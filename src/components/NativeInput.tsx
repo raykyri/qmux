@@ -177,7 +177,6 @@ export default function NativeInput({
     >
       {queuedTurns.length > 0 ? (
         <div className="queued-turn-stack" aria-label="Queued turns">
-          <div className="queued-turn-stack-title">Queued</div>
           {queuedTurns.map((turn, index) => (
             <div key={`${index}-${turn}`} className="queued-turn">
               <div className="queued-turn-text">{turn}</div>

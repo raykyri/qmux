@@ -61,6 +61,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // xterm opens into this inner mount, which fills the host's content box with no
+  // padding of its own. The visual breathing room lives as padding on the host;
+  // keeping it off the element FitAddon measures means rows/cols are computed from
+  // the true drawable area, so the first/last rows are not pushed out and clipped.
+  const mountRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -151,7 +156,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [searchOpen]);
 
   useEffect(() => {
-    if (!hostRef.current || terminalRef.current) {
+    const mount = mountRef.current;
+    if (!hostRef.current || !mount || terminalRef.current) {
       return;
     }
 
@@ -216,7 +222,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // The canvas renderer is fine as a fallback, especially in CI and older webviews.
     }
 
-    terminal.open(hostRef.current);
+    terminal.open(mount);
     terminal.focus();
 
     let resizeFrame: number | null = null;
@@ -403,7 +409,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
   return (
     <div className={`terminal-pane ${active ? "is-active" : ""}`} aria-hidden={!active}>
-      <div ref={hostRef} className="terminal-host" />
+      <div ref={hostRef} className="terminal-host">
+        <div ref={mountRef} className="terminal-mount" />
+      </div>
       {searchOpen ? (
         <div className="terminal-search" role="search">
           <input
