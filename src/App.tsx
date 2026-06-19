@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
 import NativeInput from "./components/NativeInput";
@@ -41,6 +42,8 @@ const MIN_INITIAL_COLS = 20;
 const MIN_INITIAL_ROWS = 5;
 const MAX_INITIAL_COLS = 500;
 const MAX_INITIAL_ROWS = 200;
+const PANE_CONTEXT_MENU_WIDTH = 320;
+const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 
 let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
@@ -151,6 +154,12 @@ type CloseDialogState =
     }
   | { kind: "stop"; pane: PaneInfo; reason: string };
 
+type PaneContextMenuState = {
+  paneId: string;
+  x: number;
+  y: number;
+};
+
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
@@ -178,6 +187,7 @@ export default function App() {
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -348,6 +358,12 @@ export default function App() {
     "--sidebar-width": `${sidebarWidth}px`,
     ...(activeAgent ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
+  const contextMenuPane = paneContextMenu
+    ? panes.find((pane) => pane.id === paneContextMenu.paneId)
+    : undefined;
+  const contextMenuAgent = contextMenuPane
+    ? agents.find((agent) => agent.paneId === contextMenuPane.id)
+    : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -480,11 +496,23 @@ export default function App() {
     }
   }
 
+  function openPaneContextMenu(event: ReactMouseEvent, pane: PaneInfo) {
+    event.preventDefault();
+    const maxX = Math.max(8, window.innerWidth - PANE_CONTEXT_MENU_WIDTH - 8);
+    const maxY = Math.max(8, window.innerHeight - PANE_CONTEXT_MENU_ESTIMATED_HEIGHT - 8);
+    setPaneContextMenu({
+      paneId: pane.id,
+      x: clamp(event.clientX, 8, maxX),
+      y: clamp(event.clientY, 8, maxY),
+    });
+  }
+
   async function closePane(paneToClose: PaneInfo) {
     setError(null);
     try {
       await killPane(paneToClose.id);
       setPanes((current) => current.filter((pane) => pane.id !== paneToClose.id));
+      setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
       setActivePaneId((current) => {
         if (current !== paneToClose.id) {
           return current;
@@ -601,6 +629,33 @@ export default function App() {
     activePaneRef.current = activePane;
     requestClosePaneRef.current = requestClosePane;
   });
+
+  useEffect(() => {
+    if (!paneContextMenu) {
+      return;
+    }
+    const handleDismiss = () => setPaneContextMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPaneContextMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", handleDismiss);
+    window.addEventListener("resize", handleDismiss);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", handleDismiss);
+      window.removeEventListener("resize", handleDismiss);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [paneContextMenu]);
+
+  useEffect(() => {
+    if (paneContextMenu && !panes.some((pane) => pane.id === paneContextMenu.paneId)) {
+      setPaneContextMenu(null);
+    }
+  }, [paneContextMenu, panes]);
 
   // Escape cancels the worktree close dialog. Capture phase so it wins over the
   // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
@@ -833,6 +888,7 @@ export default function App() {
               <div
                 key={pane.id}
                 className={pane.id === activePane?.id ? "pane-tab-row is-selected" : "pane-tab-row"}
+                onContextMenu={(event) => openPaneContextMenu(event, pane)}
               >
                 <button
                   type="button"
@@ -881,6 +937,42 @@ export default function App() {
           </button>
         </div>
       </aside>
+
+      {paneContextMenu && contextMenuPane ? (
+        <div
+          className="pane-context-menu"
+          role="dialog"
+          aria-label={`${contextMenuPane.title} details`}
+          style={{ left: paneContextMenu.x, top: paneContextMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {contextMenuAgent ? (
+            <div className="pane-context-status">
+              <span>Agent status</span>
+              <strong>{agentStatusLabel(contextMenuAgent.status) ?? "Stopped"}</strong>
+            </div>
+          ) : null}
+          <dl className="pane-context-details">
+            <div>
+              <dt>Tab</dt>
+              <dd>{contextMenuPane.title}</dd>
+            </div>
+            <div>
+              <dt>Branch</dt>
+              <dd>{contextMenuAgent?.branch ?? "None"}</dd>
+            </div>
+            <div>
+              <dt>Worktree</dt>
+              <dd>{contextMenuAgent?.branch ? contextMenuAgent.worktreeDir : "None"}</dd>
+            </div>
+            <div>
+              <dt>Directory</dt>
+              <dd>{contextMenuPane.cwd}</dd>
+            </div>
+          </dl>
+        </div>
+      ) : null}
 
       {launcherOpen ? (
         <div
