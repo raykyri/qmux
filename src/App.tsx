@@ -39,7 +39,7 @@ function agentStatusLabel(status: AgentInfo["status"]) {
     case "awaitingInput":
       return "Awaiting input";
     case "stopped":
-      return "Stopped";
+      return null;
     case "failed":
       return "Failed";
   }
@@ -258,6 +258,9 @@ export default function App() {
         <nav className="pane-list" aria-label="Panes">
           {panes.map((pane) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+            const paneStatus = paneAgent
+              ? agentStatusLabel(paneAgent.status)
+              : statusLabel(pane.status);
             return (
               <button
                 key={pane.id}
@@ -266,9 +269,7 @@ export default function App() {
                 onClick={() => setActivePaneId(pane.id)}
               >
                 <span>{pane.title}</span>
-                <small>
-                  {paneAgent ? agentStatusLabel(paneAgent.status) : statusLabel(pane.status)}
-                </small>
+                {paneStatus ? <small>{paneStatus}</small> : null}
               </button>
             );
           })}
