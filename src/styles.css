@@ -222,6 +222,9 @@ button:disabled {
 
 .sidebar-actions button {
   min-height: 30px;
+  /* Label sits 1px tighter to the bottom edge than the top. */
+  padding-top: 1px;
+  padding-bottom: 0;
   border: 1px solid #2a2d2f;
   border-radius: 4px;
   background: #15191b;
@@ -555,6 +558,9 @@ button:disabled {
   position: absolute;
   inset: 0;
   display: grid;
+  /* Pin the single column to the pane width so a long, unbreakable line wraps
+     instead of stretching the track and scrolling the whole transcript sideways. */
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 8px;
   /* The transcript fills the whole pane and is the only scroll surface; the
@@ -607,15 +613,18 @@ button:disabled {
 
 .turn-blocks {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin-top: 5px;
 }
 
 .turn-text {
   margin: 0;
+  min-width: 0;
   color: #f1f0e8;
   font-size: 13px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .assistant-activity {
@@ -685,6 +694,7 @@ button:disabled {
 
 .tool-run-items {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   border-top: 1px solid #30383b;
   padding: 7px;
@@ -713,6 +723,7 @@ button:disabled {
   overflow: auto;
   padding: 6px 8px 8px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .thinking-block {
@@ -897,15 +908,21 @@ button:disabled {
   margin-left: auto;
 }
 
-/* Steer overrides the busy guard, so it reads as an interrupt rather than a
-   neutral submit. */
-.steer-button {
+.native-input-submit-actions button {
+  /* Label sits 1px tighter to the bottom edge than the top. */
+  padding-top: 1px;
+  padding-bottom: 0;
+}
+
+/* Queue is the colored call-to-action so it stands apart from the neutral
+   Send/Steer submits. */
+.queue-button {
   flex: 0 0 auto;
   border-color: #5a4a1f;
   background: #2a2410;
   color: #f2d37b;
 }
 
-.steer-button:hover:not(:disabled) {
+.queue-button:hover:not(:disabled) {
   background: #3a3115;
 }
