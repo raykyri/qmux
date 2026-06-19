@@ -99,7 +99,7 @@ pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> 
             "QMUX_SOCK".to_string(),
             state.config().socket_path.display().to_string(),
         ),
-        ("QMUX_TOKEN".to_string(), state.token().to_string()),
+        ("QMUX_TOKEN".to_string(), state.pane_token(pane_id)),
         (
             "QMUX_WORKSPACE_ROOT".to_string(),
             state.config().workspace_root.display().to_string(),
@@ -553,10 +553,10 @@ mod tests {
             env_value(&envs, "QMUX_SOCK"),
             Some("/tmp/qmux.sock".to_string())
         );
-        assert_eq!(
-            env_value(&envs, "QMUX_TOKEN"),
-            Some(state.token().to_string())
-        );
+        let token = env_value(&envs, "QMUX_TOKEN").expect("pane token env is present");
+        assert_eq!(token, state.pane_token("pane-123"));
+        assert_eq!(token.len(), 64);
+        assert_ne!(state.pane_token("pane-123"), state.pane_token("other-pane"));
         assert_eq!(
             env_value(&envs, "QMUX_WORKSPACE_ROOT"),
             Some("/tmp/qmux-workspaces".to_string())

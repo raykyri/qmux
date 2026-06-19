@@ -50,6 +50,10 @@ impl QmuxConfig {
                     parent.display()
                 )
             })?;
+            // Best-effort: keep the control socket's directory owner-only so the socket
+            // itself is not reachable by other local accounts.
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
         }
 
         Ok(config)

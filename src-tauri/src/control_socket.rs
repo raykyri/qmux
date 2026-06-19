@@ -1,19 +1,13 @@
-use crate::claude::{
-    PrepareShellClaudeLaunchRequest, SpawnClaudeRequest, prepare_shell_claude_launch,
-    spawn_claude_pane,
-};
+use crate::claude::{PrepareShellClaudeLaunchRequest, prepare_shell_claude_launch};
 use crate::events::QmuxEvent;
 use crate::hooks::{HookNotification, ingest_hook_notification};
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
-use crate::turn_queue::{
-    RemoveQueuedAgentTurnRequest, SubmitAgentTurnRequest, remove_queued_agent_turn,
-    submit_agent_turn,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 
@@ -47,6 +41,15 @@ pub fn start_control_socket(state: AppState) -> Result<(), String> {
 
     let listener = UnixListener::bind(&socket_path)
         .map_err(|err| format!("failed to bind socket {}: {err}", socket_path.display()))?;
+
+    // Restrict the socket to the owning user so the per-pane token is not the only thing
+    // standing between other local accounts and the control plane.
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).map_err(|err| {
+        format!(
+            "failed to restrict socket permissions {}: {err}",
+            socket_path.display()
+        )
+    })?;
 
     thread::spawn(move || {
         for stream in listener.incoming() {
@@ -95,53 +98,51 @@ fn handle_client(state: AppState, mut stream: UnixStream) {
 fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
     let request: ControlRequest =
         serde_json::from_str(line).map_err(|err| format!("invalid control request: {err}"))?;
-    if request.token != state.token() {
-        return Err("invalid QMUX_TOKEN".to_string());
-    }
+    // A control token authorizes exactly one pane. Resolving it here means every
+    // command below acts only on the caller's own pane: a process in one pane cannot
+    // write to, or impersonate hooks for, any other pane.
+    let authed_pane = state
+        .pane_for_token(&request.token)
+        .ok_or_else(|| "invalid QMUX_TOKEN".to_string())?;
 
     match request.command.as_str() {
         "ping" => Ok(json!({ "status": "ok" })),
         "pane.write" => {
             let options = serde_json::from_value::<PaneWriteOptions>(request.payload)
                 .map_err(|err| format!("invalid pane.write payload: {err}"))?;
+            ensure_pane_scope(&authed_pane, &options.pane_id)?;
             write_pane(state, options)?;
             Ok(json!({ "written": true }))
-        }
-        "agent.spawn" => {
-            let spawn = serde_json::from_value::<SpawnClaudeRequest>(request.payload)
-                .map_err(|err| format!("invalid agent.spawn payload: {err}"))?;
-            let pane = spawn_claude_pane(state, spawn)?;
-            serde_json::to_value(pane).map_err(|err| format!("failed to encode pane: {err}"))
         }
         "claude.prepare_shell_launch" => {
             let launch = serde_json::from_value::<PrepareShellClaudeLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid claude.prepare_shell_launch payload: {err}"))?;
+            ensure_pane_scope(&authed_pane, &launch.pane_id)?;
             let prepared = prepare_shell_claude_launch(state, launch)?;
             serde_json::to_value(prepared)
                 .map_err(|err| format!("failed to encode prepared Claude launch: {err}"))
         }
-        "agent.submit_turn" => {
-            let submit = serde_json::from_value::<SubmitAgentTurnRequest>(request.payload)
-                .map_err(|err| format!("invalid agent.submit_turn payload: {err}"))?;
-            let result = submit_agent_turn(state, submit)?;
-            serde_json::to_value(result)
-                .map_err(|err| format!("failed to encode submit result: {err}"))
-        }
-        "agent.remove_queued_turn" => {
-            let remove = serde_json::from_value::<RemoveQueuedAgentTurnRequest>(request.payload)
-                .map_err(|err| format!("invalid agent.remove_queued_turn payload: {err}"))?;
-            let result = remove_queued_agent_turn(state, remove)?;
-            serde_json::to_value(result)
-                .map_err(|err| format!("failed to encode queue removal result: {err}"))
-        }
         "hook.notify" => {
-            let notification = serde_json::from_value::<HookNotification>(request.payload)
+            let mut notification = serde_json::from_value::<HookNotification>(request.payload)
                 .map_err(|err| format!("invalid hook.notify payload: {err}"))?;
+            // Bind the notification to the authenticated pane regardless of what the
+            // caller claims, so hook status can only be reported for its own pane.
+            notification.pane_id = Some(authed_pane);
             let event = ingest_hook_notification(state, notification)?;
             state.emit(event);
             Ok(json!({ "notified": true }))
         }
+        // Spawning agents and queueing turns are management operations that belong to the
+        // trusted GUI (Tauri commands), not to processes holding a pane token.
         other => Err(format!("unknown control command '{other}'")),
+    }
+}
+
+fn ensure_pane_scope(authed_pane: &str, requested_pane: &str) -> Result<(), String> {
+    if authed_pane == requested_pane {
+        Ok(())
+    } else {
+        Err("control token is not authorized for that pane".to_string())
     }
 }
 

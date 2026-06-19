@@ -5,7 +5,7 @@ use crate::workspace::{AgentInfo, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,7 +22,7 @@ pub struct AppState {
 
 struct AppStateInner {
     config: QmuxConfig,
-    token: String,
+    pane_tokens: Mutex<HashMap<String, String>>,
     model: Mutex<Model>,
     transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
@@ -80,7 +80,7 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 config,
-                token: mint_token(),
+                pane_tokens: Mutex::new(HashMap::new()),
                 model: Mutex::new(Model::default()),
                 transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
@@ -93,8 +93,31 @@ impl AppState {
         &self.inner.config
     }
 
-    pub fn token(&self) -> &str {
-        &self.inner.token
+    /// Returns the control-socket token scoped to a single pane, minting one on first
+    /// use. Each pane gets its own unguessable token so a process running in one pane
+    /// cannot drive another pane (or the control plane) through the socket.
+    pub fn pane_token(&self, pane_id: &str) -> String {
+        let mut tokens = self
+            .inner
+            .pane_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        tokens
+            .entry(pane_id.to_string())
+            .or_insert_with(random_token)
+            .clone()
+    }
+
+    /// Resolves the pane a presented control token is authorized for, if any.
+    pub fn pane_for_token(&self, token: &str) -> Option<String> {
+        let tokens = self
+            .inner
+            .pane_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        tokens
+            .iter()
+            .find_map(|(pane_id, pane_token)| (pane_token == token).then(|| pane_id.clone()))
     }
 
     pub fn attach_app(&self, app_handle: AppHandle) -> Result<(), String> {
@@ -438,10 +461,23 @@ impl AppState {
     }
 }
 
-fn mint_token() -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    format!("qmux-{}-{millis}", std::process::id())
+fn random_token() -> String {
+    let mut bytes = [0u8; 32];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_err()
+    {
+        // /dev/urandom is effectively always available on macOS; degrade to a
+        // time/pid-mixed value rather than emitting an all-zero token if it is not,
+        // so the socket is never left guarded by a constant secret.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let pid = u128::from(std::process::id());
+        let mixed = nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        bytes[..16].copy_from_slice(&mixed.to_le_bytes());
+        bytes[16..].copy_from_slice(&nanos.to_le_bytes());
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
