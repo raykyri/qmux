@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { removeQueuedAgentTurn, submitAgentTurn, submitPaneInput } from "../lib/api";
 import type { AgentInfo, PaneInfo } from "../types";
 
+// The composer grows with its content up to this height, then scrolls.
+const MAX_INPUT_HEIGHT = 200;
+
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
@@ -23,6 +26,7 @@ export default function NativeInput({
   const [submitting, setSubmitting] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetTimerRef = useRef<number | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
   const canSend = agent.status === "awaitingInput" || agent.status === "stopped";
   const canQueue =
@@ -41,6 +45,17 @@ export default function NativeInput({
       }
     };
   }, []);
+
+  // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
+  // the value changes, including programmatic resets and queued-turn edits.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+  }, [value]);
 
   async function submitTurn(text: string, mode: "send" | "queue" | "steer") {
     if (submitting) {
@@ -175,6 +190,7 @@ export default function NativeInput({
         </div>
       ) : null}
       <textarea
+        ref={textareaRef}
         value={value}
         onChange={(event) => setValue(event.currentTarget.value)}
         onKeyDown={(event) => {
@@ -190,7 +206,7 @@ export default function NativeInput({
         placeholder={
           awaitingPermission ? "Approve or deny the pending tool use..." : "Send a turn..."
         }
-        rows={2}
+        rows={1}
       />
       <div className="native-input-actions">
         <button
