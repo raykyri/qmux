@@ -52,7 +52,6 @@ export default function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
-  const [turnOverlayVisible, setTurnOverlayVisible] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [baseRepo, setBaseRepo] = useState("");
   const [baseRef, setBaseRef] = useState("HEAD");
@@ -244,7 +243,7 @@ export default function App() {
   }, [activePane, panes]);
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${activeAgent ? "has-turn-sidebar" : ""}`}>
       <aside className="sidebar">
         <nav className="pane-list" aria-label="Panes">
           {panes.map((pane) => {
@@ -339,22 +338,21 @@ export default function App() {
               active={pane.id === activePane?.id}
             />
           ))}
-          {activeAgent ? (
-            <>
-              <TurnOverlay
-                turns={activeTurns}
-                visible={turnOverlayVisible}
-                onToggle={() => setTurnOverlayVisible((visible) => !visible)}
-                input={
-                  activePane ? (
-                    <NativeInput pane={activePane} agent={activeAgent} onError={setError} />
-                  ) : null
-                }
-              />
-            </>
-          ) : null}
         </div>
       </section>
+
+      {activeAgent ? (
+        <aside className="turn-pane">
+          <TurnOverlay
+            turns={activeTurns}
+            input={
+              activePane ? (
+                <NativeInput pane={activePane} agent={activeAgent} onError={setError} />
+              ) : null
+            }
+          />
+        </aside>
+      ) : null}
     </main>
   );
 }

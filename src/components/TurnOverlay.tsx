@@ -3,43 +3,29 @@ import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
   turns: Turn[];
-  visible: boolean;
-  onToggle: () => void;
   input?: ReactNode;
 }
 
-export default function TurnOverlay({ turns, visible, onToggle, input }: TurnOverlayProps) {
+export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
   return (
-    <section className={`turn-overlay ${visible ? "is-visible" : ""}`}>
-      <button
-        type="button"
-        className={`overlay-toggle ${visible ? "is-open" : ""}`}
-        aria-label={visible ? "Hide turns overlay" : "Show turns overlay"}
-        aria-expanded={visible}
-        title={visible ? "Hide turns overlay" : "Show turns overlay"}
-        onClick={onToggle}
-      />
-      {visible ? (
-        <div className="turn-panel" aria-label="Agent turns">
-          <div className="turn-timeline">
-            {turns.length === 0 ? (
-              <p className="empty-turns">No turns yet</p>
-            ) : (
-              turns.map((turn) => (
-                <article key={turn.id} className={`turn-card role-${turn.role}`}>
-                  <header>{turn.role}</header>
-                  <div className="turn-blocks">
-                    {turn.blocks.map((block, index) => (
-                      <TurnBlockView key={`${turn.id}-${index}`} block={block} />
-                    ))}
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
-          {input}
-        </div>
-      ) : null}
+    <section className="turn-sidebar" aria-label="Agent turns">
+      <div className="turn-timeline">
+        {turns.length === 0 ? (
+          <p className="empty-turns">No turns yet</p>
+        ) : (
+          turns.map((turn) => (
+            <article key={turn.id} className={`turn-card role-${turn.role}`}>
+              <header>{turn.role}</header>
+              <div className="turn-blocks">
+                {turn.blocks.map((block, index) => (
+                  <TurnBlockView key={`${turn.id}-${index}`} block={block} />
+                ))}
+              </div>
+            </article>
+          ))
+        )}
+      </div>
+      {input ? <div className="turn-sidebar-input">{input}</div> : null}
     </section>
   );
 }
