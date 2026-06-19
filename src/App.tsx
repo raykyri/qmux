@@ -277,6 +277,12 @@ export default function App() {
 
         <form
           className="launcher"
+          onKeyDown={(event) => {
+            if (event.metaKey && event.key === "Enter") {
+              event.preventDefault();
+              void addClaudePane();
+            }
+          }}
           onSubmit={(event) => {
             event.preventDefault();
             void addClaudePane();

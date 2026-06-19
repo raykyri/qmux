@@ -14,6 +14,10 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
   const awaitingPermission = agent.status === "awaitingPermission";
 
   async function submitTurn(text: string) {
+    if (submitting) {
+      return;
+    }
+
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -52,6 +56,12 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
       <textarea
         value={value}
         onChange={(event) => setValue(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.metaKey && event.key === "Enter") {
+            event.preventDefault();
+            void submitTurn(value);
+          }
+        }}
         placeholder={
           awaitingPermission ? "Approve or deny the pending tool use..." : "Send a turn..."
         }
