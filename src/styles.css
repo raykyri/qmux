@@ -58,6 +58,10 @@ button:disabled {
   background: #17191b;
 }
 
+.app-shell.has-turn-sidebar {
+  grid-template-columns: 268px minmax(0, 1fr) minmax(340px, 420px);
+}
+
 .sidebar {
   display: flex;
   min-width: 0;
@@ -222,56 +226,24 @@ button:disabled {
   height: 100%;
 }
 
-.turn-overlay {
-  position: absolute;
-  inset: 10px 10px 10px auto;
-  display: grid;
-  width: min(480px, calc(100% - 20px));
-  max-width: 100%;
-  grid-template-rows: auto minmax(0, 1fr);
-  pointer-events: none;
-  z-index: 4;
-}
-
-.overlay-toggle {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  justify-self: end;
-  place-items: center;
-  padding: 0;
-  pointer-events: auto;
-}
-
-.overlay-toggle::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: translateY(-2px) rotate(45deg);
-}
-
-.overlay-toggle.is-open::before {
-  transform: translateY(2px) rotate(-135deg);
-}
-
-.turn-panel {
-  display: none;
+.turn-pane {
+  display: flex;
+  min-width: 0;
   min-height: 0;
-  margin-top: 8px;
+  border-left: 1px solid #2a2d2f;
+  background: #171b1d;
+  padding: 10px;
+}
+
+.turn-sidebar {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 8px;
   overflow: hidden;
-  border: 1px solid #364044;
-  border-radius: 8px;
-  background: rgba(23, 25, 27, 0.94);
-  padding: 10px;
-  pointer-events: auto;
-}
-
-.turn-overlay.is-visible .turn-panel {
-  display: grid;
+  background: #171b1d;
 }
 
 .turn-timeline {
@@ -280,6 +252,10 @@ button:disabled {
   gap: 10px;
   min-height: 0;
   overflow: auto;
+}
+
+.turn-sidebar-input {
+  min-width: 0;
 }
 
 .empty-turns {
