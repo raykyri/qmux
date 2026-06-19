@@ -26,6 +26,16 @@ select {
   font: inherit;
 }
 
+button:focus-visible,
+textarea:focus,
+input:focus,
+select:focus {
+  border-width: 1px;
+  border-color: #6cae9d;
+  outline: 1px solid #6cae9d;
+  outline-offset: 1px;
+}
+
 button {
   border: 1px solid #3a3d3f;
   border-radius: 6px;
