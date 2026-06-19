@@ -133,6 +133,15 @@ impl AppState {
         Ok(model.panes.values().map(|pane| pane.info.clone()).collect())
     }
 
+    pub fn pane(&self, pane_id: &str) -> Result<Option<PaneInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.panes.get(pane_id).map(|pane| pane.info.clone()))
+    }
+
     pub fn list_groups(&self) -> Result<Vec<GroupInfo>, String> {
         let model = self
             .inner

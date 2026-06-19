@@ -25,8 +25,10 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
 
     setSubmitting(true);
     try {
-      await submitAgentTurn(agent.id, trimmed);
-      setValue("");
+      const result = await submitAgentTurn(agent.id, trimmed);
+      if (!result.queued) {
+        setValue("");
+      }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
