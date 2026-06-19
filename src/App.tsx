@@ -6,14 +6,13 @@ import {
   getRuntimeConfig,
   killPane,
   listAgents,
-  listGroups,
   listTurns,
   listenToEvents,
   listPanes,
   spawnClaude,
   spawnShell,
 } from "./lib/api";
-import type { AgentInfo, GroupInfo, PaneInfo, RuntimeConfig, Turn } from "./types";
+import type { AgentInfo, PaneInfo, RuntimeConfig, Turn } from "./types";
 
 function statusLabel(status: PaneInfo["status"]) {
   switch (status) {
@@ -48,7 +47,6 @@ function agentStatusLabel(status: AgentInfo["status"]) {
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
-  const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
@@ -75,16 +73,9 @@ export default function App() {
 
     async function boot() {
       try {
-        const [
-          runtimeConfig,
-          existingPanes,
-          existingGroups,
-          existingAgents,
-          existingTurns,
-        ] = await Promise.all([
+        const [runtimeConfig, existingPanes, existingAgents, existingTurns] = await Promise.all([
           getRuntimeConfig(),
           listPanes(),
-          listGroups(),
           listAgents(),
           listTurns(),
         ]);
@@ -93,7 +84,6 @@ export default function App() {
         }
 
         setConfig(runtimeConfig);
-        setGroups(existingGroups);
         setAgents(existingAgents);
         setTurns(existingTurns);
 
@@ -220,7 +210,6 @@ export default function App() {
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
       setPrompt("");
-      setGroups(await listGroups());
       setAgents(await listAgents());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -316,13 +305,6 @@ export default function App() {
           </div>
           <button type="submit">Launch Claude</button>
         </form>
-
-        <div className="workspace-summary">
-          <strong>{groups.length}</strong>
-          <span>groups</span>
-          <strong>{agents.length}</strong>
-          <span>agents</span>
-        </div>
 
         {config ? (
           <dl className="runtime-info">
