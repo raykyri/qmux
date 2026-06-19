@@ -720,7 +720,7 @@ export default function App() {
             className="command-launcher"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="claude-launcher-title"
+            aria-label="New agent"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -737,40 +737,32 @@ export default function App() {
               void addClaudePane();
             }}
           >
-            <div className="command-launcher-header">
-              <h2 id="claude-launcher-title">New agent</h2>
-              <span className="shortcut-hint" aria-label="Command K">
-                ⌘K
-              </span>
-            </div>
             <textarea
               ref={launcherInputRef}
               id="claude-prompt"
+              className="command-launcher-input"
               value={prompt}
               onChange={(event) => setPrompt(event.currentTarget.value)}
-              rows={5}
+              rows={3}
               placeholder="Ask Claude Code to work on this checkout..."
             />
-            <div className="command-launcher-actions">
-              <label className="command-launcher-option">
+            <div className="command-launcher-overlay">
+              <label className="command-launcher-worktree">
                 <input
                   type="checkbox"
                   checked={createInWorktree}
                   onChange={(event) => setCreateInWorktree(event.currentTarget.checked)}
                 />
-                <span>Create in worktree</span>
+                <span>Worktree</span>
               </label>
-              <div className="command-launcher-buttons">
-                <button type="button" onClick={() => setLauncherOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit">
-                  <span>Launch Claude</span>
-                  <span className="shortcut-hint" aria-label="Command Enter">
-                    ⌘↵
-                  </span>
-                </button>
-              </div>
+              <button
+                type="submit"
+                className="command-launcher-send"
+                aria-label="Launch Claude"
+                title="Launch Claude"
+              >
+                <span aria-hidden="true">⌘↵</span>
+              </button>
             </div>
           </form>
         </div>
