@@ -46,10 +46,12 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
     const terminal = new Terminal({
       allowProposedApi: true,
       convertEol: true,
+      cols: pane.cols,
       cursorBlink: true,
       fontFamily:
         "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
       fontSize: 13,
+      rows: pane.rows,
       theme: {
         background: "#111315",
         foreground: "#e7e7e2",

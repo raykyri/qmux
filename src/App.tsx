@@ -17,16 +17,53 @@ import {
   spawnClaude,
   spawnShell,
 } from "./lib/api";
-import type { AgentInfo, PaneInfo, RuntimeConfig, Turn } from "./types";
+import type { AgentInfo, InitialPaneSize, PaneInfo, RuntimeConfig, Turn } from "./types";
 
 const LEFT_SIDEBAR_WIDTH = 268;
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
 const TURN_PANE_MAX_WIDTH = 720;
+const TERMINAL_HORIZONTAL_PADDING = 20;
+const TERMINAL_VERTICAL_PADDING = 20;
+const TERMINAL_FONT_SIZE = 13;
+const TERMINAL_FONT_FAMILY =
+  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace";
+const DEFAULT_INITIAL_COLS = 100;
+const DEFAULT_INITIAL_ROWS = 24;
+const MIN_INITIAL_COLS = 20;
+const MIN_INITIAL_ROWS = 5;
+const MAX_INITIAL_COLS = 500;
+const MAX_INITIAL_ROWS = 200;
+
+let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function measureTerminalCellSize() {
+  if (measuredTerminalCellSize) {
+    return measuredTerminalCellSize;
+  }
+
+  const probe = document.createElement("span");
+  probe.textContent = "mmmmmmmmmm";
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.whiteSpace = "pre";
+  probe.style.fontFamily = TERMINAL_FONT_FAMILY;
+  probe.style.fontSize = `${TERMINAL_FONT_SIZE}px`;
+  document.body.appendChild(probe);
+
+  const rect = probe.getBoundingClientRect();
+  probe.remove();
+
+  measuredTerminalCellSize = {
+    width: rect.width > 0 ? rect.width / 10 : 8,
+    height: rect.height > 0 ? rect.height : 16,
+  };
+  return measuredTerminalCellSize;
 }
 
 function statusLabel(status: PaneInfo["status"]) {
@@ -63,6 +100,7 @@ function agentStatusLabel(status: AgentInfo["status"]) {
 
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
+  const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -96,6 +134,29 @@ export default function App() {
     return clamp(width, TURN_PANE_MIN_WIDTH, maxTurnPaneWidth());
   }
 
+  function estimateInitialPaneSize(willShowTurnPane: boolean): InitialPaneSize {
+    const stageRect = terminalStageRef.current?.getBoundingClientRect();
+    const appWidth = appRef.current?.getBoundingClientRect().width;
+    const reservedTurnPaneWidth = willShowTurnPane ? clampTurnPaneWidth(turnPaneWidth) : 0;
+    const terminalWidth =
+      appWidth !== undefined
+        ? appWidth - LEFT_SIDEBAR_WIDTH - reservedTurnPaneWidth
+        : (stageRect?.width ?? window.innerWidth - LEFT_SIDEBAR_WIDTH - reservedTurnPaneWidth);
+    const terminalHeight = stageRect?.height ?? window.innerHeight;
+    const cell = measureTerminalCellSize();
+    const cols = Math.floor((terminalWidth - TERMINAL_HORIZONTAL_PADDING) / cell.width);
+    const rows = Math.floor((terminalHeight - TERMINAL_VERTICAL_PADDING) / cell.height);
+
+    return {
+      cols: Number.isFinite(cols)
+        ? clamp(cols, MIN_INITIAL_COLS, MAX_INITIAL_COLS)
+        : DEFAULT_INITIAL_COLS,
+      rows: Number.isFinite(rows)
+        ? clamp(rows, MIN_INITIAL_ROWS, MAX_INITIAL_ROWS)
+        : DEFAULT_INITIAL_ROWS,
+    };
+  }
+
   const appStyle = activeAgent
     ? ({
         "--turn-pane-width": `${turnPaneWidth}px`,
@@ -127,7 +188,7 @@ export default function App() {
           return;
         }
 
-        const pane = await spawnShell();
+        const pane = await spawnShell(estimateInitialPaneSize(false));
         if (!cancelled) {
           setPanes([pane]);
           setActivePaneId(pane.id);
@@ -199,7 +260,7 @@ export default function App() {
   async function addShellPane() {
     setError(null);
     try {
-      const pane = await spawnShell();
+      const pane = await spawnShell(estimateInitialPaneSize(false));
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
     } catch (err) {
@@ -240,6 +301,7 @@ export default function App() {
         prompt: trimmed,
         baseRepo: baseRepo.trim() || null,
         baseRef: baseRef.trim() || "HEAD",
+        initialSize: estimateInitialPaneSize(true),
       });
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
@@ -425,7 +487,7 @@ export default function App() {
       <section className="workspace">
         {error ? <div className="error-banner">{error}</div> : null}
 
-        <div className="terminal-stage">
+        <div ref={terminalStageRef} className="terminal-stage">
           {panes.map((pane) => (
             <TerminalPane
               key={pane.id}

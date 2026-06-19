@@ -1,5 +1,5 @@
 use crate::hooks::write_claude_hook_settings;
-use crate::pty::{PtySpawnSpec, qmux_pane_envs, spawn_pty};
+use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::workspace::{
     PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed, prepare_agent_workspace,
@@ -19,6 +19,7 @@ pub struct SpawnClaudeRequest {
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    pub initial_size: Option<InitialPaneSize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -117,6 +118,7 @@ pub fn spawn_claude_pane(
             args,
             cwd,
             envs,
+            initial_size: request.initial_size,
         },
     );
 
