@@ -6,7 +6,10 @@ use crate::events::QmuxEvent;
 use crate::hooks::{HookNotification, ingest_hook_notification};
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
-use crate::turn_queue::{SubmitAgentTurnRequest, submit_agent_turn};
+use crate::turn_queue::{
+    RemoveQueuedAgentTurnRequest, SubmitAgentTurnRequest, remove_queued_agent_turn,
+    submit_agent_turn,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
@@ -123,6 +126,13 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             let result = submit_agent_turn(state, submit)?;
             serde_json::to_value(result)
                 .map_err(|err| format!("failed to encode submit result: {err}"))
+        }
+        "agent.remove_queued_turn" => {
+            let remove = serde_json::from_value::<RemoveQueuedAgentTurnRequest>(request.payload)
+                .map_err(|err| format!("invalid agent.remove_queued_turn payload: {err}"))?;
+            let result = remove_queued_agent_turn(state, remove)?;
+            serde_json::to_value(result)
+                .map_err(|err| format!("failed to encode queue removal result: {err}"))
         }
         "hook.notify" => {
             let notification = serde_json::from_value::<HookNotification>(request.payload)

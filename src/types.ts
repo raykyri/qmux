@@ -79,9 +79,18 @@ export interface SpawnClaudeRequest {
   initialSize?: InitialPaneSize | null;
 }
 
+export type SubmitAgentTurnMode = "auto" | "send" | "queue";
+
 export interface SubmitAgentTurnResult {
   queued: boolean;
   pendingTurns: number;
+  queuedTurns: string[];
+}
+
+export interface RemoveQueuedAgentTurnResult {
+  removedTurn: string;
+  pendingTurns: number;
+  queuedTurns: string[];
 }
 
 export interface QmuxEvent {

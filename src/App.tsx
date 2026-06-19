@@ -11,6 +11,7 @@ import {
   getRuntimeConfig,
   killPane,
   listAgents,
+  listAgentTurnQueue,
   listTurns,
   listenToEvents,
   listPanes,
@@ -101,13 +102,16 @@ function agentStatusLabel(status: AgentInfo["status"]) {
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
+  const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [queuedTurnsByAgent, setQueuedTurnsByAgent] = useState<Record<string, string[]>>({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
+  const [launcherOpen, setLauncherOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
@@ -121,6 +125,22 @@ export default function App() {
     () => turns.filter((turn) => turn.agentId === activeAgent?.id),
     [activeAgent?.id, turns],
   );
+  const activeQueuedTurns = useMemo(
+    () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
+    [activeAgent?.id, queuedTurnsByAgent],
+  );
+
+  function setAgentQueuedTurns(agentId: string, queuedTurns: string[]) {
+    setQueuedTurnsByAgent((current) => ({
+      ...current,
+      [agentId]: queuedTurns,
+    }));
+  }
+
+  async function refreshAgentTurnQueue(agentId: string) {
+    const queuedTurns = await listAgentTurnQueue(agentId);
+    setAgentQueuedTurns(agentId, queuedTurns);
+  }
 
   function maxTurnPaneWidth() {
     const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
@@ -179,6 +199,16 @@ export default function App() {
         setConfig(runtimeConfig);
         setAgents(existingAgents);
         setTurns(existingTurns);
+        const queueEntries = await Promise.all(
+          existingAgents.map(async (agent) => [
+            agent.id,
+            await listAgentTurnQueue(agent.id),
+          ] as const),
+        );
+        if (cancelled) {
+          return;
+        }
+        setQueuedTurnsByAgent(Object.fromEntries(queueEntries));
 
         if (existingPanes.length > 0) {
           setPanes(existingPanes);
@@ -223,6 +253,22 @@ export default function App() {
       if (event.type.startsWith("agent.")) {
         void listAgents().then(setAgents).catch(() => undefined);
       }
+      if (
+        event.agentId &&
+        (event.type === "agent.turn_queued" ||
+          event.type === "agent.queued_turn_sent" ||
+          event.type === "agent.queued_turn_removed" ||
+          event.type === "agent.queue_error")
+      ) {
+        const queuedTurns = Array.isArray(event.payload.queuedTurns)
+          ? event.payload.queuedTurns.filter((turn): turn is string => typeof turn === "string")
+          : null;
+        if (queuedTurns) {
+          setAgentQueuedTurns(event.agentId, queuedTurns);
+        } else {
+          void refreshAgentTurnQueue(event.agentId).catch(() => undefined);
+        }
+      }
       if (event.type === "turn.appended") {
         const turn = event.payload.turn as Turn | undefined;
         if (turn) {
@@ -266,20 +312,16 @@ export default function App() {
     }
   }
 
-  async function closeActivePane() {
-    if (!activePane) {
-      return;
-    }
-
+  async function closePane(paneToClose: PaneInfo) {
     setError(null);
     try {
-      await killPane(activePane.id);
-      setPanes((current) => current.filter((pane) => pane.id !== activePane.id));
+      await killPane(paneToClose.id);
+      setPanes((current) => current.filter((pane) => pane.id !== paneToClose.id));
       setActivePaneId((current) => {
-        if (current !== activePane.id) {
+        if (current !== paneToClose.id) {
           return current;
         }
-        return panes.find((pane) => pane.id !== activePane.id)?.id ?? null;
+        return panes.find((pane) => pane.id !== paneToClose.id)?.id ?? null;
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -288,11 +330,6 @@ export default function App() {
 
   async function addClaudePane() {
     const trimmed = prompt.trim();
-    if (!trimmed) {
-      setError("Enter a prompt before launching Claude.");
-      return;
-    }
-
     setError(null);
     try {
       const pane = await spawnClaude({
@@ -303,7 +340,11 @@ export default function App() {
       });
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
+      if (pane.agentId) {
+        setAgentQueuedTurns(pane.agentId, []);
+      }
       setPrompt("");
+      setLauncherOpen(false);
       setAgents(await listAgents());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -317,7 +358,7 @@ export default function App() {
       }
 
       const key = event.key.toLowerCase();
-      if (key !== "t" && key !== "w") {
+      if (key !== "t" && key !== "k") {
         return;
       }
 
@@ -327,13 +368,24 @@ export default function App() {
       if (key === "t") {
         void addShellPane();
       } else {
-        void closeActivePane();
+        setLauncherOpen(true);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [activePane, panes]);
+  }, [panes]);
+
+  useEffect(() => {
+    if (!launcherOpen) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      launcherInputRef.current?.focus();
+      launcherInputRef.current?.select();
+    });
+  }, [launcherOpen]);
 
   useEffect(() => {
     if (!activeAgent) {
@@ -402,15 +454,30 @@ export default function App() {
               ? agentStatusLabel(paneAgent.status)
               : statusLabel(pane.status);
             return (
-              <button
+              <div
                 key={pane.id}
-                type="button"
-                className={pane.id === activePane?.id ? "pane-tab is-selected" : "pane-tab"}
-                onClick={() => setActivePaneId(pane.id)}
+                className={pane.id === activePane?.id ? "pane-tab-row is-selected" : "pane-tab-row"}
               >
-                <span>{pane.title}</span>
-                {paneStatus ? <small>{paneStatus}</small> : null}
-              </button>
+                <button
+                  type="button"
+                  className="pane-tab"
+                  onClick={() => setActivePaneId(pane.id)}
+                >
+                  <span className="pane-tab-title">{pane.title}</span>
+                  {paneStatus ? <small>{paneStatus}</small> : null}
+                </button>
+                <button
+                  type="button"
+                  className="pane-tab-close"
+                  aria-label={`Close ${pane.title}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void closePane(pane);
+                  }}
+                >
+                  x
+                </button>
+              </div>
             );
           })}
         </nav>
@@ -419,39 +486,10 @@ export default function App() {
           <button type="button" onClick={addShellPane}>
             New shell
           </button>
-          <button type="button" onClick={closeActivePane} disabled={!activePane}>
-            Close pane
+          <button type="button" onClick={() => setLauncherOpen(true)}>
+            New agent
           </button>
         </div>
-
-        <form
-          className="launcher"
-          onKeyDown={(event) => {
-            if (event.metaKey && event.key === "Enter") {
-              event.preventDefault();
-              void addClaudePane();
-            }
-          }}
-          onSubmit={(event) => {
-            event.preventDefault();
-            void addClaudePane();
-          }}
-        >
-          <label htmlFor="claude-prompt">Claude prompt</label>
-          <textarea
-            id="claude-prompt"
-            value={prompt}
-            onChange={(event) => setPrompt(event.currentTarget.value)}
-            rows={5}
-            placeholder="Ask Claude Code to work on this checkout..."
-          />
-          <button type="submit">
-            <span>Launch Claude</span>
-            <span className="shortcut-hint" aria-label="Command Enter">
-              ⌘↵
-            </span>
-          </button>
-        </form>
 
         {config ? (
           <dl className="runtime-info">
@@ -459,13 +497,69 @@ export default function App() {
               <dt>Workspace</dt>
               <dd>{config.workspaceRoot}</dd>
             </div>
-            <div>
-              <dt>Socket</dt>
-              <dd>{config.socketPath}</dd>
-            </div>
           </dl>
         ) : null}
       </aside>
+
+      {launcherOpen ? (
+        <div
+          className="command-launcher-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setLauncherOpen(false);
+            }
+          }}
+        >
+          <form
+            className="command-launcher"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="claude-launcher-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setLauncherOpen(false);
+                return;
+              }
+              if (event.metaKey && event.key === "Enter") {
+                event.preventDefault();
+                void addClaudePane();
+              }
+            }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void addClaudePane();
+            }}
+          >
+            <div className="command-launcher-header">
+              <h2 id="claude-launcher-title">New agent</h2>
+              <span className="shortcut-hint" aria-label="Command K">
+                ⌘K
+              </span>
+            </div>
+            <textarea
+              ref={launcherInputRef}
+              id="claude-prompt"
+              value={prompt}
+              onChange={(event) => setPrompt(event.currentTarget.value)}
+              rows={5}
+              placeholder="Ask Claude Code to work on this checkout..."
+            />
+            <div className="command-launcher-actions">
+              <button type="button" onClick={() => setLauncherOpen(false)}>
+                Cancel
+              </button>
+              <button type="submit">
+                <span>Launch Claude</span>
+                <span className="shortcut-hint" aria-label="Command Enter">
+                  ⌘↵
+                </span>
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
 
       <section className="workspace">
         {error ? <div className="error-banner">{error}</div> : null}
@@ -499,7 +593,13 @@ export default function App() {
             turns={activeTurns}
             input={
               activePane ? (
-                <NativeInput pane={activePane} agent={activeAgent} onError={setError} />
+                <NativeInput
+                  pane={activePane}
+                  agent={activeAgent}
+                  queuedTurns={activeQueuedTurns}
+                  onQueueChange={setAgentQueuedTurns}
+                  onError={setError}
+                />
               ) : null
             }
           />

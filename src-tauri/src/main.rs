@@ -19,7 +19,10 @@ use pty::{
 use state::{AppState, PaneInfo};
 use tauri::Manager;
 use transcript::Turn;
-use turn_queue::{SubmitAgentTurnRequest, SubmitAgentTurnResult, submit_agent_turn};
+use turn_queue::{
+    RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, SubmitAgentTurnRequest,
+    SubmitAgentTurnResult, remove_queued_agent_turn, submit_agent_turn,
+};
 use workspace::{AgentInfo, CreateGroupRequest, GroupInfo, create_group};
 
 #[tauri::command]
@@ -48,6 +51,14 @@ fn list_turns(
     agent_id: Option<String>,
 ) -> Result<Vec<Turn>, String> {
     state.list_turns(agent_id.as_deref())
+}
+
+#[tauri::command]
+fn list_agent_turn_queue(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<String>, String> {
+    state.list_agent_turn_queue(&agent_id)
 }
 
 #[tauri::command]
@@ -116,6 +127,14 @@ fn agent_submit_turn(
     submit_agent_turn(&state, request)
 }
 
+#[tauri::command]
+fn agent_remove_queued_turn(
+    state: tauri::State<'_, AppState>,
+    request: RemoveQueuedAgentTurnRequest,
+) -> Result<RemoveQueuedAgentTurnResult, String> {
+    remove_queued_agent_turn(&state, request)
+}
+
 fn main() {
     match cli::run_cli_if_requested() {
         Ok(true) => return,
@@ -150,6 +169,7 @@ fn main() {
             list_groups,
             list_agents,
             list_turns,
+            list_agent_turn_queue,
             group_create,
             spawn_shell,
             spawn_claude,
@@ -157,6 +177,7 @@ fn main() {
             pane_resize,
             pane_kill,
             agent_submit_turn,
+            agent_remove_queued_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running qmux");
