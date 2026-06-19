@@ -6,6 +6,7 @@ import type {
 } from "react";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
+import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay from "./components/TurnOverlay";
 import {
   getRuntimeConfig,
@@ -102,6 +103,8 @@ function agentStatusLabel(status: AgentInfo["status"]) {
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
+  const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
+  const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
@@ -140,6 +143,17 @@ export default function App() {
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
+  }
+
+  function focusActiveTerminal() {
+    const paneId = activePane?.id;
+    if (!paneId) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      terminalPaneRefs.current.get(paneId)?.focus();
+    });
   }
 
   function maxTurnPaneWidth() {
@@ -388,6 +402,13 @@ export default function App() {
   }, [launcherOpen]);
 
   useEffect(() => {
+    if (wasLauncherOpenRef.current && !launcherOpen) {
+      focusActiveTerminal();
+    }
+    wasLauncherOpenRef.current = launcherOpen;
+  }, [launcherOpen, activePane?.id]);
+
+  useEffect(() => {
     if (!activeAgent) {
       return;
     }
@@ -568,6 +589,13 @@ export default function App() {
           {panes.map((pane) => (
             <TerminalPane
               key={pane.id}
+              ref={(handle) => {
+                if (handle) {
+                  terminalPaneRefs.current.set(pane.id, handle);
+                } else {
+                  terminalPaneRefs.current.delete(pane.id);
+                }
+              }}
               pane={pane}
               active={pane.id === activePane?.id}
             />

@@ -4,13 +4,17 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
 import type { PaneInfo } from "../types";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
   active: boolean;
+}
+
+export interface TerminalPaneHandle {
+  focus: () => void;
 }
 
 function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
@@ -32,11 +36,21 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
   return null;
 }
 
-export default function TerminalPane({ pane, active }: TerminalPaneProps) {
+const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
+  { pane, active },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus() {
+      terminalRef.current?.focus();
+      stabilizeTerminalRef.current?.();
+    },
+  }));
 
   useEffect(() => {
     if (!hostRef.current || terminalRef.current) {
@@ -211,4 +225,6 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
       <div ref={hostRef} className="terminal-host" />
     </div>
   );
-}
+});
+
+export default TerminalPane;
