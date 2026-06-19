@@ -111,6 +111,10 @@ export default function NativeInput({
       const result = await submitAgentTurn(agent.id, trimmed, mode);
       onQueueChange(agent.id, result.queuedTurns);
       setValue("");
+      // Return focus to the composer once it clears. Deferred to the next frame
+      // so it lands after the submit buttons re-render — clicking one disables or
+      // unmounts it, which briefly bounces focus to <body>.
+      requestAnimationFrame(() => textareaRef.current?.focus());
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
