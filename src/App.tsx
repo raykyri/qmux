@@ -402,7 +402,9 @@ export default function App() {
           </div>
           <button type="submit">
             <span>Launch Claude</span>
-            <span className="shortcut-hint">Cmd-Enter</span>
+            <span className="shortcut-hint" aria-label="Command Enter">
+              ⌘↵
+            </span>
           </button>
         </form>
 
