@@ -16,8 +16,10 @@ import {
   listTurns,
   listenToEvents,
   listPanes,
+  removeWorktree,
   spawnClaude,
   spawnShell,
+  worktreeStatus,
 } from "./lib/api";
 import type { AgentInfo, InitialPaneSize, PaneInfo, RuntimeConfig, Turn } from "./types";
 
@@ -135,6 +137,13 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [closeDialog, setCloseDialog] = useState<{
+    pane: PaneInfo;
+    agentId: string;
+    worktreeDir: string;
+    hasChanges: boolean;
+    busy: boolean;
+  } | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -385,11 +394,36 @@ export default function App() {
     }
   }
 
-  // Closing a live agent pane interrupts it, so confirm first when the agent is
-  // working or waiting on the user (awaiting input or a yes/no approval). Shell
+  // Closing a tab that owns a git worktree opens a dialog: check the worktree for
+  // uncommitted changes first, then let the user delete or keep it (or cancel).
+  // Other agent panes confirm only when a live agent would be interrupted; shell
   // panes and finished/failed agents close without a prompt.
   async function requestClosePane(paneToClose: PaneInfo) {
     const agent = agents.find((candidate) => candidate.paneId === paneToClose.id);
+
+    if (agent && agent.branch) {
+      let hasChanges = false;
+      try {
+        hasChanges = (await worktreeStatus(agent.id)).hasChanges;
+      } catch {
+        // If the status check fails, still offer the choice rather than blocking
+        // the close; treat the change state as unknown (assume none).
+        hasChanges = false;
+      }
+      setCloseDialog({
+        pane: paneToClose,
+        agentId: agent.id,
+        worktreeDir: agent.worktreeDir,
+        hasChanges,
+        busy:
+          agent.status === "starting" ||
+          agent.status === "running" ||
+          agent.status === "awaitingInput" ||
+          agent.status === "awaitingPermission",
+      });
+      return;
+    }
+
     const reason =
       agent?.status === "awaitingPermission"
         ? "is waiting for you to approve a tool use"
@@ -402,6 +436,25 @@ export default function App() {
       return;
     }
     await closePane(paneToClose);
+  }
+
+  // Resolves the worktree close dialog: always closes the pane, and additionally
+  // deletes the worktree when the user chose to.
+  async function resolveCloseDialog(choice: "keep" | "delete") {
+    const dialog = closeDialog;
+    if (!dialog) {
+      return;
+    }
+    setCloseDialog(null);
+    setError(null);
+    try {
+      await closePane(dialog.pane);
+      if (choice === "delete") {
+        await removeWorktree(dialog.agentId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function addClaudePane() {
@@ -433,6 +486,23 @@ export default function App() {
     activePaneRef.current = activePane;
     requestClosePaneRef.current = requestClosePane;
   });
+
+  // Escape cancels the worktree close dialog. Capture phase so it wins over the
+  // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
+  useEffect(() => {
+    if (!closeDialog) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setCloseDialog(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [closeDialog]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -689,6 +759,58 @@ export default function App() {
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {closeDialog ? (
+        <div
+          className="confirm-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setCloseDialog(null);
+            }
+          }}
+        >
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-dialog-title"
+          >
+            <h2 id="close-dialog-title">Close {closeDialog.pane.title}?</h2>
+            <p>
+              {closeDialog.busy
+                ? "The agent is still working — closing this tab will stop it."
+                : "Closing this tab will stop the agent."}
+            </p>
+            <p>
+              {closeDialog.hasChanges ? (
+                <span className="confirm-dialog-changes">
+                  The worktree {formatPaneDir(closeDialog.worktreeDir)} has uncommitted changes
+                  that will be lost if deleted.
+                </span>
+              ) : (
+                <>The worktree {formatPaneDir(closeDialog.worktreeDir)} has no uncommitted changes.</>
+              )}{" "}
+              Delete the worktree?
+            </p>
+            <div className="confirm-dialog-actions">
+              <button type="button" onClick={() => setCloseDialog(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void resolveCloseDialog("delete")}
+              >
+                Delete worktree
+              </button>
+              <button type="button" autoFocus onClick={() => void resolveCloseDialog("keep")}>
+                Keep worktree
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
 

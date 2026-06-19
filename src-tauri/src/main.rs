@@ -25,7 +25,10 @@ use turn_queue::{
     RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, SubmitAgentTurnRequest,
     SubmitAgentTurnResult, remove_queued_agent_turn, submit_agent_turn,
 };
-use workspace::{AgentInfo, CreateGroupRequest, GroupInfo, create_group};
+use workspace::{
+    AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, agent_worktree_status, create_group,
+    remove_agent_worktree,
+};
 
 /// Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) out of
 /// the default menu so the webview receives ⌘W itself instead of the OS closing
@@ -165,6 +168,19 @@ fn agent_remove_queued_turn(
     remove_queued_agent_turn(&state, request)
 }
 
+#[tauri::command]
+fn worktree_status(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<WorktreeStatus, String> {
+    agent_worktree_status(&state, &agent_id)
+}
+
+#[tauri::command]
+fn worktree_remove(state: tauri::State<'_, AppState>, agent_id: String) -> Result<(), String> {
+    remove_agent_worktree(&state, &agent_id)
+}
+
 fn main() {
     match cli::run_cli_if_requested() {
         Ok(true) => return,
@@ -218,6 +234,8 @@ fn main() {
             pane_kill,
             agent_submit_turn,
             agent_remove_queued_turn,
+            worktree_status,
+            worktree_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running qmux");
