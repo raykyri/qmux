@@ -88,7 +88,9 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
         ) : null}
         <button type="submit" disabled={submitting || value.trim().length === 0}>
           <span>Send</span>
-          <span className="shortcut-hint">Cmd-Enter</span>
+          <span className="shortcut-hint" aria-label="Command Enter">
+            ⌘↵
+          </span>
         </button>
       </div>
     </form>

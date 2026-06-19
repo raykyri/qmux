@@ -24,6 +24,7 @@ textarea,
 input,
 select {
   font: inherit;
+  font-size: 15px;
 }
 
 button:focus-visible,
@@ -40,7 +41,8 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 2px 8px;
   border: 1px solid #3a3d3f;
   border-radius: 6px;
   background: #24282b;
@@ -55,8 +57,10 @@ button:disabled {
 }
 
 .shortcut-hint {
-  color: #9ea5a6;
+  color: #797d80;
   font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .app-shell {
