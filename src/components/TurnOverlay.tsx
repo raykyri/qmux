@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
@@ -6,14 +7,40 @@ interface TurnOverlayProps {
   input?: ReactNode;
 }
 
+// Gap kept between the last transcript message and the top of the composer.
+const COMPOSER_CLEARANCE = 16;
+
 export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
 }
 
 export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
+  const inputWrapRef = useRef<HTMLDivElement | null>(null);
+  const [composerHeight, setComposerHeight] = useState(0);
+
+  // The composer floats over the transcript, so reserve scroll room beneath the
+  // last message equal to the composer's live height (it changes as the queue
+  // grows and as the textarea expands). Without this, queued turns hide the
+  // bottom of the transcript with no way to scroll to it.
+  useEffect(() => {
+    const element = inputWrapRef.current;
+    if (!element) {
+      setComposerHeight(0);
+      return;
+    }
+    const measure = () => setComposerHeight(element.offsetHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [Boolean(input)]);
+
+  const timelineStyle: CSSProperties | undefined =
+    composerHeight > 0 ? { paddingBottom: composerHeight + COMPOSER_CLEARANCE } : undefined;
+
   return (
     <section className="turn-sidebar" aria-label="Agent turns">
-      <div className="turn-timeline">
+      <div className="turn-timeline" style={timelineStyle}>
         {turns.length === 0 ? (
           <p className="empty-turns">No turns yet</p>
         ) : (
@@ -29,7 +56,11 @@ export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
           ))
         )}
       </div>
-      {input ? <div className="turn-sidebar-input">{input}</div> : null}
+      {input ? (
+        <div className="turn-sidebar-input" ref={inputWrapRef}>
+          {input}
+        </div>
+      ) : null}
     </section>
   );
 }
