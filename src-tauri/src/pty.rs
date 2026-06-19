@@ -382,8 +382,7 @@ fn start_reader_thread(state: AppState, pane_id: String, mut reader: Box<dyn Rea
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
-                    let data = String::from_utf8_lossy(&buffer[..count]).to_string();
-                    state.emit(QmuxEvent::pty_data(pane_id.clone(), data));
+                    state.emit(QmuxEvent::pty_data(pane_id.clone(), &buffer[..count]));
                 }
                 Err(err) => {
                     state.emit(QmuxEvent::new(

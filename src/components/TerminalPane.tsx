@@ -13,6 +13,25 @@ interface TerminalPaneProps {
   active: boolean;
 }
 
+function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
+  if (typeof data === "string") {
+    return data;
+  }
+
+  if (data instanceof Uint8Array) {
+    return data;
+  }
+
+  if (
+    Array.isArray(data) &&
+    data.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+  ) {
+    return Uint8Array.from(data);
+  }
+
+  return null;
+}
+
 export default function TerminalPane({ pane, active }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -109,8 +128,10 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
         return;
       }
 
-      const data = typeof event.payload.data === "string" ? event.payload.data : "";
-      terminalRef.current?.write(data);
+      const data = terminalDataFromPayload(event.payload.data);
+      if (data) {
+        terminalRef.current?.write(data);
+      }
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
