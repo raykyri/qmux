@@ -79,6 +79,7 @@ export interface SpawnClaudeRequest {
   model?: string | null;
   permissionMode?: string | null;
   initialSize?: InitialPaneSize | null;
+  useWorktree?: boolean | null;
 }
 
 export interface WorktreeStatus {
