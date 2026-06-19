@@ -347,7 +347,6 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   min-width: 0;
-  border: 1px solid #364044;
   border-radius: 8px;
   background: rgba(23, 25, 27, 0.96);
   padding: 8px;
