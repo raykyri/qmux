@@ -1,9 +1,10 @@
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
+use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ struct AppStateInner {
     config: QmuxConfig,
     token: String,
     model: Mutex<Model>,
+    transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
     app_handle: Mutex<Option<AppHandle>>,
 }
@@ -32,6 +34,7 @@ struct Model {
     panes: HashMap<String, PaneRuntime>,
     groups: HashMap<String, GroupInfo>,
     agents: HashMap<String, AgentInfo>,
+    turns: HashMap<String, Vec<Turn>>,
 }
 
 pub struct PaneRuntime {
@@ -78,6 +81,7 @@ impl AppState {
                 config,
                 token: mint_token(),
                 model: Mutex::new(Model::default()),
+                transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
             }),
@@ -144,6 +148,23 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.agents.values().cloned().collect())
+    }
+
+    pub fn list_turns(&self, agent_id: Option<&str>) -> Result<Vec<Turn>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        if let Some(agent_id) = agent_id {
+            Ok(model.turns.get(agent_id).cloned().unwrap_or_default())
+        } else {
+            Ok(model
+                .turns
+                .values()
+                .flat_map(|turns| turns.iter().cloned())
+                .collect())
+        }
     }
 
     pub fn group(&self, group_id: &str) -> Result<Option<GroupInfo>, String> {
@@ -225,6 +246,40 @@ impl AppState {
             .map_err(|_| "model lock poisoned".to_string())?;
         model.agents.insert(agent.id.clone(), agent);
         Ok(())
+    }
+
+    pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model
+            .turns
+            .entry(turn.agent_id.clone())
+            .or_default()
+            .push(turn);
+        Ok(())
+    }
+
+    pub fn replace_turns(&self, agent_id: &str, turns: Vec<Turn>) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.turns.insert(agent_id.to_string(), turns);
+        Ok(())
+    }
+
+    pub fn mark_transcript_tail(&self, agent_id: &str, path: &str) -> Result<bool, String> {
+        let key = format!("{agent_id}:{path}");
+        let mut tails = self
+            .inner
+            .transcript_tails
+            .lock()
+            .map_err(|_| "transcript tail lock poisoned".to_string())?;
+        Ok(tails.insert(key))
     }
 
     pub fn pane_writer(&self, pane_id: &str) -> Result<Option<SharedWriter>, String> {

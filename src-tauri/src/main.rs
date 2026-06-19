@@ -6,6 +6,7 @@ mod events;
 mod hooks;
 mod pty;
 mod state;
+mod transcript;
 mod workspace;
 
 use claude::{SpawnClaudeRequest, spawn_claude_pane};
@@ -14,6 +15,7 @@ use control_socket::start_control_socket;
 use pty::{PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane};
 use state::{AppState, PaneInfo};
 use tauri::Manager;
+use transcript::Turn;
 use workspace::{AgentInfo, CreateGroupRequest, GroupInfo, create_group};
 
 #[tauri::command]
@@ -34,6 +36,14 @@ fn list_groups(state: tauri::State<'_, AppState>) -> Result<Vec<GroupInfo>, Stri
 #[tauri::command]
 fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
     state.list_agents()
+}
+
+#[tauri::command]
+fn list_turns(
+    state: tauri::State<'_, AppState>,
+    agent_id: Option<String>,
+) -> Result<Vec<Turn>, String> {
+    state.list_turns(agent_id.as_deref())
 }
 
 #[tauri::command]
@@ -124,6 +134,7 @@ fn main() {
             list_panes,
             list_groups,
             list_agents,
+            list_turns,
             group_create,
             spawn_shell,
             spawn_claude,

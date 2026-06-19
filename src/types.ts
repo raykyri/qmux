@@ -42,6 +42,21 @@ export interface AgentInfo {
   createdAt: number;
 }
 
+export type TurnBlock =
+  | { type: "text"; text: string }
+  | { type: "toolUse"; name: string; input: unknown }
+  | { type: "toolResult"; content: unknown; isError: boolean }
+  | { type: "raw"; value: unknown };
+
+export interface Turn {
+  id: string;
+  agentId: string;
+  sessionId?: string | null;
+  role: string;
+  blocks: TurnBlock[];
+  sourceIndex: number;
+}
+
 export interface SpawnClaudeRequest {
   prompt: string;
   groupId?: string | null;

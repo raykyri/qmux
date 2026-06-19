@@ -1,5 +1,6 @@
 use crate::events::QmuxEvent;
 use crate::state::AppState;
+use crate::transcript::start_transcript_tail;
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -78,6 +79,9 @@ pub fn ingest_hook_notification(
                     .or_else(|| string_field(&notification.payload, "transcriptPath"));
                 agent.status = AgentStatus::Running;
                 state.update_agent(agent.clone())?;
+                if let Some(transcript_path) = agent.transcript_path.clone() {
+                    start_transcript_tail(state.clone(), agent.id.clone(), transcript_path);
+                }
             }
             "agent.session_start"
         }

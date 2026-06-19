@@ -274,3 +274,128 @@ button:disabled {
   height: 100%;
   padding: 10px;
 }
+
+.turn-overlay {
+  position: absolute;
+  inset: 10px 10px 86px auto;
+  display: grid;
+  width: min(480px, calc(100% - 20px));
+  max-width: 100%;
+  grid-template-rows: auto minmax(0, 1fr);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.overlay-toggle {
+  justify-self: end;
+  pointer-events: auto;
+}
+
+.turn-timeline {
+  display: none;
+  min-height: 0;
+  margin-top: 8px;
+  overflow: auto;
+  border: 1px solid #364044;
+  border-radius: 8px;
+  background: rgba(23, 25, 27, 0.94);
+  padding: 10px;
+  pointer-events: auto;
+}
+
+.turn-overlay.is-visible .turn-timeline {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.empty-turns {
+  margin: 0;
+  color: #aab1ad;
+  font-size: 12px;
+}
+
+.turn-card {
+  border: 1px solid #30383b;
+  border-radius: 7px;
+  background: #1d2224;
+  padding: 9px 10px;
+}
+
+.turn-card header {
+  color: #96e0cf;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.turn-blocks {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.turn-text {
+  margin: 0;
+  color: #f1f0e8;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.tool-block {
+  border: 1px solid #384246;
+  border-radius: 6px;
+  background: #15191b;
+  color: #d9ddd9;
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.tool-block.is-error {
+  border-color: #755149;
+}
+
+.tool-block summary {
+  cursor: pointer;
+  padding: 7px 8px;
+}
+
+.tool-block pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid #30383b;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.native-input {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 1px solid #364044;
+  border-radius: 8px;
+  background: rgba(23, 25, 27, 0.96);
+  padding: 8px;
+  z-index: 5;
+}
+
+.native-input textarea {
+  min-width: 0;
+  resize: none;
+  border: 1px solid #3a3d3f;
+  border-radius: 6px;
+  background: #111315;
+  color: #f1f0e8;
+  padding: 8px 9px;
+}
+
+.native-input-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}

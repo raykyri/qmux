@@ -7,6 +7,7 @@ import type {
   QmuxEvent,
   RuntimeConfig,
   SpawnClaudeRequest,
+  Turn,
 } from "../types";
 
 export function getRuntimeConfig() {
@@ -25,6 +26,10 @@ export function listAgents() {
   return invoke<AgentInfo[]>("list_agents");
 }
 
+export function listTurns(agentId?: string | null) {
+  return invoke<Turn[]>("list_turns", { agentId: agentId ?? null });
+}
+
 export function spawnShell() {
   return invoke<PaneInfo>("spawn_shell");
 }
@@ -35,6 +40,10 @@ export function spawnClaude(request: SpawnClaudeRequest) {
 
 export function writePane(paneId: string, data: string) {
   return invoke<void>("pane_write", { paneId, data, paste: false, submit: false });
+}
+
+export function submitPaneInput(paneId: string, data: string) {
+  return invoke<void>("pane_write", { paneId, data, paste: true, submit: true });
 }
 
 export function resizePane(paneId: string, cols: number, rows: number) {

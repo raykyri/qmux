@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
+import TurnOverlay from "./components/TurnOverlay";
 import {
   getRuntimeConfig,
   killPane,
   listAgents,
   listGroups,
+  listTurns,
   listenToEvents,
   listPanes,
   spawnClaude,
   spawnShell,
 } from "./lib/api";
-import type { AgentInfo, GroupInfo, PaneInfo, RuntimeConfig } from "./types";
+import type { AgentInfo, GroupInfo, PaneInfo, RuntimeConfig, Turn } from "./types";
 
 function statusLabel(status: PaneInfo["status"]) {
   switch (status) {
@@ -47,7 +50,9 @@ export default function App() {
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [turnOverlayVisible, setTurnOverlayVisible] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [baseRepo, setBaseRepo] = useState("");
   const [baseRef, setBaseRef] = useState("HEAD");
@@ -60,17 +65,28 @@ export default function App() {
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
   );
+  const activeTurns = useMemo(
+    () => turns.filter((turn) => turn.agentId === activeAgent?.id),
+    [activeAgent?.id, turns],
+  );
 
   useEffect(() => {
     let cancelled = false;
 
     async function boot() {
       try {
-        const [runtimeConfig, existingPanes, existingGroups, existingAgents] = await Promise.all([
+        const [
+          runtimeConfig,
+          existingPanes,
+          existingGroups,
+          existingAgents,
+          existingTurns,
+        ] = await Promise.all([
           getRuntimeConfig(),
           listPanes(),
           listGroups(),
           listAgents(),
+          listTurns(),
         ]);
         if (cancelled) {
           return;
@@ -79,6 +95,7 @@ export default function App() {
         setConfig(runtimeConfig);
         setGroups(existingGroups);
         setAgents(existingAgents);
+        setTurns(existingTurns);
 
         if (existingPanes.length > 0) {
           setPanes(existingPanes);
@@ -122,6 +139,18 @@ export default function App() {
       }
       if (event.type.startsWith("agent.")) {
         void listAgents().then(setAgents).catch(() => undefined);
+      }
+      if (event.type === "turn.appended") {
+        const turn = event.payload.turn as Turn | undefined;
+        if (turn) {
+          setTurns((current) =>
+            current.some((existing) => existing.id === turn.id) ? current : [...current, turn],
+          );
+        }
+      }
+      if (event.type === "turn.updated" && event.payload.reset) {
+        const agentId = event.agentId;
+        setTurns((current) => current.filter((turn) => turn.agentId !== agentId));
       }
     }).then((cleanup) => {
       if (disposed) {
@@ -303,6 +332,18 @@ export default function App() {
               active={pane.id === activePane?.id}
             />
           ))}
+          {activeAgent ? (
+            <>
+              <TurnOverlay
+                turns={activeTurns}
+                visible={turnOverlayVisible}
+                onToggle={() => setTurnOverlayVisible((visible) => !visible)}
+              />
+              {activePane ? (
+                <NativeInput pane={activePane} agent={activeAgent} onError={setError} />
+              ) : null}
+            </>
+          ) : null}
         </div>
       </section>
     </main>
