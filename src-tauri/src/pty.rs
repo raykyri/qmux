@@ -36,19 +36,43 @@ pub struct PaneWriteOptions {
 pub fn spawn_shell_pane(state: &AppState) -> Result<PaneInfo, String> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let cwd = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
+    let pane_id = state.next_id("pane");
+    let envs = shell_pane_envs(state, &pane_id);
+
     spawn_pty(
         state,
         PtySpawnSpec {
-            pane_id: None,
+            pane_id: Some(pane_id),
             agent_id: None,
             kind: PaneKind::Shell,
             title: "Shell".to_string(),
             program: shell,
             args: Vec::new(),
             cwd,
-            envs: Vec::new(),
+            envs,
         },
     )
+}
+
+pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
+    vec![
+        ("QMUX_PANE_ID".to_string(), pane_id.to_string()),
+        (
+            "QMUX_SOCK".to_string(),
+            state.config().socket_path.display().to_string(),
+        ),
+        ("QMUX_TOKEN".to_string(), state.token().to_string()),
+        (
+            "QMUX_WORKSPACE_ROOT".to_string(),
+            state.config().workspace_root.display().to_string(),
+        ),
+    ]
+}
+
+fn shell_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
+    let mut envs = qmux_pane_envs(state, pane_id);
+    envs.push(("QMUX_SHELL_INTEGRATION".to_string(), "1".to_string()));
+    envs
 }
 
 pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
@@ -260,7 +284,9 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::QmuxConfig;
     use std::io;
+    use std::path::PathBuf;
 
     #[derive(Default)]
     struct RecordingWriter {
@@ -287,6 +313,54 @@ mod tests {
             paste,
             submit,
         }
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: PathBuf::from("/tmp/qmux-workspaces"),
+            socket_path: PathBuf::from("/tmp/qmux.sock"),
+            claude_binary: "claude".to_string(),
+        })
+    }
+
+    fn env_value(envs: &[(String, String)], key: &str) -> Option<String> {
+        envs.iter()
+            .find_map(|(env_key, value)| (env_key == key).then(|| value.clone()))
+    }
+
+    #[test]
+    fn base_qmux_envs_include_pane_socket_token_and_workspace() {
+        let state = test_state();
+        let envs = qmux_pane_envs(&state, "pane-123");
+
+        assert_eq!(
+            env_value(&envs, "QMUX_PANE_ID"),
+            Some("pane-123".to_string())
+        );
+        assert_eq!(
+            env_value(&envs, "QMUX_SOCK"),
+            Some("/tmp/qmux.sock".to_string())
+        );
+        assert_eq!(
+            env_value(&envs, "QMUX_TOKEN"),
+            Some(state.token().to_string())
+        );
+        assert_eq!(
+            env_value(&envs, "QMUX_WORKSPACE_ROOT"),
+            Some("/tmp/qmux-workspaces".to_string())
+        );
+    }
+
+    #[test]
+    fn shell_pane_envs_enable_shell_integration() {
+        let state = test_state();
+        let envs = shell_pane_envs(&state, "pane-123");
+
+        assert_eq!(
+            env_value(&envs, "QMUX_SHELL_INTEGRATION"),
+            Some("1".to_string())
+        );
+        assert!(env_value(&envs, "QMUX_AGENT_ID").is_none());
     }
 
     #[test]
