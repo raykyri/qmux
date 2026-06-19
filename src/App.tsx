@@ -160,6 +160,29 @@ export default function App() {
     }));
   }
 
+  // Compact directory label for a pane tab. Worktrees under the workspace root
+  // are shown relative to it (e.g. "group-1/agent-1"); home paths use ~/ and
+  // other paths fall back to their last two segments so the meaningful tail stays
+  // visible. The full path is preserved in the tab's title attribute.
+  function formatPaneDir(rawPath: string): string {
+    const workspaceRoot = config?.workspaceRoot;
+    if (workspaceRoot && rawPath.startsWith(`${workspaceRoot}/`)) {
+      return rawPath.slice(workspaceRoot.length + 1);
+    }
+    const homeDir = config?.homeDir;
+    if (homeDir && rawPath === homeDir) {
+      return "~";
+    }
+    if (homeDir && rawPath.startsWith(`${homeDir}/`)) {
+      return `~/${rawPath.slice(homeDir.length + 1)}`;
+    }
+    const segments = rawPath.split("/").filter(Boolean);
+    if (segments.length <= 2) {
+      return rawPath;
+    }
+    return `…/${segments.slice(-2).join("/")}`;
+  }
+
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
@@ -548,9 +571,14 @@ export default function App() {
         <nav className="pane-list" aria-label="Panes">
           {panes.map((pane) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
-            const paneStatus = paneAgent
+            const rawStatus = paneAgent
               ? agentStatusLabel(paneAgent.status)
               : statusLabel(pane.status);
+            // "Running" is the steady state for every pane, so it is just noise.
+            const paneStatus = rawStatus === "Running" ? null : rawStatus;
+            // Agent panes live in a worktree; shells show the directory they
+            // launched in (their spawn-time cwd).
+            const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
             return (
               <div
                 key={pane.id}
@@ -561,15 +589,22 @@ export default function App() {
                   className="pane-tab"
                   onClick={() => setActivePaneId(pane.id)}
                 >
-                  <span className="pane-tab-title">{pane.title}</span>
-                  <span className="pane-tab-meta">
-                    {pane.recovered ? (
-                      <small className="pane-tab-recovered" title="Recovered after restart">
-                        Recovered
-                      </small>
-                    ) : null}
-                    {paneStatus ? <small>{paneStatus}</small> : null}
+                  <span className="pane-tab-line">
+                    <span className="pane-tab-title">{pane.title}</span>
+                    <span className="pane-tab-meta">
+                      {pane.recovered ? (
+                        <small className="pane-tab-recovered" title="Recovered after restart">
+                          Recovered
+                        </small>
+                      ) : null}
+                      {paneStatus ? <small>{paneStatus}</small> : null}
+                    </span>
                   </span>
+                  {paneDir ? (
+                    <span className="pane-tab-path" title={paneDir}>
+                      {formatPaneDir(paneDir)}
+                    </span>
+                  ) : null}
                 </button>
                 <button
                   type="button"
@@ -595,15 +630,6 @@ export default function App() {
             New agent
           </button>
         </div>
-
-        {config ? (
-          <dl className="runtime-info">
-            <div>
-              <dt>Workspace</dt>
-              <dd>{config.workspaceRoot}</dd>
-            </div>
-          </dl>
-        ) : null}
       </aside>
 
       {launcherOpen ? (

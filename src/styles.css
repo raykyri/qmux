@@ -106,11 +106,11 @@ button:disabled {
 }
 
 .pane-tab {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
   min-height: 30px;
   padding: 6px 30px 6px 9px;
   border: 1px solid transparent;
@@ -133,25 +133,34 @@ button:disabled {
   box-shadow: inset 2px 0 0 #6cae9d;
 }
 
-.pane-tab span,
-.pane-tab small {
+.pane-tab-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pane-tab-title,
+.pane-tab small,
+.pane-tab-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pane-tab-title::before {
-  content: "❯ ";
-  color: #4b5450;
-}
-
-.pane-tab-row.is-selected .pane-tab-title::before {
-  color: #6cae9d;
-}
-
 .pane-tab small {
   color: #7f8884;
   font-size: 11px;
+}
+
+.pane-tab-path {
+  color: #6b736f;
+  font-size: 11px;
+}
+
+.pane-tab-row.is-selected .pane-tab-path {
+  color: #8a938e;
 }
 
 .pane-tab-meta {
@@ -223,34 +232,6 @@ button:disabled {
 .sidebar-actions button:hover {
   border-color: #6cae9d;
   color: #f4f3ec;
-}
-
-.runtime-info {
-  display: grid;
-  gap: 5px;
-  margin: 0;
-  padding-top: 10px;
-  /* Reads like a terminal status line pinned under the session list. */
-  border-top: 1px solid #2a2d2f;
-  color: #7f8884;
-  font-size: 10.5px;
-}
-
-.runtime-info div {
-  min-width: 0;
-}
-
-.runtime-info dt {
-  color: #8f9893;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.runtime-info dd {
-  margin: 2px 0 0;
-  color: #aab1ad;
-  overflow-wrap: anywhere;
 }
 
 .command-launcher-backdrop {
