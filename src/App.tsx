@@ -119,6 +119,20 @@ function agentStatusLabel(status: AgentInfo["status"]) {
   }
 }
 
+// The close-confirmation dialog covers two cases: a worktree agent (offer to keep
+// or delete the worktree) and a live agent without a worktree (just confirm the
+// stop). Both render in-app — window.confirm is a no-op in the Tauri webview.
+type CloseDialogState =
+  | {
+      kind: "worktree";
+      pane: PaneInfo;
+      agentId: string;
+      worktreeDir: string;
+      hasChanges: boolean;
+      busy: boolean;
+    }
+  | { kind: "stop"; pane: PaneInfo; reason: string };
+
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
@@ -141,13 +155,7 @@ export default function App() {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [closeDialog, setCloseDialog] = useState<{
-    pane: PaneInfo;
-    agentId: string;
-    worktreeDir: string;
-    hasChanges: boolean;
-    busy: boolean;
-  } | null>(null);
+  const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -420,6 +428,7 @@ export default function App() {
         hasChanges = false;
       }
       setCloseDialog({
+        kind: "worktree",
         pane: paneToClose,
         agentId: agent.id,
         worktreeDir: agent.worktreeDir,
@@ -441,7 +450,8 @@ export default function App() {
           : agent?.status === "running" || agent?.status === "starting"
             ? "is still working"
             : null;
-    if (reason && !window.confirm(`This agent ${reason}. Close the pane and stop it?`)) {
+    if (reason) {
+      setCloseDialog({ kind: "stop", pane: paneToClose, reason });
       return;
     }
     await closePane(paneToClose);
@@ -451,7 +461,7 @@ export default function App() {
   // deletes the worktree when the user chose to.
   async function resolveCloseDialog(choice: "keep" | "delete") {
     const dialog = closeDialog;
-    if (!dialog) {
+    if (!dialog || dialog.kind !== "worktree") {
       return;
     }
     setCloseDialog(null);
@@ -464,6 +474,16 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  // Confirms stopping a live agent that has no worktree to clean up.
+  async function confirmStopAndClose() {
+    const dialog = closeDialog;
+    if (!dialog || dialog.kind !== "stop") {
+      return;
+    }
+    setCloseDialog(null);
+    await closePane(dialog.pane);
   }
 
   async function addClaudePane() {
@@ -856,37 +876,61 @@ export default function App() {
             aria-labelledby="close-dialog-title"
           >
             <h2 id="close-dialog-title">Close {closeDialog.pane.title}?</h2>
-            <p>
-              {closeDialog.busy
-                ? "The agent is still working — closing this tab will stop it."
-                : "Closing this tab will stop the agent."}
-            </p>
-            <p>
-              {closeDialog.hasChanges ? (
-                <span className="confirm-dialog-changes">
-                  The worktree {formatPaneDir(closeDialog.worktreeDir)} has uncommitted changes
-                  that will be lost if deleted.
-                </span>
-              ) : (
-                <>The worktree {formatPaneDir(closeDialog.worktreeDir)} has no uncommitted changes.</>
-              )}{" "}
-              Delete the worktree?
-            </p>
-            <div className="confirm-dialog-actions">
-              <button type="button" onClick={() => setCloseDialog(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="danger"
-                onClick={() => void resolveCloseDialog("delete")}
-              >
-                Delete worktree
-              </button>
-              <button type="button" autoFocus onClick={() => void resolveCloseDialog("keep")}>
-                Keep worktree
-              </button>
-            </div>
+            {closeDialog.kind === "worktree" ? (
+              <>
+                <p>
+                  {closeDialog.busy
+                    ? "The agent is still working — closing this tab will stop it."
+                    : "Closing this tab will stop the agent."}
+                </p>
+                <p>
+                  {closeDialog.hasChanges ? (
+                    <span className="confirm-dialog-changes">
+                      The worktree {formatPaneDir(closeDialog.worktreeDir)} has uncommitted changes
+                      that will be lost if deleted.
+                    </span>
+                  ) : (
+                    <>
+                      The worktree {formatPaneDir(closeDialog.worktreeDir)} has no uncommitted
+                      changes.
+                    </>
+                  )}{" "}
+                  Delete the worktree?
+                </p>
+                <div className="confirm-dialog-actions">
+                  <button type="button" onClick={() => setCloseDialog(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void resolveCloseDialog("delete")}
+                  >
+                    Delete worktree
+                  </button>
+                  <button type="button" autoFocus onClick={() => void resolveCloseDialog("keep")}>
+                    Keep worktree
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>This agent {closeDialog.reason}. Close the pane and stop it?</p>
+                <div className="confirm-dialog-actions">
+                  <button type="button" onClick={() => setCloseDialog(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    autoFocus
+                    onClick={() => void confirmStopAndClose()}
+                  >
+                    Close pane
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : null}
