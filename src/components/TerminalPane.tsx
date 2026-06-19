@@ -35,8 +35,8 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
 export default function TerminalPane({ pane, active }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
+  const stabilizeTerminalRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!hostRef.current || terminalRef.current) {
@@ -79,11 +79,30 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
     terminal.focus();
 
     let resizeFrame: number | null = null;
+    let settleFrame: number | null = null;
+    const settleTimers = new Set<number>();
+    let disposed = false;
+
+    let syncedCols = pane.cols;
+    let syncedRows = pane.rows;
+    const refreshTerminal = () => {
+      if (terminal.rows > 0) {
+        terminal.refresh(0, terminal.rows - 1);
+      }
+    };
     const fitAndSyncSize = () => {
       fit.fit();
-      void resizePane(pane.id, terminal.cols, terminal.rows);
+      if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
+        syncedCols = terminal.cols;
+        syncedRows = terminal.rows;
+        void resizePane(pane.id, terminal.cols, terminal.rows);
+      }
+      refreshTerminal();
     };
     const scheduleFit = () => {
+      if (disposed) {
+        return;
+      }
       if (resizeFrame !== null) {
         window.cancelAnimationFrame(resizeFrame);
       }
@@ -92,8 +111,33 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
         fitAndSyncSize();
       });
     };
+    const scheduleSettledFits = () => {
+      if (disposed) {
+        return;
+      }
+      scheduleFit();
 
-    scheduleFit();
+      if (settleFrame !== null) {
+        window.cancelAnimationFrame(settleFrame);
+      }
+      settleFrame = window.requestAnimationFrame(() => {
+        settleFrame = null;
+        scheduleFit();
+      });
+
+      for (const delay of [50, 250]) {
+        const timer = window.setTimeout(() => {
+          settleTimers.delete(timer);
+          scheduleFit();
+        }, delay);
+        settleTimers.add(timer);
+      }
+    };
+
+    scheduleSettledFits();
+    void document.fonts.ready.then(() => {
+      scheduleSettledFits();
+    });
 
     const resizeObserver = new ResizeObserver(() => {
       scheduleFit();
@@ -105,19 +149,26 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
     });
 
     terminalRef.current = terminal;
-    fitRef.current = fit;
     serializeRef.current = serialize;
+    stabilizeTerminalRef.current = scheduleSettledFits;
 
     return () => {
+      disposed = true;
       inputDisposable.dispose();
       resizeObserver.disconnect();
       if (resizeFrame !== null) {
         window.cancelAnimationFrame(resizeFrame);
       }
+      if (settleFrame !== null) {
+        window.cancelAnimationFrame(settleFrame);
+      }
+      for (const timer of settleTimers) {
+        window.clearTimeout(timer);
+      }
       terminal.dispose();
       terminalRef.current = null;
-      fitRef.current = null;
       serializeRef.current = null;
+      stabilizeTerminalRef.current = null;
     };
   }, [pane.id]);
 
@@ -151,13 +202,7 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
   useEffect(() => {
     if (active) {
       terminalRef.current?.focus();
-      window.requestAnimationFrame(() => {
-        fitRef.current?.fit();
-        const terminal = terminalRef.current;
-        if (terminal) {
-          void resizePane(pane.id, terminal.cols, terminal.rows);
-        }
-      });
+      stabilizeTerminalRef.current?.();
     }
   }, [active, pane.id]);
 
