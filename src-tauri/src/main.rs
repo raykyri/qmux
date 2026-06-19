@@ -4,7 +4,9 @@ mod config;
 mod control_socket;
 mod events;
 mod hooks;
+mod persistence;
 mod pty;
+mod recovery;
 mod state;
 mod transcript;
 mod turn_queue;
@@ -159,6 +161,11 @@ fn main() {
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
                 start_control_socket(state.clone()).map_err(std::io::Error::other)?;
+                // Restore persisted groups/agents/queues, then respawn recoverable
+                // panes into fresh PTYs before the command handlers go live so the
+                // webview's first list_panes() already sees the recovered session.
+                let recovered_panes = state.restore_session();
+                recovery::respawn_session(&state, recovered_panes);
                 app.manage(state.clone());
                 Ok(())
             }

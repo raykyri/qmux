@@ -512,7 +512,14 @@ export default function App() {
                   onClick={() => setActivePaneId(pane.id)}
                 >
                   <span className="pane-tab-title">{pane.title}</span>
-                  {paneStatus ? <small>{paneStatus}</small> : null}
+                  <span className="pane-tab-meta">
+                    {pane.recovered ? (
+                      <small className="pane-tab-recovered" title="Recovered after restart">
+                        Recovered
+                      </small>
+                    ) : null}
+                    {paneStatus ? <small>{paneStatus}</small> : null}
+                  </span>
                 </button>
                 <button
                   type="button"

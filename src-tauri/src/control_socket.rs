@@ -114,6 +114,19 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             write_pane(state, options)?;
             Ok(json!({ "written": true }))
         }
+        "pane.set_cwd" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct SetCwdPayload {
+                cwd: String,
+            }
+            let payload = serde_json::from_value::<SetCwdPayload>(request.payload)
+                .map_err(|err| format!("invalid pane.set_cwd payload: {err}"))?;
+            // Bind the cwd update to the authenticated pane regardless of any claimed
+            // paneId, mirroring hook.notify's scoping.
+            state.update_pane_cwd(&authed_pane, payload.cwd)?;
+            Ok(json!({ "updated": true }))
+        }
         "claude.prepare_shell_launch" => {
             let launch = serde_json::from_value::<PrepareShellClaudeLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid claude.prepare_shell_launch payload: {err}"))?;
