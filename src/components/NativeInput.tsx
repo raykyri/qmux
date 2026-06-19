@@ -144,6 +144,15 @@ export default function NativeInput({
       const result = await removeQueuedAgentTurn(agent.id, index, turn);
       onQueueChange(agent.id, result.queuedTurns);
       setValue(result.removedTurn);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
+        }
+        const end = result.removedTurn.length;
+        textarea.focus();
+        textarea.setSelectionRange(end, end);
+      });
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
