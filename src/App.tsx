@@ -354,10 +354,12 @@ export default function App() {
                 turns={activeTurns}
                 visible={turnOverlayVisible}
                 onToggle={() => setTurnOverlayVisible((visible) => !visible)}
+                input={
+                  activePane ? (
+                    <NativeInput pane={activePane} agent={activeAgent} onError={setError} />
+                  ) : null
+                }
               />
-              {activePane ? (
-                <NativeInput pane={activePane} agent={activeAgent} onError={setError} />
-              ) : null}
             </>
           ) : null}
         </div>

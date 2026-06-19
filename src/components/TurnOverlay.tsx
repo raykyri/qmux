@@ -1,33 +1,38 @@
+import type { ReactNode } from "react";
 import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
   turns: Turn[];
   visible: boolean;
   onToggle: () => void;
+  input?: ReactNode;
 }
 
-export default function TurnOverlay({ turns, visible, onToggle }: TurnOverlayProps) {
+export default function TurnOverlay({ turns, visible, onToggle, input }: TurnOverlayProps) {
   return (
     <section className={`turn-overlay ${visible ? "is-visible" : ""}`}>
       <button type="button" className="overlay-toggle" onClick={onToggle}>
         {visible ? "PTY" : "Turns"}
       </button>
       {visible ? (
-        <div className="turn-timeline" aria-label="Agent turns">
-          {turns.length === 0 ? (
-            <p className="empty-turns">No turns yet</p>
-          ) : (
-            turns.map((turn) => (
-              <article key={turn.id} className={`turn-card role-${turn.role}`}>
-                <header>{turn.role}</header>
-                <div className="turn-blocks">
-                  {turn.blocks.map((block, index) => (
-                    <TurnBlockView key={`${turn.id}-${index}`} block={block} />
-                  ))}
-                </div>
-              </article>
-            ))
-          )}
+        <div className="turn-panel" aria-label="Agent turns">
+          <div className="turn-timeline">
+            {turns.length === 0 ? (
+              <p className="empty-turns">No turns yet</p>
+            ) : (
+              turns.map((turn) => (
+                <article key={turn.id} className={`turn-card role-${turn.role}`}>
+                  <header>{turn.role}</header>
+                  <div className="turn-blocks">
+                    {turn.blocks.map((block, index) => (
+                      <TurnBlockView key={`${turn.id}-${index}`} block={block} />
+                    ))}
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+          {input}
         </div>
       ) : null}
     </section>
