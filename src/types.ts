@@ -37,7 +37,13 @@ export interface AgentInfo {
   paneId?: string | null;
   sessionId?: string | null;
   transcriptPath?: string | null;
-  status: "starting" | "running" | "awaitingInput" | "stopped" | "failed";
+  status:
+    | "starting"
+    | "running"
+    | "awaitingInput"
+    | "awaitingPermission"
+    | "stopped"
+    | "failed";
   model?: string | null;
   createdAt: number;
 }

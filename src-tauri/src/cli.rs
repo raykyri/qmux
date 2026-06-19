@@ -20,7 +20,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
                 .read_to_string(&mut stdin)
                 .map_err(|err| format!("failed to read stdin: {err}"))?;
             let payload = parse_payload(&stdin);
-            request(
+            request_silent(
                 "hook.notify",
                 json!({
                     "event": event,
@@ -35,7 +35,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
                 .next()
                 .ok_or_else(|| "usage: qmux pane-write <pane-id> <text>".to_string())?;
             let data = args.collect::<Vec<_>>().join(" ");
-            request(
+            request_and_print(
                 "pane.write",
                 json!({
                     "paneId": pane_id,
@@ -47,7 +47,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "ping" => {
-            request("ping", json!({}))?;
+            request_and_print("ping", json!({}))?;
             Ok(true)
         }
         "help" | "--help" | "-h" => {
@@ -58,7 +58,17 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
     }
 }
 
-fn request(command: &str, payload: Value) -> Result<(), String> {
+fn request_silent(command: &str, payload: Value) -> Result<(), String> {
+    request(command, payload).map(|_| ())
+}
+
+fn request_and_print(command: &str, payload: Value) -> Result<(), String> {
+    let response = request(command, payload)?;
+    println!("{response}");
+    Ok(())
+}
+
+fn request(command: &str, payload: Value) -> Result<String, String> {
     let socket_path = env::var("QMUX_SOCK").map_err(|_| "QMUX_SOCK is not set".to_string())?;
     let token = env::var("QMUX_TOKEN").map_err(|_| "QMUX_TOKEN is not set".to_string())?;
     let mut stream = UnixStream::connect(&socket_path)
@@ -85,8 +95,7 @@ fn request(command: &str, payload: Value) -> Result<(), String> {
     BufReader::new(stream)
         .read_line(&mut response)
         .map_err(|err| format!("failed to read response: {err}"))?;
-    println!("{}", response.trim_end());
-    Ok(())
+    Ok(response.trim_end().to_string())
 }
 
 fn parse_payload(input: &str) -> Value {

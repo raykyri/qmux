@@ -37,6 +37,8 @@ function agentStatusLabel(status: AgentInfo["status"]) {
       return "Running";
     case "awaitingInput":
       return "Awaiting input";
+    case "awaitingPermission":
+      return "Approval needed";
     case "stopped":
       return null;
     case "failed":

@@ -44,6 +44,7 @@ pub enum AgentStatus {
     Starting,
     Running,
     AwaitingInput,
+    AwaitingPermission,
     Stopped,
     Failed,
 }
