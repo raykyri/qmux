@@ -560,10 +560,59 @@ button:disabled {
   gap: 6px;
 }
 
-.copy-transcript-button {
+.composer-menu {
+  position: relative;
   flex: 0 0 auto;
-  padding: 0 10px;
+  display: flex;
+}
+
+.composer-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #b9c0bc;
+}
+
+.composer-menu-trigger:hover {
+  background: #283032;
+  color: #f4f3ec;
+}
+
+.composer-menu-popover {
+  /* Anchored above the trigger so it opens upward, away from the bottom edge. */
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid #2a2d2f;
+  border-radius: 8px;
+  background: #1d2224;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.composer-menu-item {
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 6px 10px;
+  border-color: transparent;
+  background: transparent;
+  color: #e7e7e2;
   font-size: 13px;
+  text-align: left;
+}
+
+.composer-menu-item:hover:not(:disabled) {
+  background: #283032;
 }
 
 .native-input-submit-actions {

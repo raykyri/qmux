@@ -5,6 +5,29 @@ import type { AgentInfo, PaneInfo } from "../types";
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
 
+// Lucide "ellipsis" glyph (three horizontal dots), inlined to avoid pulling in a
+// dependency for a single icon.
+function EllipsisIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </svg>
+  );
+}
+
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
@@ -24,8 +47,8 @@ export default function NativeInput({
 }: NativeInputProps) {
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const copyResetTimerRef = useRef<number | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
   const canSend = agent.status === "awaitingInput" || agent.status === "stopped";
@@ -38,13 +61,28 @@ export default function NativeInput({
   const isWorking = agent.status === "starting" || agent.status === "running";
   const hasTranscript = transcriptText.trim().length > 0;
 
+  // Close the actions menu on an outside click or Escape while it is open.
   useEffect(() => {
-    return () => {
-      if (copyResetTimerRef.current !== null) {
-        window.clearTimeout(copyResetTimerRef.current);
+    if (!menuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
       }
     };
-  }, []);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [menuOpen]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -137,14 +175,6 @@ export default function NativeInput({
 
     try {
       await writeClipboardText(transcriptText);
-      setCopyState("copied");
-      if (copyResetTimerRef.current !== null) {
-        window.clearTimeout(copyResetTimerRef.current);
-      }
-      copyResetTimerRef.current = window.setTimeout(() => {
-        setCopyState("idle");
-        copyResetTimerRef.current = null;
-      }, 1600);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
@@ -209,15 +239,34 @@ export default function NativeInput({
         rows={1}
       />
       <div className="native-input-actions">
-        <button
-          type="button"
-          className="copy-transcript-button"
-          aria-label="Copy past turns transcript"
-          disabled={!hasTranscript}
-          onClick={() => void copyTranscript()}
-        >
-          {copyState === "copied" ? "Copied" : "Copy"}
-        </button>
+        <div className="composer-menu" ref={menuRef}>
+          <button
+            type="button"
+            className="composer-menu-trigger"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="More actions"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <EllipsisIcon />
+          </button>
+          {menuOpen ? (
+            <div className="composer-menu-popover" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="composer-menu-item"
+                disabled={!hasTranscript}
+                onClick={() => {
+                  setMenuOpen(false);
+                  void copyTranscript();
+                }}
+              >
+                Copy transcript
+              </button>
+            </div>
+          ) : null}
+        </div>
         <div className="native-input-submit-actions">
           {awaitingPermission ? (
             <>
