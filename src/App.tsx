@@ -858,6 +858,7 @@ export default function App() {
           />
           <TurnOverlay
             turns={activeTurns}
+            agentId={activeAgent.id}
             input={
               activePane ? (
                 <NativeInput
