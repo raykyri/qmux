@@ -7,6 +7,7 @@ mod hooks;
 mod pty;
 mod state;
 mod transcript;
+mod turn_queue;
 mod workspace;
 
 use claude::{SpawnClaudeRequest, spawn_claude_pane};
@@ -16,6 +17,7 @@ use pty::{PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane
 use state::{AppState, PaneInfo};
 use tauri::Manager;
 use transcript::Turn;
+use turn_queue::{SubmitAgentTurnRequest, SubmitAgentTurnResult, submit_agent_turn};
 use workspace::{AgentInfo, CreateGroupRequest, GroupInfo, create_group};
 
 #[tauri::command]
@@ -101,6 +103,14 @@ fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), S
     kill_pane(&state, pane_id)
 }
 
+#[tauri::command]
+fn agent_submit_turn(
+    state: tauri::State<'_, AppState>,
+    request: SubmitAgentTurnRequest,
+) -> Result<SubmitAgentTurnResult, String> {
+    submit_agent_turn(&state, request)
+}
+
 fn main() {
     match cli::run_cli_if_requested() {
         Ok(true) => return,
@@ -141,6 +151,7 @@ fn main() {
             pane_write,
             pane_resize,
             pane_kill,
+            agent_submit_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running qmux");

@@ -1,6 +1,7 @@
 use crate::events::QmuxEvent;
 use crate::state::AppState;
 use crate::transcript::start_transcript_tail;
+use crate::turn_queue::drain_agent_turn_queue;
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -137,16 +138,21 @@ pub fn ingest_hook_notification(
             "agent.awaiting_permission"
         }
         event if event.starts_with("Notification") => {
+            let notification_kind = notification_kind(&notification);
             if let Some(agent) = agent.as_mut() {
-                agent.status = notification_status(&notification);
+                agent.status = notification_status(notification_kind);
                 state.update_agent(agent.clone())?;
+                if matches!(notification_kind, NotificationKind::IdlePrompt) {
+                    drain_queued_turn_after_idle(state, agent);
+                }
             }
-            notification_event_type(&notification)
+            notification_event_type(notification_kind)
         }
         "Stop" => {
             if let Some(agent) = agent.as_mut() {
                 agent.status = AgentStatus::Stopped;
                 state.update_agent(agent.clone())?;
+                drain_queued_turn_after_idle(state, agent);
             }
             "agent.stopped"
         }
@@ -175,8 +181,19 @@ pub fn ingest_hook_notification(
     ))
 }
 
-fn notification_event_type(notification: &HookNotification) -> &'static str {
-    match notification_kind(notification) {
+fn drain_queued_turn_after_idle(state: &AppState, agent: &AgentInfo) {
+    if let Err(err) = drain_agent_turn_queue(state, &agent.id) {
+        state.emit(QmuxEvent::new(
+            "agent.queue_error",
+            agent.pane_id.clone(),
+            Some(agent.id.clone()),
+            json!({ "error": err }),
+        ));
+    }
+}
+
+fn notification_event_type(notification_kind: NotificationKind) -> &'static str {
+    match notification_kind {
         NotificationKind::PermissionPrompt => "agent.awaiting_permission",
         NotificationKind::IdlePrompt => "agent.idle",
         NotificationKind::ElicitationDialog => "agent.awaiting_input",
@@ -184,8 +201,8 @@ fn notification_event_type(notification: &HookNotification) -> &'static str {
     }
 }
 
-fn notification_status(notification: &HookNotification) -> AgentStatus {
-    match notification_kind(notification) {
+fn notification_status(notification_kind: NotificationKind) -> AgentStatus {
+    match notification_kind {
         NotificationKind::PermissionPrompt => AgentStatus::AwaitingPermission,
         NotificationKind::IdlePrompt => AgentStatus::Stopped,
         NotificationKind::ElicitationDialog => AgentStatus::AwaitingInput,

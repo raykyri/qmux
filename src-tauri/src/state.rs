@@ -4,7 +4,7 @@ use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,6 +35,7 @@ struct Model {
     groups: HashMap<String, GroupInfo>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
+    agent_turn_queues: HashMap<String, VecDeque<String>>,
 }
 
 pub struct PaneRuntime {
@@ -270,6 +271,53 @@ impl AppState {
             .map_err(|_| "model lock poisoned".to_string())?;
         model.turns.insert(agent_id.to_string(), turns);
         Ok(())
+    }
+
+    pub fn enqueue_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let queue = model
+            .agent_turn_queues
+            .entry(agent_id.to_string())
+            .or_default();
+        queue.push_back(data);
+        Ok(queue.len())
+    }
+
+    pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(String, usize)>, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let Some(queue) = model.agent_turn_queues.get_mut(agent_id) else {
+            return Ok(None);
+        };
+        let Some(data) = queue.pop_front() else {
+            return Ok(None);
+        };
+        let pending_count = queue.len();
+        if queue.is_empty() {
+            model.agent_turn_queues.remove(agent_id);
+        }
+        Ok(Some((data, pending_count)))
+    }
+
+    pub fn prepend_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let queue = model
+            .agent_turn_queues
+            .entry(agent_id.to_string())
+            .or_default();
+        queue.push_front(data);
+        Ok(queue.len())
     }
 
     pub fn mark_transcript_tail(&self, agent_id: &str, path: &str) -> Result<bool, String> {
