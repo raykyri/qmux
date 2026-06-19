@@ -44,6 +44,21 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+function isTerminalTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement && target.closest(".xterm") !== null;
+}
+
 function measureTerminalCellSize() {
   if (measuredTerminalCellSize) {
     return measuredTerminalCellSize;
@@ -373,6 +388,17 @@ export default function App() {
 
       const key = event.key.toLowerCase();
       if (key !== "t" && key !== "k") {
+        return;
+      }
+
+      // The terminal owns ⌘K (clear) and Ctrl-K (kill-line), so never hijack K there.
+      if (key === "k" && isTerminalTarget(event.target)) {
+        return;
+      }
+
+      // Ctrl-based shortcuts collide with native text editing (e.g. Ctrl-K kill-line) in
+      // any editable element, so let those through; the documented ⌘ shortcuts keep working.
+      if (event.ctrlKey && !event.metaKey && isEditableTarget(event.target)) {
         return;
       }
 
