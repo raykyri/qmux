@@ -549,7 +549,21 @@ button:disabled {
   display: flex;
   flex: 0 0 auto;
   align-items: stretch;
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.copy-transcript-button {
+  flex: 0 0 auto;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.native-input-submit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
 }

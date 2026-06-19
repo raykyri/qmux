@@ -7,7 +7,7 @@ import type {
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
-import TurnOverlay from "./components/TurnOverlay";
+import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
 import {
   getRuntimeConfig,
   killPane,
@@ -143,6 +143,7 @@ export default function App() {
     () => turns.filter((turn) => turn.agentId === activeAgent?.id),
     [activeAgent?.id, turns],
   );
+  const activeTranscript = useMemo(() => formatTurnsTranscript(activeTurns), [activeTurns]);
   const activeQueuedTurns = useMemo(
     () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, queuedTurnsByAgent],
@@ -651,6 +652,7 @@ export default function App() {
                   pane={activePane}
                   agent={activeAgent}
                   queuedTurns={activeQueuedTurns}
+                  transcriptText={activeTranscript}
                   onQueueChange={setAgentQueuedTurns}
                   onError={setError}
                 />

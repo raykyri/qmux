@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { removeQueuedAgentTurn, submitAgentTurn, submitPaneInput } from "../lib/api";
 import type { AgentInfo, PaneInfo } from "../types";
 
@@ -6,6 +6,7 @@ interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
   queuedTurns: string[];
+  transcriptText: string;
   onQueueChange: (agentId: string, queuedTurns: string[]) => void;
   onError: (message: string) => void;
 }
@@ -14,17 +15,29 @@ export default function NativeInput({
   pane,
   agent,
   queuedTurns,
+  transcriptText,
   onQueueChange,
   onError,
 }: NativeInputProps) {
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const copyResetTimerRef = useRef<number | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
   const canSend = agent.status === "awaitingInput" || agent.status === "stopped";
   const canQueue =
     agent.status === "starting" ||
     agent.status === "running" ||
     agent.status === "awaitingPermission";
+  const hasTranscript = transcriptText.trim().length > 0;
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    };
+  }, []);
 
   async function submitTurn(text: string, mode: "send" | "queue") {
     if (submitting) {
@@ -99,6 +112,26 @@ export default function NativeInput({
     }
   }
 
+  async function copyTranscript() {
+    if (!hasTranscript) {
+      return;
+    }
+
+    try {
+      await writeClipboardText(transcriptText);
+      setCopyState("copied");
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopyState("idle");
+        copyResetTimerRef.current = null;
+      }, 1600);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <form
       className="native-input"
@@ -157,49 +190,89 @@ export default function NativeInput({
         rows={2}
       />
       <div className="native-input-actions">
-        {awaitingPermission ? (
-          <>
-            <button
-              type="button"
-              onClick={() => void submitPermissionResponse("y")}
-              disabled={submitting}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              onClick={() => void submitPermissionResponse("n")}
-              disabled={submitting}
-            >
-              Deny
-            </button>
-          </>
-        ) : null}
         <button
           type="button"
-          disabled={submitting || !canSend || value.trim().length === 0}
-          onClick={() => void submitTurn(value, "send")}
+          className="copy-transcript-button"
+          aria-label="Copy past turns transcript"
+          disabled={!hasTranscript}
+          onClick={() => void copyTranscript()}
         >
-          <span>Send</span>
-          {canSend ? (
-            <span className="shortcut-hint" aria-label="Command Enter">
-              ⌘↵
-            </span>
-          ) : null}
+          {copyState === "copied" ? "Copied" : "Copy"}
         </button>
-        <button
-          type="button"
-          disabled={submitting || !canQueue || value.trim().length === 0}
-          onClick={() => void submitTurn(value, "queue")}
-        >
-          <span>Queue</span>
-          {canQueue ? (
-            <span className="shortcut-hint" aria-label="Command Enter">
-              ⌘↵
-            </span>
+        <div className="native-input-submit-actions">
+          {awaitingPermission ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void submitPermissionResponse("y")}
+                disabled={submitting}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitPermissionResponse("n")}
+                disabled={submitting}
+              >
+                Deny
+              </button>
+            </>
           ) : null}
-        </button>
+          <button
+            type="button"
+            disabled={submitting || !canSend || value.trim().length === 0}
+            onClick={() => void submitTurn(value, "send")}
+          >
+            <span>Send</span>
+            {canSend ? (
+              <span className="shortcut-hint" aria-label="Command Enter">
+                ⌘↵
+              </span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            disabled={submitting || !canQueue || value.trim().length === 0}
+            onClick={() => void submitTurn(value, "queue")}
+          >
+            <span>Queue</span>
+            {canQueue ? (
+              <span className="shortcut-hint" aria-label="Command Enter">
+                ⌘↵
+              </span>
+            ) : null}
+          </button>
+        </div>
       </div>
     </form>
   );
+}
+
+async function writeClipboardText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back to the legacy command for WebViews without clipboard permission.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("Copy command was rejected");
+    }
+  } finally {
+    textarea.remove();
+  }
 }
