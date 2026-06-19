@@ -64,6 +64,9 @@ pub struct PrepareAgentWorkspaceRequest {
     pub base_ref: Option<String>,
     pub adapter: String,
     pub model: Option<String>,
+    /// When false, the agent runs directly in the base repository / cwd with no
+    /// isolated git worktree (the default).
+    pub use_worktree: bool,
 }
 
 pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<GroupInfo, String> {
@@ -116,7 +119,6 @@ pub fn prepare_agent_workspace(
 
     let agent_id = state.next_id("agent");
     let agent_name = format!("agent-{}", group.agents.len() + 1);
-    let worktree_dir = PathBuf::from(&group.dir).join(&agent_name);
     let base_repo = request
         .base_repo
         .or_else(|| group.base_repo.clone())
@@ -127,24 +129,34 @@ pub fn prepare_agent_workspace(
         .unwrap_or_else(|| "HEAD".to_string());
     let mut branch = None;
 
-    if let Some(base_repo) = base_repo.as_deref().filter(|repo| is_git_repo(repo)) {
-        let branch_name = format!("qmux/{}/{}", sanitize_ref_segment(&group.name), agent_name);
-        create_worktree(base_repo, &worktree_dir, &branch_name, &base_ref)?;
-        branch = Some(branch_name);
+    let worktree_dir = if request.use_worktree {
+        // Isolated git worktree under the group dir (or a plain directory when the
+        // base is not a git repo).
+        let dir = PathBuf::from(&group.dir).join(&agent_name);
+        match base_repo.as_deref().filter(|repo| is_git_repo(repo)) {
+            Some(base_repo) => {
+                let branch_name =
+                    format!("qmux/{}/{}", sanitize_ref_segment(&group.name), agent_name);
+                create_worktree(base_repo, &dir, &branch_name, &base_ref)?;
+                branch = Some(branch_name);
+            }
+            None => {
+                fs::create_dir_all(&dir).map_err(|err| {
+                    format!("failed to create agent directory {}: {err}", dir.display())
+                })?;
+            }
+        }
+        dir.display().to_string()
     } else {
-        fs::create_dir_all(&worktree_dir).map_err(|err| {
-            format!(
-                "failed to create agent directory {}: {err}",
-                worktree_dir.display()
-            )
-        })?;
-    }
+        // Default: no worktree — the agent runs directly in the base repo / cwd.
+        base_repo.unwrap_or_else(|| group.dir.clone())
+    };
 
     let agent = AgentInfo {
         id: agent_id.clone(),
         group_id: group.id.clone(),
         adapter: request.adapter,
-        worktree_dir: worktree_dir.display().to_string(),
+        worktree_dir,
         branch,
         pane_id: None,
         session_id: None,

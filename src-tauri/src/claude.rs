@@ -23,6 +23,8 @@ pub struct SpawnClaudeRequest {
     pub model: Option<String>,
     pub permission_mode: Option<String>,
     pub initial_size: Option<InitialPaneSize>,
+    /// Opt in to an isolated git worktree; defaults to false (run in place).
+    pub use_worktree: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -67,6 +69,7 @@ pub fn spawn_claude_pane(
             base_ref: request.base_ref,
             adapter: "claude".to_string(),
             model: request.model.clone(),
+            use_worktree: request.use_worktree.unwrap_or(false),
         },
     )?;
     let cwd = request
@@ -272,6 +275,8 @@ pub fn prepare_shell_claude_launch(
             base_ref: Some("HEAD".to_string()),
             adapter: "claude".to_string(),
             model: None,
+            // Typing `claude` in a shell runs in the current directory; no worktree.
+            use_worktree: false,
         },
     )?;
     let settings_path = match write_claude_hook_settings(&agent) {

@@ -136,6 +136,7 @@ export default function App() {
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
+  const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<{
     pane: PaneInfo;
@@ -466,6 +467,7 @@ export default function App() {
         baseRepo: null,
         baseRef: "HEAD",
         initialSize: estimateInitialPaneSize(true),
+        useWorktree: createInWorktree,
       });
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
@@ -565,6 +567,8 @@ export default function App() {
       return;
     }
 
+    // New agents default to no worktree each time the launcher opens.
+    setCreateInWorktree(false);
     requestAnimationFrame(() => {
       launcherInputRef.current?.focus();
       launcherInputRef.current?.select();
@@ -748,15 +752,25 @@ export default function App() {
               placeholder="Ask Claude Code to work on this checkout..."
             />
             <div className="command-launcher-actions">
-              <button type="button" onClick={() => setLauncherOpen(false)}>
-                Cancel
-              </button>
-              <button type="submit">
-                <span>Launch Claude</span>
-                <span className="shortcut-hint" aria-label="Command Enter">
-                  ⌘↵
-                </span>
-              </button>
+              <label className="command-launcher-option">
+                <input
+                  type="checkbox"
+                  checked={createInWorktree}
+                  onChange={(event) => setCreateInWorktree(event.currentTarget.checked)}
+                />
+                <span>Create in worktree</span>
+              </label>
+              <div className="command-launcher-buttons">
+                <button type="button" onClick={() => setLauncherOpen(false)}>
+                  Cancel
+                </button>
+                <button type="submit">
+                  <span>Launch Claude</span>
+                  <span className="shortcut-hint" aria-label="Command Enter">
+                    ⌘↵
+                  </span>
+                </button>
+              </div>
             </div>
           </form>
         </div>
