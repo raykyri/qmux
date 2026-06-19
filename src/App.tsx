@@ -108,8 +108,6 @@ export default function App() {
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
-  const [baseRepo, setBaseRepo] = useState("");
-  const [baseRef, setBaseRef] = useState("HEAD");
   const [error, setError] = useState<string | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
@@ -299,8 +297,8 @@ export default function App() {
     try {
       const pane = await spawnClaude({
         prompt: trimmed,
-        baseRepo: baseRepo.trim() || null,
-        baseRef: baseRef.trim() || "HEAD",
+        baseRepo: null,
+        baseRef: "HEAD",
         initialSize: estimateInitialPaneSize(true),
       });
       setPanes((current) => [...current, pane]);
@@ -447,21 +445,6 @@ export default function App() {
             rows={5}
             placeholder="Ask Claude Code to work on this checkout..."
           />
-          <div className="launcher-options">
-            <label htmlFor="base-repo">Base repo</label>
-            <input
-              id="base-repo"
-              value={baseRepo}
-              onChange={(event) => setBaseRepo(event.currentTarget.value)}
-              placeholder="Default: this checkout"
-            />
-            <label htmlFor="base-ref">Base ref</label>
-            <input
-              id="base-ref"
-              value={baseRef}
-              onChange={(event) => setBaseRef(event.currentTarget.value)}
-            />
-          </div>
           <button type="submit">
             <span>Launch Claude</span>
             <span className="shortcut-hint" aria-label="Command Enter">
