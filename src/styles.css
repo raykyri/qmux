@@ -65,7 +65,7 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 268px) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   border-top: 1px solid #2a2d2f;
@@ -74,11 +74,12 @@ button:disabled {
 
 .app-shell.has-turn-sidebar {
   grid-template-columns:
-    268px minmax(380px, 1fr)
+    var(--sidebar-width, 268px) minmax(380px, 1fr)
     minmax(300px, var(--turn-pane-width, 420px));
 }
 
 .sidebar {
+  position: relative;
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -89,6 +90,31 @@ button:disabled {
   padding: 12px 10px;
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 2;
+  width: 10px;
+  cursor: col-resize;
+}
+
+.sidebar-resizer::before {
+  position: absolute;
+  top: 0;
+  right: 5px;
+  bottom: 0;
+  width: 1px;
+  background: #2a2d2f;
+  content: "";
+}
+
+.sidebar-resizer:hover::before,
+.sidebar-resizer:focus-visible::before {
+  background: #6cae9d;
 }
 
 .pane-list {

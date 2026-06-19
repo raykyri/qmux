@@ -23,7 +23,9 @@ import {
 } from "./lib/api";
 import type { AgentInfo, InitialPaneSize, PaneInfo, RuntimeConfig, Turn } from "./types";
 
-const LEFT_SIDEBAR_WIDTH = 268;
+const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
+const LEFT_SIDEBAR_MIN_WIDTH = 208;
+const LEFT_SIDEBAR_MAX_WIDTH = 420;
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -134,6 +136,7 @@ export default function App() {
   const [queuedTurnsByAgent, setQueuedTurnsByAgent] = useState<Record<string, string[]>>({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
+  const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [createInWorktree, setCreateInWorktree] = useState(false);
@@ -204,12 +207,25 @@ export default function App() {
 
   function maxTurnPaneWidth() {
     const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-    const available = Math.floor(appWidth - LEFT_SIDEBAR_WIDTH - TERMINAL_MIN_WIDTH);
+    const available = Math.floor(appWidth - sidebarWidth - TERMINAL_MIN_WIDTH);
     return Math.max(TURN_PANE_MIN_WIDTH, Math.min(TURN_PANE_MAX_WIDTH, available));
   }
 
   function clampTurnPaneWidth(width: number) {
     return clamp(width, TURN_PANE_MIN_WIDTH, maxTurnPaneWidth());
+  }
+
+  // The sidebar may grow until the terminal would fall below its minimum (with the
+  // turn pane's current width reserved), capped by a comfortable absolute maximum.
+  function maxSidebarWidth() {
+    const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+    const reservedTurnPane = activeAgent ? turnPaneWidth : 0;
+    const available = Math.floor(appWidth - TERMINAL_MIN_WIDTH - reservedTurnPane);
+    return Math.max(LEFT_SIDEBAR_MIN_WIDTH, Math.min(LEFT_SIDEBAR_MAX_WIDTH, available));
+  }
+
+  function clampSidebarWidth(width: number) {
+    return clamp(width, LEFT_SIDEBAR_MIN_WIDTH, maxSidebarWidth());
   }
 
   function estimateInitialPaneSize(willShowTurnPane: boolean): InitialPaneSize {
@@ -218,8 +234,8 @@ export default function App() {
     const reservedTurnPaneWidth = willShowTurnPane ? clampTurnPaneWidth(turnPaneWidth) : 0;
     const terminalWidth =
       appWidth !== undefined
-        ? appWidth - LEFT_SIDEBAR_WIDTH - reservedTurnPaneWidth
-        : (stageRect?.width ?? window.innerWidth - LEFT_SIDEBAR_WIDTH - reservedTurnPaneWidth);
+        ? appWidth - sidebarWidth - reservedTurnPaneWidth
+        : (stageRect?.width ?? window.innerWidth - sidebarWidth - reservedTurnPaneWidth);
     const terminalHeight = stageRect?.height ?? window.innerHeight;
     const cell = measureTerminalCellSize();
     const cols = Math.floor((terminalWidth - TERMINAL_HORIZONTAL_PADDING) / cell.width);
@@ -235,11 +251,10 @@ export default function App() {
     };
   }
 
-  const appStyle = activeAgent
-    ? ({
-        "--turn-pane-width": `${turnPaneWidth}px`,
-      } as CSSProperties)
-    : undefined;
+  const appStyle = {
+    "--sidebar-width": `${sidebarWidth}px`,
+    ...(activeAgent ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
+  } as CSSProperties;
 
   useEffect(() => {
     let cancelled = false;
@@ -589,6 +604,18 @@ export default function App() {
     return () => window.removeEventListener("resize", handleResize);
   }, [activeAgent]);
 
+  // Keep the sidebar within bounds as the window resizes or the turn pane claims
+  // space (deps refresh the clamp's view of available width).
+  useEffect(() => {
+    const handleResize = () => {
+      setSidebarWidth((current) => clampSidebarWidth(current));
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [activeAgent, turnPaneWidth]);
+
   function startTurnPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -628,6 +655,45 @@ export default function App() {
     );
   }
 
+  function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = startWidth + moveEvent.clientX - startX;
+      setSidebarWidth(clampSidebarWidth(nextWidth));
+    };
+    const stopResize = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
+  function resizeSidebarWithKeyboard(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+
+    event.preventDefault();
+    const step = event.shiftKey ? 40 : 16;
+    setSidebarWidth((current) =>
+      clampSidebarWidth(current + (event.key === "ArrowRight" ? step : -step)),
+    );
+  }
+
   return (
     <main
       ref={appRef}
@@ -635,6 +701,18 @@ export default function App() {
       style={appStyle}
     >
       <aside className="sidebar">
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-label="Resize sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={LEFT_SIDEBAR_MIN_WIDTH}
+          aria-valuemax={maxSidebarWidth()}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          onPointerDown={startSidebarResize}
+          onKeyDown={resizeSidebarWithKeyboard}
+        />
         <nav className="pane-list" aria-label="Panes">
           {panes.map((pane) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
