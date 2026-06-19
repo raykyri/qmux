@@ -21,10 +21,22 @@ pub struct Turn {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum TurnBlock {
-    Text { text: String },
-    ToolUse { name: String, input: Value },
-    ToolResult { content: Value, is_error: bool },
-    Raw { value: Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: Option<String>,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: Option<String>,
+        content: Value,
+        is_error: bool,
+    },
+    Raw {
+        value: Value,
+    },
 }
 
 pub fn start_transcript_tail(state: AppState, agent_id: String, transcript_path: String) {
@@ -138,6 +150,7 @@ fn parse_block(value: &Value) -> Option<TurnBlock> {
                 text: text.to_string(),
             }),
         Some("tool_use") => Some(TurnBlock::ToolUse {
+            id: string_field(value, "id"),
             name: value
                 .get("name")
                 .and_then(Value::as_str)
@@ -146,6 +159,8 @@ fn parse_block(value: &Value) -> Option<TurnBlock> {
             input: value.get("input").cloned().unwrap_or(Value::Null),
         }),
         Some("tool_result") => Some(TurnBlock::ToolResult {
+            tool_use_id: string_field(value, "tool_use_id")
+                .or_else(|| string_field(value, "toolUseId")),
             content: value.get("content").cloned().unwrap_or(Value::Null),
             is_error: value
                 .get("is_error")
@@ -167,4 +182,64 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tool_blocks_preserves_correlation_ids() {
+        let tool_use = json!({
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "Bash",
+            "input": { "cmd": "pwd" }
+        });
+
+        match parse_block(&tool_use).expect("tool_use should parse") {
+            TurnBlock::ToolUse { id, name, input } => {
+                assert_eq!(id.as_deref(), Some("toolu_1"));
+                assert_eq!(name, "Bash");
+                assert_eq!(input["cmd"], "pwd");
+            }
+            other => panic!("expected tool use, got {other:?}"),
+        }
+
+        let tool_result = json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "ok",
+            "is_error": true
+        });
+
+        match parse_block(&tool_result).expect("tool_result should parse") {
+            TurnBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_1"));
+                assert_eq!(content, "ok");
+                assert!(is_error);
+            }
+            other => panic!("expected tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tool_result_accepts_camel_case_id() {
+        let tool_result = json!({
+            "type": "tool_result",
+            "toolUseId": "toolu_2",
+            "content": "ok"
+        });
+
+        match parse_block(&tool_result).expect("tool_result should parse") {
+            TurnBlock::ToolResult { tool_use_id, .. } => {
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_2"));
+            }
+            other => panic!("expected tool result, got {other:?}"),
+        }
+    }
 }
