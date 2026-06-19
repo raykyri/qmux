@@ -350,7 +350,31 @@ button:disabled {
 
 .command-launcher-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.command-launcher-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #c4cbc6;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.command-launcher-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #6cae9d;
+  cursor: pointer;
+}
+
+.command-launcher-buttons {
+  display: flex;
   gap: 8px;
 }
 
