@@ -1,15 +1,24 @@
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
-use crate::state::{AppState, PaneKind};
+use crate::state::AppState;
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubmitAgentTurnMode {
+    Auto,
+    Send,
+    Queue,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitAgentTurnRequest {
     pub agent_id: String,
     pub data: String,
+    pub mode: Option<SubmitAgentTurnMode>,
 }
 
 #[derive(Debug, Serialize)]
@@ -17,6 +26,23 @@ pub struct SubmitAgentTurnRequest {
 pub struct SubmitAgentTurnResult {
     pub queued: bool,
     pub pending_turns: usize,
+    pub queued_turns: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveQueuedAgentTurnRequest {
+    pub agent_id: String,
+    pub index: usize,
+    pub expected_data: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveQueuedAgentTurnResult {
+    pub removed_turn: String,
+    pub pending_turns: usize,
+    pub queued_turns: Vec<String>,
 }
 
 pub fn submit_agent_turn(
@@ -36,24 +62,63 @@ pub fn submit_agent_turn(
         return Err(format!("agent {} has failed", agent.id));
     }
 
-    let pane_kind = agent
-        .pane_id
-        .as_deref()
-        .and_then(|pane_id| state.pane(pane_id).ok().flatten())
-        .map(|pane| pane.kind);
-
-    if should_queue(agent.status, pane_kind) {
-        let pending_turns = state.enqueue_agent_turn(&agent.id, data)?;
-        return Ok(SubmitAgentTurnResult {
-            queued: true,
-            pending_turns,
-        });
+    match request.mode.unwrap_or(SubmitAgentTurnMode::Auto) {
+        SubmitAgentTurnMode::Auto => {
+            if should_queue(agent.status) {
+                return queue_agent_turn(state, &agent, data);
+            }
+            send_agent_turn(state, &agent, data)?;
+            let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+            Ok(SubmitAgentTurnResult {
+                queued: false,
+                pending_turns: queued_turns.len(),
+                queued_turns,
+            })
+        }
+        SubmitAgentTurnMode::Send => {
+            if should_queue(agent.status) {
+                return Err("agent is busy; queue the turn instead".to_string());
+            }
+            send_agent_turn(state, &agent, data)?;
+            let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+            Ok(SubmitAgentTurnResult {
+                queued: false,
+                pending_turns: queued_turns.len(),
+                queued_turns,
+            })
+        }
+        SubmitAgentTurnMode::Queue => {
+            if !should_queue(agent.status) {
+                return Err("agent is ready for input; send the turn instead".to_string());
+            }
+            queue_agent_turn(state, &agent, data)
+        }
     }
+}
 
-    send_agent_turn(state, &agent, data)?;
-    Ok(SubmitAgentTurnResult {
-        queued: false,
-        pending_turns: 0,
+pub fn remove_queued_agent_turn(
+    state: &AppState,
+    request: RemoveQueuedAgentTurnRequest,
+) -> Result<RemoveQueuedAgentTurnResult, String> {
+    let agent = state
+        .agent(&request.agent_id)?
+        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+    let (removed_turn, queued_turns) = state.remove_agent_turn_queue_item(
+        &agent.id,
+        request.index,
+        request.expected_data.as_deref(),
+    )?;
+    let pending_turns = queued_turns.len();
+    state.emit(QmuxEvent::new(
+        "agent.queued_turn_removed",
+        agent.pane_id.clone(),
+        Some(agent.id),
+        json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns.clone() }),
+    ));
+    Ok(RemoveQueuedAgentTurnResult {
+        removed_turn,
+        pending_turns,
+        queued_turns,
     })
 }
 
@@ -72,31 +137,38 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
         let _ = state.prepend_agent_turn(agent_id, data);
         return Err(err);
     }
+    let queued_turns = state.list_agent_turn_queue(agent_id)?;
     state.emit(QmuxEvent::new(
         "agent.queued_turn_sent",
         agent.pane_id.clone(),
         Some(agent.id),
-        json!({ "pendingTurns": pending_turns }),
+        json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
     ));
     Ok(true)
 }
 
-fn should_queue(status: AgentStatus, pane_kind: Option<PaneKind>) -> bool {
-    if matches!(status, AgentStatus::AwaitingInput | AgentStatus::Stopped) {
-        return false;
-    }
+fn should_queue(status: AgentStatus) -> bool {
+    !matches!(status, AgentStatus::AwaitingInput | AgentStatus::Stopped)
+}
 
-    if matches!(pane_kind, Some(PaneKind::Shell)) {
-        return matches!(
-            status,
-            AgentStatus::Starting | AgentStatus::AwaitingPermission
-        );
-    }
-
-    matches!(
-        status,
-        AgentStatus::Starting | AgentStatus::Running | AgentStatus::AwaitingPermission
-    )
+fn queue_agent_turn(
+    state: &AppState,
+    agent: &AgentInfo,
+    data: String,
+) -> Result<SubmitAgentTurnResult, String> {
+    let pending_turns = state.enqueue_agent_turn(&agent.id, data)?;
+    let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+    state.emit(QmuxEvent::new(
+        "agent.turn_queued",
+        agent.pane_id.clone(),
+        Some(agent.id.clone()),
+        json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
+    ));
+    Ok(SubmitAgentTurnResult {
+        queued: true,
+        pending_turns,
+        queued_turns,
+    })
 }
 
 fn send_agent_turn(state: &AppState, agent: &AgentInfo, data: String) -> Result<(), String> {
@@ -124,22 +196,14 @@ mod tests {
 
     #[test]
     fn ready_agent_statuses_send_immediately() {
-        assert!(!should_queue(AgentStatus::AwaitingInput, None));
-        assert!(!should_queue(AgentStatus::Stopped, None));
+        assert!(!should_queue(AgentStatus::AwaitingInput));
+        assert!(!should_queue(AgentStatus::Stopped));
     }
 
     #[test]
-    fn app_spawned_running_agents_queue_turns() {
-        assert!(should_queue(AgentStatus::Running, Some(PaneKind::Agent)));
-        assert!(should_queue(AgentStatus::Running, None));
-    }
-
-    #[test]
-    fn shell_hosted_running_agents_send_immediately() {
-        assert!(!should_queue(AgentStatus::Running, Some(PaneKind::Shell)));
-        assert!(should_queue(
-            AgentStatus::AwaitingPermission,
-            Some(PaneKind::Shell)
-        ));
+    fn busy_agent_statuses_queue_turns() {
+        assert!(should_queue(AgentStatus::Starting));
+        assert!(should_queue(AgentStatus::Running));
+        assert!(should_queue(AgentStatus::AwaitingPermission));
     }
 }

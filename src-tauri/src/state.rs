@@ -133,15 +133,6 @@ impl AppState {
         Ok(model.panes.values().map(|pane| pane.info.clone()).collect())
     }
 
-    pub fn pane(&self, pane_id: &str) -> Result<Option<PaneInfo>, String> {
-        let model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.panes.get(pane_id).map(|pane| pane.info.clone()))
-    }
-
     pub fn list_groups(&self) -> Result<Vec<GroupInfo>, String> {
         let model = self
             .inner
@@ -294,6 +285,59 @@ impl AppState {
             .or_default();
         queue.push_back(data);
         Ok(queue.len())
+    }
+
+    pub fn list_agent_turn_queue(&self, agent_id: &str) -> Result<Vec<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_turn_queues
+            .get(agent_id)
+            .map(|queue| queue.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    pub fn remove_agent_turn_queue_item(
+        &self,
+        agent_id: &str,
+        index: usize,
+        expected_data: Option<&str>,
+    ) -> Result<(String, Vec<String>), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+
+        let (removed, queued_turns, is_empty) = {
+            let queue = model
+                .agent_turn_queues
+                .get_mut(agent_id)
+                .ok_or_else(|| format!("agent {agent_id} does not have queued turns"))?;
+            let current = queue
+                .get(index)
+                .ok_or_else(|| format!("queued turn {index} was not found"))?;
+            if let Some(expected_data) = expected_data {
+                if current != expected_data {
+                    return Err("queued turn changed; refresh before editing".to_string());
+                }
+            }
+
+            let removed = queue
+                .remove(index)
+                .ok_or_else(|| format!("queued turn {index} was not found"))?;
+            let queued_turns = queue.iter().cloned().collect::<Vec<_>>();
+            (removed, queued_turns, queue.is_empty())
+        };
+
+        if is_empty {
+            model.agent_turn_queues.remove(agent_id);
+        }
+
+        Ok((removed, queued_turns))
     }
 
     pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(String, usize)>, String> {

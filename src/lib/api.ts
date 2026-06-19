@@ -6,8 +6,10 @@ import type {
   InitialPaneSize,
   PaneInfo,
   QmuxEvent,
+  RemoveQueuedAgentTurnResult,
   RuntimeConfig,
   SpawnClaudeRequest,
+  SubmitAgentTurnMode,
   SubmitAgentTurnResult,
   Turn,
 } from "../types";
@@ -32,6 +34,10 @@ export function listTurns(agentId?: string | null) {
   return invoke<Turn[]>("list_turns", { agentId: agentId ?? null });
 }
 
+export function listAgentTurnQueue(agentId: string) {
+  return invoke<string[]>("list_agent_turn_queue", { agentId });
+}
+
 export function spawnShell(initialSize?: InitialPaneSize | null) {
   return invoke<PaneInfo>("spawn_shell", { initialSize: initialSize ?? null });
 }
@@ -48,9 +54,15 @@ export function submitPaneInput(paneId: string, data: string) {
   return invoke<void>("pane_write", { paneId, data, paste: true, submit: true });
 }
 
-export function submitAgentTurn(agentId: string, data: string) {
+export function submitAgentTurn(agentId: string, data: string, mode: SubmitAgentTurnMode = "auto") {
   return invoke<SubmitAgentTurnResult>("agent_submit_turn", {
-    request: { agentId, data },
+    request: { agentId, data, mode },
+  });
+}
+
+export function removeQueuedAgentTurn(agentId: string, index: number, expectedData: string) {
+  return invoke<RemoveQueuedAgentTurnResult>("agent_remove_queued_turn", {
+    request: { agentId, index, expectedData },
   });
 }
 

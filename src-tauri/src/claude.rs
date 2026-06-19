@@ -102,7 +102,10 @@ pub fn spawn_claude_pane(
         args.push(permission_mode);
     }
 
-    args.push(request.prompt);
+    let prompt = request.prompt.trim();
+    if !prompt.is_empty() {
+        args.push(prompt.to_string());
+    }
 
     let mut envs = qmux_pane_envs(state, &pane_id);
     envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
