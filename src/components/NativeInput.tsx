@@ -1,32 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { EllipsisVertical } from "lucide-react";
 import { removeQueuedAgentTurn, submitAgentTurn, submitPaneInput } from "../lib/api";
 import type { AgentInfo, PaneInfo } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
-
-// Lucide "ellipsis-vertical" glyph (three vertical dots), inlined to avoid pulling
-// in a dependency for a single icon.
-function EllipsisIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="12" cy="5" r="1" />
-      <circle cx="12" cy="19" r="1" />
-    </svg>
-  );
-}
 
 interface NativeInputProps {
   pane: PaneInfo;
@@ -255,7 +233,7 @@ export default function NativeInput({
             aria-label="More actions"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <EllipsisIcon />
+            <EllipsisVertical size={18} aria-hidden="true" />
           </button>
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">
