@@ -478,10 +478,10 @@ button:disabled {
   inset: 0;
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
   /* The transcript fills the whole pane and is the only scroll surface; the
      bottom padding keeps the latest turn clear of the floating composer. */
-  padding: 12px 12px 132px;
+  padding: 10px 10px 132px;
   overflow: auto;
 }
 
@@ -511,9 +511,9 @@ button:disabled {
 
 .turn-card {
   border: 1px solid #30383b;
-  border-radius: 7px;
+  border-radius: 6px;
   background: #1d2224;
-  padding: 9px 10px;
+  padding: 8px 9px;
 }
 
 .turn-card header {
@@ -525,8 +525,8 @@ button:disabled {
 
 .turn-blocks {
   display: grid;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 6px;
+  margin-top: 5px;
 }
 
 .turn-text {
@@ -536,7 +536,9 @@ button:disabled {
   white-space: pre-wrap;
 }
 
-.tool-block {
+.tool-block,
+.tool-run-block,
+.thinking-block {
   border: 1px solid #384246;
   border-radius: 6px;
   background: #15191b;
@@ -545,22 +547,85 @@ button:disabled {
   overflow: hidden;
 }
 
-.tool-block.is-error {
+.tool-block.is-error,
+.tool-run-block.is-error {
   border-color: #755149;
 }
 
-.tool-block summary {
+.tool-block summary,
+.tool-run-block summary,
+.thinking-block summary {
   cursor: pointer;
-  padding: 7px 8px;
+  padding: 5px 7px;
 }
 
-.tool-block pre {
+.tool-summary {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 18px);
+  vertical-align: top;
+}
+
+.tool-summary-main,
+.tool-summary-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-summary-main {
+  color: #f1f0e8;
+  font-weight: 650;
+}
+
+.tool-summary-meta {
+  color: #8f9994;
+  font-size: 11px;
+}
+
+.tool-run-items {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid #30383b;
+  padding: 7px;
+}
+
+.tool-block.is-nested {
+  background: #111416;
+}
+
+.tool-payload {
+  border-top: 1px solid #30383b;
+}
+
+.tool-payload-label {
+  padding: 6px 8px 0;
+  color: #8f9994;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.tool-block pre,
+.thinking-block pre {
   max-height: 220px;
   margin: 0;
   overflow: auto;
-  border-top: 1px solid #30383b;
-  padding: 8px;
+  padding: 6px 8px 8px;
   white-space: pre-wrap;
+}
+
+.thinking-block {
+  border-style: dashed;
+  color: #aab1ad;
+}
+
+.thinking-block summary {
+  color: #aab1ad;
+  font-style: italic;
 }
 
 .native-input {
