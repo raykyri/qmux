@@ -233,16 +233,19 @@ export default function NativeInput({
       />
       <div className="native-input-actions">
         <div className="composer-menu" ref={menuRef}>
-          <button
-            type="button"
+          <a
+            href="#"
             className="composer-menu-trigger"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-label="More actions"
-            onClick={() => setMenuOpen((open) => !open)}
+            onClick={(event) => {
+              event.preventDefault();
+              setMenuOpen((open) => !open);
+            }}
           >
             <EllipsisVertical size={18} aria-hidden="true" />
-          </button>
+          </a>
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">
               <button

@@ -930,14 +930,19 @@ button:disabled {
   width: 34px;
   min-height: 34px;
   padding: 0;
-  border-color: transparent;
-  background: transparent;
+  border-radius: 4px;
   color: #b9c0bc;
+  text-decoration: none;
+  cursor: pointer;
 }
 
 .composer-menu-trigger:hover {
-  background: #283032;
   color: #f4f3ec;
+}
+
+.composer-menu-trigger:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px #6cae9d;
 }
 
 .composer-menu-popover {
