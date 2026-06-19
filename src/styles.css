@@ -409,7 +409,9 @@ button:disabled {
      queue but never taller than the pane. */
   max-height: 100%;
   padding: 10px 12px;
-  background: linear-gradient(to top, #171b1d 70%, rgba(23, 27, 29, 0));
+  /* Mostly opaque so the unwrapped queue/composer stay legible over the
+     transcript, with only a short fade at the very top. */
+  background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
 }
 
 .empty-turns {
@@ -478,13 +480,10 @@ button:disabled {
   gap: 8px;
   min-width: 0;
   min-height: 0;
-  /* Floats over the transcript; the queue claims the height above the composer. */
+  /* Sits directly in the floating composer area (.turn-sidebar-input owns the
+     background and padding) — no extra card border or padding layer. The queue
+     claims the height above the composer. */
   flex: 1 1 auto;
-  border: 1px solid #2a2d2f;
-  border-radius: 8px;
-  background: rgba(23, 25, 27, 0.96);
-  padding: 8px;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.4);
 }
 
 .queued-turn-stack {
@@ -540,6 +539,10 @@ button:disabled {
 .native-input textarea {
   flex: 0 0 auto;
   min-width: 0;
+  /* Auto-grows with content (JS sets the height) up to a cap, then scrolls. */
+  min-height: 38px;
+  max-height: 200px;
+  overflow-y: auto;
   resize: none;
   border: 1px solid #3a3d3f;
   border-radius: 6px;
