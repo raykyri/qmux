@@ -1,10 +1,13 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import type { ISearchOptions } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
 import type { PaneInfo } from "../types";
 
@@ -16,6 +19,23 @@ interface TerminalPaneProps {
 export interface TerminalPaneHandle {
   focus: () => void;
 }
+
+// On macOS the find shortcut is ⌘F; on other platforms it is Ctrl-F. (Ctrl-F is
+// readline's forward-char, so on the Mac we leave it for the terminal.)
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
+
+// Colors for the search match highlights, tuned to read against the terminal's
+// dark background while echoing the cursor's amber. The overview-ruler colors are
+// required by the addon's types even though we do not render a ruler.
+const SEARCH_DECORATIONS = {
+  matchBackground: "#665a2b",
+  matchBorder: "#8a7a3a",
+  matchOverviewRuler: "#8a7a3a",
+  activeMatchBackground: "#a8842f",
+  activeMatchBorder: "#f2d37b",
+  activeMatchColorOverviewRuler: "#f2d37b",
+} as const;
 
 function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
   if (typeof data === "string") {
@@ -43,7 +63,27 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [useRegex, setUseRegex] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ index: number; count: number }>({
+    index: -1,
+    count: 0,
+  });
+
+  const searchOptions = useMemo<ISearchOptions>(
+    () => ({
+      regex: useRegex,
+      caseSensitive,
+      decorations: { ...SEARCH_DECORATIONS },
+    }),
+    [useRegex, caseSensitive],
+  );
 
   useImperativeHandle(ref, () => ({
     focus() {
@@ -51,6 +91,64 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       stabilizeTerminalRef.current?.();
     },
   }));
+
+  const findNext = () => {
+    if (searchTerm) {
+      searchRef.current?.findNext(searchTerm, searchOptions);
+    }
+  };
+
+  const findPrevious = () => {
+    if (searchTerm) {
+      searchRef.current?.findPrevious(searchTerm, searchOptions);
+    }
+  };
+
+  const closeSearch = () => {
+    setSearchOpen(false);
+  };
+
+  const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        findPrevious();
+      } else {
+        findNext();
+      }
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearch();
+    }
+  };
+
+  // Re-run the search whenever the term or options change while the bar is open.
+  // `incremental` keeps the current match selected as the term grows, so typing
+  // does not jump the viewport around. Clearing the term wipes the highlights.
+  useEffect(() => {
+    const addon = searchRef.current;
+    if (!addon || !searchOpen) {
+      return;
+    }
+    if (searchTerm === "") {
+      addon.clearDecorations();
+      setSearchResults({ index: -1, count: 0 });
+      return;
+    }
+    addon.findNext(searchTerm, { ...searchOptions, incremental: true });
+  }, [searchTerm, searchOpen, searchOptions]);
+
+  // Opening the bar focuses its input; closing it clears highlights and returns
+  // focus to the terminal so typing keeps flowing to the PTY.
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    } else {
+      searchRef.current?.clearDecorations();
+      terminalRef.current?.focus();
+    }
+  }, [searchOpen]);
 
   useEffect(() => {
     if (!hostRef.current || terminalRef.current) {
@@ -77,11 +175,40 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     const fit = new FitAddon();
     const unicode = new Unicode11Addon();
     const serialize = new SerializeAddon();
+    const search = new SearchAddon();
 
     terminal.loadAddon(fit);
     terminal.loadAddon(unicode);
     terminal.loadAddon(serialize);
+    terminal.loadAddon(search);
     terminal.unicode.activeVersion = "11";
+
+    const resultsDisposable = search.onDidChangeResults(({ resultIndex, resultCount }) => {
+      setSearchResults({ index: resultIndex, count: resultCount });
+    });
+
+    // ⌘F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
+    // Returning false stops xterm from forwarding the keystroke to the PTY.
+    terminal.attachCustomKeyEventHandler((event) => {
+      const findCombo = IS_MAC
+        ? event.metaKey && !event.ctrlKey
+        : event.ctrlKey && !event.metaKey;
+      if (
+        event.type === "keydown" &&
+        findCombo &&
+        !event.altKey &&
+        (event.key === "f" || event.key === "F")
+      ) {
+        event.preventDefault();
+        setSearchOpen(true);
+        window.requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
+        return false;
+      }
+      return true;
+    });
 
     try {
       terminal.loadAddon(new WebglAddon());
@@ -172,6 +299,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
     terminalRef.current = terminal;
     serializeRef.current = serialize;
+    searchRef.current = search;
     stabilizeTerminalRef.current = scheduleSettledFits;
 
     // xterm paints inside requestAnimationFrame, which the OS/webview throttles or
@@ -208,6 +336,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     return () => {
       disposed = true;
       inputDisposable.dispose();
+      resultsDisposable.dispose();
       resizeObserver.disconnect();
       if (resizeFrame !== null) {
         window.cancelAnimationFrame(resizeFrame);
@@ -225,6 +354,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       terminal.dispose();
       terminalRef.current = null;
       serializeRef.current = null;
+      searchRef.current = null;
       stabilizeTerminalRef.current = null;
     };
   }, [pane.id]);
@@ -263,9 +393,87 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     }
   }, [active, pane.id]);
 
+  const matchLabel =
+    searchTerm === ""
+      ? ""
+      : searchResults.count === 0
+        ? "No results"
+        : `${searchResults.index + 1}/${searchResults.count}`;
+  const hasMatches = searchResults.count > 0;
+
   return (
     <div className={`terminal-pane ${active ? "is-active" : ""}`} aria-hidden={!active}>
       <div ref={hostRef} className="terminal-host" />
+      {searchOpen ? (
+        <div className="terminal-search" role="search">
+          <input
+            ref={searchInputRef}
+            type="text"
+            className="terminal-search-input"
+            value={searchTerm}
+            placeholder="Find in terminal"
+            spellCheck={false}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            aria-label="Find in terminal"
+            onChange={(event) => setSearchTerm(event.currentTarget.value)}
+            onKeyDown={handleSearchKeyDown}
+          />
+          <span className="terminal-search-count">{matchLabel}</span>
+          <div className="terminal-search-toggles">
+            <button
+              type="button"
+              className={`terminal-search-toggle ${caseSensitive ? "is-active" : ""}`}
+              title="Match case"
+              aria-pressed={caseSensitive}
+              onClick={() => setCaseSensitive((value) => !value)}
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              className={`terminal-search-toggle ${useRegex ? "is-active" : ""}`}
+              title="Use regular expression"
+              aria-pressed={useRegex}
+              onClick={() => setUseRegex((value) => !value)}
+            >
+              .*
+            </button>
+          </div>
+          <div className="terminal-search-nav">
+            <button
+              type="button"
+              className="terminal-search-button"
+              title="Previous match (Shift+Enter)"
+              aria-label="Previous match"
+              disabled={!hasMatches}
+              onClick={findPrevious}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="terminal-search-button"
+              title="Next match (Enter)"
+              aria-label="Next match"
+              disabled={!hasMatches}
+              onClick={findNext}
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="terminal-search-button"
+              title="Close (Esc)"
+              aria-label="Close search"
+              onClick={closeSearch}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 });
