@@ -76,16 +76,14 @@ button:disabled {
   font-weight: 800;
 }
 
-.brand h1,
-.workspace-header h2 {
+.brand h1 {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0;
 }
 
-.brand p,
-.workspace-header p {
+.brand p {
   margin: 1px 0 0;
   color: #9ea5a6;
   font-size: 12px;
@@ -210,34 +208,10 @@ button:disabled {
 }
 
 .workspace {
-  display: grid;
-  min-width: 0;
-  min-height: 0;
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
-.workspace-header {
   display: flex;
   min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  border-bottom: 1px solid #2a2d2f;
-  padding: 13px 16px;
-}
-
-.workspace-header > div {
-  min-width: 0;
-}
-
-.status-chip {
-  flex: none;
-  border: 1px solid #50615e;
-  border-radius: 999px;
-  padding: 4px 10px;
-  background: #22302f;
-  color: #b7e7dc;
-  font-size: 12px;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .error-banner {
@@ -252,6 +226,7 @@ button:disabled {
 
 .terminal-stage {
   position: relative;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   background: #111315;

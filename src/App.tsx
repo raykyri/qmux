@@ -316,18 +316,6 @@ export default function App() {
       </aside>
 
       <section className="workspace">
-        <header className="workspace-header">
-          <div>
-            <h2>{activePane?.title ?? "No pane"}</h2>
-            <p>{activePane?.cwd ?? "Create a shell pane to begin."}</p>
-          </div>
-          {activePane ? (
-            <span className="status-chip">
-              {activeAgent ? agentStatusLabel(activeAgent.status) : statusLabel(activePane.status)}
-            </span>
-          ) : null}
-        </header>
-
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div className="terminal-stage">
