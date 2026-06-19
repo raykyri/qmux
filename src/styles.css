@@ -548,6 +548,7 @@ button:disabled {
   padding-top: 7px;
 }
 
+.assistant-run-block,
 .tool-block,
 .tool-run-block,
 .thinking-block {
@@ -559,11 +560,17 @@ button:disabled {
   overflow: hidden;
 }
 
+.assistant-run-block {
+  border-color: #30383b;
+  background: #1d2224;
+}
+
 .tool-block.is-error,
 .tool-run-block.is-error {
   border-color: #755149;
 }
 
+.assistant-run-block > summary,
 .tool-block summary,
 .tool-run-block summary,
 .thinking-block summary {
@@ -654,6 +661,13 @@ button:disabled {
 
 .assistant-activity .tool-summary-meta {
   color: #7f8884;
+}
+
+.assistant-run-items {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #30383b;
+  padding: 8px;
 }
 
 .native-input {
