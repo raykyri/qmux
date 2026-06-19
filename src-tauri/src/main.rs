@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod control_socket;
 mod events;
+mod hooks;
 mod pty;
 mod state;
 mod workspace;

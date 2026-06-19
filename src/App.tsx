@@ -27,6 +27,21 @@ function statusLabel(status: PaneInfo["status"]) {
   }
 }
 
+function agentStatusLabel(status: AgentInfo["status"]) {
+  switch (status) {
+    case "starting":
+      return "Starting";
+    case "running":
+      return "Running";
+    case "awaitingInput":
+      return "Awaiting input";
+    case "stopped":
+      return "Stopped";
+    case "failed":
+      return "Failed";
+  }
+}
+
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
@@ -40,6 +55,10 @@ export default function App() {
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
+  );
+  const activeAgent = useMemo(
+    () => agents.find((agent) => agent.paneId === activePane?.id),
+    [activePane?.id, agents],
   );
 
   useEffect(() => {
@@ -100,6 +119,9 @@ export default function App() {
             pane.id === event.paneId ? { ...pane, status: "exited" } : pane,
           ),
         );
+      }
+      if (event.type.startsWith("agent.")) {
+        void listAgents().then(setAgents).catch(() => undefined);
       }
     }).then((cleanup) => {
       if (disposed) {
@@ -177,17 +199,22 @@ export default function App() {
         </div>
 
         <nav className="pane-list" aria-label="Panes">
-          {panes.map((pane) => (
-            <button
-              key={pane.id}
-              type="button"
-              className={pane.id === activePane?.id ? "pane-tab is-selected" : "pane-tab"}
-              onClick={() => setActivePaneId(pane.id)}
-            >
-              <span>{pane.title}</span>
-              <small>{statusLabel(pane.status)}</small>
-            </button>
-          ))}
+          {panes.map((pane) => {
+            const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+            return (
+              <button
+                key={pane.id}
+                type="button"
+                className={pane.id === activePane?.id ? "pane-tab is-selected" : "pane-tab"}
+                onClick={() => setActivePaneId(pane.id)}
+              >
+                <span>{pane.title}</span>
+                <small>
+                  {paneAgent ? agentStatusLabel(paneAgent.status) : statusLabel(pane.status)}
+                </small>
+              </button>
+            );
+          })}
         </nav>
 
         <div className="sidebar-actions">
@@ -259,7 +286,11 @@ export default function App() {
             <h2>{activePane?.title ?? "No pane"}</h2>
             <p>{activePane?.cwd ?? "Create a shell pane to begin."}</p>
           </div>
-          {activePane ? <span className="status-chip">{statusLabel(activePane.status)}</span> : null}
+          {activePane ? (
+            <span className="status-chip">
+              {activeAgent ? agentStatusLabel(activeAgent.status) : statusLabel(activePane.status)}
+            </span>
+          ) : null}
         </header>
 
         {error ? <div className="error-banner">{error}</div> : null}

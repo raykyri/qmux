@@ -164,6 +164,19 @@ impl AppState {
         Ok(model.agents.get(agent_id).cloned())
     }
 
+    pub fn agent_by_pane(&self, pane_id: &str) -> Result<Option<AgentInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agents
+            .values()
+            .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
+            .cloned())
+    }
+
     pub fn insert_pane(&self, pane: PaneRuntime) -> Result<(), String> {
         let mut model = self
             .inner

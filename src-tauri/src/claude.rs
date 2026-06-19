@@ -1,3 +1,4 @@
+use crate::hooks::write_claude_hook_settings;
 use crate::pty::{PtySpawnSpec, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::workspace::{PrepareAgentWorkspaceRequest, attach_agent_pane, prepare_agent_workspace};
@@ -49,7 +50,11 @@ pub fn spawn_claude_pane(
         ));
     }
     let pane_id = state.next_id("pane");
-    let mut args = vec![request.prompt];
+    let settings_path = write_claude_hook_settings(&agent)?;
+    let mut args = vec![
+        "--settings".to_string(),
+        settings_path.display().to_string(),
+    ];
 
     if let Some(model) = request.model.filter(|model| !model.trim().is_empty()) {
         args.push("--model".to_string());
@@ -63,6 +68,8 @@ pub fn spawn_claude_pane(
         args.push("--permission-mode".to_string());
         args.push(permission_mode);
     }
+
+    args.push(request.prompt);
 
     spawn_pty(
         state,
@@ -85,6 +92,7 @@ pub fn spawn_claude_pane(
                     "QMUX_WORKSPACE_ROOT".to_string(),
                     state.config().workspace_root.display().to_string(),
                 ),
+                ("QMUX_AGENT_ID".to_string(), agent.id.clone()),
             ],
         },
     )

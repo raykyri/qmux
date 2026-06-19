@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 pub fn run_cli_if_requested() -> Result<bool, String> {
     let mut args = env::args().skip(1);
@@ -62,6 +63,9 @@ fn request(command: &str, payload: Value) -> Result<(), String> {
     let token = env::var("QMUX_TOKEN").map_err(|_| "QMUX_TOKEN is not set".to_string())?;
     let mut stream = UnixStream::connect(&socket_path)
         .map_err(|err| format!("failed to connect to {socket_path}: {err}"))?;
+    let timeout = Some(Duration::from_secs(2));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
     let request = json!({
         "token": token,
         "command": command,

@@ -1,5 +1,6 @@
 use crate::claude::{SpawnClaudeRequest, spawn_claude_pane};
 use crate::events::QmuxEvent;
+use crate::hooks::{HookNotification, ingest_hook_notification};
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -106,18 +107,10 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             serde_json::to_value(pane).map_err(|err| format!("failed to encode pane: {err}"))
         }
         "hook.notify" => {
-            let event_type = request
-                .payload
-                .get("event")
-                .and_then(Value::as_str)
-                .unwrap_or("hook.notification")
-                .to_string();
-            let pane_id = request
-                .payload
-                .get("paneId")
-                .and_then(Value::as_str)
-                .map(ToString::to_string);
-            state.emit(QmuxEvent::new(event_type, pane_id, None, request.payload));
+            let notification = serde_json::from_value::<HookNotification>(request.payload)
+                .map_err(|err| format!("invalid hook.notify payload: {err}"))?;
+            let event = ingest_hook_notification(state, notification)?;
+            state.emit(event);
             Ok(json!({ "notified": true }))
         }
         other => Err(format!("unknown control command '{other}'")),
