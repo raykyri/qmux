@@ -3,8 +3,9 @@ use crate::state::{AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, Shared
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use std::env;
+use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -37,7 +38,26 @@ pub fn spawn_shell_pane(state: &AppState) -> Result<PaneInfo, String> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let cwd = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
     let pane_id = state.next_id("pane");
-    let envs = shell_pane_envs(state, &pane_id);
+    let mut envs = shell_pane_envs(state, &pane_id);
+    let mut args = Vec::new();
+
+    match claude_shell_function_injection(&shell, &pane_id) {
+        Ok(Some(injection)) => {
+            args = injection.args;
+            envs.extend(injection.envs);
+            envs.push(("QMUX_CLAUDE_FUNCTION".to_string(), "1".to_string()));
+        }
+        Ok(None) => {
+            envs.push((
+                "QMUX_CLAUDE_FUNCTION".to_string(),
+                "unsupported".to_string(),
+            ));
+        }
+        Err(err) => {
+            envs.push(("QMUX_CLAUDE_FUNCTION".to_string(), "failed".to_string()));
+            envs.push(("QMUX_CLAUDE_FUNCTION_ERROR".to_string(), err));
+        }
+    }
 
     spawn_pty(
         state,
@@ -47,7 +67,7 @@ pub fn spawn_shell_pane(state: &AppState) -> Result<PaneInfo, String> {
             kind: PaneKind::Shell,
             title: "Shell".to_string(),
             program: shell,
-            args: Vec::new(),
+            args,
             cwd,
             envs,
         },
@@ -73,6 +93,147 @@ fn shell_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
     let mut envs = qmux_pane_envs(state, pane_id);
     envs.push(("QMUX_SHELL_INTEGRATION".to_string(), "1".to_string()));
     envs
+}
+
+struct ShellFunctionInjection {
+    args: Vec<String>,
+    envs: Vec<(String, String)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellKind {
+    Bash,
+    Zsh,
+    Unsupported,
+}
+
+fn claude_shell_function_injection(
+    shell: &str,
+    pane_id: &str,
+) -> Result<Option<ShellFunctionInjection>, String> {
+    let shell_kind = shell_kind(shell);
+    if matches!(shell_kind, ShellKind::Unsupported) {
+        return Ok(None);
+    }
+
+    let qmux_cli = env::current_exe()
+        .map_err(|err| format!("failed to resolve qmux executable for shell integration: {err}"))?;
+    let root = env::temp_dir().join("qmux-shell-init").join(pane_id);
+    fs::create_dir_all(&root).map_err(|err| {
+        format!(
+            "failed to create shell integration dir {}: {err}",
+            root.display()
+        )
+    })?;
+
+    match shell_kind {
+        ShellKind::Zsh => {
+            let zdotdir = root.join("zsh");
+            fs::create_dir_all(&zdotdir).map_err(|err| {
+                format!(
+                    "failed to create zsh integration dir {}: {err}",
+                    zdotdir.display()
+                )
+            })?;
+            let rcfile = zdotdir.join(".zshrc");
+            fs::write(&rcfile, zsh_init_script(&qmux_cli)).map_err(|err| {
+                format!(
+                    "failed to write zsh integration file {}: {err}",
+                    rcfile.display()
+                )
+            })?;
+            let mut envs = vec![("ZDOTDIR".to_string(), zdotdir.display().to_string())];
+            if let Some(zdotdir) = original_zdotdir() {
+                envs.push(("QMUX_ORIGINAL_ZDOTDIR".to_string(), zdotdir));
+            }
+            Ok(Some(ShellFunctionInjection {
+                args: vec!["-i".to_string()],
+                envs,
+            }))
+        }
+        ShellKind::Bash => {
+            let rcfile = root.join("bashrc");
+            fs::write(&rcfile, bash_init_script(&qmux_cli)).map_err(|err| {
+                format!(
+                    "failed to write bash integration file {}: {err}",
+                    rcfile.display()
+                )
+            })?;
+            let mut envs = Vec::new();
+            if let Some(bashrc) = original_bashrc() {
+                envs.push(("QMUX_ORIGINAL_BASHRC".to_string(), bashrc));
+            }
+            Ok(Some(ShellFunctionInjection {
+                args: vec![
+                    "--rcfile".to_string(),
+                    rcfile.display().to_string(),
+                    "-i".to_string(),
+                ],
+                envs,
+            }))
+        }
+        ShellKind::Unsupported => Ok(None),
+    }
+}
+
+fn shell_kind(shell: &str) -> ShellKind {
+    match Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+    {
+        "bash" => ShellKind::Bash,
+        "zsh" => ShellKind::Zsh,
+        _ => ShellKind::Unsupported,
+    }
+}
+
+fn zsh_init_script(qmux_cli: &Path) -> String {
+    format!(
+        r#"# Generated by qmux. Do not edit.
+if [ -n "${{QMUX_ORIGINAL_ZDOTDIR:-}}" ]; then
+  export ZDOTDIR="$QMUX_ORIGINAL_ZDOTDIR"
+  if [ -r "$ZDOTDIR/.zshrc" ]; then
+    source "$ZDOTDIR/.zshrc"
+  fi
+fi
+unalias claude 2>/dev/null || true
+claude() {{
+  {} claude "$@"
+}}
+"#,
+        shell_quote(qmux_cli)
+    )
+}
+
+fn bash_init_script(qmux_cli: &Path) -> String {
+    format!(
+        r#"# Generated by qmux. Do not edit.
+if [ -n "${{QMUX_ORIGINAL_BASHRC:-}}" ] && [ -r "$QMUX_ORIGINAL_BASHRC" ]; then
+  . "$QMUX_ORIGINAL_BASHRC"
+fi
+unalias claude 2>/dev/null || true
+claude() {{
+  {} claude "$@"
+}}
+"#,
+        shell_quote(qmux_cli)
+    )
+}
+
+fn original_zdotdir() -> Option<String> {
+    env::var("ZDOTDIR").ok().or_else(|| env::var("HOME").ok())
+}
+
+fn original_bashrc() -> Option<String> {
+    env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".bashrc").display().to_string())
+}
+
+fn shell_quote(path: &Path) -> String {
+    let raw = path.display().to_string();
+    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
@@ -326,6 +487,27 @@ mod tests {
     fn env_value(envs: &[(String, String)], key: &str) -> Option<String> {
         envs.iter()
             .find_map(|(env_key, value)| (env_key == key).then(|| value.clone()))
+    }
+
+    #[test]
+    fn shell_kind_detects_supported_shells_by_basename() {
+        assert_eq!(shell_kind("/bin/zsh"), ShellKind::Zsh);
+        assert_eq!(shell_kind("/opt/homebrew/bin/bash"), ShellKind::Bash);
+        assert_eq!(shell_kind("/opt/homebrew/bin/fish"), ShellKind::Unsupported);
+    }
+
+    #[test]
+    fn init_scripts_define_claude_function_through_qmux() {
+        let qmux_cli = PathBuf::from("/Applications/qmux app/qmux");
+
+        let zsh_script = zsh_init_script(&qmux_cli);
+        let bash_script = bash_init_script(&qmux_cli);
+
+        for script in [zsh_script, bash_script] {
+            assert!(script.contains("claude() {"));
+            assert!(script.contains("'/Applications/qmux app/qmux' claude \"$@\""));
+            assert!(script.contains("unalias claude"));
+        }
     }
 
     #[test]
