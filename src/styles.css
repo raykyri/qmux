@@ -516,6 +516,10 @@ button:disabled {
   padding: 8px 9px;
 }
 
+.turn-card.is-activity-only header {
+  color: #78918b;
+}
+
 .turn-card header {
   color: #96e0cf;
   font-size: 11px;
@@ -534,6 +538,14 @@ button:disabled {
   color: #f1f0e8;
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+.assistant-activity {
+  display: grid;
+  gap: 4px;
+  margin-top: 7px;
+  border-top: 1px solid #30383b;
+  padding-top: 7px;
 }
 
 .tool-block,
@@ -619,13 +631,29 @@ button:disabled {
 }
 
 .thinking-block {
-  border-style: dashed;
+  border-color: transparent;
+  background: transparent;
   color: #aab1ad;
 }
 
 .thinking-block summary {
   color: #aab1ad;
   font-style: italic;
+}
+
+.assistant-activity .tool-block,
+.assistant-activity .tool-run-block {
+  border-color: #2c3538;
+  background: #171c1e;
+  color: #aab1ad;
+}
+
+.assistant-activity .tool-summary-main {
+  color: #c4cbc7;
+}
+
+.assistant-activity .tool-summary-meta {
+  color: #7f8884;
 }
 
 .native-input {
