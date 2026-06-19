@@ -56,12 +56,26 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
 
     terminal.open(hostRef.current);
     terminal.focus();
-    fit.fit();
-    void resizePane(pane.id, terminal.cols, terminal.rows);
 
-    const resizeObserver = new ResizeObserver(() => {
+    let resizeFrame: number | null = null;
+    const fitAndSyncSize = () => {
       fit.fit();
       void resizePane(pane.id, terminal.cols, terminal.rows);
+    };
+    const scheduleFit = () => {
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        fitAndSyncSize();
+      });
+    };
+
+    scheduleFit();
+
+    const resizeObserver = new ResizeObserver(() => {
+      scheduleFit();
     });
     resizeObserver.observe(hostRef.current);
 
@@ -76,6 +90,9 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
     return () => {
       inputDisposable.dispose();
       resizeObserver.disconnect();
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -111,9 +128,15 @@ export default function TerminalPane({ pane, active }: TerminalPaneProps) {
   useEffect(() => {
     if (active) {
       terminalRef.current?.focus();
-      fitRef.current?.fit();
+      window.requestAnimationFrame(() => {
+        fitRef.current?.fit();
+        const terminal = terminalRef.current;
+        if (terminal) {
+          void resizePane(pane.id, terminal.cols, terminal.rows);
+        }
+      });
     }
-  }, [active]);
+  }, [active, pane.id]);
 
   return (
     <div className={`terminal-pane ${active ? "is-active" : ""}`} aria-hidden={!active}>
