@@ -141,7 +141,10 @@ export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps)
 
   const timelineStyle: CSSProperties | undefined =
     composerHeight > 0 ? { paddingBottom: composerHeight + COMPOSER_CLEARANCE } : undefined;
-  const timelineItems = useMemo(() => buildTimelineItems(turns), [turns]);
+  const timelineItems = useMemo(
+    () => buildTimelineItems(collapseQueuedDuplicates(turns)),
+    [turns],
+  );
 
   return (
     <section className="turn-sidebar" aria-label="Agent turns">
@@ -164,6 +167,34 @@ export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps)
       ) : null}
     </section>
   );
+}
+
+function turnText(turn: Turn): string {
+  return turn.blocks
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
+}
+
+// Claude's transcript logs a queued prompt twice: once as a `queue-operation`
+// entry when it is enqueued, then again as a `user` turn when it is actually
+// submitted. With the empty bookkeeping entries filtered out, those two land
+// next to each other with identical text. Drop the queue-operation duplicate so
+// the prompt shows once, as a plain user message.
+function collapseQueuedDuplicates(turns: Turn[]): Turn[] {
+  return turns.filter((turn, index) => {
+    if (turn.role !== "queue-operation") {
+      return true;
+    }
+    const text = turnText(turn);
+    if (!text) {
+      return true;
+    }
+    const hasAdjacentUserDuplicate = [turns[index - 1], turns[index + 1]].some(
+      (neighbor) => neighbor?.role === "user" && turnText(neighbor) === text,
+    );
+    return !hasAdjacentUserDuplicate;
+  });
 }
 
 function buildTimelineItems(turns: Turn[]): TimelineItem[] {
