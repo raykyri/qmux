@@ -177,6 +177,15 @@ pub fn attach_agent_pane(
     Ok(agent)
 }
 
+pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
+    let mut agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    agent.status = AgentStatus::Failed;
+    state.update_agent(agent.clone())?;
+    Ok(agent)
+}
+
 fn default_base_repo() -> Option<String> {
     env::current_dir()
         .ok()

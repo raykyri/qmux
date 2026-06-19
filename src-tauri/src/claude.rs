@@ -1,7 +1,9 @@
 use crate::hooks::write_claude_hook_settings;
 use crate::pty::{PtySpawnSpec, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
-use crate::workspace::{PrepareAgentWorkspaceRequest, attach_agent_pane, prepare_agent_workspace};
+use crate::workspace::{
+    PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed, prepare_agent_workspace,
+};
 use serde::Deserialize;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -50,7 +52,13 @@ pub fn spawn_claude_pane(
         ));
     }
     let pane_id = state.next_id("pane");
-    let settings_path = write_claude_hook_settings(&agent)?;
+    let settings_path = match write_claude_hook_settings(&agent) {
+        Ok(settings_path) => settings_path,
+        Err(err) => {
+            let _ = mark_agent_failed(state, &agent.id);
+            return Err(err);
+        }
+    };
     let mut args = vec![
         "--settings".to_string(),
         settings_path.display().to_string(),
@@ -71,7 +79,7 @@ pub fn spawn_claude_pane(
 
     args.push(request.prompt);
 
-    spawn_pty(
+    let spawn_result = spawn_pty(
         state,
         PtySpawnSpec {
             pane_id: Some(pane_id.clone()),
@@ -95,11 +103,18 @@ pub fn spawn_claude_pane(
                 ("QMUX_AGENT_ID".to_string(), agent.id.clone()),
             ],
         },
-    )
-    .and_then(|pane| {
-        attach_agent_pane(state, &agent.id, pane.id.clone())?;
-        Ok(pane)
-    })
+    );
+
+    match spawn_result {
+        Ok(pane) => {
+            attach_agent_pane(state, &agent.id, pane.id.clone())?;
+            Ok(pane)
+        }
+        Err(err) => {
+            let _ = mark_agent_failed(state, &agent.id);
+            Err(err)
+        }
+    }
 }
 
 fn ensure_on_path(binary: &str) -> Option<PathBuf> {
