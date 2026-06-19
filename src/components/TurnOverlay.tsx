@@ -13,6 +13,10 @@ interface TurnOverlayProps {
 // Gap kept between the last transcript message and the top of the composer.
 const COMPOSER_CLEARANCE = 16;
 
+// How close to the bottom (in px) the user must be for new turns or a growing
+// composer to keep the transcript pinned to the bottom.
+const STICK_TO_BOTTOM_THRESHOLD = 100;
+
 type TextBlock = Extract<TurnBlock, { type: "text" }>;
 type ToolUseBlock = Extract<TurnBlock, { type: "toolUse" }>;
 type ToolResultBlock = Extract<TurnBlock, { type: "toolResult" }>;
@@ -65,23 +69,45 @@ export function formatTurnsTranscript(turns: Turn[]) {
 export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps) {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  // Whether the view is parked near the bottom, so incoming content can keep it
+  // pinned there. Starts true (we load at the bottom) and tracks user scrolling.
+  const stickToBottomRef = useRef(true);
   const [composerHeight, setComposerHeight] = useState(0);
+
+  const scrollToBottom = () => {
+    const timeline = timelineRef.current;
+    if (timeline) {
+      timeline.scrollTop = timeline.scrollHeight;
+    }
+  };
+
+  const handleTimelineScroll = () => {
+    const timeline = timelineRef.current;
+    if (!timeline) {
+      return;
+    }
+    const distanceFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= STICK_TO_BOTTOM_THRESHOLD;
+  };
 
   // When a different transcript loads, start at the bottom so the latest turn is
   // in view. useLayoutEffect runs before paint, so the pane never flashes at the
   // top first; the rAF re-assert catches the composer's reserved-space reflow.
   useLayoutEffect(() => {
-    const timeline = timelineRef.current;
-    if (!timeline) {
-      return;
-    }
-    const scrollToBottom = () => {
-      timeline.scrollTop = timeline.scrollHeight;
-    };
+    stickToBottomRef.current = true;
     scrollToBottom();
     const frame = requestAnimationFrame(scrollToBottom);
     return () => cancelAnimationFrame(frame);
   }, [agentId]);
+
+  // Keep pinned to the bottom when new turns arrive or the composer grows (e.g. a
+  // queued message), but only while the user is already near the bottom — instant,
+  // so reading older turns is never interrupted.
+  useLayoutEffect(() => {
+    if (stickToBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [turns, composerHeight]);
 
   // The composer floats over the transcript, so reserve scroll room beneath the
   // last message equal to the composer's live height (it changes as the queue
@@ -106,7 +132,12 @@ export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps)
 
   return (
     <section className="turn-sidebar" aria-label="Agent turns">
-      <div ref={timelineRef} className="turn-timeline" style={timelineStyle}>
+      <div
+        ref={timelineRef}
+        className="turn-timeline"
+        style={timelineStyle}
+        onScroll={handleTimelineScroll}
+      >
         {timelineItems.length === 0 ? (
           <p className="empty-turns">No turns yet</p>
         ) : (
