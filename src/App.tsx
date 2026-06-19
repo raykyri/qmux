@@ -188,14 +188,19 @@ export default function App() {
       return;
     }
 
-    await killPane(activePane.id);
-    setPanes((current) => current.filter((pane) => pane.id !== activePane.id));
-    setActivePaneId((current) => {
-      if (current !== activePane.id) {
-        return current;
-      }
-      return panes.find((pane) => pane.id !== activePane.id)?.id ?? null;
-    });
+    setError(null);
+    try {
+      await killPane(activePane.id);
+      setPanes((current) => current.filter((pane) => pane.id !== activePane.id));
+      setActivePaneId((current) => {
+        if (current !== activePane.id) {
+          return current;
+        }
+        return panes.find((pane) => pane.id !== activePane.id)?.id ?? null;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function addClaudePane() {
@@ -221,6 +226,31 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || !(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key !== "t" && key !== "w") {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (key === "t") {
+        void addShellPane();
+      } else {
+        void closeActivePane();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [activePane, panes]);
 
   return (
     <main className="app-shell">
