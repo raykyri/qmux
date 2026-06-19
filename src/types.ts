@@ -57,8 +57,8 @@ export interface AgentInfo {
 
 export type TurnBlock =
   | { type: "text"; text: string }
-  | { type: "toolUse"; name: string; input: unknown }
-  | { type: "toolResult"; content: unknown; isError: boolean }
+  | { type: "toolUse"; id?: string | null; name: string; input: unknown }
+  | { type: "toolResult"; toolUseId?: string | null; content: unknown; isError: boolean }
   | { type: "raw"; value: unknown };
 
 export interface Turn {
