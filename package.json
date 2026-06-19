@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
-    "build": "tsc && vite build",
+    "build": "tauri build",
+    "build:web": "tsc && vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev"
   },
