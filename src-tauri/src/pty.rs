@@ -1,6 +1,6 @@
 use crate::events::QmuxEvent;
 use crate::state::{AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedChild};
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use std::env;
 use std::io::{Read, Write};
@@ -147,7 +147,7 @@ pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> R
     let master = state
         .pane_master(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
-    let mut master = master
+    let master = master
         .lock()
         .map_err(|_| format!("pane {pane_id} master lock poisoned"))?;
     master
