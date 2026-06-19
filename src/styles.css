@@ -430,6 +430,84 @@ button:disabled {
   height: 100%;
 }
 
+.terminal-search {
+  position: absolute;
+  top: 10px;
+  right: 22px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #3a3d3f;
+  border-radius: 8px;
+  background: #1b1f21;
+  padding: 6px 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.terminal-search-input {
+  width: 200px;
+  border: 1px solid #3a3d3f;
+  border-radius: 6px;
+  background: #111315;
+  color: #f1f0e8;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.terminal-search-input:focus {
+  outline: none;
+  border-color: #6cae9d;
+}
+
+.terminal-search-count {
+  min-width: 56px;
+  color: #9aa0a3;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.terminal-search-toggles,
+.terminal-search-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.terminal-search-toggle,
+.terminal-search-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #c4cbc6;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.terminal-search-toggle:hover,
+.terminal-search-button:hover:not(:disabled) {
+  background: #2a2f31;
+}
+
+.terminal-search-toggle.is-active {
+  border-color: #6cae9d;
+  background: #243430;
+  color: #e7e7e2;
+}
+
+.terminal-search-button:disabled {
+  color: #5a5f62;
+  cursor: default;
+}
+
 .turn-pane {
   position: relative;
   display: flex;
