@@ -11,6 +11,9 @@ pub enum SubmitAgentTurnMode {
     Auto,
     Send,
     Queue,
+    /// Force the turn through to the agent right now, even while it is busy, so
+    /// the user can steer a running agent instead of waiting for it to go idle.
+    Steer,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +95,17 @@ pub fn submit_agent_turn(
                 return Err("agent is ready for input; send the turn instead".to_string());
             }
             queue_agent_turn(state, &agent, data)
+        }
+        SubmitAgentTurnMode::Steer => {
+            // Deliberately skips the busy guard: steering injects the turn into a
+            // working agent now rather than queueing it until idle.
+            send_agent_turn(state, &agent, data)?;
+            let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+            Ok(SubmitAgentTurnResult {
+                queued: false,
+                pending_turns: queued_turns.len(),
+                queued_turns,
+            })
         }
     }
 }

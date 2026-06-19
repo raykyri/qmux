@@ -154,6 +154,28 @@ button:disabled {
   font-size: 11px;
 }
 
+.pane-tab-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pane-tab-recovered {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #16201e;
+  color: #6cae9d;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.pane-tab-row.is-selected .pane-tab-recovered {
+  background: #1b2a27;
+}
+
 .pane-tab-close {
   position: absolute;
   top: 50%;
@@ -566,4 +588,17 @@ button:disabled {
   justify-content: flex-end;
   gap: 6px;
   margin-left: auto;
+}
+
+/* Steer overrides the busy guard, so it reads as an interrupt rather than a
+   neutral submit. */
+.steer-button {
+  flex: 0 0 auto;
+  border-color: #5a4a1f;
+  background: #2a2410;
+  color: #f2d37b;
+}
+
+.steer-button:hover:not(:disabled) {
+  background: #3a3115;
 }

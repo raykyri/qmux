@@ -1,12 +1,13 @@
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
+use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
@@ -27,6 +28,10 @@ struct AppStateInner {
     transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
     app_handle: Mutex<Option<AppHandle>>,
+    // Persistence stays off until restore_session() runs so constructing a state
+    // (notably in tests) never touches disk. Once enabled, every model mutation
+    // snapshots to workspace_root/.qmux/state.json.
+    persist_enabled: AtomicBool,
 }
 
 #[derive(Default)]
@@ -56,6 +61,10 @@ pub struct PaneInfo {
     pub cols: u16,
     pub rows: u16,
     pub status: PaneStatus,
+    /// True for panes recreated from persisted state on restart. Set at respawn
+    /// time only; the persisted value is never consulted when reloading.
+    #[serde(default)]
+    pub recovered: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -85,12 +94,82 @@ impl AppState {
                 transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
+                persist_enabled: AtomicBool::new(false),
             }),
         }
     }
 
     pub fn config(&self) -> &QmuxConfig {
         &self.inner.config
+    }
+
+    /// Loads persisted metadata into the in-memory model and enables persistence.
+    ///
+    /// Groups, agents and queued turns are hydrated directly. Panes are *not*:
+    /// their persisted runtimes are stale (the old PTYs died with the previous
+    /// process), so the pane metadata is returned for the caller to respawn into
+    /// fresh PTYs. Returns the recoverable pane infos in a stable order.
+    pub fn restore_session(&self) -> Vec<PaneInfo> {
+        let persisted = persistence::load(&self.inner.config.workspace_root);
+
+        if let Ok(mut model) = self.inner.model.lock() {
+            for group in persisted.groups {
+                model.groups.insert(group.id.clone(), group);
+            }
+            for agent in persisted.agents {
+                model.agents.insert(agent.id.clone(), agent);
+            }
+            for (agent_id, turns) in persisted.queues {
+                if !turns.is_empty() {
+                    model
+                        .agent_turn_queues
+                        .insert(agent_id, turns.into_iter().collect());
+                }
+            }
+        }
+
+        // Keep id allocation monotonic across restarts so reused ids never alias.
+        if persisted.next_id > self.inner.next_id.load(Ordering::Relaxed) {
+            self.inner.next_id.store(persisted.next_id, Ordering::Relaxed);
+        }
+
+        // Enable persistence only after hydration so loading does not rewrite the
+        // file, but before respawn so respawned panes get persisted.
+        self.inner.persist_enabled.store(true, Ordering::Relaxed);
+
+        let mut panes = persisted.panes;
+        panes.sort_by(|a, b| a.id.cmp(&b.id));
+        panes
+    }
+
+    /// Snapshots the model to disk when persistence is enabled. Best-effort: a
+    /// failed write is logged but never propagated, so it cannot break a mutation.
+    fn persist(&self) {
+        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let snapshot = {
+            let Ok(model) = self.inner.model.lock() else {
+                return;
+            };
+            PersistedState {
+                version: STATE_VERSION,
+                next_id: self.inner.next_id.load(Ordering::Relaxed),
+                panes: model.panes.values().map(|pane| pane.info.clone()).collect(),
+                groups: model.groups.values().cloned().collect(),
+                agents: model.agents.values().cloned().collect(),
+                queues: model
+                    .agent_turn_queues
+                    .iter()
+                    .map(|(agent_id, queue)| (agent_id.clone(), queue.iter().cloned().collect()))
+                    .collect(),
+            }
+        };
+
+        if let Err(err) = persistence::save(&self.inner.config.workspace_root, &snapshot) {
+            eprintln!("qmux: failed to persist session state: {err}");
+        }
     }
 
     /// Returns the control-socket token scoped to a single pane, minting one on first
@@ -223,52 +302,67 @@ impl AppState {
     }
 
     pub fn insert_pane(&self, pane: PaneRuntime) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        model.panes.insert(pane.info.id.clone(), pane);
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.panes.insert(pane.info.id.clone(), pane);
+        }
+        self.persist();
         Ok(())
     }
 
     pub fn insert_group(&self, group: GroupInfo) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        model.groups.insert(group.id.clone(), group);
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.groups.insert(group.id.clone(), group);
+        }
+        self.persist();
         Ok(())
     }
 
     pub fn insert_agent(&self, agent: AgentInfo) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        model.agents.insert(agent.id.clone(), agent);
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.agents.insert(agent.id.clone(), agent);
+        }
+        self.persist();
         Ok(())
     }
 
     pub fn update_group(&self, group: GroupInfo) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        model.groups.insert(group.id.clone(), group);
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.groups.insert(group.id.clone(), group);
+        }
+        self.persist();
         Ok(())
     }
 
     pub fn update_agent(&self, agent: AgentInfo) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        model.agents.insert(agent.id.clone(), agent);
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.agents.insert(agent.id.clone(), agent);
+        }
+        self.persist();
         Ok(())
     }
 
@@ -297,17 +391,21 @@ impl AppState {
     }
 
     pub fn enqueue_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        let queue = model
-            .agent_turn_queues
-            .entry(agent_id.to_string())
-            .or_default();
-        queue.push_back(data);
-        Ok(queue.len())
+        let len = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let queue = model
+                .agent_turn_queues
+                .entry(agent_id.to_string())
+                .or_default();
+            queue.push_back(data);
+            queue.len()
+        };
+        self.persist();
+        Ok(len)
     }
 
     pub fn list_agent_turn_queue(&self, agent_id: &str) -> Result<Vec<String>, String> {
@@ -360,40 +458,50 @@ impl AppState {
             model.agent_turn_queues.remove(agent_id);
         }
 
+        drop(model);
+        self.persist();
         Ok((removed, queued_turns))
     }
 
     pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(String, usize)>, String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        let Some(queue) = model.agent_turn_queues.get_mut(agent_id) else {
-            return Ok(None);
+        let popped = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let Some(queue) = model.agent_turn_queues.get_mut(agent_id) else {
+                return Ok(None);
+            };
+            let Some(data) = queue.pop_front() else {
+                return Ok(None);
+            };
+            let pending_count = queue.len();
+            if queue.is_empty() {
+                model.agent_turn_queues.remove(agent_id);
+            }
+            (data, pending_count)
         };
-        let Some(data) = queue.pop_front() else {
-            return Ok(None);
-        };
-        let pending_count = queue.len();
-        if queue.is_empty() {
-            model.agent_turn_queues.remove(agent_id);
-        }
-        Ok(Some((data, pending_count)))
+        self.persist();
+        Ok(Some(popped))
     }
 
     pub fn prepend_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        let queue = model
-            .agent_turn_queues
-            .entry(agent_id.to_string())
-            .or_default();
-        queue.push_front(data);
-        Ok(queue.len())
+        let len = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let queue = model
+                .agent_turn_queues
+                .entry(agent_id.to_string())
+                .or_default();
+            queue.push_front(data);
+            queue.len()
+        };
+        self.persist();
+        Ok(len)
     }
 
     pub fn mark_transcript_tail(&self, agent_id: &str, path: &str) -> Result<bool, String> {
@@ -434,29 +542,59 @@ impl AppState {
     }
 
     pub fn update_pane_size(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        let pane = model
-            .panes
-            .get_mut(pane_id)
-            .ok_or_else(|| format!("pane {pane_id} was not found"))?;
-        pane.info.cols = cols;
-        pane.info.rows = rows;
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let pane = model
+                .panes
+                .get_mut(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            pane.info.cols = cols;
+            pane.info.rows = rows;
+        }
+        self.persist();
+        Ok(())
+    }
+
+    /// Updates a pane's last-known working directory, reported by shell
+    /// integration on directory changes so a restarted shell reopens where it
+    /// left off rather than at its spawn-time cwd. No-op for unknown panes.
+    pub fn update_pane_cwd(&self, pane_id: &str, cwd: String) -> Result<(), String> {
+        let changed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            match model.panes.get_mut(pane_id) {
+                Some(pane) if pane.info.cwd != cwd => {
+                    pane.info.cwd = cwd;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.persist();
+        }
         Ok(())
     }
 
     pub fn mark_pane_status(&self, pane_id: &str, status: PaneStatus) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        if let Some(pane) = model.panes.get_mut(pane_id) {
-            pane.info.status = status;
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if let Some(pane) = model.panes.get_mut(pane_id) {
+                pane.info.status = status;
+            }
         }
+        self.persist();
         Ok(())
     }
 }
@@ -480,4 +618,180 @@ fn random_token() -> String {
         bytes[16..].copy_from_slice(&nanos.to_le_bytes());
     }
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::PersistedState;
+    use crate::workspace::AgentStatus;
+    use std::path::PathBuf;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_workspace() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("qmux-state-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_config(workspace_root: PathBuf) -> QmuxConfig {
+        QmuxConfig {
+            workspace_root,
+            socket_path: PathBuf::from("/tmp/qmux-test.sock"),
+            claude_binary: "claude".to_string(),
+        }
+    }
+
+    fn sample_agent(id: &str) -> AgentInfo {
+        AgentInfo {
+            id: id.to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/work/agent-1".to_string(),
+            branch: Some("qmux/group-1/agent-1".to_string()),
+            pane_id: Some("pane-7".to_string()),
+            session_id: Some("session-abc".to_string()),
+            transcript_path: Some("/tmp/transcript.jsonl".to_string()),
+            status: AgentStatus::Running,
+            model: Some("opus".to_string()),
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            created_at: 1,
+        }
+    }
+
+    fn sample_group() -> GroupInfo {
+        GroupInfo {
+            id: "group-1".to_string(),
+            name: "group-1".to_string(),
+            dir: "/tmp/work".to_string(),
+            base_repo: Some("/tmp/repo".to_string()),
+            base_ref: Some("HEAD".to_string()),
+            parent_id: None,
+            created_at: 1,
+            agents: vec!["agent-1".to_string()],
+        }
+    }
+
+    fn sample_pane(id: &str, agent_id: Option<&str>) -> PaneInfo {
+        PaneInfo {
+            id: id.to_string(),
+            title: "Shell".to_string(),
+            kind: PaneKind::Shell,
+            agent_id: agent_id.map(ToString::to_string),
+            cwd: "/tmp/work/agent-1".to_string(),
+            cols: 132,
+            rows: 43,
+            status: PaneStatus::Running,
+            recovered: false,
+        }
+    }
+
+    #[test]
+    fn queue_mutations_round_trip_through_persistence() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        // First process: build up a queue through enqueue/remove with persistence on.
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state.enqueue_agent_turn("agent-1", "first".to_string()).unwrap();
+            state.enqueue_agent_turn("agent-1", "second".to_string()).unwrap();
+            state.enqueue_agent_turn("agent-1", "third".to_string()).unwrap();
+            // Drop "second" from the middle.
+            state
+                .remove_agent_turn_queue_item("agent-1", 1, Some("second"))
+                .unwrap();
+        }
+
+        // Second process: the surviving queue order must reload intact.
+        let popped = {
+            let state = AppState::new(config.clone());
+            state.restore_session();
+            assert_eq!(
+                state.list_agent_turn_queue("agent-1").unwrap(),
+                vec!["first".to_string(), "third".to_string()]
+            );
+            let (data, pending) = state.pop_agent_turn("agent-1").unwrap().unwrap();
+            assert_eq!(data, "first");
+            assert_eq!(pending, 1);
+            data
+        };
+        assert_eq!(popped, "first");
+
+        // Third process: the pop must also have been persisted.
+        let state = AppState::new(config);
+        state.restore_session();
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["third".to_string()]
+        );
+    }
+
+    #[test]
+    fn restore_rehydrates_metadata_but_not_pane_runtimes() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        // Stand in for a previous process having persisted a full session.
+        let persisted = PersistedState {
+            next_id: 99,
+            groups: vec![sample_group()],
+            agents: vec![sample_agent("agent-1")],
+            panes: vec![sample_pane("pane-7", Some("agent-1"))],
+            queues: HashMap::from([("agent-1".to_string(), vec!["queued turn".to_string()])]),
+            ..PersistedState::default()
+        };
+        crate::persistence::save(&workspace, &persisted).unwrap();
+
+        let state = AppState::new(config);
+        let recovered = state.restore_session();
+
+        // Pane metadata is returned for respawning, with fields intact...
+        assert_eq!(recovered.len(), 1);
+        let pane = &recovered[0];
+        assert_eq!(pane.id, "pane-7");
+        assert_eq!(pane.cwd, "/tmp/work/agent-1");
+        assert_eq!(pane.cols, 132);
+        assert_eq!(pane.rows, 43);
+
+        // ...but the stale runtime is NOT trusted: no live pane exists until respawn.
+        assert!(state.list_panes().unwrap().is_empty());
+        assert!(state.pane_writer("pane-7").unwrap().is_none());
+
+        // Groups, agents and queues are hydrated directly into the live model.
+        assert_eq!(state.list_groups().unwrap().len(), 1);
+        let agent = state.agent("agent-1").unwrap().expect("agent restored");
+        assert_eq!(agent.session_id.as_deref(), Some("session-abc"));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued turn".to_string()]
+        );
+
+        // next_id is advanced past the persisted high-water mark so ids never alias.
+        assert!(state.next_id("pane").starts_with("pane-"));
+        let raw = state.next_id("pane");
+        let seq: u64 = raw.rsplit('-').next().unwrap().parse().unwrap();
+        assert!(seq >= 99, "expected next_id >= persisted high-water mark");
+    }
+
+    #[test]
+    fn persistence_stays_off_until_restore() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        // Without restore_session(), mutations must not touch disk (keeps tests and
+        // ad-hoc AppState construction hermetic).
+        let state = AppState::new(config);
+        state.enqueue_agent_turn("agent-1", "ghost".to_string()).unwrap();
+        assert!(!crate::persistence::state_path(&workspace).exists());
+    }
 }

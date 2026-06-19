@@ -15,6 +15,8 @@ export interface PaneInfo {
   cols: number;
   rows: number;
   status: "starting" | "running" | "exited" | "killed" | "failed";
+  // True for panes recreated from persisted state after a qmux restart.
+  recovered?: boolean;
 }
 
 export interface InitialPaneSize {
@@ -79,7 +81,7 @@ export interface SpawnClaudeRequest {
   initialSize?: InitialPaneSize | null;
 }
 
-export type SubmitAgentTurnMode = "auto" | "send" | "queue";
+export type SubmitAgentTurnMode = "auto" | "send" | "queue" | "steer";
 
 export interface SubmitAgentTurnResult {
   queued: boolean;

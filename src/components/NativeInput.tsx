@@ -29,6 +29,9 @@ export default function NativeInput({
     agent.status === "starting" ||
     agent.status === "running" ||
     agent.status === "awaitingPermission";
+  // Send is disabled while the agent is actively working; offer Steer to inject
+  // the message into the running turn anyway instead of only being able to queue.
+  const isWorking = agent.status === "starting" || agent.status === "running";
   const hasTranscript = transcriptText.trim().length > 0;
 
   useEffect(() => {
@@ -39,7 +42,7 @@ export default function NativeInput({
     };
   }, []);
 
-  async function submitTurn(text: string, mode: "send" | "queue") {
+  async function submitTurn(text: string, mode: "send" | "queue" | "steer") {
     if (submitting) {
       return;
     }
@@ -230,6 +233,17 @@ export default function NativeInput({
               </span>
             ) : null}
           </button>
+          {isWorking ? (
+            <button
+              type="button"
+              className="steer-button"
+              disabled={submitting || value.trim().length === 0}
+              onClick={() => void submitTurn(value, "steer")}
+              title="Send now, interrupting the agent's current work"
+            >
+              <span>Steer</span>
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={submitting || !canQueue || value.trim().length === 0}

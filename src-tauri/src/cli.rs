@@ -57,6 +57,21 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             )?;
             Ok(true)
         }
+        "cwd" => {
+            // Reports the shell pane's current directory so a restart can reopen it
+            // where the user left off. The server binds the update to the pane that
+            // owns the presented token, so the claimed paneId is advisory only.
+            let cwd = env::current_dir()
+                .map_err(|err| format!("failed to read current directory: {err}"))?;
+            request_silent(
+                "pane.set_cwd",
+                json!({
+                    "paneId": env::var("QMUX_PANE_ID").ok(),
+                    "cwd": cwd.display().to_string(),
+                }),
+            )?;
+            Ok(true)
+        }
         "pane-write" => {
             let pane_id = args
                 .next()
@@ -82,7 +97,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write|claude]");
+            println!("usage: qmux [ping|notify|pane-write|cwd|claude]");
             Ok(true)
         }
         _ => Ok(false),
