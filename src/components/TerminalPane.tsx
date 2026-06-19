@@ -166,6 +166,37 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     serializeRef.current = serialize;
     stabilizeTerminalRef.current = scheduleSettledFits;
 
+    // xterm paints inside requestAnimationFrame, which the OS/webview throttles or
+    // pauses while the qmux window is unfocused or hidden. PTY data (e.g. Claude's
+    // elapsed-time spinner) keeps arriving, but the canvas stops repainting, so the
+    // on-screen timer looks frozen. While the window is not focused, nudge the
+    // renderer on an interval so timers keep updating, and force a catch-up repaint
+    // the moment focus/visibility returns.
+    let keepAliveTimer: number | null = null;
+    const forceRefresh = () => {
+      if (!disposed && terminal.rows > 0) {
+        terminal.refresh(0, terminal.rows - 1);
+      }
+    };
+    const stopRenderKeepAlive = () => {
+      if (keepAliveTimer !== null) {
+        window.clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+      }
+    };
+    const syncRenderKeepAlive = () => {
+      if (document.hasFocus() && !document.hidden) {
+        stopRenderKeepAlive();
+        forceRefresh();
+      } else if (keepAliveTimer === null) {
+        keepAliveTimer = window.setInterval(forceRefresh, 250);
+      }
+    };
+    window.addEventListener("focus", syncRenderKeepAlive);
+    window.addEventListener("blur", syncRenderKeepAlive);
+    document.addEventListener("visibilitychange", syncRenderKeepAlive);
+    syncRenderKeepAlive();
+
     return () => {
       disposed = true;
       inputDisposable.dispose();
@@ -179,6 +210,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       for (const timer of settleTimers) {
         window.clearTimeout(timer);
       }
+      window.removeEventListener("focus", syncRenderKeepAlive);
+      window.removeEventListener("blur", syncRenderKeepAlive);
+      document.removeEventListener("visibilitychange", syncRenderKeepAlive);
+      stopRenderKeepAlive();
       terminal.dispose();
       terminalRef.current = null;
       serializeRef.current = null;
