@@ -1,6 +1,6 @@
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
-use crate::state::AppState;
+use crate::state::{AppState, PaneKind};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,7 +36,13 @@ pub fn submit_agent_turn(
         return Err(format!("agent {} has failed", agent.id));
     }
 
-    if should_queue(agent.status) {
+    let pane_kind = agent
+        .pane_id
+        .as_deref()
+        .and_then(|pane_id| state.pane(pane_id).ok().flatten())
+        .map(|pane| pane.kind);
+
+    if should_queue(agent.status, pane_kind) {
         let pending_turns = state.enqueue_agent_turn(&agent.id, data)?;
         return Ok(SubmitAgentTurnResult {
             queued: true,
@@ -75,13 +81,21 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     Ok(true)
 }
 
-fn should_queue(status: AgentStatus) -> bool {
+fn should_queue(status: AgentStatus, pane_kind: Option<PaneKind>) -> bool {
+    if matches!(status, AgentStatus::AwaitingInput | AgentStatus::Stopped) {
+        return false;
+    }
+
+    if matches!(pane_kind, Some(PaneKind::Shell)) {
+        return matches!(
+            status,
+            AgentStatus::Starting | AgentStatus::AwaitingPermission
+        );
+    }
+
     matches!(
         status,
-        AgentStatus::Starting
-            | AgentStatus::Running
-            | AgentStatus::AwaitingInput
-            | AgentStatus::AwaitingPermission
+        AgentStatus::Starting | AgentStatus::Running | AgentStatus::AwaitingPermission
     )
 }
 
@@ -102,4 +116,30 @@ fn send_agent_turn(state: &AppState, agent: &AgentInfo, data: String) -> Result<
             submit: true,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_agent_statuses_send_immediately() {
+        assert!(!should_queue(AgentStatus::AwaitingInput, None));
+        assert!(!should_queue(AgentStatus::Stopped, None));
+    }
+
+    #[test]
+    fn app_spawned_running_agents_queue_turns() {
+        assert!(should_queue(AgentStatus::Running, Some(PaneKind::Agent)));
+        assert!(should_queue(AgentStatus::Running, None));
+    }
+
+    #[test]
+    fn shell_hosted_running_agents_send_immediately() {
+        assert!(!should_queue(AgentStatus::Running, Some(PaneKind::Shell)));
+        assert!(should_queue(
+            AgentStatus::AwaitingPermission,
+            Some(PaneKind::Shell)
+        ));
+    }
 }
