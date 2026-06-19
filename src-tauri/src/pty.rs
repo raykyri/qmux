@@ -8,6 +8,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
+
+const SUBMIT_KEY: &[u8] = b"\r";
+const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
 
 pub struct PtySpawnSpec {
     pub pane_id: Option<String>,
@@ -117,6 +121,14 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
         .lock()
         .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
 
+    write_pane_input(&mut *writer, &options, SUBMIT_KEY_DELAY)
+}
+
+fn write_pane_input<W: Write + ?Sized>(
+    writer: &mut W,
+    options: &PaneWriteOptions,
+    submit_key_delay: Duration,
+) -> Result<(), String> {
     if options.paste {
         writer
             .write_all(b"\x1b[200~")
@@ -127,11 +139,6 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
         writer
             .write_all(b"\x1b[201~")
             .map_err(|err| format!("failed to write paste end: {err}"))?;
-        if options.submit {
-            writer
-                .write_all(b"\r")
-                .map_err(|err| format!("failed to submit paste: {err}"))?;
-        }
     } else {
         writer
             .write_all(options.data.as_bytes())
@@ -140,7 +147,21 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
 
     writer
         .flush()
-        .map_err(|err| format!("failed to flush pane input: {err}"))
+        .map_err(|err| format!("failed to flush pane input: {err}"))?;
+
+    if options.submit {
+        if !submit_key_delay.is_zero() {
+            thread::sleep(submit_key_delay);
+        }
+        writer
+            .write_all(SUBMIT_KEY)
+            .map_err(|err| format!("failed to submit pane input: {err}"))?;
+        writer
+            .flush()
+            .map_err(|err| format!("failed to flush pane submit key: {err}"))?;
+    }
+
+    Ok(())
 }
 
 pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
@@ -233,5 +254,61 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
             .filter_map(|line| line.trim().parse::<u32>().ok())
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        bytes: Vec<u8>,
+        flush_offsets: Vec<usize>,
+    }
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flush_offsets.push(self.bytes.len());
+            Ok(())
+        }
+    }
+
+    fn write_options(data: &str, paste: bool, submit: bool) -> PaneWriteOptions {
+        PaneWriteOptions {
+            pane_id: "pane-1".to_string(),
+            data: data.to_string(),
+            paste,
+            submit,
+        }
+    }
+
+    #[test]
+    fn submit_after_bracketed_paste_flushes_before_return() {
+        let mut writer = RecordingWriter::default();
+        let options = write_options("turn text", true, true);
+
+        write_pane_input(&mut writer, &options, Duration::ZERO).unwrap();
+
+        let pasted = b"\x1b[200~turn text\x1b[201~";
+        assert_eq!(writer.bytes, b"\x1b[200~turn text\x1b[201~\r");
+        assert_eq!(writer.flush_offsets, vec![pasted.len(), pasted.len() + 1]);
+    }
+
+    #[test]
+    fn submit_after_plain_write_sends_return_after_text() {
+        let mut writer = RecordingWriter::default();
+        let options = write_options("y", false, true);
+
+        write_pane_input(&mut writer, &options, Duration::ZERO).unwrap();
+
+        assert_eq!(writer.bytes, b"y\r");
+        assert_eq!(writer.flush_offsets, vec![1, 2]);
     }
 }
