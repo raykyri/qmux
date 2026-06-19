@@ -68,7 +68,9 @@ button:disabled {
 }
 
 .app-shell.has-turn-sidebar {
-  grid-template-columns: 268px minmax(0, 1fr) minmax(340px, 420px);
+  grid-template-columns:
+    268px minmax(380px, 1fr)
+    minmax(300px, var(--turn-pane-width, 420px));
 }
 
 .sidebar {
@@ -236,12 +238,38 @@ button:disabled {
 }
 
 .turn-pane {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
   border-left: 1px solid #2a2d2f;
   background: #171b1d;
   padding: 10px;
+}
+
+.turn-pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  z-index: 2;
+  width: 10px;
+  cursor: col-resize;
+}
+
+.turn-pane-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: #2a2d2f;
+  content: "";
+}
+
+.turn-pane-resizer:hover::before,
+.turn-pane-resizer:focus-visible::before {
+  background: #6cae9d;
 }
 
 .turn-sidebar {

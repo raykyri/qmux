@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import TurnOverlay from "./components/TurnOverlay";
@@ -13,6 +18,16 @@ import {
   spawnShell,
 } from "./lib/api";
 import type { AgentInfo, PaneInfo, RuntimeConfig, Turn } from "./types";
+
+const LEFT_SIDEBAR_WIDTH = 268;
+const TERMINAL_MIN_WIDTH = 380;
+const TURN_PANE_MIN_WIDTH = 300;
+const TURN_PANE_DEFAULT_WIDTH = 420;
+const TURN_PANE_MAX_WIDTH = 720;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
 
 function statusLabel(status: PaneInfo["status"]) {
   switch (status) {
@@ -47,11 +62,13 @@ function agentStatusLabel(status: AgentInfo["status"]) {
 }
 
 export default function App() {
+  const appRef = useRef<HTMLElement | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
   const [baseRepo, setBaseRepo] = useState("");
   const [baseRef, setBaseRef] = useState("HEAD");
@@ -68,6 +85,22 @@ export default function App() {
     () => turns.filter((turn) => turn.agentId === activeAgent?.id),
     [activeAgent?.id, turns],
   );
+
+  function maxTurnPaneWidth() {
+    const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+    const available = Math.floor(appWidth - LEFT_SIDEBAR_WIDTH - TERMINAL_MIN_WIDTH);
+    return Math.max(TURN_PANE_MIN_WIDTH, Math.min(TURN_PANE_MAX_WIDTH, available));
+  }
+
+  function clampTurnPaneWidth(width: number) {
+    return clamp(width, TURN_PANE_MIN_WIDTH, maxTurnPaneWidth());
+  }
+
+  const appStyle = activeAgent
+    ? ({
+        "--turn-pane-width": `${turnPaneWidth}px`,
+      } as CSSProperties)
+    : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -242,8 +275,65 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [activePane, panes]);
 
+  useEffect(() => {
+    if (!activeAgent) {
+      return;
+    }
+
+    const handleResize = () => {
+      setTurnPaneWidth((current) => clampTurnPaneWidth(current));
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [activeAgent]);
+
+  function startTurnPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = turnPaneWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = startWidth + startX - moveEvent.clientX;
+      setTurnPaneWidth(clampTurnPaneWidth(nextWidth));
+    };
+    const stopResize = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
+  function resizeTurnPaneWithKeyboard(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+
+    event.preventDefault();
+    const step = event.shiftKey ? 40 : 16;
+    setTurnPaneWidth((current) =>
+      clampTurnPaneWidth(current + (event.key === "ArrowLeft" ? step : -step)),
+    );
+  }
+
   return (
-    <main className={`app-shell ${activeAgent ? "has-turn-sidebar" : ""}`}>
+    <main
+      ref={appRef}
+      className={`app-shell ${activeAgent ? "has-turn-sidebar" : ""}`}
+      style={appStyle}
+    >
       <aside className="sidebar">
         <nav className="pane-list" aria-label="Panes">
           {panes.map((pane) => {
@@ -346,6 +436,18 @@ export default function App() {
 
       {activeAgent ? (
         <aside className="turn-pane">
+          <div
+            className="turn-pane-resizer"
+            role="separator"
+            aria-label="Resize command queue"
+            aria-orientation="vertical"
+            aria-valuemin={TURN_PANE_MIN_WIDTH}
+            aria-valuemax={maxTurnPaneWidth()}
+            aria-valuenow={turnPaneWidth}
+            tabIndex={0}
+            onPointerDown={startTurnPaneResize}
+            onKeyDown={resizeTurnPaneWithKeyboard}
+          />
           <TurnOverlay
             turns={activeTurns}
             input={
