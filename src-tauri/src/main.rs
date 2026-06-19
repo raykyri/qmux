@@ -13,7 +13,9 @@ mod workspace;
 use claude::{SpawnClaudeRequest, spawn_claude_pane};
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
-use pty::{PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane};
+use pty::{
+    InitialPaneSize, PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane,
+};
 use state::{AppState, PaneInfo};
 use tauri::Manager;
 use transcript::Turn;
@@ -57,8 +59,11 @@ fn group_create(
 }
 
 #[tauri::command]
-fn spawn_shell(state: tauri::State<'_, AppState>) -> Result<PaneInfo, String> {
-    spawn_shell_pane(&state)
+fn spawn_shell(
+    state: tauri::State<'_, AppState>,
+    initial_size: Option<InitialPaneSize>,
+) -> Result<PaneInfo, String> {
+    spawn_shell_pane(&state, initial_size)
 }
 
 #[tauri::command]

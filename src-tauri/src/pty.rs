@@ -13,6 +13,19 @@ use std::time::Duration;
 
 const SUBMIT_KEY: &[u8] = b"\r";
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
+const DEFAULT_PTY_COLS: u16 = 100;
+const DEFAULT_PTY_ROWS: u16 = 24;
+const MIN_INITIAL_COLS: u16 = 20;
+const MIN_INITIAL_ROWS: u16 = 5;
+const MAX_INITIAL_COLS: u16 = 500;
+const MAX_INITIAL_ROWS: u16 = 200;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialPaneSize {
+    pub cols: u16,
+    pub rows: u16,
+}
 
 pub struct PtySpawnSpec {
     pub pane_id: Option<String>,
@@ -23,6 +36,7 @@ pub struct PtySpawnSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub envs: Vec<(String, String)>,
+    pub initial_size: Option<InitialPaneSize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +48,10 @@ pub struct PaneWriteOptions {
     pub submit: bool,
 }
 
-pub fn spawn_shell_pane(state: &AppState) -> Result<PaneInfo, String> {
+pub fn spawn_shell_pane(
+    state: &AppState,
+    initial_size: Option<InitialPaneSize>,
+) -> Result<PaneInfo, String> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let cwd = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
     let pane_id = state.next_id("pane");
@@ -70,6 +87,7 @@ pub fn spawn_shell_pane(state: &AppState) -> Result<PaneInfo, String> {
             args,
             cwd,
             envs,
+            initial_size,
         },
     )
 }
@@ -236,13 +254,26 @@ fn shell_quote(path: &Path) -> String {
     format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
+fn resolved_initial_size(initial_size: Option<InitialPaneSize>) -> InitialPaneSize {
+    let size = initial_size.unwrap_or(InitialPaneSize {
+        cols: DEFAULT_PTY_COLS,
+        rows: DEFAULT_PTY_ROWS,
+    });
+
+    InitialPaneSize {
+        cols: size.cols.clamp(MIN_INITIAL_COLS, MAX_INITIAL_COLS),
+        rows: size.rows.clamp(MIN_INITIAL_ROWS, MAX_INITIAL_ROWS),
+    }
+}
+
 pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
     let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
+    let initial_size = resolved_initial_size(spec.initial_size);
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
-            rows: 24,
-            cols: 100,
+            rows: initial_size.rows,
+            cols: initial_size.cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -280,8 +311,8 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
         kind: spec.kind,
         agent_id: spec.agent_id,
         cwd: spec.cwd.display().to_string(),
-        cols: 100,
-        rows: 24,
+        cols: initial_size.cols,
+        rows: initial_size.rows,
         status: PaneStatus::Running,
     };
 
@@ -542,6 +573,38 @@ mod tests {
             Some("1".to_string())
         );
         assert!(env_value(&envs, "QMUX_AGENT_ID").is_none());
+    }
+
+    #[test]
+    fn initial_pty_size_defaults_to_legacy_geometry() {
+        assert_eq!(
+            resolved_initial_size(None),
+            InitialPaneSize {
+                cols: DEFAULT_PTY_COLS,
+                rows: DEFAULT_PTY_ROWS
+            }
+        );
+    }
+
+    #[test]
+    fn initial_pty_size_is_clamped_to_safe_bounds() {
+        assert_eq!(
+            resolved_initial_size(Some(InitialPaneSize { cols: 1, rows: 1 })),
+            InitialPaneSize {
+                cols: MIN_INITIAL_COLS,
+                rows: MIN_INITIAL_ROWS
+            }
+        );
+        assert_eq!(
+            resolved_initial_size(Some(InitialPaneSize {
+                cols: u16::MAX,
+                rows: u16::MAX
+            })),
+            InitialPaneSize {
+                cols: MAX_INITIAL_COLS,
+                rows: MAX_INITIAL_ROWS
+            }
+        );
     }
 
     #[test]

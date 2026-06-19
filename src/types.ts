@@ -17,6 +17,11 @@ export interface PaneInfo {
   status: "starting" | "running" | "exited" | "killed" | "failed";
 }
 
+export interface InitialPaneSize {
+  cols: number;
+  rows: number;
+}
+
 export interface GroupInfo {
   id: string;
   name: string;
@@ -71,6 +76,7 @@ export interface SpawnClaudeRequest {
   cwd?: string | null;
   model?: string | null;
   permissionMode?: string | null;
+  initialSize?: InitialPaneSize | null;
 }
 
 export interface SubmitAgentTurnResult {

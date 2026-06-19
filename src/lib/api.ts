@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentInfo,
   GroupInfo,
+  InitialPaneSize,
   PaneInfo,
   QmuxEvent,
   RuntimeConfig,
@@ -31,8 +32,8 @@ export function listTurns(agentId?: string | null) {
   return invoke<Turn[]>("list_turns", { agentId: agentId ?? null });
 }
 
-export function spawnShell() {
-  return invoke<PaneInfo>("spawn_shell");
+export function spawnShell(initialSize?: InitialPaneSize | null) {
+  return invoke<PaneInfo>("spawn_shell", { initialSize: initialSize ?? null });
 }
 
 export function spawnClaude(request: SpawnClaudeRequest) {
