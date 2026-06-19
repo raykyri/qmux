@@ -105,6 +105,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       }
     };
     const fitAndSyncSize = () => {
+      const host = hostRef.current;
+      if (!host || host.offsetParent === null || host.clientWidth === 0 || host.clientHeight === 0) {
+        // The pane is hidden (display: none). FitAddon measures the host via
+        // getComputedStyle, which returns the computed "100%" width for an
+        // unrendered element; parseInt("100%") = 100, so it proposes ~10 cols
+        // and reflows the scrollback (and the PTY) down to that bogus width.
+        return;
+      }
       fit.fit();
       if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
         syncedCols = terminal.cols;
