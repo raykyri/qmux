@@ -33,8 +33,8 @@ input:focus,
 select:focus {
   border-width: 1px;
   border-color: #6cae9d;
-  outline: 1px solid #6cae9d;
-  outline-offset: 1px;
+  outline: none;
+  box-shadow: inset 0 0 0 1px #6cae9d;
 }
 
 button {
