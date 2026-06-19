@@ -81,6 +81,11 @@ export interface SpawnClaudeRequest {
   initialSize?: InitialPaneSize | null;
 }
 
+export interface WorktreeStatus {
+  hasChanges: boolean;
+  changedFiles: number;
+}
+
 export type SubmitAgentTurnMode = "auto" | "send" | "queue" | "steer";
 
 export interface SubmitAgentTurnResult {

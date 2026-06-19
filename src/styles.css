@@ -256,6 +256,71 @@ button:disabled {
   padding: 12px;
 }
 
+.confirm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(8, 10, 12, 0.58);
+}
+
+.confirm-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100%);
+  gap: 10px;
+  border: 1px solid #3b4447;
+  border-radius: 10px;
+  background: #1b2022;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  padding: 16px;
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  font-size: 15px;
+  color: #f4f3ec;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #c4cbc6;
+}
+
+.confirm-dialog-changes {
+  /* Amber to flag uncommitted work that deletion would discard. */
+  color: #e6b673;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.confirm-dialog-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.confirm-dialog-actions .danger {
+  border-color: #7a3b34;
+  background: #2c1a17;
+  color: #ffb4a3;
+}
+
+.confirm-dialog-actions .danger:hover {
+  background: #3a221d;
+}
+
 .command-launcher-header {
   display: flex;
   align-items: center;

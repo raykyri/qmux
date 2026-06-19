@@ -187,6 +187,85 @@ pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, 
     Ok(agent)
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeStatus {
+    pub has_changes: bool,
+    pub changed_files: usize,
+}
+
+/// Reports whether an agent's git worktree has uncommitted changes — staged,
+/// unstaged, or untracked — so closing a tab can warn before that work is gone.
+pub fn agent_worktree_status(state: &AppState, agent_id: &str) -> Result<WorktreeStatus, String> {
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    let dir = agent.worktree_dir;
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+        .map_err(|err| format!("failed to run git status in {dir}: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git status failed in {dir}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let changed_files = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    Ok(WorktreeStatus {
+        has_changes: changed_files > 0,
+        changed_files,
+    })
+}
+
+/// Removes an agent's git worktree with `--force`, discarding any uncommitted
+/// changes. The branch is left intact so committed work is preserved. Runs from
+/// the group's base repository so git is never asked to remove the worktree it is
+/// standing in.
+pub fn remove_agent_worktree(state: &AppState, agent_id: &str) -> Result<(), String> {
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    if agent.branch.is_none() {
+        return Err(format!("agent {agent_id} is not in a git worktree"));
+    }
+    let worktree_dir = agent.worktree_dir;
+
+    let run_dir = state
+        .group(&agent.group_id)?
+        .and_then(|group| group.base_repo)
+        .filter(|repo| is_git_repo(repo))
+        .unwrap_or_else(|| worktree_dir.clone());
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&run_dir)
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(&worktree_dir)
+        .output()
+        .map_err(|err| format!("failed to run git worktree remove: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "git worktree remove failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
 fn default_base_repo() -> Option<String> {
     env::current_dir()
         .ok()

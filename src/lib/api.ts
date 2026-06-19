@@ -12,6 +12,7 @@ import type {
   SubmitAgentTurnMode,
   SubmitAgentTurnResult,
   Turn,
+  WorktreeStatus,
 } from "../types";
 
 export function getRuntimeConfig() {
@@ -72,6 +73,14 @@ export function resizePane(paneId: string, cols: number, rows: number) {
 
 export function killPane(paneId: string) {
   return invoke<void>("pane_kill", { paneId });
+}
+
+export function worktreeStatus(agentId: string) {
+  return invoke<WorktreeStatus>("worktree_status", { agentId });
+}
+
+export function removeWorktree(agentId: string) {
+  return invoke<void>("worktree_remove", { agentId });
 }
 
 export function listenToEvents(onEvent: (event: QmuxEvent) => void): Promise<UnlistenFn> {
