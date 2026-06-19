@@ -73,10 +73,16 @@ Run the app:
 npm run tauri:dev
 ```
 
-Build the frontend:
+Build the app:
 
 ```sh
 npm run build
+```
+
+Build the frontend only:
+
+```sh
+npm run build:web
 ```
 
 Check Rust formatting:
@@ -111,6 +117,6 @@ The code has been reviewed and Rust formatting passes. Full build verification r
 resolution:
 
 - `cargo check --offline` fails if `portable-pty` is not already cached locally.
-- `npm run build` requires `npm install` first so `tsc` and Vite are available.
+- `npm run build` requires `npm install` first so Tauri, `tsc`, and Vite are available.
 
 Those commands should be run normally once networked dependency installation is allowed.
