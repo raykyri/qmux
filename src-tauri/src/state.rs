@@ -20,6 +20,7 @@ pub struct AppState {
 
 struct AppStateInner {
     config: QmuxConfig,
+    token: String,
     model: Mutex<Model>,
     next_id: AtomicU64,
     app_handle: Mutex<Option<AppHandle>>,
@@ -72,6 +73,7 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 config,
+                token: mint_token(),
                 model: Mutex::new(Model::default()),
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
@@ -81,6 +83,10 @@ impl AppState {
 
     pub fn config(&self) -> &QmuxConfig {
         &self.inner.config
+    }
+
+    pub fn token(&self) -> &str {
+        &self.inner.token
     }
 
     pub fn attach_app(&self, app_handle: AppHandle) -> Result<(), String> {
@@ -182,4 +188,12 @@ impl AppState {
         }
         Ok(())
     }
+}
+
+fn mint_token() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("qmux-{}-{millis}", std::process::id())
 }

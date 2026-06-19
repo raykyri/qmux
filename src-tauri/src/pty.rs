@@ -8,6 +8,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+pub struct PtySpawnSpec {
+    pub pane_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub kind: PaneKind,
+    pub title: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub envs: Vec<(String, String)>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaneWriteOptions {
@@ -22,25 +33,21 @@ pub fn spawn_shell_pane(state: &AppState) -> Result<PaneInfo, String> {
     let cwd = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
     spawn_pty(
         state,
-        PaneKind::Shell,
-        "Shell".to_string(),
-        shell,
-        Vec::new(),
-        cwd,
-        Vec::new(),
+        PtySpawnSpec {
+            pane_id: None,
+            agent_id: None,
+            kind: PaneKind::Shell,
+            title: "Shell".to_string(),
+            program: shell,
+            args: Vec::new(),
+            cwd,
+            envs: Vec::new(),
+        },
     )
 }
 
-pub fn spawn_pty(
-    state: &AppState,
-    kind: PaneKind,
-    title: String,
-    program: String,
-    args: Vec<String>,
-    cwd: PathBuf,
-    envs: Vec<(String, String)>,
-) -> Result<PaneInfo, String> {
-    let pane_id = state.next_id("pane");
+pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
+    let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -51,10 +58,10 @@ pub fn spawn_pty(
         })
         .map_err(|err| format!("failed to open PTY: {err}"))?;
 
-    let mut command = CommandBuilder::new(program);
-    command.args(args);
-    command.cwd(cwd.clone());
-    for (key, value) in envs {
+    let mut command = CommandBuilder::new(spec.program);
+    command.args(spec.args);
+    command.cwd(spec.cwd.clone());
+    for (key, value) in spec.envs {
         command.env(key, value);
     }
 
@@ -79,10 +86,10 @@ pub fn spawn_pty(
 
     let pane = PaneInfo {
         id: pane_id.clone(),
-        title,
-        kind,
-        agent_id: None,
-        cwd: cwd.display().to_string(),
+        title: spec.title,
+        kind: spec.kind,
+        agent_id: spec.agent_id,
+        cwd: spec.cwd.display().to_string(),
         cols: 100,
         rows: 24,
         status: PaneStatus::Running,

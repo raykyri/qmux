@@ -1,9 +1,14 @@
+mod claude;
+mod cli;
 mod config;
+mod control_socket;
 mod events;
 mod pty;
 mod state;
 
+use claude::{SpawnClaudeRequest, spawn_claude_pane};
 use config::{QmuxConfig, RuntimeConfig};
+use control_socket::start_control_socket;
 use pty::{PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane};
 use state::{AppState, PaneInfo};
 use tauri::Manager;
@@ -21,6 +26,14 @@ fn list_panes(state: tauri::State<'_, AppState>) -> Result<Vec<PaneInfo>, String
 #[tauri::command]
 fn spawn_shell(state: tauri::State<'_, AppState>) -> Result<PaneInfo, String> {
     spawn_shell_pane(&state)
+}
+
+#[tauri::command]
+fn spawn_claude(
+    state: tauri::State<'_, AppState>,
+    request: SpawnClaudeRequest,
+) -> Result<PaneInfo, String> {
+    spawn_claude_pane(&state, request)
 }
 
 #[tauri::command]
@@ -58,6 +71,15 @@ fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), S
 }
 
 fn main() {
+    match cli::run_cli_if_requested() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    }
+
     let config = QmuxConfig::load().unwrap_or_else(|err| {
         eprintln!("{err}");
         std::process::exit(1);
@@ -71,6 +93,7 @@ fn main() {
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
+                start_control_socket(state.clone()).map_err(std::io::Error::other)?;
                 app.manage(state.clone());
                 Ok(())
             }
@@ -79,6 +102,7 @@ fn main() {
             get_runtime_config,
             list_panes,
             spawn_shell,
+            spawn_claude,
             pane_write,
             pane_resize,
             pane_kill,

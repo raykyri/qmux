@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import TerminalPane from "./components/TerminalPane";
-import { getRuntimeConfig, killPane, listenToEvents, listPanes, spawnShell } from "./lib/api";
+import {
+  getRuntimeConfig,
+  killPane,
+  listenToEvents,
+  listPanes,
+  spawnClaude,
+  spawnShell,
+} from "./lib/api";
 import type { PaneInfo, RuntimeConfig } from "./types";
 
 function statusLabel(status: PaneInfo["status"]) {
@@ -22,6 +29,7 @@ export default function App() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
@@ -123,6 +131,24 @@ export default function App() {
     });
   }
 
+  async function addClaudePane() {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      setError("Enter a prompt before launching Claude.");
+      return;
+    }
+
+    setError(null);
+    try {
+      const pane = await spawnClaude({ prompt: trimmed });
+      setPanes((current) => [...current, pane]);
+      setActivePaneId(pane.id);
+      setPrompt("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -156,6 +182,24 @@ export default function App() {
             Close pane
           </button>
         </div>
+
+        <form
+          className="launcher"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void addClaudePane();
+          }}
+        >
+          <label htmlFor="claude-prompt">Claude prompt</label>
+          <textarea
+            id="claude-prompt"
+            value={prompt}
+            onChange={(event) => setPrompt(event.currentTarget.value)}
+            rows={5}
+            placeholder="Ask Claude Code to work on this checkout..."
+          />
+          <button type="submit">Launch Claude</button>
+        </form>
 
         {config ? (
           <dl className="runtime-info">

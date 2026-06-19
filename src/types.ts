@@ -17,6 +17,13 @@ export interface PaneInfo {
   status: "starting" | "running" | "exited" | "killed" | "failed";
 }
 
+export interface SpawnClaudeRequest {
+  prompt: string;
+  cwd?: string | null;
+  model?: string | null;
+  permissionMode?: string | null;
+}
+
 export interface QmuxEvent {
   type: string;
   paneId?: string | null;
