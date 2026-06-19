@@ -920,7 +920,7 @@ export default function App() {
               value={prompt}
               onChange={(event) => setPrompt(event.currentTarget.value)}
               rows={3}
-              placeholder="Ask Claude Code to work on this checkout..."
+              placeholder="What’s next?"
             />
             <div className="command-launcher-overlay">
               <label className="command-launcher-worktree">
