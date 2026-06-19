@@ -32,7 +32,7 @@ impl QmuxEvent {
         }
     }
 
-    pub fn pty_data(pane_id: String, data: String) -> Self {
+    pub fn pty_data(pane_id: String, data: &[u8]) -> Self {
         Self::new("pty.data", Some(pane_id), None, json!({ "data": data }))
     }
 
@@ -43,5 +43,17 @@ impl QmuxEvent {
             None,
             json!({ "exitCode": exit_code }),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pty_data_payload_preserves_raw_bytes() {
+        let event = QmuxEvent::pty_data("pane-1".to_string(), &[0xf0, 0x9f]);
+
+        assert_eq!(event.payload, json!({ "data": [240, 159] }));
     }
 }
