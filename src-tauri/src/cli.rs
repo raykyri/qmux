@@ -1,8 +1,35 @@
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::time::Duration;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ControlResponse {
+    ok: bool,
+    data: Value,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedClaudeLaunch {
+    claude_binary: String,
+    cwd: String,
+    settings_path: String,
+    envs: Vec<PreparedClaudeEnv>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedClaudeEnv {
+    key: String,
+    value: String,
+}
 
 pub fn run_cli_if_requested() -> Result<bool, String> {
     let mut args = env::args().skip(1);
@@ -46,16 +73,52 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             )?;
             Ok(true)
         }
+        "claude" => {
+            run_claude(args.collect())?;
+            Ok(true)
+        }
         "ping" => {
             request_and_print("ping", json!({}))?;
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write]");
+            println!("usage: qmux [ping|notify|pane-write|claude]");
             Ok(true)
         }
         _ => Ok(false),
     }
+}
+
+fn run_claude(args: Vec<String>) -> Result<(), String> {
+    let pane_id = env::var("QMUX_PANE_ID")
+        .map_err(|_| "QMUX_PANE_ID is not set; run this from a qmux shell pane".to_string())?;
+    let cwd = env::current_dir()
+        .map_err(|err| format!("failed to read current directory for Claude launch: {err}"))?;
+    let launch = request_value(
+        "claude.prepare_shell_launch",
+        json!({
+            "paneId": pane_id,
+            "cwd": cwd.display().to_string(),
+        }),
+    )?;
+    let launch = serde_json::from_value::<PreparedClaudeLaunch>(launch)
+        .map_err(|err| format!("invalid prepared Claude launch response: {err}"))?;
+
+    let mut command = Command::new(&launch.claude_binary);
+    command
+        .arg("--settings")
+        .arg(&launch.settings_path)
+        .args(args)
+        .current_dir(&launch.cwd);
+    for env in launch.envs {
+        command.env(env.key, env.value);
+    }
+
+    let err = command.exec();
+    Err(format!(
+        "failed to launch Claude CLI '{}': {err}",
+        launch.claude_binary
+    ))
 }
 
 fn request_silent(command: &str, payload: Value) -> Result<(), String> {
@@ -66,6 +129,19 @@ fn request_and_print(command: &str, payload: Value) -> Result<(), String> {
     let response = request(command, payload)?;
     println!("{response}");
     Ok(())
+}
+
+fn request_value(command: &str, payload: Value) -> Result<Value, String> {
+    let raw = request(command, payload)?;
+    let response = serde_json::from_str::<ControlResponse>(&raw)
+        .map_err(|err| format!("invalid qmux response: {err}"))?;
+    if response.ok {
+        Ok(response.data)
+    } else {
+        Err(response
+            .error
+            .unwrap_or_else(|| "qmux request failed".to_string()))
+    }
 }
 
 fn request(command: &str, payload: Value) -> Result<String, String> {

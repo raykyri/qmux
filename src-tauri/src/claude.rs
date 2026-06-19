@@ -4,7 +4,8 @@ use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::workspace::{
     PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed, prepare_agent_workspace,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,29 @@ pub struct SpawnClaudeRequest {
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareShellClaudeLaunchRequest {
+    pub pane_id: String,
+    pub cwd: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareShellClaudeLaunchResponse {
+    pub claude_binary: String,
+    pub cwd: String,
+    pub settings_path: String,
+    pub envs: Vec<ClaudeLaunchEnv>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeLaunchEnv {
+    pub key: String,
+    pub value: String,
 }
 
 pub fn spawn_claude_pane(
@@ -108,7 +132,71 @@ pub fn spawn_claude_pane(
     }
 }
 
-fn ensure_on_path(binary: &str) -> Option<PathBuf> {
+pub fn prepare_shell_claude_launch(
+    state: &AppState,
+    request: PrepareShellClaudeLaunchRequest,
+) -> Result<PrepareShellClaudeLaunchResponse, String> {
+    let binary = state.config().claude_binary.clone();
+    ensure_on_path(&binary).ok_or_else(|| {
+        format!(
+            "Claude CLI binary '{binary}' was not found on PATH. Install Claude Code or update qmux.config.json."
+        )
+    })?;
+
+    if state.pane_writer(&request.pane_id)?.is_none() {
+        return Err(format!("pane {} was not found", request.pane_id));
+    }
+
+    let cwd = PathBuf::from(&request.cwd);
+    if !cwd.is_dir() {
+        return Err(format!(
+            "Claude working directory {} does not exist",
+            cwd.display()
+        ));
+    }
+
+    let agent = prepare_agent_workspace(
+        state,
+        PrepareAgentWorkspaceRequest {
+            group_id: None,
+            base_repo: Some(cwd.display().to_string()),
+            base_ref: Some("HEAD".to_string()),
+            adapter: "claude".to_string(),
+            model: None,
+        },
+    )?;
+    let settings_path = match write_claude_hook_settings(&agent) {
+        Ok(settings_path) => settings_path,
+        Err(err) => {
+            let _ = mark_agent_failed(state, &agent.id);
+            return Err(err);
+        }
+    };
+    let agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
+
+    let mut envs = qmux_pane_envs(state, &request.pane_id);
+    envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+    let agent_id = agent.id.clone();
+    let worktree_dir = agent.worktree_dir.clone();
+    state.emit(crate::events::QmuxEvent::new(
+        "agent.spawned",
+        Some(request.pane_id),
+        Some(agent_id),
+        json!({ "agent": agent.clone(), "source": "shell" }),
+    ));
+
+    Ok(PrepareShellClaudeLaunchResponse {
+        claude_binary: binary,
+        cwd: worktree_dir,
+        settings_path: settings_path.display().to_string(),
+        envs: envs
+            .into_iter()
+            .map(|(key, value)| ClaudeLaunchEnv { key, value })
+            .collect(),
+    })
+}
+
+pub fn ensure_on_path(binary: &str) -> Option<PathBuf> {
     let binary_path = Path::new(binary);
     if binary_path.components().count() > 1 {
         return binary_path.is_file().then(|| binary_path.to_path_buf());

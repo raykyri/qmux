@@ -1,4 +1,7 @@
-use crate::claude::{SpawnClaudeRequest, spawn_claude_pane};
+use crate::claude::{
+    PrepareShellClaudeLaunchRequest, SpawnClaudeRequest, prepare_shell_claude_launch,
+    spawn_claude_pane,
+};
 use crate::events::QmuxEvent;
 use crate::hooks::{HookNotification, ingest_hook_notification};
 use crate::pty::{PaneWriteOptions, write_pane};
@@ -106,6 +109,13 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                 .map_err(|err| format!("invalid agent.spawn payload: {err}"))?;
             let pane = spawn_claude_pane(state, spawn)?;
             serde_json::to_value(pane).map_err(|err| format!("failed to encode pane: {err}"))
+        }
+        "claude.prepare_shell_launch" => {
+            let launch = serde_json::from_value::<PrepareShellClaudeLaunchRequest>(request.payload)
+                .map_err(|err| format!("invalid claude.prepare_shell_launch payload: {err}"))?;
+            let prepared = prepare_shell_claude_launch(state, launch)?;
+            serde_json::to_value(prepared)
+                .map_err(|err| format!("failed to encode prepared Claude launch: {err}"))
         }
         "agent.submit_turn" => {
             let submit = serde_json::from_value::<SubmitAgentTurnRequest>(request.payload)
