@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
   turns: Turn[];
   input?: ReactNode;
+  // Identifies the agent whose transcript is shown; a change means a different
+  // transcript loaded, which is when we jump the view to the latest turn.
+  agentId?: string;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -59,9 +62,26 @@ export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
 }
 
-export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
+export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps) {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
   const [composerHeight, setComposerHeight] = useState(0);
+
+  // When a different transcript loads, start at the bottom so the latest turn is
+  // in view. useLayoutEffect runs before paint, so the pane never flashes at the
+  // top first; the rAF re-assert catches the composer's reserved-space reflow.
+  useLayoutEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) {
+      return;
+    }
+    const scrollToBottom = () => {
+      timeline.scrollTop = timeline.scrollHeight;
+    };
+    scrollToBottom();
+    const frame = requestAnimationFrame(scrollToBottom);
+    return () => cancelAnimationFrame(frame);
+  }, [agentId]);
 
   // The composer floats over the transcript, so reserve scroll room beneath the
   // last message equal to the composer's live height (it changes as the queue
@@ -86,7 +106,7 @@ export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
 
   return (
     <section className="turn-sidebar" aria-label="Agent turns">
-      <div className="turn-timeline" style={timelineStyle}>
+      <div ref={timelineRef} className="turn-timeline" style={timelineStyle}>
         {timelineItems.length === 0 ? (
           <p className="empty-turns">No turns yet</p>
         ) : (
