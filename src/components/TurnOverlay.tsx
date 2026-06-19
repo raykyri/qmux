@@ -6,6 +6,10 @@ interface TurnOverlayProps {
   input?: ReactNode;
 }
 
+export function formatTurnsTranscript(turns: Turn[]) {
+  return turns.map(formatTurnTranscript).join("\n\n");
+}
+
 export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
   return (
     <section className="turn-sidebar" aria-label="Agent turns">
@@ -56,6 +60,28 @@ function TurnBlockView({ block }: { block: TurnBlock }) {
         </details>
       );
   }
+}
+
+function formatTurnTranscript(turn: Turn) {
+  return [turn.role, ...turn.blocks.map(formatTurnBlockTranscript)].join("\n").trimEnd();
+}
+
+function formatTurnBlockTranscript(block: TurnBlock) {
+  switch (block.type) {
+    case "text":
+      return block.text;
+    case "toolUse":
+      return formatLabeledBlock(block.name, block.input);
+    case "toolResult":
+      return formatLabeledBlock(block.isError ? "Tool error" : "Tool result", block.content);
+    case "raw":
+      return formatLabeledBlock("Raw", block.value);
+  }
+}
+
+function formatLabeledBlock(label: string, value: unknown) {
+  const content = stringify(value);
+  return content ? `${label}\n${content}` : label;
 }
 
 function stringify(value: unknown) {
