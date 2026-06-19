@@ -237,8 +237,26 @@ button:disabled {
 }
 
 .overlay-toggle {
+  display: grid;
+  width: 34px;
+  height: 34px;
   justify-self: end;
+  place-items: center;
+  padding: 0;
   pointer-events: auto;
+}
+
+.overlay-toggle::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.overlay-toggle.is-open::before {
+  transform: translateY(2px) rotate(-135deg);
 }
 
 .turn-panel {
