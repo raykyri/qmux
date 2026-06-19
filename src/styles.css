@@ -17,6 +17,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* Kill the elastic rubber-band overscroll of the whole window. */
+  overscroll-behavior: none;
 }
 
 button,
@@ -498,7 +500,12 @@ button:disabled {
   padding: 10px;
 }
 
-.terminal-host .xterm {
+.terminal-mount {
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-mount .xterm {
   width: 100%;
   height: 100%;
 }
@@ -637,6 +644,7 @@ button:disabled {
      bottom padding keeps the latest turn clear of the floating composer. */
   padding: 10px 10px 132px;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .turn-sidebar-input {
@@ -850,13 +858,7 @@ button:disabled {
      consumed all the space above the composer. */
   flex: 1 1 auto;
   overflow: auto;
-}
-
-.queued-turn-stack-title {
-  color: #96e0cf;
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  overscroll-behavior: contain;
 }
 
 .queued-turn {
