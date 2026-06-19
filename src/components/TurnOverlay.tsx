@@ -46,8 +46,14 @@ interface ThinkingItem {
   values: unknown[];
 }
 
+interface AssistantRunItem {
+  type: "assistantRun";
+  key: string;
+  messages: MessageItem[];
+}
+
 type ActivityItem = ToolRunItem | ThinkingItem;
-type TimelineItem = MessageItem;
+type TimelineItem = MessageItem | AssistantRunItem;
 
 export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
@@ -97,7 +103,7 @@ export default function TurnOverlay({ turns, input }: TurnOverlayProps) {
 }
 
 function buildTimelineItems(turns: Turn[]): TimelineItem[] {
-  const items: TimelineItem[] = [];
+  const items: MessageItem[] = [];
   const pendingById = new Map<string, ToolEntry>();
   const pendingWithoutId: ToolEntry[] = [];
   let sequence = 0;
@@ -225,11 +231,66 @@ function buildTimelineItems(turns: Turn[]): TimelineItem[] {
     }
   }
 
-  return items;
+  return groupAssistantRuns(items);
 }
 
 function TimelineItemView({ item }: { item: TimelineItem }) {
-  return <MessageItemView item={item} />;
+  switch (item.type) {
+    case "message":
+      return <MessageItemView item={item} />;
+    case "assistantRun":
+      return <AssistantRunView item={item} />;
+  }
+}
+
+function groupAssistantRuns(items: MessageItem[]): TimelineItem[] {
+  const grouped: TimelineItem[] = [];
+  let index = 0;
+
+  while (index < items.length) {
+    const item = items[index];
+    if (item.role !== "assistant") {
+      grouped.push(item);
+      index += 1;
+      continue;
+    }
+
+    const messages: MessageItem[] = [];
+    while (index < items.length && items[index].role === "assistant") {
+      messages.push(items[index]);
+      index += 1;
+    }
+
+    if (messages.length === 1) {
+      grouped.push(messages[0]);
+    } else {
+      grouped.push({
+        type: "assistantRun",
+        key: `assistant-run-${messages[0].key}`,
+        messages,
+      });
+    }
+  }
+
+  return grouped;
+}
+
+function AssistantRunView({ item }: { item: AssistantRunItem }) {
+  return (
+    <details className="assistant-run-block">
+      <summary>
+        <span className="tool-summary">
+          <span className="tool-summary-main">{item.messages.length} assistant updates</span>
+          <span className="tool-summary-meta">{assistantRunMeta(item.messages)}</span>
+        </span>
+      </summary>
+      <div className="assistant-run-items">
+        {item.messages.map((message) => (
+          <MessageItemView key={message.key} item={message} />
+        ))}
+      </div>
+    </details>
+  );
 }
 
 function MessageItemView({ item }: { item: MessageItem }) {
@@ -354,6 +415,30 @@ function summarizeToolNames(entries: ToolEntry[]) {
   const visibleNames = names.slice(0, 4).join(", ");
   const remaining = names.length - 4;
   return remaining > 0 ? `${visibleNames}, +${remaining}` : visibleNames;
+}
+
+function assistantRunMeta(messages: MessageItem[]) {
+  let toolCalls = 0;
+  let thinkingBlocks = 0;
+
+  for (const message of messages) {
+    for (const activity of message.activities) {
+      if (activity.type === "toolRun") {
+        toolCalls += activity.entries.length;
+      } else {
+        thinkingBlocks += activity.values.length;
+      }
+    }
+  }
+
+  const labels = [];
+  if (toolCalls > 0) {
+    labels.push(`${toolCalls} tool ${toolCalls === 1 ? "call" : "calls"}`);
+  }
+  if (thinkingBlocks > 0) {
+    labels.push(`${thinkingBlocks} thinking ${thinkingBlocks === 1 ? "block" : "blocks"}`);
+  }
+  return labels.length > 0 ? labels.join(" · ") : "collapsed";
 }
 
 function formatTurnTranscript(turn: Turn) {
