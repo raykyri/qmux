@@ -1,5 +1,5 @@
 use crate::hooks::write_claude_hook_settings;
-use crate::pty::{PtySpawnSpec, spawn_pty};
+use crate::pty::{PtySpawnSpec, qmux_pane_envs, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::workspace::{
     PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed, prepare_agent_workspace,
@@ -79,6 +79,9 @@ pub fn spawn_claude_pane(
 
     args.push(request.prompt);
 
+    let mut envs = qmux_pane_envs(state, &pane_id);
+    envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+
     let spawn_result = spawn_pty(
         state,
         PtySpawnSpec {
@@ -89,19 +92,7 @@ pub fn spawn_claude_pane(
             program: binary,
             args,
             cwd,
-            envs: vec![
-                ("QMUX_PANE_ID".to_string(), pane_id),
-                (
-                    "QMUX_SOCK".to_string(),
-                    state.config().socket_path.display().to_string(),
-                ),
-                ("QMUX_TOKEN".to_string(), state.token().to_string()),
-                (
-                    "QMUX_WORKSPACE_ROOT".to_string(),
-                    state.config().workspace_root.display().to_string(),
-                ),
-                ("QMUX_AGENT_ID".to_string(), agent.id.clone()),
-            ],
+            envs,
         },
     );
 
