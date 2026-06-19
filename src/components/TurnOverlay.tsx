@@ -11,9 +11,14 @@ interface TurnOverlayProps {
 export default function TurnOverlay({ turns, visible, onToggle, input }: TurnOverlayProps) {
   return (
     <section className={`turn-overlay ${visible ? "is-visible" : ""}`}>
-      <button type="button" className="overlay-toggle" onClick={onToggle}>
-        {visible ? "PTY" : "Turns"}
-      </button>
+      <button
+        type="button"
+        className={`overlay-toggle ${visible ? "is-open" : ""}`}
+        aria-label={visible ? "Hide turns overlay" : "Show turns overlay"}
+        aria-expanded={visible}
+        title={visible ? "Hide turns overlay" : "Show turns overlay"}
+        onClick={onToggle}
+      />
       {visible ? (
         <div className="turn-panel" aria-label="Agent turns">
           <div className="turn-timeline">
