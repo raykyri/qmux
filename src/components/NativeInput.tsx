@@ -5,8 +5,8 @@ import type { AgentInfo, PaneInfo } from "../types";
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
 
-// Lucide "ellipsis" glyph (three horizontal dots), inlined to avoid pulling in a
-// dependency for a single icon.
+// Lucide "ellipsis-vertical" glyph (three vertical dots), inlined to avoid pulling
+// in a dependency for a single icon.
 function EllipsisIcon() {
   return (
     <svg
@@ -22,8 +22,8 @@ function EllipsisIcon() {
       aria-hidden="true"
     >
       <circle cx="12" cy="12" r="1" />
-      <circle cx="19" cy="12" r="1" />
-      <circle cx="5" cy="12" r="1" />
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="19" r="1" />
     </svg>
   );
 }
@@ -60,6 +60,7 @@ export default function NativeInput({
   // the message into the running turn anyway instead of only being able to queue.
   const isWorking = agent.status === "starting" || agent.status === "running";
   const hasTranscript = transcriptText.trim().length > 0;
+  const sendDisabled = submitting || !canSend || value.trim().length === 0;
 
   // Close the actions menu on an outside click or Escape while it is open.
   useEffect(() => {
@@ -234,7 +235,9 @@ export default function NativeInput({
           }
         }}
         placeholder={
-          awaitingPermission ? "Approve or deny the pending tool use..." : "Send a turn..."
+          awaitingPermission
+            ? "Approve or deny the pending tool use..."
+            : "What should we implement next?"
         }
         rows={1}
       />
@@ -286,22 +289,17 @@ export default function NativeInput({
               </button>
             </>
           ) : null}
-          <button
-            type="button"
-            disabled={submitting || !canSend || value.trim().length === 0}
-            onClick={() => void submitTurn(value, "send")}
-          >
-            <span>Send</span>
-            {canSend ? (
+          {!sendDisabled ? (
+            <button type="button" onClick={() => void submitTurn(value, "send")}>
+              <span>Send</span>
               <span className="shortcut-hint" aria-label="Command Enter">
                 ⌘↵
               </span>
-            ) : null}
-          </button>
+            </button>
+          ) : null}
           {isWorking ? (
             <button
               type="button"
-              className="steer-button"
               disabled={submitting || value.trim().length === 0}
               onClick={() => void submitTurn(value, "steer")}
               title="Send now, interrupting the agent's current work"
@@ -311,6 +309,7 @@ export default function NativeInput({
           ) : null}
           <button
             type="button"
+            className="queue-button"
             disabled={submitting || !canQueue || value.trim().length === 0}
             onClick={() => void submitTurn(value, "queue")}
           >
