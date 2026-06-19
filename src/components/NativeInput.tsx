@@ -11,6 +11,7 @@ interface NativeInputProps {
 export default function NativeInput({ pane, agent, onError }: NativeInputProps) {
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const awaitingPermission = agent.status === "awaitingPermission";
 
   async function submitText(text: string) {
     const trimmed = text.trim();
@@ -40,11 +41,13 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
       <textarea
         value={value}
         onChange={(event) => setValue(event.currentTarget.value)}
-        placeholder={agent.status === "awaitingInput" ? "Respond to prompt..." : "Send a turn..."}
+        placeholder={
+          awaitingPermission ? "Approve or deny the pending tool use..." : "Send a turn..."
+        }
         rows={2}
       />
       <div className="native-input-actions">
-        {agent.status === "awaitingInput" ? (
+        {awaitingPermission ? (
           <>
             <button type="button" onClick={() => void submitText("y")} disabled={submitting}>
               Approve

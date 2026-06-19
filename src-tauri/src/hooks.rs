@@ -13,9 +13,15 @@ const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
-    "Notification",
+    "PermissionRequest",
     "Stop",
     "SubagentStop",
+];
+
+const CLAUDE_NOTIFICATION_MATCHERS: &[(&str, &str)] = &[
+    ("permission_prompt", "Notification.permission_prompt"),
+    ("idle_prompt", "Notification.idle_prompt"),
+    ("elicitation_dialog", "Notification.elicitation_dialog"),
 ];
 
 #[derive(Clone, Debug, Deserialize)]
@@ -52,6 +58,23 @@ pub fn write_claude_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> 
             ]),
         );
     }
+    hooks.insert(
+        "Notification".to_string(),
+        json!(
+            CLAUDE_NOTIFICATION_MATCHERS
+                .iter()
+                .map(|(matcher, event)| json!({
+                    "matcher": matcher,
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": format!("{} notify {}", shell_quote(&qmux_cli), event)
+                        }
+                    ]
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
 
     let settings = json!({ "hooks": hooks });
     let settings_path = qmux_dir.join("qmux-hooks.json");
@@ -106,12 +129,19 @@ pub fn ingest_hook_notification(
             }
             "agent.tool_result"
         }
-        "Notification" => {
+        "PermissionRequest" => {
             if let Some(agent) = agent.as_mut() {
-                agent.status = AgentStatus::AwaitingInput;
+                agent.status = AgentStatus::AwaitingPermission;
                 state.update_agent(agent.clone())?;
             }
-            "agent.awaiting_input"
+            "agent.awaiting_permission"
+        }
+        event if event.starts_with("Notification") => {
+            if let Some(agent) = agent.as_mut() {
+                agent.status = notification_status(&notification);
+                state.update_agent(agent.clone())?;
+            }
+            notification_event_type(&notification)
         }
         "Stop" => {
             if let Some(agent) = agent.as_mut() {
@@ -143,6 +173,64 @@ pub fn ingest_hook_notification(
             "payload": notification.payload,
         }),
     ))
+}
+
+fn notification_event_type(notification: &HookNotification) -> &'static str {
+    match notification_kind(notification) {
+        NotificationKind::PermissionPrompt => "agent.awaiting_permission",
+        NotificationKind::IdlePrompt => "agent.idle",
+        NotificationKind::ElicitationDialog => "agent.awaiting_input",
+        NotificationKind::Other => "agent.notification",
+    }
+}
+
+fn notification_status(notification: &HookNotification) -> AgentStatus {
+    match notification_kind(notification) {
+        NotificationKind::PermissionPrompt => AgentStatus::AwaitingPermission,
+        NotificationKind::IdlePrompt => AgentStatus::Stopped,
+        NotificationKind::ElicitationDialog => AgentStatus::AwaitingInput,
+        NotificationKind::Other => AgentStatus::AwaitingInput,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NotificationKind {
+    PermissionPrompt,
+    IdlePrompt,
+    ElicitationDialog,
+    Other,
+}
+
+fn notification_kind(notification: &HookNotification) -> NotificationKind {
+    match notification.event.as_str() {
+        "Notification.permission_prompt" => return NotificationKind::PermissionPrompt,
+        "Notification.idle_prompt" => return NotificationKind::IdlePrompt,
+        "Notification.elicitation_dialog" => return NotificationKind::ElicitationDialog,
+        _ => {}
+    }
+
+    if payload_contains(&notification.payload, "permission_prompt") {
+        NotificationKind::PermissionPrompt
+    } else if payload_contains(&notification.payload, "idle_prompt") {
+        NotificationKind::IdlePrompt
+    } else if payload_contains(&notification.payload, "elicitation_dialog") {
+        NotificationKind::ElicitationDialog
+    } else {
+        NotificationKind::Other
+    }
+}
+
+fn payload_contains(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(value) => value.contains(needle),
+        Value::Array(values) => values.iter().any(|value| payload_contains(value, needle)),
+        Value::Object(values) => values.iter().any(|(key, value)| {
+            key.contains(needle)
+                || value.as_str().is_some_and(|value| value.contains(needle))
+                || payload_contains(value, needle)
+        }),
+        _ => false,
+    }
 }
 
 fn string_field(value: &Value, key: &str) -> Option<String> {
