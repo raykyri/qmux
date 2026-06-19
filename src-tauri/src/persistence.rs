@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Distinguishes the scratch file of each in-flight `save` so concurrent writers
+/// never share (and then race to rename) the same temp path.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Bumped whenever the on-disk shape changes incompatibly. A file written by a
 /// newer or unknown version is treated as empty rather than misinterpreted.
@@ -66,6 +71,11 @@ pub fn load(workspace_root: &Path) -> PersistedState {
 
 /// Writes state atomically: serialize to a sibling `.tmp` file then rename over
 /// the target so a crash mid-write can never leave a half-written state.json.
+///
+/// The scratch file name is unique per call (pid + sequence). Two saves can run
+/// concurrently — `persist` releases the model lock before writing — and a shared
+/// temp name would let one writer's rename consume the file out from under the
+/// other, which then fails with ENOENT.
 pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String> {
     let path = state_path(workspace_root);
     if let Some(parent) = path.parent() {
@@ -75,11 +85,15 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
 
     let raw = serde_json::to_string_pretty(state)
         .map_err(|err| format!("failed to encode state: {err}"))?;
-    let tmp = path.with_extension("json.tmp");
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     fs::write(&tmp, raw)
         .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
-    fs::rename(&tmp, &path)
-        .map_err(|err| format!("failed to commit {}: {err}", path.display()))
+    fs::rename(&tmp, &path).map_err(|err| {
+        // Don't strand the scratch file if the commit itself fails.
+        let _ = fs::remove_file(&tmp);
+        format!("failed to commit {}: {err}", path.display())
+    })
 }
 
 #[cfg(test)]
@@ -179,5 +193,42 @@ mod tests {
         let path = state_path(&root);
         assert!(path.exists());
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    // Regression: persist() releases the model lock before writing, so saves can
+    // overlap. A shared temp name let one writer's rename pull the file out from
+    // under another, which then failed to commit with ENOENT.
+    #[test]
+    fn concurrent_saves_do_not_race_and_leave_no_temp_files() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let root = Arc::new(temp_root());
+        let parent = state_path(&root).parent().unwrap().to_path_buf();
+        fs::create_dir_all(&parent).unwrap();
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let root = Arc::clone(&root);
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        save(&root, &PersistedState::default()).expect("save must not fail");
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // A complete, parseable snapshot survives and nothing is stranded.
+        assert_eq!(load(&root).version, STATE_VERSION);
+        let leftover_temps: Vec<_> = fs::read_dir(&parent)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftover_temps.is_empty(), "stranded temp files: {leftover_temps:?}");
     }
 }
