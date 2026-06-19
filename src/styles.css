@@ -64,6 +64,7 @@ button:disabled {
   grid-template-columns: 268px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  border-top: 1px solid #2a2d2f;
   background: #17191b;
 }
 
@@ -362,7 +363,6 @@ button:disabled {
   min-width: 0;
   border-radius: 8px;
   background: rgba(23, 25, 27, 0.96);
-  padding: 8px;
 }
 
 .native-input textarea {
