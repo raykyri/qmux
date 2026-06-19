@@ -1,5 +1,6 @@
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
+use crate::workspace::{AgentInfo, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,6 +30,8 @@ struct AppStateInner {
 #[derive(Default)]
 struct Model {
     panes: HashMap<String, PaneRuntime>,
+    groups: HashMap<String, GroupInfo>,
+    agents: HashMap<String, AgentInfo>,
 }
 
 pub struct PaneRuntime {
@@ -125,6 +128,42 @@ impl AppState {
         Ok(model.panes.values().map(|pane| pane.info.clone()).collect())
     }
 
+    pub fn list_groups(&self) -> Result<Vec<GroupInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.groups.values().cloned().collect())
+    }
+
+    pub fn list_agents(&self) -> Result<Vec<AgentInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.agents.values().cloned().collect())
+    }
+
+    pub fn group(&self, group_id: &str) -> Result<Option<GroupInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.groups.get(group_id).cloned())
+    }
+
+    pub fn agent(&self, agent_id: &str) -> Result<Option<AgentInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.agents.get(agent_id).cloned())
+    }
+
     pub fn insert_pane(&self, pane: PaneRuntime) -> Result<(), String> {
         let mut model = self
             .inner
@@ -132,6 +171,46 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         model.panes.insert(pane.info.id.clone(), pane);
+        Ok(())
+    }
+
+    pub fn insert_group(&self, group: GroupInfo) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.groups.insert(group.id.clone(), group);
+        Ok(())
+    }
+
+    pub fn insert_agent(&self, agent: AgentInfo) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.agents.insert(agent.id.clone(), agent);
+        Ok(())
+    }
+
+    pub fn update_group(&self, group: GroupInfo) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.groups.insert(group.id.clone(), group);
+        Ok(())
+    }
+
+    pub fn update_agent(&self, agent: AgentInfo) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.agents.insert(agent.id.clone(), agent);
         Ok(())
     }
 

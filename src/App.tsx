@@ -3,12 +3,14 @@ import TerminalPane from "./components/TerminalPane";
 import {
   getRuntimeConfig,
   killPane,
+  listAgents,
+  listGroups,
   listenToEvents,
   listPanes,
   spawnClaude,
   spawnShell,
 } from "./lib/api";
-import type { PaneInfo, RuntimeConfig } from "./types";
+import type { AgentInfo, GroupInfo, PaneInfo, RuntimeConfig } from "./types";
 
 function statusLabel(status: PaneInfo["status"]) {
   switch (status) {
@@ -28,8 +30,12 @@ function statusLabel(status: PaneInfo["status"]) {
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [baseRepo, setBaseRepo] = useState("");
+  const [baseRef, setBaseRef] = useState("HEAD");
   const [error, setError] = useState<string | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
@@ -41,15 +47,19 @@ export default function App() {
 
     async function boot() {
       try {
-        const [runtimeConfig, existingPanes] = await Promise.all([
+        const [runtimeConfig, existingPanes, existingGroups, existingAgents] = await Promise.all([
           getRuntimeConfig(),
           listPanes(),
+          listGroups(),
+          listAgents(),
         ]);
         if (cancelled) {
           return;
         }
 
         setConfig(runtimeConfig);
+        setGroups(existingGroups);
+        setAgents(existingAgents);
 
         if (existingPanes.length > 0) {
           setPanes(existingPanes);
@@ -140,10 +150,16 @@ export default function App() {
 
     setError(null);
     try {
-      const pane = await spawnClaude({ prompt: trimmed });
+      const pane = await spawnClaude({
+        prompt: trimmed,
+        baseRepo: baseRepo.trim() || null,
+        baseRef: baseRef.trim() || "HEAD",
+      });
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
       setPrompt("");
+      setGroups(await listGroups());
+      setAgents(await listAgents());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -198,8 +214,30 @@ export default function App() {
             rows={5}
             placeholder="Ask Claude Code to work on this checkout..."
           />
+          <div className="launcher-options">
+            <label htmlFor="base-repo">Base repo</label>
+            <input
+              id="base-repo"
+              value={baseRepo}
+              onChange={(event) => setBaseRepo(event.currentTarget.value)}
+              placeholder="Default: this checkout"
+            />
+            <label htmlFor="base-ref">Base ref</label>
+            <input
+              id="base-ref"
+              value={baseRef}
+              onChange={(event) => setBaseRef(event.currentTarget.value)}
+            />
+          </div>
           <button type="submit">Launch Claude</button>
         </form>
+
+        <div className="workspace-summary">
+          <strong>{groups.length}</strong>
+          <span>groups</span>
+          <strong>{agents.length}</strong>
+          <span>agents</span>
+        </div>
 
         {config ? (
           <dl className="runtime-info">

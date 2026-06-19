@@ -141,7 +141,8 @@ button:disabled {
   gap: 8px;
 }
 
-.launcher label {
+.launcher label,
+.launcher-options label {
   color: #d6d2bd;
   font-size: 12px;
   font-weight: 700;
@@ -156,6 +157,34 @@ button:disabled {
   background: #151719;
   color: #f1f0e8;
   padding: 9px 10px;
+}
+
+.launcher-options {
+  display: grid;
+  gap: 7px;
+}
+
+.launcher-options input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #3a3d3f;
+  border-radius: 6px;
+  background: #151719;
+  color: #f1f0e8;
+  padding: 7px 9px;
+}
+
+.workspace-summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  align-items: center;
+  gap: 6px;
+  color: #aab1ad;
+  font-size: 12px;
+}
+
+.workspace-summary strong {
+  color: #f1f0e8;
 }
 
 .runtime-info {

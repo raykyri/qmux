@@ -5,6 +5,7 @@ mod control_socket;
 mod events;
 mod pty;
 mod state;
+mod workspace;
 
 use claude::{SpawnClaudeRequest, spawn_claude_pane};
 use config::{QmuxConfig, RuntimeConfig};
@@ -12,6 +13,7 @@ use control_socket::start_control_socket;
 use pty::{PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane};
 use state::{AppState, PaneInfo};
 use tauri::Manager;
+use workspace::{AgentInfo, CreateGroupRequest, GroupInfo, create_group};
 
 #[tauri::command]
 fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
@@ -21,6 +23,24 @@ fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
 #[tauri::command]
 fn list_panes(state: tauri::State<'_, AppState>) -> Result<Vec<PaneInfo>, String> {
     state.list_panes()
+}
+
+#[tauri::command]
+fn list_groups(state: tauri::State<'_, AppState>) -> Result<Vec<GroupInfo>, String> {
+    state.list_groups()
+}
+
+#[tauri::command]
+fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
+    state.list_agents()
+}
+
+#[tauri::command]
+fn group_create(
+    state: tauri::State<'_, AppState>,
+    request: CreateGroupRequest,
+) -> Result<GroupInfo, String> {
+    create_group(&state, request)
 }
 
 #[tauri::command]
@@ -101,6 +121,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_runtime_config,
             list_panes,
+            list_groups,
+            list_agents,
+            group_create,
             spawn_shell,
             spawn_claude,
             pane_write,

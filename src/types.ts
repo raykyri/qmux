@@ -17,8 +17,36 @@ export interface PaneInfo {
   status: "starting" | "running" | "exited" | "killed" | "failed";
 }
 
+export interface GroupInfo {
+  id: string;
+  name: string;
+  dir: string;
+  baseRepo?: string | null;
+  baseRef?: string | null;
+  parentId?: string | null;
+  createdAt: number;
+  agents: string[];
+}
+
+export interface AgentInfo {
+  id: string;
+  groupId: string;
+  adapter: string;
+  worktreeDir: string;
+  branch?: string | null;
+  paneId?: string | null;
+  sessionId?: string | null;
+  transcriptPath?: string | null;
+  status: "starting" | "running" | "awaitingInput" | "stopped" | "failed";
+  model?: string | null;
+  createdAt: number;
+}
+
 export interface SpawnClaudeRequest {
   prompt: string;
+  groupId?: string | null;
+  baseRepo?: string | null;
+  baseRef?: string | null;
   cwd?: string | null;
   model?: string | null;
   permissionMode?: string | null;

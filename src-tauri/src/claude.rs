@@ -1,5 +1,6 @@
 use crate::pty::{PtySpawnSpec, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
+use crate::workspace::{PrepareAgentWorkspaceRequest, attach_agent_pane, prepare_agent_workspace};
 use serde::Deserialize;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,9 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct SpawnClaudeRequest {
     pub prompt: String,
+    pub group_id: Option<String>,
+    pub base_repo: Option<String>,
+    pub base_ref: Option<String>,
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
@@ -24,11 +28,27 @@ pub fn spawn_claude_pane(
         )
     })?;
 
-    let cwd = request.cwd.map(PathBuf::from).unwrap_or_else(|| {
-        env::current_dir().unwrap_or_else(|_| state.config().workspace_root.clone())
-    });
+    let agent = prepare_agent_workspace(
+        state,
+        PrepareAgentWorkspaceRequest {
+            group_id: request.group_id,
+            base_repo: request.base_repo,
+            base_ref: request.base_ref,
+            adapter: "claude".to_string(),
+            model: request.model.clone(),
+        },
+    )?;
+    let cwd = request
+        .cwd
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&agent.worktree_dir));
+    if !cwd.is_dir() {
+        return Err(format!(
+            "Claude working directory {} does not exist",
+            cwd.display()
+        ));
+    }
     let pane_id = state.next_id("pane");
-    let agent_id = state.next_id("agent");
     let mut args = vec![request.prompt];
 
     if let Some(model) = request.model.filter(|model| !model.trim().is_empty()) {
@@ -48,7 +68,7 @@ pub fn spawn_claude_pane(
         state,
         PtySpawnSpec {
             pane_id: Some(pane_id.clone()),
-            agent_id: Some(agent_id),
+            agent_id: Some(agent.id.clone()),
             kind: PaneKind::Agent,
             title: "Claude".to_string(),
             program: binary,
@@ -68,6 +88,10 @@ pub fn spawn_claude_pane(
             ],
         },
     )
+    .and_then(|pane| {
+        attach_agent_pane(state, &agent.id, pane.id.clone())?;
+        Ok(pane)
+    })
 }
 
 fn ensure_on_path(binary: &str) -> Option<PathBuf> {

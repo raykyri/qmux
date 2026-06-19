@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { PaneInfo, QmuxEvent, RuntimeConfig, SpawnClaudeRequest } from "../types";
+import type {
+  AgentInfo,
+  GroupInfo,
+  PaneInfo,
+  QmuxEvent,
+  RuntimeConfig,
+  SpawnClaudeRequest,
+} from "../types";
 
 export function getRuntimeConfig() {
   return invoke<RuntimeConfig>("get_runtime_config");
@@ -8,6 +15,14 @@ export function getRuntimeConfig() {
 
 export function listPanes() {
   return invoke<PaneInfo[]>("list_panes");
+}
+
+export function listGroups() {
+  return invoke<GroupInfo[]>("list_groups");
+}
+
+export function listAgents() {
+  return invoke<AgentInfo[]>("list_agents");
 }
 
 export function spawnShell() {
