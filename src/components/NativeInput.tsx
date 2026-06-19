@@ -10,8 +10,10 @@ interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
   queuedTurns: string[];
+  collapsedQueuedTurns: boolean[];
   transcriptText: string;
   onQueueChange: (agentId: string, queuedTurns: string[]) => void;
+  onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onError: (message: string) => void;
 }
 
@@ -19,8 +21,10 @@ export default function NativeInput({
   pane,
   agent,
   queuedTurns,
+  collapsedQueuedTurns,
   transcriptText,
   onQueueChange,
+  onQueuedTurnCollapseToggle,
   onError,
 }: NativeInputProps) {
   const [value, setValue] = useState("");
@@ -186,28 +190,42 @@ export default function NativeInput({
     >
       {queuedTurns.length > 0 ? (
         <div className="queued-turn-stack" aria-label="Queued turns">
-          {queuedTurns.map((turn, index) => (
-            <div key={`${index}-${turn}`} className="queued-turn">
-              <div className="queued-turn-text">{turn}</div>
-              <div className="queued-turn-actions">
+          {queuedTurns.map((turn, index) => {
+            const collapsed = collapsedQueuedTurns[index] ?? false;
+            return (
+              <div
+                key={`${index}-${turn}`}
+                className={`queued-turn${collapsed ? " is-collapsed" : ""}`}
+              >
                 <button
                   type="button"
-                  aria-label="Remove queued turn"
-                  disabled={submitting}
-                  onClick={() => void removeQueuedTurn(index, turn)}
+                  className="queued-turn-toggle"
+                  aria-expanded={!collapsed}
+                  aria-label={collapsed ? "Expand queued turn" : "Collapse queued turn"}
+                  onClick={() => onQueuedTurnCollapseToggle(agent.id, index)}
                 >
-                  x
+                  <span className="queued-turn-text">{turn}</span>
                 </button>
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => void editQueuedTurn(index, turn)}
-                >
-                  Edit
-                </button>
+                <div className="queued-turn-actions">
+                  <button
+                    type="button"
+                    aria-label="Remove queued turn"
+                    disabled={submitting}
+                    onClick={() => void removeQueuedTurn(index, turn)}
+                  >
+                    x
+                  </button>
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void editQueuedTurn(index, turn)}
+                  >
+                    Edit
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
       <textarea

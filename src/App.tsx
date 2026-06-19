@@ -48,6 +48,24 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+function reconcileQueuedTurnCollapse(
+  previousTurns: string[],
+  nextTurns: string[],
+  previousCollapsed: boolean[],
+) {
+  const usedPreviousIndexes = new Set<number>();
+  return nextTurns.map((nextTurn) => {
+    const previousIndex = previousTurns.findIndex(
+      (previousTurn, index) => previousTurn === nextTurn && !usedPreviousIndexes.has(index),
+    );
+    if (previousIndex === -1) {
+      return false;
+    }
+    usedPreviousIndexes.add(previousIndex);
+    return previousCollapsed[previousIndex] ?? false;
+  });
+}
+
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -137,6 +155,7 @@ export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
+  const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
   const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Keep the latest active pane / close handler reachable from the global keydown
@@ -147,7 +166,10 @@ export default function App() {
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [queuedTurnsByAgent, setQueuedTurnsByAgent] = useState<Record<string, string[]>>({});
+  const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, string[]>>({});
+  const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
+    Record<string, boolean[]>
+  >({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
@@ -173,12 +195,68 @@ export default function App() {
     () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, queuedTurnsByAgent],
   );
+  const activeCollapsedQueuedTurns = useMemo(
+    () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
+    [activeAgent?.id, collapsedQueuedTurnsByAgent],
+  );
+
+  function replaceQueuedTurnsByAgent(nextQueues: Record<string, string[]>) {
+    const previousQueues = queuedTurnsByAgentRef.current;
+    queuedTurnsByAgentRef.current = nextQueues;
+    setQueuedTurnsByAgentState(nextQueues);
+    setCollapsedQueuedTurnsByAgent((current) => {
+      const nextCollapsedByAgent: Record<string, boolean[]> = {};
+      for (const [agentId, queuedTurns] of Object.entries(nextQueues)) {
+        nextCollapsedByAgent[agentId] = reconcileQueuedTurnCollapse(
+          previousQueues[agentId] ?? [],
+          queuedTurns,
+          current[agentId] ?? [],
+        );
+      }
+      return nextCollapsedByAgent;
+    });
+  }
 
   function setAgentQueuedTurns(agentId: string, queuedTurns: string[]) {
-    setQueuedTurnsByAgent((current) => ({
-      ...current,
+    const previousQueues = queuedTurnsByAgentRef.current;
+    const nextQueues = {
+      ...previousQueues,
       [agentId]: queuedTurns,
-    }));
+    };
+    queuedTurnsByAgentRef.current = nextQueues;
+    setQueuedTurnsByAgentState(nextQueues);
+    setCollapsedQueuedTurnsByAgent((current) => {
+      const nextCollapsed = {
+        ...current,
+        [agentId]: reconcileQueuedTurnCollapse(
+          previousQueues[agentId] ?? [],
+          queuedTurns,
+          current[agentId] ?? [],
+        ),
+      };
+      if (queuedTurns.length === 0) {
+        delete nextCollapsed[agentId];
+      }
+      return nextCollapsed;
+    });
+  }
+
+  function toggleQueuedTurnCollapsed(agentId: string, index: number) {
+    setCollapsedQueuedTurnsByAgent((current) => {
+      const queuedTurns = queuedTurnsByAgentRef.current[agentId] ?? [];
+      if (index < 0 || index >= queuedTurns.length) {
+        return current;
+      }
+      const collapsedTurns = current[agentId] ?? [];
+      const nextCollapsedTurns = queuedTurns.map(
+        (_, turnIndex) => collapsedTurns[turnIndex] ?? false,
+      );
+      nextCollapsedTurns[index] = !nextCollapsedTurns[index];
+      return {
+        ...current,
+        [agentId]: nextCollapsedTurns,
+      };
+    });
   }
 
   // Compact directory label for a pane tab. Worktrees under the workspace root
@@ -298,7 +376,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setQueuedTurnsByAgent(Object.fromEntries(queueEntries));
+        replaceQueuedTurnsByAgent(Object.fromEntries(queueEntries));
 
         if (existingPanes.length > 0) {
           setPanes(existingPanes);
@@ -986,8 +1064,10 @@ export default function App() {
                   pane={activePane}
                   agent={activeAgent}
                   queuedTurns={activeQueuedTurns}
+                  collapsedQueuedTurns={activeCollapsedQueuedTurns}
                   transcriptText={activeTranscript}
                   onQueueChange={setAgentQueuedTurns}
+                  onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                   onError={setError}
                 />
               ) : null
