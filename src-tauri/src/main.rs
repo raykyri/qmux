@@ -27,6 +27,34 @@ use turn_queue::{
 };
 use workspace::{AgentInfo, CreateGroupRequest, GroupInfo, create_group};
 
+/// Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) out of
+/// the default menu so the webview receives ⌘W itself instead of the OS closing
+/// the window; the frontend then routes ⌘W to close the active pane. Every other
+/// default item is preserved — notably the Edit menu that wires up ⌘C/⌘V/⌘A.
+#[cfg(desktop)]
+fn route_window_close_to_frontend(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItemKind};
+
+    let menu = Menu::default(app.handle())?;
+    for item in menu.items()? {
+        let MenuItemKind::Submenu(submenu) = item else {
+            continue;
+        };
+        for sub_item in submenu.items()? {
+            if let MenuItemKind::Predefined(predefined) = &sub_item {
+                // Match the close item by its (mnemonic-stripped) label so both the
+                // File and Window submenu copies are removed across platforms.
+                let label = predefined.text().unwrap_or_default().replace('&', "");
+                if label == "Close Window" || label == "Close" {
+                    submenu.remove(predefined)?;
+                }
+            }
+        }
+    }
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[tauri::command]
 fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
     state.config().runtime()
@@ -160,6 +188,11 @@ fn main() {
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
+                // Best-effort: if the menu tweak fails, ⌘W keeps its default
+                // (window-closing) behavior rather than aborting startup.
+                if let Err(err) = route_window_close_to_frontend(app) {
+                    eprintln!("qmux: failed to reroute window close shortcut: {err}");
+                }
                 start_control_socket(state.clone()).map_err(std::io::Error::other)?;
                 // Restore persisted groups/agents/queues, then respawn recoverable
                 // panes into fresh PTYs before the command handlers go live so the

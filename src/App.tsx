@@ -121,6 +121,10 @@ export default function App() {
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
   const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
+  // Keep the latest active pane / close handler reachable from the global keydown
+  // listener without re-registering it on every state change.
+  const activePaneRef = useRef<PaneInfo | undefined>(undefined);
+  const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -358,6 +362,25 @@ export default function App() {
     }
   }
 
+  // Closing a live agent pane interrupts it, so confirm first when the agent is
+  // working or waiting on the user (awaiting input or a yes/no approval). Shell
+  // panes and finished/failed agents close without a prompt.
+  async function requestClosePane(paneToClose: PaneInfo) {
+    const agent = agents.find((candidate) => candidate.paneId === paneToClose.id);
+    const reason =
+      agent?.status === "awaitingPermission"
+        ? "is waiting for you to approve a tool use"
+        : agent?.status === "awaitingInput"
+          ? "is waiting for your input"
+          : agent?.status === "running" || agent?.status === "starting"
+            ? "is still working"
+            : null;
+    if (reason && !window.confirm(`This agent ${reason}. Close the pane and stop it?`)) {
+      return;
+    }
+    await closePane(paneToClose);
+  }
+
   async function addClaudePane() {
     const trimmed = prompt.trim();
     setError(null);
@@ -381,6 +404,13 @@ export default function App() {
     }
   }
 
+  // Mirror the latest active pane and close handler into refs so the always-on
+  // keydown listener (registered once) never reads stale state.
+  useEffect(() => {
+    activePaneRef.current = activePane;
+    requestClosePaneRef.current = requestClosePane;
+  });
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || !(event.metaKey || event.ctrlKey)) {
@@ -388,7 +418,27 @@ export default function App() {
       }
 
       const key = event.key.toLowerCase();
-      if (key !== "t" && key !== "k") {
+      if (key !== "t" && key !== "k" && key !== "w") {
+        return;
+      }
+
+      // ⌘W/Ctrl-W close the active pane instead of the window. ⌘W always closes
+      // (it is never a text-editing key); Ctrl-W must stay as delete-previous-word
+      // in the terminal and text inputs, so it only closes when focus is elsewhere.
+      if (key === "w") {
+        if (
+          event.ctrlKey &&
+          !event.metaKey &&
+          (isTerminalTarget(event.target) || isEditableTarget(event.target))
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const pane = activePaneRef.current;
+        if (pane) {
+          requestClosePaneRef.current(pane);
+        }
         return;
       }
 
@@ -527,7 +577,7 @@ export default function App() {
                   aria-label={`Close ${pane.title}`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void closePane(pane);
+                    void requestClosePane(pane);
                   }}
                 >
                   x
