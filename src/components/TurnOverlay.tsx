@@ -22,6 +22,7 @@ interface MessageItem {
   key: string;
   role: string;
   blocks: MessageBlock[];
+  activities: ActivityItem[];
 }
 
 interface ToolEntry {
@@ -45,7 +46,8 @@ interface ThinkingItem {
   values: unknown[];
 }
 
-type TimelineItem = MessageItem | ToolRunItem | ThinkingItem;
+type ActivityItem = ToolRunItem | ThinkingItem;
+type TimelineItem = MessageItem;
 
 export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
@@ -102,27 +104,42 @@ function buildTimelineItems(turns: Turn[]): TimelineItem[] {
 
   const nextKey = (prefix: string) => `${prefix}-${sequence++}`;
 
+  const createMessageItem = (role: string, block?: MessageBlock): MessageItem => ({
+    type: "message",
+    key: nextKey(`message-${role}`),
+    role,
+    blocks: block ? [block] : [],
+    activities: [],
+  });
+
   const pushMessageBlock = (role: string, block: MessageBlock) => {
     const previous = items[items.length - 1];
-    if (previous?.type === "message" && previous.role === role) {
+    if (previous?.role === role && previous.activities.length === 0) {
       previous.blocks.push(block);
       return;
     }
-    items.push({
-      type: "message",
-      key: nextKey(`message-${role}`),
-      role,
-      blocks: [block],
-    });
+    items.push(createMessageItem(role, block));
+  };
+
+  const assistantActivityOwner = () => {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index].role === "assistant") {
+        return items[index];
+      }
+    }
+    const fallback = createMessageItem("assistant");
+    items.push(fallback);
+    return fallback;
   };
 
   const pushThinkingValue = (value: unknown) => {
-    const previous = items[items.length - 1];
-    if (previous?.type === "thinking") {
-      previous.values.push(value);
+    const owner = assistantActivityOwner();
+    const previousActivity = owner.activities[owner.activities.length - 1];
+    if (previousActivity?.type === "thinking") {
+      previousActivity.values.push(value);
       return;
     }
-    items.push({
+    owner.activities.push({
       type: "thinking",
       key: nextKey("thinking"),
       values: [value],
@@ -130,12 +147,13 @@ function buildTimelineItems(turns: Turn[]): TimelineItem[] {
   };
 
   const pushToolEntry = (entry: ToolEntry) => {
-    const previous = items[items.length - 1];
-    if (previous?.type === "toolRun") {
-      previous.entries.push(entry);
+    const owner = assistantActivityOwner();
+    const previousActivity = owner.activities[owner.activities.length - 1];
+    if (previousActivity?.type === "toolRun") {
+      previousActivity.entries.push(entry);
       return;
     }
-    items.push({
+    owner.activities.push({
       type: "toolRun",
       key: nextKey("tool-run"),
       entries: [entry],
@@ -211,27 +229,40 @@ function buildTimelineItems(turns: Turn[]): TimelineItem[] {
 }
 
 function TimelineItemView({ item }: { item: TimelineItem }) {
+  return <MessageItemView item={item} />;
+}
+
+function MessageItemView({ item }: { item: MessageItem }) {
+  return (
+    <article
+      className={`turn-card role-${item.role} ${item.blocks.length === 0 ? "is-activity-only" : ""}`}
+    >
+      <header>{item.role}</header>
+      {item.blocks.length > 0 ? (
+        <div className="turn-blocks">
+          {item.blocks.map((block, index) => (
+            <MessageBlockView key={`${item.key}-${index}`} block={block} />
+          ))}
+        </div>
+      ) : null}
+      {item.activities.length > 0 ? (
+        <div className="assistant-activity" aria-label="Assistant activity">
+          {item.activities.map((activity) => (
+            <ActivityItemView key={activity.key} item={activity} />
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function ActivityItemView({ item }: { item: ActivityItem }) {
   switch (item.type) {
-    case "message":
-      return <MessageItemView item={item} />;
     case "toolRun":
       return <ToolRunView item={item} />;
     case "thinking":
       return <ThinkingView item={item} />;
   }
-}
-
-function MessageItemView({ item }: { item: MessageItem }) {
-  return (
-    <article className={`turn-card role-${item.role}`}>
-      <header>{item.role}</header>
-      <div className="turn-blocks">
-        {item.blocks.map((block, index) => (
-          <MessageBlockView key={`${item.key}-${index}`} block={block} />
-        ))}
-      </div>
-    </article>
-  );
 }
 
 function MessageBlockView({ block }: { block: MessageBlock }) {
