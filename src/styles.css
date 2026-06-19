@@ -876,10 +876,39 @@ button:disabled {
   line-height: 1.4;
 }
 
+.queued-turn-toggle {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.queued-turn-toggle:hover {
+  color: #f1f0e8;
+}
+
+.queued-turn-toggle:focus-visible {
+  border: 0;
+  outline: none;
+  box-shadow: 0 0 0 1px #6cae9d;
+}
+
 .queued-turn-text {
+  display: block;
   min-width: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.queued-turn.is-collapsed .queued-turn-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .queued-turn-actions {
