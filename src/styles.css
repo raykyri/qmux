@@ -266,13 +266,22 @@ button:disabled {
 }
 
 .terminal-pane.is-active {
-  display: block;
+  display: flex;
 }
 
 .terminal-host {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
   width: 100%;
   height: 100%;
+  overflow: hidden;
   padding: 10px;
+}
+
+.terminal-host .xterm {
+  width: 100%;
+  height: 100%;
 }
 
 .turn-overlay {
