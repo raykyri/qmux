@@ -7,6 +7,7 @@ import type {
   QmuxEvent,
   RuntimeConfig,
   SpawnClaudeRequest,
+  SubmitAgentTurnResult,
   Turn,
 } from "../types";
 
@@ -44,6 +45,12 @@ export function writePane(paneId: string, data: string) {
 
 export function submitPaneInput(paneId: string, data: string) {
   return invoke<void>("pane_write", { paneId, data, paste: true, submit: true });
+}
+
+export function submitAgentTurn(agentId: string, data: string) {
+  return invoke<SubmitAgentTurnResult>("agent_submit_turn", {
+    request: { agentId, data },
+  });
 }
 
 export function resizePane(paneId: string, cols: number, rows: number) {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { submitPaneInput } from "../lib/api";
+import { submitAgentTurn, submitPaneInput } from "../lib/api";
 import type { AgentInfo, PaneInfo } from "../types";
 
 interface NativeInputProps {
@@ -13,7 +13,7 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
   const [submitting, setSubmitting] = useState(false);
   const awaitingPermission = agent.status === "awaitingPermission";
 
-  async function submitText(text: string) {
+  async function submitTurn(text: string) {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -21,8 +21,19 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
 
     setSubmitting(true);
     try {
-      await submitPaneInput(pane.id, trimmed);
+      await submitAgentTurn(agent.id, trimmed);
       setValue("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitPermissionResponse(response: string) {
+    setSubmitting(true);
+    try {
+      await submitPaneInput(pane.id, response);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -35,7 +46,7 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
       className="native-input"
       onSubmit={(event) => {
         event.preventDefault();
-        void submitText(value);
+        void submitTurn(value);
       }}
     >
       <textarea
@@ -49,10 +60,18 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
       <div className="native-input-actions">
         {awaitingPermission ? (
           <>
-            <button type="button" onClick={() => void submitText("y")} disabled={submitting}>
+            <button
+              type="button"
+              onClick={() => void submitPermissionResponse("y")}
+              disabled={submitting}
+            >
               Approve
             </button>
-            <button type="button" onClick={() => void submitText("n")} disabled={submitting}>
+            <button
+              type="button"
+              onClick={() => void submitPermissionResponse("n")}
+              disabled={submitting}
+            >
               Deny
             </button>
           </>

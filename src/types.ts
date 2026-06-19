@@ -73,6 +73,11 @@ export interface SpawnClaudeRequest {
   permissionMode?: string | null;
 }
 
+export interface SubmitAgentTurnResult {
+  queued: boolean;
+  pendingTurns: number;
+}
+
 export interface QmuxEvent {
   type: string;
   paneId?: string | null;

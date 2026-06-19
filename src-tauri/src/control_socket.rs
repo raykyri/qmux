@@ -3,6 +3,7 @@ use crate::events::QmuxEvent;
 use crate::hooks::{HookNotification, ingest_hook_notification};
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
+use crate::turn_queue::{SubmitAgentTurnRequest, submit_agent_turn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
@@ -105,6 +106,13 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                 .map_err(|err| format!("invalid agent.spawn payload: {err}"))?;
             let pane = spawn_claude_pane(state, spawn)?;
             serde_json::to_value(pane).map_err(|err| format!("failed to encode pane: {err}"))
+        }
+        "agent.submit_turn" => {
+            let submit = serde_json::from_value::<SubmitAgentTurnRequest>(request.payload)
+                .map_err(|err| format!("invalid agent.submit_turn payload: {err}"))?;
+            let result = submit_agent_turn(state, submit)?;
+            serde_json::to_value(result)
+                .map_err(|err| format!("failed to encode submit result: {err}"))
         }
         "hook.notify" => {
             let notification = serde_json::from_value::<HookNotification>(request.payload)
