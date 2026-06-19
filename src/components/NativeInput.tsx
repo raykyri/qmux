@@ -87,7 +87,8 @@ export default function NativeInput({ pane, agent, onError }: NativeInputProps) 
           </>
         ) : null}
         <button type="submit" disabled={submitting || value.trim().length === 0}>
-          Send
+          <span>Send</span>
+          <span className="shortcut-hint">Cmd-Enter</span>
         </button>
       </div>
     </form>

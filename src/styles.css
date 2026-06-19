@@ -37,6 +37,10 @@ select:focus {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid #3a3d3f;
   border-radius: 6px;
   background: #24282b;
@@ -48,6 +52,11 @@ button {
 button:disabled {
   color: #797d80;
   cursor: default;
+}
+
+.shortcut-hint {
+  color: #9ea5a6;
+  font-size: 11px;
 }
 
 .app-shell {

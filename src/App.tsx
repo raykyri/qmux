@@ -310,7 +310,10 @@ export default function App() {
               onChange={(event) => setBaseRef(event.currentTarget.value)}
             />
           </div>
-          <button type="submit">Launch Claude</button>
+          <button type="submit">
+            <span>Launch Claude</span>
+            <span className="shortcut-hint">Cmd-Enter</span>
+          </button>
         </form>
 
         {config ? (
