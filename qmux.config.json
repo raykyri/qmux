@@ -1,0 +1,5 @@
+{
+  "workspaceRoot": ".qmux/workspaces",
+  "socketPath": ".qmux/run/qmux.sock",
+  "claudeBinary": "claude"
+}
