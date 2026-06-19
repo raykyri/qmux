@@ -58,40 +58,6 @@ button:disabled {
   padding: 16px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid #4e5b5d;
-  border-radius: 6px;
-  background: #243133;
-  color: #96e0cf;
-  font-weight: 800;
-}
-
-.brand h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-.brand p {
-  margin: 1px 0 0;
-  color: #9ea5a6;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .pane-list {
   display: flex;
   min-height: 0;

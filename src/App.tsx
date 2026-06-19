@@ -225,14 +225,6 @@ export default function App() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">q</span>
-          <div>
-            <h1>qmux</h1>
-            <p>PTY renderer</p>
-          </div>
-        </div>
-
         <nav className="pane-list" aria-label="Panes">
           {panes.map((pane) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
