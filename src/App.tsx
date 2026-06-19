@@ -150,7 +150,13 @@ export default function App() {
       }
       if (event.type === "turn.updated" && event.payload.reset) {
         const agentId = event.agentId;
-        setTurns((current) => current.filter((turn) => turn.agentId !== agentId));
+        const replacementTurns = Array.isArray(event.payload.turns)
+          ? (event.payload.turns as Turn[])
+          : [];
+        setTurns((current) => [
+          ...current.filter((turn) => turn.agentId !== agentId),
+          ...replacementTurns,
+        ]);
       }
     }).then((cleanup) => {
       if (disposed) {

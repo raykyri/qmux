@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::env;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -200,14 +201,37 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
         .map_err(|_| format!("pane {pane_id} child lock poisoned"))?;
 
     if let Some(pid) = child.process_id() {
+        terminate_descendants(pid);
         let group = format!("-{}", pid);
-        let _ = std::process::Command::new("/bin/kill")
-            .arg("-TERM")
-            .arg(&group)
-            .status();
+        let _ = Command::new("/bin/kill").arg("-TERM").arg(&group).status();
     }
 
     child
         .kill()
         .map_err(|err| format!("failed to kill pane {pane_id}: {err}"))
+}
+
+fn terminate_descendants(pid: u32) {
+    for child_pid in child_process_ids(pid) {
+        terminate_descendants(child_pid);
+        let _ = Command::new("/bin/kill")
+            .arg("-TERM")
+            .arg(child_pid.to_string())
+            .status();
+    }
+}
+
+fn child_process_ids(pid: u32) -> Vec<u32> {
+    let output = Command::new("/usr/bin/pgrep")
+        .arg("-P")
+        .arg(pid.to_string())
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .collect(),
+        _ => Vec::new(),
+    }
 }

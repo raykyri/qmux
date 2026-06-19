@@ -37,7 +37,7 @@ pub fn start_transcript_tail(state: AppState, agent_id: String, transcript_path:
 
     thread::spawn(move || {
         let path = PathBuf::from(&transcript_path);
-        let mut seen_lines = 0_usize;
+        let mut seen_lines: Vec<String> = Vec::new();
 
         loop {
             let raw = match fs::read_to_string(&path) {
@@ -47,35 +47,47 @@ pub fn start_transcript_tail(state: AppState, agent_id: String, transcript_path:
                     continue;
                 }
             };
-            let lines = raw.lines().collect::<Vec<_>>();
+            let lines = raw.lines().map(ToString::to_string).collect::<Vec<_>>();
 
-            if lines.len() < seen_lines {
-                seen_lines = 0;
-                let _ = state.replace_turns(&agent_id, Vec::new());
+            if is_append_only(&seen_lines, &lines) {
+                for (index, line) in lines.iter().enumerate().skip(seen_lines.len()) {
+                    if let Some(turn) = parse_transcript_line(&agent_id, index, line) {
+                        let _ = state.append_turn(turn.clone());
+                        state.emit(QmuxEvent::new(
+                            "turn.appended",
+                            None,
+                            Some(agent_id.clone()),
+                            json!({ "turn": turn }),
+                        ));
+                    }
+                }
+            } else {
+                let turns = lines
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, line)| parse_transcript_line(&agent_id, index, line))
+                    .collect::<Vec<_>>();
+                let _ = state.replace_turns(&agent_id, turns.clone());
                 state.emit(QmuxEvent::new(
                     "turn.updated",
                     None,
                     Some(agent_id.clone()),
-                    json!({ "reset": true, "turns": [] }),
+                    json!({ "reset": true, "turns": turns }),
                 ));
             }
 
-            for (index, line) in lines.iter().enumerate().skip(seen_lines) {
-                if let Some(turn) = parse_transcript_line(&agent_id, index, line) {
-                    let _ = state.append_turn(turn.clone());
-                    state.emit(QmuxEvent::new(
-                        "turn.appended",
-                        None,
-                        Some(agent_id.clone()),
-                        json!({ "turn": turn }),
-                    ));
-                }
-            }
-
-            seen_lines = lines.len();
+            seen_lines = lines;
             thread::sleep(Duration::from_millis(350));
         }
     });
+}
+
+fn is_append_only(previous: &[String], current: &[String]) -> bool {
+    previous.len() <= current.len()
+        && previous
+            .iter()
+            .zip(current.iter())
+            .all(|(previous, current)| previous == current)
 }
 
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
