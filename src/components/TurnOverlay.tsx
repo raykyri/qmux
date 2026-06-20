@@ -57,14 +57,7 @@ interface ThinkingItem {
   values: unknown[];
 }
 
-interface AssistantRunItem {
-  type: "assistantRun";
-  key: string;
-  messages: MessageItem[];
-}
-
 type ActivityItem = ToolRunItem | ThinkingItem;
-type TimelineItem = MessageItem | AssistantRunItem;
 
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
@@ -157,7 +150,7 @@ export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps)
         {timelineItems.length === 0 ? (
           <p className="empty-turns">No turns yet</p>
         ) : (
-          timelineItems.map((item) => <TimelineItemView key={item.key} item={item} />)
+          timelineItems.map((item) => <MessageTimelineItemView key={item.key} item={item} />)
         )}
       </div>
       {input ? (
@@ -205,7 +198,7 @@ function normalizeQueuedTurns(turns: Turn[]): Turn[] {
   return result;
 }
 
-function buildTimelineItems(turns: Turn[]): TimelineItem[] {
+function buildTimelineItems(turns: Turn[]): MessageItem[] {
   const items: MessageItem[] = [];
   const pendingById = new Map<string, ToolEntry>();
   const pendingWithoutId: ToolEntry[] = [];
@@ -334,66 +327,7 @@ function buildTimelineItems(turns: Turn[]): TimelineItem[] {
     }
   }
 
-  return groupAssistantRuns(items);
-}
-
-function TimelineItemView({ item }: { item: TimelineItem }) {
-  switch (item.type) {
-    case "message":
-      return <MessageTimelineItemView item={item} />;
-    case "assistantRun":
-      return <AssistantRunView item={item} />;
-  }
-}
-
-function groupAssistantRuns(items: MessageItem[]): TimelineItem[] {
-  const grouped: TimelineItem[] = [];
-  let index = 0;
-
-  while (index < items.length) {
-    const item = items[index];
-    if (item.role !== "assistant") {
-      grouped.push(item);
-      index += 1;
-      continue;
-    }
-
-    const messages: MessageItem[] = [];
-    while (index < items.length && items[index].role === "assistant") {
-      messages.push(items[index]);
-      index += 1;
-    }
-
-    if (messages.length === 1) {
-      grouped.push(messages[0]);
-    } else {
-      grouped.push({
-        type: "assistantRun",
-        key: `assistant-run-${messages[0].key}`,
-        messages,
-      });
-    }
-  }
-
-  return grouped;
-}
-
-function AssistantRunView({ item }: { item: AssistantRunItem }) {
-  return (
-    <details className="assistant-run-block">
-      <summary>
-        <span className="tool-summary">
-          <span className="tool-summary-main">{item.messages.length} assistant updates</span>
-          <span className="tool-summary-meta">{assistantRunMeta(item.messages)}</span>
-        </span>
-      </summary>
-      <div className="assistant-run-items">
-        {item.messages.map((message) => (
-          <MessageTimelineItemView key={message.key} item={message} />
-        ))}
-      </div>
-    </details>
-  );
+  return items;
 }
 
 function MessageTimelineItemView({ item }: { item: MessageItem }) {
@@ -525,23 +459,6 @@ function summarizeToolNames(entries: ToolEntry[]) {
   const visibleNames = names.slice(0, 4).join(", ");
   const remaining = names.length - 4;
   return remaining > 0 ? `${visibleNames}, +${remaining}` : visibleNames;
-}
-
-function assistantRunMeta(messages: MessageItem[]) {
-  let toolCalls = 0;
-
-  for (const message of messages) {
-    for (const activity of message.activities) {
-      if (activity.type === "toolRun") {
-        toolCalls += activity.entries.length;
-      }
-    }
-  }
-
-  if (toolCalls > 0) {
-    return `${toolCalls} tool ${toolCalls === 1 ? "call" : "calls"}`;
-  }
-  return "collapsed";
 }
 
 function formatTurnTranscript(turn: Turn) {
