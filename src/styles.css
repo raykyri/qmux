@@ -654,9 +654,11 @@ button:disabled {
   width: min(680px, 100%);
   border: 1px solid var(--accent-color);
   border-radius: 14px;
-  background: #1b2022;
+  /* Faint top-lit gradient — a touch lighter at the very top, settling to the
+     base surface by ~40% down — so the bar reads as a lifted panel. */
+  background: linear-gradient(180deg, #1f2426, #1b2022 40%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 26px 80px rgba(0, 0, 0, 0.55);
   overflow: hidden;
   /* Only the border eases; the focus ring (box-shadow) snaps in so clicking the
@@ -669,7 +671,7 @@ button:disabled {
 .command-launcher:focus-within {
   border-color: var(--accent-color);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 0 0 1px var(--accent-shadow),
     0 26px 80px rgba(0, 0, 0, 0.55);
 }
@@ -1031,6 +1033,7 @@ button:disabled {
 }
 
 .command-launcher-option select {
+  --select-chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   appearance: none;
   -webkit-appearance: none;
   min-height: var(--control-h-md);
@@ -1039,7 +1042,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background-color: #111315;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-image: var(--select-chevron);
   background-repeat: no-repeat;
   background-position: right 8px center;
   background-size: 10px;
@@ -1053,6 +1056,25 @@ button:disabled {
 .command-launcher-option select:hover {
   border-color: var(--control-border-hover);
   background-color: #16191b;
+}
+
+/* Leading glyph inside a select: chevron stays right, a 14px icon sits left,
+   and the text shifts over to clear it. Variants supply the left-hand icon. */
+.command-launcher-option select[data-lead] {
+  padding-left: 28px;
+  background-repeat: no-repeat, no-repeat;
+  background-position: right 8px center, left 8px center;
+  background-size: 10px, 14px;
+}
+
+.command-launcher-option select[data-lead="folder"] {
+  background-image: var(--select-chevron),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca6a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/></svg>");
+}
+
+.command-launcher-option select[data-lead="shield"] {
+  background-image: var(--select-chevron),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca6a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z'/></svg>");
 }
 
 .command-launcher-option-toggle {
