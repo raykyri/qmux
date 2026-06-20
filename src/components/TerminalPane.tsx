@@ -103,6 +103,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // the true drawable area, so the first/last rows are not pushed out and clipped.
   const mountRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  // Kept so font changes can clear the WebGL glyph atlas (see the font effect),
+  // and so a lost context can dispose the addon and fall back to the DOM renderer.
+  const webglAddonRef = useRef<WebglAddon | null>(null);
   const terminalReadyRef = useRef(false);
   // PTY output can arrive while the terminal waits for the bundled font to load.
   // Buffer it and flush once xterm is open so startup output is not dropped.
@@ -280,7 +283,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       });
 
       try {
-        terminal.loadAddon(new WebglAddon());
+        const webgl = new WebglAddon();
+        // On macOS WKWebView the GPU can drop the WebGL context (e.g. after a
+        // font swap rebuilds the glyph atlas). xterm leaves a blank/transparent
+        // canvas behind when that happens, which—because the window is
+        // translucent—reads as the whole app going see-through. Disposing the
+        // addon on context loss falls the terminal back to the DOM renderer
+        // instead of stranding it blank.
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          if (webglAddonRef.current === webgl) {
+            webglAddonRef.current = null;
+          }
+        });
+        terminal.loadAddon(webgl);
+        webglAddonRef.current = webgl;
       } catch {
         // The canvas renderer is fine as a fallback, especially in CI and older webviews.
       }
@@ -444,6 +461,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         document.removeEventListener("visibilitychange", syncRenderKeepAlive);
         stopRenderKeepAlive();
         terminal.dispose();
+        webglAddonRef.current = null;
         terminalReadyRef.current = false;
         terminalRef.current = null;
         searchRef.current = null;
@@ -519,6 +537,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       changed = true;
     }
     if (changed) {
+      // The WebGL renderer caches rasterized glyphs in a texture atlas keyed to
+      // the old font/size. Without clearing it the new font draws from stale (or
+      // empty) cells, which on WKWebView can blank the canvas entirely. Clearing
+      // forces the atlas to rebuild for the new metrics.
+      webglAddonRef.current?.clearTextureAtlas();
       stabilizeTerminalRef.current?.();
     }
   }, [fontSize, fontFamily]);
