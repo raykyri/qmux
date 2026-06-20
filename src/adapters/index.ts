@@ -33,7 +33,7 @@ export interface AgentUiAdapter {
   contextRows?: (agent: AgentInfo, pane: PaneInfo) => Array<{ label: string; value: string }>;
 }
 
-export const agentUiAdapters = [codexUiAdapter, claudeUiAdapter];
+export const agentUiAdapters = [claudeUiAdapter, codexUiAdapter];
 
 export function findAgentUiAdapter(adapterId: string | null | undefined): AgentUiAdapter | null {
   return agentUiAdapters.find((adapter) => adapter.id === adapterId) ?? null;

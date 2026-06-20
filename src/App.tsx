@@ -436,6 +436,9 @@ export default function App() {
       .filter((adapter): adapter is NonNullable<typeof adapter> => Boolean(adapter));
     return runtimeAdapters && runtimeAdapters.length > 0 ? runtimeAdapters : agentUiAdapters;
   }, [config]);
+  function focusLauncherInput() {
+    requestAnimationFrame(() => launcherInputRef.current?.focus());
+  }
   const activeTurns = useMemo(
     () => {
       const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
@@ -2093,7 +2096,10 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={createInWorktree}
-                    onChange={(event) => setCreateInWorktree(event.currentTarget.checked)}
+                    onChange={(event) => {
+                      setCreateInWorktree(event.currentTarget.checked);
+                      focusLauncherInput();
+                    }}
                   />
                   <span>New worktree</span>
                 </label>
@@ -2101,12 +2107,13 @@ export default function App() {
                   <div className="command-launcher-options">
                     <LauncherOptions
                       value={launcherOptions}
-                      onChange={(next) =>
+                      onChange={(next) => {
                         setLauncherOptionsByAdapter((current) => ({
                           ...current,
                           [launchAdapter.id]: next,
-                        }))
-                      }
+                        }));
+                        focusLauncherInput();
+                      }}
                     />
                   </div>
                 ) : null}
@@ -2119,7 +2126,10 @@ export default function App() {
                       type="button"
                       className={adapter.id === launchAdapter.id ? "is-active" : ""}
                       aria-pressed={adapter.id === launchAdapter.id}
-                      onClick={() => setLauncherAdapterId(adapter.id)}
+                      onClick={() => {
+                        setLauncherAdapterId(adapter.id);
+                        focusLauncherInput();
+                      }}
                     >
                       {adapter.label}
                     </button>
@@ -2429,7 +2439,21 @@ export default function App() {
 
         <div ref={terminalStageRef} className="terminal-stage">
           {panes.length === 0 ? (
-            <div className="empty-state terminal-empty-state">No active tab</div>
+            <div className="empty-state terminal-empty-state">
+              <div className="terminal-empty-content">
+                <div>No active tab</div>
+                <div className="terminal-empty-actions">
+                  <button type="button" onClick={addShellPane}>
+                    <SquareTerminal size={14} aria-hidden="true" />
+                    <span>New shell</span>
+                  </button>
+                  <button type="button" onClick={() => setLauncherOpen(true)}>
+                    <MessageSquareText size={14} aria-hidden="true" />
+                    <span>New agent</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : null}
           {panes.map((pane) => (
             <TerminalPane
