@@ -1360,6 +1360,7 @@ button:disabled {
   line-height: 1.4;
   /* The whole row is the drag handle (there is no separate grip). */
   cursor: grab;
+  user-select: none;
 }
 
 /* The dragged row fades; a drop line marks where it will land. */
