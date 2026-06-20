@@ -1,13 +1,7 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
-import type { ISearchOptions } from "@xterm/addon-search";
-import { SerializeAddon } from "@xterm/addon-serialize";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { FitAddon, Terminal } from "ghostty-web";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { ensureGhosttyReady } from "../lib/ghostty";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
 import type { PaneInfo } from "../types";
 
@@ -25,17 +19,11 @@ export interface TerminalPaneHandle {
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 
-// Colors for the search match highlights, tuned to read against the terminal's
-// dark background while echoing the cursor's amber. The overview-ruler colors are
-// required by the addon's types even though we do not render a ruler.
-const SEARCH_DECORATIONS = {
-  matchBackground: "#665a2b",
-  matchBorder: "#8a7a3a",
-  matchOverviewRuler: "#8a7a3a",
-  activeMatchBackground: "#a8842f",
-  activeMatchBorder: "#f2d37b",
-  activeMatchColorOverviewRuler: "#f2d37b",
-} as const;
+type SearchMatch = { row: number; col: number; length: number };
+
+// Cap how many matches we track so a pathological search (e.g. "." as a regex)
+// over a long scrollback cannot lock up the UI building a huge array.
+const MAX_SEARCH_MATCHES = 5000;
 
 function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
   if (typeof data === "string") {
@@ -56,19 +44,150 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
   return null;
 }
 
+// ghostty-web has no SearchAddon, so we implement find over its public buffer
+// API. We scan every line of the active buffer (scrollback + screen) and record
+// each hit as an absolute (row, col, length). The active match is highlighted
+// with the terminal's own selection; unlike xterm's SearchAddon we cannot paint
+// every match at once (ghostty has a single selection, no decoration layer).
+function computeSearchMatches(
+  terminal: Terminal,
+  term: string,
+  useRegex: boolean,
+  caseSensitive: boolean,
+): SearchMatch[] {
+  if (!term) {
+    return [];
+  }
+
+  const buffer = terminal.buffer.active;
+  const matches: SearchMatch[] = [];
+
+  let findInLine: (text: string) => Array<{ col: number; length: number }>;
+  if (useRegex) {
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(term, caseSensitive ? "g" : "gi");
+    } catch {
+      // Incomplete/invalid regex while the user is still typing: no matches.
+      return [];
+    }
+    findInLine = (text) => {
+      const hits: Array<{ col: number; length: number }> = [];
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(text)) !== null) {
+        if (match[0].length === 0) {
+          // Avoid an infinite loop on zero-width matches (e.g. "a*").
+          pattern.lastIndex += 1;
+          continue;
+        }
+        hits.push({ col: match.index, length: match[0].length });
+      }
+      return hits;
+    };
+  } else {
+    const needle = caseSensitive ? term : term.toLowerCase();
+    findInLine = (text) => {
+      const hits: Array<{ col: number; length: number }> = [];
+      const haystack = caseSensitive ? text : text.toLowerCase();
+      let index = haystack.indexOf(needle);
+      while (index !== -1) {
+        hits.push({ col: index, length: term.length });
+        index = haystack.indexOf(needle, index + needle.length);
+      }
+      return hits;
+    };
+  }
+
+  const lineCount = buffer.length;
+  for (let row = 0; row < lineCount; row += 1) {
+    const line = buffer.getLine(row);
+    if (!line) {
+      continue;
+    }
+    const text = line.translateToString(true);
+    if (!text) {
+      continue;
+    }
+    for (const hit of findInLine(text)) {
+      matches.push({ row, col: hit.col, length: hit.length });
+      if (matches.length >= MAX_SEARCH_MATCHES) {
+        return matches;
+      }
+    }
+  }
+
+  return matches;
+}
+
+function highlightSearchMatch(terminal: Terminal, match: SearchMatch) {
+  try {
+    terminal.select(match.col, match.row, match.length);
+    // scrollToLine takes an absolute buffer line (0 = top of scrollback). Pulling
+    // the match a little below the top leaves a line of context above it.
+    if (typeof terminal.scrollToLine === "function") {
+      terminal.scrollToLine(Math.max(0, match.row - 1));
+    }
+  } catch {
+    // Selection/scroll APIs are best-effort; never let find crash the pane.
+  }
+}
+
+// ghostty-web has no public refresh(); its CanvasRenderer repaints inside its own
+// requestAnimationFrame loop. To force a frame (see the keep-alive below) we drive
+// the renderer directly with the same arguments the internal loop uses. These
+// fields are public on the Terminal instance but the call shape is internal, so
+// it is wrapped defensively.
+interface GhosttyRenderInternals {
+  renderer?: {
+    render: (
+      buffer: unknown,
+      forceAll: boolean,
+      viewportY: number,
+      scrollbackProvider: unknown,
+      scrollbarOpacity: number,
+    ) => void;
+  };
+  wasmTerm?: unknown;
+  viewportY?: number;
+  scrollbarOpacity?: number;
+}
+
+function forceRender(terminal: Terminal) {
+  const internals = terminal as unknown as GhosttyRenderInternals;
+  if (!internals.renderer || !internals.wasmTerm) {
+    return;
+  }
+  try {
+    internals.renderer.render(
+      internals.wasmTerm,
+      true,
+      internals.viewportY ?? 0,
+      terminal,
+      internals.scrollbarOpacity ?? 0,
+    );
+  } catch {
+    // Renderer internals shifted between library versions; keep-alive is optional.
+  }
+}
+
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
   { pane, active },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  // xterm opens into this inner mount, which fills the host's content box with no
-  // padding of its own. The visual breathing room lives as padding on the host;
-  // keeping it off the element FitAddon measures means rows/cols are computed from
+  // ghostty opens into this inner mount (it appends a <canvas> and a hidden
+  // <textarea> for input/IME). The mount fills the host's content box with no
+  // padding of its own; the visual breathing room lives as padding on the host.
+  // Keeping it off the element FitAddon measures means rows/cols are computed from
   // the true drawable area, so the first/last rows are not pushed out and clipped.
   const mountRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const serializeRef = useRef<SerializeAddon | null>(null);
-  const searchRef = useRef<SearchAddon | null>(null);
+  const terminalReadyRef = useRef(false);
+  // PTY output can arrive before the (async) terminal finishes initializing. We
+  // buffer it here and flush once the terminal is open so nothing is dropped.
+  const pendingDataRef = useRef<Array<string | Uint8Array>>([]);
+  const searchMatchesRef = useRef<SearchMatch[]>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
 
@@ -81,15 +200,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     count: 0,
   });
 
-  const searchOptions = useMemo<ISearchOptions>(
-    () => ({
-      regex: useRegex,
-      caseSensitive,
-      decorations: { ...SEARCH_DECORATIONS },
-    }),
-    [useRegex, caseSensitive],
-  );
-
   useImperativeHandle(ref, () => ({
     focus() {
       terminalRef.current?.focus();
@@ -97,15 +207,31 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     },
   }));
 
+  const showMatch = (index: number) => {
+    const terminal = terminalRef.current;
+    const matches = searchMatchesRef.current;
+    if (!terminal) {
+      return;
+    }
+    if (!matches.length || index < 0) {
+      terminal.clearSelection();
+      setSearchResults({ index: -1, count: matches.length });
+      return;
+    }
+    const wrapped = ((index % matches.length) + matches.length) % matches.length;
+    highlightSearchMatch(terminal, matches[wrapped]);
+    setSearchResults({ index: wrapped, count: matches.length });
+  };
+
   const findNext = () => {
-    if (searchTerm) {
-      searchRef.current?.findNext(searchTerm, searchOptions);
+    if (searchMatchesRef.current.length) {
+      showMatch(searchResults.index + 1);
     }
   };
 
   const findPrevious = () => {
-    if (searchTerm) {
-      searchRef.current?.findPrevious(searchTerm, searchOptions);
+    if (searchMatchesRef.current.length) {
+      showMatch(searchResults.index - 1);
     }
   };
 
@@ -128,240 +254,253 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   };
 
   // Re-run the search whenever the term or options change while the bar is open.
-  // `incremental` keeps the current match selected as the term grows, so typing
-  // does not jump the viewport around. Clearing the term wipes the highlights.
+  // We default the active match to the most recent (bottom-most) hit, which keeps
+  // the viewport near the live output; ↑ walks back through earlier matches.
   useEffect(() => {
-    const addon = searchRef.current;
-    if (!addon || !searchOpen) {
+    const terminal = terminalRef.current;
+    if (!terminal || !searchOpen) {
       return;
     }
     if (searchTerm === "") {
-      addon.clearDecorations();
+      searchMatchesRef.current = [];
+      terminal.clearSelection();
       setSearchResults({ index: -1, count: 0 });
       return;
     }
-    addon.findNext(searchTerm, { ...searchOptions, incremental: true });
-  }, [searchTerm, searchOpen, searchOptions]);
+    const matches = computeSearchMatches(terminal, searchTerm, useRegex, caseSensitive);
+    searchMatchesRef.current = matches;
+    if (!matches.length) {
+      terminal.clearSelection();
+      setSearchResults({ index: -1, count: 0 });
+      return;
+    }
+    showMatch(matches.length - 1);
+    // showMatch is intentionally excluded; it reads only refs/state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, searchOpen, useRegex, caseSensitive]);
 
-  // Opening the bar focuses its input; closing it clears highlights and returns
+  // Opening the bar focuses its input; closing it clears the highlight and returns
   // focus to the terminal so typing keeps flowing to the PTY.
   useEffect(() => {
     if (searchOpen) {
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
     } else {
-      searchRef.current?.clearDecorations();
+      searchMatchesRef.current = [];
+      terminalRef.current?.clearSelection();
       terminalRef.current?.focus();
     }
   }, [searchOpen]);
 
   useEffect(() => {
     const mount = mountRef.current;
-    if (!hostRef.current || !mount || terminalRef.current) {
+    const host = hostRef.current;
+    if (!mount || !host || terminalRef.current) {
       return;
     }
 
-    const terminal = new Terminal({
-      allowProposedApi: true,
-      convertEol: true,
-      cols: pane.cols,
-      cursorBlink: true,
-      fontFamily:
-        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
-      fontSize: 13,
-      rows: pane.rows,
-      theme: {
-        background: "#111315",
-        foreground: "#e7e7e2",
-        cursor: "#f2d37b",
-        selectionBackground: "#3d4a52",
-      },
-    });
+    let cancelled = false;
+    let teardown: (() => void) | null = null;
 
-    const fit = new FitAddon();
-    const unicode = new Unicode11Addon();
-    const serialize = new SerializeAddon();
-    const search = new SearchAddon();
-
-    terminal.loadAddon(fit);
-    terminal.loadAddon(unicode);
-    terminal.loadAddon(serialize);
-    terminal.loadAddon(search);
-    terminal.unicode.activeVersion = "11";
-
-    const resultsDisposable = search.onDidChangeResults(({ resultIndex, resultCount }) => {
-      setSearchResults({ index: resultIndex, count: resultCount });
-    });
-
-    // ⌘F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
-    // Returning false stops xterm from forwarding the keystroke to the PTY.
-    terminal.attachCustomKeyEventHandler((event) => {
-      const findCombo = IS_MAC
-        ? event.metaKey && !event.ctrlKey
-        : event.ctrlKey && !event.metaKey;
-      if (
-        event.type === "keydown" &&
-        findCombo &&
-        !event.altKey &&
-        (event.key === "f" || event.key === "F")
-      ) {
-        event.preventDefault();
-        setSearchOpen(true);
-        window.requestAnimationFrame(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        });
-        return false;
-      }
-      return true;
-    });
-
-    try {
-      terminal.loadAddon(new WebglAddon());
-    } catch {
-      // The canvas renderer is fine as a fallback, especially in CI and older webviews.
-    }
-
-    terminal.open(mount);
-    terminal.focus();
-
-    let resizeFrame: number | null = null;
-    let settleFrame: number | null = null;
-    const settleTimers = new Set<number>();
-    let disposed = false;
-
-    let syncedCols = pane.cols;
-    let syncedRows = pane.rows;
-    const refreshTerminal = () => {
-      if (terminal.rows > 0) {
-        terminal.refresh(0, terminal.rows - 1);
-      }
-    };
-    const fitAndSyncSize = () => {
-      const host = hostRef.current;
-      if (!host || host.offsetParent === null || host.clientWidth === 0 || host.clientHeight === 0) {
-        // The pane is hidden (display: none). FitAddon measures the host via
-        // getComputedStyle, which returns the computed "100%" width for an
-        // unrendered element; parseInt("100%") = 100, so it proposes ~10 cols
-        // and reflows the scrollback (and the PTY) down to that bogus width.
-        return;
-      }
-      fit.fit();
-      if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
-        syncedCols = terminal.cols;
-        syncedRows = terminal.rows;
-        void resizePane(pane.id, terminal.cols, terminal.rows);
-      }
-      refreshTerminal();
-    };
-    const scheduleFit = () => {
-      if (disposed) {
-        return;
-      }
-      if (resizeFrame !== null) {
-        window.cancelAnimationFrame(resizeFrame);
-      }
-      resizeFrame = window.requestAnimationFrame(() => {
-        resizeFrame = null;
-        fitAndSyncSize();
+    void ensureGhosttyReady()
+      .then(() => {
+        if (cancelled || !mountRef.current) {
+          return;
+        }
+        teardown = setUpTerminal(mount, host);
+        if (cancelled) {
+          teardown();
+          teardown = null;
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to initialize ghostty terminal", error);
       });
-    };
-    const scheduleSettledFits = () => {
-      if (disposed) {
-        return;
-      }
-      scheduleFit();
 
-      if (settleFrame !== null) {
-        window.cancelAnimationFrame(settleFrame);
+    function setUpTerminal(mountEl: HTMLDivElement, hostEl: HTMLDivElement): () => void {
+      const terminal = new Terminal({
+        convertEol: true,
+        cols: pane.cols,
+        rows: pane.rows,
+        cursorBlink: true,
+        scrollback: 10000,
+        fontFamily:
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
+        fontSize: 13,
+        theme: {
+          background: "#111315",
+          foreground: "#e7e7e2",
+          cursor: "#f2d37b",
+          selectionBackground: "#3d4a52",
+        },
+      });
+
+      const fit = new FitAddon();
+      terminal.loadAddon(fit);
+
+      // ⌘F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
+      // ghostty's custom key handler is inverted from xterm's: returning true calls
+      // preventDefault() and stops the key from reaching the PTY, returning false
+      // lets ghostty handle it normally (so ⌘C/⌘V copy & paste keep working).
+      terminal.attachCustomKeyEventHandler((event) => {
+        const findCombo = IS_MAC
+          ? event.metaKey && !event.ctrlKey
+          : event.ctrlKey && !event.metaKey;
+        if (findCombo && !event.altKey && (event.key === "f" || event.key === "F")) {
+          setSearchOpen(true);
+          window.requestAnimationFrame(() => {
+            searchInputRef.current?.focus();
+            searchInputRef.current?.select();
+          });
+          return true;
+        }
+        return false;
+      });
+
+      terminal.open(mountEl);
+      terminal.focus();
+
+      // Flush any PTY output that arrived while the WASM engine was still loading.
+      terminalRef.current = terminal;
+      terminalReadyRef.current = true;
+      const pending = pendingDataRef.current;
+      pendingDataRef.current = [];
+      for (const chunk of pending) {
+        terminal.write(chunk);
       }
-      settleFrame = window.requestAnimationFrame(() => {
-        settleFrame = null;
+
+      let resizeFrame: number | null = null;
+      let settleFrame: number | null = null;
+      const settleTimers = new Set<number>();
+
+      let syncedCols = pane.cols;
+      let syncedRows = pane.rows;
+      const fitAndSyncSize = () => {
+        if (
+          hostEl.offsetParent === null ||
+          hostEl.clientWidth === 0 ||
+          hostEl.clientHeight === 0
+        ) {
+          // The pane is hidden (display: none). Measuring it would propose a bogus
+          // tiny size and reflow the scrollback (and the PTY) down to it.
+          return;
+        }
+        fit.fit();
+        if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
+          syncedCols = terminal.cols;
+          syncedRows = terminal.rows;
+          void resizePane(pane.id, terminal.cols, terminal.rows);
+        }
+        forceRender(terminal);
+      };
+      const scheduleFit = () => {
+        if (cancelled) {
+          return;
+        }
+        if (resizeFrame !== null) {
+          window.cancelAnimationFrame(resizeFrame);
+        }
+        resizeFrame = window.requestAnimationFrame(() => {
+          resizeFrame = null;
+          fitAndSyncSize();
+        });
+      };
+      const scheduleSettledFits = () => {
+        if (cancelled) {
+          return;
+        }
+        scheduleFit();
+
+        if (settleFrame !== null) {
+          window.cancelAnimationFrame(settleFrame);
+        }
+        settleFrame = window.requestAnimationFrame(() => {
+          settleFrame = null;
+          scheduleFit();
+        });
+
+        for (const delay of [50, 250]) {
+          const timer = window.setTimeout(() => {
+            settleTimers.delete(timer);
+            scheduleFit();
+          }, delay);
+          settleTimers.add(timer);
+        }
+      };
+
+      scheduleSettledFits();
+      void document.fonts.ready.then(() => {
+        scheduleSettledFits();
+      });
+
+      const resizeObserver = new ResizeObserver(() => {
         scheduleFit();
       });
+      resizeObserver.observe(hostEl);
 
-      for (const delay of [50, 250]) {
-        const timer = window.setTimeout(() => {
-          settleTimers.delete(timer);
-          scheduleFit();
-        }, delay);
-        settleTimers.add(timer);
-      }
-    };
+      const inputDisposable = terminal.onData((data) => {
+        void writePane(pane.id, data);
+      });
 
-    scheduleSettledFits();
-    void document.fonts.ready.then(() => {
-      scheduleSettledFits();
-    });
+      stabilizeTerminalRef.current = scheduleSettledFits;
 
-    const resizeObserver = new ResizeObserver(() => {
-      scheduleFit();
-    });
-    resizeObserver.observe(hostRef.current);
+      // ghostty paints inside requestAnimationFrame, which the OS/webview throttles
+      // or pauses while the qmux window is unfocused or hidden. PTY data (e.g.
+      // Claude's elapsed-time spinner) keeps arriving, but the canvas stops
+      // repainting, so the on-screen timer looks frozen. While the window is not
+      // focused, drive the renderer on an interval so timers keep updating, and
+      // force a catch-up repaint the moment focus/visibility returns.
+      let keepAliveTimer: number | null = null;
+      const stopRenderKeepAlive = () => {
+        if (keepAliveTimer !== null) {
+          window.clearInterval(keepAliveTimer);
+          keepAliveTimer = null;
+        }
+      };
+      const syncRenderKeepAlive = () => {
+        if (document.hasFocus() && !document.hidden) {
+          stopRenderKeepAlive();
+          forceRender(terminal);
+        } else if (keepAliveTimer === null) {
+          keepAliveTimer = window.setInterval(() => forceRender(terminal), 250);
+        }
+      };
+      window.addEventListener("focus", syncRenderKeepAlive);
+      window.addEventListener("blur", syncRenderKeepAlive);
+      document.addEventListener("visibilitychange", syncRenderKeepAlive);
+      syncRenderKeepAlive();
 
-    const inputDisposable = terminal.onData((data) => {
-      void writePane(pane.id, data);
-    });
-
-    terminalRef.current = terminal;
-    serializeRef.current = serialize;
-    searchRef.current = search;
-    stabilizeTerminalRef.current = scheduleSettledFits;
-
-    // xterm paints inside requestAnimationFrame, which the OS/webview throttles or
-    // pauses while the qmux window is unfocused or hidden. PTY data (e.g. Claude's
-    // elapsed-time spinner) keeps arriving, but the canvas stops repainting, so the
-    // on-screen timer looks frozen. While the window is not focused, nudge the
-    // renderer on an interval so timers keep updating, and force a catch-up repaint
-    // the moment focus/visibility returns.
-    let keepAliveTimer: number | null = null;
-    const forceRefresh = () => {
-      if (!disposed && terminal.rows > 0) {
-        terminal.refresh(0, terminal.rows - 1);
-      }
-    };
-    const stopRenderKeepAlive = () => {
-      if (keepAliveTimer !== null) {
-        window.clearInterval(keepAliveTimer);
-        keepAliveTimer = null;
-      }
-    };
-    const syncRenderKeepAlive = () => {
-      if (document.hasFocus() && !document.hidden) {
+      return () => {
+        inputDisposable.dispose();
+        resizeObserver.disconnect();
+        if (resizeFrame !== null) {
+          window.cancelAnimationFrame(resizeFrame);
+        }
+        if (settleFrame !== null) {
+          window.cancelAnimationFrame(settleFrame);
+        }
+        for (const timer of settleTimers) {
+          window.clearTimeout(timer);
+        }
+        window.removeEventListener("focus", syncRenderKeepAlive);
+        window.removeEventListener("blur", syncRenderKeepAlive);
+        document.removeEventListener("visibilitychange", syncRenderKeepAlive);
         stopRenderKeepAlive();
-        forceRefresh();
-      } else if (keepAliveTimer === null) {
-        keepAliveTimer = window.setInterval(forceRefresh, 250);
-      }
-    };
-    window.addEventListener("focus", syncRenderKeepAlive);
-    window.addEventListener("blur", syncRenderKeepAlive);
-    document.addEventListener("visibilitychange", syncRenderKeepAlive);
-    syncRenderKeepAlive();
+        terminal.dispose();
+        terminalReadyRef.current = false;
+        terminalRef.current = null;
+        stabilizeTerminalRef.current = null;
+        searchMatchesRef.current = [];
+      };
+    }
 
     return () => {
-      disposed = true;
-      inputDisposable.dispose();
-      resultsDisposable.dispose();
-      resizeObserver.disconnect();
-      if (resizeFrame !== null) {
-        window.cancelAnimationFrame(resizeFrame);
-      }
-      if (settleFrame !== null) {
-        window.cancelAnimationFrame(settleFrame);
-      }
-      for (const timer of settleTimers) {
-        window.clearTimeout(timer);
-      }
-      window.removeEventListener("focus", syncRenderKeepAlive);
-      window.removeEventListener("blur", syncRenderKeepAlive);
-      document.removeEventListener("visibilitychange", syncRenderKeepAlive);
-      stopRenderKeepAlive();
-      terminal.dispose();
-      terminalRef.current = null;
-      serializeRef.current = null;
-      searchRef.current = null;
-      stabilizeTerminalRef.current = null;
+      cancelled = true;
+      teardown?.();
+      teardown = null;
+      // If output is still buffered because the terminal never finished opening,
+      // drop it; a fresh terminal will be created for the next pane.id.
+      pendingDataRef.current = [];
     };
   }, [pane.id]);
 
@@ -375,8 +514,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       }
 
       const data = terminalDataFromPayload(event.payload.data);
-      if (data) {
-        terminalRef.current?.write(data);
+      if (!data) {
+        return;
+      }
+      const terminal = terminalRef.current;
+      if (terminal && terminalReadyRef.current) {
+        terminal.write(data);
+      } else {
+        pendingDataRef.current.push(data);
       }
     }).then((cleanup) => {
       if (disposed) {

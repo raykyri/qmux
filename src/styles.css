@@ -723,9 +723,11 @@ button:disabled {
   height: 100%;
 }
 
-.terminal-mount .xterm {
-  width: 100%;
-  height: 100%;
+/* ghostty-web renders into a <canvas> it appends to the mount. It sizes the
+   canvas itself from the fitted cols/rows; we only need it to lay out as a block
+   so there is no inline baseline gap under it. */
+.terminal-mount canvas {
+  display: block;
 }
 
 .terminal-search {
