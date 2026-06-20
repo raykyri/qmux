@@ -741,11 +741,6 @@ button:disabled {
   padding: 16px 18px 52px;
 }
 
-.command-launcher.has-options .command-launcher-input {
-  min-height: 146px;
-  padding-bottom: 92px;
-}
-
 .command-launcher-input::placeholder {
   color: var(--placeholder-color);
 }
@@ -796,53 +791,73 @@ button:disabled {
 }
 
 .command-launcher-options {
-  position: absolute;
-  right: 10px;
-  bottom: 50px;
-  left: 10px;
-  display: flex;
-  flex-wrap: nowrap;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  pointer-events: auto;
+}
+
+.command-launcher-overlay-group {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  pointer-events: auto;
+  min-width: 0;
+  /* Let clicks in the gaps between the worktree chip and the option chips fall
+     through to focus the composer; each child re-enables pointer events. */
+  pointer-events: none;
 }
 
 .command-launcher-option {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
   min-height: var(--control-h-md);
-  color: #c4cbc6;
+  color: var(--control-fg-muted);
   font-size: var(--fs-sm);
 }
 
 .command-launcher-option span {
   white-space: nowrap;
+  color: var(--placeholder-color);
 }
 
 .command-launcher-option select {
+  appearance: none;
+  -webkit-appearance: none;
   min-height: var(--control-h-md);
-  max-width: 160px;
-  padding: 0 28px 0 9px;
-  border: 1px solid #384044;
+  max-width: 150px;
+  padding: 0 24px 0 9px;
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111517;
+  background-color: #111315;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 10px;
   color: #e7e7e2;
   font-size: var(--fs-sm);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
-.command-launcher-option select:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(108, 174, 157, 0.32);
+.command-launcher-option select:hover {
+  border-color: var(--control-border-hover);
+  background-color: #16191b;
 }
 
 .command-launcher-option-toggle {
-  padding: 0 8px;
-  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   user-select: none;
 }
@@ -872,24 +887,24 @@ button:disabled {
   display: inline-flex;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #384044;
-  border-radius: var(--radius-md);
-  background: #111517;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .command-launcher-adapter-picker button {
   min-height: var(--control-h-md);
-  padding: 0 10px;
+  padding: 0 12px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #b9c0bc;
+  color: var(--control-fg-muted);
   font-size: var(--fs-base);
   white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .command-launcher-adapter-picker button + button {
-  border-left: 1px solid #384044;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .command-launcher-adapter-picker button:hover {
@@ -899,7 +914,7 @@ button:disabled {
 
 .command-launcher-adapter-picker button.is-active {
   background: #2f6f61;
-  color: #ffffff;
+  color: #f4f3ec;
 }
 
 .command-launcher-adapter-picker button:focus-visible {
