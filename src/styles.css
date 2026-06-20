@@ -741,6 +741,11 @@ button:disabled {
   padding: 16px 18px 52px;
 }
 
+.command-launcher.has-options .command-launcher-input {
+  min-height: 146px;
+  padding-bottom: 92px;
+}
+
 .command-launcher-input::placeholder {
   color: var(--placeholder-color);
 }
@@ -783,6 +788,71 @@ button:disabled {
 }
 
 .command-launcher-worktree input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #6cae9d;
+  cursor: pointer;
+}
+
+.command-launcher-options {
+  position: absolute;
+  right: 10px;
+  bottom: 50px;
+  left: 10px;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  pointer-events: auto;
+}
+
+.command-launcher-option {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 7px;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  color: #c4cbc6;
+  font-size: var(--fs-sm);
+}
+
+.command-launcher-option span {
+  white-space: nowrap;
+}
+
+.command-launcher-option select {
+  min-height: var(--control-h-md);
+  max-width: 160px;
+  padding: 0 28px 0 9px;
+  border: 1px solid #384044;
+  border-radius: var(--radius-md);
+  background: #111517;
+  color: #e7e7e2;
+  font-size: var(--fs-sm);
+}
+
+.command-launcher-option select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(108, 174, 157, 0.32);
+}
+
+.command-launcher-option-toggle {
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.command-launcher-option-toggle:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e7e7e2;
+}
+
+.command-launcher-option-toggle input {
   width: 14px;
   height: 14px;
   margin: 0;
