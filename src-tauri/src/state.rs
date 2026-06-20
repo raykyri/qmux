@@ -961,7 +961,7 @@ fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig};
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
     use crate::persistence::PersistedState;
     use crate::workspace::AgentStatus;
     use std::path::PathBuf;
@@ -986,6 +986,9 @@ mod tests {
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
                 },
             },
             legacy_claude_binary: None,

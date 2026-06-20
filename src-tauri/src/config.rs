@@ -24,11 +24,20 @@ pub struct QmuxConfig {
 pub struct AdapterConfigs {
     #[serde(default)]
     pub claude: ClaudeAdapterConfig,
+    #[serde(default)]
+    pub codex: CodexAdapterConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeAdapterConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAdapterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
 }
@@ -98,6 +107,14 @@ impl QmuxConfig {
             .unwrap_or_else(|| "claude".to_string())
     }
 
+    pub fn codex_binary(&self) -> String {
+        self.adapters
+            .codex
+            .binary
+            .clone()
+            .unwrap_or_else(|| "codex".to_string())
+    }
+
     fn default_config() -> Result<Self, String> {
         let home = env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
         Ok(Self {
@@ -106,6 +123,9 @@ impl QmuxConfig {
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
                 },
             },
             legacy_claude_binary: None,
@@ -156,5 +176,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.claude_binary(), "legacy-claude");
+    }
+
+    #[test]
+    fn codex_binary_defaults_and_can_be_configured() {
+        let default_config: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(default_config.codex_binary(), "codex");
+
+        let configured: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "adapters": {
+                "codex": {
+                  "binary": "/opt/bin/codex"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(configured.codex_binary(), "/opt/bin/codex");
     }
 }

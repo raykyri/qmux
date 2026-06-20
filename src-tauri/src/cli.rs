@@ -100,12 +100,16 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             run_agent_exec("claude".to_string(), args.collect())?;
             Ok(true)
         }
+        "codex" => {
+            run_agent_exec("codex".to_string(), args.collect())?;
+            Ok(true)
+        }
         "ping" => {
             request_and_print("ping", json!({}))?;
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude]");
+            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude|codex]");
             Ok(true)
         }
         _ => Ok(false),

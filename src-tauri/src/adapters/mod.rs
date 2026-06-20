@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod codex;
 
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -7,8 +8,11 @@ use crate::state::{AppState, PaneInfo};
 use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus};
 use claude::ClaudeAdapter;
+use codex::CodexAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::env;
+use std::path::{Path, PathBuf};
 
 pub use claude::{PrepareShellClaudeLaunchRequest, SpawnClaudeRequest};
 
@@ -202,7 +206,22 @@ pub struct AdapterMetadata {
 }
 
 pub fn adapter_registry(config: &QmuxConfig) -> AdapterRegistry {
-    AdapterRegistry::new(vec![Box::new(ClaudeAdapter::new(config))])
+    AdapterRegistry::new(vec![
+        Box::new(CodexAdapter::new(config)),
+        Box::new(ClaudeAdapter::new(config)),
+    ])
+}
+
+pub(crate) fn ensure_on_path(binary: &str) -> Option<PathBuf> {
+    let binary_path = Path::new(binary);
+    if binary_path.components().count() > 1 {
+        return binary_path.is_file().then(|| binary_path.to_path_buf());
+    }
+
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| candidate.is_file())
 }
 
 pub fn agent_spawn(state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
@@ -272,7 +291,7 @@ fn notification_adapter_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig};
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
     use std::path::PathBuf;
 
     fn test_config() -> QmuxConfig {
@@ -282,6 +301,9 @@ mod tests {
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
                 },
             },
             legacy_claude_binary: None,
@@ -304,8 +326,11 @@ mod tests {
     fn runtime_metadata_marks_claude_as_default() {
         let registry = adapter_registry(&test_config());
 
-        assert_eq!(registry.metadata().len(), 1);
-        assert_eq!(registry.metadata()[0].id, "claude");
-        assert!(registry.metadata()[0].default);
+        let metadata = registry.metadata();
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0].id, "codex");
+        assert!(!metadata[0].default);
+        assert_eq!(metadata[1].id, "claude");
+        assert!(metadata[1].default);
     }
 }
