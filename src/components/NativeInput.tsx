@@ -112,6 +112,11 @@ export default function NativeInput({
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  // Recently sent or removed messages, per agent, so the menu can offer them for
+  // quick re-copy. Kept here (not in the backend) as a session convenience.
+  const [recentByAgent, setRecentByAgent] = useState<Record<string, string[]>>({});
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
   const queueStackRef = useRef<HTMLDivElement | null>(null);
   const previousQueueLength = useRef(queuedTurns.length);
   const previousAgentId = useRef(agent.id);
@@ -128,6 +133,7 @@ export default function NativeInput({
   const isWorking = agent.status === "starting" || agent.status === "running";
   const hasTranscript = transcriptText.trim().length > 0;
   const sendDisabled = submitting || !canSend || value.trim().length === 0;
+  const recentMessages = recentByAgent[agent.id] ?? [];
 
   // Close the actions menu on an outside click or Escape while it is open.
   useEffect(() => {
@@ -175,6 +181,14 @@ export default function NativeInput({
     }
   }, [queuedTurns.length, agent.id]);
 
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current !== null) {
+        window.clearTimeout(toastTimer.current);
+      }
+    };
+  }, []);
+
   async function submitTurn(text: string, mode: "send" | "queue" | "steer") {
     if (submitting) {
       return;
@@ -189,6 +203,7 @@ export default function NativeInput({
     try {
       const result = await submitAgentTurn(agent.id, trimmed, mode);
       onQueueChange(agent.id, result.queuedTurns);
+      recordRecentMessage(trimmed);
       setValue("");
       // Return focus to the composer once it clears. Deferred to the next frame
       // so it lands after the submit buttons re-render — clicking one disables or
@@ -221,6 +236,7 @@ export default function NativeInput({
     try {
       const result = await removeQueuedAgentTurn(agent.id, index, turn);
       onQueueChange(agent.id, result.queuedTurns);
+      recordRecentMessage(turn);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -268,6 +284,40 @@ export default function NativeInput({
 
     try {
       await writeClipboardText(transcriptCopyText());
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Push a message onto this agent's recent list: most-recent first, de-duplicated,
+  // capped at five.
+  function recordRecentMessage(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    setRecentByAgent((current) => {
+      const existing = current[agent.id] ?? [];
+      const next = [trimmed, ...existing.filter((entry) => entry !== trimmed)].slice(0, 5);
+      return { ...current, [agent.id]: next };
+    });
+  }
+
+  function showToast(message: string) {
+    setToast(message);
+    if (toastTimer.current !== null) {
+      window.clearTimeout(toastTimer.current);
+    }
+    toastTimer.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimer.current = null;
+    }, 1600);
+  }
+
+  async function copyRecentMessage(message: string) {
+    try {
+      await writeClipboardText(message);
+      showToast("Copied to clipboard");
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
@@ -448,7 +498,7 @@ export default function NativeInput({
             aria-label="More actions"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <EllipsisVertical size={16} aria-hidden="true" />
+            <EllipsisVertical size={15} aria-hidden="true" />
           </button>
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">
@@ -464,6 +514,27 @@ export default function NativeInput({
               >
                 Copy transcript
               </button>
+              {recentMessages.length > 0 ? (
+                <>
+                  <div className="composer-menu-divider" role="separator" />
+                  <div className="composer-menu-label">Recent messages</div>
+                  {recentMessages.map((message, index) => (
+                    <button
+                      key={`${index}-${message}`}
+                      type="button"
+                      role="menuitem"
+                      className="composer-menu-item composer-menu-recent"
+                      title={message}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void copyRecentMessage(message);
+                      }}
+                    >
+                      {message}
+                    </button>
+                  ))}
+                </>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -519,6 +590,11 @@ export default function NativeInput({
           </button>
         </div>
       </div>
+      {toast ? (
+        <div className="composer-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      ) : null}
     </form>
   );
 }

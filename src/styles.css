@@ -1328,8 +1328,9 @@ button:disabled {
   position: relative;
   flex: 0 0 auto;
   display: flex;
-  /* Sit at the right of the row, just left of the submit buttons. */
+  /* Sit at the right of the row, with a small gap before the submit buttons. */
   margin-left: auto;
+  margin-right: 2px;
 }
 
 .composer-menu-trigger {
@@ -1383,6 +1384,53 @@ button:disabled {
 
 .composer-menu-item:hover:not(:disabled) {
   background: #283032;
+}
+
+.composer-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: #2a2d2f;
+}
+
+.composer-menu-label {
+  padding: 4px 10px 2px;
+  color: #8a938e;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Recent-message rows truncate to a single line; the full text is in the title. */
+.composer-menu-recent {
+  display: block;
+  max-width: 300px;
+  min-height: 0;
+  padding: 5px 10px;
+  overflow: hidden;
+  color: #b9c0bc;
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-menu-recent:hover:not(:disabled) {
+  color: #f1f0e8;
+}
+
+.composer-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  z-index: 30;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border: 1px solid #2a2d2f;
+  border-radius: 999px;
+  background: #1d2224;
+  color: #e7e7e2;
+  font-size: var(--fs-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
 }
 
 .native-input-submit-actions {
