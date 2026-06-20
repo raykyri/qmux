@@ -930,9 +930,24 @@ button:disabled {
 }
 
 .empty-turns {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   margin: 0;
+  /* Pushed down from the top of the pane rather than pinned to the very top. */
+  padding-top: 20vh;
   color: #aab1ad;
-  font-size: 12px;
+  text-align: center;
+}
+
+.empty-turns p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.empty-turns-icon {
+  color: #5d6663;
 }
 
 .turn-card {
@@ -1285,13 +1300,6 @@ button:disabled {
   min-width: 0;
 }
 
-.recovered-queue-source {
-  color: #8f9a94;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
 .recovered-queue-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1378,6 +1386,9 @@ button:disabled {
   display: block;
   min-width: 0;
   min-height: 0;
+  /* When the text is shorter than the row (whose height the action buttons set),
+     center it vertically instead of pinning it to the top. */
+  align-self: center;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1429,6 +1440,12 @@ button:disabled {
   border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
   color: #f4f3ec;
+}
+
+/* Trim 1px of horizontal padding on each side so the × button reads tighter. */
+.queued-turn-remove {
+  padding-left: 6px;
+  padding-right: 6px;
 }
 
 /* Optically center the × against the text baseline. */
@@ -1503,10 +1520,11 @@ button:disabled {
 }
 
 .composer-menu-popover {
-  /* Anchored above the trigger so it opens upward, away from the bottom edge. */
+  /* Anchored above the trigger so it opens upward, away from the bottom edge.
+     Right edge pinned to the trigger so the menu always grows leftward. */
   position: absolute;
   bottom: calc(100% + 6px);
-  left: 0;
+  right: 0;
   z-index: 5;
   display: flex;
   flex-direction: column;
@@ -1556,7 +1574,6 @@ button:disabled {
   padding: 5px 10px;
   overflow: hidden;
   color: #b9c0bc;
-  font-size: var(--fs-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1594,4 +1611,12 @@ button:disabled {
 
 .queue-button {
   flex: 0 0 auto;
+  /* 1px tighter than the shared button column-gap (8px) between text and glyphs. */
+  column-gap: 7px;
+}
+
+/* Nudge the enter (↵) glyph down 1px so it sits optically centered next to ⌘. */
+.enter-glyph {
+  display: inline-block;
+  transform: translateY(1px);
 }

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, MessagesSquare } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -144,7 +144,10 @@ export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps)
         onScroll={handleTimelineScroll}
       >
         {timelineItems.length === 0 ? (
-          <p className="empty-turns">No turns yet</p>
+          <div className="empty-turns">
+            <MessagesSquare className="empty-turns-icon" size={36} aria-hidden="true" />
+            <p>No turns yet</p>
+          </div>
         ) : (
           timelineItems.map((item) => <MessageTimelineItemView key={item.key} item={item} />)
         )}
