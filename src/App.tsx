@@ -2099,9 +2099,13 @@ export default function App() {
                 id="settings-font"
                 className="settings-select"
                 value={settings.fontId}
-                onChange={(event) =>
-                  setSettings((current) => ({ ...current, fontId: event.currentTarget.value }))
-                }
+                onChange={(event) => {
+                  // Read the value synchronously: the setSettings updater runs
+                  // during render, by which point React has reset currentTarget
+                  // to null, so it must close over the value, not the event.
+                  const fontId = event.currentTarget.value;
+                  setSettings((current) => ({ ...current, fontId }));
+                }}
               >
                 {FONT_OPTIONS.map((option) => (
                   <option key={option.id} value={option.id}>
@@ -2150,12 +2154,12 @@ export default function App() {
                 type="checkbox"
                 className="settings-checkbox"
                 checked={settings.preventSleep}
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    preventSleep: event.currentTarget.checked,
-                  }))
-                }
+                onChange={(event) => {
+                  // See the font select above: capture before the updater, which
+                  // runs after currentTarget has been nulled out.
+                  const preventSleep = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, preventSleep }));
+                }}
               />
             </label>
           </div>
