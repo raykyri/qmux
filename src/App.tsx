@@ -1387,7 +1387,17 @@ export default function App() {
         return;
       }
 
-      if (key !== "t" && key !== "n" && key !== "k" && key !== "w") {
+      // Cmd-; / Ctrl-; opens qmux's agent picker, even from terminal focus.
+      // Claimed in the capture phase so focus doesn't matter; ⌘K is left alone
+      // for the terminal to handle (e.g. clear-screen).
+      if (key === ";") {
+        event.preventDefault();
+        event.stopPropagation();
+        setLauncherOpen(true);
+        return;
+      }
+
+      if (key !== "t" && key !== "n" && key !== "w") {
         return;
       }
 
@@ -1411,15 +1421,7 @@ export default function App() {
         return;
       }
 
-      // Cmd-K opens qmux's agent picker even from terminal focus. Ctrl-K still
-      // belongs to the terminal as kill-line.
-      if (key === "k" && isTerminalTarget(event.target)) {
-        if (!event.metaKey || event.ctrlKey) {
-          return;
-        }
-      }
-
-      // Ctrl-based shortcuts collide with native text editing (e.g. Ctrl-K kill-line) in
+      // Ctrl-based shortcuts collide with native text editing (e.g. Ctrl-W delete-word) in
       // any editable element, so let those through; the documented ⌘ shortcuts keep working.
       if (event.ctrlKey && !event.metaKey && isEditableTarget(event.target)) {
         return;
@@ -1428,14 +1430,11 @@ export default function App() {
       event.preventDefault();
       event.stopPropagation();
 
-      if (key === "t" || key === "n") {
-        if (!event.metaKey || event.ctrlKey) {
-          return;
-        }
-        void addShellPane();
-      } else {
-        setLauncherOpen(true);
+      // Cmd-T / Cmd-N open a new shell pane.
+      if (!event.metaKey || event.ctrlKey) {
+        return;
       }
+      void addShellPane();
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
