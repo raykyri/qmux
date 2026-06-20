@@ -340,7 +340,7 @@ function buildTimelineItems(turns: Turn[]): TimelineItem[] {
 function TimelineItemView({ item }: { item: TimelineItem }) {
   switch (item.type) {
     case "message":
-      return <MessageItemView item={item} />;
+      return <MessageTimelineItemView item={item} />;
     case "assistantRun":
       return <AssistantRunView item={item} />;
   }
@@ -389,33 +389,33 @@ function AssistantRunView({ item }: { item: AssistantRunItem }) {
       </summary>
       <div className="assistant-run-items">
         {item.messages.map((message) => (
-          <MessageItemView key={message.key} item={message} />
+          <MessageTimelineItemView key={message.key} item={message} />
         ))}
       </div>
     </details>
   );
 }
 
+function MessageTimelineItemView({ item }: { item: MessageItem }) {
+  return (
+    <>
+      {item.blocks.length > 0 ? <MessageItemView item={item} /> : null}
+      {item.activities.map((activity) => (
+        <ActivityItemView key={activity.key} item={activity} />
+      ))}
+    </>
+  );
+}
+
 function MessageItemView({ item }: { item: MessageItem }) {
   return (
-    <article
-      className={`turn-card role-${item.role} ${item.blocks.length === 0 ? "is-activity-only" : ""}`}
-    >
+    <article className={`turn-card role-${item.role}`}>
       <header>{item.role}</header>
-      {item.blocks.length > 0 ? (
-        <div className="turn-blocks">
-          {item.blocks.map((block, index) => (
-            <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
-          ))}
-        </div>
-      ) : null}
-      {item.activities.length > 0 ? (
-        <div className="assistant-activity" aria-label="Assistant activity">
-          {item.activities.map((activity) => (
-            <ActivityItemView key={activity.key} item={activity} />
-          ))}
-        </div>
-      ) : null}
+      <div className="turn-blocks">
+        {item.blocks.map((block, index) => (
+          <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
+        ))}
+      </div>
     </article>
   );
 }
@@ -468,18 +468,16 @@ function ToolRunView({ item }: { item: ToolRunItem }) {
       </summary>
       <div className="tool-run-items">
         {item.entries.map((entry) => (
-          <ToolEntryView key={entry.key} entry={entry} nested />
+          <ToolEntryView key={entry.key} entry={entry} />
         ))}
       </div>
     </details>
   );
 }
 
-function ToolEntryView({ entry, nested = false }: { entry: ToolEntry; nested?: boolean }) {
+function ToolEntryView({ entry }: { entry: ToolEntry }) {
   return (
-    <details
-      className={`tool-block tool-pair ${nested ? "is-nested" : ""} ${entry.isError ? "is-error" : ""}`}
-    >
+    <details className={`tool-block tool-pair ${entry.isError ? "is-error" : ""}`}>
       <summary>
         <span className="tool-summary">
           <span className="tool-summary-main">{entry.name}</span>
