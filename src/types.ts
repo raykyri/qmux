@@ -42,6 +42,7 @@ export interface AgentInfo {
   worktreeDir: string;
   branch?: string | null;
   paneId?: string | null;
+  orphanedQueuePaneId?: string | null;
   sessionId?: string | null;
   transcriptPath?: string | null;
   status:

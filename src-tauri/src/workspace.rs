@@ -28,6 +28,8 @@ pub struct AgentInfo {
     pub worktree_dir: String,
     pub branch: Option<String>,
     pub pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orphaned_queue_pane_id: Option<String>,
     pub session_id: Option<String>,
     pub transcript_path: Option<String>,
     pub status: AgentStatus,
@@ -159,6 +161,7 @@ pub fn prepare_agent_workspace(
         worktree_dir,
         branch,
         pane_id: None,
+        orphaned_queue_pane_id: None,
         session_id: None,
         transcript_path: None,
         status: AgentStatus::Starting,
@@ -181,10 +184,21 @@ pub fn attach_agent_pane(
     agent_id: &str,
     pane_id: String,
 ) -> Result<AgentInfo, String> {
+    for mut previous in state.list_agents()? {
+        if previous.id != agent_id && previous.pane_id.as_deref() == Some(&pane_id) {
+            let has_queue = !state.list_agent_turn_queue(&previous.id)?.is_empty();
+            previous.pane_id = None;
+            previous.orphaned_queue_pane_id = has_queue.then(|| pane_id.clone());
+            previous.status = AgentStatus::Stopped;
+            state.update_agent(previous)?;
+        }
+    }
+
     let mut agent = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
     agent.pane_id = Some(pane_id);
+    agent.orphaned_queue_pane_id = None;
     agent.status = AgentStatus::Running;
     state.update_agent(agent.clone())?;
     Ok(agent)
@@ -385,4 +399,65 @@ fn now_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::QmuxConfig;
+
+    fn test_state() -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: PathBuf::from("/tmp/qmux-workspace-tests"),
+            socket_path: PathBuf::from("/tmp/qmux-workspace-tests.sock"),
+            claude_binary: "claude".to_string(),
+        })
+    }
+
+    fn sample_agent(id: &str, pane_id: Option<&str>, status: AgentStatus) -> AgentInfo {
+        AgentInfo {
+            id: id.to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/qmux-workspace-tests".to_string(),
+            branch: None,
+            pane_id: pane_id.map(ToString::to_string),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn attach_agent_pane_detaches_previous_agent_for_same_pane() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(
+                "agent-old",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent("agent-new", None, AgentStatus::Starting))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-old", "old queued turn".to_string())
+            .unwrap();
+
+        let attached = attach_agent_pane(&state, "agent-new", "pane-1".to_string()).unwrap();
+
+        assert_eq!(attached.pane_id.as_deref(), Some("pane-1"));
+        assert!(matches!(attached.status, AgentStatus::Running));
+        let old = state.agent("agent-old").unwrap().expect("old agent exists");
+        assert_eq!(old.pane_id, None);
+        assert_eq!(old.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
+        assert!(matches!(old.status, AgentStatus::Stopped));
+    }
 }

@@ -2,7 +2,7 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::transcript::Turn;
-use crate::workspace::{AgentInfo, GroupInfo};
+use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -160,12 +160,35 @@ impl AppState {
     /// fresh PTYs. Returns the recoverable pane infos in a stable order.
     pub fn restore_session(&self) -> Vec<PaneInfo> {
         let persisted = persistence::load(&self.inner.config.workspace_root);
+        let shell_pane_ids = persisted
+            .panes
+            .iter()
+            .filter_map(|pane| matches!(pane.kind, PaneKind::Shell).then(|| pane.id.clone()))
+            .collect::<HashSet<_>>();
+        let queued_agent_ids = persisted
+            .queues
+            .iter()
+            .filter_map(|(agent_id, turns)| (!turns.is_empty()).then(|| agent_id.clone()))
+            .collect::<HashSet<_>>();
 
         if let Ok(mut model) = self.inner.model.lock() {
             for group in persisted.groups {
                 model.groups.insert(group.id.clone(), group);
             }
-            for agent in persisted.agents {
+            for mut agent in persisted.agents {
+                if let Some(pane_id) = agent
+                    .pane_id
+                    .clone()
+                    .filter(|pane_id| shell_pane_ids.contains(pane_id))
+                {
+                    agent.pane_id = None;
+                    agent.status = AgentStatus::Stopped;
+                    agent.orphaned_queue_pane_id = queued_agent_ids
+                        .contains(&agent.id)
+                        .then_some(pane_id);
+                } else if !queued_agent_ids.contains(&agent.id) {
+                    agent.orphaned_queue_pane_id = None;
+                }
                 model.agents.insert(agent.id.clone(), agent);
             }
             for (agent_id, turns) in persisted.queues {
@@ -524,6 +547,9 @@ impl AppState {
 
         if is_empty {
             model.agent_turn_queues.remove(agent_id);
+            if let Some(agent) = model.agents.get_mut(agent_id) {
+                agent.orphaned_queue_pane_id = None;
+            }
         }
 
         drop(model);
@@ -586,6 +612,9 @@ impl AppState {
             let pending_count = queue.len();
             if queue.is_empty() {
                 model.agent_turn_queues.remove(agent_id);
+                if let Some(agent) = model.agents.get_mut(agent_id) {
+                    agent.orphaned_queue_pane_id = None;
+                }
             }
             (data, pending_count)
         };
@@ -929,6 +958,7 @@ mod tests {
             worktree_dir: "/tmp/work/agent-1".to_string(),
             branch: Some("qmux/group-1/agent-1".to_string()),
             pane_id: Some("pane-7".to_string()),
+            orphaned_queue_pane_id: None,
             session_id: Some("session-abc".to_string()),
             transcript_path: Some("/tmp/transcript.jsonl".to_string()),
             status: AgentStatus::Running,
@@ -1044,10 +1074,18 @@ mod tests {
         assert_eq!(state.list_groups().unwrap().len(), 1);
         let agent = state.agent("agent-1").unwrap().expect("agent restored");
         assert_eq!(agent.session_id.as_deref(), Some("session-abc"));
+        assert_eq!(agent.pane_id, None);
+        assert_eq!(agent.orphaned_queue_pane_id.as_deref(), Some("pane-7"));
+        assert!(matches!(agent.status, AgentStatus::Stopped));
         assert_eq!(
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["queued turn".to_string()]
         );
+        state
+            .remove_agent_turn_queue_item("agent-1", 0, Some("queued turn"))
+            .unwrap();
+        let agent = state.agent("agent-1").unwrap().expect("agent restored");
+        assert_eq!(agent.orphaned_queue_pane_id, None);
 
         // next_id is advanced past the persisted high-water mark so ids never alias.
         assert!(state.next_id("pane").starts_with("pane-"));
