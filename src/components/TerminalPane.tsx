@@ -9,6 +9,7 @@ import "@xterm/xterm/css/xterm.css";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
+import { confirmLargePaste } from "../lib/paste";
 import {
   loadTerminalFont,
   TERMINAL_FONT_FAMILY,
@@ -405,7 +406,22 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       document.addEventListener("visibilitychange", syncRenderKeepAlive);
       syncRenderKeepAlive();
 
+      // Guard accidental giant pastes into the PTY. xterm reads the clipboard from
+      // its own textarea during the event's bubble phase, so a preventDefault is
+      // not enough — it pastes programmatically. We intercept one level up in the
+      // capture phase instead: declining stops the event before it descends to
+      // xterm, which never sees the paste.
+      const handlePaste = (event: ClipboardEvent) => {
+        const text = event.clipboardData?.getData("text") ?? "";
+        if (text && !confirmLargePaste(text)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      };
+      hostEl.addEventListener("paste", handlePaste, true);
+
       return () => {
+        hostEl.removeEventListener("paste", handlePaste, true);
         inputDisposable.dispose();
         resultsDisposable.dispose();
         resizeObserver.disconnect();
