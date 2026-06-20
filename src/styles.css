@@ -790,6 +790,53 @@ button:disabled {
   cursor: pointer;
 }
 
+.command-launcher-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.command-launcher-adapter-picker {
+  display: inline-flex;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #384044;
+  border-radius: var(--radius-md);
+  background: #111517;
+}
+
+.command-launcher-adapter-picker button {
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #b9c0bc;
+  font-size: var(--fs-base);
+  white-space: nowrap;
+}
+
+.command-launcher-adapter-picker button + button {
+  border-left: 1px solid #384044;
+}
+
+.command-launcher-adapter-picker button:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e7e7e2;
+}
+
+.command-launcher-adapter-picker button.is-active {
+  background: #2f6f61;
+  color: #ffffff;
+}
+
+.command-launcher-adapter-picker button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(231, 231, 226, 0.4);
+}
+
 .command-launcher-send {
   pointer-events: auto;
   min-height: var(--control-h-md);

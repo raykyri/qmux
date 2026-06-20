@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import { claudeUiAdapter } from "./claude";
+import { codexUiAdapter } from "./codex";
 import type { AgentInfo, PaneInfo, Turn, TurnBlock } from "../types";
 
 export type AgentStatus = AgentInfo["status"];
@@ -32,10 +33,10 @@ export interface AgentUiAdapter {
   contextRows?: (agent: AgentInfo, pane: PaneInfo) => Array<{ label: string; value: string }>;
 }
 
-const adapters = [claudeUiAdapter];
+export const agentUiAdapters = [codexUiAdapter, claudeUiAdapter];
 
 export function getAgentUiAdapter(adapterId: string | null | undefined): AgentUiAdapter {
-  return adapters.find((adapter) => adapter.id === adapterId) ?? claudeUiAdapter;
+  return agentUiAdapters.find((adapter) => adapter.id === adapterId) ?? claudeUiAdapter;
 }
 
 export function getDefaultAgentUiAdapter(adapterId?: string | null): AgentUiAdapter {

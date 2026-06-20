@@ -6,7 +6,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import { Bot, SquareTerminal, X } from "lucide-react";
-import { getAgentUiAdapter, getDefaultAgentUiAdapter } from "./adapters";
+import { agentUiAdapters, getAgentUiAdapter } from "./adapters";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -354,6 +354,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
+  const [launcherAdapterId, setLauncherAdapterId] = useState("claude");
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
@@ -372,10 +373,7 @@ export default function App() {
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
   );
-  const launchAdapter = useMemo(() => {
-    const defaultAdapterId = config?.adapters.find((adapter) => adapter.default)?.id;
-    return getDefaultAgentUiAdapter(defaultAdapterId);
-  }, [config]);
+  const launchAdapter = useMemo(() => getAgentUiAdapter(launcherAdapterId), [launcherAdapterId]);
   const activeTurns = useMemo(
     () => {
       const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
@@ -1397,6 +1395,13 @@ export default function App() {
   }, [launcherOpen]);
 
   useEffect(() => {
+    const defaultAdapterId = config?.adapters.find((adapter) => adapter.default)?.id;
+    if (defaultAdapterId) {
+      setLauncherAdapterId(defaultAdapterId);
+    }
+  }, [config]);
+
+  useEffect(() => {
     if (wasLauncherOpenRef.current && !launcherOpen) {
       focusActiveTerminal();
     }
@@ -1791,14 +1796,29 @@ export default function App() {
                 />
                 <span>Create a worktree</span>
               </label>
-              <button
-                type="submit"
-                className="command-launcher-send"
-                aria-label={`Launch ${launchAdapter.label}`}
-                title={`Launch ${launchAdapter.label}`}
-              >
-                <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
-              </button>
+              <div className="command-launcher-controls">
+                <div className="command-launcher-adapter-picker" role="group" aria-label="Agent">
+                  {agentUiAdapters.map((adapter) => (
+                    <button
+                      key={adapter.id}
+                      type="button"
+                      className={adapter.id === launchAdapter.id ? "is-active" : ""}
+                      aria-pressed={adapter.id === launchAdapter.id}
+                      onClick={() => setLauncherAdapterId(adapter.id)}
+                    >
+                      {adapter.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="submit"
+                  className="command-launcher-send"
+                  aria-label={`Launch ${launchAdapter.label}`}
+                  title={`Launch ${launchAdapter.label}`}
+                >
+                  <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
+                </button>
+              </div>
             </div>
           </form>
         </div>
