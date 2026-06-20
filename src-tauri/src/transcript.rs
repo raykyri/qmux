@@ -71,6 +71,12 @@ pub fn start_transcript_tail(
         let mut seen_lines: Vec<String> = Vec::new();
         let mut read_failures: u32 = 0;
         let mut notice_active = false;
+        // Whether this tail has ever read its bound file. Recovery only makes sense
+        // for a file we were actually following that then vanished (a rotation); a
+        // file that has never appeared is a freshly launched session still warming
+        // up, and jumping to the newest existing JSONL would bind us to an unrelated
+        // old session instead of the new one whose SessionStart just set this path.
+        let mut have_read_bound_file = false;
         let registry = adapter_registry(state.config());
         let adapter = match registry.get(&adapter_id) {
             Ok(adapter) => adapter,
@@ -109,6 +115,7 @@ pub fn start_transcript_tail(
             let raw = match fs::read_to_string(&path) {
                 Ok(raw) => {
                     read_failures = 0;
+                    have_read_bound_file = true;
                     if notice_active {
                         notice_active = false;
                         state.emit(transcript_notice(&agent_id, &transcript_path, None));
@@ -116,7 +123,7 @@ pub fn start_transcript_tail(
                     raw
                 }
                 Err(err) => {
-                    if err.kind() == ErrorKind::NotFound
+                    if should_recover_missing(err.kind(), have_read_bound_file)
                         && let Ok(Some(recovered_path)) = recover_missing_transcript(
                             &state,
                             &agent_id,
@@ -591,6 +598,16 @@ fn tail_should_continue(current: Option<Option<&str>>, bound_path: &str) -> bool
     matches!(current, Some(Some(path)) if path == bound_path)
 }
 
+/// Whether a failed read should recover onto a sibling transcript. Only a file we
+/// have already followed and that has now vanished counts as a rotation worth
+/// recovering. A never-seen file is a freshly launched session (e.g. typing
+/// `claude` in the terminal) whose transcript hasn't hit disk yet — recovering
+/// then would bind us to an unrelated existing session, so we keep waiting for the
+/// real file the new session's SessionStart pointed us at.
+fn should_recover_missing(err_kind: ErrorKind, have_read_bound_file: bool) -> bool {
+    err_kind == ErrorKind::NotFound && have_read_bound_file
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +626,17 @@ mod tests {
         assert!(!tail_should_continue(Some(None), "/t/a.jsonl"));
         // Agent gone entirely: stop.
         assert!(!tail_should_continue(None, "/t/a.jsonl"));
+    }
+
+    #[test]
+    fn recovery_waits_for_a_fresh_session_file_to_appear() {
+        // A file we followed that then vanished is a rotation: recover to a sibling.
+        assert!(should_recover_missing(ErrorKind::NotFound, true));
+        // A never-seen file is a fresh session warming up: keep waiting, don't bind
+        // to a pre-existing session in the same folder.
+        assert!(!should_recover_missing(ErrorKind::NotFound, false));
+        // Other read errors (permissions, mid-write races) never trigger recovery.
+        assert!(!should_recover_missing(ErrorKind::PermissionDenied, true));
     }
 
     #[test]
