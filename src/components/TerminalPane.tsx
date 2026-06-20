@@ -1,4 +1,4 @@
-import { FitAddon, Terminal } from "ghostty-web";
+import { Terminal } from "ghostty-web";
 import type { ITheme } from "ghostty-web";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -182,10 +182,39 @@ interface GhosttyRenderInternals {
       scrollbackProvider: unknown,
       scrollbarOpacity: number,
     ) => void;
+    // Measured cell box, e.g. { width, height, baseline }. Used to size the grid
+    // ourselves (see fitTerminalToMount).
+    getMetrics?: () => { width: number; height: number };
   };
   wasmTerm?: unknown;
   viewportY?: number;
   scrollbarOpacity?: number;
+}
+
+// ghostty-web's bundled FitAddon always carves a fixed 15px off the width for a
+// scrollbar (its internal `gA` constant), even though ghostty paints its
+// scrollbar as a fading overlay *inside* the canvas (and only while scrolling).
+// That reservation is permanent dead space pinned to the right edge — and since
+// the terminal-stage shares the canvas's background color, it just reads as a
+// terminal that won't fill the pane. So we skip the FitAddon and size the grid
+// ourselves from the mount's content box and the renderer's measured cell box.
+function fitTerminalToMount(terminal: Terminal, mountEl: HTMLElement) {
+  const width = mountEl.clientWidth;
+  const height = mountEl.clientHeight;
+  if (width === 0 || height === 0) {
+    return;
+  }
+  const metrics = (terminal as unknown as GhosttyRenderInternals).renderer?.getMetrics?.();
+  if (!metrics || !metrics.width || !metrics.height) {
+    return;
+  }
+  // Match the FitAddon's floors (2 cols / 1 row) so a momentarily tiny mount
+  // never proposes a zero-sized grid.
+  const cols = Math.max(2, Math.floor(width / metrics.width));
+  const rows = Math.max(1, Math.floor(height / metrics.height));
+  if (cols !== terminal.cols || rows !== terminal.rows) {
+    terminal.resize(cols, rows);
+  }
 }
 
 function forceRender(terminal: Terminal) {
@@ -214,8 +243,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // ghostty opens into this inner mount (it appends a <canvas> and a hidden
   // <textarea> for input/IME). The mount fills the host's content box with no
   // padding of its own; the visual breathing room lives as padding on the host.
-  // Keeping it off the element FitAddon measures means rows/cols are computed from
-  // the true drawable area, so the first/last rows are not pushed out and clipped.
+  // Keeping it off the element we measure means rows/cols are computed from the
+  // true drawable area, so the first/last rows are not pushed out and clipped.
   const mountRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const terminalReadyRef = useRef(false);
@@ -365,9 +394,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         theme: TERMINAL_THEME,
       });
 
-      const fit = new FitAddon();
-      terminal.loadAddon(fit);
-
       // ⌘F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
       // ghostty's custom key handler is inverted from xterm's: returning true calls
       // preventDefault() and stops the key from reaching the PTY, returning false
@@ -428,7 +454,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           // tiny size and reflow the scrollback (and the PTY) down to it.
           return;
         }
-        fit.fit();
+        fitTerminalToMount(terminal, mountEl);
         if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
           syncedCols = terminal.cols;
           syncedRows = terminal.rows;
