@@ -170,6 +170,14 @@ fn pane_rename(
 }
 
 #[tauri::command]
+fn pane_reorder(
+    state: tauri::State<'_, AppState>,
+    pane_ids: Vec<String>,
+) -> Result<Vec<PaneInfo>, String> {
+    state.reorder_panes(pane_ids)
+}
+
+#[tauri::command]
 fn agent_submit_turn(
     state: tauri::State<'_, AppState>,
     request: SubmitAgentTurnRequest,
@@ -323,6 +331,7 @@ fn main() {
             pane_resize,
             pane_kill,
             pane_rename,
+            pane_reorder,
             agent_submit_turn,
             agent_remove_queued_turn,
             agent_reorder_queued_turn,
