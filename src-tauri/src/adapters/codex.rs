@@ -1196,6 +1196,7 @@ mod tests {
                 writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
                     bytes: bytes.clone(),
                 }))),
+                backlog: Default::default(),
             })
             .unwrap();
         bytes

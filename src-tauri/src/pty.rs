@@ -1,6 +1,8 @@
 use crate::adapters::{ShellCommandIntegration, adapter_registry};
 use crate::events::QmuxEvent;
-use crate::state::{AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedChild};
+use crate::state::{
+    AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
+};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use std::env;
@@ -20,6 +22,10 @@ const MIN_INITIAL_COLS: u16 = 20;
 const MIN_INITIAL_ROWS: u16 = 5;
 const MAX_INITIAL_COLS: u16 = 500;
 const MAX_INITIAL_ROWS: u16 = 200;
+/// Cap on PTY output buffered before the frontend attaches. Only a prompt (or a
+/// recovered pane's startup banner) is ever expected here; the cap just bounds a
+/// pathological pre-attach burst, keeping the most recent bytes.
+const BACKLOG_CAP: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -381,6 +387,7 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     let child = Arc::new(Mutex::new(child));
     let master = Arc::new(Mutex::new(pair.master));
     let writer = Arc::new(Mutex::new(writer));
+    let backlog: SharedBacklog = Arc::new(Mutex::new(Default::default()));
 
     let pane = PaneInfo {
         id: pane_id.clone(),
@@ -399,12 +406,35 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
         child: child.clone(),
         master,
         writer,
+        backlog: backlog.clone(),
     };
 
     state.insert_pane(runtime)?;
-    start_reader_thread(state.clone(), pane_id, reader);
+    start_reader_thread(state.clone(), pane_id, reader, backlog);
 
     Ok(pane)
+}
+
+/// Marks a pane's frontend listener as live and flushes any output buffered
+/// before it attached. Called once per pane, after the webview registers its
+/// `qmux-event` listener, so the cold-start prompt is never lost to a startup
+/// race. The buffered bytes are emitted before `ready` releases the reader to
+/// emit live, preserving output order.
+pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
+    let backlog = state
+        .pane_backlog(&pane_id)?
+        .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+    let mut backlog = backlog
+        .lock()
+        .map_err(|_| format!("pane {pane_id} backlog lock poisoned"))?;
+    if !backlog.ready {
+        backlog.ready = true;
+        if !backlog.buffer.is_empty() {
+            let pending = std::mem::take(&mut backlog.buffer);
+            state.emit(QmuxEvent::pty_data(pane_id, &pending));
+        }
+    }
+    Ok(())
 }
 
 pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), String> {
@@ -484,14 +514,37 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     state.remove_pane(&pane_id)
 }
 
-fn start_reader_thread(state: AppState, pane_id: String, mut reader: Box<dyn Read + Send>) {
+fn start_reader_thread(
+    state: AppState,
+    pane_id: String,
+    mut reader: Box<dyn Read + Send>,
+    backlog: SharedBacklog,
+) {
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
-                    state.emit(QmuxEvent::pty_data(pane_id.clone(), &buffer[..count]));
+                    let chunk = &buffer[..count];
+                    // Hold the backlog lock only long enough to decide; emitting
+                    // live happens after releasing it. `attach_pane` flips `ready`
+                    // (and drains the buffer) under the same lock, so no chunk is
+                    // ever both buffered and emitted, and order is preserved.
+                    let live = match backlog.lock() {
+                        Ok(mut backlog) => {
+                            if backlog.ready {
+                                true
+                            } else {
+                                append_capped(&mut backlog.buffer, chunk);
+                                false
+                            }
+                        }
+                        Err(_) => true,
+                    };
+                    if live {
+                        state.emit(QmuxEvent::pty_data(pane_id.clone(), chunk));
+                    }
                 }
                 Err(err) => {
                     state.emit(QmuxEvent::new(
@@ -507,6 +560,16 @@ fn start_reader_thread(state: AppState, pane_id: String, mut reader: Box<dyn Rea
         let _ = state.remove_pane(&pane_id);
         state.emit(QmuxEvent::pty_exit(pane_id, None));
     });
+}
+
+/// Appends to the pre-attach backlog, dropping the oldest bytes once it exceeds
+/// the cap so a runaway pre-attach burst can't grow unbounded.
+fn append_capped(buffer: &mut Vec<u8>, chunk: &[u8]) {
+    buffer.extend_from_slice(chunk);
+    if buffer.len() > BACKLOG_CAP {
+        let overflow = buffer.len() - BACKLOG_CAP;
+        buffer.drain(..overflow);
+    }
 }
 
 fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
@@ -749,5 +812,26 @@ mod tests {
 
         assert_eq!(writer.bytes, b"y\r");
         assert_eq!(writer.flush_offsets, vec![1, 2]);
+    }
+
+    #[test]
+    fn append_capped_keeps_recent_bytes_under_cap() {
+        let mut buffer = Vec::new();
+        append_capped(&mut buffer, b"hello");
+        append_capped(&mut buffer, b" world");
+        assert_eq!(buffer, b"hello world");
+    }
+
+    #[test]
+    fn append_capped_drops_oldest_when_over_cap() {
+        let mut buffer = Vec::new();
+        let first = vec![b'a'; BACKLOG_CAP];
+        append_capped(&mut buffer, &first);
+        append_capped(&mut buffer, b"tail");
+
+        assert_eq!(buffer.len(), BACKLOG_CAP);
+        // The oldest bytes were dropped to make room; the most recent bytes win.
+        assert_eq!(&buffer[buffer.len() - 4..], b"tail");
+        assert_eq!(buffer[0], b'a');
     }
 }
