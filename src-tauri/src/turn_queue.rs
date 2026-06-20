@@ -1,3 +1,4 @@
+use crate::adapters::agent_composer_policy;
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::{AgentSendSource, AppState};
@@ -80,11 +81,18 @@ pub fn submit_agent_turn(
     if matches!(agent.status, AgentStatus::Failed) {
         return Err(format!("agent {} has failed", agent.id));
     }
+    let policy = agent_composer_policy(state, &agent)?;
 
     match request.mode.unwrap_or(SubmitAgentTurnMode::Auto) {
         SubmitAgentTurnMode::Auto => {
-            if should_queue(agent.status) {
+            if policy.should_queue(agent.status) {
                 return queue_agent_turn(state, &agent, data);
+            }
+            if !policy.can_send(agent.status) {
+                return Err(format!(
+                    "agent {} is not accepting turns in its current state",
+                    agent.id
+                ));
             }
             send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
             let queued_turns = state.list_agent_turn_queue(&agent.id)?;
@@ -95,8 +103,8 @@ pub fn submit_agent_turn(
             })
         }
         SubmitAgentTurnMode::Send => {
-            if should_queue(agent.status) {
-                return Err("agent is busy; queue the turn instead".to_string());
+            if !policy.can_send(agent.status) {
+                return Err("agent is not ready for input; queue the turn instead".to_string());
             }
             send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
             let queued_turns = state.list_agent_turn_queue(&agent.id)?;
@@ -107,14 +115,15 @@ pub fn submit_agent_turn(
             })
         }
         SubmitAgentTurnMode::Queue => {
-            if !should_queue(agent.status) {
+            if !policy.should_queue(agent.status) {
                 return Err("agent is ready for input; send the turn instead".to_string());
             }
             queue_agent_turn(state, &agent, data)
         }
         SubmitAgentTurnMode::Steer => {
-            // Deliberately skips the busy guard: steering injects the turn into a
-            // working agent now rather than queueing it until idle.
+            if !policy.can_steer(agent.status) {
+                return Err("agent does not support steering in its current state".to_string());
+            }
             send_agent_turn(state, &agent, data, AgentSendSource::Steer)?;
             let queued_turns = state.list_agent_turn_queue(&agent.id)?;
             Ok(SubmitAgentTurnResult {
@@ -203,13 +212,6 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     Ok(true)
 }
 
-fn should_queue(status: AgentStatus) -> bool {
-    !matches!(
-        status,
-        AgentStatus::AwaitingInput | AgentStatus::Done | AgentStatus::Idle
-    )
-}
-
 fn queue_agent_turn(
     state: &AppState,
     agent: &AgentInfo,
@@ -260,18 +262,57 @@ fn send_agent_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::{ComposerPolicy, PermissionAction};
+
+    fn claude_policy() -> ComposerPolicy {
+        ComposerPolicy {
+            ready_statuses: vec![
+                AgentStatus::AwaitingInput,
+                AgentStatus::Done,
+                AgentStatus::Idle,
+            ],
+            queue_statuses: vec![
+                AgentStatus::Starting,
+                AgentStatus::Running,
+                AgentStatus::AwaitingPermission,
+            ],
+            steer_statuses: vec![AgentStatus::Starting, AgentStatus::Running],
+            permission_actions: vec![
+                PermissionAction {
+                    id: "approve",
+                    label: "Approve",
+                    input: "y",
+                },
+                PermissionAction {
+                    id: "deny",
+                    label: "Deny",
+                    input: "n",
+                },
+            ],
+        }
+    }
 
     #[test]
     fn ready_agent_statuses_send_immediately() {
-        assert!(!should_queue(AgentStatus::AwaitingInput));
-        assert!(!should_queue(AgentStatus::Done));
-        assert!(!should_queue(AgentStatus::Idle));
+        let policy = claude_policy();
+        assert!(!policy.should_queue(AgentStatus::AwaitingInput));
+        assert!(!policy.should_queue(AgentStatus::Done));
+        assert!(!policy.should_queue(AgentStatus::Idle));
     }
 
     #[test]
     fn busy_agent_statuses_queue_turns() {
-        assert!(should_queue(AgentStatus::Starting));
-        assert!(should_queue(AgentStatus::Running));
-        assert!(should_queue(AgentStatus::AwaitingPermission));
+        let policy = claude_policy();
+        assert!(policy.should_queue(AgentStatus::Starting));
+        assert!(policy.should_queue(AgentStatus::Running));
+        assert!(policy.should_queue(AgentStatus::AwaitingPermission));
+    }
+
+    #[test]
+    fn steer_statuses_are_policy_owned() {
+        let policy = claude_policy();
+        assert!(policy.can_steer(AgentStatus::Starting));
+        assert!(policy.can_steer(AgentStatus::Running));
+        assert!(!policy.can_steer(AgentStatus::AwaitingInput));
     }
 }

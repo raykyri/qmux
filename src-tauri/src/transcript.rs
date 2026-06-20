@@ -1,3 +1,4 @@
+use crate::adapters::adapter_registry;
 use crate::events::QmuxEvent;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,12 @@ pub enum TurnBlock {
     },
 }
 
-pub fn start_transcript_tail(state: AppState, agent_id: String, transcript_path: String) {
+pub fn start_transcript_tail(
+    state: AppState,
+    agent_id: String,
+    transcript_path: String,
+    adapter_id: String,
+) {
     let should_start = state
         .mark_transcript_tail(&agent_id, &transcript_path)
         .unwrap_or(false);
@@ -63,7 +69,9 @@ pub fn start_transcript_tail(state: AppState, agent_id: String, transcript_path:
 
             if is_append_only(&seen_lines, &lines) {
                 for (index, line) in lines.iter().enumerate().skip(seen_lines.len()) {
-                    if let Some(turn) = parse_transcript_line(&agent_id, index, line) {
+                    if let Some(turn) =
+                        parse_transcript_line(&state, &adapter_id, &agent_id, index, line)
+                    {
                         let _ = state.append_turn(turn.clone());
                         state.emit(QmuxEvent::new(
                             "turn.appended",
@@ -77,7 +85,9 @@ pub fn start_transcript_tail(state: AppState, agent_id: String, transcript_path:
                 let turns = lines
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, line)| parse_transcript_line(&agent_id, index, line))
+                    .filter_map(|(index, line)| {
+                        parse_transcript_line(&state, &adapter_id, &agent_id, index, line)
+                    })
                     .collect::<Vec<_>>();
                 let _ = state.replace_turns(&agent_id, turns.clone());
                 state.emit(QmuxEvent::new(
@@ -102,144 +112,15 @@ fn is_append_only(previous: &[String], current: &[String]) -> bool {
             .all(|(previous, current)| previous == current)
 }
 
-fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
-    let value = serde_json::from_str::<Value>(line).ok()?;
-    let message = value.get("message").unwrap_or(&value);
-    let role = message
-        .get("role")
-        .or_else(|| value.get("type"))
-        .and_then(Value::as_str)
-        .unwrap_or("event")
-        .to_string();
-    let session_id =
-        string_field(&value, "session_id").or_else(|| string_field(&value, "sessionId"));
-    let content = message.get("content").or_else(|| value.get("content"))?;
-    let blocks = parse_blocks(content);
-
-    if blocks.is_empty() {
-        return None;
-    }
-
-    Some(Turn {
-        id: format!("{agent_id}-{source_index}"),
-        agent_id: agent_id.to_string(),
-        session_id,
-        role,
-        blocks,
-        source_index,
-    })
-}
-
-fn parse_blocks(content: &Value) -> Vec<TurnBlock> {
-    match content {
-        Value::String(text) => vec![TurnBlock::Text { text: text.clone() }],
-        Value::Array(items) => items.iter().filter_map(parse_block).collect(),
-        other => vec![TurnBlock::Raw {
-            value: other.clone(),
-        }],
-    }
-}
-
-fn parse_block(value: &Value) -> Option<TurnBlock> {
-    let block_type = value.get("type").and_then(Value::as_str);
-    match block_type {
-        Some("text") => value
-            .get("text")
-            .and_then(Value::as_str)
-            .map(|text| TurnBlock::Text {
-                text: text.to_string(),
-            }),
-        Some("tool_use") => Some(TurnBlock::ToolUse {
-            id: string_field(value, "id"),
-            name: value
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("tool")
-                .to_string(),
-            input: value.get("input").cloned().unwrap_or(Value::Null),
-        }),
-        Some("tool_result") => Some(TurnBlock::ToolResult {
-            tool_use_id: string_field(value, "tool_use_id")
-                .or_else(|| string_field(value, "toolUseId")),
-            content: value.get("content").cloned().unwrap_or(Value::Null),
-            is_error: value
-                .get("is_error")
-                .or_else(|| value.get("isError"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        }),
-        Some(_) => Some(TurnBlock::Raw {
-            value: value.clone(),
-        }),
-        None => value.as_str().map(|text| TurnBlock::Text {
-            text: text.to_string(),
-        }),
-    }
-}
-
-fn string_field(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_tool_blocks_preserves_correlation_ids() {
-        let tool_use = json!({
-            "type": "tool_use",
-            "id": "toolu_1",
-            "name": "Bash",
-            "input": { "cmd": "pwd" }
-        });
-
-        match parse_block(&tool_use).expect("tool_use should parse") {
-            TurnBlock::ToolUse { id, name, input } => {
-                assert_eq!(id.as_deref(), Some("toolu_1"));
-                assert_eq!(name, "Bash");
-                assert_eq!(input["cmd"], "pwd");
-            }
-            other => panic!("expected tool use, got {other:?}"),
-        }
-
-        let tool_result = json!({
-            "type": "tool_result",
-            "tool_use_id": "toolu_1",
-            "content": "ok",
-            "is_error": true
-        });
-
-        match parse_block(&tool_result).expect("tool_result should parse") {
-            TurnBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
-                assert_eq!(tool_use_id.as_deref(), Some("toolu_1"));
-                assert_eq!(content, "ok");
-                assert!(is_error);
-            }
-            other => panic!("expected tool result, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_tool_result_accepts_camel_case_id() {
-        let tool_result = json!({
-            "type": "tool_result",
-            "toolUseId": "toolu_2",
-            "content": "ok"
-        });
-
-        match parse_block(&tool_result).expect("tool_result should parse") {
-            TurnBlock::ToolResult { tool_use_id, .. } => {
-                assert_eq!(tool_use_id.as_deref(), Some("toolu_2"));
-            }
-            other => panic!("expected tool result, got {other:?}"),
-        }
-    }
+fn parse_transcript_line(
+    state: &AppState,
+    adapter_id: &str,
+    agent_id: &str,
+    source_index: usize,
+    line: &str,
+) -> Option<Turn> {
+    adapter_registry(state.config())
+        .get(adapter_id)
+        .ok()?
+        .parse_transcript_line(agent_id, source_index, line)
 }

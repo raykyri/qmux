@@ -40,7 +40,7 @@ pub struct AgentInfo {
     pub created_at: u128,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentStatus {
     Starting,
@@ -429,13 +429,18 @@ fn now_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::QmuxConfig;
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, QmuxConfig};
 
     fn test_state() -> AppState {
         AppState::new(QmuxConfig {
             workspace_root: PathBuf::from("/tmp/qmux-workspace-tests"),
             socket_path: PathBuf::from("/tmp/qmux-workspace-tests.sock"),
-            claude_binary: "claude".to_string(),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
         })
     }
 

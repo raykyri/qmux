@@ -93,8 +93,7 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
         .map_err(|err| format!("failed to encode state: {err}"))?;
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
-    fs::write(&tmp, raw)
-        .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
+    fs::write(&tmp, raw).map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
     fs::rename(&tmp, &path).map_err(|err| {
         // Don't strand the scratch file if the commit itself fails.
         let _ = fs::remove_file(&tmp);
@@ -235,6 +234,9 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| name.ends_with(".tmp"))
             .collect();
-        assert!(leftover_temps.is_empty(), "stranded temp files: {leftover_temps:?}");
+        assert!(
+            leftover_temps.is_empty(),
+            "stranded temp files: {leftover_temps:?}"
+        );
     }
 }

@@ -9,7 +9,7 @@ import type {
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   RuntimeConfig,
-  SpawnClaudeRequest,
+  SpawnAgentRequest,
   SubmitAgentTurnMode,
   SubmitAgentTurnResult,
   Turn,
@@ -44,8 +44,8 @@ export function spawnShell(initialSize?: InitialPaneSize | null) {
   return invoke<PaneInfo>("spawn_shell", { initialSize: initialSize ?? null });
 }
 
-export function spawnClaude(request: SpawnClaudeRequest) {
-  return invoke<PaneInfo>("spawn_claude", { request });
+export function spawnAgent(request: SpawnAgentRequest) {
+  return invoke<PaneInfo>("agent_spawn", { request });
 }
 
 export function writePane(paneId: string, data: string) {

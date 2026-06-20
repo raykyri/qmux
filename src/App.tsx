@@ -6,6 +6,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import { Bot, SquareTerminal, X } from "lucide-react";
+import { getAgentUiAdapter, getDefaultAgentUiAdapter } from "./adapters";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -30,7 +31,7 @@ import {
   removeWorktree,
   renamePane,
   setAgentDraft as persistAgentDraft,
-  spawnClaude,
+  spawnAgent,
   spawnShell,
   submitAgentTurn,
   worktreeStatus,
@@ -261,6 +262,7 @@ type OrphanedQueueGroup = {
 interface RecoveredQueuePanelProps {
   queues: OrphanedQueueGroup[];
   hasTargetAgent: boolean;
+  agentLabel: string;
   onMoveTurn: (agentId: string, index: number, turn: string) => void;
   onDiscardTurn: (agentId: string, index: number, turn: string) => void;
 }
@@ -268,6 +270,7 @@ interface RecoveredQueuePanelProps {
 function RecoveredQueuePanel({
   queues,
   hasTargetAgent,
+  agentLabel,
   onMoveTurn,
   onDiscardTurn,
 }: RecoveredQueuePanelProps) {
@@ -292,7 +295,7 @@ function RecoveredQueuePanel({
                     title={
                       hasTargetAgent
                         ? "Queue to the current agent"
-                        : "Launch Claude in this tab before queueing"
+                        : `Launch ${agentLabel} in this tab before queueing`
                     }
                     onClick={() => onMoveTurn(agent.id, index, turn)}
                   >
@@ -369,9 +372,20 @@ export default function App() {
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
   );
+  const launchAdapter = useMemo(() => {
+    const defaultAdapterId = config?.adapters.find((adapter) => adapter.default)?.id;
+    return getDefaultAgentUiAdapter(defaultAdapterId);
+  }, [config]);
   const activeTurns = useMemo(
-    () => turns.filter((turn) => turn.agentId === activeAgent?.id),
-    [activeAgent?.id, turns],
+    () => {
+      const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
+      if (!activeAgent) {
+        return agentTurns;
+      }
+      const adapter = getAgentUiAdapter(activeAgent.adapter);
+      return adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
+    },
+    [activeAgent?.id, activeAgent?.adapter, turns],
   );
   const activeTranscript = useMemo(() => formatTurnsTranscript(activeTurns), [activeTurns]);
   const activeHookEvents = useMemo(
@@ -1195,11 +1209,12 @@ export default function App() {
     }
   }
 
-  async function addClaudePane() {
+  async function addAgentPane() {
     const trimmed = prompt.trim();
     setError(null);
     try {
-      const pane = await spawnClaude({
+      const pane = await spawnAgent({
+        adapterId: launchAdapter.id,
         prompt: trimmed,
         baseRepo: null,
         baseRef: "HEAD",
@@ -1740,17 +1755,17 @@ export default function App() {
               }
               if (event.metaKey && event.key === "Enter") {
                 event.preventDefault();
-                void addClaudePane();
+                void addAgentPane();
               }
             }}
             onSubmit={(event) => {
               event.preventDefault();
-              void addClaudePane();
+              void addAgentPane();
             }}
           >
             <textarea
               ref={launcherInputRef}
-              id="claude-prompt"
+              id="agent-prompt"
               className="command-launcher-input"
               value={prompt}
               onChange={(event) => setPrompt(event.currentTarget.value)}
@@ -1769,8 +1784,8 @@ export default function App() {
               <button
                 type="submit"
                 className="command-launcher-send"
-                aria-label="Launch Claude"
-                title="Launch Claude"
+                aria-label={`Launch ${launchAdapter.label}`}
+                title={`Launch ${launchAdapter.label}`}
               >
                 <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
               </button>
@@ -1981,6 +1996,7 @@ export default function App() {
                   <RecoveredQueuePanel
                     queues={activeOrphanedQueues}
                     hasTargetAgent={Boolean(activeAgent)}
+                    agentLabel={launchAdapter.label}
                     onMoveTurn={(agentId, index, turn) =>
                       void moveRecoveredQueuedTurn(agentId, index, turn)
                     }
@@ -2006,6 +2022,9 @@ export default function App() {
                         hooks: activeHookEvents,
                       })
                     }
+                    composerPolicy={getAgentUiAdapter(activeAgent.adapter).composerPolicy(
+                      activeAgent,
+                    )}
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
