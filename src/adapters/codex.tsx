@@ -17,21 +17,17 @@ export const codexUiAdapter: AgentUiAdapter = {
 };
 
 function CodexLauncherOptions({ value, onChange }: LauncherOptionsProps) {
-  const sandbox = stringOption(value.sandbox);
+  const sandbox = stringOption(value.sandbox) || "workspace-write";
   const approvalPolicy = stringOption(value.approvalPolicy);
-  const search = value.search === true;
 
   return (
     <>
       <label className="command-launcher-option">
-        <span>Sandbox</span>
         <select
           value={sandbox}
           onChange={(event) => setOption(value, onChange, "sandbox", event.currentTarget.value)}
         >
-          <option value="">Default</option>
-          <option value="read-only">Read-only</option>
-          <option value="workspace-write">Workspace</option>
+          <option value="workspace-write">Workspace access</option>
           <option value="danger-full-access">Full access</option>
         </select>
       </label>
@@ -48,14 +44,6 @@ function CodexLauncherOptions({ value, onChange }: LauncherOptionsProps) {
           <option value="on-request">On request</option>
           <option value="never">Never</option>
         </select>
-      </label>
-      <label className="command-launcher-option command-launcher-option-toggle">
-        <input
-          type="checkbox"
-          checked={search}
-          onChange={(event) => setOption(value, onChange, "search", event.currentTarget.checked)}
-        />
-        <span>Search</span>
       </label>
     </>
   );

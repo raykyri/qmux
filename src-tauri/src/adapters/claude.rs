@@ -194,10 +194,9 @@ impl ClaudeAdapter {
             args.push(model);
         }
 
-        if let Some(permission_mode) = options.permission_mode {
-            args.push("--permission-mode".to_string());
-            args.push(permission_mode);
-        }
+        let permission_mode = options.permission_mode.unwrap_or("auto".to_string());
+        args.push("--permission-mode".to_string());
+        args.push(permission_mode);
 
         let prompt = request.prompt.trim();
         if !prompt.is_empty() {
