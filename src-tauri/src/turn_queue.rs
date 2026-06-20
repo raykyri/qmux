@@ -202,12 +202,12 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
-            let _ = state.prepend_agent_turn(agent_id, data);
+            requeue_after_failed_drain(state, agent_id, data);
             return Err(format!("agent {agent_id} was not found"));
         }
     };
     if let Err(err) = send_agent_turn(state, &agent, data.clone(), AgentSendSource::QueuedTurn) {
-        let _ = state.prepend_agent_turn(agent_id, data);
+        requeue_after_failed_drain(state, agent_id, data);
         return Err(err);
     }
     let queued_turns = state.list_agent_turn_queue(agent_id)?;
@@ -253,6 +253,16 @@ fn queue_agent_turn(
     })
 }
 
+/// Restores a just-popped turn to the front of the queue after a drain fails to
+/// deliver it. If even the rollback fails the turn is genuinely lost, so log it
+/// rather than dropping it silently — the caller already propagates the original
+/// send error.
+fn requeue_after_failed_drain(state: &AppState, agent_id: &str, data: String) {
+    if let Err(err) = state.prepend_agent_turn(agent_id, data) {
+        eprintln!("qmux: dropped queued turn for agent {agent_id} after failed re-queue: {err}");
+    }
+}
+
 fn send_agent_turn(
     state: &AppState,
     agent: &AgentInfo,
@@ -278,7 +288,12 @@ fn send_agent_turn(
         .ok_or_else(|| format!("agent {} was not found", agent.id))?;
     updated.status = AgentStatus::Running;
     state.update_agent(updated)?;
-    let _ = state.record_agent_send(&agent.id, text, source);
+    // Send tracking is advisory (it feeds de-dup/echo suppression), so a failure
+    // here must not fail the send the user already sees in the pane — but log it
+    // rather than discarding it without a trace.
+    if let Err(err) = state.record_agent_send(&agent.id, text, source) {
+        eprintln!("qmux: failed to record send for agent {}: {err}", agent.id);
+    }
     Ok(())
 }
 

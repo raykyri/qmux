@@ -613,7 +613,11 @@ fn start_reader_thread(
                 }
             }
         }
-        let _ = state.remove_pane(&pane_id);
+        if let Err(err) = state.remove_pane(&pane_id) {
+            // A failure here (e.g. a poisoned model lock) leaves a dead pane in
+            // state; log it so the stale entry has a trace rather than vanishing.
+            eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
+        }
         remove_shell_integration_dir(&pane_id);
         state.emit(QmuxEvent::pty_exit(pane_id, None));
     });
