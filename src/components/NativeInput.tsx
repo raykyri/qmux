@@ -142,7 +142,8 @@ export default function NativeInput({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
-  const canSend = agent.status === "awaitingInput" || agent.status === "stopped";
+  const canSend =
+    agent.status === "awaitingInput" || agent.status === "done" || agent.status === "idle";
   const canQueue =
     agent.status === "starting" ||
     agent.status === "running" ||
