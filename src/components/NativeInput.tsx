@@ -682,7 +682,7 @@ export default function NativeInput({
               onClick={() => void submitTurn(value, "steer")}
               title="Send now, interrupting the agent's current work"
             >
-              <span>Steer</span>
+              <span>Send Now</span>
             </button>
           ) : null}
           <button
