@@ -55,7 +55,7 @@ npm install
 Run the app in development:
 
 ```sh
-npm run tauri:dev
+npm run dev:tauri
 ```
 
 Build the app:
