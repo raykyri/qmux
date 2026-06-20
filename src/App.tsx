@@ -5,7 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { Sparkles, SquareTerminal, X } from "lucide-react";
+import { Bot, SquareTerminal, X } from "lucide-react";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -992,7 +992,7 @@ export default function App() {
             <span>New shell</span>
           </button>
           <button type="button" onClick={() => setLauncherOpen(true)}>
-            <Sparkles size={14} aria-hidden="true" />
+            <Bot size={14} aria-hidden="true" />
             <span>New agent</span>
           </button>
         </div>
