@@ -15,6 +15,14 @@ use std::path::{Path, PathBuf};
 
 pub use claude::{PrepareShellClaudeLaunchRequest, SpawnClaudeRequest};
 
+/// Single-quotes a path for safe interpolation into a POSIX shell command,
+/// escaping embedded single quotes. Shared by the Claude and Codex adapters,
+/// which both embed the qmux CLI path into generated hook commands.
+pub(crate) fn shell_quote_path(path: &Path) -> String {
+    let raw = path.display().to_string();
+    format!("'{}'", raw.replace('\'', "'\\''"))
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnAgentRequest {

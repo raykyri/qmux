@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
-    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path,
+    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
@@ -711,7 +711,7 @@ pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": format!("{} notify {}", shell_quote(&qmux_cli), event)
+                            "command": format!("{} notify {}", shell_quote_path(&qmux_cli), event)
                         }
                     ]
                 }
@@ -728,7 +728,7 @@ pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": format!("{} notify {}", shell_quote(&qmux_cli), event)
+                            "command": format!("{} notify {}", shell_quote_path(&qmux_cli), event)
                         }
                     ]
                 }))
@@ -914,11 +914,6 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
-}
-
-fn shell_quote(path: &Path) -> String {
-    let raw = path.display().to_string();
-    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

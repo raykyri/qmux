@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, ensure_on_path,
+    SpawnAgentRequest, ensure_on_path, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -693,11 +693,6 @@ fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path) -> String {
     }
 
     raw
-}
-
-fn shell_quote_path(path: &Path) -> String {
-    let raw = path.display().to_string();
-    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 fn toml_string(value: &str) -> String {
