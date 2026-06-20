@@ -199,7 +199,8 @@ impl ClaudeAdapter {
         args.push(permission_mode);
 
         let prompt = request.prompt.trim();
-        if !prompt.is_empty() {
+        let has_prompt = !prompt.is_empty();
+        if has_prompt {
             args.push(prompt.to_string());
         }
 
@@ -224,7 +225,14 @@ impl ClaudeAdapter {
 
         match spawn_result {
             Ok(pane) => {
-                attach_agent_pane(state, &agent.id, pane.id.clone())?;
+                let mut agent = attach_agent_pane(state, &agent.id, pane.id.clone())?;
+                if !has_prompt {
+                    // Launched without a prompt: Claude opens interactively and waits
+                    // for input, so present the tab as having an agent that is awaiting
+                    // input rather than working.
+                    agent.status = AgentStatus::AwaitingInput;
+                    state.update_agent(agent)?;
+                }
                 Ok(pane)
             }
             Err(err) => {
@@ -360,7 +368,14 @@ impl ClaudeAdapter {
                 return Err(err);
             }
         };
-        let agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
+        let mut agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
+        if !args_contain_prompt(&request.args) {
+            // A bare `claude` (no inline prompt) drops into interactive mode and
+            // waits for the user, so present the tab as having an agent that is
+            // awaiting input rather than working. The first real turn promotes it.
+            agent.status = AgentStatus::AwaitingInput;
+            state.update_agent(agent.clone())?;
+        }
 
         let mut envs = qmux_pane_envs(state, &request.pane_id);
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
@@ -413,7 +428,14 @@ impl ClaudeAdapter {
                         .or_else(|| string_field(&notification.payload, "sessionId"));
                     agent.transcript_path = string_field(&notification.payload, "transcript_path")
                         .or_else(|| string_field(&notification.payload, "transcriptPath"));
-                    agent.status = AgentStatus::Running;
+                    // A session starting doesn't mean a turn is running. When the agent
+                    // was launched without a prompt it is idle and awaiting input, so
+                    // don't promote that to Running here — the first real turn
+                    // (UserPromptSubmit/PreToolUse) does. Resume keeps its Starting
+                    // status, which still advances to Running.
+                    if agent.status != AgentStatus::AwaitingInput {
+                        agent.status = AgentStatus::Running;
+                    }
                     state.update_agent(agent.clone())?;
                     if let Some(transcript_path) = agent.transcript_path.clone() {
                         start_transcript_tail(
@@ -527,6 +549,58 @@ impl ClaudeAdapter {
             event_payload,
         )))
     }
+}
+
+/// Whether a manual `claude …` invocation carries an inline prompt — a positional
+/// argument — as opposed to a bare or flags-only launch that drops into Claude's
+/// interactive mode and waits for input. Flags that consume a separate value are
+/// skipped so e.g. `claude --model sonnet` is not mistaken for carrying a prompt.
+/// Erring toward "no prompt" is safe: the agent just starts idle and the first real
+/// turn (UserPromptSubmit/PreToolUse) promotes it to running.
+fn args_contain_prompt(args: &[String]) -> bool {
+    // Claude CLI flags that take a separate value argument; the token after one of
+    // these is the flag's value, not a prompt. Boolean flags (e.g. -c/--continue,
+    // -p/--print) are intentionally absent so a prompt following them is detected.
+    const VALUE_FLAGS: &[&str] = &[
+        "--model",
+        "--fallback-model",
+        "--settings",
+        "--setting-sources",
+        "--add-dir",
+        "--allowedTools",
+        "--allowed-tools",
+        "--disallowedTools",
+        "--disallowed-tools",
+        "--mcp-config",
+        "--append-system-prompt",
+        "--permission-mode",
+        "--permission-prompt-tool",
+        "--resume",
+        "-r",
+        "--session-id",
+        "--input-format",
+        "--output-format",
+        "--max-turns",
+        "--agents",
+    ];
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            // Everything after the `--` separator is positional.
+            return iter.next().is_some();
+        }
+        if arg.starts_with('-') {
+            // `--flag=value` is self-contained and never consumes the next token.
+            if !arg.contains('=') && VALUE_FLAGS.contains(&arg.as_str()) {
+                iter.next();
+            }
+            continue;
+        }
+        // A bare, non-flag token is an inline prompt.
+        return true;
+    }
+    false
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -847,6 +921,28 @@ mod tests {
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
+
+    fn svec(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn args_contain_prompt_detects_inline_prompts() {
+        // Bare or flags-only launches drop into interactive mode (no prompt).
+        assert!(!args_contain_prompt(&[]));
+        assert!(!args_contain_prompt(&svec(&["--model", "sonnet"])));
+        assert!(!args_contain_prompt(&svec(&["--permission-mode", "plan"])));
+        assert!(!args_contain_prompt(&svec(&["--continue"])));
+        assert!(!args_contain_prompt(&svec(&["--resume", "abc123"])));
+        assert!(!args_contain_prompt(&svec(&["-r"])));
+        assert!(!args_contain_prompt(&svec(&["--model=sonnet"])));
+
+        // A positional token is an inline prompt, even after value-taking flags.
+        assert!(args_contain_prompt(&svec(&["fix the bug"])));
+        assert!(args_contain_prompt(&svec(&["--model", "sonnet", "fix the bug"])));
+        assert!(args_contain_prompt(&svec(&["--continue", "keep going"])));
+        assert!(args_contain_prompt(&svec(&["--", "after separator"])));
+    }
 
     #[derive(Debug)]
     struct FakeChild;
