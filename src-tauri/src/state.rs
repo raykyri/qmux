@@ -314,6 +314,19 @@ impl AppState {
         Ok(())
     }
 
+    pub fn remove_pane(&self, pane_id: &str) -> Result<(), String> {
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.panes.remove(pane_id);
+        }
+        self.persist();
+        Ok(())
+    }
+
     pub fn insert_group(&self, group: GroupInfo) -> Result<(), String> {
         {
             let mut model = self

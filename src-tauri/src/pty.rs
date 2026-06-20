@@ -462,7 +462,7 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
     kill_child(&pane_id, child)?;
-    state.mark_pane_status(&pane_id, PaneStatus::Killed)
+    state.remove_pane(&pane_id)
 }
 
 fn start_reader_thread(state: AppState, pane_id: String, mut reader: Box<dyn Read + Send>) {
@@ -495,15 +495,34 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
         .lock()
         .map_err(|_| format!("pane {pane_id} child lock poisoned"))?;
 
+    if child
+        .try_wait()
+        .map_err(|err| format!("failed to inspect pane {pane_id}: {err}"))?
+        .is_some()
+    {
+        return Ok(());
+    }
+
     if let Some(pid) = child.process_id() {
         terminate_descendants(pid);
         let group = format!("-{}", pid);
         let _ = Command::new("/bin/kill").arg("-TERM").arg(&group).status();
     }
 
-    child
-        .kill()
-        .map_err(|err| format!("failed to kill pane {pane_id}: {err}"))
+    match child.kill() {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if child
+                .try_wait()
+                .map_err(|wait_err| format!("failed to inspect pane {pane_id}: {wait_err}"))?
+                .is_some()
+            {
+                Ok(())
+            } else {
+                Err(format!("failed to kill pane {pane_id}: {err}"))
+            }
+        }
+    }
 }
 
 fn terminate_descendants(pid: u32) {
