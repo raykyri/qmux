@@ -74,13 +74,6 @@ pub struct LoadOutcome {
     pub warning: Option<LoadWarning>,
 }
 
-/// Reads persisted state, degrading to an empty snapshot whenever the file is
-/// missing, unreadable, corrupt, or written by an unrecognized version. Recovery
-/// must never abort startup, so this function keeps the old state-only API.
-pub fn load(workspace_root: &Path) -> PersistedState {
-    load_with_diagnostics(workspace_root).state
-}
-
 /// Reads persisted state and reports why recovery had to fall back to an empty
 /// snapshot. Missing state is expected on first run and does not produce a warning.
 /// Corrupt or unsupported state files are renamed aside before future saves can
@@ -277,7 +270,7 @@ mod tests {
     #[test]
     fn load_missing_file_returns_empty_current_version() {
         let root = temp_root();
-        let state = load(&root);
+        let state = load_with_diagnostics(&root).state;
         assert_eq!(state.version, STATE_VERSION);
         assert!(state.panes.is_empty());
         assert!(state.agents.is_empty());
@@ -335,7 +328,7 @@ mod tests {
         };
         save(&root, &state).unwrap();
 
-        let loaded = load(&root);
+        let loaded = load_with_diagnostics(&root).state;
         assert_eq!(loaded.next_id, 17);
         assert_eq!(loaded.panes.len(), 1);
         let pane = &loaded.panes[0];
@@ -384,7 +377,7 @@ mod tests {
         }
 
         // A complete, parseable snapshot survives and nothing is stranded.
-        assert_eq!(load(&root).version, STATE_VERSION);
+        assert_eq!(load_with_diagnostics(&root).state.version, STATE_VERSION);
         let leftover_temps: Vec<_> = fs::read_dir(&parent)
             .unwrap()
             .filter_map(|entry| entry.ok())

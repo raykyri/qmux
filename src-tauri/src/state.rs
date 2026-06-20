@@ -967,6 +967,7 @@ impl AppState {
         Ok(info)
     }
 
+    #[cfg(test)]
     pub fn mark_pane_status(&self, pane_id: &str, status: PaneStatus) -> Result<(), String> {
         {
             let mut model = self
