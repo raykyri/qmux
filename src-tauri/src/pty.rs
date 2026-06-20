@@ -569,7 +569,7 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, QmuxConfig};
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
     use std::io;
     use std::path::PathBuf;
 
@@ -608,6 +608,9 @@ mod tests {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
                 },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
             },
             legacy_claude_binary: None,
         })
@@ -626,17 +629,26 @@ mod tests {
     }
 
     #[test]
-    fn init_scripts_define_claude_function_through_qmux() {
+    fn init_scripts_define_agent_functions_through_qmux() {
         let qmux_cli = PathBuf::from("/Applications/qmux app/qmux");
-        let shell_commands = [ShellCommandIntegration {
-            command_name: "claude",
-            adapter_id: "claude",
-        }];
+        let shell_commands = [
+            ShellCommandIntegration {
+                command_name: "codex",
+                adapter_id: "codex",
+            },
+            ShellCommandIntegration {
+                command_name: "claude",
+                adapter_id: "claude",
+            },
+        ];
 
         let zsh_script = zsh_init_script(&qmux_cli, &shell_commands);
         let bash_script = bash_init_script(&qmux_cli, &shell_commands);
 
         for script in [zsh_script, bash_script] {
+            assert!(script.contains("codex() {"));
+            assert!(script.contains("'/Applications/qmux app/qmux' agent-exec codex \"$@\""));
+            assert!(script.contains("unalias codex"));
             assert!(script.contains("claude() {"));
             assert!(script.contains("'/Applications/qmux app/qmux' agent-exec claude \"$@\""));
             assert!(script.contains("unalias claude"));

@@ -429,7 +429,7 @@ fn now_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, QmuxConfig};
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
 
     fn test_state() -> AppState {
         AppState::new(QmuxConfig {
@@ -438,6 +438,9 @@ mod tests {
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
                 },
             },
             legacy_claude_binary: None,
