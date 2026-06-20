@@ -256,13 +256,13 @@ button:disabled {
 }
 
 .pane-tab {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 6px;
   width: 100%;
   min-height: 30px;
-  padding: 6px 30px 6px 9px;
+  padding: 6px 9px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
@@ -307,15 +307,10 @@ button:disabled {
   cursor: grabbing !important;
 }
 
-.pane-tab-line {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
 .pane-tab-dot {
+  grid-column: 1;
+  justify-self: start;
+  align-self: center;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -367,6 +362,13 @@ button:disabled {
   white-space: nowrap;
 }
 
+.pane-tab-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .pane-tab small {
   color: #7f8884;
   font-size: 11px;
@@ -408,6 +410,8 @@ button:disabled {
 
 .pane-tab-meta {
   display: flex;
+  grid-column: 3;
+  align-self: center;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
@@ -547,6 +551,7 @@ button:disabled {
   font-size: 13px;
   line-height: 1;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
 }
 
@@ -561,8 +566,6 @@ button:disabled {
   color: #ffffff;
   background: #357565;
   background: color-mix(in srgb, AccentColor, #000 15%);
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .pane-tab-row.is-selected .pane-tab-close:hover {
@@ -571,9 +574,9 @@ button:disabled {
   background: color-mix(in srgb, AccentColor, #000 26%);
 }
 
-.pane-tab-row:hover .pane-tab-close,
-.pane-tab-row:focus-within .pane-tab-close {
+.pane-tab-row:hover .pane-tab-close {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
 }
 
