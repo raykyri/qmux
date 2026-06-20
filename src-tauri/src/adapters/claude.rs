@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
-    ShellCommandIntegration, SpawnAgentRequest,
+    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -819,22 +819,10 @@ fn shell_quote(path: &Path) -> String {
     format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
-pub fn ensure_on_path(binary: &str) -> Option<PathBuf> {
-    let binary_path = Path::new(binary);
-    if binary_path.components().count() > 1 {
-        return binary_path.is_file().then(|| binary_path.to_path_buf());
-    }
-
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path)
-        .map(|dir| dir.join(binary))
-        .find(|candidate| candidate.is_file())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig};
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
     use crate::state::{AgentSendSource, PaneInfo, PaneRuntime, PaneStatus};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io::{self, Write};
@@ -889,6 +877,9 @@ mod tests {
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
                 },
             },
             legacy_claude_binary: None,
