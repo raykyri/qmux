@@ -6,7 +6,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import { Bot, SquareTerminal, X } from "lucide-react";
-import { agentUiAdapters, getAgentUiAdapter } from "./adapters";
+import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -354,7 +354,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
-  const [launcherAdapterId, setLauncherAdapterId] = useState("claude");
+  const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
@@ -373,7 +373,19 @@ export default function App() {
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
   );
-  const launchAdapter = useMemo(() => getAgentUiAdapter(launcherAdapterId), [launcherAdapterId]);
+  const runtimeDefaultAdapterId =
+    config?.adapters.find((adapter) => adapter.default)?.id ?? config?.adapters[0]?.id ?? "claude";
+  const selectedLauncherAdapterId = launcherAdapterId ?? runtimeDefaultAdapterId;
+  const launchAdapter = useMemo(
+    () => getAgentUiAdapter(selectedLauncherAdapterId),
+    [selectedLauncherAdapterId],
+  );
+  const launcherAdapters = useMemo(() => {
+    const runtimeAdapters = config?.adapters
+      .map((adapter) => findAgentUiAdapter(adapter.id))
+      .filter((adapter): adapter is NonNullable<typeof adapter> => Boolean(adapter));
+    return runtimeAdapters && runtimeAdapters.length > 0 ? runtimeAdapters : agentUiAdapters;
+  }, [config]);
   const activeTurns = useMemo(
     () => {
       const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
@@ -1388,10 +1400,13 @@ export default function App() {
   }, [launcherOpen]);
 
   useEffect(() => {
-    const defaultAdapterId = config?.adapters.find((adapter) => adapter.default)?.id;
-    if (defaultAdapterId) {
-      setLauncherAdapterId(defaultAdapterId);
+    const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
+    if (runtimeAdapterIds.length === 0) {
+      return;
     }
+    setLauncherAdapterId((current) =>
+      current && runtimeAdapterIds.includes(current) ? current : null,
+    );
   }, [config]);
 
   useEffect(() => {
@@ -1791,7 +1806,7 @@ export default function App() {
               </label>
               <div className="command-launcher-controls">
                 <div className="command-launcher-adapter-picker" role="group" aria-label="Agent">
-                  {agentUiAdapters.map((adapter) => (
+                  {launcherAdapters.map((adapter) => (
                     <button
                       key={adapter.id}
                       type="button"
