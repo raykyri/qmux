@@ -736,7 +736,7 @@ export default function App() {
       }
 
       const key = event.key.toLowerCase();
-      if (key !== "t" && key !== "k" && key !== "w") {
+      if (key !== "t" && key !== "n" && key !== "k" && key !== "w") {
         return;
       }
 
@@ -774,7 +774,7 @@ export default function App() {
       event.preventDefault();
       event.stopPropagation();
 
-      if (key === "t") {
+      if (key === "t" || key === "n") {
         if (!event.metaKey || event.ctrlKey) {
           return;
         }
