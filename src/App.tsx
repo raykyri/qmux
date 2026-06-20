@@ -1245,7 +1245,7 @@ export default function App() {
   }
 
   function handlePaneTabClosePointerDown(
-    event: ReactPointerEvent<HTMLButtonElement>,
+    event: ReactPointerEvent<HTMLElement>,
     pane: PaneInfo,
   ) {
     if (event.button !== 0) {
@@ -1256,7 +1256,7 @@ export default function App() {
     void requestClosePane(pane, { confirmAlways: true });
   }
 
-  function handlePaneTabCloseClick(event: ReactMouseEvent<HTMLButtonElement>, pane: PaneInfo) {
+  function handlePaneTabCloseClick(event: ReactMouseEvent<HTMLElement>, pane: PaneInfo) {
     event.stopPropagation();
     if (event.detail === 0) {
       void requestClosePane(pane, { confirmAlways: true });
@@ -1792,15 +1792,24 @@ export default function App() {
                     </span>
                   ) : null}
                 </button>
-                <button
-                  type="button"
+                <a
                   className="pane-tab-close"
+                  role="button"
+                  tabIndex={0}
                   aria-label={`Close ${pane.title}`}
+                  title={`Close ${pane.title}`}
                   onPointerDown={(event) => handlePaneTabClosePointerDown(event, pane)}
                   onClick={(event) => handlePaneTabCloseClick(event, pane)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void requestClosePane(pane, { confirmAlways: true });
+                    }
+                  }}
                 >
-                  <X size={13} aria-hidden="true" />
-                </button>
+                  <X size={11} aria-hidden="true" />
+                </a>
               </div>
             );
           })}

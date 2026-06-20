@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod control_socket;
 mod events;
+mod launch_path;
 mod persistence;
 mod pty;
 mod recovery;
