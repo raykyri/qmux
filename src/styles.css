@@ -1104,7 +1104,7 @@ button:disabled {
   background: #15191b;
   color: #d9ddd9;
   padding: 7px 8px;
-  font-size: 12px;
+  font-size: var(--fs-base);
   line-height: 1.4;
 }
 
@@ -1155,8 +1155,9 @@ button:disabled {
 }
 
 .queued-turn-actions button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
   background: var(--control-bg-hover);
-  border-color: var(--control-border-hover);
+  color: #f4f3ec;
 }
 
 .native-input textarea {
@@ -1171,7 +1172,7 @@ button:disabled {
   border-radius: var(--radius-md);
   background: #111315;
   color: #f1f0e8;
-  font-size: var(--fs-input);
+  font-size: var(--fs-base);
   padding: 8px 9px;
 }
 
@@ -1197,7 +1198,9 @@ button:disabled {
 .composer-menu-trigger {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  /* Left-align the dots so they line up under the textarea's text inset (the
+     icon's centred dots land at the textarea border + padding). */
+  justify-content: flex-start;
   width: var(--control-h-lg);
   min-height: var(--control-h-lg);
   padding: 0;
@@ -1265,39 +1268,15 @@ button:disabled {
   padding-bottom: 0;
 }
 
-.native-input-submit-actions button:not(.queue-button):hover:not(:disabled) {
+/* Every composer button (Send, Steer, Queue, Approve, Deny) shares the neutral
+   skin and accent-on-hover of the sidebar's action buttons, so the two panes read
+   as one control set. */
+.native-input-submit-actions button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
   background: var(--control-bg-hover);
-  border-color: var(--control-border-hover);
+  color: #f4f3ec;
 }
 
-/* Queue is the primary call-to-action: a solid fill so it reads unmistakably as a
-   button and stands apart from the neutral Send/Steer submits, matching the
-   launcher's Launch button. */
 .queue-button {
   flex: 0 0 auto;
-  border-color: transparent;
-  background: var(--accent-strong);
-  color: #10211c;
-  font-weight: 700;
-}
-
-.queue-button:hover:not(:disabled) {
-  background: var(--accent-strong-hover);
-}
-
-.queue-button .shortcut-hint {
-  color: rgba(16, 33, 28, 0.65);
-}
-
-/* When queueing isn't available, drop to a quiet neutral disabled state instead
-   of a dimmed green that still looks actionable. */
-.queue-button:disabled {
-  border-color: var(--control-border);
-  background: var(--control-bg);
-  color: #6c7c77;
-  font-weight: 400;
-}
-
-.queue-button:disabled .shortcut-hint {
-  color: #797d80;
 }
