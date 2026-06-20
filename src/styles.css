@@ -1667,6 +1667,7 @@ button:disabled {
 .queued-turn-text {
   display: block;
   min-width: 0;
+  user-select: text;
   /* overflow:hidden lets the JS height tween clip content cleanly while it eases
      open/closed (see QueuedTurnText). */
   overflow: hidden;
