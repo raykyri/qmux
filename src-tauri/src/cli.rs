@@ -52,6 +52,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
                 json!({
                     "event": event,
                     "paneId": env::var("QMUX_PANE_ID").ok(),
+                    "agentId": env::var("QMUX_AGENT_ID").ok(),
                     "payload": payload,
                 }),
             )?;
