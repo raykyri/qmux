@@ -479,6 +479,19 @@ export default function NativeInput({
             } else if (canQueue) {
               void submitTurn(value, "queue");
             }
+            return;
+          }
+          // With an empty composer, Up pulls the most recently queued item back in
+          // to edit (dequeuing it), like recalling the last line in a shell.
+          if (
+            event.key === "ArrowUp" &&
+            !event.repeat &&
+            value.length === 0 &&
+            queuedTurns.length > 0
+          ) {
+            event.preventDefault();
+            const lastIndex = queuedTurns.length - 1;
+            void editQueuedTurn(lastIndex, queuedTurns[lastIndex]);
           }
         }}
         placeholder={
