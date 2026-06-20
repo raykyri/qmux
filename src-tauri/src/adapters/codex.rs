@@ -154,12 +154,7 @@ impl CodexAdapter {
             ));
         }
 
-        let prompt = request.prompt.trim();
-        let mut tail_args = Vec::new();
-        if !prompt.is_empty() {
-            tail_args.push("--".to_string());
-            tail_args.push(prompt.to_string());
-        }
+        let tail_args = prompt_tail_args(&request.prompt);
         let args = build_codex_args(&cwd, request.model.as_deref(), &options, tail_args);
         let pane_id = state.next_id("pane");
         let mut envs = qmux_pane_envs(state, &pane_id);
@@ -210,7 +205,12 @@ impl CodexAdapter {
             )
         })?;
         let options = CodexLaunchOptions::default();
-        let args = build_codex_args(&cwd, agent.model.as_deref(), &options, Vec::new());
+        let (args, resumed) = build_codex_resume_args(
+            &cwd,
+            agent.model.as_deref(),
+            &options,
+            agent.session_id.as_deref(),
+        );
 
         let mut envs = qmux_pane_envs(state, &pane.id);
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
@@ -241,7 +241,7 @@ impl CodexAdapter {
             "agent.recovered",
             Some(pane.id.clone()),
             Some(restored.id.clone()),
-            json!({ "resumed": false, "agent": restored }),
+            json!({ "resumed": resumed, "agent": restored }),
         ));
 
         Ok(info)
@@ -498,6 +498,39 @@ fn build_codex_args(
     args
 }
 
+fn build_codex_resume_args(
+    cwd: &Path,
+    model: Option<&str>,
+    options: &CodexLaunchOptions,
+    session_id: Option<&str>,
+) -> (Vec<String>, bool) {
+    let Some(session_id) = session_id
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+    else {
+        return (build_codex_args(cwd, model, options, Vec::new()), false);
+    };
+
+    (
+        build_codex_args(
+            cwd,
+            model,
+            options,
+            vec!["resume".to_string(), session_id.to_string()],
+        ),
+        true,
+    )
+}
+
+fn prompt_tail_args(prompt: &str) -> Vec<String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        Vec::new()
+    } else {
+        vec!["--".to_string(), prompt.to_string()]
+    }
+}
+
 fn ensure_codex_integration() -> Result<PathBuf, String> {
     let codex_home = codex_home()?;
     let qmux_cli = env::current_exe()
@@ -708,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn build_args_adds_cwd_model_options_and_prompt() {
+    fn build_args_adds_cwd_model_options_and_tail_args() {
         let options = CodexLaunchOptions::from_value(json!({
             "sandbox": "workspace-write",
             "approvalPolicy": "on-request",
@@ -720,7 +753,7 @@ mod tests {
             Path::new("/tmp/qmux"),
             Some("gpt-5"),
             &options,
-            vec!["start here".to_string()],
+            vec!["--".to_string(), "start here".to_string()],
         );
 
         assert_eq!(
@@ -737,7 +770,75 @@ mod tests {
                 "--ask-for-approval",
                 "on-request",
                 "--search",
+                "--",
                 "start here"
+            ]
+        );
+    }
+
+    #[test]
+    fn prompt_tail_args_trim_and_delimit_initial_prompt() {
+        assert_eq!(prompt_tail_args("   "), Vec::<String>::new());
+        assert_eq!(
+            prompt_tail_args("  start here  "),
+            vec!["--".to_string(), "start here".to_string()]
+        );
+    }
+
+    #[test]
+    fn resume_args_include_session_id_when_present() {
+        let options = CodexLaunchOptions::from_value(json!({
+            "sandbox": "workspace-write",
+            "approvalPolicy": "on-request"
+        }))
+        .unwrap();
+
+        let (args, resumed) = build_codex_resume_args(
+            Path::new("/tmp/qmux"),
+            Some("gpt-5"),
+            &options,
+            Some(" session-123 "),
+        );
+
+        assert!(resumed);
+        assert_eq!(
+            args,
+            vec![
+                "--cd",
+                "/tmp/qmux",
+                "--model",
+                "gpt-5",
+                "--profile",
+                "qmux-integration",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "on-request",
+                "--search",
+                "resume",
+                "session-123"
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_args_fall_back_to_fresh_launch_without_session_id() {
+        let options = CodexLaunchOptions::default();
+
+        let (args, resumed) =
+            build_codex_resume_args(Path::new("/tmp/qmux"), None, &options, Some("   "));
+
+        assert!(!resumed);
+        assert_eq!(
+            args,
+            vec![
+                "--cd",
+                "/tmp/qmux",
+                "--profile",
+                "qmux-integration",
+                "--sandbox",
+                "workspace-write",
+                "--search"
             ]
         );
     }
