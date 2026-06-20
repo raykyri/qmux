@@ -877,7 +877,7 @@ export default function App() {
       return;
     }
 
-    const reason =
+    const liveReason =
       agent?.status === "awaitingPermission"
         ? "is waiting for you to approve a tool use"
         : agent?.status === "awaitingInput"
@@ -885,6 +885,24 @@ export default function App() {
           : agent?.status === "running" || agent?.status === "starting"
             ? "is still working"
             : null;
+
+    // Recovered (orphaned) queued turns parked in this pane would be discarded on
+    // close — surface that through the same stop dialog rather than a second prompt.
+    const recoveredTurnCount = agents
+      .filter((candidate) => candidate.orphanedQueuePaneId === paneToClose.id)
+      .reduce(
+        (total, candidate) =>
+          total + (queuedTurnsByAgentRef.current[candidate.id]?.length ?? 0),
+        0,
+      );
+
+    const reason =
+      liveReason ??
+      (recoveredTurnCount > 0
+        ? `has ${recoveredTurnCount} recovered queued ${
+            recoveredTurnCount === 1 ? "turn" : "turns"
+          }`
+        : null);
     if (reason) {
       setCloseDialog({ kind: "stop", pane: paneToClose, reason });
       return;
