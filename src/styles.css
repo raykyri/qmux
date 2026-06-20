@@ -1770,9 +1770,13 @@ button:disabled {
   flex: 1 1 auto;
   overflow: auto;
   overscroll-behavior: contain;
+  /* Room above the first / below the last row so the drop rule, which sits in
+     the inter-row gap, is not clipped by this scroll container at the edges. */
+  padding-block: 4px;
 }
 
 .queued-turn {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
@@ -1796,12 +1800,29 @@ button:disabled {
   cursor: grabbing;
 }
 
-.queued-turn.is-drop-before {
-  box-shadow: inset 0 2px 0 0 var(--accent-color);
+/* The drop target is a standalone rule sitting centered in the 6px gap between
+   rows (not a border hugging a row). For the very first/last position the rule
+   sits in the stack's edge padding. */
+.queued-turn.is-drop-before::before,
+.queued-turn.is-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent-color);
+  pointer-events: none;
 }
 
-.queued-turn.is-drop-after {
-  box-shadow: inset 0 -2px 0 0 var(--accent-color);
+.queued-turn.is-drop-before::before {
+  /* Centered in the gap: 3px (half the gap) above the row, less 1px (half the
+     rule height). */
+  top: -4px;
+}
+
+.queued-turn.is-drop-after::after {
+  bottom: -4px;
 }
 
 /* Hold the grabbing cursor across the whole stack for the duration of a drag. */
