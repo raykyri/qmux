@@ -799,10 +799,6 @@ button:disabled {
   padding: 8px 9px;
 }
 
-.turn-card.is-activity-only header {
-  color: #78918b;
-}
-
 .turn-card header {
   color: #96e0cf;
   font-size: 11px;
@@ -952,17 +948,7 @@ button:disabled {
   margin-right: 6px;
 }
 
-.assistant-activity {
-  display: grid;
-  gap: 4px;
-  margin-top: 7px;
-  border-top: 1px solid #30383b;
-  padding-top: 7px;
-}
-
-.assistant-run-block,
 .tool-block,
-.tool-run-block,
 .thinking-block {
   border: 1px solid #384246;
   border-radius: 6px;
@@ -972,22 +958,41 @@ button:disabled {
   overflow: hidden;
 }
 
+.tool-run-block,
 .assistant-run-block {
-  border-color: #30383b;
-  background: #1d2224;
+  background: transparent;
+  color: #d9ddd9;
+  font-size: 12px;
+  overflow: visible;
 }
 
-.tool-block.is-error,
-.tool-run-block.is-error {
+.tool-block.is-error {
   border-color: #755149;
 }
 
-.assistant-run-block > summary,
 .tool-block summary,
-.tool-run-block summary,
 .thinking-block summary {
   cursor: pointer;
   padding: 5px 7px;
+}
+
+.tool-run-block > summary,
+.assistant-run-block > summary {
+  cursor: pointer;
+  list-style-position: inside;
+  border: 1px solid #384246;
+  border-radius: 6px;
+  background: #15191b;
+  padding: 5px 7px;
+}
+
+.tool-run-block.is-error > summary {
+  border-color: #755149;
+}
+
+.assistant-run-block > summary {
+  border-color: #30383b;
+  background: #1d2224;
 }
 
 .tool-summary {
@@ -1021,12 +1026,7 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  border-top: 1px solid #30383b;
-  padding: 7px;
-}
-
-.tool-block.is-nested {
-  background: #111416;
+  padding: 7px 0 0;
 }
 
 .tool-payload {
@@ -1062,26 +1062,11 @@ button:disabled {
   font-style: italic;
 }
 
-.assistant-activity .tool-block,
-.assistant-activity .tool-run-block {
-  border-color: #2c3538;
-  background: #171c1e;
-  color: #aab1ad;
-}
-
-.assistant-activity .tool-summary-main {
-  color: #c4cbc7;
-}
-
-.assistant-activity .tool-summary-meta {
-  color: #7f8884;
-}
-
 .assistant-run-items {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  border-top: 1px solid #30383b;
-  padding: 8px;
+  padding: 8px 0 0;
 }
 
 .native-input {
