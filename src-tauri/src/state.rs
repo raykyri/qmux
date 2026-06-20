@@ -41,6 +41,54 @@ struct Model {
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
     agent_turn_queues: HashMap<String, VecDeque<String>>,
+    agent_send_tracking: HashMap<String, AgentSendTracking>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AgentSendTracking {
+    outstanding_sends: VecDeque<AgentOutstandingSend>,
+    ups_seq: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSendSource {
+    DirectSend,
+    QueuedTurn,
+    Steer,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOutstandingSend {
+    pub text: String,
+    pub sent_at_seq: u64,
+    pub source: AgentSendSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "status"
+)]
+pub enum AgentPromptSubmitMatch {
+    Matched {
+        source: AgentSendSource,
+        outstanding_sends: usize,
+    },
+    Mismatched {
+        expected: String,
+        actual: String,
+        outstanding_sends: usize,
+    },
+    Untracked {
+        actual: String,
+        outstanding_sends: usize,
+    },
+    MissingPrompt {
+        outstanding_sends: usize,
+    },
 }
 
 pub struct PaneRuntime {
@@ -517,6 +565,107 @@ impl AppState {
         Ok(len)
     }
 
+    pub fn record_agent_send(
+        &self,
+        agent_id: &str,
+        text: String,
+        source: AgentSendSource,
+    ) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let tracking = model
+            .agent_send_tracking
+            .entry(agent_id.to_string())
+            .or_default();
+        tracking.outstanding_sends.push_back(AgentOutstandingSend {
+            text,
+            sent_at_seq: tracking.ups_seq,
+            source,
+        });
+        Ok(())
+    }
+
+    pub fn match_agent_prompt_submit(
+        &self,
+        agent_id: &str,
+        prompt: Option<&str>,
+    ) -> Result<AgentPromptSubmitMatch, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let tracking = model
+            .agent_send_tracking
+            .entry(agent_id.to_string())
+            .or_default();
+        tracking.ups_seq = tracking.ups_seq.saturating_add(1);
+        let outstanding_count = tracking.outstanding_sends.len();
+
+        let Some(prompt) = prompt else {
+            return Ok(AgentPromptSubmitMatch::MissingPrompt {
+                outstanding_sends: outstanding_count,
+            });
+        };
+
+        let Some(front) = tracking.outstanding_sends.front() else {
+            return Ok(AgentPromptSubmitMatch::Untracked {
+                actual: prompt.to_string(),
+                outstanding_sends: 0,
+            });
+        };
+
+        if prompts_match(prompt, &front.text) {
+            let matched = tracking
+                .outstanding_sends
+                .pop_front()
+                .expect("front checked above");
+            Ok(AgentPromptSubmitMatch::Matched {
+                source: matched.source,
+                outstanding_sends: tracking.outstanding_sends.len(),
+            })
+        } else {
+            Ok(AgentPromptSubmitMatch::Mismatched {
+                expected: front.text.clone(),
+                actual: prompt.to_string(),
+                outstanding_sends: outstanding_count,
+            })
+        }
+    }
+
+    pub fn outstanding_agent_sends(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<AgentOutstandingSend>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_send_tracking
+            .get(agent_id)
+            .map(|tracking| tracking.outstanding_sends.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    pub fn clear_agent_outstanding_sends(&self, agent_id: &str) -> Result<usize, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let Some(tracking) = model.agent_send_tracking.get_mut(agent_id) else {
+            return Ok(0);
+        };
+        let cleared = tracking.outstanding_sends.len();
+        tracking.outstanding_sends.clear();
+        Ok(cleared)
+    }
+
     pub fn mark_transcript_tail(&self, agent_id: &str, path: &str) -> Result<bool, String> {
         let key = format!("{agent_id}:{path}");
         let mut tails = self
@@ -610,6 +759,16 @@ impl AppState {
         self.persist();
         Ok(())
     }
+}
+
+fn prompts_match(actual: &str, expected: &str) -> bool {
+    let actual = normalize_prompt(actual);
+    let expected = normalize_prompt(expected);
+    actual == expected
+}
+
+fn normalize_prompt(prompt: &str) -> String {
+    prompt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn random_token() -> String {

@@ -1,6 +1,6 @@
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
-use crate::state::AppState;
+use crate::state::{AgentSendSource, AppState};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -70,7 +70,7 @@ pub fn submit_agent_turn(
             if should_queue(agent.status) {
                 return queue_agent_turn(state, &agent, data);
             }
-            send_agent_turn(state, &agent, data)?;
+            send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
             let queued_turns = state.list_agent_turn_queue(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
@@ -82,7 +82,7 @@ pub fn submit_agent_turn(
             if should_queue(agent.status) {
                 return Err("agent is busy; queue the turn instead".to_string());
             }
-            send_agent_turn(state, &agent, data)?;
+            send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
             let queued_turns = state.list_agent_turn_queue(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
@@ -99,7 +99,7 @@ pub fn submit_agent_turn(
         SubmitAgentTurnMode::Steer => {
             // Deliberately skips the busy guard: steering injects the turn into a
             // working agent now rather than queueing it until idle.
-            send_agent_turn(state, &agent, data)?;
+            send_agent_turn(state, &agent, data, AgentSendSource::Steer)?;
             let queued_turns = state.list_agent_turn_queue(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
@@ -147,7 +147,7 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
             return Err(format!("agent {agent_id} was not found"));
         }
     };
-    if let Err(err) = send_agent_turn(state, &agent, data.clone()) {
+    if let Err(err) = send_agent_turn(state, &agent, data.clone(), AgentSendSource::QueuedTurn) {
         let _ = state.prepend_agent_turn(agent_id, data);
         return Err(err);
     }
@@ -185,11 +185,17 @@ fn queue_agent_turn(
     })
 }
 
-fn send_agent_turn(state: &AppState, agent: &AgentInfo, data: String) -> Result<(), String> {
+fn send_agent_turn(
+    state: &AppState,
+    agent: &AgentInfo,
+    data: String,
+    source: AgentSendSource,
+) -> Result<(), String> {
     let pane_id = agent
         .pane_id
         .clone()
         .ok_or_else(|| format!("agent {} does not have an attached pane", agent.id))?;
+    let text = data.clone();
     let mut updated = agent.clone();
     updated.status = AgentStatus::Running;
     state.update_agent(updated)?;
@@ -201,7 +207,9 @@ fn send_agent_turn(state: &AppState, agent: &AgentInfo, data: String) -> Result<
             paste: true,
             submit: true,
         },
-    )
+    )?;
+    let _ = state.record_agent_send(&agent.id, text, source);
+    Ok(())
 }
 
 #[cfg(test)]
