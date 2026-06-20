@@ -1,7 +1,7 @@
 [package]
 name = "qmux"
 version = "0.1.0"
-description = "A PTY-owned terminal for Claude Code agent panes."
+description = "A PTY-owned terminal for agent panes."
 authors = ["Raymond"]
 edition = "2024"
 

@@ -1,3 +1,4 @@
+use crate::adapters::{AdapterMetadata, adapter_registry};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -8,7 +9,28 @@ use std::path::{Path, PathBuf};
 pub struct QmuxConfig {
     pub workspace_root: PathBuf,
     pub socket_path: PathBuf,
-    pub claude_binary: String,
+    #[serde(default)]
+    pub adapters: AdapterConfigs,
+    #[serde(
+        default,
+        rename = "claudeBinary",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub legacy_claude_binary: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterConfigs {
+    #[serde(default)]
+    pub claude: ClaudeAdapterConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAdapterConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -16,7 +38,7 @@ pub struct QmuxConfig {
 pub struct RuntimeConfig {
     pub workspace_root: String,
     pub socket_path: String,
-    pub claude_binary: String,
+    pub adapters: Vec<AdapterMetadata>,
 }
 
 impl QmuxConfig {
@@ -63,8 +85,17 @@ impl QmuxConfig {
         RuntimeConfig {
             workspace_root: self.workspace_root.display().to_string(),
             socket_path: self.socket_path.display().to_string(),
-            claude_binary: self.claude_binary.clone(),
+            adapters: adapter_registry(self).metadata(),
         }
+    }
+
+    pub fn claude_binary(&self) -> String {
+        self.adapters
+            .claude
+            .binary
+            .clone()
+            .or_else(|| self.legacy_claude_binary.clone())
+            .unwrap_or_else(|| "claude".to_string())
     }
 
     fn default_config() -> Result<Self, String> {
@@ -72,7 +103,12 @@ impl QmuxConfig {
         Ok(Self {
             workspace_root: PathBuf::from(home).join("qmux/workspaces"),
             socket_path: env::temp_dir().join("qmux.sock"),
-            claude_binary: "claude".to_string(),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
         })
     }
 }
@@ -82,5 +118,43 @@ fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         cwd.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_binary_overrides_legacy_claude_binary() {
+        let config: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "claudeBinary": "legacy-claude",
+              "adapters": {
+                "claude": {
+                  "binary": "adapter-claude"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.claude_binary(), "adapter-claude");
+    }
+
+    #[test]
+    fn legacy_claude_binary_is_used_when_adapter_binary_is_absent() {
+        let config: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "claudeBinary": "legacy-claude"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.claude_binary(), "legacy-claude");
     }
 }

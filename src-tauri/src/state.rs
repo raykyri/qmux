@@ -209,7 +209,9 @@ impl AppState {
 
         // Keep id allocation monotonic across restarts so reused ids never alias.
         if persisted.next_id > self.inner.next_id.load(Ordering::Relaxed) {
-            self.inner.next_id.store(persisted.next_id, Ordering::Relaxed);
+            self.inner
+                .next_id
+                .store(persisted.next_id, Ordering::Relaxed);
         }
 
         // Enable persistence only after hydration so loading does not rewrite the
@@ -959,6 +961,7 @@ fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig};
     use crate::persistence::PersistedState;
     use crate::workspace::AgentStatus;
     use std::path::PathBuf;
@@ -980,7 +983,12 @@ mod tests {
         QmuxConfig {
             workspace_root,
             socket_path: PathBuf::from("/tmp/qmux-test.sock"),
-            claude_binary: "claude".to_string(),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
         }
     }
 
@@ -1040,9 +1048,15 @@ mod tests {
         {
             let state = AppState::new(config.clone());
             assert!(state.restore_session().is_empty());
-            state.enqueue_agent_turn("agent-1", "first".to_string()).unwrap();
-            state.enqueue_agent_turn("agent-1", "second".to_string()).unwrap();
-            state.enqueue_agent_turn("agent-1", "third".to_string()).unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "first".to_string())
+                .unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "second".to_string())
+                .unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "third".to_string())
+                .unwrap();
             // Drop "second" from the middle.
             state
                 .remove_agent_turn_queue_item("agent-1", 1, Some("second"))
@@ -1136,7 +1150,9 @@ mod tests {
         // Without restore_session(), mutations must not touch disk (keeps tests and
         // ad-hoc AppState construction hermetic).
         let state = AppState::new(config);
-        state.enqueue_agent_turn("agent-1", "ghost".to_string()).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "ghost".to_string())
+            .unwrap();
         assert!(!crate::persistence::state_path(&workspace).exists());
     }
 

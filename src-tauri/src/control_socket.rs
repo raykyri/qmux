@@ -1,6 +1,8 @@
-use crate::claude::{PrepareShellClaudeLaunchRequest, prepare_shell_claude_launch};
+use crate::adapters::{
+    AdapterNotification, PrepareShellAgentLaunchRequest, PrepareShellClaudeLaunchRequest,
+    agent_prepare_shell_launch, ingest_adapter_notification,
+};
 use crate::events::QmuxEvent;
-use crate::hooks::{HookNotification, ingest_hook_notification};
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -127,16 +129,41 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             state.update_pane_cwd(&authed_pane, payload.cwd)?;
             Ok(json!({ "updated": true }))
         }
+        "agent.prepare_shell_launch" => {
+            let launch = serde_json::from_value::<PrepareShellAgentLaunchRequest>(request.payload)
+                .map_err(|err| format!("invalid agent.prepare_shell_launch payload: {err}"))?;
+            ensure_pane_scope(&authed_pane, &launch.pane_id)?;
+            let prepared = agent_prepare_shell_launch(state, launch)?;
+            serde_json::to_value(prepared)
+                .map_err(|err| format!("failed to encode prepared agent launch: {err}"))
+        }
         "claude.prepare_shell_launch" => {
             let launch = serde_json::from_value::<PrepareShellClaudeLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid claude.prepare_shell_launch payload: {err}"))?;
             ensure_pane_scope(&authed_pane, &launch.pane_id)?;
-            let prepared = prepare_shell_claude_launch(state, launch)?;
-            serde_json::to_value(prepared)
-                .map_err(|err| format!("failed to encode prepared Claude launch: {err}"))
+            let prepared = agent_prepare_shell_launch(
+                state,
+                PrepareShellAgentLaunchRequest {
+                    adapter_id: "claude".to_string(),
+                    pane_id: launch.pane_id,
+                    cwd: launch.cwd,
+                    args: launch.args,
+                },
+            )?;
+            let settings_path = prepared
+                .args
+                .windows(2)
+                .find_map(|args| (args[0] == "--settings").then(|| args[1].clone()))
+                .ok_or_else(|| "prepared Claude launch did not include --settings".to_string())?;
+            Ok(json!({
+                "claudeBinary": prepared.binary,
+                "cwd": prepared.cwd,
+                "settingsPath": settings_path,
+                "envs": prepared.envs,
+            }))
         }
         "hook.notify" => {
-            let mut notification = serde_json::from_value::<HookNotification>(request.payload)
+            let mut notification = serde_json::from_value::<AdapterNotification>(request.payload)
                 .map_err(|err| format!("invalid hook.notify payload: {err}"))?;
             // Bind the notification to the authenticated pane regardless of what the
             // caller claims, so hook status can only be reported for its own pane.
@@ -144,8 +171,10 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             if let Some(agent_id) = notification.agent_id.as_deref() {
                 ensure_agent_scope(state, &authed_pane, agent_id)?;
             }
-            let event = ingest_hook_notification(state, notification)?;
-            state.emit(event);
+            let outcome = ingest_adapter_notification(state, notification)?;
+            for event in outcome.into_events() {
+                state.emit(event);
+            }
             Ok(json!({ "notified": true }))
         }
         // Spawning agents and queueing turns are management operations that belong to the

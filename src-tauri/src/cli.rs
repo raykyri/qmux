@@ -17,16 +17,16 @@ struct ControlResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PreparedClaudeLaunch {
-    claude_binary: String,
+struct PreparedAgentLaunch {
+    binary: String,
     cwd: String,
-    settings_path: String,
-    envs: Vec<PreparedClaudeEnv>,
+    args: Vec<String>,
+    envs: Vec<PreparedLaunchEnv>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PreparedClaudeEnv {
+struct PreparedLaunchEnv {
     key: String,
     value: String,
 }
@@ -89,8 +89,15 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             )?;
             Ok(true)
         }
+        "agent-exec" => {
+            let adapter_id = args
+                .next()
+                .ok_or_else(|| "usage: qmux agent-exec <adapter-id> [args...]".to_string())?;
+            run_agent_exec(adapter_id, args.collect())?;
+            Ok(true)
+        }
         "claude" => {
-            run_claude(args.collect())?;
+            run_agent_exec("claude".to_string(), args.collect())?;
             Ok(true)
         }
         "ping" => {
@@ -98,42 +105,40 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write|cwd|claude]");
+            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude]");
             Ok(true)
         }
         _ => Ok(false),
     }
 }
 
-fn run_claude(args: Vec<String>) -> Result<(), String> {
+fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
     let pane_id = env::var("QMUX_PANE_ID")
         .map_err(|_| "QMUX_PANE_ID is not set; run this from a qmux shell pane".to_string())?;
     let cwd = env::current_dir()
-        .map_err(|err| format!("failed to read current directory for Claude launch: {err}"))?;
+        .map_err(|err| format!("failed to read current directory for agent launch: {err}"))?;
     let launch = request_value(
-        "claude.prepare_shell_launch",
+        "agent.prepare_shell_launch",
         json!({
+            "adapterId": adapter_id,
             "paneId": pane_id,
             "cwd": cwd.display().to_string(),
+            "args": args,
         }),
     )?;
-    let launch = serde_json::from_value::<PreparedClaudeLaunch>(launch)
-        .map_err(|err| format!("invalid prepared Claude launch response: {err}"))?;
+    let launch = serde_json::from_value::<PreparedAgentLaunch>(launch)
+        .map_err(|err| format!("invalid prepared agent launch response: {err}"))?;
 
-    let mut command = Command::new(&launch.claude_binary);
-    command
-        .arg("--settings")
-        .arg(&launch.settings_path)
-        .args(args)
-        .current_dir(&launch.cwd);
+    let mut command = Command::new(&launch.binary);
+    command.args(launch.args).current_dir(&launch.cwd);
     for env in launch.envs {
         command.env(env.key, env.value);
     }
 
     let err = command.exec();
     Err(format!(
-        "failed to launch Claude CLI '{}': {err}",
-        launch.claude_binary
+        "failed to launch agent binary '{}': {err}",
+        launch.binary
     ))
 }
 

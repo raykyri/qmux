@@ -3,7 +3,13 @@ export type PaneKind = "shell" | "agent";
 export interface RuntimeConfig {
   workspaceRoot: string;
   socketPath: string;
-  claudeBinary: string;
+  adapters: AgentAdapterMetadata[];
+}
+
+export interface AgentAdapterMetadata {
+  id: string;
+  label: string;
+  default: boolean;
 }
 
 export interface PaneInfo {
@@ -72,16 +78,17 @@ export interface Turn {
   sourceIndex: number;
 }
 
-export interface SpawnClaudeRequest {
+export interface SpawnAgentRequest {
+  adapterId: string;
   prompt: string;
   groupId?: string | null;
   baseRepo?: string | null;
   baseRef?: string | null;
   cwd?: string | null;
   model?: string | null;
-  permissionMode?: string | null;
   initialSize?: InitialPaneSize | null;
   useWorktree?: boolean | null;
+  options?: Record<string, unknown> | null;
 }
 
 export interface WorktreeStatus {

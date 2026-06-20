@@ -1,9 +1,8 @@
-mod claude;
+mod adapters;
 mod cli;
 mod config;
 mod control_socket;
 mod events;
-mod hooks;
 mod persistence;
 mod pty;
 mod recovery;
@@ -12,7 +11,7 @@ mod transcript;
 mod turn_queue;
 mod workspace;
 
-use claude::{SpawnClaudeRequest, spawn_claude_pane};
+use adapters::{SpawnAgentRequest, SpawnClaudeRequest, agent_spawn as spawn_agent_pane};
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use pty::{
@@ -112,11 +111,19 @@ fn spawn_shell(
 }
 
 #[tauri::command]
+fn agent_spawn(
+    state: tauri::State<'_, AppState>,
+    request: SpawnAgentRequest,
+) -> Result<PaneInfo, String> {
+    spawn_agent_pane(&state, request)
+}
+
+#[tauri::command]
 fn spawn_claude(
     state: tauri::State<'_, AppState>,
     request: SpawnClaudeRequest,
 ) -> Result<PaneInfo, String> {
-    spawn_claude_pane(&state, request)
+    spawn_agent_pane(&state, request.into_agent_request())
 }
 
 #[tauri::command]
@@ -226,7 +233,10 @@ fn worktree_remove(state: tauri::State<'_, AppState>, agent_id: String) -> Resul
 }
 
 #[tauri::command]
-fn app_confirm_exit(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn app_confirm_exit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     state.mark_exit_confirmed();
     app.exit(0);
     Ok(())
@@ -307,6 +317,7 @@ fn main() {
             list_agent_turn_queue,
             group_create,
             spawn_shell,
+            agent_spawn,
             spawn_claude,
             pane_write,
             pane_resize,
