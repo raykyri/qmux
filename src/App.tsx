@@ -2085,7 +2085,7 @@ export default function App() {
               value={prompt}
               onChange={(event) => setPrompt(event.currentTarget.value)}
               rows={2}
-              placeholder="What do you want to do next?"
+              placeholder="What do you want to research or build?"
             />
             <div className="command-launcher-overlay">
               <div className="command-launcher-overlay-group">

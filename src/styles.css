@@ -1147,11 +1147,12 @@ button:disabled {
 .launcher-select-trigger {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
   min-height: var(--control-h-md);
   /* Cap width so long option labels truncate (the value ellipsizes) instead of
      stretching the launcher row. */
-  max-width: 160px;
+  max-width: 165px;
   padding: 0 10px 0 11px;
   border: 1px solid var(--control-border);
   /* Pill, matching the Codex/Claude toggle. */
