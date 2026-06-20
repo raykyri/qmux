@@ -8,10 +8,13 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
+use std::time::Duration;
+
+const CONTROL_SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +25,7 @@ struct ControlRequest {
     payload: Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ControlResponse {
     ok: bool,
@@ -75,7 +78,11 @@ pub fn start_control_socket(state: AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_client(state: AppState, mut stream: UnixStream) {
+fn handle_client(state: AppState, stream: UnixStream) {
+    handle_client_with_timeout(state, stream, CONTROL_SOCKET_READ_TIMEOUT);
+}
+
+fn handle_client_with_timeout(state: AppState, mut stream: UnixStream, read_timeout: Duration) {
     let reader_stream = match stream.try_clone() {
         Ok(stream) => stream,
         Err(err) => {
@@ -83,11 +90,21 @@ fn handle_client(state: AppState, mut stream: UnixStream) {
             return;
         }
     };
+    if let Err(err) = reader_stream.set_read_timeout(Some(read_timeout)) {
+        let _ = write_response(
+            &mut stream,
+            Err(format!("failed to set socket read timeout: {err}")),
+        );
+        return;
+    }
     let reader = BufReader::new(reader_stream);
 
     for line in reader.lines() {
         let result = match line {
             Ok(line) => handle_line(&state, &line),
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return;
+            }
             Err(err) => Err(format!("failed to read socket request: {err}")),
         };
 
@@ -218,4 +235,99 @@ fn write_response(stream: &mut UnixStream, result: Result<Value, String>) -> std
     serde_json::to_writer(&mut *stream, &response)?;
     stream.write_all(b"\n")?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
+    use std::io::Read;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_state() -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: temp_dir(),
+            socket_path: PathBuf::from("/tmp/qmux-control-test.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+        })
+    }
+
+    fn temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("qmux-control-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn partial_request_times_out_server_reader() {
+        let state = test_state();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            handle_client_with_timeout(state, server, Duration::from_millis(50));
+            done_tx.send(()).unwrap();
+        });
+
+        client.write_all(b"{").unwrap();
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server reader should exit after the read timeout");
+
+        let mut buf = [0_u8; 1];
+        assert_eq!(client.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn complete_request_still_receives_response() {
+        let state = test_state();
+        let token = state.pane_token("pane-1");
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            handle_client_with_timeout(state, server, Duration::from_secs(1));
+            done_tx.send(()).unwrap();
+        });
+
+        let request = json!({
+            "token": token,
+            "command": "ping",
+            "payload": Value::Null,
+        });
+        serde_json::to_writer(&mut client, &request).unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let mut response = String::new();
+        BufReader::new(client.try_clone().unwrap())
+            .read_line(&mut response)
+            .unwrap();
+        let response = serde_json::from_str::<ControlResponse>(&response).unwrap();
+        assert!(response.ok);
+        assert_eq!(response.data, json!({ "status": "ok" }));
+
+        drop(client);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server reader should exit after the client closes");
+    }
 }
