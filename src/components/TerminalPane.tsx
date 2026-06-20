@@ -1,4 +1,5 @@
 import { FitAddon, Terminal } from "ghostty-web";
+import type { ITheme } from "ghostty-web";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
@@ -29,6 +30,35 @@ type SearchMatch = { row: number; col: number; length: number };
 // Cap how many matches we track so a pathological search (e.g. "." as a regex)
 // over a long scrollback cannot lock up the UI building a huge array.
 const MAX_SEARCH_MATCHES = 5000;
+
+const TERMINAL_THEME: ITheme = {
+  background: "#111315",
+  foreground: "#e7e7e2",
+  cursor: "#f2d37b",
+  cursorAccent: "#111315",
+  selectionBackground: "#3d4a52",
+  selectionForeground: "#f4f4ef",
+
+  // ghostty-web passes unspecified palette entries to the WASM parser as black,
+  // and its canvas renderer treats RGB 0/0/0 backgrounds as transparent. Keep
+  // the palette explicit so ANSI-backed CLI tints render instead of disappearing.
+  black: "#1b1f21",
+  red: "#e0796d",
+  green: "#6cae9d",
+  yellow: "#d8b878",
+  blue: "#6aa4d8",
+  magenta: "#c586c0",
+  cyan: "#63b3c2",
+  white: "#d7d7d2",
+  brightBlack: "#7f8884",
+  brightRed: "#ef8a80",
+  brightGreen: "#7bc8b2",
+  brightYellow: "#f0c97a",
+  brightBlue: "#8ab5e1",
+  brightMagenta: "#d7a0d3",
+  brightCyan: "#83ced9",
+  brightWhite: "#f4f4ef",
+};
 
 function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
   if (typeof data === "string") {
@@ -332,12 +362,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         scrollback: 10000,
         fontFamily: TERMINAL_FONT_FAMILY,
         fontSize: TERMINAL_FONT_SIZE,
-        theme: {
-          background: "#111315",
-          foreground: "#e7e7e2",
-          cursor: "#f2d37b",
-          selectionBackground: "#3d4a52",
-        },
+        theme: TERMINAL_THEME,
       });
 
       const fit = new FitAddon();
