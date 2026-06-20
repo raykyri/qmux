@@ -46,6 +46,16 @@ pub fn start_transcript_tail(
     transcript_path: String,
     adapter_id: String,
 ) {
+    if let Err(err) = adapter_registry(state.config()).get(&adapter_id) {
+        state.emit(QmuxEvent::new(
+            "transcript.error",
+            None,
+            Some(agent_id),
+            json!({ "error": err, "path": transcript_path, "adapterId": adapter_id }),
+        ));
+        return;
+    }
+
     let should_start = state
         .mark_transcript_tail(&agent_id, &transcript_path)
         .unwrap_or(false);
@@ -56,6 +66,19 @@ pub fn start_transcript_tail(
     thread::spawn(move || {
         let path = PathBuf::from(&transcript_path);
         let mut seen_lines: Vec<String> = Vec::new();
+        let registry = adapter_registry(state.config());
+        let adapter = match registry.get(&adapter_id) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                state.emit(QmuxEvent::new(
+                    "transcript.error",
+                    None,
+                    Some(agent_id),
+                    json!({ "error": err, "path": transcript_path, "adapterId": adapter_id }),
+                ));
+                return;
+            }
+        };
 
         loop {
             let raw = match fs::read_to_string(&path) {
@@ -69,9 +92,7 @@ pub fn start_transcript_tail(
 
             if is_append_only(&seen_lines, &lines) {
                 for (index, line) in lines.iter().enumerate().skip(seen_lines.len()) {
-                    if let Some(turn) =
-                        parse_transcript_line(&state, &adapter_id, &agent_id, index, line)
-                    {
+                    if let Some(turn) = adapter.parse_transcript_line(&agent_id, index, line) {
                         let _ = state.append_turn(turn.clone());
                         state.emit(QmuxEvent::new(
                             "turn.appended",
@@ -86,7 +107,7 @@ pub fn start_transcript_tail(
                     .iter()
                     .enumerate()
                     .filter_map(|(index, line)| {
-                        parse_transcript_line(&state, &adapter_id, &agent_id, index, line)
+                        adapter.parse_transcript_line(&agent_id, index, line)
                     })
                     .collect::<Vec<_>>();
                 let _ = state.replace_turns(&agent_id, turns.clone());
@@ -110,17 +131,4 @@ fn is_append_only(previous: &[String], current: &[String]) -> bool {
             .iter()
             .zip(current.iter())
             .all(|(previous, current)| previous == current)
-}
-
-fn parse_transcript_line(
-    state: &AppState,
-    adapter_id: &str,
-    agent_id: &str,
-    source_index: usize,
-    line: &str,
-) -> Option<Turn> {
-    adapter_registry(state.config())
-        .get(adapter_id)
-        .ok()?
-        .parse_transcript_line(agent_id, source_index, line)
 }
