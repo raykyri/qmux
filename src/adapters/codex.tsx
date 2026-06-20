@@ -3,8 +3,8 @@ import type { AgentUiAdapter, ComposerPolicy, LauncherOptionsProps } from ".";
 export const CODEX_ADAPTER_ID = "codex";
 
 const codexComposerPolicy: ComposerPolicy = {
-  readyStatuses: ["running", "awaitingInput", "done", "idle"],
-  queueStatuses: ["starting", "awaitingPermission"],
+  readyStatuses: ["awaitingInput", "done", "idle"],
+  queueStatuses: ["starting", "running", "awaitingPermission"],
   steerStatuses: ["starting", "running"],
   permissionActions: [],
 };

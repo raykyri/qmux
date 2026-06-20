@@ -8,13 +8,27 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::Turn;
+use crate::turn_queue::drain_agent_turn_queue;
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     prepare_agent_workspace,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::env;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+const CODEX_QMUX_PROFILE: &str = "qmux-integration";
+const CODEX_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+];
 
 #[derive(Clone, Debug)]
 pub struct CodexAdapter {
@@ -96,12 +110,15 @@ impl AgentAdapter for CodexAdapter {
     fn composer_policy(&self) -> ComposerPolicy {
         ComposerPolicy {
             ready_statuses: vec![
-                AgentStatus::Running,
                 AgentStatus::AwaitingInput,
                 AgentStatus::Done,
                 AgentStatus::Idle,
             ],
-            queue_statuses: vec![AgentStatus::Starting, AgentStatus::AwaitingPermission],
+            queue_statuses: vec![
+                AgentStatus::Starting,
+                AgentStatus::Running,
+                AgentStatus::AwaitingPermission,
+            ],
             steer_statuses: vec![AgentStatus::Starting, AgentStatus::Running],
             permission_actions: Vec::new(),
         }
@@ -112,6 +129,7 @@ impl CodexAdapter {
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
         let options = CodexLaunchOptions::from_value(request.options)?;
+        let codex_home = ensure_codex_integration()?;
 
         let agent = prepare_agent_workspace(
             state,
@@ -139,12 +157,15 @@ impl CodexAdapter {
         let prompt = request.prompt.trim();
         let mut tail_args = Vec::new();
         if !prompt.is_empty() {
+            tail_args.push("--".to_string());
             tail_args.push(prompt.to_string());
         }
         let args = build_codex_args(&cwd, request.model.as_deref(), &options, tail_args);
         let pane_id = state.next_id("pane");
         let mut envs = qmux_pane_envs(state, &pane_id);
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
+        envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
 
         let spawn_result = spawn_pty(
             state,
@@ -181,6 +202,7 @@ impl CodexAdapter {
         agent: &AgentInfo,
     ) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
+        let codex_home = ensure_codex_integration()?;
         let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
             format!(
                 "agent worktree {} no longer exists; relaunch manually",
@@ -192,6 +214,8 @@ impl CodexAdapter {
 
         let mut envs = qmux_pane_envs(state, &pane.id);
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
+        envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
 
         let info = spawn_pty(
             state,
@@ -229,6 +253,7 @@ impl CodexAdapter {
         request: PrepareShellAgentLaunchRequest,
     ) -> Result<PreparedShellAgentLaunch, String> {
         let binary = self.ensure_binary()?;
+        validate_shell_tail_args(&request.args)?;
 
         if state.pane_writer(&request.pane_id)?.is_none() {
             return Err(format!("pane {} was not found", request.pane_id));
@@ -241,6 +266,7 @@ impl CodexAdapter {
                 cwd.display()
             ));
         }
+        let codex_home = ensure_codex_integration()?;
 
         let agent = prepare_agent_workspace(
             state,
@@ -260,6 +286,8 @@ impl CodexAdapter {
         let args = build_codex_args(&cwd, None, &options, request.args);
         let mut envs = qmux_pane_envs(state, &request.pane_id);
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
+        envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
         let agent_id = agent.id.clone();
         let worktree_dir = agent.worktree_dir.clone();
 
@@ -287,22 +315,104 @@ impl CodexAdapter {
         notification: AdapterNotification,
     ) -> Result<AdapterNotificationOutcome, String> {
         let pane_id = notification.pane_id.clone();
-        let agent_id = notification.agent_id.clone().or_else(|| {
-            pane_id
-                .as_deref()
-                .and_then(|pane_id| state.agent_by_pane(pane_id).ok().flatten())
-                .map(|agent| agent.id)
+        let mut send_tracking = None;
+        let mut agent = notification
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| state.agent(agent_id).ok().flatten())
+            .or_else(|| {
+                pane_id
+                    .as_deref()
+                    .and_then(|pane_id| state.agent_by_pane(pane_id).ok().flatten())
+            });
+        let hook_event = notification.event.clone();
+        let event_type = match hook_event.as_str() {
+            "SessionStart" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.session_id = string_field(&notification.payload, "session_id")
+                        .or_else(|| string_field(&notification.payload, "sessionId"))
+                        .or_else(|| string_field(&notification.payload, "resource_id"))
+                        .or_else(|| string_field(&notification.payload, "resourceId"));
+                    agent.status = AgentStatus::Running;
+                    state.update_agent(agent.clone())?;
+                }
+                "agent.session_start"
+            }
+            "UserPromptSubmit" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.update_agent(agent.clone())?;
+                    let prompt = string_field(&notification.payload, "prompt")
+                        .or_else(|| string_field(&notification.payload, "input"));
+                    send_tracking =
+                        Some(state.match_agent_prompt_submit(&agent.id, prompt.as_deref())?);
+                }
+                "agent.prompt_submitted"
+            }
+            "PreToolUse" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.update_agent(agent.clone())?;
+                }
+                "agent.tool_use"
+            }
+            "PostToolUse" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.update_agent(agent.clone())?;
+                }
+                "agent.tool_result"
+            }
+            "PermissionRequest" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::AwaitingPermission;
+                    state.update_agent(agent.clone())?;
+                }
+                "agent.awaiting_permission"
+            }
+            "Stop" => {
+                let drained = if let Some(agent) = agent.as_mut() {
+                    finish_agent_after_stop(state, agent)?
+                } else {
+                    false
+                };
+                if drained {
+                    "agent.running"
+                } else {
+                    "agent.done"
+                }
+            }
+            other => {
+                return Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
+                    format!("agent.hook.{other}"),
+                    pane_id,
+                    agent.map(|agent| agent.id),
+                    json!({
+                        "hookEvent": hook_event,
+                        "payload": notification.payload,
+                    }),
+                )));
+            }
+        };
+        let mut event_payload = json!({
+            "hookEvent": hook_event,
+            "payload": notification.payload,
         });
-        let event = notification.event;
+        if let Some(send_tracking) = send_tracking {
+            if let Value::Object(payload) = &mut event_payload {
+                payload.insert(
+                    "sendTracking".to_string(),
+                    serde_json::to_value(send_tracking)
+                        .map_err(|err| format!("failed to encode send tracking: {err}"))?,
+                );
+            }
+        }
 
         Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
-            format!("agent.hook.{event}"),
+            event_type,
             pane_id,
-            agent_id,
-            json!({
-                "hookEvent": event,
-                "payload": notification.payload,
-            }),
+            agent.map(|agent| agent.id),
+            event_payload,
         )))
     }
 }
@@ -314,10 +424,6 @@ struct CodexLaunchOptions {
     sandbox: Option<String>,
     #[serde(default)]
     approval_policy: Option<String>,
-    #[serde(default)]
-    profile: Option<String>,
-    #[serde(default)]
-    oss: bool,
     // Kept only so saved launcher options that still carry `search: true` parse
     // cleanly under `deny_unknown_fields`; --search is now always emitted.
     #[serde(default)]
@@ -341,12 +447,8 @@ impl CodexLaunchOptions {
         options.approval_policy = normalize_option(
             "approvalPolicy",
             options.approval_policy.as_deref(),
-            &["untrusted", "on-request", "on-failure", "never"],
+            &["untrusted", "on-request", "never"],
         )?;
-        options.profile = options
-            .profile
-            .map(|profile| profile.trim().to_string())
-            .filter(|profile| !profile.is_empty());
         Ok(options)
     }
 }
@@ -381,10 +483,8 @@ fn build_codex_args(
         args.push("--model".to_string());
         args.push(model.to_string());
     }
-    if let Some(profile) = options.profile.as_deref() {
-        args.push("--profile".to_string());
-        args.push(profile.to_string());
-    }
+    args.push("--profile".to_string());
+    args.push(CODEX_QMUX_PROFILE.to_string());
     let sandbox = options.sandbox.as_deref().unwrap_or("workspace-write");
     args.push("--sandbox".to_string());
     args.push(sandbox.to_string());
@@ -392,24 +492,204 @@ fn build_codex_args(
         args.push("--ask-for-approval".to_string());
         args.push(approval_policy.to_string());
     }
-    if options.oss {
-        args.push("--oss".to_string());
-    }
     args.push("--search".to_string());
 
     args.extend(tail_args);
     args
 }
 
+fn ensure_codex_integration() -> Result<PathBuf, String> {
+    let codex_home = codex_home()?;
+    let qmux_cli = env::current_exe()
+        .map_err(|err| format!("failed to resolve qmux executable for Codex hooks: {err}"))?;
+    write_codex_integration_files(&codex_home, &qmux_cli)?;
+    Ok(codex_home)
+}
+
+fn codex_home() -> Result<PathBuf, String> {
+    env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .ok_or_else(|| "CODEX_HOME and HOME are not set; cannot configure Codex hooks".to_string())
+}
+
+fn qmux_cli_path() -> Result<String, String> {
+    env::current_exe()
+        .map(|path| path.display().to_string())
+        .map_err(|err| format!("failed to resolve qmux executable for Codex hooks: {err}"))
+}
+
+fn write_codex_integration_files(codex_home: &Path, qmux_cli: &Path) -> Result<(), String> {
+    let qmux_dir = codex_home.join("qmux");
+    fs::create_dir_all(&qmux_dir)
+        .map_err(|err| format!("failed to create {}: {err}", qmux_dir.display()))?;
+
+    let shim_path = qmux_dir.join("qmux-codex-hook");
+    let shim = codex_hook_shim();
+    fs::write(&shim_path, shim)
+        .map_err(|err| format!("failed to write {}: {err}", shim_path.display()))?;
+    fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755))
+        .map_err(|err| format!("failed to chmod {}: {err}", shim_path.display()))?;
+
+    let profile_path = codex_home.join(format!("{CODEX_QMUX_PROFILE}.config.toml"));
+    let profile = codex_profile_toml(&shim_path, qmux_cli);
+    fs::write(&profile_path, profile)
+        .map_err(|err| format!("failed to write {}: {err}", profile_path.display()))?;
+
+    Ok(())
+}
+
+fn codex_hook_shim() -> &'static str {
+    r#"#!/bin/sh
+event="${1:-}"
+if [ -z "$event" ]; then
+  exit 0
+fi
+if [ -z "${QMUX_SOCK:-}" ] || [ -z "${QMUX_TOKEN:-}" ] || [ -z "${QMUX_PANE_ID:-}" ] || [ -z "${QMUX_AGENT_ID:-}" ] || [ -z "${QMUX_CLI:-}" ]; then
+  exit 0
+fi
+exec "$QMUX_CLI" notify "$event"
+"#
+}
+
+fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path) -> String {
+    let command_prefix = shell_quote_path(shim_path);
+    let mut raw = String::new();
+    raw.push_str("# Generated by qMux. Do not edit.\n");
+    raw.push_str(
+        "# This profile enables qMux Codex lifecycle hooks only for qMux-launched panes.\n",
+    );
+    raw.push_str(&format!("# qMux executable: {}\n\n", qmux_cli.display()));
+    raw.push_str("[features]\n");
+    raw.push_str("hooks = true\n\n");
+
+    for event in CODEX_HOOK_EVENTS {
+        if *event == "SessionStart" {
+            raw.push_str("[[hooks.SessionStart]]\n");
+            raw.push_str("matcher = \"startup|resume\"\n");
+        } else {
+            raw.push_str(&format!("[[hooks.{event}]]\n"));
+        }
+        raw.push_str(&format!("[[hooks.{event}.hooks]]\n"));
+        raw.push_str("type = \"command\"\n");
+        raw.push_str(&format!(
+            "command = {}\n",
+            toml_string(&format!("{command_prefix} {event}"))
+        ));
+        raw.push_str("timeout = 5\n\n");
+    }
+
+    raw
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    let raw = path.display().to_string();
+    format!("'{}'", raw.replace('\'', "'\\''"))
+}
+
+fn toml_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn validate_shell_tail_args(args: &[String]) -> Result<(), String> {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--oss" {
+            return Err("qMux Codex integration does not support --oss".to_string());
+        }
+        if arg == "--profile" || arg == "-p" || arg.starts_with("--profile=") {
+            return Err(
+                "qMux Codex integration uses its own profile and does not support --profile"
+                    .to_string(),
+            );
+        }
+        if arg.starts_with("-p") && arg.len() > 2 {
+            return Err(
+                "qMux Codex integration uses its own profile and does not support -p".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn finish_agent_after_stop(state: &AppState, agent: &mut AgentInfo) -> Result<bool, String> {
+    let drained = drain_queued_turn_after_stop(state, agent);
+    agent.status = if drained {
+        AgentStatus::Running
+    } else {
+        AgentStatus::Done
+    };
+    state.update_agent(agent.clone())?;
+    Ok(drained)
+}
+
+fn drain_queued_turn_after_stop(state: &AppState, agent: &AgentInfo) -> bool {
+    let _ = state.clear_agent_outstanding_sends(&agent.id);
+    match drain_agent_turn_queue(state, &agent.id) {
+        Ok(drained) => drained,
+        Err(err) => {
+            state.emit(QmuxEvent::new(
+                "agent.queue_error",
+                agent.pane_id.clone(),
+                Some(agent.id.clone()),
+                json!({ "error": err }),
+            ));
+            false
+        }
+    }
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+    use crate::state::{AppState, PaneInfo, PaneRuntime, PaneStatus};
+    use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
+    use std::io::{self, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn launch_options_reject_unknown_fields() {
         let err = CodexLaunchOptions::from_value(json!({ "bogus": true })).unwrap_err();
 
         assert!(err.contains("invalid Codex adapter options"));
+    }
+
+    #[test]
+    fn launch_options_reject_removed_profile_and_oss_options() {
+        let profile_err = CodexLaunchOptions::from_value(json!({ "profile": "work" })).unwrap_err();
+        let oss_err = CodexLaunchOptions::from_value(json!({ "oss": true })).unwrap_err();
+
+        assert!(profile_err.contains("invalid Codex adapter options"));
+        assert!(oss_err.contains("invalid Codex adapter options"));
     }
 
     #[test]
@@ -420,12 +700,18 @@ mod tests {
     }
 
     #[test]
+    fn launch_options_reject_deprecated_on_failure_approval_policy() {
+        let err =
+            CodexLaunchOptions::from_value(json!({ "approvalPolicy": "on-failure" })).unwrap_err();
+
+        assert!(err.contains("invalid Codex adapter option approvalPolicy"));
+    }
+
+    #[test]
     fn build_args_adds_cwd_model_options_and_prompt() {
         let options = CodexLaunchOptions::from_value(json!({
             "sandbox": "workspace-write",
             "approvalPolicy": "on-request",
-            "profile": "work",
-            "oss": true,
             "search": true
         }))
         .unwrap();
@@ -445,12 +731,11 @@ mod tests {
                 "--model",
                 "gpt-5",
                 "--profile",
-                "work",
+                "qmux-integration",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
                 "on-request",
-                "--oss",
                 "--search",
                 "start here"
             ]
@@ -458,14 +743,281 @@ mod tests {
     }
 
     #[test]
-    fn composer_policy_sends_running_codex_panes_without_queueing() {
+    fn shell_tail_args_reject_profile_and_oss_before_delimiter() {
+        let profile_args = vec!["--profile".to_string(), "work".to_string()];
+        let inline_profile_args = vec!["--profile=work".to_string()];
+        let short_profile_args = vec!["-pwork".to_string()];
+        let oss_args = vec!["--oss".to_string()];
+        let prompt_args = vec![
+            "--".to_string(),
+            "--profile".to_string(),
+            "work".to_string(),
+        ];
+
+        assert!(validate_shell_tail_args(&profile_args).is_err());
+        assert!(validate_shell_tail_args(&inline_profile_args).is_err());
+        assert!(validate_shell_tail_args(&short_profile_args).is_err());
+        assert!(validate_shell_tail_args(&oss_args).is_err());
+        assert!(validate_shell_tail_args(&prompt_args).is_ok());
+    }
+
+    #[test]
+    fn generated_profile_uses_stable_qmux_shim_and_inline_hooks() {
+        let codex_home = temp_dir();
+        let qmux_cli = Path::new("/Applications/qmux app/qmux");
+
+        write_codex_integration_files(&codex_home, qmux_cli).unwrap();
+
+        let profile_path = codex_home.join("qmux-integration.config.toml");
+        let shim_path = codex_home.join("qmux").join("qmux-codex-hook");
+        let profile = fs::read_to_string(profile_path).unwrap();
+        let shim = fs::read_to_string(shim_path).unwrap();
+
+        assert!(profile.contains("[features]"));
+        assert!(profile.contains("hooks = true"));
+        assert!(profile.contains("[[hooks.SessionStart]]"));
+        assert!(profile.contains("matcher = \"startup|resume\""));
+        assert!(profile.contains("[[hooks.Stop]]"));
+        assert!(profile.contains("qmux-codex-hook' Stop"));
+        assert!(profile.contains("qMux executable: /Applications/qmux app/qmux"));
+        assert!(shim.contains("QMUX_SOCK"));
+        assert!(shim.contains("exec \"$QMUX_CLI\" notify \"$event\""));
+    }
+
+    #[test]
+    fn composer_policy_queues_running_codex_panes() {
         let policy = CodexAdapter {
             binary: "codex".to_string(),
         }
         .composer_policy();
 
-        assert!(policy.can_send(AgentStatus::Running));
-        assert!(!policy.should_queue(AgentStatus::Running));
+        assert!(!policy.can_send(AgentStatus::Running));
+        assert!(policy.should_queue(AgentStatus::Running));
         assert!(policy.can_steer(AgentStatus::Running));
+    }
+
+    #[test]
+    fn session_start_captures_codex_resource_id() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        state.insert_agent(agent).unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "resource_id": "codex-session-1" }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.session_start");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id.as_deref(), Some("codex-session-1"));
+        assert!(matches!(agent.status, AgentStatus::Running));
+    }
+
+    #[test]
+    fn permission_request_marks_codex_awaiting_permission() {
+        let state = test_state();
+        state.insert_agent(sample_agent()).unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "PermissionRequest",
+                "agent-1",
+                json!({ "tool_name": "Bash" }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.awaiting_permission");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::AwaitingPermission));
+    }
+
+    #[test]
+    fn stop_marks_codex_done_without_queued_turns() {
+        let state = test_state();
+        state.insert_agent(sample_agent()).unwrap();
+
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+
+        assert_eq!(event.event_type, "agent.done");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
+    }
+
+    #[test]
+    fn stop_drains_one_queued_codex_turn() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "first".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "second".to_string())
+            .unwrap();
+
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+
+        assert_eq!(event.event_type, "agent.running");
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["second".to_string()]
+        );
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Running));
+        let written = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("first"));
+        assert!(!written.contains("second"));
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: temp_dir(),
+            socket_path: PathBuf::from("/tmp/qmux-codex-test.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+        })
+    }
+
+    fn sample_agent() -> AgentInfo {
+        AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "codex".to_string(),
+            worktree_dir: "/tmp/qmux-codex-test".to_string(),
+            branch: None,
+            pane_id: Some("pane-1".to_string()),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status: AgentStatus::Running,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            created_at: 1,
+        }
+    }
+
+    fn install_agent_pane(state: &AppState) -> Arc<Mutex<Vec<u8>>> {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+
+        state.insert_agent(sample_agent()).unwrap();
+        state
+            .insert_pane(PaneRuntime {
+                info: PaneInfo {
+                    id: "pane-1".to_string(),
+                    title: "Codex".to_string(),
+                    kind: PaneKind::Agent,
+                    agent_id: Some("agent-1".to_string()),
+                    cwd: "/tmp/qmux-codex-test".to_string(),
+                    cols: 80,
+                    rows: 24,
+                    status: PaneStatus::Running,
+                    recovered: false,
+                },
+                child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                master: Arc::new(Mutex::new(pair.master)),
+                writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
+                    bytes: bytes.clone(),
+                }))),
+            })
+            .unwrap();
+        bytes
+    }
+
+    fn hook_for_agent(
+        event: &str,
+        agent_id: &str,
+        payload: serde_json::Value,
+    ) -> AdapterNotification {
+        AdapterNotification {
+            adapter_id: None,
+            event: event.to_string(),
+            pane_id: Some("pane-1".to_string()),
+            agent_id: Some(agent_id.to_string()),
+            payload,
+        }
+    }
+
+    fn ingest(state: &AppState, notification: AdapterNotification) -> QmuxEvent {
+        match CodexAdapter::new(&state.config()).ingest_notification(state, notification) {
+            Ok(AdapterNotificationOutcome::Event(event)) => event,
+            Ok(AdapterNotificationOutcome::Events(mut events)) => events.remove(0),
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    fn temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = env::temp_dir().join(format!("qmux-codex-{nanos}-{seq}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[derive(Debug)]
+    struct FakeChild;
+
+    impl ChildKiller for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(FakeChild)
+        }
+    }
+
+    impl Child for FakeChild {
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            Ok(ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    struct RecordingWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 }
