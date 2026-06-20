@@ -426,8 +426,16 @@ impl ClaudeAdapter {
                 if let Some(agent) = agent.as_mut() {
                     agent.session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"));
-                    agent.transcript_path = string_field(&notification.payload, "transcript_path")
-                        .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                    // Only overwrite a known-good transcript path when this event
+                    // actually carries one. A SessionStart whose payload omits the
+                    // field must not blank the path out from under a running tail,
+                    // which would silently freeze the timeline while the agent runs.
+                    if let Some(transcript_path) =
+                        string_field(&notification.payload, "transcript_path")
+                            .or_else(|| string_field(&notification.payload, "transcriptPath"))
+                    {
+                        agent.transcript_path = Some(transcript_path);
+                    }
                     // A session starting doesn't mean a turn is running. When the agent
                     // was launched without a prompt it is idle and awaiting input, so
                     // don't promote that to Running here — the first real turn
