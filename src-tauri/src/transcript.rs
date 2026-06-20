@@ -1,13 +1,15 @@
 use crate::adapters::adapter_registry;
 use crate::events::QmuxEvent;
 use crate::state::AppState;
+use crate::workspace::AgentInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -192,6 +194,11 @@ pub fn start_transcript_tail(
 /// being unreadable is surfaced as an unexpected state rather than a write race.
 const READ_FAILURE_NOTICE_THRESHOLD: u32 = 6;
 
+/// When the auto-recovery picks the newest session but two or more other sessions
+/// in the same folder were touched within this window of it, the pick is a guess:
+/// surface a notice so the user can correct it via the right pane's session picker.
+const RECOVERY_AMBIGUITY_WINDOW: Duration = Duration::from_secs(10);
+
 fn recover_missing_transcript(
     state: &AppState,
     agent_id: &str,
@@ -203,7 +210,16 @@ fn recover_missing_transcript(
         return Ok(None);
     }
 
-    let Some(candidate) = newest_transcript_in_same_dir(missing_path)? else {
+    let Some(dir) = missing_path.parent() else {
+        return Ok(None);
+    };
+    let candidates = gather_transcript_candidates(dir)?;
+    // Never recover onto a file another agent is already tailing — in a shared
+    // project directory the newest JSONL by mtime is frequently a sibling agent's
+    // live session, which would silently bind this agent to the wrong transcript.
+    let excluded = other_agent_transcript_paths(state, agent_id);
+    let Some(candidate) = select_newest_transcript_candidate(&candidates, &excluded, bound_path)
+    else {
         return Ok(None);
     };
     let recovered_path = candidate.path.display().to_string();
@@ -218,7 +234,7 @@ fn recover_missing_transcript(
         return Ok(None);
     }
 
-    agent.session_id = candidate.session_id;
+    agent.session_id = candidate.session_id.clone();
     agent.transcript_path = Some(recovered_path.clone());
     state.update_agent(agent.clone())?;
     state.emit(QmuxEvent::new(
@@ -232,6 +248,26 @@ fn recover_missing_transcript(
         }),
     ));
 
+    // The mtime heuristic can't tell which of several recently-touched sessions is
+    // the real continuation. When the field is crowded, the pick is a best guess —
+    // tell the user so they can switch sessions if replies stop showing up.
+    let rivals = recent_rival_count(&candidates, &excluded, bound_path, candidate.modified);
+    if rivals > 1 {
+        let label = candidate
+            .session_id
+            .as_deref()
+            .map(short_session_label)
+            .unwrap_or_else(|| "the newest session".to_string());
+        state.emit(transcript_notice(
+            agent_id,
+            &recovered_path,
+            Some(&format!(
+                "Recovered to {label} — {rivals} recent sessions match this folder. \
+                 If new replies aren't showing, pick the right session below."
+            )),
+        ));
+    }
+
     Ok(Some(recovered_path))
 }
 
@@ -242,15 +278,13 @@ struct TranscriptCandidate {
     session_id: Option<String>,
 }
 
-fn newest_transcript_in_same_dir(
-    missing_path: &Path,
-) -> Result<Option<TranscriptCandidate>, String> {
-    let Some(dir) = missing_path.parent() else {
-        return Ok(None);
-    };
+/// All `*.jsonl` transcript files in `dir`, each paired with its mtime and the
+/// session id read from its filename. Shared by auto-recovery and the manual
+/// session picker so both reason over the same candidate set.
+fn gather_transcript_candidates(dir: &Path) -> Result<Vec<TranscriptCandidate>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => {
             return Err(format!(
                 "failed to inspect transcript directory {}: {err}",
@@ -284,20 +318,242 @@ fn newest_transcript_in_same_dir(
         });
     }
 
-    select_newest_transcript_candidate(candidates)
+    Ok(candidates)
 }
 
+/// Transcript paths bound to agents other than `agent_id`, so recovery can avoid
+/// stealing a sibling agent's live session.
+fn other_agent_transcript_paths(state: &AppState, agent_id: &str) -> HashSet<String> {
+    state
+        .list_agents()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|agent| agent.id != agent_id)
+        .filter_map(|agent| agent.transcript_path)
+        .collect()
+}
+
+/// Newest candidate by mtime, ignoring the now-missing bound path and any file
+/// another agent is tailing. Path is a stable tiebreaker for equal mtimes.
 fn select_newest_transcript_candidate(
-    candidates: Vec<TranscriptCandidate>,
-) -> Result<Option<TranscriptCandidate>, String> {
-    // TODO: selecting the exact missing transcript when many have been updated in
-    // the last 10 sec should be deferred to a dropdown in the right pane. For now,
-    // recover to the newest active Claude JSONL in the same project directory.
-    Ok(candidates.into_iter().max_by(|left, right| {
-        left.modified
-            .cmp(&right.modified)
+    candidates: &[TranscriptCandidate],
+    excluded: &HashSet<String>,
+    bound_path: &str,
+) -> Option<TranscriptCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            let path = candidate.path.display().to_string();
+            path != bound_path && !excluded.contains(&path)
+        })
+        .max_by(|left, right| {
+            left.modified
+                .cmp(&right.modified)
+                .then(left.path.cmp(&right.path))
+        })
+        .cloned()
+}
+
+/// How many selectable candidates were modified within the ambiguity window of the
+/// chosen one (the chosen file included). >1 means the auto-pick was a guess.
+fn recent_rival_count(
+    candidates: &[TranscriptCandidate],
+    excluded: &HashSet<String>,
+    bound_path: &str,
+    selected_modified: SystemTime,
+) -> usize {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            let path = candidate.path.display().to_string();
+            if path == bound_path || excluded.contains(&path) {
+                return false;
+            }
+            selected_modified
+                .duration_since(candidate.modified)
+                .map(|gap| gap <= RECOVERY_AMBIGUITY_WINDOW)
+                .unwrap_or(true)
+        })
+        .count()
+}
+
+/// Short, human-friendly session label (the leading segment of the session id).
+fn short_session_label(session_id: &str) -> String {
+    let head = session_id.split('-').next().unwrap_or(session_id);
+    format!("session {head}")
+}
+
+/// Cap on how many sessions the picker offers, newest first — old projects can
+/// accumulate hundreds of JSONL files and the user only ever wants a recent one.
+const MAX_TRANSCRIPT_OPTIONS: usize = 30;
+
+/// Characters of the first user message shown as a session preview.
+const PREVIEW_MAX_CHARS: usize = 90;
+
+/// One selectable session for the right pane's transcript picker.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptOption {
+    pub path: String,
+    pub session_id: Option<String>,
+    pub modified_ms: u128,
+    pub preview: Option<String>,
+    pub line_count: usize,
+    /// This is the transcript the agent is currently bound to.
+    pub is_active: bool,
+    /// Another agent is tailing this file; selecting it would collide.
+    pub bound_to_other_agent: bool,
+}
+
+/// Sessions in the agent's transcript directory, newest first, for the manual
+/// picker. Empty when the agent has no transcript path yet (nothing to scan).
+pub fn list_agent_transcripts(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<Vec<TranscriptOption>, String> {
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(Vec::new());
+    };
+    let Some(current_path) = agent.transcript_path.clone() else {
+        return Ok(Vec::new());
+    };
+    let Some(dir) = Path::new(&current_path).parent().map(Path::to_path_buf) else {
+        return Ok(Vec::new());
+    };
+
+    let mut candidates = gather_transcript_candidates(&dir)?;
+    candidates.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
             .then(left.path.cmp(&right.path))
-    }))
+    });
+
+    let other = other_agent_transcript_paths(state, agent_id);
+    let options = candidates
+        .into_iter()
+        .take(MAX_TRANSCRIPT_OPTIONS)
+        .map(|candidate| {
+            let path = candidate.path.display().to_string();
+            let (preview, line_count) = read_transcript_meta(&candidate.path);
+            TranscriptOption {
+                is_active: path == current_path,
+                bound_to_other_agent: other.contains(&path),
+                modified_ms: candidate
+                    .modified
+                    .duration_since(UNIX_EPOCH)
+                    .map(|since| since.as_millis())
+                    .unwrap_or(0),
+                session_id: candidate.session_id,
+                preview,
+                line_count,
+                path,
+            }
+        })
+        .collect();
+
+    Ok(options)
+}
+
+/// Repoints an agent at `path` and restarts its tail there. The old tail stops
+/// itself once it sees the agent no longer pointing at its file.
+pub fn set_agent_transcript(
+    state: &AppState,
+    agent_id: &str,
+    path: &str,
+) -> Result<AgentInfo, String> {
+    let Some(mut agent) = state.agent(agent_id)? else {
+        return Err(format!("agent {agent_id} not found"));
+    };
+
+    let candidate = Path::new(path);
+    if candidate.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        return Err("transcript must be a .jsonl file".to_string());
+    }
+    if !candidate.is_file() {
+        return Err(format!("transcript {path} does not exist"));
+    }
+    // Keep selection inside the agent's current session directory so a stray path
+    // can't repoint the tail outside the project's transcript folder.
+    if let Some(current) = agent.transcript_path.as_deref()
+        && Path::new(current).parent() != candidate.parent()
+    {
+        return Err("transcript is outside the agent's session directory".to_string());
+    }
+
+    let already_bound = agent.transcript_path.as_deref() == Some(path);
+    agent.session_id = session_id_from_transcript_path(candidate);
+    agent.transcript_path = Some(path.to_string());
+    state.update_agent(agent.clone())?;
+    // Clear any recovery/ambiguity notice tied to the previous binding.
+    state.emit(transcript_notice(agent_id, path, None));
+    if !already_bound {
+        start_transcript_tail(
+            state.clone(),
+            agent_id.to_string(),
+            path.to_string(),
+            agent.adapter.clone(),
+        );
+    }
+
+    Ok(agent)
+}
+
+/// Reads a transcript's first user-message preview and total line count without
+/// holding the file open — best-effort, so an unreadable file yields `(None, 0)`.
+fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return (None, 0);
+    };
+    let mut line_count = 0;
+    let mut preview = None;
+    for line in raw.lines() {
+        line_count += 1;
+        if preview.is_some() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let message = value.get("message").unwrap_or(&value);
+        let is_user = value.get("type").and_then(Value::as_str) == Some("user")
+            || message.get("role").and_then(Value::as_str) == Some("user");
+        if !is_user {
+            continue;
+        }
+        if let Some(text) = first_text_block(message.get("content")) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                preview = Some(truncate_preview(trimmed));
+            }
+        }
+    }
+    (preview, line_count)
+}
+
+/// First textual content of a message: the string itself, or the first text block
+/// of a content array. Ignores tool results and other non-text blocks.
+fn first_text_block(content: Option<&Value>) -> Option<String> {
+    match content? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => blocks.iter().find_map(|block| {
+            if block.get("type").and_then(Value::as_str) == Some("text") {
+                block.get("text").and_then(Value::as_str).map(str::to_string)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn truncate_preview(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= PREVIEW_MAX_CHARS {
+        return collapsed;
+    }
+    let head: String = collapsed.chars().take(PREVIEW_MAX_CHARS).collect();
+    format!("{head}…")
 }
 
 fn session_id_from_transcript_path(path: &Path) -> Option<String> {
@@ -369,27 +625,61 @@ mod tests {
         assert!(!is_append_only(&base, &["x".to_string(), "b".to_string()]));
     }
 
+    fn candidate(path: &str, secs: u64, session: &str) -> TranscriptCandidate {
+        TranscriptCandidate {
+            path: PathBuf::from(path),
+            modified: UNIX_EPOCH + Duration::from_secs(secs),
+            session_id: Some(session.to_string()),
+        }
+    }
+
     #[test]
     fn newest_transcript_candidate_prefers_latest_modified_file() {
         let candidates = vec![
-            TranscriptCandidate {
-                path: PathBuf::from("/tmp/a.jsonl"),
-                modified: UNIX_EPOCH + Duration::from_secs(10),
-                session_id: Some("a".to_string()),
-            },
-            TranscriptCandidate {
-                path: PathBuf::from("/tmp/b.jsonl"),
-                modified: UNIX_EPOCH + Duration::from_secs(20),
-                session_id: Some("b".to_string()),
-            },
+            candidate("/tmp/a.jsonl", 10, "a"),
+            candidate("/tmp/b.jsonl", 20, "b"),
         ];
 
-        let selected = select_newest_transcript_candidate(candidates)
-            .unwrap()
+        let selected = select_newest_transcript_candidate(&candidates, &HashSet::new(), "")
             .expect("newest candidate is selected");
 
         assert_eq!(selected.path, PathBuf::from("/tmp/b.jsonl"));
         assert_eq!(selected.session_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn selection_skips_the_bound_path_and_other_agents_files() {
+        let candidates = vec![
+            candidate("/tmp/a.jsonl", 10, "a"),
+            candidate("/tmp/b.jsonl", 20, "b"),
+            candidate("/tmp/c.jsonl", 30, "c"),
+        ];
+        // c is newest but owned by another agent; b is the bound (missing) file —
+        // so recovery must fall back to a, the newest unclaimed candidate.
+        let excluded = HashSet::from(["/tmp/c.jsonl".to_string()]);
+
+        let selected = select_newest_transcript_candidate(&candidates, &excluded, "/tmp/b.jsonl")
+            .expect("an unclaimed candidate remains");
+
+        assert_eq!(selected.path, PathBuf::from("/tmp/a.jsonl"));
+    }
+
+    #[test]
+    fn rival_count_only_counts_recent_selectable_candidates() {
+        let candidates = vec![
+            candidate("/tmp/a.jsonl", 100, "a"),
+            candidate("/tmp/b.jsonl", 105, "b"),
+            candidate("/tmp/c.jsonl", 30, "c"), // stale: outside the 10s window
+            candidate("/tmp/d.jsonl", 104, "d"), // claimed by another agent
+        ];
+        let excluded = HashSet::from(["/tmp/d.jsonl".to_string()]);
+        let selected = UNIX_EPOCH + Duration::from_secs(105);
+
+        // a and b are within 10s of the selected (b); c is stale, d is excluded.
+        assert_eq!(
+            recent_rival_count(&candidates, &excluded, "", selected),
+            2
+        );
     }
 
     #[test]

@@ -1368,6 +1368,66 @@ button:disabled {
   line-height: 1.4;
 }
 
+/* The session switcher floats over the top of the transcript, mirroring how the
+   composer floats at the bottom; the timeline reserves matching top padding. */
+.turn-sidebar-header {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: linear-gradient(to bottom, #171b1d 84%, rgba(23, 27, 29, 0));
+}
+
+.turn-header-notice {
+  color: #aab1ad;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.transcript-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* In the empty state the label stacks above the select and reads as a prompt. */
+.turn-empty-state .transcript-picker {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  margin-top: 4px;
+  max-width: 280px;
+}
+
+.transcript-picker-label {
+  flex: none;
+  color: #aab1ad;
+  font-size: 12px;
+}
+
+.transcript-picker-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid #30383b;
+  border-radius: 5px;
+  background: #1d2224;
+  color: #e6e9e7;
+  font-size: 12px;
+}
+
+.transcript-picker-select:focus-visible {
+  outline: 2px solid #3a6ea5;
+  outline-offset: 1px;
+}
+
 /* Pack the quiet disclosure rows (tool/thinking/assistant toggles) closer than the
    8px timeline gap that surrounds the bordered message cards — it only applies
    between two consecutive non-card rows, so cards keep their breathing room. */
