@@ -35,8 +35,12 @@ export interface AgentUiAdapter {
 
 export const agentUiAdapters = [codexUiAdapter, claudeUiAdapter];
 
+export function findAgentUiAdapter(adapterId: string | null | undefined): AgentUiAdapter | null {
+  return agentUiAdapters.find((adapter) => adapter.id === adapterId) ?? null;
+}
+
 export function getAgentUiAdapter(adapterId: string | null | undefined): AgentUiAdapter {
-  return agentUiAdapters.find((adapter) => adapter.id === adapterId) ?? claudeUiAdapter;
+  return findAgentUiAdapter(adapterId) ?? claudeUiAdapter;
 }
 
 export function getDefaultAgentUiAdapter(adapterId?: string | null): AgentUiAdapter {
