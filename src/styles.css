@@ -599,10 +599,11 @@ button:disabled {
   padding: 0 6px;
 }
 
-/* The sidebar action buttons (New shell/New agent) and the composer submit
-   buttons (Send/Steer/Queue/Approve/Deny) share one skin so both panes read as the
-   same control set — same height, padding, gap, and UI-sans font. */
+/* The sidebar/empty-state action buttons (New shell/New agent) and the composer
+   submit buttons (Send/Steer/Queue/Approve/Deny) share one skin so both panes read
+   as the same control set — same height, padding, gap, and UI-sans font. */
 .sidebar-actions button,
+.terminal-empty-actions button,
 .native-input-submit-actions button {
   flex-wrap: nowrap;
   gap: 6px;
@@ -612,13 +613,15 @@ button:disabled {
 }
 
 .sidebar-actions button:hover,
+.terminal-empty-actions button:hover,
 .native-input-submit-actions button:hover:not(:disabled) {
   border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
   color: #f4f3ec;
 }
 
-.sidebar-actions button svg {
+.sidebar-actions button svg,
+.terminal-empty-actions button svg {
   flex: none;
   opacity: 0.8;
 }
@@ -779,7 +782,7 @@ button:disabled {
   border-radius: 10px;
   background: #1b2022;
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
-  padding: 16px;
+  padding: 16px 16px 20px;
 }
 
 .settings-header {
@@ -940,6 +943,7 @@ button:disabled {
   gap: 10px;
   /* Clicks in the empty gap fall through to focus the composer. */
   pointer-events: none;
+  user-select: none;
 }
 
 .command-launcher-worktree {
@@ -1203,6 +1207,7 @@ button:disabled {
   border-radius: 8px;
   background: #1d2224;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  user-select: none;
 }
 
 .launcher-select-item {
@@ -1274,6 +1279,18 @@ button:disabled {
   inset: 0;
   padding: 24px;
   pointer-events: none;
+}
+
+.terminal-empty-content {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
+.terminal-empty-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
 }
 
 .terminal-pane {

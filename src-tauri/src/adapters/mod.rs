@@ -206,8 +206,8 @@ pub struct AdapterMetadata {
 
 pub fn adapter_registry(config: &QmuxConfig) -> AdapterRegistry {
     AdapterRegistry::new(vec![
-        Box::new(CodexAdapter::new(config)),
         Box::new(ClaudeAdapter::new(config)),
+        Box::new(CodexAdapter::new(config)),
     ])
 }
 
@@ -324,9 +324,9 @@ mod tests {
 
         let metadata = registry.metadata();
         assert_eq!(metadata.len(), 2);
-        assert_eq!(metadata[0].id, "codex");
-        assert!(!metadata[0].default);
-        assert_eq!(metadata[1].id, "claude");
-        assert!(metadata[1].default);
+        assert_eq!(metadata[0].id, "claude");
+        assert!(metadata[0].default);
+        assert_eq!(metadata[1].id, "codex");
+        assert!(!metadata[1].default);
     }
 }
