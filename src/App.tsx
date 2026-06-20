@@ -5,7 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { Bot, SquareTerminal, X } from "lucide-react";
+import { Bot, Minus, Plus, Settings, SquareTerminal, X } from "lucide-react";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
@@ -13,11 +13,18 @@ import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
 import {
   isTerminalFontLoaded,
-  TERMINAL_FONT_FAMILY,
   TERMINAL_FONT_SIZE,
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
+import {
+  clampFontSize,
+  FONT_OPTIONS,
+  fontStackFor,
+  loadSettings,
+  saveSettings,
+  type AppSettings,
+} from "./lib/settings";
 import {
   acknowledgeAgent,
   confirmAppExit,
@@ -80,6 +87,7 @@ const TRANSCRIPT_COPY_VERSION = 1;
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 
 let measuredTerminalCellSize: { width: number; height: number } | null = null;
+const DEFAULT_FONT_STACK = FONT_OPTIONS[0].stack;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -118,11 +126,11 @@ function isTerminalTarget(target: EventTarget | null) {
   return target instanceof HTMLElement && target.closest(".terminal-mount") !== null;
 }
 
-function measureTerminalCellSize(fontSize: number) {
-  // Only the default size is cached (the common case); zoomed sizes measure fresh
-  // so a new pane created while zoomed gets a close initial grid before the fit.
-  const isDefaultSize = fontSize === TERMINAL_FONT_SIZE;
-  if (isDefaultSize && measuredTerminalCellSize && isTerminalFontLoaded()) {
+function measureTerminalCellSize(fontFamily: string, fontSize: number) {
+  // Only the default font + size is cached (the common case); other choices
+  // measure fresh so a pane created with them gets a close initial grid pre-fit.
+  const isDefault = fontFamily === DEFAULT_FONT_STACK && fontSize === TERMINAL_FONT_SIZE;
+  if (isDefault && measuredTerminalCellSize && isTerminalFontLoaded()) {
     return measuredTerminalCellSize;
   }
 
@@ -131,7 +139,7 @@ function measureTerminalCellSize(fontSize: number) {
   probe.style.position = "absolute";
   probe.style.visibility = "hidden";
   probe.style.whiteSpace = "pre";
-  probe.style.fontFamily = TERMINAL_FONT_FAMILY;
+  probe.style.fontFamily = fontFamily;
   probe.style.fontSize = `${fontSize}px`;
   document.body.appendChild(probe);
 
@@ -142,7 +150,7 @@ function measureTerminalCellSize(fontSize: number) {
     width: rect.width > 0 ? rect.width / 10 : 8,
     height: rect.height > 0 ? rect.height : 16,
   };
-  if (isDefaultSize && isTerminalFontLoaded()) {
+  if (isDefault && isTerminalFontLoaded()) {
     measuredTerminalCellSize = cellSize;
   }
   return cellSize;
@@ -368,9 +376,13 @@ export default function App() {
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
-  // Terminal font size, adjustable in-session with Cmd-+/Cmd-- and shared by every
-  // pane. Deliberately not persisted — each launch starts at TERMINAL_FONT_SIZE.
-  const [terminalFontSize, setTerminalFontSize] = useState(TERMINAL_FONT_SIZE);
+  // Application-level UI settings (terminal font + size), loaded from localStorage
+  // once on mount and persisted on every change. Shared by every pane. Font size
+  // is also adjustable in-session with Cmd-+/Cmd--.
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const terminalFontSize = settings.fontSize;
+  const terminalFontFamily = fontStackFor(settings.fontId);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
@@ -680,7 +692,7 @@ export default function App() {
         ? appWidth - sidebarWidth - reservedTurnPaneWidth
         : (stageRect?.width ?? window.innerWidth - sidebarWidth - reservedTurnPaneWidth);
     const terminalHeight = stageRect?.height ?? window.innerHeight;
-    const cell = measureTerminalCellSize(terminalFontSize);
+    const cell = measureTerminalCellSize(terminalFontFamily, terminalFontSize);
     const cols = Math.floor((terminalWidth - TERMINAL_HORIZONTAL_PADDING) / cell.width);
     const rows = Math.floor((terminalHeight - TERMINAL_VERTICAL_PADDING) / cell.height);
 
@@ -1380,6 +1392,12 @@ export default function App() {
     }
   }, [paneContextMenu, panes]);
 
+  // Persist application settings (font + size) whenever they change, so the
+  // choice survives a restart. Writing on the initial value is harmless.
+  useEffect(() => {
+    saveSettings(settings);
+  }, [settings]);
+
   // Escape cancels the worktree close dialog. Capture phase so it wins over the
   // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
   useEffect(() => {
@@ -1397,6 +1415,23 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [closeDialog, exitDialog]);
+
+  // Escape closes the settings panel. Separate from the dialog handler above so
+  // it can run regardless of which other modals are open.
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setSettingsOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [settingsOpen]);
 
   // Focus and select the name when the rename dialog opens, so the user can type
   // a new name straight away.
@@ -1418,14 +1453,15 @@ export default function App() {
 
       // Cmd-+ / Cmd-= zoom the terminal font in, Cmd-- / Cmd-_ zoom out. Handled
       // before the repeat bail so holding the combo keeps stepping the size; the
-      // size lives in state only and is never persisted.
+      // change is written into the persisted settings, same as the panel stepper.
       if (key === "+" || key === "=" || key === "-" || key === "_") {
         event.preventDefault();
         event.stopPropagation();
         const delta = key === "-" || key === "_" ? -1 : 1;
-        setTerminalFontSize((current) =>
-          clamp(current + delta, TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX),
-        );
+        setSettings((current) => ({
+          ...current,
+          fontSize: clampFontSize(current.fontSize + delta),
+        }));
         return;
       }
 
@@ -1849,6 +1885,10 @@ export default function App() {
             <Bot size={14} aria-hidden="true" />
             <span>New agent</span>
           </button>
+          <button type="button" onClick={() => setSettingsOpen(true)}>
+            <Settings size={14} aria-hidden="true" />
+            <span>Settings</span>
+          </button>
         </div>
       </aside>
 
@@ -1988,6 +2028,90 @@ export default function App() {
               </div>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <div
+          className="settings-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSettingsOpen(false);
+            }
+          }}
+        >
+          <div
+            className="settings-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+          >
+            <div className="settings-header">
+              <h2 id="settings-title">Settings</h2>
+              <button
+                type="button"
+                className="settings-close"
+                aria-label="Close settings"
+                onClick={() => setSettingsOpen(false)}
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="settings-font" className="settings-label">
+                Font
+              </label>
+              <select
+                id="settings-font"
+                className="settings-select"
+                value={settings.fontId}
+                onChange={(event) =>
+                  setSettings((current) => ({ ...current, fontId: event.currentTarget.value }))
+                }
+              >
+                {FONT_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="settings-row">
+              <span className="settings-label">Font size</span>
+              <div className="settings-stepper" role="group" aria-label="Font size">
+                <button
+                  type="button"
+                  aria-label="Decrease font size"
+                  disabled={settings.fontSize <= TERMINAL_FONT_SIZE_MIN}
+                  onClick={() =>
+                    setSettings((current) => ({
+                      ...current,
+                      fontSize: clampFontSize(current.fontSize - 1),
+                    }))
+                  }
+                >
+                  <Minus size={14} aria-hidden="true" />
+                </button>
+                <span className="settings-stepper-value">{settings.fontSize}px</span>
+                <button
+                  type="button"
+                  aria-label="Increase font size"
+                  disabled={settings.fontSize >= TERMINAL_FONT_SIZE_MAX}
+                  onClick={() =>
+                    setSettings((current) => ({
+                      ...current,
+                      fontSize: clampFontSize(current.fontSize + 1),
+                    }))
+                  }
+                >
+                  <Plus size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -2183,6 +2307,7 @@ export default function App() {
               pane={pane}
               active={pane.id === activePane?.id}
               fontSize={terminalFontSize}
+              fontFamily={terminalFontFamily}
             />
           ))}
         </div>
