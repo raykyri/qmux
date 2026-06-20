@@ -1162,8 +1162,8 @@ export default function App() {
               className="command-launcher-input"
               value={prompt}
               onChange={(event) => setPrompt(event.currentTarget.value)}
-              rows={3}
-              placeholder="What’s next?"
+              rows={2}
+              placeholder="What do you want to do next?"
             />
             <div className="command-launcher-overlay">
               <label className="command-launcher-worktree">
@@ -1172,7 +1172,7 @@ export default function App() {
                   checked={createInWorktree}
                   onChange={(event) => setCreateInWorktree(event.currentTarget.checked)}
                 />
-                <span>Worktree</span>
+                <span>Create a worktree</span>
               </label>
               <button
                 type="submit"
