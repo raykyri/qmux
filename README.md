@@ -72,7 +72,7 @@ src-tauri/target/release/qmux
 
 ## Using The App
 
-- `Cmd-T`: open a shell pane.
+- `Cmd-T` / `Cmd-N`: open a shell pane.
 - `Cmd-K`: open the Claude launcher.
 - `Cmd-W`: close the active pane.
 - In the launcher, enter a prompt and press `Cmd-Enter` to launch Claude.
