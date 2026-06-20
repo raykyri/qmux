@@ -8,6 +8,7 @@ import type {
   QmuxEvent,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
+  SendNextQueuedAgentTurnResult,
   RuntimeConfig,
   SpawnAgentRequest,
   SubmitAgentTurnMode,
@@ -77,6 +78,10 @@ export function reorderQueuedAgentTurn(
   return invoke<ReorderQueuedAgentTurnResult>("agent_reorder_queued_turn", {
     request: { agentId, fromIndex, toIndex, expectedData },
   });
+}
+
+export function sendNextQueuedAgentTurn(agentId: string) {
+  return invoke<SendNextQueuedAgentTurnResult>("agent_send_next_queued_turn", { agentId });
 }
 
 export function setAgentDraft(agentId: string, draft: string) {
