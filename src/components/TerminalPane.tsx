@@ -256,10 +256,18 @@ function writePreservingScroll(terminal: Terminal, data: string | Uint8Array) {
   const added = Math.max(0, after - before);
   // Re-anchor by writing the field directly: scrollToLine() would also pulse the
   // scrollbar visible on every chunk, keeping it lit for the whole stream.
-  (terminal as unknown as { viewportY: number }).viewportY = Math.min(
-    after,
-    previousViewportY + added,
-  );
+  const next = Math.min(after, previousViewportY + added);
+  (terminal as unknown as { viewportY: number }).viewportY = next;
+  // Temporary: set `window.__qmuxScrollDebug = true` in the devtools console to
+  // trace viewport preservation while streaming. `read` is the value immediately
+  // after our write; if a later call's `prev` is 0 despite this, something else
+  // is resetting the viewport.
+  if ((window as unknown as { __qmuxScrollDebug?: boolean }).__qmuxScrollDebug) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[qmux scroll] prev=${previousViewportY} sb=${before}->${after} added=${added} set=${next} read=${terminal.getViewportY()}`,
+    );
+  }
 }
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
