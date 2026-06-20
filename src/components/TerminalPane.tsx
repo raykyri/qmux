@@ -6,7 +6,15 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { attachPane, listenToEvents, resizePane, writePane } from "../lib/api";
 import { confirmLargePaste } from "../lib/paste";
@@ -138,6 +146,32 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       stabilizeTerminalRef.current?.();
     },
   }));
+
+  // Loads a fresh WebGL renderer onto the terminal. Kept as a single helper so
+  // the initial setup and the font-change path build it identically (same
+  // context-loss handling). The canvas renderer is a fine fallback if WebGL is
+  // unavailable, so any failure is swallowed.
+  const attachWebglAddon = useCallback((terminal: Terminal) => {
+    try {
+      const webgl = new WebglAddon();
+      // macOS WKWebView can drop the GL context (e.g. while rebuilding the glyph
+      // atlas for a new font). xterm leaves a blank/gray canvas behind, which —
+      // because the window is translucent — reads as the app going see-through.
+      // Dispose the addon to fall back to the DOM renderer, then force a repaint
+      // since the fallback won't redraw on its own.
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        if (webglAddonRef.current === webgl) {
+          webglAddonRef.current = null;
+        }
+        stabilizeTerminalRef.current?.();
+      });
+      terminal.loadAddon(webgl);
+      webglAddonRef.current = webgl;
+    } catch {
+      webglAddonRef.current = null;
+    }
+  }, []);
 
   const findNext = () => {
     if (searchTerm) {
@@ -282,25 +316,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         return true;
       });
 
-      try {
-        const webgl = new WebglAddon();
-        // On macOS WKWebView the GPU can drop the WebGL context (e.g. after a
-        // font swap rebuilds the glyph atlas). xterm leaves a blank/transparent
-        // canvas behind when that happens, which—because the window is
-        // translucent—reads as the whole app going see-through. Disposing the
-        // addon on context loss falls the terminal back to the DOM renderer
-        // instead of stranding it blank.
-        webgl.onContextLoss(() => {
-          webgl.dispose();
-          if (webglAddonRef.current === webgl) {
-            webglAddonRef.current = null;
-          }
-        });
-        terminal.loadAddon(webgl);
-        webglAddonRef.current = webgl;
-      } catch {
-        // The canvas renderer is fine as a fallback, especially in CI and older webviews.
-      }
+      attachWebglAddon(terminal);
 
       terminal.open(mountEl);
       terminal.focus();
@@ -475,7 +491,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       teardown = null;
       pendingDataRef.current = [];
     };
-  }, [pane.id]);
+  }, [pane.id, attachWebglAddon]);
 
   useEffect(() => {
     let disposed = false;
@@ -542,14 +558,19 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       changed = true;
     }
     if (changed) {
-      // The WebGL renderer caches rasterized glyphs in a texture atlas keyed to
-      // the old font/size. Without clearing it the new font draws from stale (or
-      // empty) cells, which on WKWebView can blank the canvas entirely. Clearing
-      // forces the atlas to rebuild for the new metrics.
-      webglAddonRef.current?.clearTextureAtlas();
+      // The WebGL renderer's glyph atlas and GL state are keyed to the previous
+      // font metrics. Clearing the atlas in place is not enough on macOS
+      // WKWebView — it can blank the canvas to a translucent gray — so tear the
+      // renderer down and load a fresh one, which reinitializes cleanly for the
+      // new font. A missing addon (WebGL unavailable) just skips to the re-fit.
+      if (webglAddonRef.current) {
+        webglAddonRef.current.dispose();
+        webglAddonRef.current = null;
+        attachWebglAddon(terminal);
+      }
       stabilizeTerminalRef.current?.();
     }
-  }, [fontSize, fontFamily]);
+  }, [fontSize, fontFamily, attachWebglAddon]);
 
   const matchLabel =
     searchTerm === ""
