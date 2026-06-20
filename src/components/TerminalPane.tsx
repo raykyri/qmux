@@ -18,6 +18,8 @@ interface TerminalPaneProps {
   active: boolean;
   fontSize: number;
   fontFamily: string;
+  /** Extra inter-character spacing in px, passed to xterm's `letterSpacing`. */
+  letterSpacing: number;
 }
 
 export interface TerminalPaneHandle {
@@ -86,7 +88,7 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
 }
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active, fontSize, fontFamily },
+  { pane, active, fontSize, fontFamily, letterSpacing },
   ref,
 ) {
   // The setup effect runs once (keyed on pane.id) and closes over its render's
@@ -96,6 +98,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   fontSizeRef.current = fontSize;
   const fontFamilyRef = useRef(fontFamily);
   fontFamilyRef.current = fontFamily;
+  const letterSpacingRef = useRef(letterSpacing);
+  letterSpacingRef.current = letterSpacing;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // xterm opens into this inner mount, which fills the host's content box with no
   // padding of its own. The visual breathing room lives as padding on the host;
@@ -228,6 +232,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         cursorBlink: false,
         fontFamily: fontFamilyRef.current,
         fontSize: fontSizeRef.current,
+        letterSpacing: letterSpacingRef.current,
         rows: pane.rows,
         scrollback: 10000,
         theme: TERMINAL_THEME,
@@ -541,6 +546,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       terminal.options.fontFamily = fontFamily;
       changed = true;
     }
+    if (terminal.options.letterSpacing !== letterSpacing) {
+      terminal.options.letterSpacing = letterSpacing;
+      changed = true;
+    }
     if (changed) {
       // The WebGL renderer caches rasterized glyphs in a texture atlas keyed to
       // the old font/size. Without clearing it the new font draws from stale (or
@@ -549,7 +558,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       webglAddonRef.current?.clearTextureAtlas();
       stabilizeTerminalRef.current?.();
     }
-  }, [fontSize, fontFamily]);
+  }, [fontSize, fontFamily, letterSpacing]);
 
   const matchLabel =
     searchTerm === ""
