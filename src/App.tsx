@@ -11,6 +11,7 @@ import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
 import {
+  getAgentDraft,
   getRuntimeConfig,
   killPane,
   listAgents,
@@ -19,6 +20,7 @@ import {
   listenToEvents,
   listPanes,
   removeWorktree,
+  setAgentDraft as persistAgentDraft,
   spawnClaude,
   spawnShell,
   worktreeStatus,
@@ -55,6 +57,10 @@ const MAX_INITIAL_ROWS = 200;
 const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 const TRANSCRIPT_COPY_VERSION = 1;
+// How long the composer can sit idle before its draft is flushed to disk. The
+// in-memory copy updates on every keystroke (so tab switches never lose it); the
+// disk write is debounced so a paused composer — and a restart — can recover it.
+const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 
 let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
@@ -203,6 +209,10 @@ export default function App() {
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
   const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
+  // Composer drafts live here keyed by agent so they survive tab switches; the
+  // ref mirrors the state for synchronous reads from the debounced disk flush.
+  const draftsByAgentRef = useRef<Record<string, string>>({});
+  const draftFlushTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Keep the latest active pane / close handler reachable from the global keydown
@@ -220,6 +230,7 @@ export default function App() {
   const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
     Record<string, boolean[]>
   >({});
+  const [draftsByAgent, setDraftsByAgentState] = useState<Record<string, string>>({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
@@ -253,6 +264,10 @@ export default function App() {
   const activeCollapsedQueuedTurns = useMemo(
     () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, collapsedQueuedTurnsByAgent],
+  );
+  const activeDraft = useMemo(
+    () => (activeAgent ? draftsByAgent[activeAgent.id] ?? "" : ""),
+    [activeAgent?.id, draftsByAgent],
   );
 
   function replaceQueuedTurnsByAgent(nextQueues: Record<string, string[]>) {
@@ -294,6 +309,50 @@ export default function App() {
       }
       return nextCollapsed;
     });
+  }
+
+  // Records a composer draft: the in-memory copy updates immediately so the text
+  // is there when the user returns to the tab, while the disk write is debounced
+  // (clearing flushes at once so a sent/emptied draft never lingers in state.json).
+  function setAgentDraft(agentId: string, draft: string) {
+    const nextDrafts = { ...draftsByAgentRef.current };
+    if (draft) {
+      nextDrafts[agentId] = draft;
+    } else {
+      delete nextDrafts[agentId];
+    }
+    draftsByAgentRef.current = nextDrafts;
+    setDraftsByAgentState(nextDrafts);
+
+    const timers = draftFlushTimersRef.current;
+    const pending = timers[agentId];
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      delete timers[agentId];
+    }
+    if (!draft) {
+      void persistAgentDraft(agentId, "").catch(() => undefined);
+      return;
+    }
+    timers[agentId] = setTimeout(() => {
+      delete timers[agentId];
+      void persistAgentDraft(agentId, draftsByAgentRef.current[agentId] ?? "").catch(
+        () => undefined,
+      );
+    }, DRAFT_FLUSH_DEBOUNCE_MS);
+  }
+
+  // Flushes every still-pending debounced draft right now (used when the window is
+  // going away, so the last second of typing is not lost on a quick close).
+  function flushPendingDrafts() {
+    const timers = draftFlushTimersRef.current;
+    for (const [agentId, timer] of Object.entries(timers)) {
+      clearTimeout(timer);
+      delete timers[agentId];
+      void persistAgentDraft(agentId, draftsByAgentRef.current[agentId] ?? "").catch(
+        () => undefined,
+      );
+    }
   }
 
   function toggleQueuedTurnCollapsed(agentId: string, index: number) {
@@ -421,16 +480,26 @@ export default function App() {
         setConfig(runtimeConfig);
         setAgents(existingAgents);
         setTurns(existingTurns);
-        const queueEntries = await Promise.all(
-          existingAgents.map(async (agent) => [
-            agent.id,
-            await listAgentTurnQueue(agent.id),
-          ] as const),
-        );
+        const [queueEntries, draftEntries] = await Promise.all([
+          Promise.all(
+            existingAgents.map(async (agent) => [
+              agent.id,
+              await listAgentTurnQueue(agent.id),
+            ] as const),
+          ),
+          Promise.all(
+            existingAgents.map(async (agent) => [agent.id, await getAgentDraft(agent.id)] as const),
+          ),
+        ]);
         if (cancelled) {
           return;
         }
         replaceQueuedTurnsByAgent(Object.fromEntries(queueEntries));
+        const restoredDrafts = Object.fromEntries(
+          draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
+        );
+        draftsByAgentRef.current = restoredDrafts;
+        setDraftsByAgentState(restoredDrafts);
 
         if (existingPanes.length > 0) {
           setPanes(existingPanes);
@@ -454,6 +523,17 @@ export default function App() {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Persist any debounced-but-unwritten drafts when the window is hidden or the
+  // app unmounts, so a quick close never drops the last second of typing.
+  useEffect(() => {
+    const handlePageHide = () => flushPendingDrafts();
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      flushPendingDrafts();
     };
   }, []);
 
@@ -1208,6 +1288,7 @@ export default function App() {
                 <NativeInput
                   pane={activePane}
                   agent={activeAgent}
+                  draft={activeDraft}
                   queuedTurns={activeQueuedTurns}
                   collapsedQueuedTurns={activeCollapsedQueuedTurns}
                   transcriptText={activeTranscript}
@@ -1221,6 +1302,7 @@ export default function App() {
                     })
                   }
                   onQueueChange={setAgentQueuedTurns}
+                  onDraftChange={setAgentDraft}
                   onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                   onError={setError}
                 />

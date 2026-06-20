@@ -33,6 +33,11 @@ pub struct PersistedState {
     pub agents: Vec<AgentInfo>,
     #[serde(default)]
     pub queues: HashMap<String, Vec<String>>,
+    /// Per-agent composer drafts: the unsent text sitting in the right-pane input.
+    /// Persisted so an in-progress draft survives a restart, recovered alongside
+    /// queues and transcripts.
+    #[serde(default)]
+    pub drafts: HashMap<String, String>,
 }
 
 impl Default for PersistedState {
@@ -44,6 +49,7 @@ impl Default for PersistedState {
             groups: Vec::new(),
             agents: Vec::new(),
             queues: HashMap::new(),
+            drafts: HashMap::new(),
         }
     }
 }
