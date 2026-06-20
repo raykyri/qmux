@@ -1,4 +1,4 @@
-export const TERMINAL_FONT_SIZE = 13;
+export const TERMINAL_FONT_SIZE = 14;
 export const TERMINAL_FONT_FAMILY =
   '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
 
