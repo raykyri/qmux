@@ -15,6 +15,8 @@ import {
   isTerminalFontLoaded,
   TERMINAL_FONT_FAMILY,
   TERMINAL_FONT_SIZE,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
 import {
   acknowledgeAgent,
@@ -116,8 +118,11 @@ function isTerminalTarget(target: EventTarget | null) {
   return target instanceof HTMLElement && target.closest(".terminal-mount") !== null;
 }
 
-function measureTerminalCellSize() {
-  if (measuredTerminalCellSize && isTerminalFontLoaded()) {
+function measureTerminalCellSize(fontSize: number) {
+  // Only the default size is cached (the common case); zoomed sizes measure fresh
+  // so a new pane created while zoomed gets a close initial grid before the fit.
+  const isDefaultSize = fontSize === TERMINAL_FONT_SIZE;
+  if (isDefaultSize && measuredTerminalCellSize && isTerminalFontLoaded()) {
     return measuredTerminalCellSize;
   }
 
@@ -127,7 +132,7 @@ function measureTerminalCellSize() {
   probe.style.visibility = "hidden";
   probe.style.whiteSpace = "pre";
   probe.style.fontFamily = TERMINAL_FONT_FAMILY;
-  probe.style.fontSize = `${TERMINAL_FONT_SIZE}px`;
+  probe.style.fontSize = `${fontSize}px`;
   document.body.appendChild(probe);
 
   const rect = probe.getBoundingClientRect();
@@ -137,7 +142,7 @@ function measureTerminalCellSize() {
     width: rect.width > 0 ? rect.width / 10 : 8,
     height: rect.height > 0 ? rect.height : 16,
   };
-  if (isTerminalFontLoaded()) {
+  if (isDefaultSize && isTerminalFontLoaded()) {
     measuredTerminalCellSize = cellSize;
   }
   return cellSize;
@@ -363,6 +368,9 @@ export default function App() {
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
+  // Terminal font size, adjustable in-session with Cmd-+/Cmd-- and shared by every
+  // pane. Deliberately not persisted — each launch starts at TERMINAL_FONT_SIZE.
+  const [terminalFontSize, setTerminalFontSize] = useState(TERMINAL_FONT_SIZE);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
@@ -679,7 +687,7 @@ export default function App() {
         ? appWidth - sidebarWidth - reservedTurnPaneWidth
         : (stageRect?.width ?? window.innerWidth - sidebarWidth - reservedTurnPaneWidth);
     const terminalHeight = stageRect?.height ?? window.innerHeight;
-    const cell = measureTerminalCellSize();
+    const cell = measureTerminalCellSize(terminalFontSize);
     const cols = Math.floor((terminalWidth - TERMINAL_HORIZONTAL_PADDING) / cell.width);
     const rows = Math.floor((terminalHeight - TERMINAL_VERTICAL_PADDING) / cell.height);
 
@@ -1409,11 +1417,28 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || !(event.metaKey || event.ctrlKey)) {
+      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey)) {
         return;
       }
 
       const key = event.key.toLowerCase();
+
+      // Cmd-+ / Cmd-= zoom the terminal font in, Cmd-- / Cmd-_ zoom out. Handled
+      // before the repeat bail so holding the combo keeps stepping the size; the
+      // size lives in state only and is never persisted.
+      if (key === "+" || key === "=" || key === "-" || key === "_") {
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = key === "-" || key === "_" ? -1 : 1;
+        setTerminalFontSize((current) =>
+          clamp(current + delta, TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX),
+        );
+        return;
+      }
+
+      if (event.repeat) {
+        return;
+      }
 
       // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser.
       // Claimed here in the capture phase (before the terminal/editable bail) so
@@ -2164,6 +2189,7 @@ export default function App() {
               }}
               pane={pane}
               active={pane.id === activePane?.id}
+              fontSize={terminalFontSize}
             />
           ))}
         </div>

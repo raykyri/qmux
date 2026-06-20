@@ -10,16 +10,13 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
 import { confirmLargePaste } from "../lib/paste";
-import {
-  loadTerminalFont,
-  TERMINAL_FONT_FAMILY,
-  TERMINAL_FONT_SIZE,
-} from "../lib/terminalFont";
+import { loadTerminalFont, TERMINAL_FONT_FAMILY } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
   active: boolean;
+  fontSize: number;
 }
 
 export interface TerminalPaneHandle {
@@ -88,9 +85,14 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
 }
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active },
+  { pane, active, fontSize },
   ref,
 ) {
+  // The setup effect runs once (keyed on pane.id) and closes over its render's
+  // fontSize; read the latest value through a ref so a terminal created while
+  // zoomed opens at the current size.
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // xterm opens into this inner mount, which fills the host's content box with no
   // padding of its own. The visual breathing room lives as padding on the host;
@@ -219,7 +221,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         cols: pane.cols,
         cursorBlink: false,
         fontFamily: TERMINAL_FONT_FAMILY,
-        fontSize: TERMINAL_FONT_SIZE,
+        fontSize: fontSizeRef.current,
         rows: pane.rows,
         scrollback: 10000,
         theme: TERMINAL_THEME,
@@ -493,6 +495,19 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       stabilizeTerminalRef.current?.();
     }
   }, [active, pane.id]);
+
+  // Apply live font-size changes (Cmd-+/Cmd--) to an already-open terminal, then
+  // re-fit so rows/cols and the PTY size track the new cell metrics. On first
+  // mount the terminal may not exist yet (it opens after the font loads); the
+  // constructor already used the current size, so the no-op here is fine.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || terminal.options.fontSize === fontSize) {
+      return;
+    }
+    terminal.options.fontSize = fontSize;
+    stabilizeTerminalRef.current?.();
+  }, [fontSize]);
 
   const matchLabel =
     searchTerm === ""
