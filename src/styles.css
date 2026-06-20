@@ -1527,6 +1527,8 @@ button:disabled {
   right: 0;
   z-index: 5;
   display: flex;
+  width: 220px;
+  max-width: calc(100vw - 24px);
   flex-direction: column;
   gap: 2px;
   min-width: 180px;
@@ -1539,6 +1541,8 @@ button:disabled {
 
 .composer-menu-item {
   justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
   min-height: var(--control-h-md);
   padding: 6px 10px;
   border-color: transparent;
@@ -1569,7 +1573,7 @@ button:disabled {
 /* Recent-message rows truncate to a single line; the full text is in the title. */
 .composer-menu-recent {
   display: block;
-  max-width: 300px;
+  max-width: none;
   min-height: 0;
   padding: 5px 10px;
   overflow: hidden;
