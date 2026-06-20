@@ -711,6 +711,10 @@ impl AppState {
         }
     }
 
+    // Only the test suite inspects the full outstanding-send queue; production
+    // code reads the count via match_agent_prompt_submit and clears it via
+    // clear_agent_outstanding_sends. Gated to keep it out of the release binary.
+    #[cfg(test)]
     pub fn outstanding_agent_sends(
         &self,
         agent_id: &str,
