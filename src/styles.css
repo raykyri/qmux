@@ -1202,27 +1202,22 @@ button:disabled {
 .composer-menu-trigger {
   display: inline-flex;
   align-items: center;
-  /* Left-align the dots so they line up under the textarea's text inset (the
-     icon's centred dots land at the textarea border + padding). */
-  justify-content: flex-start;
-  width: var(--control-h-lg);
   min-height: var(--control-h-lg);
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: 0;
   background: transparent;
   color: var(--control-fg-muted);
   cursor: pointer;
+  transition: color 120ms ease;
 }
 
 .composer-menu-trigger:hover {
-  background: var(--control-bg-hover);
   color: #f4f3ec;
 }
 
 .composer-menu-trigger:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 1px #6cae9d;
+  color: #f4f3ec;
 }
 
 .composer-menu-popover {
