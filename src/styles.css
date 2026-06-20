@@ -1214,8 +1214,13 @@ button:disabled {
 .queued-turn-text {
   display: block;
   min-width: 0;
+  overflow: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+  /* Light, subtle height ease when expanding/collapsing. The generous cap clears
+     any realistic prompt without clipping; the motion is meant to be barely-there. */
+  max-height: 800px;
+  transition: max-height 160ms ease;
 }
 
 .queued-turn.is-collapsed .queued-turn-text {
@@ -1223,6 +1228,7 @@ button:disabled {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  max-height: 2.9em;
 }
 
 .queued-turn-actions {
@@ -1240,6 +1246,20 @@ button:disabled {
   border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
   color: #f4f3ec;
+}
+
+/* Optically center the × against the text baseline. */
+.queued-turn-remove svg {
+  transform: translateY(-0.5px);
+}
+
+/* The remove (×) button is destructive, so it gets a soft red glow on hover
+   instead of the neutral accent edge. */
+.queued-turn-actions button.queued-turn-remove:hover:not(:disabled) {
+  border-color: #7a3b34;
+  background: #2c1a17;
+  color: #ffd3c7;
+  box-shadow: 0 0 8px 1px rgba(208, 86, 68, 0.5);
 }
 
 .native-input textarea {
