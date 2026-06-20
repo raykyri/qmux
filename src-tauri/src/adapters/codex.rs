@@ -20,7 +20,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-const CODEX_QMUX_PROFILE: &str = "qmux.codex";
+const CODEX_QMUX_PROFILE: &str = "qmux-codex";
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -848,7 +848,7 @@ mod tests {
                 "--model",
                 "gpt-5",
                 "--profile",
-                "qmux.codex",
+                "qmux-codex",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -909,7 +909,7 @@ mod tests {
                 "--model",
                 "gpt-5",
                 "--profile",
-                "qmux.codex",
+                "qmux-codex",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -935,7 +935,7 @@ mod tests {
                 "--cd",
                 "/tmp/qmux",
                 "--profile",
-                "qmux.codex",
+                "qmux-codex",
                 "--sandbox",
                 "workspace-write",
                 "--search"
@@ -969,7 +969,7 @@ mod tests {
 
         write_codex_integration_files(&codex_home, qmux_cli).unwrap();
 
-        let profile_path = codex_home.join("qmux.codex.config.toml");
+        let profile_path = codex_home.join("qmux-codex.config.toml");
         let shim_path = codex_home.join("qmux").join("qmux-codex-hook");
         let profile = fs::read_to_string(profile_path).unwrap();
         let shim = fs::read_to_string(shim_path).unwrap();
