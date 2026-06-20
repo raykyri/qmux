@@ -460,9 +460,9 @@ button:disabled {
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 26px 80px rgba(0, 0, 0, 0.55);
   overflow: hidden;
-  transition:
-    border-color 120ms ease,
-    box-shadow 120ms ease;
+  /* Only the border eases; the focus ring (box-shadow) snaps in so clicking the
+     bar doesn't pulse the shadow. */
+  transition: border-color 120ms ease;
 }
 
 /* The whole bar — not the inner field — carries the focus highlight, so it reads
@@ -548,7 +548,8 @@ button:disabled {
 .command-launcher-input {
   display: block;
   width: 100%;
-  min-height: 128px;
+  /* One text row (line-height 1.5 × --fs-input) shorter than before. */
+  min-height: 106px;
   max-height: 50vh;
   margin: 0;
   resize: none;
