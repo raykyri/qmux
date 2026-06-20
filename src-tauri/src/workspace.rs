@@ -283,16 +283,17 @@ pub fn agent_worktree_status(state: &AppState, agent_id: &str) -> Result<Worktre
 }
 
 /// Removes an agent's git worktree with `--force`, discarding any uncommitted
-/// changes. The branch is left intact so committed work is preserved. Runs from
-/// the group's base repository so git is never asked to remove the worktree it is
-/// standing in.
+/// changes, then soft-deletes its branch (`git branch -d`). Because `-d` only
+/// removes a fully-merged branch, any committed-but-unmerged work is preserved —
+/// git refuses and the branch is kept. Runs from the group's base repository so
+/// git is never asked to remove the worktree it is standing in.
 pub fn remove_agent_worktree(state: &AppState, agent_id: &str) -> Result<(), String> {
     let agent = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
-    if agent.branch.is_none() {
+    let Some(branch) = agent.branch.clone() else {
         return Err(format!("agent {agent_id} is not in a git worktree"));
-    }
+    };
     let worktree_dir = agent.worktree_dir;
 
     let run_dir = state
@@ -311,15 +312,39 @@ pub fn remove_agent_worktree(state: &AppState, agent_id: &str) -> Result<(), Str
         .output()
         .map_err(|err| format!("failed to run git worktree remove: {err}"))?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
+    if !output.status.success() {
+        return Err(format!(
             "git worktree remove failed: {}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        ))
+        ));
     }
+
+    // Best-effort: the worktree is gone, so the branch can be soft-deleted. A
+    // declined delete (unmerged commits) or a git error is logged, not fatal —
+    // the worktree removal the user confirmed has already succeeded.
+    match soft_delete_branch(&run_dir, &branch) {
+        Ok(true) => {}
+        Ok(false) => eprintln!("qmux: kept branch {branch}: not fully merged"),
+        Err(err) => eprintln!("qmux: {err}"),
+    }
+
+    Ok(())
+}
+
+/// Soft-deletes `branch` in the repository at `run_dir`. Returns `Ok(true)` if
+/// the branch was removed, `Ok(false)` if git declined because it is not fully
+/// merged, or `Err` if git could not be run.
+fn soft_delete_branch(run_dir: &str, branch: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(run_dir)
+        .arg("branch")
+        .arg("-d")
+        .arg(branch)
+        .output()
+        .map_err(|err| format!("failed to run git branch -d {branch}: {err}"))?;
+    Ok(output.status.success())
 }
 
 fn default_base_repo() -> Option<String> {
@@ -548,6 +573,57 @@ mod tests {
                 "name should not use the group- prefix: {name:?}"
             );
         }
+    }
+
+    fn branch_exists(repo: &Path, branch: &str) -> bool {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["branch", "--list", branch])
+            .output()
+            .expect("git branch --list runs");
+        !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    }
+
+    #[test]
+    fn soft_delete_branch_removes_merged_keeps_unmerged() {
+        let repo = std::env::temp_dir().join(format!("qmux-branch-{}", now_millis()));
+        fs::create_dir_all(&repo).unwrap();
+        let repo_str = repo.to_string_lossy().to_string();
+
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "qmux test"]);
+        git(&["commit", "--allow-empty", "-m", "init"]);
+
+        // A branch at HEAD is fully merged, so the soft delete removes it.
+        git(&["branch", "merged"]);
+        assert_eq!(soft_delete_branch(&repo_str, "merged"), Ok(true));
+        assert!(!branch_exists(&repo, "merged"));
+
+        // A branch with its own commit is not merged into main, so git declines
+        // and the branch (and its committed work) is preserved.
+        git(&["checkout", "-b", "feature"]);
+        git(&["commit", "--allow-empty", "-m", "work"]);
+        git(&["checkout", "main"]);
+        assert_eq!(soft_delete_branch(&repo_str, "feature"), Ok(false));
+        assert!(branch_exists(&repo, "feature"));
+
+        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
