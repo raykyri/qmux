@@ -534,50 +534,56 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* The close affordance is a plain linkified glyph that sits directly over the
+   status dot (same left offset + size as .pane-tab-dot), not a boxed button.
+   On hover the dot is hidden and only the × shows. */
 .pane-tab-close {
   position: absolute;
   top: 50%;
-  right: 5px;
+  left: 9px;
   z-index: 1;
-  width: 22px;
-  min-height: 22px;
+  display: flex;
+  width: 7px;
+  height: 7px;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   transform: translateY(-50%);
-  border: 1px solid transparent;
-  border-radius: 4px;
+  border: 0;
   background: transparent;
   /* Match the tab's text rather than dimming the glyph. */
   color: #b9c0bc;
-  font-size: 13px;
-  line-height: 1;
+  line-height: 0;
+  cursor: pointer;
+  text-decoration: none;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
 }
 
 .pane-tab-close:hover {
-  background: #2a211f;
   color: #ffd3c7;
 }
 
-/* On a selected tab the × is white (matching the selected label) and sits on a
-   background a shade darker than the accent selection, so it reads as a button. */
+/* On a selected tab the × is white, matching the selected label. */
 .pane-tab-row.is-selected .pane-tab-close {
   color: #ffffff;
-  background: #357565;
-  background: color-mix(in srgb, AccentColor, #000 15%);
 }
 
 .pane-tab-row.is-selected .pane-tab-close:hover {
-  color: #ffffff;
-  background: #2f675a;
-  background: color-mix(in srgb, AccentColor, #000 26%);
+  color: #ffd3c7;
 }
 
 .pane-tab-row:hover .pane-tab-close {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+}
+
+/* Hide the status dot while hovering so the × takes its place. Use visibility
+   (not opacity) so it wins over the status-dot-pulse opacity animation. */
+.pane-tab-row:hover .pane-tab-dot {
+  visibility: hidden;
 }
 
 .sidebar-actions {

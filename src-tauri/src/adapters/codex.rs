@@ -43,13 +43,13 @@ impl CodexAdapter {
     }
 
     fn ensure_binary(&self) -> Result<String, String> {
-        ensure_on_path(&self.binary).ok_or_else(|| {
+        let binary = ensure_on_path(&self.binary).ok_or_else(|| {
             format!(
-                "Codex adapter binary '{}' was not found on PATH. Install Codex CLI or update adapters.codex.binary in qmux.config.json.",
+                "Codex adapter binary '{}' was not found on PATH or standard macOS tool paths. Install Codex CLI or update adapters.codex.binary in qmux.config.json.",
                 self.binary
             )
         })?;
-        Ok(self.binary.clone())
+        Ok(binary.display().to_string())
     }
 }
 

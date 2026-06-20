@@ -1261,7 +1261,9 @@ mod tests {
             .unwrap();
         assert!(!state.should_confirm_exit());
 
-        state.insert_pane(sample_pane_runtime("pane-running")).unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-running"))
+            .unwrap();
         assert!(state.should_confirm_exit());
 
         state
@@ -1269,7 +1271,9 @@ mod tests {
             .unwrap();
         assert!(!state.should_confirm_exit());
 
-        state.insert_pane(sample_pane_runtime("pane-failed")).unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-failed"))
+            .unwrap();
         state
             .mark_pane_status("pane-failed", PaneStatus::Failed)
             .unwrap();
