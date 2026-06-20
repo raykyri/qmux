@@ -22,8 +22,9 @@ use state::{AppState, PaneInfo};
 use tauri::Manager;
 use transcript::Turn;
 use turn_queue::{
-    RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, SubmitAgentTurnRequest,
-    SubmitAgentTurnResult, remove_queued_agent_turn, submit_agent_turn,
+    RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest,
+    ReorderQueuedAgentTurnResult, SubmitAgentTurnRequest, SubmitAgentTurnResult,
+    remove_queued_agent_turn, reorder_queued_agent_turn, submit_agent_turn,
 };
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, agent_worktree_status, create_group,
@@ -169,6 +170,14 @@ fn agent_remove_queued_turn(
 }
 
 #[tauri::command]
+fn agent_reorder_queued_turn(
+    state: tauri::State<'_, AppState>,
+    request: ReorderQueuedAgentTurnRequest,
+) -> Result<ReorderQueuedAgentTurnResult, String> {
+    reorder_queued_agent_turn(&state, request)
+}
+
+#[tauri::command]
 fn agent_set_draft(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -266,6 +275,7 @@ fn main() {
             pane_kill,
             agent_submit_turn,
             agent_remove_queued_turn,
+            agent_reorder_queued_turn,
             agent_set_draft,
             agent_get_draft,
             worktree_status,

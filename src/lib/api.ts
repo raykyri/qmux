@@ -7,6 +7,7 @@ import type {
   PaneInfo,
   QmuxEvent,
   RemoveQueuedAgentTurnResult,
+  ReorderQueuedAgentTurnResult,
   RuntimeConfig,
   SpawnClaudeRequest,
   SubmitAgentTurnMode,
@@ -64,6 +65,17 @@ export function submitAgentTurn(agentId: string, data: string, mode: SubmitAgent
 export function removeQueuedAgentTurn(agentId: string, index: number, expectedData: string) {
   return invoke<RemoveQueuedAgentTurnResult>("agent_remove_queued_turn", {
     request: { agentId, index, expectedData },
+  });
+}
+
+export function reorderQueuedAgentTurn(
+  agentId: string,
+  fromIndex: number,
+  toIndex: number,
+  expectedData: string,
+) {
+  return invoke<ReorderQueuedAgentTurnResult>("agent_reorder_queued_turn", {
+    request: { agentId, fromIndex, toIndex, expectedData },
   });
 }
 

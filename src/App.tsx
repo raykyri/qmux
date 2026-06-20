@@ -585,6 +585,7 @@ export default function App() {
         (event.type === "agent.turn_queued" ||
           event.type === "agent.queued_turn_sent" ||
           event.type === "agent.queued_turn_removed" ||
+          event.type === "agent.queued_turn_reordered" ||
           event.type === "agent.queue_error")
       ) {
         const queuedTurns = Array.isArray(event.payload.queuedTurns)

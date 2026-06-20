@@ -531,6 +531,45 @@ impl AppState {
         Ok((removed, queued_turns))
     }
 
+    pub fn reorder_agent_turn_queue_item(
+        &self,
+        agent_id: &str,
+        from: usize,
+        to: usize,
+        expected_data: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let queued_turns = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let queue = model
+                .agent_turn_queues
+                .get_mut(agent_id)
+                .ok_or_else(|| format!("agent {agent_id} does not have queued turns"))?;
+            let len = queue.len();
+            if from >= len || to >= len {
+                return Err(format!("queued turn index out of range (len {len})"));
+            }
+            if let Some(expected_data) = expected_data {
+                let current = queue
+                    .get(from)
+                    .ok_or_else(|| format!("queued turn {from} was not found"))?;
+                if current != expected_data {
+                    return Err("queued turn changed; refresh before reordering".to_string());
+                }
+            }
+            let moved = queue
+                .remove(from)
+                .ok_or_else(|| format!("queued turn {from} was not found"))?;
+            queue.insert(to, moved);
+            queue.iter().cloned().collect::<Vec<_>>()
+        };
+        self.persist();
+        Ok(queued_turns)
+    }
+
     pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(String, usize)>, String> {
         let popped = {
             let mut model = self
