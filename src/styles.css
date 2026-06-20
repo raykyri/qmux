@@ -183,6 +183,7 @@ button:disabled {
   padding: 32px 10px 12px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
+  user-select: none;
 }
 
 /* Draggable strip over the cleared area at the top of the sidebar so the
@@ -2151,30 +2152,21 @@ button:disabled {
   color: #f1f0e8;
 }
 
-/* The session switcher sits at the far left of the actions row (no margin-left
-   auto), so its terminal-icon trigger anchors the bottom-left of the pane. */
-.session-menu {
-  position: relative;
-  flex: 0 0 auto;
+.composer-menu-sessions {
   display: flex;
-}
-
-/* Reuses .composer-menu-popover, but opens from the left edge of the trigger
-   (composer menu opens from the right) and caps height so a folder with many
-   sessions scrolls. Scoped under .session-menu to win over .composer-menu-popover
-   regardless of source order. */
-.session-menu .composer-menu-popover {
-  right: auto;
-  left: 0;
-  max-height: 320px;
+  max-height: 260px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Stack the session title over its gray last-modified subtext as plain block
    flow. A flex button (any direction) renders the rows blank in WebKit (qmux's
    WKWebView) — it collapses the children — so the row stays block and the title/
    meta carry explicit line-heights and margins so they don't run together. */
-.session-menu .composer-menu-item.session-menu-item {
+.composer-menu-sessions .composer-menu-item.session-menu-item {
   display: block;
   width: 100%;
   min-height: 48px;

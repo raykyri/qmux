@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { EllipsisVertical, SquareChevronRight, X } from "lucide-react";
+import { EllipsisVertical, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   removeQueuedAgentTurn,
@@ -136,7 +136,6 @@ export default function NativeInput({
   const setValue = (next: string) => onDraftChange(agent.id, next);
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -155,7 +154,6 @@ export default function NativeInput({
   const previousQueueLength = useRef(queuedTurns.length);
   const previousAgentId = useRef(agent.id);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const sessionMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
   const canSend = composerPolicy.readyStatuses.includes(agent.status);
@@ -190,29 +188,6 @@ export default function NativeInput({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [menuOpen]);
-
-  // Same close-on-outside-click/Escape behavior for the session switcher.
-  useEffect(() => {
-    if (!sessionMenuOpen) {
-      return;
-    }
-    const handlePointerDown = (event: MouseEvent) => {
-      if (sessionMenuRef.current && !sessionMenuRef.current.contains(event.target as Node)) {
-        setSessionMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setSessionMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [sessionMenuOpen]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -708,51 +683,6 @@ export default function NativeInput({
         rows={1}
       />
       <div className="native-input-actions">
-        {transcriptOptions.length > 0 ? (
-          <div className="session-menu" ref={sessionMenuRef}>
-            <button
-              type="button"
-              className="composer-menu-trigger session-menu-trigger"
-              aria-haspopup="menu"
-              aria-expanded={sessionMenuOpen}
-              aria-label="Switch session transcript"
-              title="Switch session transcript"
-              onClick={() => {
-                setMenuOpen(false);
-                setSessionMenuOpen((open) => !open);
-              }}
-            >
-              <SquareChevronRight size={15} aria-hidden="true" />
-            </button>
-            {sessionMenuOpen ? (
-              <div className="session-menu-popover composer-menu-popover" role="menu">
-                <div className="composer-menu-label">Sessions</div>
-                {sessionOptions.map((option) => {
-                  const active = option.path === agent.transcriptPath;
-                  return (
-                    <button
-                      key={option.path}
-                      type="button"
-                      role="menuitemcheckbox"
-                      aria-checked={active}
-                      className={`composer-menu-item session-menu-item${active ? " is-active" : ""}`}
-                      onClick={() => {
-                        setSessionMenuOpen(false);
-                        onSelectTranscript(active ? null : option.path);
-                      }}
-                    >
-                      <span className="session-menu-title">{sessionMenuTitle(option)}</span>
-                      <span className="session-menu-meta">
-                        {formatRelativeTime(option.modifiedMs)}
-                        {option.boundToOtherAgent ? " · in use by another agent" : ""}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
         <div className="composer-menu" ref={menuRef}>
           <button
             type="button"
@@ -760,10 +690,7 @@ export default function NativeInput({
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-label="More actions"
-            onClick={() => {
-              setSessionMenuOpen(false);
-              setMenuOpen((open) => !open);
-            }}
+            onClick={() => setMenuOpen((open) => !open)}
           >
             <EllipsisVertical size={15} aria-hidden="true" />
           </button>
@@ -795,6 +722,38 @@ export default function NativeInput({
               >
                 Copy transcript
               </button>
+              {transcriptOptions.length > 0 ? (
+                <>
+                  <div className="composer-menu-divider" role="separator" />
+                  <div className="composer-menu-label">Past sessions</div>
+                  <div className="composer-menu-sessions" role="group" aria-label="Past sessions">
+                    {sessionOptions.map((option) => {
+                      const active = option.path === agent.transcriptPath;
+                      return (
+                        <button
+                          key={option.path}
+                          type="button"
+                          role="menuitemcheckbox"
+                          aria-checked={active}
+                          className={`composer-menu-item session-menu-item${
+                            active ? " is-active" : ""
+                          }`}
+                          onClick={() => {
+                            setMenuOpen(false);
+                            onSelectTranscript(active ? null : option.path);
+                          }}
+                        >
+                          <span className="session-menu-title">{sessionMenuTitle(option)}</span>
+                          <span className="session-menu-meta">
+                            {formatRelativeTime(option.modifiedMs)}
+                            {option.boundToOtherAgent ? " · in use by another agent" : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : null}
               {recentMessages.length > 0 ? (
                 <>
                   <div className="composer-menu-divider" role="separator" />
