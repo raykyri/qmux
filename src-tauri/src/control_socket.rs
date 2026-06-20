@@ -140,7 +140,10 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                 .map_err(|err| format!("invalid hook.notify payload: {err}"))?;
             // Bind the notification to the authenticated pane regardless of what the
             // caller claims, so hook status can only be reported for its own pane.
-            notification.pane_id = Some(authed_pane);
+            notification.pane_id = Some(authed_pane.clone());
+            if let Some(agent_id) = notification.agent_id.as_deref() {
+                ensure_agent_scope(state, &authed_pane, agent_id)?;
+            }
             let event = ingest_hook_notification(state, notification)?;
             state.emit(event);
             Ok(json!({ "notified": true }))
@@ -156,6 +159,17 @@ fn ensure_pane_scope(authed_pane: &str, requested_pane: &str) -> Result<(), Stri
         Ok(())
     } else {
         Err("control token is not authorized for that pane".to_string())
+    }
+}
+
+fn ensure_agent_scope(state: &AppState, authed_pane: &str, agent_id: &str) -> Result<(), String> {
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    if agent.pane_id.as_deref() == Some(authed_pane) {
+        Ok(())
+    } else {
+        Err("control token is not authorized for that agent".to_string())
     }
 }
 

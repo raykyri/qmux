@@ -30,6 +30,7 @@ const CLAUDE_NOTIFICATION_MATCHERS: &[(&str, &str)] = &[
 pub struct HookNotification {
     pub event: String,
     pub pane_id: Option<String>,
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub payload: Value,
 }
@@ -92,9 +93,15 @@ pub fn ingest_hook_notification(
 ) -> Result<QmuxEvent, String> {
     let pane_id = notification.pane_id.clone();
     let mut send_tracking = None;
-    let mut agent = pane_id
+    let mut agent = notification
+        .agent_id
         .as_deref()
-        .and_then(|pane_id| state.agent_by_pane(pane_id).ok().flatten());
+        .and_then(|agent_id| state.agent(agent_id).ok().flatten())
+        .or_else(|| {
+            pane_id
+                .as_deref()
+                .and_then(|pane_id| state.agent_by_pane(pane_id).ok().flatten())
+        });
     let event_type = match notification.event.as_str() {
         "SessionStart" => {
             if let Some(agent) = agent.as_mut() {
@@ -353,6 +360,7 @@ mod tests {
             worktree_dir: "/tmp/qmux-hooks-test".to_string(),
             branch: None,
             pane_id: Some("pane-1".to_string()),
+            orphaned_queue_pane_id: None,
             session_id: None,
             transcript_path: None,
             status: AgentStatus::Running,
@@ -404,6 +412,16 @@ mod tests {
         HookNotification {
             event: event.to_string(),
             pane_id: Some("pane-1".to_string()),
+            agent_id: None,
+            payload,
+        }
+    }
+
+    fn hook_for_agent(event: &str, agent_id: &str, payload: serde_json::Value) -> HookNotification {
+        HookNotification {
+            event: event.to_string(),
+            pane_id: Some("pane-1".to_string()),
+            agent_id: Some(agent_id.to_string()),
             payload,
         }
     }
@@ -455,6 +473,42 @@ mod tests {
         assert_eq!(event.event_type, "agent.idle");
         assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
         assert!(written_text(&bytes).contains("queued"));
+    }
+
+    #[test]
+    fn explicit_agent_id_routes_hooks_for_shared_shell_pane() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        let mut second_agent = sample_agent();
+        second_agent.id = "agent-2".to_string();
+        second_agent.created_at = 2;
+        state.insert_agent(second_agent).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "wrong queue".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-2", "right queue".to_string())
+            .unwrap();
+
+        let event = ingest_hook_notification(
+            &state,
+            hook_for_agent(
+                "Notification.idle_prompt",
+                "agent-2",
+                json!({ "hook_event_name": "Notification" }),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(event.agent_id.as_deref(), Some("agent-2"));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["wrong queue".to_string()]
+        );
+        assert!(state.list_agent_turn_queue("agent-2").unwrap().is_empty());
+        let written = written_text(&bytes);
+        assert!(written.contains("right queue"));
+        assert!(!written.contains("wrong queue"));
     }
 
     #[test]

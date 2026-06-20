@@ -19,11 +19,13 @@ import {
   listTurns,
   listenToEvents,
   listPanes,
+  removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
   setAgentDraft as persistAgentDraft,
   spawnClaude,
   spawnShell,
+  submitAgentTurn,
   worktreeStatus,
 } from "./lib/api";
 import type {
@@ -226,6 +228,65 @@ type PaneContextMenuState = {
   y: number;
 };
 
+type OrphanedQueueGroup = {
+  agent: AgentInfo;
+  queuedTurns: string[];
+};
+
+interface RecoveredQueuePanelProps {
+  queues: OrphanedQueueGroup[];
+  hasTargetAgent: boolean;
+  onMoveTurn: (agentId: string, index: number, turn: string) => void;
+  onDiscardTurn: (agentId: string, index: number, turn: string) => void;
+}
+
+function RecoveredQueuePanel({
+  queues,
+  hasTargetAgent,
+  onMoveTurn,
+  onDiscardTurn,
+}: RecoveredQueuePanelProps) {
+  const totalTurns = queues.reduce((total, queue) => total + queue.queuedTurns.length, 0);
+
+  return (
+    <section className="recovered-queue-panel" aria-label="Recovered queued turns">
+      <header>
+        <h2>Recovered queued turns</h2>
+        <span>{totalTurns}</span>
+      </header>
+      <div className="recovered-queue-list">
+        {queues.map(({ agent, queuedTurns }) => (
+          <div key={agent.id} className="recovered-queue-group">
+            <div className="recovered-queue-source">Previous Claude session</div>
+            {queuedTurns.map((turn, index) => (
+              <div key={`${agent.id}-${index}-${turn}`} className="recovered-queue-item">
+                <p>{turn}</p>
+                <div className="recovered-queue-actions">
+                  <button
+                    type="button"
+                    disabled={!hasTargetAgent}
+                    title={
+                      hasTargetAgent
+                        ? "Move to the current agent"
+                        : "Launch Claude in this tab before moving"
+                    }
+                    onClick={() => onMoveTurn(agent.id, index, turn)}
+                  >
+                    Move
+                  </button>
+                  <button type="button" onClick={() => onDiscardTurn(agent.id, index, turn)}>
+                    Discard
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
@@ -294,6 +355,20 @@ export default function App() {
     () => (activeAgent ? draftsByAgent[activeAgent.id] ?? "" : ""),
     [activeAgent?.id, draftsByAgent],
   );
+  const activeOrphanedQueues = useMemo(
+    () =>
+      activePane
+        ? agents
+            .filter((agent) => agent.orphanedQueuePaneId === activePane.id)
+            .map((agent) => ({
+              agent,
+              queuedTurns: queuedTurnsByAgent[agent.id] ?? [],
+            }))
+            .filter((queue) => queue.queuedTurns.length > 0)
+        : [],
+    [activePane?.id, agents, queuedTurnsByAgent],
+  );
+  const hasTurnSidebar = Boolean(activeAgent) || activeOrphanedQueues.length > 0;
 
   function replaceQueuedTurnsByAgent(nextQueues: Record<string, string[]>) {
     const previousQueues = queuedTurnsByAgentRef.current;
@@ -426,6 +501,33 @@ export default function App() {
     setAgentQueuedTurns(agentId, queuedTurns);
   }
 
+  async function discardRecoveredQueuedTurn(agentId: string, index: number, turn: string) {
+    setError(null);
+    try {
+      const result = await removeQueuedAgentTurn(agentId, index, turn);
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function moveRecoveredQueuedTurn(agentId: string, index: number, turn: string) {
+    const targetAgent = activeAgent;
+    if (!targetAgent || targetAgent.id === agentId) {
+      return;
+    }
+
+    setError(null);
+    try {
+      const submitResult = await submitAgentTurn(targetAgent.id, turn);
+      setAgentQueuedTurns(targetAgent.id, submitResult.queuedTurns);
+      const removeResult = await removeQueuedAgentTurn(agentId, index, turn);
+      setAgentQueuedTurns(agentId, removeResult.queuedTurns);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function focusActiveTerminal() {
     const paneId = activePane?.id;
     if (!paneId) {
@@ -451,7 +553,7 @@ export default function App() {
   // turn pane's current width reserved), capped by a comfortable absolute maximum.
   function maxSidebarWidth() {
     const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-    const reservedTurnPane = activeAgent ? turnPaneWidth : 0;
+    const reservedTurnPane = hasTurnSidebar ? turnPaneWidth : 0;
     const available = Math.floor(appWidth - TERMINAL_MIN_WIDTH - reservedTurnPane);
     return Math.max(LEFT_SIDEBAR_MIN_WIDTH, Math.min(LEFT_SIDEBAR_MAX_WIDTH, available));
   }
@@ -485,7 +587,7 @@ export default function App() {
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
-    ...(activeAgent ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
+    ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
   const contextMenuPane = paneContextMenu
     ? panes.find((pane) => pane.id === paneContextMenu.paneId)
@@ -987,7 +1089,7 @@ export default function App() {
   }, [launcherOpen, activePane?.id]);
 
   useEffect(() => {
-    if (!activeAgent) {
+    if (!hasTurnSidebar) {
       return;
     }
 
@@ -998,7 +1100,7 @@ export default function App() {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [activeAgent]);
+  }, [hasTurnSidebar]);
 
   // Keep the sidebar within bounds as the window resizes or the turn pane claims
   // space (deps refresh the clamp's view of available width).
@@ -1010,7 +1112,7 @@ export default function App() {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [activeAgent, turnPaneWidth]);
+  }, [hasTurnSidebar, turnPaneWidth]);
 
   function startTurnPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -1093,7 +1195,7 @@ export default function App() {
   return (
     <main
       ref={appRef}
-      className={`app-shell ${activeAgent ? "has-turn-sidebar" : ""}`}
+      className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}`}
       style={appStyle}
     >
       <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
@@ -1456,7 +1558,7 @@ export default function App() {
         </div>
       </section>
 
-      {activeAgent ? (
+      {hasTurnSidebar ? (
         <aside className="turn-pane">
           <div
             className="turn-pane-resizer"
@@ -1471,32 +1573,46 @@ export default function App() {
             onKeyDown={resizeTurnPaneWithKeyboard}
           />
           <TurnOverlay
-            turns={activeTurns}
-            agentId={activeAgent.id}
+            turns={activeAgent ? activeTurns : []}
+            agentId={activeAgent?.id ?? activePane?.id}
             input={
-              activePane ? (
-                <NativeInput
-                  pane={activePane}
-                  agent={activeAgent}
-                  draft={activeDraft}
-                  queuedTurns={activeQueuedTurns}
-                  collapsedQueuedTurns={activeCollapsedQueuedTurns}
-                  transcriptText={activeTranscript}
-                  transcriptCopyText={() =>
-                    formatTranscriptCopyJson({
-                      agent: activeAgent,
-                      pane: activePane,
-                      transcriptText: activeTranscript,
-                      turns: activeTurns,
-                      hooks: activeHookEvents,
-                    })
-                  }
-                  onQueueChange={setAgentQueuedTurns}
-                  onDraftChange={setAgentDraft}
-                  onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
-                  onError={setError}
-                />
-              ) : null
+              <div className="turn-pane-input-stack">
+                {activeOrphanedQueues.length > 0 ? (
+                  <RecoveredQueuePanel
+                    queues={activeOrphanedQueues}
+                    hasTargetAgent={Boolean(activeAgent)}
+                    onMoveTurn={(agentId, index, turn) =>
+                      void moveRecoveredQueuedTurn(agentId, index, turn)
+                    }
+                    onDiscardTurn={(agentId, index, turn) =>
+                      void discardRecoveredQueuedTurn(agentId, index, turn)
+                    }
+                  />
+                ) : null}
+                {activeAgent && activePane ? (
+                  <NativeInput
+                    pane={activePane}
+                    agent={activeAgent}
+                    draft={activeDraft}
+                    queuedTurns={activeQueuedTurns}
+                    collapsedQueuedTurns={activeCollapsedQueuedTurns}
+                    transcriptText={activeTranscript}
+                    transcriptCopyText={() =>
+                      formatTranscriptCopyJson({
+                        agent: activeAgent,
+                        pane: activePane,
+                        transcriptText: activeTranscript,
+                        turns: activeTurns,
+                        hooks: activeHookEvents,
+                      })
+                    }
+                    onQueueChange={setAgentQueuedTurns}
+                    onDraftChange={setAgentDraft}
+                    onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
+                    onError={setError}
+                  />
+                ) : null}
+              </div>
             }
           />
         </aside>
