@@ -268,7 +268,7 @@ export default function NativeInput({
             aria-label="More actions"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <EllipsisVertical size={18} aria-hidden="true" />
+            <EllipsisVertical size={16} aria-hidden="true" />
           </button>
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">

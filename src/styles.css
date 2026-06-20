@@ -28,6 +28,9 @@
   --control-bg-hover: #2c3134;
   --control-border: #3a3d3f;
   --control-border-hover: #474b4e;
+  /* Button/resizer hover edge: a touch brighter than the base border and lightly
+     tinted toward the accent, without the loud full-accent outline. */
+  --control-border-hover-accent: #4a5d56;
   --control-fg: #f1f0e8;
   --control-fg-muted: #b9c0bc;
   --focus-ring: #6cae9d;
@@ -168,7 +171,7 @@ button:disabled {
 
 .sidebar-resizer:hover::before,
 .sidebar-resizer:focus-visible::before {
-  background: #6cae9d;
+  background: var(--control-border-hover-accent);
 }
 
 .pane-list {
@@ -417,7 +420,7 @@ button:disabled {
 
 .sidebar-actions button:hover,
 .native-input-submit-actions button:hover:not(:disabled) {
-  border-color: var(--accent-strong);
+  border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
   color: #f4f3ec;
 }
@@ -798,7 +801,7 @@ button:disabled {
 
 .turn-pane-resizer:hover::before,
 .turn-pane-resizer:focus-visible::before {
-  background: #6cae9d;
+  background: var(--control-border-hover-accent);
 }
 
 .turn-sidebar {
@@ -1066,6 +1069,15 @@ button:disabled {
   font-weight: 650;
 }
 
+/* The collapsed group toggles ("N tool calls" / "N assistant updates") read as
+   quiet labels — regular weight in the same muted tone as thinking text — rather
+   than bold headings. Single tool entries keep the brighter treatment above. */
+.tool-run-block > summary .tool-summary-main,
+.assistant-run-block > summary .tool-summary-main {
+  color: #aab1ad;
+  font-weight: 400;
+}
+
 .tool-summary-meta {
   color: #8f9994;
   font-size: 11px;
@@ -1224,7 +1236,7 @@ button:disabled {
 }
 
 .queued-turn-actions button:hover:not(:disabled) {
-  border-color: var(--accent-strong);
+  border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
   color: #f4f3ec;
 }
@@ -1233,7 +1245,7 @@ button:disabled {
   flex: 0 0 auto;
   min-width: 0;
   /* Auto-grows with content (JS sets the height) up to a cap, then scrolls. */
-  min-height: 38px;
+  min-height: 39px;
   max-height: 200px;
   overflow-y: auto;
   resize: none;
@@ -1241,7 +1253,7 @@ button:disabled {
   border-radius: var(--radius-md);
   background: #111315;
   color: #f1f0e8;
-  font-size: var(--fs-base);
+  font-size: calc(var(--fs-base) + 1px);
   padding: 8px 9px;
 }
 
@@ -1262,6 +1274,8 @@ button:disabled {
   position: relative;
   flex: 0 0 auto;
   display: flex;
+  /* Sit at the right of the row, just left of the submit buttons. */
+  margin-left: auto;
 }
 
 .composer-menu-trigger {
@@ -1325,7 +1339,7 @@ button:disabled {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-  margin-left: auto;
+  /* The composer menu now owns the margin-left:auto that pushes this group right. */
 }
 
 .queue-button {
