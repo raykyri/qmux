@@ -1371,6 +1371,22 @@ export default function App() {
         return;
       }
 
+      // Cmd-Shift-[ / Cmd-Shift-] cycle backward/forward through the open tabs.
+      // Claimed in the capture phase so it works regardless of focus.
+      if ((key === "[" || key === "]") && event.metaKey && event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (panes.length > 0) {
+          const direction = key === "[" ? -1 : 1;
+          setActivePaneId((current) => {
+            const index = panes.findIndex((pane) => pane.id === current);
+            const base = index === -1 ? 0 : index;
+            return panes[(base + direction + panes.length) % panes.length].id;
+          });
+        }
+        return;
+      }
+
       if (key !== "t" && key !== "n" && key !== "k" && key !== "w") {
         return;
       }
