@@ -21,6 +21,7 @@ import {
   clampFontSize,
   FONT_OPTIONS,
   fontStackFor,
+  letterSpacingFor,
   loadSettings,
   saveSettings,
   type AppSettings,
@@ -384,6 +385,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
+  const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
@@ -2362,6 +2364,7 @@ export default function App() {
               active={pane.id === activePane?.id}
               fontSize={terminalFontSize}
               fontFamily={terminalFontFamily}
+              letterSpacing={terminalLetterSpacing}
             />
           ))}
         </div>

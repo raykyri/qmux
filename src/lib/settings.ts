@@ -10,6 +10,12 @@ export interface FontOption {
   label: string;
   /** Full CSS font-family stack applied to the terminal. */
   stack: string;
+  /**
+   * Extra inter-character spacing in px passed to xterm's `letterSpacing`.
+   * Defaults to 0 when omitted. Monaco's glyphs sit a touch tight in xterm, so
+   * a hairline 0.01px nudge keeps the cells from looking cramped.
+   */
+  letterSpacing?: number;
 }
 
 // Shared fallback chain so a face that is missing on the host degrades to the
@@ -24,7 +30,7 @@ export const FONT_OPTIONS: FontOption[] = [
   { id: "jetbrains-mono", label: "JetBrains Mono", stack: TERMINAL_FONT_FAMILY },
   { id: "sf-mono", label: "SF Mono", stack: `"SF Mono", ${MONO_FALLBACK}` },
   { id: "menlo", label: "Menlo", stack: `"Menlo", ${MONO_FALLBACK}` },
-  { id: "monaco", label: "Monaco", stack: `"Monaco", ${MONO_FALLBACK}` },
+  { id: "monaco", label: "Monaco", stack: `"Monaco", ${MONO_FALLBACK}`, letterSpacing: 0.01 },
 ];
 
 export const DEFAULT_FONT_ID = FONT_OPTIONS[0].id;
@@ -47,6 +53,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
 /** Resolves a stored font id to its CSS stack, falling back to the default. */
 export function fontStackFor(fontId: string): string {
   return (FONT_OPTIONS.find((option) => option.id === fontId) ?? FONT_OPTIONS[0]).stack;
+}
+
+/**
+ * Resolves a stored font id to its terminal letter spacing (px), falling back
+ * to the default. Fonts without an explicit value spell out 0 (no extra gap).
+ */
+export function letterSpacingFor(fontId: string): number {
+  return (FONT_OPTIONS.find((option) => option.id === fontId) ?? FONT_OPTIONS[0]).letterSpacing ?? 0;
 }
 
 export function clampFontSize(size: number): number {
