@@ -1,5 +1,14 @@
+import { LauncherSelect } from "../components/LauncherSelect";
+import type { LauncherSelectOption } from "../components/LauncherSelect";
 import type { AgentUiAdapter, ComposerPolicy, LauncherOptionsProps } from ".";
 import type { Turn } from "../types";
+
+const CLAUDE_PERMISSION_OPTIONS: LauncherSelectOption[] = [
+  { value: "auto", label: "Auto mode" },
+  { value: "acceptEdits", label: "Only accept edits" },
+  { value: "dontAsk", label: "Block approval requests" },
+  { value: "bypassPermissions", label: "Bypass permissions", tone: "danger" },
+];
 
 export const CLAUDE_ADAPTER_ID = "claude";
 
@@ -25,25 +34,20 @@ function ClaudeLauncherOptions({ value, onChange }: LauncherOptionsProps) {
   const permissionMode = typeof value.permissionMode === "string" ? value.permissionMode : "auto";
 
   return (
-    <label className="command-launcher-option">
-      <select
-        value={permissionMode}
-        onChange={(event) => {
-          const next = { ...value };
-          if (event.currentTarget.value) {
-            next.permissionMode = event.currentTarget.value;
-          } else {
-            delete next.permissionMode;
-          }
-          onChange(next);
-        }}
-      >
-        <option value="auto">Auto</option>
-        <option value="acceptEdits">Accept edits</option>
-        <option value="dontAsk">Don't ask</option>
-        <option value="bypassPermissions">Bypass</option>
-      </select>
-    </label>
+    <LauncherSelect
+      ariaLabel="Permission mode"
+      value={permissionMode}
+      options={CLAUDE_PERMISSION_OPTIONS}
+      onChange={(next) => {
+        const updated = { ...value };
+        if (next) {
+          updated.permissionMode = next;
+        } else {
+          delete updated.permissionMode;
+        }
+        onChange(updated);
+      }}
+    />
   );
 }
 

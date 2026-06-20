@@ -70,6 +70,10 @@ Run a release build directly:
 src-tauri/target/release/qmux
 ```
 
+```sh
+open src-tauri/target/release/bundle/macos/qmux.app
+```
+
 ## Using The App
 
 - `Cmd-T` / `Cmd-N`: open a shell pane.

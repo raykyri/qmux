@@ -13,6 +13,7 @@ import type {
   SpawnAgentRequest,
   SubmitAgentTurnMode,
   SubmitAgentTurnResult,
+  TranscriptOption,
   Turn,
   WorktreeStatus,
 } from "../types";
@@ -39,6 +40,14 @@ export function listTurns(agentId?: string | null) {
 
 export function listAgentTurnQueue(agentId: string) {
   return invoke<string[]>("list_agent_turn_queue", { agentId });
+}
+
+export function listAgentTranscripts(agentId: string) {
+  return invoke<TranscriptOption[]>("list_agent_transcripts", { agentId });
+}
+
+export function setAgentTranscript(agentId: string, path: string | null) {
+  return invoke<AgentInfo>("set_agent_transcript", { agentId, path });
 }
 
 export function spawnShell(initialSize?: InitialPaneSize | null) {

@@ -23,7 +23,10 @@ use pty::{
 use sleep::SleepGuard;
 use state::{AppState, PaneInfo};
 use tauri::Manager;
-use transcript::Turn;
+use transcript::{
+    Turn, TranscriptOption, list_agent_transcripts as list_agent_transcript_options,
+    set_agent_transcript as repoint_agent_transcript,
+};
 use turn_queue::{
     RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest,
     ReorderQueuedAgentTurnResult, SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest,
@@ -97,6 +100,23 @@ fn list_agent_turn_queue(
     agent_id: String,
 ) -> Result<Vec<String>, String> {
     state.list_agent_turn_queue(&agent_id)
+}
+
+#[tauri::command]
+fn list_agent_transcripts(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<TranscriptOption>, String> {
+    list_agent_transcript_options(&state, &agent_id)
+}
+
+#[tauri::command]
+fn set_agent_transcript(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    path: Option<String>,
+) -> Result<AgentInfo, String> {
+    repoint_agent_transcript(&state, &agent_id, path.as_deref())
 }
 
 #[tauri::command]
@@ -354,6 +374,8 @@ fn main() {
             list_agents,
             list_turns,
             list_agent_turn_queue,
+            list_agent_transcripts,
+            set_agent_transcript,
             group_create,
             spawn_shell,
             agent_spawn,
