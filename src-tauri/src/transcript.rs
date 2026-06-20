@@ -160,12 +160,18 @@ pub fn start_transcript_tail(
                     continue;
                 }
             };
-            let lines = raw.lines().map(ToString::to_string).collect::<Vec<_>>();
+            let lines = complete_lines(&raw);
 
             if is_append_only(&seen_lines, &lines) {
                 for (index, line) in lines.iter().enumerate().skip(seen_lines.len()) {
                     if let Some(turn) = adapter.parse_transcript_line(&agent_id, index, line) {
-                        let _ = state.append_turn(turn.clone());
+                        // Surface a persistence failure rather than silently emitting a
+                        // turn the store never recorded, which would drift the UI
+                        // timeline from recovered state.
+                        if let Err(err) = state.append_turn(turn.clone()) {
+                            state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                            continue;
+                        }
                         state.emit(QmuxEvent::new(
                             "turn.appended",
                             None,
@@ -182,13 +188,16 @@ pub fn start_transcript_tail(
                         adapter.parse_transcript_line(&agent_id, index, line)
                     })
                     .collect::<Vec<_>>();
-                let _ = state.replace_turns(&agent_id, turns.clone());
-                state.emit(QmuxEvent::new(
-                    "turn.updated",
-                    None,
-                    Some(agent_id.clone()),
-                    json!({ "reset": true, "turns": turns }),
-                ));
+                if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
+                    state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                } else {
+                    state.emit(QmuxEvent::new(
+                        "turn.updated",
+                        None,
+                        Some(agent_id.clone()),
+                        json!({ "reset": true, "turns": turns }),
+                    ));
+                }
             }
 
             seen_lines = lines;
@@ -534,6 +543,30 @@ fn transcript_notice(agent_id: &str, path: &str, message: Option<&str>) -> QmuxE
     )
 }
 
+/// Reports a failure to persist parsed turns (a poisoned state lock or full
+/// disk) so the UI can show the timeline is no longer authoritative instead of
+/// silently diverging from recovered state.
+fn transcript_persist_error(agent_id: &str, path: &str, error: &str) -> QmuxEvent {
+    QmuxEvent::new(
+        "transcript.error",
+        None,
+        Some(agent_id.to_string()),
+        json!({ "error": error, "path": path }),
+    )
+}
+
+/// Returns the newline-terminated lines of a transcript snapshot, holding back
+/// any trailing bytes after the final '\n'. A transcript record is one JSON
+/// object per line ending in '\n', so content past the last newline is a record
+/// still being written: parsing it would either be dropped as invalid JSON or,
+/// once it completes, differ from the stored partial line and churn a full
+/// timeline reset. Deferring it until its newline lands keeps the tail purely
+/// append-driven.
+fn complete_lines(raw: &str) -> Vec<String> {
+    let complete = raw.rfind('\n').map_or("", |idx| &raw[..=idx]);
+    complete.lines().map(ToString::to_string).collect()
+}
+
 fn is_append_only(previous: &[String], current: &[String]) -> bool {
     previous.len() <= current.len()
         && previous
@@ -579,6 +612,30 @@ mod tests {
         assert!(!tail_should_continue(Some(None), "/t/a.jsonl"));
         // Agent gone entirely: stop.
         assert!(!tail_should_continue(None, "/t/a.jsonl"));
+    }
+
+    #[test]
+    fn complete_lines_holds_back_an_unterminated_trailing_record() {
+        // Fully terminated snapshot: every record is stable.
+        assert_eq!(
+            complete_lines("{\"a\":1}\n{\"b\":2}\n"),
+            vec!["{\"a\":1}".to_string(), "{\"b\":2}".to_string()]
+        );
+        // A record still being written (no trailing newline) is withheld until
+        // its newline lands, so it is never parsed as a partial line.
+        assert_eq!(
+            complete_lines("{\"a\":1}\n{\"b\":2"),
+            vec!["{\"a\":1}".to_string()]
+        );
+        // Once the newline arrives the previously-partial record becomes stable,
+        // appended after the line already seen (no reset churn).
+        assert_eq!(
+            complete_lines("{\"a\":1}\n{\"b\":2}\n"),
+            vec!["{\"a\":1}".to_string(), "{\"b\":2}".to_string()]
+        );
+        // A snapshot with no complete line yet yields nothing.
+        assert!(complete_lines("{\"partial").is_empty());
+        assert!(complete_lines("").is_empty());
     }
 
     #[test]
