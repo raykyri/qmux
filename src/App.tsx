@@ -1345,9 +1345,12 @@ export default function App() {
         return;
       }
 
-      // The terminal owns ⌘K (clear) and Ctrl-K (kill-line), so never hijack K there.
+      // Cmd-K opens qmux's agent picker even from terminal focus. Ctrl-K still
+      // belongs to the terminal as kill-line.
       if (key === "k" && isTerminalTarget(event.target)) {
-        return;
+        if (!event.metaKey || event.ctrlKey) {
+          return;
+        }
       }
 
       // Ctrl-based shortcuts collide with native text editing (e.g. Ctrl-K kill-line) in
