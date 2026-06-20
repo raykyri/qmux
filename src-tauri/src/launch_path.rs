@@ -149,7 +149,7 @@ fn login_shell_path(shell: &OsStr) -> Option<String> {
 
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    let reader = thread::spawn(move || {
         let mut buffer = String::new();
         let _ = stdout.read_to_string(&mut buffer);
         let _ = tx.send(buffer);
@@ -161,12 +161,17 @@ fn login_shell_path(shell: &OsStr) -> Option<String> {
             output
         }
         Err(_) => {
+            // Kill the child so its stdout closes and the reader's blocking
+            // read_to_string returns EOF; joining below then reaps the thread
+            // rather than detaching it to linger past this call.
             let _ = child.kill();
             let _ = child.wait();
+            let _ = reader.join();
             return None;
         }
     };
 
+    let _ = reader.join();
     extract_between(&output, MARKER_START, MARKER_END)
 }
 
