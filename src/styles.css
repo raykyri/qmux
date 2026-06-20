@@ -388,7 +388,8 @@ button:disabled {
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: #7f8884;
+  /* Match the tab's text rather than dimming the glyph. */
+  color: #b9c0bc;
   font-size: 13px;
   line-height: 1;
   opacity: 0;
@@ -398,6 +399,20 @@ button:disabled {
 .pane-tab-close:hover {
   background: #2a211f;
   color: #ffd3c7;
+}
+
+/* On a selected tab the × is white (matching the selected label) and sits on a
+   background a shade darker than the accent selection, so it reads as a button. */
+.pane-tab-row.is-selected .pane-tab-close {
+  color: #ffffff;
+  background: #357565;
+  background: color-mix(in srgb, AccentColor, #000 15%);
+}
+
+.pane-tab-row.is-selected .pane-tab-close:hover {
+  color: #ffffff;
+  background: #2f675a;
+  background: color-mix(in srgb, AccentColor, #000 26%);
 }
 
 .pane-tab-row:hover .pane-tab-close,
