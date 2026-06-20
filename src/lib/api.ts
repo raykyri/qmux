@@ -67,6 +67,14 @@ export function removeQueuedAgentTurn(agentId: string, index: number, expectedDa
   });
 }
 
+export function setAgentDraft(agentId: string, draft: string) {
+  return invoke<void>("agent_set_draft", { agentId, draft });
+}
+
+export function getAgentDraft(agentId: string) {
+  return invoke<string | null>("agent_get_draft", { agentId });
+}
+
 export function resizePane(paneId: string, cols: number, rows: number) {
   return invoke<void>("pane_resize", { paneId, cols, rows });
 }
