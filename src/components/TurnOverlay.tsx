@@ -13,6 +13,9 @@ interface TurnOverlayProps {
   // Identifies the agent whose transcript is shown; a change means a different
   // transcript loaded, which is when we jump the view to the latest turn.
   agentId?: string;
+  // Short diagnostic shown under the empty-state placeholder when the transcript
+  // tail is in an unexpected state (stalled/unreadable file, adapter failure).
+  notice?: string | null;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -68,7 +71,7 @@ export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
 }
 
-export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps) {
+export default function TurnOverlay({ turns, input, agentId, notice }: TurnOverlayProps) {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   // Whether the view is parked near the bottom, so incoming content can keep it
@@ -141,7 +144,10 @@ export default function TurnOverlay({ turns, input, agentId }: TurnOverlayProps)
         onScroll={handleTimelineScroll}
       >
         {timelineItems.length === 0 ? (
-          <div className="empty-state turn-empty-state">No turns yet</div>
+          <div className="empty-state turn-empty-state">
+            <span>No turns yet</span>
+            {notice ? <span className="turn-empty-notice">{notice}</span> : null}
+          </div>
         ) : (
           timelineItems.map((item) => <MessageTimelineItemView key={item.key} item={item} />)
         )}

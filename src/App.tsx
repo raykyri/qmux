@@ -345,6 +345,12 @@ export default function App() {
   const [hookEventsByAgent, setHookEventsByAgent] = useState<
     Record<string, TranscriptHookEvent[]>
   >({});
+  // Latest unexpected-state message per agent (stalled/unreadable transcript,
+  // adapter failure). Shown under the right pane's "No turns yet" placeholder;
+  // null clears it once the transcript tail recovers.
+  const [transcriptNoticeByAgent, setTranscriptNoticeByAgent] = useState<
+    Record<string, string | null>
+  >({});
   const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
     Record<string, boolean[]>
   >({});
@@ -406,6 +412,10 @@ export default function App() {
   const activeHookEvents = useMemo(
     () => (activeAgent ? hookEventsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, hookEventsByAgent],
+  );
+  const activeTranscriptNotice = useMemo(
+    () => (activeAgent ? transcriptNoticeByAgent[activeAgent.id] ?? null : null),
+    [activeAgent?.id, transcriptNoticeByAgent],
   );
   const activeQueuedTurns = useMemo(
     () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
@@ -878,6 +888,23 @@ export default function App() {
           ...current.filter((turn) => turn.agentId !== agentId),
           ...replacementTurns,
         ]);
+      }
+      if (
+        event.agentId &&
+        (event.type === "transcript.notice" || event.type === "transcript.error")
+      ) {
+        const agentId = event.agentId;
+        // transcript.error carries `error`; transcript.notice carries `message`
+        // (null/absent means the tail recovered, so the notice is cleared).
+        const message =
+          event.type === "transcript.error"
+            ? typeof event.payload.error === "string"
+              ? event.payload.error
+              : "Failed to load transcript"
+            : typeof event.payload.message === "string"
+              ? event.payload.message
+              : null;
+        setTranscriptNoticeByAgent((current) => ({ ...current, [agentId]: message }));
       }
     }).then((cleanup) => {
       if (disposed) {
@@ -2049,6 +2076,7 @@ export default function App() {
           <TurnOverlay
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
+            notice={activeAgent ? activeTranscriptNotice : null}
             input={
               <div className="turn-pane-input-stack">
                 {activeOrphanedQueues.length > 0 ? (
