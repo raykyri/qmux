@@ -199,8 +199,10 @@ function normalizeQueuedTurns(turns: Turn[]): Turn[] {
 
 function buildTimelineItems(turns: Turn[]): MessageItem[] {
   const items: MessageItem[] = [];
-  const pendingById = new Map<string, ToolEntry>();
-  const pendingWithoutId: ToolEntry[] = [];
+  // Tool calls awaiting a result, in arrival order. A result matches by tool-use
+  // id when both sides carry one, otherwise it falls back to the oldest pending
+  // call — either way the call and its result collapse into a single row.
+  const pending: ToolEntry[] = [];
   let sequence = 0;
 
   const nextKey = (prefix: string) => `${prefix}-${sequence++}`;
@@ -262,30 +264,27 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
       isError: false,
     };
     pushToolEntry(entry);
-    if (entry.id) {
-      pendingById.set(entry.id, entry);
-    } else {
-      pendingWithoutId.push(entry);
-    }
+    pending.push(entry);
   };
 
   const attachToolResult = (block: ToolResultBlock) => {
-    let entry: ToolEntry | undefined;
     const toolUseId = block.toolUseId ?? null;
 
-    if (toolUseId) {
-      entry = pendingById.get(toolUseId);
-      pendingById.delete(toolUseId);
-    } else {
-      entry = pendingWithoutId.shift();
+    // Prefer an exact tool-use id match; otherwise fall back to the oldest pending
+    // call so mismatched or absent ids still collapse the result into its call.
+    let index = toolUseId ? pending.findIndex((entry) => entry.id === toolUseId) : -1;
+    if (index === -1 && pending.length > 0) {
+      index = 0;
     }
 
-    if (entry) {
+    if (index !== -1) {
+      const [entry] = pending.splice(index, 1);
       entry.result = block.content;
       entry.isError = block.isError;
       return;
     }
 
+    // A result with no pending call at all — surface it on its own row.
     pushToolEntry({
       type: "tool",
       key: nextKey("tool-result"),
