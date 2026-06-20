@@ -102,7 +102,7 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 function isTerminalTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && target.closest(".xterm") !== null;
+  return target instanceof HTMLElement && target.closest(".terminal-mount") !== null;
 }
 
 function measureTerminalCellSize() {
