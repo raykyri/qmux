@@ -1154,6 +1154,19 @@ button:disabled {
   padding: 24px;
 }
 
+/* Stack the placeholder text and any transcript-health notice vertically. */
+.turn-empty-state {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.turn-empty-notice {
+  max-width: 260px;
+  color: #e0b341;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 /* Pack the quiet disclosure rows (tool/thinking/assistant toggles) closer than the
    8px timeline gap that surrounds the bordered message cards — it only applies
    between two consecutive non-card rows, so cards keep their breathing room. */

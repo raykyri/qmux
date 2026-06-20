@@ -820,6 +820,17 @@ impl AppState {
         Ok(tails.insert(key))
     }
 
+    /// Drops the marker for a tail that is stopping (its file rotated away or its
+    /// agent went away) so the same `(agent_id, path)` can be tailed again if the
+    /// agent ever returns to that file. Best-effort: a poisoned lock is ignored
+    /// rather than propagated, since this only runs as a tail unwinds.
+    pub fn clear_transcript_tail(&self, agent_id: &str, path: &str) {
+        let key = format!("{agent_id}:{path}");
+        if let Ok(mut tails) = self.inner.transcript_tails.lock() {
+            tails.remove(&key);
+        }
+    }
+
     pub fn pane_writer(&self, pane_id: &str) -> Result<Option<SharedWriter>, String> {
         let model = self
             .inner
