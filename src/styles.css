@@ -1188,6 +1188,28 @@ button:disabled {
   padding: 7px 8px;
   font-size: var(--fs-base);
   line-height: 1.4;
+  /* The whole row is the drag handle (there is no separate grip). */
+  cursor: grab;
+}
+
+/* The dragged row fades; a drop line marks where it will land. */
+.queued-turn.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.queued-turn.is-drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent-color);
+}
+
+.queued-turn.is-drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent-color);
+}
+
+/* Hold the grabbing cursor across the whole stack for the duration of a drag. */
+.queued-turn-stack.is-dragging,
+.queued-turn-stack.is-dragging * {
+  cursor: grabbing !important;
 }
 
 .queued-turn-toggle {
@@ -1199,6 +1221,8 @@ button:disabled {
   background: transparent;
   color: inherit;
   text-align: left;
+  /* Inherit the row's grab cursor rather than the default button pointer. */
+  cursor: inherit;
 }
 
 .queued-turn-toggle:hover {
