@@ -1,4 +1,4 @@
-import { type DragEvent, useEffect, useRef, useState } from "react";
+import { type DragEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EllipsisVertical, X } from "lucide-react";
 import {
   listAgentTurnQueue,
@@ -11,6 +11,69 @@ import type { AgentInfo, PaneInfo } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
+
+// A quick, subtle ease for the queued-turn collapse/expand. CSS can't transition
+// to/from `auto`, so we measure both layouts and tween between explicit pixel
+// heights, then hand control back to CSS once it settles.
+const QUEUED_TURN_ANIM_MS = 120;
+
+function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const naturalHeight = useRef<number | null>(null);
+  const initialized = useRef(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) {
+      return;
+    }
+    // The ancestor's is-collapsed class has already flipped, so the element is in
+    // its target layout; capture that resting height with transitions off.
+    el.style.transition = "none";
+    el.style.height = "auto";
+    const to = el.offsetHeight;
+
+    if (!initialized.current) {
+      // First mount (or a remount from reorder): nothing to animate.
+      initialized.current = true;
+      naturalHeight.current = to;
+      el.style.height = "";
+      el.style.transition = "";
+      return;
+    }
+
+    const from = naturalHeight.current ?? to;
+    naturalHeight.current = to;
+    if (from === to) {
+      el.style.height = "";
+      el.style.transition = "";
+      return;
+    }
+
+    el.style.height = `${from}px`;
+    // Force a reflow so the start height is registered before the ease begins.
+    void el.offsetHeight;
+    el.style.transition = `height ${QUEUED_TURN_ANIM_MS}ms ease`;
+    el.style.height = `${to}px`;
+
+    const handleEnd = () => {
+      el.style.height = "";
+      el.style.transition = "";
+      naturalHeight.current = el.offsetHeight;
+      el.removeEventListener("transitionend", handleEnd);
+    };
+    el.addEventListener("transitionend", handleEnd);
+    return () => {
+      el.removeEventListener("transitionend", handleEnd);
+    };
+  }, [collapsed]);
+
+  return (
+    <span ref={ref} className="queued-turn-text">
+      {turn}
+    </span>
+  );
+}
 
 interface NativeInputProps {
   pane: PaneInfo;
@@ -49,6 +112,9 @@ export default function NativeInput({
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const queueStackRef = useRef<HTMLDivElement | null>(null);
+  const previousQueueLength = useRef(queuedTurns.length);
+  const previousAgentId = useRef(agent.id);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
@@ -96,6 +162,18 @@ export default function NativeInput({
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_INPUT_HEIGHT)}px`;
   }, [value]);
+
+  // When a new turn is queued (appended to the bottom), scroll the stack down so
+  // the latest item is visible. Skip removals/reorders and agent switches.
+  useEffect(() => {
+    const grew =
+      previousAgentId.current === agent.id && queuedTurns.length > previousQueueLength.current;
+    previousQueueLength.current = queuedTurns.length;
+    previousAgentId.current = agent.id;
+    if (grew && queueStackRef.current) {
+      queueStackRef.current.scrollTop = queueStackRef.current.scrollHeight;
+    }
+  }, [queuedTurns.length, agent.id]);
 
   async function submitTurn(text: string, mode: "send" | "queue" | "steer") {
     if (submitting) {
@@ -275,6 +353,7 @@ export default function NativeInput({
     >
       {queuedTurns.length > 0 ? (
         <div
+          ref={queueStackRef}
           className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
           aria-label="Queued turns"
         >
@@ -313,7 +392,7 @@ export default function NativeInput({
                   aria-label={collapsed ? "Expand queued turn" : "Collapse queued turn"}
                   onClick={() => onQueuedTurnCollapseToggle(agent.id, index)}
                 >
-                  <span className="queued-turn-text">{turn}</span>
+                  <QueuedTurnText turn={turn} collapsed={collapsed} />
                 </button>
                 <div className="queued-turn-actions">
                   <button
