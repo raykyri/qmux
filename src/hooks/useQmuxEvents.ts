@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { listAgents, listenToEvents } from "../lib/api";
-import { transcriptHookEvent } from "../lib/appHelpers";
+import { isTurn, transcriptHookEvent } from "../lib/appHelpers";
 import type { ExitDialogState, PaneContextMenuState } from "../appTypes";
 import type { AgentInfo, PaneInfo, TranscriptHookEvent, Turn } from "../types";
 
@@ -95,8 +95,8 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         }
       }
       if (event.type === "turn.appended") {
-        const turn = event.payload.turn as Turn | undefined;
-        if (turn) {
+        const turn = event.payload.turn;
+        if (isTurn(turn)) {
           setTurns((current) =>
             current.some((existing) => existing.id === turn.id) ? current : [...current, turn],
           );
@@ -105,7 +105,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (event.type === "turn.updated" && event.payload.reset) {
         const agentId = event.agentId;
         const replacementTurns = Array.isArray(event.payload.turns)
-          ? (event.payload.turns as Turn[])
+          ? event.payload.turns.filter(isTurn)
           : [];
         setTurns((current) => [
           ...current.filter((turn) => turn.agentId !== agentId),
@@ -130,10 +130,10 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         setTranscriptNoticeByAgent((current) => ({ ...current, [agentId]: message }));
         // A notice usually follows a recovery/rotation; refresh the picker so the
         // active session and any new candidates are reflected.
-        void refreshTranscriptOptions(agentId);
+        void refreshTranscriptOptions(agentId).catch(() => undefined);
       }
       if (event.agentId && event.type === "agent.transcript_recovered") {
-        void refreshTranscriptOptions(event.agentId);
+        void refreshTranscriptOptions(event.agentId).catch(() => undefined);
       }
     }).then((cleanup) => {
       if (disposed) {

@@ -9,6 +9,7 @@ import type {
   QmuxEvent,
   TranscriptCopyPayload,
   TranscriptHookEvent,
+  Turn,
   WorktreeStatus,
 } from "../types";
 
@@ -19,6 +20,23 @@ let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
 export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+// Validates a turn payload arriving over the backend event stream before it is
+// trusted as a Turn. The data is structured by Rust, but guarding at the boundary
+// keeps a malformed/renamed field from silently producing an invalid turn the UI
+// then renders.
+export function isTurn(value: unknown): value is Turn {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const turn = value as Record<string, unknown>;
+  return (
+    typeof turn.id === "string" &&
+    typeof turn.agentId === "string" &&
+    typeof turn.role === "string" &&
+    Array.isArray(turn.blocks)
+  );
 }
 
 export function reconcileQueuedTurnCollapse(
