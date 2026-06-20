@@ -95,6 +95,10 @@ export function killPane(paneId: string) {
   return invoke<void>("pane_kill", { paneId });
 }
 
+export function renamePane(paneId: string, title: string) {
+  return invoke<PaneInfo>("pane_rename", { paneId, title });
+}
+
 export function worktreeStatus(agentId: string) {
   return invoke<WorktreeStatus>("worktree_status", { agentId });
 }

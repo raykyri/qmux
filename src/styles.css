@@ -528,6 +528,17 @@ button:disabled {
   color: #e6b673;
 }
 
+.rename-dialog-input {
+  width: 100%;
+  min-height: var(--control-h-lg);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #f1f0e8;
+  font-size: var(--fs-input);
+}
+
 .confirm-dialog-actions {
   display: flex;
   flex-wrap: wrap;
