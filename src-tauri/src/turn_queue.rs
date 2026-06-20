@@ -48,6 +48,22 @@ pub struct RemoveQueuedAgentTurnResult {
     pub queued_turns: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReorderQueuedAgentTurnRequest {
+    pub agent_id: String,
+    pub from_index: usize,
+    pub to_index: usize,
+    pub expected_data: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReorderQueuedAgentTurnResult {
+    pub pending_turns: usize,
+    pub queued_turns: Vec<String>,
+}
+
 pub fn submit_agent_turn(
     state: &AppState,
     request: SubmitAgentTurnRequest,
@@ -131,6 +147,32 @@ pub fn remove_queued_agent_turn(
     ));
     Ok(RemoveQueuedAgentTurnResult {
         removed_turn,
+        pending_turns,
+        queued_turns,
+    })
+}
+
+pub fn reorder_queued_agent_turn(
+    state: &AppState,
+    request: ReorderQueuedAgentTurnRequest,
+) -> Result<ReorderQueuedAgentTurnResult, String> {
+    let agent = state
+        .agent(&request.agent_id)?
+        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+    let queued_turns = state.reorder_agent_turn_queue_item(
+        &agent.id,
+        request.from_index,
+        request.to_index,
+        request.expected_data.as_deref(),
+    )?;
+    let pending_turns = queued_turns.len();
+    state.emit(QmuxEvent::new(
+        "agent.queued_turn_reordered",
+        agent.pane_id.clone(),
+        Some(agent.id),
+        json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns.clone() }),
+    ));
+    Ok(ReorderQueuedAgentTurnResult {
         pending_turns,
         queued_turns,
     })

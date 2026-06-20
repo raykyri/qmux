@@ -1,6 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { type DragEvent, useEffect, useRef, useState } from "react";
 import { EllipsisVertical, X } from "lucide-react";
-import { removeQueuedAgentTurn, submitAgentTurn, submitPaneInput } from "../lib/api";
+import {
+  listAgentTurnQueue,
+  removeQueuedAgentTurn,
+  reorderQueuedAgentTurn,
+  submitAgentTurn,
+  submitPaneInput,
+} from "../lib/api";
 import type { AgentInfo, PaneInfo } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
@@ -39,6 +45,10 @@ export default function NativeInput({
   const setValue = (next: string) => onDraftChange(agent.id, next);
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
+  // dropIndex is the gap (0..length) it would land in.
+  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
@@ -185,6 +195,72 @@ export default function NativeInput({
     }
   }
 
+  function handleQueueDragStart(event: DragEvent<HTMLDivElement>, index: number) {
+    setDraggingIndex(index);
+    setDropIndex(null);
+    event.dataTransfer.effectAllowed = "move";
+    // Firefox only begins a drag once some data has been set.
+    try {
+      event.dataTransfer.setData("text/plain", String(index));
+    } catch {
+      // Some platforms reject setData here; the drag still works without it.
+    }
+  }
+
+  function handleQueueDragOver(event: DragEvent<HTMLDivElement>, index: number) {
+    if (draggingIndex === null) {
+      return;
+    }
+    // Permit the drop and mark the gap the row would land in — above or below the
+    // hovered row depending on which half the cursor is over.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const rect = event.currentTarget.getBoundingClientRect();
+    const after = event.clientY - rect.top > rect.height / 2;
+    setDropIndex(after ? index + 1 : index);
+  }
+
+  function handleQueueDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const from = draggingIndex;
+    const gap = dropIndex;
+    setDraggingIndex(null);
+    setDropIndex(null);
+    if (from === null || gap === null) {
+      return;
+    }
+    const to = from < gap ? gap - 1 : gap;
+    if (to === from) {
+      return;
+    }
+    const next = [...queuedTurns];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    // Reorder the displayed queue immediately, then persist so a reload keeps it.
+    onQueueChange(agent.id, next);
+    void persistQueueReorder(from, to, moved);
+  }
+
+  function handleQueueDragEnd() {
+    setDraggingIndex(null);
+    setDropIndex(null);
+  }
+
+  async function persistQueueReorder(from: number, to: number, turn: string) {
+    try {
+      const result = await reorderQueuedAgentTurn(agent.id, from, to, turn);
+      onQueueChange(agent.id, result.queuedTurns);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+      // The optimistic order may now be wrong; pull the backend's truth back.
+      try {
+        onQueueChange(agent.id, await listAgentTurnQueue(agent.id));
+      } catch {
+        // Best-effort resync; leave the optimistic order if this also fails.
+      }
+    }
+  }
+
   return (
     <form
       className="native-input"
@@ -198,13 +274,37 @@ export default function NativeInput({
       }}
     >
       {queuedTurns.length > 0 ? (
-        <div className="queued-turn-stack" aria-label="Queued turns">
+        <div
+          className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
+          aria-label="Queued turns"
+        >
           {queuedTurns.map((turn, index) => {
             const collapsed = collapsedQueuedTurns[index] ?? false;
+            // Suppress the drop line at the dragged row's own current position.
+            const activeDrop =
+              dropIndex === null || dropIndex === draggingIndex || dropIndex === (draggingIndex ?? -1) + 1
+                ? null
+                : dropIndex;
+            const className = [
+              "queued-turn",
+              collapsed ? "is-collapsed" : "",
+              index === draggingIndex ? "is-dragging" : "",
+              activeDrop === index ? "is-drop-before" : "",
+              activeDrop === queuedTurns.length && index === queuedTurns.length - 1
+                ? "is-drop-after"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
             return (
               <div
                 key={`${index}-${turn}`}
-                className={`queued-turn${collapsed ? " is-collapsed" : ""}`}
+                className={className}
+                draggable
+                onDragStart={(event) => handleQueueDragStart(event, index)}
+                onDragOver={(event) => handleQueueDragOver(event, index)}
+                onDrop={handleQueueDrop}
+                onDragEnd={handleQueueDragEnd}
               >
                 <button
                   type="button"

@@ -101,6 +101,11 @@ export interface RemoveQueuedAgentTurnResult {
   queuedTurns: string[];
 }
 
+export interface ReorderQueuedAgentTurnResult {
+  pendingTurns: number;
+  queuedTurns: string[];
+}
+
 export interface TranscriptHookEvent {
   type: string;
   paneId?: string | null;
