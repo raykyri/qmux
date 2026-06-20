@@ -17,7 +17,8 @@ use adapters::{SpawnAgentRequest, SpawnClaudeRequest, agent_spawn as spawn_agent
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use pty::{
-    InitialPaneSize, PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane,
+    InitialPaneSize, PaneWriteOptions, attach_pane, kill_pane, resize_pane, spawn_shell_pane,
+    write_pane,
 };
 use sleep::SleepGuard;
 use state::{AppState, PaneInfo};
@@ -147,6 +148,13 @@ fn pane_write(
             submit,
         },
     )
+}
+
+/// Signals that the webview's listener for `pane_id` is live, flushing any
+/// output the pane produced before the frontend was ready to receive it.
+#[tauri::command]
+fn pane_attach(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
+    attach_pane(&state, pane_id)
 }
 
 #[tauri::command]
@@ -351,6 +359,7 @@ fn main() {
             agent_spawn,
             spawn_claude,
             pane_write,
+            pane_attach,
             pane_resize,
             pane_kill,
             pane_rename,
