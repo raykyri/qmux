@@ -42,6 +42,7 @@ struct Model {
     turns: HashMap<String, Vec<Turn>>,
     agent_turn_queues: HashMap<String, VecDeque<String>>,
     agent_send_tracking: HashMap<String, AgentSendTracking>,
+    agent_drafts: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -174,6 +175,11 @@ impl AppState {
                         .insert(agent_id, turns.into_iter().collect());
                 }
             }
+            for (agent_id, draft) in persisted.drafts {
+                if !draft.trim().is_empty() {
+                    model.agent_drafts.insert(agent_id, draft);
+                }
+            }
         }
 
         // Keep id allocation monotonic across restarts so reused ids never alias.
@@ -212,6 +218,7 @@ impl AppState {
                     .iter()
                     .map(|(agent_id, queue)| (agent_id.clone(), queue.iter().cloned().collect()))
                     .collect(),
+                drafts: model.agent_drafts.clone(),
             }
         };
 
@@ -563,6 +570,35 @@ impl AppState {
         };
         self.persist();
         Ok(len)
+    }
+
+    /// Stores the agent's composer draft and snapshots it to disk. A trimmed-empty
+    /// draft drops the entry so recovery never restores stray whitespace and the
+    /// map does not grow an entry per cleared composer.
+    pub fn set_agent_draft(&self, agent_id: &str, draft: String) -> Result<(), String> {
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if draft.trim().is_empty() {
+                model.agent_drafts.remove(agent_id);
+            } else {
+                model.agent_drafts.insert(agent_id.to_string(), draft);
+            }
+        }
+        self.persist();
+        Ok(())
+    }
+
+    pub fn agent_draft(&self, agent_id: &str) -> Result<Option<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.agent_drafts.get(agent_id).cloned())
     }
 
     pub fn record_agent_send(
@@ -965,5 +1001,38 @@ mod tests {
         let state = AppState::new(config);
         state.enqueue_agent_turn("agent-1", "ghost".to_string()).unwrap();
         assert!(!crate::persistence::state_path(&workspace).exists());
+    }
+
+    #[test]
+    fn agent_draft_round_trips_and_clears_through_persistence() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        // First process: stash a draft for one agent.
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state
+                .set_agent_draft("agent-1", "half-written thought".to_string())
+                .unwrap();
+        }
+
+        // Second process: the draft reloads from disk and a trimmed-empty value
+        // clears it (so recovery never restores stray whitespace).
+        {
+            let state = AppState::new(config.clone());
+            state.restore_session();
+            assert_eq!(
+                state.agent_draft("agent-1").unwrap().as_deref(),
+                Some("half-written thought")
+            );
+            state.set_agent_draft("agent-1", "   ".to_string()).unwrap();
+            assert_eq!(state.agent_draft("agent-1").unwrap(), None);
+        }
+
+        // Third process: the clear was persisted too.
+        let state = AppState::new(config);
+        state.restore_session();
+        assert_eq!(state.agent_draft("agent-1").unwrap(), None);
     }
 }

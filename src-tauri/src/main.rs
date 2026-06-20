@@ -169,6 +169,23 @@ fn agent_remove_queued_turn(
 }
 
 #[tauri::command]
+fn agent_set_draft(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    draft: String,
+) -> Result<(), String> {
+    state.set_agent_draft(&agent_id, draft)
+}
+
+#[tauri::command]
+fn agent_get_draft(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<Option<String>, String> {
+    state.agent_draft(&agent_id)
+}
+
+#[tauri::command]
 fn worktree_status(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -234,6 +251,8 @@ fn main() {
             pane_kill,
             agent_submit_turn,
             agent_remove_queued_turn,
+            agent_set_draft,
+            agent_get_draft,
             worktree_status,
             worktree_remove,
         ])

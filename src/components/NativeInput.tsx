@@ -9,11 +9,15 @@ const MAX_INPUT_HEIGHT = 200;
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
+  // Controlled composer text, owned by the app and keyed by agent so it survives
+  // tab switches; onDraftChange both updates that store and schedules the disk flush.
+  draft: string;
   queuedTurns: string[];
   collapsedQueuedTurns: boolean[];
   transcriptText: string;
   transcriptCopyText: () => string;
   onQueueChange: (agentId: string, queuedTurns: string[]) => void;
+  onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onError: (message: string) => void;
 }
@@ -21,15 +25,18 @@ interface NativeInputProps {
 export default function NativeInput({
   pane,
   agent,
+  draft,
   queuedTurns,
   collapsedQueuedTurns,
   transcriptText,
   transcriptCopyText,
   onQueueChange,
+  onDraftChange,
   onQueuedTurnCollapseToggle,
   onError,
 }: NativeInputProps) {
-  const [value, setValue] = useState("");
+  const value = draft;
+  const setValue = (next: string) => onDraftChange(agent.id, next);
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
