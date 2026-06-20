@@ -107,6 +107,10 @@ export function removeWorktree(agentId: string) {
   return invoke<void>("worktree_remove", { agentId });
 }
 
+export function confirmAppExit() {
+  return invoke<void>("app_confirm_exit");
+}
+
 export function listenToEvents(onEvent: (event: QmuxEvent) => void): Promise<UnlistenFn> {
   return listen<QmuxEvent>("qmux-event", (event) => onEvent(event.payload));
 }
