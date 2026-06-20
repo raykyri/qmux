@@ -11,6 +11,7 @@ import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
 import {
+  confirmAppExit,
   getAgentDraft,
   getRuntimeConfig,
   killPane,
@@ -222,6 +223,10 @@ type CloseDialogState =
     }
   | { kind: "stop"; pane: PaneInfo; reason: string };
 
+type ExitDialogState = {
+  paneCount: number;
+};
+
 type PaneContextMenuState = {
   paneId: string;
   x: number;
@@ -322,6 +327,7 @@ export default function App() {
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  const [exitDialog, setExitDialog] = useState<ExitDialogState | null>(null);
   const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -693,6 +699,11 @@ export default function App() {
           ),
         );
       }
+      if (event.type === "app.exit_confirmation_requested") {
+        const paneCount =
+          typeof event.payload.paneCount === "number" ? event.payload.paneCount : 1;
+        setExitDialog({ paneCount });
+      }
       if (event.type.startsWith("agent.")) {
         void listAgents().then(setAgents).catch(() => undefined);
       }
@@ -906,6 +917,17 @@ export default function App() {
     await closePane(dialog.pane);
   }
 
+  async function confirmExit() {
+    setExitDialog(null);
+    setError(null);
+    flushPendingDrafts();
+    try {
+      await confirmAppExit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function addClaudePane() {
     const trimmed = prompt.trim();
     setError(null);
@@ -967,7 +989,7 @@ export default function App() {
   // Escape cancels the worktree close dialog. Capture phase so it wins over the
   // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
   useEffect(() => {
-    if (!closeDialog) {
+    if (!closeDialog && !exitDialog) {
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -975,11 +997,12 @@ export default function App() {
         event.preventDefault();
         event.stopPropagation();
         setCloseDialog(null);
+        setExitDialog(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [closeDialog]);
+  }, [closeDialog, exitDialog]);
 
   // Focus and select the name when the rename dialog opens, so the user can type
   // a new name straight away.
@@ -1489,6 +1512,41 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {exitDialog ? (
+        <div
+          className="confirm-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setExitDialog(null);
+            }
+          }}
+        >
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="exit-dialog-title"
+          >
+            <h2 id="exit-dialog-title">Quit qmux?</h2>
+            <p>
+              {exitDialog.paneCount === 1
+                ? "There is 1 open tab."
+                : `There are ${exitDialog.paneCount} open tabs.`}{" "}
+              Quitting will stop them.
+            </p>
+            <div className="confirm-dialog-actions">
+              <button type="button" autoFocus onClick={() => setExitDialog(null)}>
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={() => void confirmExit()}>
+                Quit qmux
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

@@ -216,6 +216,13 @@ fn worktree_remove(state: tauri::State<'_, AppState>, agent_id: String) -> Resul
     remove_agent_worktree(&state, &agent_id)
 }
 
+#[tauri::command]
+fn app_confirm_exit(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.mark_exit_confirmed();
+    app.exit(0);
+    Ok(())
+}
+
 fn main() {
     match cli::run_cli_if_requested() {
         Ok(true) => return,
@@ -232,7 +239,20 @@ fn main() {
     });
     let state = AppState::new(config);
 
+    let exit_state = state.clone();
+
     tauri::Builder::default()
+        .on_window_event({
+            let state = state.clone();
+            move |_window, event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if state.should_confirm_exit() {
+                        api.prevent_close();
+                        state.request_exit_confirmation();
+                    }
+                }
+            }
+        })
         .setup({
             let state = state.clone();
             move |app| {
@@ -290,7 +310,16 @@ fn main() {
             agent_get_draft,
             worktree_status,
             worktree_remove,
+            app_confirm_exit,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running qmux");
+        .build(tauri::generate_context!())
+        .expect("error while building qmux")
+        .run(move |_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if code != Some(tauri::RESTART_EXIT_CODE) && exit_state.should_confirm_exit() {
+                    api.prevent_exit();
+                    exit_state.request_exit_confirmation();
+                }
+            }
+        });
 }

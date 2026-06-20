@@ -5,6 +5,7 @@ use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -32,6 +33,7 @@ struct AppStateInner {
     // (notably in tests) never touches disk. Once enabled, every model mutation
     // snapshots to workspace_root/.qmux/state.json.
     persist_enabled: AtomicBool,
+    exit_confirmed: AtomicBool,
 }
 
 #[derive(Default)]
@@ -144,6 +146,7 @@ impl AppState {
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
+                exit_confirmed: AtomicBool::new(false),
             }),
         }
     }
@@ -302,6 +305,38 @@ impl AppState {
                 let _ = app_handle.emit("qmux-event", event);
             }
         }
+    }
+
+    pub fn mark_exit_confirmed(&self) {
+        self.inner.exit_confirmed.store(true, Ordering::Relaxed);
+    }
+
+    pub fn should_confirm_exit(&self) -> bool {
+        if self.inner.exit_confirmed.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.open_pane_count() > 0
+    }
+
+    pub fn request_exit_confirmation(&self) {
+        let pane_count = self.open_pane_count();
+        if pane_count == 0 {
+            return;
+        }
+        self.emit(QmuxEvent::new(
+            "app.exit_confirmation_requested",
+            None,
+            None,
+            json!({ "paneCount": pane_count }),
+        ));
+    }
+
+    fn open_pane_count(&self) -> usize {
+        self.inner
+            .model
+            .lock()
+            .map(|model| model.panes.len())
+            .unwrap_or_default()
     }
 
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>, String> {
