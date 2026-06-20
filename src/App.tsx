@@ -840,6 +840,24 @@ export default function App() {
       }
 
       const key = event.key.toLowerCase();
+
+      // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser.
+      // Claimed here in the capture phase (before the terminal/editable bail) so
+      // it works regardless of focus; Tab with Ctrl is never a text-editing key.
+      if (key === "tab" && event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (panes.length > 0) {
+          const direction = event.shiftKey ? -1 : 1;
+          setActivePaneId((current) => {
+            const index = panes.findIndex((pane) => pane.id === current);
+            const base = index === -1 ? 0 : index;
+            return panes[(base + direction + panes.length) % panes.length].id;
+          });
+        }
+        return;
+      }
+
       if (key !== "t" && key !== "n" && key !== "k" && key !== "w") {
         return;
       }
