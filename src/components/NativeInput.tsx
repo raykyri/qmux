@@ -218,6 +218,7 @@ export default function NativeInput({
                 <div className="queued-turn-actions">
                   <button
                     type="button"
+                    className="queued-turn-remove"
                     aria-label="Remove queued turn"
                     disabled={submitting}
                     onClick={() => void removeQueuedTurn(index, turn)}
