@@ -243,9 +243,6 @@ fn send_agent_turn(
         .clone()
         .ok_or_else(|| format!("agent {} does not have an attached pane", agent.id))?;
     let text = data.clone();
-    let mut updated = agent.clone();
-    updated.status = AgentStatus::Running;
-    state.update_agent(updated)?;
     write_pane(
         state,
         PaneWriteOptions {
@@ -255,6 +252,11 @@ fn send_agent_turn(
             submit: true,
         },
     )?;
+    let mut updated = state
+        .agent(&agent.id)?
+        .ok_or_else(|| format!("agent {} was not found", agent.id))?;
+    updated.status = AgentStatus::Running;
+    state.update_agent(updated)?;
     let _ = state.record_agent_send(&agent.id, text, source);
     Ok(())
 }
@@ -263,6 +265,59 @@ fn send_agent_turn(
 mod tests {
     use super::*;
     use crate::adapters::{ComposerPolicy, PermissionAction};
+    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_workspace() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("qmux-turn-queue-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: temp_workspace(),
+            socket_path: PathBuf::from("/tmp/qmux-test.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+        })
+    }
+
+    fn sample_agent(status: AgentStatus) -> AgentInfo {
+        AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/work/agent-1".to_string(),
+            branch: None,
+            pane_id: Some("missing-pane".to_string()),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            created_at: 1,
+        }
+    }
 
     fn claude_policy() -> ComposerPolicy {
         ComposerPolicy {
@@ -314,5 +369,48 @@ mod tests {
         assert!(policy.can_steer(AgentStatus::Starting));
         assert!(policy.can_steer(AgentStatus::Running));
         assert!(!policy.can_steer(AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn failed_direct_send_preserves_agent_status_and_tracking() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingInput))
+            .unwrap();
+
+        let err = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "hello".to_string(),
+                mode: Some(SubmitAgentTurnMode::Send),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.contains("pane missing-pane was not found"));
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+        assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_queue_drain_reprepends_turn_without_running_status() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued turn".to_string())
+            .unwrap();
+
+        let err = drain_agent_turn_queue(&state, "agent-1").unwrap_err();
+
+        assert!(err.contains("pane missing-pane was not found"));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued turn".to_string()]
+        );
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(matches!(agent.status, AgentStatus::Done));
+        assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
     }
 }
