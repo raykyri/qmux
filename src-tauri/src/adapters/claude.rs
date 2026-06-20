@@ -35,6 +35,15 @@ const CLAUDE_NOTIFICATION_MATCHERS: &[(&str, &str)] = &[
     ("elicitation_dialog", "Notification.elicitation_dialog"),
 ];
 
+const CLAUDE_PERMISSION_MODES: &[&str] = &[
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "default",
+    "dontAsk",
+    "plan",
+];
+
 #[derive(Clone, Debug)]
 pub struct ClaudeAdapter {
     binary: String,
@@ -537,10 +546,22 @@ impl ClaudeLaunchOptions {
         }
         let mut options: ClaudeLaunchOptions = serde_json::from_value(value)
             .map_err(|err| format!("invalid Claude adapter options: {err}"))?;
-        options.permission_mode = options
-            .permission_mode
-            .map(|permission_mode| permission_mode.trim().to_string())
-            .filter(|permission_mode| !permission_mode.is_empty());
+        options.permission_mode = match options.permission_mode.map(|mode| mode.trim().to_string())
+        {
+            Some(permission_mode) if permission_mode.is_empty() => None,
+            Some(permission_mode)
+                if CLAUDE_PERMISSION_MODES.contains(&permission_mode.as_str()) =>
+            {
+                Some(permission_mode)
+            }
+            Some(permission_mode) => {
+                return Err(format!(
+                    "invalid Claude adapter option permissionMode='{permission_mode}'; expected one of {}",
+                    CLAUDE_PERMISSION_MODES.join(", ")
+                ));
+            }
+            None => None,
+        };
         Ok(options)
     }
 }
@@ -1229,5 +1250,13 @@ mod tests {
         let err = ClaudeLaunchOptions::from_value(json!({ "bogus": true })).unwrap_err();
 
         assert!(err.contains("invalid Claude adapter options"));
+    }
+
+    #[test]
+    fn launch_options_validate_permission_mode() {
+        let err =
+            ClaudeLaunchOptions::from_value(json!({ "permissionMode": "always" })).unwrap_err();
+
+        assert!(err.contains("invalid Claude adapter option permissionMode"));
     }
 }
