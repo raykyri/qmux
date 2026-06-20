@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "dev:tauri": "tauri dev",
-    "build": "tauri build",
+    "build": "scripts/build.sh",
     "build:web": "tsc && vite build",
     "tauri": "tauri"
   },
