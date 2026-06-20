@@ -58,8 +58,34 @@ interface ThinkingItem {
 
 type ActivityItem = ToolEntry | ThinkingItem;
 
+// Only let links through that the webview can safely open. Transcript markdown is
+// untrusted (an agent emits arbitrary text, and the picker can repoint to arbitrary
+// session files), and a javascript:/file:/tauri: URL clicked inside the Tauri
+// webview reaches a JS context with access to native IPC. Anything that isn't
+// http/https/mailto is rendered as plain, non-navigable text.
+function safeHref(href: unknown): string | undefined {
+  if (typeof href !== "string") {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(href, "https://qmux.invalid/");
+  } catch {
+    return undefined;
+  }
+  return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:"
+    ? href
+    : undefined;
+}
+
 const markdownComponents: Components = {
-  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+  a: ({ node: _node, href, ...props }) => {
+    const safe = safeHref(href);
+    if (!safe) {
+      return <span {...props} />;
+    }
+    return <a {...props} href={safe} target="_blank" rel="noreferrer" />;
+  },
   table: ({ node: _node, ...props }) => (
     <div className="turn-markdown-table-wrap">
       <table {...props} />

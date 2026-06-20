@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -11,8 +11,27 @@ import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
+import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
+import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
-  isTerminalFontLoaded,
+  agentStatusLabel,
+  agentStatusTone,
+  clamp,
+  formatTranscriptCopyJson,
+  isEditableTarget,
+  isTerminalTarget,
+  measureTerminalCellSize,
+  reconcileQueuedTurnCollapse,
+  statusLabel,
+} from "./lib/appHelpers";
+import { useQmuxEvents } from "./hooks/useQmuxEvents";
+import type {
+  CloseDialogState,
+  ExitDialogState,
+  PaneContextMenuState,
+  PaneTabPointerDrag,
+} from "./appTypes";
+import {
   TERMINAL_FONT_SIZE,
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
@@ -28,6 +47,7 @@ import {
 } from "./lib/settings";
 import {
   acknowledgeAgent,
+  attachPane,
   confirmAppExit,
   getAgentDraft,
   getRuntimeConfig,
@@ -36,8 +56,8 @@ import {
   listAgentTranscripts,
   listAgentTurnQueue,
   listTurns,
-  listenToEvents,
   listPanes,
+  moveQueuedAgentTurn,
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
@@ -47,16 +67,13 @@ import {
   setPreventSleep,
   spawnAgent,
   spawnShell,
-  submitAgentTurn,
   worktreeStatus,
 } from "./lib/api";
 import type {
   AgentInfo,
   InitialPaneSize,
   PaneInfo,
-  QmuxEvent,
   RuntimeConfig,
-  TranscriptCopyPayload,
   TranscriptHookEvent,
   TranscriptOption,
   Turn,
@@ -85,261 +102,21 @@ const MAX_INITIAL_COLS = 500;
 const MAX_INITIAL_ROWS = 200;
 const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
-const TRANSCRIPT_COPY_VERSION = 1;
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
-
-let measuredTerminalCellSize: { width: number; height: number } | null = null;
-const DEFAULT_FONT_STACK = FONT_OPTIONS[0].stack;
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function reconcileQueuedTurnCollapse(
-  previousTurns: string[],
-  nextTurns: string[],
-  previousCollapsed: boolean[],
-) {
-  const usedPreviousIndexes = new Set<number>();
-  return nextTurns.map((nextTurn) => {
-    const previousIndex = previousTurns.findIndex(
-      (previousTurn, index) => previousTurn === nextTurn && !usedPreviousIndexes.has(index),
-    );
-    if (previousIndex === -1) {
-      return false;
-    }
-    usedPreviousIndexes.add(previousIndex);
-    return previousCollapsed[previousIndex] ?? false;
-  });
-}
-
-function isEditableTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  if (target.isContentEditable) {
-    return true;
-  }
-  const tag = target.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-}
-
-function isTerminalTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && target.closest(".terminal-mount") !== null;
-}
-
-function measureTerminalCellSize(fontFamily: string, fontSize: number) {
-  // Only the default font + size is cached (the common case); other choices
-  // measure fresh so a pane created with them gets a close initial grid pre-fit.
-  const isDefault = fontFamily === DEFAULT_FONT_STACK && fontSize === TERMINAL_FONT_SIZE;
-  if (isDefault && measuredTerminalCellSize && isTerminalFontLoaded()) {
-    return measuredTerminalCellSize;
-  }
-
-  const probe = document.createElement("span");
-  probe.textContent = "mmmmmmmmmm";
-  probe.style.position = "absolute";
-  probe.style.visibility = "hidden";
-  probe.style.whiteSpace = "pre";
-  probe.style.fontFamily = fontFamily;
-  probe.style.fontSize = `${fontSize}px`;
-  document.body.appendChild(probe);
-
-  const rect = probe.getBoundingClientRect();
-  probe.remove();
-
-  const cellSize = {
-    width: rect.width > 0 ? rect.width / 10 : 8,
-    height: rect.height > 0 ? rect.height : 16,
-  };
-  if (isDefault && isTerminalFontLoaded()) {
-    measuredTerminalCellSize = cellSize;
-  }
-  return cellSize;
-}
-
-function statusLabel(status: PaneInfo["status"]) {
-  switch (status) {
-    case "running":
-      return "Running";
-    case "starting":
-      return "Starting";
-    case "exited":
-      return "Exited";
-    case "killed":
-      return "Killed";
-    case "failed":
-      return "Failed";
-  }
-}
-
-function agentStatusLabel(status: AgentInfo["status"], reviewStatus?: WorktreeStatus | null) {
-  switch (status) {
-    case "starting":
-      return "Starting";
-    case "running":
-      return "Running";
-    case "awaitingInput":
-      return "Awaiting input";
-    case "awaitingPermission":
-      return "Approval needed";
-    case "done":
-      return reviewStatus?.hasChanges ? `Review (${reviewStatus.changedFiles})` : "Done";
-    case "idle":
-      return null;
-    case "failed":
-      return "Failed";
-  }
-}
-
-// Maps an agent status onto the status-dot tones used by the pane detail popover.
-function agentStatusTone(status: AgentInfo["status"]) {
-  switch (status) {
-    case "running":
-      return "active";
-    case "starting":
-      return "pending";
-    case "awaitingInput":
-    case "awaitingPermission":
-      return "attention";
-    case "done":
-      return "done";
-    case "failed":
-      return "error";
-    case "idle":
-    default:
-      return "idle";
-  }
-}
-
-function transcriptHookEvent(event: QmuxEvent): TranscriptHookEvent | null {
-  const hookEvent = event.payload.hookEvent;
-  if (!event.agentId || typeof hookEvent !== "string") {
-    return null;
-  }
-
-  return {
-    type: event.type,
-    paneId: event.paneId ?? null,
-    agentId: event.agentId,
-    hookEvent,
-    payload: event.payload.payload ?? null,
-    timestamp: event.timestamp,
-  };
-}
-
-function formatTranscriptCopyJson(
-  input: Omit<TranscriptCopyPayload, "version" | "exportedAt">,
-) {
-  const payload: TranscriptCopyPayload = {
-    version: TRANSCRIPT_COPY_VERSION,
-    exportedAt: new Date().toISOString(),
-    ...input,
-  };
-  return JSON.stringify(payload, null, 2);
-}
-
-// The close-confirmation dialog covers three cases: a worktree agent (offer to
-// keep or delete the worktree), a live agent without a worktree (just confirm the
-// stop), and the explicit tab close button (always confirm). These render in-app
-// because window.confirm is a no-op in the Tauri webview.
-type CloseDialogState =
-  | {
-      kind: "worktree";
-      pane: PaneInfo;
-      agentId: string;
-      worktreeDir: string;
-      hasChanges: boolean;
-      busy: boolean;
-    }
-  | { kind: "stop"; pane: PaneInfo; reason: string }
-  | { kind: "pane"; pane: PaneInfo };
-
-type ExitDialogState = {
-  paneCount: number;
-};
-
-type PaneContextMenuState = {
-  paneId: string;
-  x: number;
-  y: number;
-};
-
-type PaneTabPointerDrag = {
-  pointerId: number;
-  paneId: string;
-  startY: number;
-  active: boolean;
-};
-
-type OrphanedQueueGroup = {
-  agent: AgentInfo;
-  queuedTurns: string[];
-};
-
-interface RecoveredQueuePanelProps {
-  queues: OrphanedQueueGroup[];
-  hasTargetAgent: boolean;
-  agentLabel: string;
-  onMoveTurn: (agentId: string, index: number, turn: string) => void;
-  onDiscardTurn: (agentId: string, index: number, turn: string) => void;
-}
-
-function RecoveredQueuePanel({
-  queues,
-  hasTargetAgent,
-  agentLabel,
-  onMoveTurn,
-  onDiscardTurn,
-}: RecoveredQueuePanelProps) {
-  const totalTurns = queues.reduce((total, queue) => total + queue.queuedTurns.length, 0);
-
-  return (
-    <section className="recovered-queue-panel" aria-label="Recovered queued turns">
-      <header>
-        <h2>Recovered queued turns</h2>
-        <span>{totalTurns}</span>
-      </header>
-      <div className="recovered-queue-list">
-        {queues.map(({ agent, queuedTurns }) => (
-          <div key={agent.id} className="recovered-queue-group">
-            {queuedTurns.map((turn, index) => (
-              <div key={`${agent.id}-${index}-${turn}`} className="recovered-queue-item">
-                <p>{turn}</p>
-                <div className="recovered-queue-actions">
-                  <button
-                    type="button"
-                    disabled={!hasTargetAgent}
-                    title={
-                      hasTargetAgent
-                        ? "Queue to the current agent"
-                        : `Launch ${agentLabel} in this tab before queueing`
-                    }
-                    onClick={() => onMoveTurn(agent.id, index, turn)}
-                  >
-                    Queue
-                  </button>
-                  <button type="button" onClick={() => onDiscardTurn(agent.id, index, turn)}>
-                    Discard
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
 
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
+  // Becomes true once the single backend event subscription is live. Until then,
+  // panes that want to attach are parked here so their pre-attach backlog is only
+  // released after the listener can actually deliver it.
+  const eventsReadyRef = useRef(false);
+  const pendingAttachRef = useRef<Set<string>>(new Set());
   const agentsRef = useRef<AgentInfo[]>([]);
   const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
   // Composer drafts live here keyed by agent so they survive tab switches; the
@@ -485,7 +262,7 @@ export default function App() {
     () => (activeAgent ? draftsByAgent[activeAgent.id] ?? "" : ""),
     [activeAgent?.id, draftsByAgent],
   );
-  const activeOrphanedQueues = useMemo(
+  const activeOrphanedQueues = useMemo<OrphanedQueueGroup[]>(
     () =>
       activePane
         ? agents
@@ -691,10 +468,11 @@ export default function App() {
 
     setError(null);
     try {
-      const submitResult = await submitAgentTurn(targetAgent.id, turn);
-      setAgentQueuedTurns(targetAgent.id, submitResult.queuedTurns);
-      const removeResult = await removeQueuedAgentTurn(agentId, index, turn);
-      setAgentQueuedTurns(agentId, removeResult.queuedTurns);
+      // One atomic backend call removes from the source and hands the turn to the
+      // target (rolling back on failure), so the turn can't end up in both queues.
+      const result = await moveQueuedAgentTurn(agentId, targetAgent.id, index, turn);
+      setAgentQueuedTurns(agentId, result.sourceQueuedTurns);
+      setAgentQueuedTurns(targetAgent.id, result.targetQueuedTurns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -925,114 +703,47 @@ export default function App() {
     };
   }, [agents, worktreeStatusByAgent]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void listenToEvents((event) => {
-      if (disposed) {
-        return;
-      }
-      const hookEvent = transcriptHookEvent(event);
-      if (hookEvent) {
-        setHookEventsByAgent((current) => ({
-          ...current,
-          [hookEvent.agentId]: [...(current[hookEvent.agentId] ?? []), hookEvent],
-        }));
-      }
-      if (event.type === "pty.exit" && event.paneId) {
-        const exitedPaneId = event.paneId;
-        setPanes((current) => {
-          const nextPanes = current.filter((pane) => pane.id !== exitedPaneId);
-          setActivePaneId((currentActivePaneId) => {
-            if (currentActivePaneId !== exitedPaneId) {
-              return currentActivePaneId;
-            }
-            return nextPanes[0]?.id ?? null;
-          });
-          return nextPanes;
-        });
-        setPaneContextMenu((current) => (current?.paneId === exitedPaneId ? null : current));
-      }
-      if (event.type === "app.exit_confirmation_requested") {
-        const paneCount =
-          typeof event.payload.paneCount === "number" ? event.payload.paneCount : 1;
-        setExitDialog({ paneCount });
-      }
-      if (event.type.startsWith("agent.")) {
-        void listAgents().then(setAgents).catch(() => undefined);
-      }
-      if (
-        event.agentId &&
-        (event.type === "agent.turn_queued" ||
-          event.type === "agent.queued_turn_sent" ||
-          event.type === "agent.queued_turn_removed" ||
-          event.type === "agent.queued_turn_reordered" ||
-          event.type === "agent.queue_error")
-      ) {
-        const queuedTurns = Array.isArray(event.payload.queuedTurns)
-          ? event.payload.queuedTurns.filter((turn): turn is string => typeof turn === "string")
-          : null;
-        if (queuedTurns) {
-          setAgentQueuedTurns(event.agentId, queuedTurns);
-        } else {
-          void refreshAgentTurnQueue(event.agentId).catch(() => undefined);
-        }
-      }
-      if (event.type === "turn.appended") {
-        const turn = event.payload.turn as Turn | undefined;
-        if (turn) {
-          setTurns((current) =>
-            current.some((existing) => existing.id === turn.id) ? current : [...current, turn],
-          );
-        }
-      }
-      if (event.type === "turn.updated" && event.payload.reset) {
-        const agentId = event.agentId;
-        const replacementTurns = Array.isArray(event.payload.turns)
-          ? (event.payload.turns as Turn[])
-          : [];
-        setTurns((current) => [
-          ...current.filter((turn) => turn.agentId !== agentId),
-          ...replacementTurns,
-        ]);
-      }
-      if (
-        event.agentId &&
-        (event.type === "transcript.notice" || event.type === "transcript.error")
-      ) {
-        const agentId = event.agentId;
-        // transcript.error carries `error`; transcript.notice carries `message`
-        // (null/absent means the tail recovered, so the notice is cleared).
-        const message =
-          event.type === "transcript.error"
-            ? typeof event.payload.error === "string"
-              ? event.payload.error
-              : "Failed to load transcript"
-            : typeof event.payload.message === "string"
-              ? event.payload.message
-              : null;
-        setTranscriptNoticeByAgent((current) => ({ ...current, [agentId]: message }));
-        // A notice usually follows a recovery/rotation; refresh the picker so the
-        // active session and any new candidates are reflected.
-        void refreshTranscriptOptions(agentId);
-      }
-      if (event.agentId && event.type === "agent.transcript_recovered") {
-        void refreshTranscriptOptions(event.agentId);
-      }
-    }).then((cleanup) => {
-      if (disposed) {
-        cleanup();
-      } else {
-        unlisten = cleanup;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
+  // Routes a decoded PTY chunk from the app's single event subscription to the
+  // pane that owns it. Stable so TerminalPane's attach effect doesn't re-run.
+  const dispatchPtyData = useCallback((paneId: string, data: Uint8Array) => {
+    terminalPaneRefs.current.get(paneId)?.write(data);
   }, []);
+
+  // Releases a pane's pre-attach output backlog. While the backend subscription is
+  // still being set up, the request is parked and flushed by handleEventsReady, so
+  // no cold-start output is delivered before a listener exists to receive it.
+  const requestPaneAttach = useCallback((paneId: string) => {
+    if (eventsReadyRef.current) {
+      void attachPane(paneId).catch(() => undefined);
+    } else {
+      pendingAttachRef.current.add(paneId);
+    }
+  }, []);
+
+  const handleEventsReady = useCallback(() => {
+    eventsReadyRef.current = true;
+    const pending = pendingAttachRef.current;
+    pendingAttachRef.current = new Set();
+    for (const paneId of pending) {
+      void attachPane(paneId).catch(() => undefined);
+    }
+  }, []);
+
+  useQmuxEvents({
+    setHookEventsByAgent,
+    setPanes,
+    setActivePaneId,
+    setPaneContextMenu,
+    setExitDialog,
+    setAgents,
+    setTurns,
+    setTranscriptNoticeByAgent,
+    setAgentQueuedTurns,
+    refreshAgentTurnQueue,
+    refreshTranscriptOptions,
+    dispatchPtyData,
+    onEventsReady: handleEventsReady,
+  });
 
   async function addShellPane() {
     setError(null);
@@ -2478,6 +2189,7 @@ export default function App() {
               fontFamily={terminalFontFamily}
               letterSpacing={terminalLetterSpacing}
               inputBlocked={settingsOpen}
+              requestAttach={requestPaneAttach}
             />
           ))}
         </div>

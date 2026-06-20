@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
-    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path,
+    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
@@ -204,7 +204,7 @@ impl ClaudeAdapter {
             args.push(prompt.to_string());
         }
 
-        let mut envs = qmux_pane_envs(state, &pane_id);
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
 
         let spawn_result = spawn_pty(
@@ -281,7 +281,7 @@ impl ClaudeAdapter {
             None => false,
         };
 
-        let mut envs = qmux_pane_envs(state, &pane.id);
+        let mut envs = qmux_pane_envs(state, &pane.id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
 
         let info = spawn_pty(
@@ -377,7 +377,7 @@ impl ClaudeAdapter {
             state.update_agent(agent.clone())?;
         }
 
-        let mut envs = qmux_pane_envs(state, &request.pane_id);
+        let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         let agent_id = agent.id.clone();
         let worktree_dir = agent.worktree_dir.clone();
@@ -549,6 +549,16 @@ impl ClaudeAdapter {
                 );
             }
         }
+        // Carry the updated agent so the frontend can apply this status change
+        // surgically instead of refetching the entire agent list on every hook
+        // event (which also avoids out-of-order refetches clobbering newer state).
+        if let (Value::Object(payload), Some(agent)) = (&mut event_payload, agent.as_ref()) {
+            payload.insert(
+                "agent".to_string(),
+                serde_json::to_value(agent)
+                    .map_err(|err| format!("failed to encode agent: {err}"))?,
+            );
+        }
 
         Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
             event_type,
@@ -711,7 +721,7 @@ pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": format!("{} notify {}", shell_quote(&qmux_cli), event)
+                            "command": format!("{} notify {}", shell_quote_path(&qmux_cli), event)
                         }
                     ]
                 }
@@ -728,7 +738,7 @@ pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": format!("{} notify {}", shell_quote(&qmux_cli), event)
+                            "command": format!("{} notify {}", shell_quote_path(&qmux_cli), event)
                         }
                     ]
                 }))
@@ -914,11 +924,6 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
-}
-
-fn shell_quote(path: &Path) -> String {
-    let raw = path.display().to_string();
-    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

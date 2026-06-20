@@ -8,8 +8,9 @@ import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { attachPane, listenToEvents, resizePane, writePane } from "../lib/api";
-import { confirmLargePaste } from "../lib/paste";
+import { pastePaneInput, resizePane, writePane } from "../lib/api";
+import { largePastePrompt } from "../lib/paste";
+import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 
@@ -23,10 +24,17 @@ interface TerminalPaneProps {
   /** When true (e.g. the settings panel is open), keystrokes and pastes are
    *  dropped instead of being forwarded to the PTY. */
   inputBlocked: boolean;
+  /** Releases this pane's pre-attach output backlog once the app's single event
+   *  subscription is live. The app calls attachPane on our behalf so we no longer
+   *  each register a listener that filters the whole pty.data stream. */
+  requestAttach: (paneId: string) => void;
 }
 
 export interface TerminalPaneHandle {
   focus: () => void;
+  // Writes a decoded PTY chunk into this pane, buffering until xterm has opened so
+  // cold-start output is never dropped. Called by the app's central event dispatch.
+  write: (data: string | Uint8Array) => void;
 }
 
 // On macOS the find shortcut is Cmd-F; on other platforms it is Ctrl-F. (Ctrl-F
@@ -71,27 +79,8 @@ const TERMINAL_THEME: ITheme = {
   brightWhite: "#f4f4ef",
 };
 
-function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
-  if (typeof data === "string") {
-    return data;
-  }
-
-  if (data instanceof Uint8Array) {
-    return data;
-  }
-
-  if (
-    Array.isArray(data) &&
-    data.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
-  ) {
-    return Uint8Array.from(data);
-  }
-
-  return null;
-}
-
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active, fontSize, fontFamily, letterSpacing, inputBlocked },
+  { pane, active, fontSize, fontFamily, letterSpacing, inputBlocked, requestAttach },
   ref,
 ) {
   // The setup effect runs once (keyed on pane.id) and closes over its render's
@@ -107,6 +96,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // see the current blocked state without being torn down and rebuilt.
   const inputBlockedRef = useRef(inputBlocked);
   inputBlockedRef.current = inputBlocked;
+  // In-app confirm (window.confirm is a no-op in the webview), reached from the
+  // paste handler inside the once-per-pane setup effect via a ref so it stays current.
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const confirmRef = useRef(confirm);
+  confirmRef.current = confirm;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // xterm opens into this inner mount, which fills the host's content box with no
   // padding of its own. The visual breathing room lives as padding on the host;
@@ -147,6 +141,16 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     focus() {
       terminalRef.current?.focus();
       stabilizeTerminalRef.current?.();
+    },
+    write(data: string | Uint8Array) {
+      const terminal = terminalRef.current;
+      if (terminal && terminalReadyRef.current) {
+        terminal.write(data);
+      } else {
+        // Output can arrive before the bundled font loads and xterm opens; buffer
+        // it and flush once the terminal is ready (see the setup effect).
+        pendingDataRef.current.push(data);
+      }
     },
   }));
 
@@ -455,10 +459,22 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           return;
         }
         const text = event.clipboardData?.getData("text") ?? "";
-        if (text && !confirmLargePaste(text)) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
+        const prompt = text ? largePastePrompt(text) : null;
+        if (!prompt) {
+          // Small/empty paste: let xterm handle it normally.
+          return;
         }
+        // Large paste: stop xterm from pasting now (the in-app confirm is async),
+        // then re-inject to the PTY only if the user accepts. Match xterm's own
+        // bracketed-paste behavior so the program sees the same framing.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const bracketed = terminal.modes.bracketedPasteMode;
+        void confirmRef.current({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
+          if (ok) {
+            void pastePaneInput(pane.id, text, bracketed).catch(() => undefined);
+          }
+        });
       };
       hostEl.addEventListener("paste", handlePaste, true);
 
@@ -497,43 +513,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
   }, [pane.id]);
 
+  // Our handle (with write) is registered during render commit, before this effect
+  // runs, so by the time we ask the app to attach, the central dispatch can already
+  // route this pane's output here. requestAttach defers the actual attachPane until
+  // the single backend subscription is live, so cold-start output is never lost:
+  // anything produced before then stays buffered in the backend's pre-attach backlog.
   useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void listenToEvents((event) => {
-      if (disposed || event.type !== "pty.data" || event.paneId !== pane.id) {
-        return;
-      }
-
-      const data = terminalDataFromPayload(event.payload.data);
-      if (!data) {
-        return;
-      }
-      const terminal = terminalRef.current;
-      if (terminal && terminalReadyRef.current) {
-        terminal.write(data);
-      } else {
-        pendingDataRef.current.push(data);
-      }
-    }).then((cleanup) => {
-      if (disposed) {
-        cleanup();
-      } else {
-        unlisten = cleanup;
-        // The listener is live now, so it is safe to release the backend's
-        // pre-attach buffer: any output produced before this point is flushed
-        // through the listener (into pendingDataRef until the terminal opens),
-        // and everything after streams live.
-        void attachPane(pane.id).catch(() => undefined);
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [pane.id]);
+    requestAttach(pane.id);
+  }, [pane.id, requestAttach]);
 
   useEffect(() => {
     if (active) {
@@ -588,6 +575,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       <div ref={hostRef} className="terminal-host">
         <div ref={mountRef} className="terminal-mount" />
       </div>
+      {confirmDialog}
       {searchOpen ? (
         <div className="terminal-search" role="search">
           <input

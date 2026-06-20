@@ -7,7 +7,8 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -64,7 +65,7 @@ pub fn spawn_shell_pane(
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane_id, cwd, initial_size, false),
+        shell_spawn_spec(state, pane_id, cwd, initial_size, false)?,
     )
 }
 
@@ -81,7 +82,7 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     });
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane.id.clone(), cwd, initial_size, true),
+        shell_spawn_spec(state, pane.id.clone(), cwd, initial_size, true)?,
     )
 }
 
@@ -93,9 +94,9 @@ fn shell_spawn_spec(
     cwd: PathBuf,
     initial_size: Option<InitialPaneSize>,
     recovered: bool,
-) -> PtySpawnSpec {
+) -> Result<PtySpawnSpec, String> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut envs = shell_pane_envs(state, &pane_id);
+    let mut envs = shell_pane_envs(state, &pane_id)?;
     let mut args = Vec::new();
 
     let shell_commands = adapter_registry(state.config()).shell_commands();
@@ -117,7 +118,7 @@ fn shell_spawn_spec(
         }
     }
 
-    PtySpawnSpec {
+    Ok(PtySpawnSpec {
         pane_id: Some(pane_id),
         agent_id: None,
         kind: PaneKind::Shell,
@@ -128,7 +129,7 @@ fn shell_spawn_spec(
         envs,
         initial_size,
         recovered,
-    }
+    })
 }
 
 /// Returns the path only when it still resolves to a directory, so recovery can
@@ -138,25 +139,25 @@ pub fn recoverable_dir(path: &str) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
-    vec![
+pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, String)>, String> {
+    Ok(vec![
         ("QMUX_PANE_ID".to_string(), pane_id.to_string()),
         (
             "QMUX_SOCK".to_string(),
             state.config().socket_path.display().to_string(),
         ),
-        ("QMUX_TOKEN".to_string(), state.pane_token(pane_id)),
+        ("QMUX_TOKEN".to_string(), state.pane_token(pane_id)?),
         (
             "QMUX_WORKSPACE_ROOT".to_string(),
             state.config().workspace_root.display().to_string(),
         ),
-    ]
+    ])
 }
 
-fn shell_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
-    let mut envs = qmux_pane_envs(state, pane_id);
+fn shell_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, String)>, String> {
+    let mut envs = qmux_pane_envs(state, pane_id)?;
     envs.push(("QMUX_SHELL_INTEGRATION".to_string(), "1".to_string()));
-    envs
+    Ok(envs)
 }
 
 struct ShellFunctionInjection {
@@ -171,6 +172,67 @@ enum ShellKind {
     Unsupported,
 }
 
+/// Per-pane scratch directory holding generated shell rc files. The location is
+/// derived purely from the pane id so teardown can find it without consulting
+/// pane state.
+fn shell_integration_dir(pane_id: &str) -> PathBuf {
+    env::temp_dir().join("qmux-shell-init").join(pane_id)
+}
+
+/// Creates the per-pane shell integration directory restricted to the owning
+/// user. The shared parent is locked to `0o700` first so other local accounts
+/// cannot pre-create (or symlink) a pane's subdirectory and redirect the rc
+/// files we are about to write; the per-pane dir is then created `0o700` too so
+/// its generated scripts are never world-readable in a shared /tmp.
+fn create_shell_integration_dir(pane_id: &str) -> Result<PathBuf, String> {
+    let parent = env::temp_dir().join("qmux-shell-init");
+    fs::create_dir_all(&parent).map_err(|err| {
+        format!(
+            "failed to create shell integration root {}: {err}",
+            parent.display()
+        )
+    })?;
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).map_err(|err| {
+        format!(
+            "failed to restrict shell integration root {}: {err}",
+            parent.display()
+        )
+    })?;
+
+    let root = parent.join(pane_id);
+    fs::create_dir_all(&root).map_err(|err| {
+        format!(
+            "failed to create shell integration dir {}: {err}",
+            root.display()
+        )
+    })?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|err| {
+        format!(
+            "failed to restrict shell integration dir {}: {err}",
+            root.display()
+        )
+    })?;
+    Ok(root)
+}
+
+/// Removes a pane's shell integration scratch directory on teardown. Best
+/// effort: a missing directory (non-shell pane, or one that never spawned a
+/// supported shell) is expected and ignored.
+fn remove_shell_integration_dir(pane_id: &str) {
+    let root = shell_integration_dir(pane_id);
+    match fs::remove_dir_all(&root) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            // A stale scratch dir is non-fatal and not worth surfacing to the UI.
+            eprintln!(
+                "qmux: failed to clean up shell integration dir {}: {err}",
+                root.display()
+            );
+        }
+    }
+}
+
 fn agent_shell_function_injection(
     shell: &str,
     pane_id: &str,
@@ -183,13 +245,7 @@ fn agent_shell_function_injection(
 
     let qmux_cli = env::current_exe()
         .map_err(|err| format!("failed to resolve qmux executable for shell integration: {err}"))?;
-    let root = env::temp_dir().join("qmux-shell-init").join(pane_id);
-    fs::create_dir_all(&root).map_err(|err| {
-        format!(
-            "failed to create shell integration dir {}: {err}",
-            root.display()
-        )
-    })?;
+    let root = create_shell_integration_dir(pane_id)?;
 
     match shell_kind {
         ShellKind::Zsh => {
@@ -441,17 +497,36 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
     let writer = state
         .pane_writer(&options.pane_id)?
         .ok_or_else(|| format!("pane {} was not found", options.pane_id))?;
-    let mut writer = writer
-        .lock()
-        .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
 
-    write_pane_input(&mut *writer, &options, SUBMIT_KEY_DELAY)
+    // Write the data (and paste markers) under the lock, then release it before the
+    // submit-key delay. The delay gives a TUI a beat to ingest a pasted turn before
+    // Return lands; holding the per-pane writer lock across that 15ms sleep would
+    // stall every other write to the same pane (live keystrokes, the next queued
+    // turn) behind it. The bracketed-paste body stays atomic within the first
+    // locked section; only the trailing Return is sent in a second short section.
+    {
+        let mut writer = writer
+            .lock()
+            .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
+        write_pane_data(&mut *writer, &options)?;
+    }
+
+    if options.submit {
+        if !SUBMIT_KEY_DELAY.is_zero() {
+            thread::sleep(SUBMIT_KEY_DELAY);
+        }
+        let mut writer = writer
+            .lock()
+            .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
+        write_pane_submit(&mut *writer)?;
+    }
+
+    Ok(())
 }
 
-fn write_pane_input<W: Write + ?Sized>(
+fn write_pane_data<W: Write + ?Sized>(
     writer: &mut W,
     options: &PaneWriteOptions,
-    submit_key_delay: Duration,
 ) -> Result<(), String> {
     if options.paste {
         writer
@@ -471,20 +546,34 @@ fn write_pane_input<W: Write + ?Sized>(
 
     writer
         .flush()
-        .map_err(|err| format!("failed to flush pane input: {err}"))?;
+        .map_err(|err| format!("failed to flush pane input: {err}"))
+}
 
+fn write_pane_submit<W: Write + ?Sized>(writer: &mut W) -> Result<(), String> {
+    writer
+        .write_all(SUBMIT_KEY)
+        .map_err(|err| format!("failed to submit pane input: {err}"))?;
+    writer
+        .flush()
+        .map_err(|err| format!("failed to flush pane submit key: {err}"))
+}
+
+/// Composes the data and submit-key writes for tests, mirroring `write_pane`'s
+/// sequencing without the per-pane lock handling. `submit_key_delay` lets a test
+/// skip the inter-write sleep.
+#[cfg(test)]
+fn write_pane_input<W: Write + ?Sized>(
+    writer: &mut W,
+    options: &PaneWriteOptions,
+    submit_key_delay: Duration,
+) -> Result<(), String> {
+    write_pane_data(writer, options)?;
     if options.submit {
         if !submit_key_delay.is_zero() {
             thread::sleep(submit_key_delay);
         }
-        writer
-            .write_all(SUBMIT_KEY)
-            .map_err(|err| format!("failed to submit pane input: {err}"))?;
-        writer
-            .flush()
-            .map_err(|err| format!("failed to flush pane submit key: {err}"))?;
+        write_pane_submit(writer)?;
     }
-
     Ok(())
 }
 
@@ -557,9 +646,29 @@ fn start_reader_thread(
                 }
             }
         }
-        let _ = state.remove_pane(&pane_id);
-        state.emit(QmuxEvent::pty_exit(pane_id, None));
+        // The PTY hit EOF, so the child has exited (or is about to). Reap it before
+        // dropping the handle so it does not linger as a zombie occupying a PID slot
+        // for the life of the qmux process, and report its real exit code rather
+        // than a blanket `None`. A pane killed via `kill_pane` is already reaped and
+        // removed there, so this returns None and emits the exit with no code.
+        let exit_code = reap_pane_child(&state, &pane_id);
+        if let Err(err) = state.remove_pane(&pane_id) {
+            // A failure here (e.g. a poisoned model lock) leaves a dead pane in
+            // state; log it so the stale entry has a trace rather than vanishing.
+            eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
+        }
+        remove_shell_integration_dir(&pane_id);
+        state.emit(QmuxEvent::pty_exit(pane_id, exit_code));
     });
+}
+
+/// Waits on a pane's child so the exited process is reaped (no zombie) and returns
+/// its exit code. Best-effort: a pane already removed (e.g. by `kill_pane`) or a
+/// poisoned child lock yields `None`.
+fn reap_pane_child(state: &AppState, pane_id: &str) -> Option<i32> {
+    let child = state.pane_child(pane_id).ok().flatten()?;
+    let mut child = child.lock().ok()?;
+    child.wait().ok().map(|status| status.exit_code() as i32)
 }
 
 /// Appends to the pre-attach backlog, dropping the oldest bytes once it exceeds
@@ -592,7 +701,12 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
     }
 
     match child.kill() {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // Reap the just-killed child while we still hold its handle, so it does
+            // not become a zombie. The kill above signals it; wait collects it.
+            let _ = child.wait();
+            Ok(())
+        }
         Err(err) => {
             if child
                 .try_wait()
@@ -727,7 +841,7 @@ mod tests {
     #[test]
     fn base_qmux_envs_include_pane_socket_token_and_workspace() {
         let state = test_state();
-        let envs = qmux_pane_envs(&state, "pane-123");
+        let envs = qmux_pane_envs(&state, "pane-123").expect("envs mint a token");
 
         assert_eq!(
             env_value(&envs, "QMUX_PANE_ID"),
@@ -738,9 +852,12 @@ mod tests {
             Some("/tmp/qmux.sock".to_string())
         );
         let token = env_value(&envs, "QMUX_TOKEN").expect("pane token env is present");
-        assert_eq!(token, state.pane_token("pane-123"));
+        assert_eq!(token, state.pane_token("pane-123").unwrap());
         assert_eq!(token.len(), 64);
-        assert_ne!(state.pane_token("pane-123"), state.pane_token("other-pane"));
+        assert_ne!(
+            state.pane_token("pane-123").unwrap(),
+            state.pane_token("other-pane").unwrap()
+        );
         assert_eq!(
             env_value(&envs, "QMUX_WORKSPACE_ROOT"),
             Some("/tmp/qmux-workspaces".to_string())
@@ -750,7 +867,7 @@ mod tests {
     #[test]
     fn shell_pane_envs_enable_shell_integration() {
         let state = test_state();
-        let envs = shell_pane_envs(&state, "pane-123");
+        let envs = shell_pane_envs(&state, "pane-123").expect("envs mint a token");
 
         assert_eq!(
             env_value(&envs, "QMUX_SHELL_INTEGRATION"),
@@ -812,6 +929,63 @@ mod tests {
 
         assert_eq!(writer.bytes, b"y\r");
         assert_eq!(writer.flush_offsets, vec![1, 2]);
+    }
+
+    fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
+        spawn_pty(
+            state,
+            PtySpawnSpec {
+                pane_id: Some(pane_id.to_string()),
+                agent_id: None,
+                kind: PaneKind::Shell,
+                title: "test".to_string(),
+                program: "/bin/sh".to_string(),
+                args,
+                cwd: std::env::temp_dir(),
+                envs: Vec::new(),
+                initial_size: None,
+                recovered: false,
+            },
+        )
+        .expect("spawning a test PTY")
+    }
+
+    #[test]
+    fn reader_thread_reaps_and_removes_pane_after_child_exits() {
+        let state = test_state();
+        let pane = spawn_test_pty(
+            &state,
+            "pane-exit",
+            vec!["-c".to_string(), "exit 0".to_string()],
+        );
+
+        // The child exits immediately; the reader thread should observe EOF, reap the
+        // child (no zombie), and remove the pane from state.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while state.pane_child(&pane.id).unwrap().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pane was not removed after the child exited"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn kill_pane_terminates_a_running_child_and_removes_it() {
+        let state = test_state();
+        let pane = spawn_test_pty(
+            &state,
+            "pane-kill",
+            vec!["-c".to_string(), "sleep 30".to_string()],
+        );
+        assert!(state.pane_child(&pane.id).unwrap().is_some());
+
+        kill_pane(&state, pane.id.clone()).expect("killing the pane");
+        assert!(
+            state.pane_child(&pane.id).unwrap().is_none(),
+            "pane should be gone after kill_pane"
+        );
     }
 
     #[test]

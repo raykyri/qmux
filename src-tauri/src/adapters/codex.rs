@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, ensure_on_path,
+    SpawnAgentRequest, ensure_on_path, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -158,7 +158,7 @@ impl CodexAdapter {
         let tail_args = prompt_tail_args(&request.prompt);
         let args = build_codex_args(&cwd, request.model.as_deref(), &options, tail_args);
         let pane_id = state.next_id("pane");
-        let mut envs = qmux_pane_envs(state, &pane_id);
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
@@ -213,7 +213,7 @@ impl CodexAdapter {
             agent.session_id.as_deref(),
         );
 
-        let mut envs = qmux_pane_envs(state, &pane.id);
+        let mut envs = qmux_pane_envs(state, &pane.id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
@@ -290,7 +290,7 @@ impl CodexAdapter {
 
         let options = CodexLaunchOptions::default();
         let args = build_codex_args(&cwd, None, &options, request.args);
-        let mut envs = qmux_pane_envs(state, &request.pane_id);
+        let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
@@ -417,6 +417,16 @@ impl CodexAdapter {
                         .map_err(|err| format!("failed to encode send tracking: {err}"))?,
                 );
             }
+        }
+        // Carry the updated agent so the frontend can apply this status change
+        // surgically instead of refetching the entire agent list on every hook
+        // event (which also avoids out-of-order refetches clobbering newer state).
+        if let (Value::Object(payload), Some(agent)) = (&mut event_payload, agent.as_ref()) {
+            payload.insert(
+                "agent".to_string(),
+                serde_json::to_value(agent)
+                    .map_err(|err| format!("failed to encode agent: {err}"))?,
+            );
         }
 
         Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
@@ -693,11 +703,6 @@ fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path) -> String {
     }
 
     raw
-}
-
-fn shell_quote_path(path: &Path) -> String {
-    let raw = path.display().to_string();
-    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 fn toml_string(value: &str) -> String {

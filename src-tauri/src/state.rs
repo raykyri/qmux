@@ -7,7 +7,7 @@ use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +17,11 @@ pub type SharedChild = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 pub type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub type SharedBacklog = Arc<Mutex<PaneBacklog>>;
+
+/// Upper bound on a pane's reported working directory. Comfortably above any
+/// real filesystem path (PATH_MAX is typically 1024–4096) while bounding what an
+/// in-pane process can push into persisted state via the control socket.
+const MAX_PANE_CWD_LEN: usize = 8192;
 
 /// Holds PTY output produced before the webview's listener is attached.
 ///
@@ -276,16 +281,20 @@ impl AppState {
     /// Returns the control-socket token scoped to a single pane, minting one on first
     /// use. Each pane gets its own unguessable token so a process running in one pane
     /// cannot drive another pane (or the control plane) through the socket.
-    pub fn pane_token(&self, pane_id: &str) -> String {
+    pub fn pane_token(&self, pane_id: &str) -> Result<String, String> {
         let mut tokens = self
             .inner
             .pane_tokens
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        tokens
-            .entry(pane_id.to_string())
-            .or_insert_with(random_token)
-            .clone()
+        if let Some(existing) = tokens.get(pane_id) {
+            return Ok(existing.clone());
+        }
+        // Mint outside the entry API so a CSPRNG failure returns an error to this one
+        // call rather than panicking inside or_insert_with and aborting the whole
+        // app (killing every running agent and unsaved draft).
+        let token = random_token()?;
+        Ok(tokens.entry(pane_id.to_string()).or_insert(token).clone())
     }
 
     /// Resolves the pane a presented control token is authorized for, if any.
@@ -737,6 +746,33 @@ impl AppState {
         Ok(len)
     }
 
+    /// Inserts a turn into an agent's queue at `index` (clamped to the queue length),
+    /// returning the new length. Used to roll a moved turn back to its original spot
+    /// when handing it to another agent fails.
+    pub fn insert_agent_turn_at(
+        &self,
+        agent_id: &str,
+        index: usize,
+        data: String,
+    ) -> Result<usize, String> {
+        let len = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let queue = model
+                .agent_turn_queues
+                .entry(agent_id.to_string())
+                .or_default();
+            let at = index.min(queue.len());
+            queue.insert(at, data);
+            queue.len()
+        };
+        self.persist();
+        Ok(len)
+    }
+
     /// Stores the agent's composer draft and snapshots it to disk. A trimmed-empty
     /// draft drops the entry so recovery never restores stray whitespace and the
     /// map does not grow an entry per cleared composer.
@@ -950,6 +986,19 @@ impl AppState {
     /// integration on directory changes so a restarted shell reopens where it
     /// left off rather than at its spawn-time cwd. No-op for unknown panes.
     pub fn update_pane_cwd(&self, pane_id: &str, cwd: String) -> Result<(), String> {
+        // This value arrives over the control socket from in-pane shell
+        // integration, so treat it as untrusted: reject control characters
+        // (newlines, NULs, escape sequences) and absurd lengths before letting
+        // it into persisted state and the UI. A legitimate working directory
+        // never contains them.
+        if cwd.len() > MAX_PANE_CWD_LEN {
+            return Err(format!(
+                "pane cwd exceeds {MAX_PANE_CWD_LEN} bytes; refusing to persist"
+            ));
+        }
+        if cwd.chars().any(|ch| ch.is_control()) {
+            return Err("pane cwd contains control characters; refusing to persist".to_string());
+        }
         let changed = {
             let mut model = self
                 .inner
@@ -1045,25 +1094,27 @@ fn normalize_prompt(prompt: &str) -> String {
     prompt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn random_token() -> String {
+fn random_token() -> Result<String, String> {
+    // 256 bits from the OS CSPRNG (getentropy/getrandom on macOS and Linux). A
+    // failure here is rare (no secure entropy source) but can be transient in some
+    // sandboxes, so retry a few times before giving up. We never fall back to a
+    // predictable time/pid-derived secret that would leave the control socket
+    // guessable; instead the error propagates so a single pane fails to launch
+    // rather than the whole process aborting.
     let mut bytes = [0u8; 32];
-    if std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .is_err()
-    {
-        // /dev/urandom is effectively always available on macOS; degrade to a
-        // time/pid-mixed value rather than emitting an all-zero token if it is not,
-        // so the socket is never left guarded by a constant secret.
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let pid = u128::from(std::process::id());
-        let mixed = nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        bytes[..16].copy_from_slice(&mixed.to_le_bytes());
-        bytes[16..].copy_from_slice(&nanos.to_le_bytes());
+    let mut last_err = None;
+    for _ in 0..3 {
+        match getrandom::getrandom(&mut bytes) {
+            Ok(()) => return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
+            Err(err) => last_err = Some(err),
+        }
     }
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    Err(format!(
+        "OS CSPRNG unavailable; cannot mint a control token: {}",
+        last_err
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
 }
 
 #[cfg(test)]
@@ -1269,6 +1320,40 @@ mod tests {
                 "pane-a".to_string(),
                 "pane-c".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn update_pane_cwd_rejects_untrusted_values() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        // A normal path is accepted and stored.
+        state
+            .update_pane_cwd("pane-1", "/Users/me/project".to_string())
+            .unwrap();
+        assert_eq!(
+            state.list_panes().unwrap()[0].cwd,
+            "/Users/me/project".to_string()
+        );
+
+        // Control characters (here a newline) are rejected and leave the stored
+        // value untouched.
+        assert!(
+            state
+                .update_pane_cwd("pane-1", "/tmp/evil\nmalicious".to_string())
+                .is_err()
+        );
+        // An oversized value is rejected too.
+        assert!(
+            state
+                .update_pane_cwd("pane-1", "/".repeat(MAX_PANE_CWD_LEN + 1))
+                .is_err()
+        );
+        assert_eq!(
+            state.list_panes().unwrap()[0].cwd,
+            "/Users/me/project".to_string()
         );
     }
 

@@ -4,6 +4,7 @@ import type {
   AgentInfo,
   GroupInfo,
   InitialPaneSize,
+  MoveQueuedAgentTurnResult,
   PaneInfo,
   QmuxEvent,
   RemoveQueuedAgentTurnResult,
@@ -66,6 +67,13 @@ export function submitPaneInput(paneId: string, data: string) {
   return invoke<void>("pane_write", { paneId, data, paste: true, submit: true });
 }
 
+// Writes pasted text to a pane's PTY, wrapping it in bracketed-paste markers when
+// the program has that mode on. Used to re-inject a large paste the user confirmed
+// in an in-app dialog, since that path bypasses xterm's own paste handling.
+export function pastePaneInput(paneId: string, data: string, bracketed: boolean) {
+  return invoke<void>("pane_write", { paneId, data, paste: bracketed, submit: false });
+}
+
 export function submitAgentTurn(agentId: string, data: string, mode: SubmitAgentTurnMode = "auto") {
   return invoke<SubmitAgentTurnResult>("agent_submit_turn", {
     request: { agentId, data, mode },
@@ -91,6 +99,20 @@ export function reorderQueuedAgentTurn(
 
 export function sendNextQueuedAgentTurn(agentId: string) {
   return invoke<SendNextQueuedAgentTurnResult>("agent_send_next_queued_turn", { agentId });
+}
+
+// Atomically moves a queued turn from one agent to another. The backend removes
+// from the source and hands it to the target in one call, rolling back on failure,
+// so the turn can never end up in both queues or be lost.
+export function moveQueuedAgentTurn(
+  fromAgentId: string,
+  toAgentId: string,
+  index: number,
+  expectedData: string,
+) {
+  return invoke<MoveQueuedAgentTurnResult>("agent_move_queued_turn", {
+    request: { fromAgentId, toAgentId, index, expectedData },
+  });
 }
 
 export function setAgentDraft(agentId: string, draft: string) {

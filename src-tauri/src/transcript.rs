@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -68,7 +68,12 @@ pub fn start_transcript_tail(
 
     thread::spawn(move || {
         let path = PathBuf::from(&transcript_path);
-        let mut seen_lines: Vec<String> = Vec::new();
+        // Incremental tail state: bytes of complete lines already consumed, and the
+        // running absolute line index so parsed turns keep stable source indices as
+        // the file grows. Reading only the appended tail each tick keeps steady
+        // state O(new bytes) instead of re-reading and re-diffing the whole file.
+        let mut consumed: u64 = 0;
+        let mut line_index: usize = 0;
         let mut read_failures: u32 = 0;
         let mut notice_active = false;
         // Whether this tail has ever read its bound file. Recovery only makes sense
@@ -112,15 +117,15 @@ pub fn start_transcript_tail(
                 }
             }
 
-            let raw = match fs::read_to_string(&path) {
-                Ok(raw) => {
+            let snapshot = match read_transcript_from(&path, consumed) {
+                Ok(snapshot) => {
                     read_failures = 0;
                     have_read_bound_file = true;
                     if notice_active {
                         notice_active = false;
                         state.emit(transcript_notice(&agent_id, &transcript_path, None));
                     }
-                    raw
+                    snapshot
                 }
                 Err(err) => {
                     if should_recover_missing(err.kind(), have_read_bound_file)
@@ -160,21 +165,11 @@ pub fn start_transcript_tail(
                     continue;
                 }
             };
-            let lines = raw.lines().map(ToString::to_string).collect::<Vec<_>>();
-
-            if is_append_only(&seen_lines, &lines) {
-                for (index, line) in lines.iter().enumerate().skip(seen_lines.len()) {
-                    if let Some(turn) = adapter.parse_transcript_line(&agent_id, index, line) {
-                        let _ = state.append_turn(turn.clone());
-                        state.emit(QmuxEvent::new(
-                            "turn.appended",
-                            None,
-                            Some(agent_id.clone()),
-                            json!({ "turn": turn }),
-                        ));
-                    }
-                }
-            } else {
+            if snapshot.reset {
+                // The file is now shorter than what we'd already consumed (a
+                // truncation or in-place rewrite), so our timeline no longer
+                // prefixes it: rebuild from the whole file.
+                let lines = complete_lines(&snapshot.data);
                 let turns = lines
                     .iter()
                     .enumerate()
@@ -182,16 +177,44 @@ pub fn start_transcript_tail(
                         adapter.parse_transcript_line(&agent_id, index, line)
                     })
                     .collect::<Vec<_>>();
-                let _ = state.replace_turns(&agent_id, turns.clone());
-                state.emit(QmuxEvent::new(
-                    "turn.updated",
-                    None,
-                    Some(agent_id.clone()),
-                    json!({ "reset": true, "turns": turns }),
-                ));
+                if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
+                    state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                } else {
+                    state.emit(QmuxEvent::new(
+                        "turn.updated",
+                        None,
+                        Some(agent_id.clone()),
+                        json!({ "reset": true, "turns": turns }),
+                    ));
+                }
+                line_index = lines.len();
+                consumed = complete_len(&snapshot.data);
+            } else {
+                // Steady state: parse only the complete lines that arrived since the
+                // last tick. line_index advances for every complete line (parsed or
+                // not) so source indices stay aligned with the file's line numbers.
+                for line in complete_lines(&snapshot.data) {
+                    if let Some(turn) = adapter.parse_transcript_line(&agent_id, line_index, &line)
+                    {
+                        // Surface a persistence failure rather than silently emitting a
+                        // turn the store never recorded, which would drift the UI
+                        // timeline from recovered state.
+                        if let Err(err) = state.append_turn(turn.clone()) {
+                            state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                        } else {
+                            state.emit(QmuxEvent::new(
+                                "turn.appended",
+                                None,
+                                Some(agent_id.clone()),
+                                json!({ "turn": turn }),
+                            ));
+                        }
+                    }
+                    line_index += 1;
+                }
+                consumed += complete_len(&snapshot.data);
             }
 
-            seen_lines = lines;
             thread::sleep(Duration::from_millis(350));
         }
     });
@@ -427,7 +450,11 @@ pub fn set_agent_transcript(
     };
 
     let candidate = Path::new(path);
-    if candidate.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+    if candidate
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("jsonl")
+    {
         return Err("transcript must be a .jsonl file".to_string());
     }
     if !candidate.is_file() {
@@ -498,7 +525,10 @@ fn first_text_block(content: Option<&Value>) -> Option<String> {
         Value::String(text) => Some(text.clone()),
         Value::Array(blocks) => blocks.iter().find_map(|block| {
             if block.get("type").and_then(Value::as_str) == Some("text") {
-                block.get("text").and_then(Value::as_str).map(str::to_string)
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
             } else {
                 None
             }
@@ -534,12 +564,64 @@ fn transcript_notice(agent_id: &str, path: &str, message: Option<&str>) -> QmuxE
     )
 }
 
-fn is_append_only(previous: &[String], current: &[String]) -> bool {
-    previous.len() <= current.len()
-        && previous
-            .iter()
-            .zip(current.iter())
-            .all(|(previous, current)| previous == current)
+/// Reports a failure to persist parsed turns (a poisoned state lock or full
+/// disk) so the UI can show the timeline is no longer authoritative instead of
+/// silently diverging from recovered state.
+fn transcript_persist_error(agent_id: &str, path: &str, error: &str) -> QmuxEvent {
+    QmuxEvent::new(
+        "transcript.error",
+        None,
+        Some(agent_id.to_string()),
+        json!({ "error": error, "path": path }),
+    )
+}
+
+/// Returns the newline-terminated lines of a transcript snapshot, holding back
+/// any trailing bytes after the final '\n'. A transcript record is one JSON
+/// object per line ending in '\n', so content past the last newline is a record
+/// still being written: parsing it would either be dropped as invalid JSON or,
+/// once it completes, differ from the stored partial line and churn a full
+/// timeline reset. Deferring it until its newline lands keeps the tail purely
+/// append-driven.
+fn complete_lines(raw: &str) -> Vec<String> {
+    let complete = raw.rfind('\n').map_or("", |idx| &raw[..=idx]);
+    complete.lines().map(ToString::to_string).collect()
+}
+
+/// Result of an incremental transcript read.
+struct TranscriptRead {
+    /// File content from the read offset, or the whole file when `reset` is set.
+    data: String,
+    /// The file is now shorter than the requested offset (truncated or rewritten),
+    /// so `data` holds the whole file and the caller must rebuild rather than append.
+    reset: bool,
+}
+
+/// Reads a transcript incrementally: only the bytes appended past `offset`. When
+/// the file has shrunk below `offset` it reads the whole file and flags a reset so
+/// the caller rebuilds the timeline. `offset` is always a newline boundary, so a
+/// tail read from it is valid UTF-8.
+fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptRead> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len < offset {
+        let mut data = String::new();
+        file.read_to_string(&mut data)?;
+        return Ok(TranscriptRead { data, reset: true });
+    }
+    if offset > 0 {
+        file.seek(SeekFrom::Start(offset))?;
+    }
+    let mut data = String::new();
+    file.read_to_string(&mut data)?;
+    Ok(TranscriptRead { data, reset: false })
+}
+
+/// Byte length of the complete (newline-terminated) prefix of `raw`. Bytes after
+/// the final '\n' are an in-progress record and are not counted as consumed, so
+/// the next read picks them up once their newline lands.
+fn complete_len(raw: &str) -> u64 {
+    raw.rfind('\n').map_or(0, |idx| (idx + 1) as u64)
 }
 
 /// Whether a tail bound to `bound_path` should keep running. `current` is the
@@ -582,6 +664,30 @@ mod tests {
     }
 
     #[test]
+    fn complete_lines_holds_back_an_unterminated_trailing_record() {
+        // Fully terminated snapshot: every record is stable.
+        assert_eq!(
+            complete_lines("{\"a\":1}\n{\"b\":2}\n"),
+            vec!["{\"a\":1}".to_string(), "{\"b\":2}".to_string()]
+        );
+        // A record still being written (no trailing newline) is withheld until
+        // its newline lands, so it is never parsed as a partial line.
+        assert_eq!(
+            complete_lines("{\"a\":1}\n{\"b\":2"),
+            vec!["{\"a\":1}".to_string()]
+        );
+        // Once the newline arrives the previously-partial record becomes stable,
+        // appended after the line already seen (no reset churn).
+        assert_eq!(
+            complete_lines("{\"a\":1}\n{\"b\":2}\n"),
+            vec!["{\"a\":1}".to_string(), "{\"b\":2}".to_string()]
+        );
+        // A snapshot with no complete line yet yields nothing.
+        assert!(complete_lines("{\"partial").is_empty());
+        assert!(complete_lines("").is_empty());
+    }
+
+    #[test]
     fn recovery_waits_for_a_fresh_session_file_to_appear() {
         // A file we followed that then vanished is a rotation: recover to a sibling.
         assert!(should_recover_missing(ErrorKind::NotFound, true));
@@ -593,17 +699,46 @@ mod tests {
     }
 
     #[test]
-    fn append_only_detects_prefix_growth_but_not_rewrites() {
-        let base = vec!["a".to_string(), "b".to_string()];
-        // Pure appends keep the existing lines as a prefix.
-        assert!(is_append_only(
-            &base,
-            &["a".to_string(), "b".to_string(), "c".to_string()]
+    fn complete_len_counts_only_the_newline_terminated_prefix() {
+        assert_eq!(complete_len(""), 0);
+        assert_eq!(complete_len("{\"a\":1}"), 0);
+        assert_eq!(complete_len("{\"a\":1}\n"), 8);
+        assert_eq!(complete_len("{\"a\":1}\n{\"b\":2"), 8);
+        assert_eq!(complete_len("{\"a\":1}\n{\"b\":2}\n"), 16);
+    }
+
+    #[test]
+    fn incremental_read_returns_only_appended_bytes_then_resets_on_shrink() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-read-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
         ));
-        assert!(is_append_only(&base, &base));
-        // A rewritten or truncated file is not append-only and forces a reset.
-        assert!(!is_append_only(&base, &["a".to_string()]));
-        assert!(!is_append_only(&base, &["x".to_string(), "b".to_string()]));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+
+        fs::write(&path, "a\nb\n").unwrap();
+        let first = read_transcript_from(&path, 0).unwrap();
+        assert!(!first.reset);
+        assert_eq!(first.data, "a\nb\n");
+        let consumed = complete_len(&first.data);
+        assert_eq!(consumed, 4);
+
+        // An append is read back as just the new bytes, not the whole file.
+        fs::write(&path, "a\nb\nc\n").unwrap();
+        let second = read_transcript_from(&path, consumed).unwrap();
+        assert!(!second.reset);
+        assert_eq!(second.data, "c\n");
+
+        // A file shorter than what we've consumed signals a rebuild from scratch.
+        fs::write(&path, "x\n").unwrap();
+        let third = read_transcript_from(&path, consumed).unwrap();
+        assert!(third.reset);
+        assert_eq!(third.data, "x\n");
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn candidate(path: &str, secs: u64, session: &str) -> TranscriptCandidate {
@@ -645,6 +780,41 @@ mod tests {
         assert_eq!(selected.path, PathBuf::from("/tmp/a.jsonl"));
     }
 
+    #[test]
+    fn truncate_preview_collapses_whitespace_and_caps_length() {
+        assert_eq!(truncate_preview("  hello   world \n"), "hello world");
+        let long = "x ".repeat(120);
+        let preview = truncate_preview(&long);
+        assert!(preview.ends_with('…'));
+        assert_eq!(preview.chars().count(), PREVIEW_MAX_CHARS + 1);
+    }
+
+    #[test]
+    fn read_transcript_meta_extracts_first_user_message_and_line_count() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-meta-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first prompt\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"reply\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let (preview, line_count) = read_transcript_meta(&path);
+        assert_eq!(preview.as_deref(), Some("first prompt"));
+        assert_eq!(line_count, 2);
+
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn session_id_comes_from_transcript_filename() {

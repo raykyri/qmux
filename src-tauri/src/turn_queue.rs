@@ -73,6 +73,90 @@ pub struct SendNextQueuedAgentTurnResult {
     pub queued_turns: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveQueuedAgentTurnRequest {
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub index: usize,
+    pub expected_data: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveQueuedAgentTurnResult {
+    /// Whether the moved turn was sent to the target immediately (vs. queued).
+    pub sent: bool,
+    pub source_queued_turns: Vec<String>,
+    pub target_queued_turns: Vec<String>,
+}
+
+/// Atomically moves a queued turn from one agent to another. The turn is removed
+/// from the source first, then handed to the target with normal send-or-queue
+/// behavior; if the handoff fails it is rolled back to its original position in the
+/// source queue. Because the removal and the add happen in one backend call, a
+/// failure can never leave the turn in both queues (the duplication the previous
+/// two-call frontend dance risked) nor silently lose it.
+pub fn move_queued_agent_turn(
+    state: &AppState,
+    request: MoveQueuedAgentTurnRequest,
+) -> Result<MoveQueuedAgentTurnResult, String> {
+    if request.from_agent_id == request.to_agent_id {
+        return Err("cannot move a queued turn onto the same agent".to_string());
+    }
+
+    let source = state
+        .agent(&request.from_agent_id)?
+        .ok_or_else(|| format!("agent {} was not found", request.from_agent_id))?;
+
+    let (removed_turn, source_queued_turns) = state.remove_agent_turn_queue_item(
+        &request.from_agent_id,
+        request.index,
+        request.expected_data.as_deref(),
+    )?;
+    state.emit(QmuxEvent::new(
+        "agent.queued_turn_removed",
+        source.pane_id.clone(),
+        Some(source.id.clone()),
+        json!({
+            "pendingTurns": source_queued_turns.len(),
+            "queuedTurns": source_queued_turns.clone(),
+        }),
+    ));
+
+    let submit = submit_agent_turn(
+        state,
+        SubmitAgentTurnRequest {
+            agent_id: request.to_agent_id.clone(),
+            data: removed_turn.clone(),
+            mode: Some(SubmitAgentTurnMode::Auto),
+        },
+    );
+    let target_result = match submit {
+        Ok(result) => result,
+        Err(err) => {
+            // Roll the turn back so the move can't lose it. Re-emit the source queue
+            // so the UI reflects the restored item.
+            let pending =
+                state.insert_agent_turn_at(&request.from_agent_id, request.index, removed_turn)?;
+            let restored = state.list_agent_turn_queue(&request.from_agent_id)?;
+            state.emit(QmuxEvent::new(
+                "agent.turn_queued",
+                source.pane_id.clone(),
+                Some(source.id.clone()),
+                json!({ "pendingTurns": pending, "queuedTurns": restored }),
+            ));
+            return Err(err);
+        }
+    };
+
+    Ok(MoveQueuedAgentTurnResult {
+        sent: !target_result.queued,
+        source_queued_turns,
+        target_queued_turns: target_result.queued_turns,
+    })
+}
+
 pub fn submit_agent_turn(
     state: &AppState,
     request: SubmitAgentTurnRequest,
@@ -202,12 +286,12 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
-            let _ = state.prepend_agent_turn(agent_id, data);
+            requeue_after_failed_drain(state, agent_id, data);
             return Err(format!("agent {agent_id} was not found"));
         }
     };
     if let Err(err) = send_agent_turn(state, &agent, data.clone(), AgentSendSource::QueuedTurn) {
-        let _ = state.prepend_agent_turn(agent_id, data);
+        requeue_after_failed_drain(state, agent_id, data);
         return Err(err);
     }
     let queued_turns = state.list_agent_turn_queue(agent_id)?;
@@ -253,6 +337,16 @@ fn queue_agent_turn(
     })
 }
 
+/// Restores a just-popped turn to the front of the queue after a drain fails to
+/// deliver it. If even the rollback fails the turn is genuinely lost, so log it
+/// rather than dropping it silently — the caller already propagates the original
+/// send error.
+fn requeue_after_failed_drain(state: &AppState, agent_id: &str, data: String) {
+    if let Err(err) = state.prepend_agent_turn(agent_id, data) {
+        eprintln!("qmux: dropped queued turn for agent {agent_id} after failed re-queue: {err}");
+    }
+}
+
 fn send_agent_turn(
     state: &AppState,
     agent: &AgentInfo,
@@ -278,7 +372,12 @@ fn send_agent_turn(
         .ok_or_else(|| format!("agent {} was not found", agent.id))?;
     updated.status = AgentStatus::Running;
     state.update_agent(updated)?;
-    let _ = state.record_agent_send(&agent.id, text, source);
+    // Send tracking is advisory (it feeds de-dup/echo suppression), so a failure
+    // here must not fail the send the user already sees in the pane — but log it
+    // rather than discarding it without a trace.
+    if let Err(err) = state.record_agent_send(&agent.id, text, source) {
+        eprintln!("qmux: failed to record send for agent {}: {err}", agent.id);
+    }
     Ok(())
 }
 
@@ -433,5 +532,78 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().unwrap();
         assert!(matches!(agent.status, AgentStatus::Done));
         assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
+    }
+
+    fn agent_with_id(id: &str, status: AgentStatus) -> AgentInfo {
+        let mut agent = sample_agent(status);
+        agent.id = id.to_string();
+        agent
+    }
+
+    #[test]
+    fn move_onto_a_busy_target_relocates_the_turn_without_duplicating() {
+        let state = test_state();
+        let mut source = agent_with_id("source", AgentStatus::Done);
+        source.pane_id = None;
+        state.insert_agent(source).unwrap();
+        // A busy target queues rather than sends, so no pane write is needed.
+        state
+            .insert_agent(agent_with_id("target", AgentStatus::Running))
+            .unwrap();
+        state
+            .enqueue_agent_turn("source", "move me".to_string())
+            .unwrap();
+
+        let result = move_queued_agent_turn(
+            &state,
+            MoveQueuedAgentTurnRequest {
+                from_agent_id: "source".to_string(),
+                to_agent_id: "target".to_string(),
+                index: 0,
+                expected_data: Some("move me".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert!(!result.sent);
+        assert!(state.list_agent_turn_queue("source").unwrap().is_empty());
+        assert_eq!(
+            state.list_agent_turn_queue("target").unwrap(),
+            vec!["move me".to_string()]
+        );
+    }
+
+    #[test]
+    fn failed_move_rolls_the_turn_back_to_the_source() {
+        let state = test_state();
+        let mut source = agent_with_id("source", AgentStatus::Done);
+        source.pane_id = None;
+        state.insert_agent(source).unwrap();
+        // The target is ready to send but its pane is missing, so the handoff fails.
+        state
+            .insert_agent(agent_with_id("target", AgentStatus::AwaitingInput))
+            .unwrap();
+        state
+            .enqueue_agent_turn("source", "keep me".to_string())
+            .unwrap();
+
+        let err = move_queued_agent_turn(
+            &state,
+            MoveQueuedAgentTurnRequest {
+                from_agent_id: "source".to_string(),
+                to_agent_id: "target".to_string(),
+                index: 0,
+                expected_data: Some("keep me".to_string()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.contains("missing-pane"));
+        // Restored to the source rather than duplicated into both or lost.
+        assert_eq!(
+            state.list_agent_turn_queue("source").unwrap(),
+            vec!["keep me".to_string()]
+        );
+        assert!(state.list_agent_turn_queue("target").unwrap().is_empty());
     }
 }
