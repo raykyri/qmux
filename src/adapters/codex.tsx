@@ -1,6 +1,19 @@
+import { LauncherSelect } from "../components/LauncherSelect";
+import type { LauncherSelectOption } from "../components/LauncherSelect";
 import type { AgentUiAdapter, ComposerPolicy, LauncherOptionsProps } from ".";
 
 export const CODEX_ADAPTER_ID = "codex";
+
+const CODEX_SANDBOX_OPTIONS: LauncherSelectOption[] = [
+  { value: "workspace-write", label: "Workspace access" },
+  { value: "danger-full-access", label: "Full access" },
+];
+
+const CODEX_APPROVAL_OPTIONS: LauncherSelectOption[] = [
+  { value: "", label: "Default approvals" },
+  { value: "on-request", label: "Allow approval requests" },
+  { value: "never", label: "Block approval requests" },
+];
 
 const codexComposerPolicy: ComposerPolicy = {
   readyStatuses: ["awaitingInput", "done", "idle"],
@@ -22,29 +35,18 @@ function CodexLauncherOptions({ value, onChange }: LauncherOptionsProps) {
 
   return (
     <>
-      <label className="command-launcher-option">
-        <select
-          value={sandbox}
-          onChange={(event) => setOption(value, onChange, "sandbox", event.currentTarget.value)}
-        >
-          <option value="workspace-write">Workspace access</option>
-          <option value="danger-full-access">Full access</option>
-        </select>
-      </label>
-      <label className="command-launcher-option">
-        <span>Approval</span>
-        <select
-          value={approvalPolicy}
-          onChange={(event) =>
-            setOption(value, onChange, "approvalPolicy", event.currentTarget.value)
-          }
-        >
-          <option value="">Default</option>
-          <option value="untrusted">Untrusted</option>
-          <option value="on-request">On request</option>
-          <option value="never">Never</option>
-        </select>
-      </label>
+      <LauncherSelect
+        ariaLabel="Sandbox access"
+        value={sandbox}
+        options={CODEX_SANDBOX_OPTIONS}
+        onChange={(next) => setOption(value, onChange, "sandbox", next)}
+      />
+      <LauncherSelect
+        ariaLabel="Approval policy"
+        value={approvalPolicy}
+        options={CODEX_APPROVAL_OPTIONS}
+        onChange={(next) => setOption(value, onChange, "approvalPolicy", next)}
+      />
     </>
   );
 }

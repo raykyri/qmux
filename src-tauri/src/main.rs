@@ -114,9 +114,9 @@ fn list_agent_transcripts(
 fn set_agent_transcript(
     state: tauri::State<'_, AppState>,
     agent_id: String,
-    path: String,
+    path: Option<String>,
 ) -> Result<AgentInfo, String> {
-    repoint_agent_transcript(&state, &agent_id, &path)
+    repoint_agent_transcript(&state, &agent_id, path.as_deref())
 }
 
 #[tauri::command]

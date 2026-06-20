@@ -201,11 +201,6 @@ pub fn start_transcript_tail(
 /// being unreadable is surfaced as an unexpected state rather than a write race.
 const READ_FAILURE_NOTICE_THRESHOLD: u32 = 6;
 
-/// When the auto-recovery picks the newest session but two or more other sessions
-/// in the same folder were touched within this window of it, the pick is a guess:
-/// surface a notice so the user can correct it via the right pane's session picker.
-const RECOVERY_AMBIGUITY_WINDOW: Duration = Duration::from_secs(10);
-
 fn recover_missing_transcript(
     state: &AppState,
     agent_id: &str,
@@ -254,26 +249,6 @@ fn recover_missing_transcript(
             "transcriptPath": recovered_path,
         }),
     ));
-
-    // The mtime heuristic can't tell which of several recently-touched sessions is
-    // the real continuation. When the field is crowded, the pick is a best guess —
-    // tell the user so they can switch sessions if replies stop showing up.
-    let rivals = recent_rival_count(&candidates, &excluded, bound_path, candidate.modified);
-    if rivals > 1 {
-        let label = candidate
-            .session_id
-            .as_deref()
-            .map(short_session_label)
-            .unwrap_or_else(|| "the newest session".to_string());
-        state.emit(transcript_notice(
-            agent_id,
-            &recovered_path,
-            Some(&format!(
-                "Recovered to {label} — {rivals} recent sessions match this folder. \
-                 If new replies aren't showing, pick the right session below."
-            )),
-        ));
-    }
 
     Ok(Some(recovered_path))
 }
@@ -361,35 +336,6 @@ fn select_newest_transcript_candidate(
         .cloned()
 }
 
-/// How many selectable candidates were modified within the ambiguity window of the
-/// chosen one (the chosen file included). >1 means the auto-pick was a guess.
-fn recent_rival_count(
-    candidates: &[TranscriptCandidate],
-    excluded: &HashSet<String>,
-    bound_path: &str,
-    selected_modified: SystemTime,
-) -> usize {
-    candidates
-        .iter()
-        .filter(|candidate| {
-            let path = candidate.path.display().to_string();
-            if path == bound_path || excluded.contains(&path) {
-                return false;
-            }
-            selected_modified
-                .duration_since(candidate.modified)
-                .map(|gap| gap <= RECOVERY_AMBIGUITY_WINDOW)
-                .unwrap_or(true)
-        })
-        .count()
-}
-
-/// Short, human-friendly session label (the leading segment of the session id).
-fn short_session_label(session_id: &str) -> String {
-    let head = session_id.split('-').next().unwrap_or(session_id);
-    format!("session {head}")
-}
-
 /// Cap on how many sessions the picker offers, newest first — old projects can
 /// accumulate hundreds of JSONL files and the user only ever wants a recent one.
 const MAX_TRANSCRIPT_OPTIONS: usize = 30;
@@ -462,15 +408,22 @@ pub fn list_agent_transcripts(
     Ok(options)
 }
 
-/// Repoints an agent at `path` and restarts its tail there. The old tail stops
-/// itself once it sees the agent no longer pointing at its file.
+/// Repoints an agent at `path` and restarts its tail there, or clears the current
+/// binding when `path` is `None`. The old tail stops itself once it sees the agent
+/// no longer pointing at its file.
 pub fn set_agent_transcript(
     state: &AppState,
     agent_id: &str,
-    path: &str,
+    path: Option<&str>,
 ) -> Result<AgentInfo, String> {
     let Some(mut agent) = state.agent(agent_id)? else {
         return Err(format!("agent {agent_id} not found"));
+    };
+    let Some(path) = path else {
+        agent.session_id = None;
+        agent.transcript_path = None;
+        state.update_agent(agent.clone())?;
+        return Ok(agent);
     };
 
     let candidate = Path::new(path);
@@ -692,23 +645,6 @@ mod tests {
         assert_eq!(selected.path, PathBuf::from("/tmp/a.jsonl"));
     }
 
-    #[test]
-    fn rival_count_only_counts_recent_selectable_candidates() {
-        let candidates = vec![
-            candidate("/tmp/a.jsonl", 100, "a"),
-            candidate("/tmp/b.jsonl", 105, "b"),
-            candidate("/tmp/c.jsonl", 30, "c"), // stale: outside the 10s window
-            candidate("/tmp/d.jsonl", 104, "d"), // claimed by another agent
-        ];
-        let excluded = HashSet::from(["/tmp/d.jsonl".to_string()]);
-        let selected = UNIX_EPOCH + Duration::from_secs(105);
-
-        // a and b are within 10s of the selected (b); c is stale, d is excluded.
-        assert_eq!(
-            recent_rival_count(&candidates, &excluded, "", selected),
-            2
-        );
-    }
 
     #[test]
     fn session_id_comes_from_transcript_filename() {

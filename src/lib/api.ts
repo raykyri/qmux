@@ -46,7 +46,7 @@ export function listAgentTranscripts(agentId: string) {
   return invoke<TranscriptOption[]>("list_agent_transcripts", { agentId });
 }
 
-export function setAgentTranscript(agentId: string, path: string) {
+export function setAgentTranscript(agentId: string, path: string | null) {
   return invoke<AgentInfo>("set_agent_transcript", { agentId, path });
 }
 

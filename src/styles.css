@@ -1016,48 +1016,6 @@ button:disabled {
   pointer-events: none;
 }
 
-.command-launcher-option {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 6px;
-  min-width: 0;
-  min-height: var(--control-h-md);
-  color: var(--control-fg-muted);
-  font-size: var(--fs-sm);
-}
-
-.command-launcher-option span {
-  white-space: nowrap;
-  color: var(--placeholder-color);
-}
-
-.command-launcher-option select {
-  --select-chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-  appearance: none;
-  -webkit-appearance: none;
-  min-height: var(--control-h-md);
-  max-width: 150px;
-  padding: 0 24px 0 9px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background-color: #111315;
-  background-image: var(--select-chevron);
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-  background-size: 10px;
-  color: #e7e7e2;
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  outline: none;
-  transition: border-color 120ms ease, background-color 120ms ease;
-}
-
-.command-launcher-option select:hover {
-  border-color: var(--control-border-hover);
-  background-color: #16191b;
-}
-
 /* Leading glyph inside a select: chevron stays right, a 14px icon sits left,
    and the text shifts over to clear it. Variants supply the left-hand icon. */
 .command-launcher-option select[data-lead] {
@@ -1100,34 +1058,33 @@ button:disabled {
   pointer-events: auto;
 }
 
-/* Segmented agent picker, skinned to read as one of the app's normal buttons:
-   a bordered control surface with a hairline divider, rather than a faint pill.
-   min-height lives on the container (border-box) so the border keeps it at 30px. */
+/* Segmented agent picker: a pill-shaped track holding two label segments. The track
+   is inset (2px padding / 1px gap) so the active segment floats as a lit pill rather
+   than filling edge-to-edge. min-height on the container (border-box) holds the row at
+   30px, aligned with the selects and send button beside it. */
 .command-launcher-adapter-picker {
   display: inline-flex;
+  align-items: center;
   min-height: var(--control-h-md);
   min-width: 0;
-  overflow: hidden;
+  gap: 1px;
+  padding: 2px;
   border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
+  border-radius: 999px;
   background: var(--control-bg);
 }
 
 .command-launcher-adapter-picker button {
   min-height: 0;
   align-self: stretch;
-  padding: 0 12px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--control-fg-muted);
   font-size: var(--fs-base);
   white-space: nowrap;
-  transition: background 120ms ease, color 120ms ease;
-}
-
-.command-launcher-adapter-picker button + button {
-  border-left: 1px solid var(--control-border);
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
 .command-launcher-adapter-picker button:hover {
@@ -1135,9 +1092,19 @@ button:disabled {
   color: #e7e7e2;
 }
 
+/* Active segment: a lit teal pill (tinted fill + hairline accent ring + soft glow)
+   instead of a flat solid block, so the chosen agent reads as the launcher's focal
+   accent. */
 .command-launcher-adapter-picker button.is-active {
-  background: #2f6f61;
-  color: #f4f3ec;
+  background: rgba(108, 174, 157, 0.16);
+  color: var(--accent-color);
+  box-shadow:
+    inset 0 0 0 1px rgba(143, 214, 199, 0.45),
+    0 0 12px rgba(143, 214, 199, 0.18);
+}
+
+.command-launcher-adapter-picker button.is-active:hover {
+  background: rgba(108, 174, 157, 0.22);
 }
 
 .command-launcher-adapter-picker button:focus-visible {
@@ -1145,25 +1112,134 @@ button:disabled {
   box-shadow: inset 0 0 0 2px rgba(231, 231, 226, 0.4);
 }
 
+/* Send reads as quiet chrome that matches the picker pill — the accent now lives on
+   the active agent segment, so ⌘↵ is a teal keyboard hint, not a competing CTA. */
 .command-launcher-send {
   pointer-events: auto;
   min-height: var(--control-h-md);
-  padding: 0 12px;
-  border: none;
-  border-radius: var(--radius-lg);
-  background: var(--accent-strong);
-  color: #10211c;
+  padding: 0 13px;
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  background: var(--control-bg);
+  color: var(--accent-color);
   font-size: var(--fs-base);
-  font-weight: 700;
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .command-launcher-send:hover {
-  background: var(--accent-strong-hover);
+  background: var(--control-bg-hover);
+  border-color: var(--control-border-hover-accent);
 }
 
 .command-launcher-send:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(231, 231, 226, 0.45);
+}
+
+/* Custom launcher dropdown (LauncherSelect), used by every agent's launcher options.
+   The popover is portaled to <body> and styled like the composer menu. */
+.launcher-select {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.launcher-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h-md);
+  /* Cap width so long option labels truncate (the value ellipsizes) instead of
+     stretching the launcher row. */
+  max-width: 160px;
+  padding: 0 10px 0 11px;
+  border: 1px solid var(--control-border);
+  /* Pill, matching the Codex/Claude toggle. */
+  border-radius: 999px;
+  background: #111315;
+  color: #e7e7e2;
+  /* Matches the Codex/Claude toggle (--fs-base), as does .launcher-select-item. */
+  font-size: var(--fs-base);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.launcher-select-trigger:hover {
+  border-color: var(--control-border-hover);
+  background: #16191b;
+}
+
+.launcher-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chevron stays muted even when the value takes a tone, so only the label reads
+   as danger. */
+.launcher-select-chevron {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  color: var(--placeholder-color);
+}
+
+.launcher-select-trigger.is-danger {
+  color: #e0796d;
+}
+
+.launcher-select-popover {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+  border: 1px solid #2a2d2f;
+  border-radius: 8px;
+  background: #1d2224;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.launcher-select-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  /* min-height lowered alongside the padding so the tighter top/bottom padding
+     actually shrinks the row instead of being held open by the 30px control height. */
+  min-height: 28px;
+  padding: 5px 10px;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.launcher-select-item:hover:not(:disabled) {
+  background: #283032;
+}
+
+.launcher-select-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.launcher-select-check {
+  flex: 0 0 auto;
+  color: var(--accent-color);
+}
+
+.launcher-select-item.is-danger {
+  color: #e0796d;
 }
 
 .workspace {
@@ -1388,66 +1464,6 @@ button:disabled {
   color: #aab1ad;
   font-size: 12px;
   line-height: 1.4;
-}
-
-/* The session switcher floats over the top of the transcript, mirroring how the
-   composer floats at the bottom; the timeline reserves matching top padding. */
-.turn-sidebar-header {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  background: linear-gradient(to bottom, #171b1d 84%, rgba(23, 27, 29, 0));
-}
-
-.turn-header-notice {
-  color: #aab1ad;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.transcript-picker {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* In the empty state the label stacks above the select and reads as a prompt. */
-.turn-empty-state .transcript-picker {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  margin-top: 4px;
-  max-width: 280px;
-}
-
-.transcript-picker-label {
-  flex: none;
-  color: #aab1ad;
-  font-size: 12px;
-}
-
-.transcript-picker-select {
-  flex: 1;
-  min-width: 0;
-  max-width: 100%;
-  padding: 3px 6px;
-  border: 1px solid #30383b;
-  border-radius: 5px;
-  background: #1d2224;
-  color: #e6e9e7;
-  font-size: 12px;
-}
-
-.transcript-picker-select:focus-visible {
-  outline: 2px solid #3a6ea5;
-  outline-offset: 1px;
 }
 
 /* Pack the quiet disclosure rows (tool/thinking/assistant toggles) closer than the
@@ -2132,6 +2148,62 @@ button:disabled {
 
 .composer-menu-recent:hover:not(:disabled) {
   color: #f1f0e8;
+}
+
+/* The session switcher sits at the far left of the actions row (no margin-left
+   auto), so its terminal-icon trigger anchors the bottom-left of the pane. */
+.session-menu {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+}
+
+/* Reuses .composer-menu-popover, but opens from the left edge of the trigger
+   (composer menu opens from the right) and caps height so a folder with many
+   sessions scrolls. Scoped under .session-menu to win over .composer-menu-popover
+   regardless of source order. */
+.session-menu .composer-menu-popover {
+  right: auto;
+  left: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* Stack the session title over its gray last-modified subtext as plain block
+   flow. A flex button (any direction) renders the rows blank in WebKit (qmux's
+   WKWebView) — it collapses the children — so the row stays block and the title/
+   meta carry explicit line-heights and margins so they don't run together. */
+.session-menu .composer-menu-item.session-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 7px 10px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.session-menu-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+  color: #e7e7e2;
+}
+
+.session-menu-item.is-active .session-menu-title {
+  color: var(--accent-color);
+}
+
+.session-menu-meta {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.25;
+  color: #8a938e;
+  font-size: 11px;
 }
 
 .composer-toast {
