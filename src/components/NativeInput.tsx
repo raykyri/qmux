@@ -284,6 +284,7 @@ export default function NativeInput({
 
     try {
       await writeClipboardText(transcriptCopyText());
+      showToast("Copied to clipboard");
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
