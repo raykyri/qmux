@@ -195,6 +195,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const searchMatchesRef = useRef<SearchMatch[]>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
+  const requestRedrawRef = useRef<(() => void) | null>(null);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -324,7 +325,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
     function setUpTerminal(mountEl: HTMLDivElement, hostEl: HTMLDivElement): () => void {
       const terminal = new Terminal({
-        convertEol: true,
+        convertEol: false,
         cols: pane.cols,
         rows: pane.rows,
         cursorBlink: false,
@@ -367,10 +368,23 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // Flush any PTY output that arrived while the WASM engine was still loading.
       terminalRef.current = terminal;
       terminalReadyRef.current = true;
+      let redrawFrame: number | null = null;
+      const scheduleForcedRedraw = () => {
+        if (cancelled || redrawFrame !== null) {
+          return;
+        }
+        redrawFrame = window.requestAnimationFrame(() => {
+          redrawFrame = null;
+          forceRender(terminal);
+        });
+      };
+      requestRedrawRef.current = scheduleForcedRedraw;
+
       const pending = pendingDataRef.current;
       pendingDataRef.current = [];
       for (const chunk of pending) {
         terminal.write(chunk);
+        scheduleForcedRedraw();
       }
 
       let resizeFrame: number | null = null;
@@ -483,6 +497,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (settleFrame !== null) {
           window.cancelAnimationFrame(settleFrame);
         }
+        if (redrawFrame !== null) {
+          window.cancelAnimationFrame(redrawFrame);
+        }
         for (const timer of settleTimers) {
           window.clearTimeout(timer);
         }
@@ -494,6 +511,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         terminalReadyRef.current = false;
         terminalRef.current = null;
         stabilizeTerminalRef.current = null;
+        if (requestRedrawRef.current === scheduleForcedRedraw) {
+          requestRedrawRef.current = null;
+        }
         searchMatchesRef.current = [];
       };
     }
@@ -524,6 +544,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       const terminal = terminalRef.current;
       if (terminal && terminalReadyRef.current) {
         terminal.write(data);
+        requestRedrawRef.current?.();
       } else {
         pendingDataRef.current.push(data);
       }
