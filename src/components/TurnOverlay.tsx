@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -367,7 +368,10 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
 
   return (
     <details className="tool-block">
-      <summary>Raw</summary>
+      <summary>
+        <DisclosureChevron />
+        <span>Raw</span>
+      </summary>
       <pre>{stringify(block.value)}</pre>
     </details>
   );
@@ -377,6 +381,7 @@ function ToolEntryView({ entry }: { entry: ToolEntry }) {
   return (
     <details className={`tool-block tool-pair ${entry.isError ? "is-error" : ""}`}>
       <summary>
+        <DisclosureChevron />
         <span className="tool-summary">
           <span className="tool-summary-main">{entry.name}</span>
           <span className="tool-summary-meta">{toolEntryStatus(entry)}</span>
@@ -402,12 +407,19 @@ function ToolPayload({ label, value }: { label: string; value: unknown }) {
 function ThinkingView({ item }: { item: ThinkingItem }) {
   return (
     <details className="thinking-block">
-      <summary>Thinking...</summary>
+      <summary>
+        <DisclosureChevron />
+        <span>Thinking...</span>
+      </summary>
       {item.values.map((value, index) => (
         <pre key={`${item.key}-${index}`}>{stringify(value)}</pre>
       ))}
     </details>
   );
+}
+
+function DisclosureChevron() {
+  return <ChevronRight className="disclosure-chevron" size={13} aria-hidden="true" />;
 }
 
 function toolEntryStatus(entry: ToolEntry) {
