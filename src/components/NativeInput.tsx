@@ -15,6 +15,7 @@ import {
   submitPaneInput,
 } from "../lib/api";
 import type { ComposerPolicy } from "../adapters";
+import { confirmLargePaste } from "../lib/paste";
 import type { AgentInfo, PaneInfo } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
@@ -595,6 +596,15 @@ export default function NativeInput({
         ref={textareaRef}
         value={value}
         onChange={(event) => setValue(event.currentTarget.value)}
+        onPaste={(event) => {
+          // A confirmed paste falls through to the default insert; a declined one
+          // is cancelled here. window.confirm blocks synchronously, so the native
+          // paste is still pending and obeys preventDefault when the handler returns.
+          const text = event.clipboardData.getData("text");
+          if (text && !confirmLargePaste(text)) {
+            event.preventDefault();
+          }
+        }}
         onKeyDown={(event) => {
           if (event.metaKey && event.key === "Enter") {
             event.preventDefault();
