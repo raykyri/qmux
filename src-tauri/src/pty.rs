@@ -7,7 +7,8 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -171,6 +172,67 @@ enum ShellKind {
     Unsupported,
 }
 
+/// Per-pane scratch directory holding generated shell rc files. The location is
+/// derived purely from the pane id so teardown can find it without consulting
+/// pane state.
+fn shell_integration_dir(pane_id: &str) -> PathBuf {
+    env::temp_dir().join("qmux-shell-init").join(pane_id)
+}
+
+/// Creates the per-pane shell integration directory restricted to the owning
+/// user. The shared parent is locked to `0o700` first so other local accounts
+/// cannot pre-create (or symlink) a pane's subdirectory and redirect the rc
+/// files we are about to write; the per-pane dir is then created `0o700` too so
+/// its generated scripts are never world-readable in a shared /tmp.
+fn create_shell_integration_dir(pane_id: &str) -> Result<PathBuf, String> {
+    let parent = env::temp_dir().join("qmux-shell-init");
+    fs::create_dir_all(&parent).map_err(|err| {
+        format!(
+            "failed to create shell integration root {}: {err}",
+            parent.display()
+        )
+    })?;
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).map_err(|err| {
+        format!(
+            "failed to restrict shell integration root {}: {err}",
+            parent.display()
+        )
+    })?;
+
+    let root = parent.join(pane_id);
+    fs::create_dir_all(&root).map_err(|err| {
+        format!(
+            "failed to create shell integration dir {}: {err}",
+            root.display()
+        )
+    })?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|err| {
+        format!(
+            "failed to restrict shell integration dir {}: {err}",
+            root.display()
+        )
+    })?;
+    Ok(root)
+}
+
+/// Removes a pane's shell integration scratch directory on teardown. Best
+/// effort: a missing directory (non-shell pane, or one that never spawned a
+/// supported shell) is expected and ignored.
+fn remove_shell_integration_dir(pane_id: &str) {
+    let root = shell_integration_dir(pane_id);
+    match fs::remove_dir_all(&root) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            // A stale scratch dir is non-fatal and not worth surfacing to the UI.
+            eprintln!(
+                "qmux: failed to clean up shell integration dir {}: {err}",
+                root.display()
+            );
+        }
+    }
+}
+
 fn agent_shell_function_injection(
     shell: &str,
     pane_id: &str,
@@ -183,13 +245,7 @@ fn agent_shell_function_injection(
 
     let qmux_cli = env::current_exe()
         .map_err(|err| format!("failed to resolve qmux executable for shell integration: {err}"))?;
-    let root = env::temp_dir().join("qmux-shell-init").join(pane_id);
-    fs::create_dir_all(&root).map_err(|err| {
-        format!(
-            "failed to create shell integration dir {}: {err}",
-            root.display()
-        )
-    })?;
+    let root = create_shell_integration_dir(pane_id)?;
 
     match shell_kind {
         ShellKind::Zsh => {
@@ -558,6 +614,7 @@ fn start_reader_thread(
             }
         }
         let _ = state.remove_pane(&pane_id);
+        remove_shell_integration_dir(&pane_id);
         state.emit(QmuxEvent::pty_exit(pane_id, None));
     });
 }

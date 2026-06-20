@@ -35,13 +35,31 @@ struct ControlResponse {
 
 pub fn start_control_socket(state: AppState) -> Result<(), String> {
     let socket_path = state.config().socket_path.clone();
-    if socket_path.exists() {
-        fs::remove_file(&socket_path).map_err(|err| {
-            format!(
+
+    // Restrict the socket's parent directory to the owning user *before* binding.
+    // With the directory untraversable by other accounts, the socket is never
+    // reachable by them even during the brief window between bind() and the
+    // explicit chmod below, and no other user can pre-create the socket path.
+    // Config sets this best-effort at startup; enforce it strictly here so we
+    // fail loudly rather than expose the control plane on a world-traversable dir.
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create socket dir {}: {err}", parent.display()))?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|err| format!("failed to restrict socket dir {}: {err}", parent.display()))?;
+    }
+
+    // Remove any stale socket unconditionally; a missing path is not an error.
+    // Probing with exists() first would open a time-of-check/time-of-use window.
+    match fs::remove_file(&socket_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(format!(
                 "failed to remove stale socket {}: {err}",
                 socket_path.display()
-            )
-        })?;
+            ));
+        }
     }
 
     let listener = UnixListener::bind(&socket_path)

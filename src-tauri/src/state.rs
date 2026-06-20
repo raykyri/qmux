@@ -7,7 +7,7 @@ use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +17,11 @@ pub type SharedChild = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 pub type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub type SharedBacklog = Arc<Mutex<PaneBacklog>>;
+
+/// Upper bound on a pane's reported working directory. Comfortably above any
+/// real filesystem path (PATH_MAX is typically 1024–4096) while bounding what an
+/// in-pane process can push into persisted state via the control socket.
+const MAX_PANE_CWD_LEN: usize = 8192;
 
 /// Holds PTY output produced before the webview's listener is attached.
 ///
@@ -950,6 +955,19 @@ impl AppState {
     /// integration on directory changes so a restarted shell reopens where it
     /// left off rather than at its spawn-time cwd. No-op for unknown panes.
     pub fn update_pane_cwd(&self, pane_id: &str, cwd: String) -> Result<(), String> {
+        // This value arrives over the control socket from in-pane shell
+        // integration, so treat it as untrusted: reject control characters
+        // (newlines, NULs, escape sequences) and absurd lengths before letting
+        // it into persisted state and the UI. A legitimate working directory
+        // never contains them.
+        if cwd.len() > MAX_PANE_CWD_LEN {
+            return Err(format!(
+                "pane cwd exceeds {MAX_PANE_CWD_LEN} bytes; refusing to persist"
+            ));
+        }
+        if cwd.chars().any(|ch| ch.is_control()) {
+            return Err("pane cwd contains control characters; refusing to persist".to_string());
+        }
         let changed = {
             let mut model = self
                 .inner
@@ -1046,23 +1064,13 @@ fn normalize_prompt(prompt: &str) -> String {
 }
 
 fn random_token() -> String {
+    // 256 bits from the OS CSPRNG (getentropy/getrandom on macOS and Linux).
+    // getrandom only fails if the platform has no secure entropy source at all,
+    // in which case there is no safe token to mint: fail loudly rather than fall
+    // back to a predictable time/pid-derived secret that would leave the control
+    // socket guessable.
     let mut bytes = [0u8; 32];
-    if std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .is_err()
-    {
-        // /dev/urandom is effectively always available on macOS; degrade to a
-        // time/pid-mixed value rather than emitting an all-zero token if it is not,
-        // so the socket is never left guarded by a constant secret.
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let pid = u128::from(std::process::id());
-        let mixed = nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        bytes[..16].copy_from_slice(&mixed.to_le_bytes());
-        bytes[16..].copy_from_slice(&nanos.to_le_bytes());
-    }
+    getrandom::getrandom(&mut bytes).expect("OS CSPRNG unavailable; cannot mint a control token");
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -1269,6 +1277,40 @@ mod tests {
                 "pane-a".to_string(),
                 "pane-c".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn update_pane_cwd_rejects_untrusted_values() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        // A normal path is accepted and stored.
+        state
+            .update_pane_cwd("pane-1", "/Users/me/project".to_string())
+            .unwrap();
+        assert_eq!(
+            state.list_panes().unwrap()[0].cwd,
+            "/Users/me/project".to_string()
+        );
+
+        // Control characters (here a newline) are rejected and leave the stored
+        // value untouched.
+        assert!(
+            state
+                .update_pane_cwd("pane-1", "/tmp/evil\nmalicious".to_string())
+                .is_err()
+        );
+        // An oversized value is rejected too.
+        assert!(
+            state
+                .update_pane_cwd("pane-1", "/".repeat(MAX_PANE_CWD_LEN + 1))
+                .is_err()
+        );
+        assert_eq!(
+            state.list_panes().unwrap()[0].cwd,
+            "/Users/me/project".to_string()
         );
     }
 
