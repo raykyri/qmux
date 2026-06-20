@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
+    "dev:tauri": "tauri dev",
     "build": "tauri build",
     "build:web": "tsc && vite build",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev"
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
