@@ -235,6 +235,33 @@ function forceRender(terminal: Terminal) {
   }
 }
 
+// ghostty-web snaps the viewport to the bottom on every write while you are
+// scrolled up (its writeInternal runs `viewportY !== 0 && scrollToBottom()`), so
+// streaming PTY output yanks you out of the scrollback. We instead keep the same
+// content anchored: viewportY counts lines up from the live bottom, so when a
+// write pushes N lines into the scrollback we add N back to where we were. At the
+// live bottom (viewportY === 0) we leave it alone so auto-follow still works.
+function writePreservingScroll(terminal: Terminal, data: string | Uint8Array) {
+  const previousViewportY = terminal.getViewportY();
+  if (previousViewportY === 0) {
+    terminal.write(data);
+    return;
+  }
+  const before = terminal.getScrollbackLength();
+  terminal.write(data);
+  const after = terminal.getScrollbackLength();
+  // `after - before` undercounts only once the scrollback hits its cap (lines
+  // then evict from the top instead of growing the length), so parking while
+  // >10k lines stream past drifts slowly — an acceptable edge for a rare case.
+  const added = Math.max(0, after - before);
+  // Re-anchor by writing the field directly: scrollToLine() would also pulse the
+  // scrollbar visible on every chunk, keeping it lit for the whole stream.
+  (terminal as unknown as { viewportY: number }).viewportY = Math.min(
+    after,
+    previousViewportY + added,
+  );
+}
+
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
   { pane, active },
   ref,
@@ -434,7 +461,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       const pending = pendingDataRef.current;
       pendingDataRef.current = [];
       for (const chunk of pending) {
-        terminal.write(chunk);
+        writePreservingScroll(terminal, chunk);
         scheduleForcedRedraw();
       }
 
@@ -594,7 +621,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       }
       const terminal = terminalRef.current;
       if (terminal && terminalReadyRef.current) {
-        terminal.write(data);
+        writePreservingScroll(terminal, data);
         requestRedrawRef.current?.();
       } else {
         pendingDataRef.current.push(data);
