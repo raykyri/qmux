@@ -807,12 +807,37 @@ button:disabled {
   color: #e7e7e2;
 }
 
-.command-launcher-worktree input {
+/* Custom checkbox so the unchecked box reads as quiet launcher chrome (dark fill,
+   hairline border) instead of a bright native control, and the checked state
+   matches the launcher's teal accent. Shared by the worktree + option toggles. */
+.command-launcher-worktree input,
+.command-launcher-option-toggle input {
+  appearance: none;
+  -webkit-appearance: none;
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: #6cae9d;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.command-launcher-worktree input:checked,
+.command-launcher-option-toggle input:checked {
+  border-color: var(--accent-strong);
+  background-color: var(--accent-strong);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3.5 7.3 5.9 9.7 10.5 4.6' fill='none' stroke='%2310211c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px;
+}
+
+.command-launcher-worktree input:focus-visible,
+.command-launcher-option-toggle input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
 .command-launcher-options {
@@ -892,14 +917,6 @@ button:disabled {
   color: #e7e7e2;
 }
 
-.command-launcher-option-toggle input {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: #6cae9d;
-  cursor: pointer;
-}
-
 .command-launcher-controls {
   display: inline-flex;
   align-items: center;
@@ -908,16 +925,22 @@ button:disabled {
   pointer-events: auto;
 }
 
+/* Segmented agent picker, skinned to read as one of the app's normal buttons:
+   a bordered control surface with a hairline divider, rather than a faint pill.
+   min-height lives on the container (border-box) so the border keeps it at 30px. */
 .command-launcher-adapter-picker {
   display: inline-flex;
+  min-height: var(--control-h-md);
   min-width: 0;
   overflow: hidden;
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
 }
 
 .command-launcher-adapter-picker button {
-  min-height: var(--control-h-md);
+  min-height: 0;
+  align-self: stretch;
   padding: 0 12px;
   border: 0;
   border-radius: 0;
@@ -929,11 +952,11 @@ button:disabled {
 }
 
 .command-launcher-adapter-picker button + button {
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 1px solid var(--control-border);
 }
 
 .command-launcher-adapter-picker button:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--control-bg-hover);
   color: #e7e7e2;
 }
 
