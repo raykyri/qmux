@@ -39,6 +39,9 @@ import type {
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 const LEFT_SIDEBAR_MIN_WIDTH = 208;
 const LEFT_SIDEBAR_MAX_WIDTH = 420;
+// Below this width the New shell/New agent buttons drop their icons to keep the
+// labels readable.
+const LEFT_SIDEBAR_COMPACT_WIDTH = 230;
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -651,6 +654,15 @@ export default function App() {
     });
   }
 
+  // The "Recovered" badge is a one-time, post-restart hint. Clicking it just
+  // clears the flag locally (panes are only fetched once at startup), so the
+  // acknowledgement sticks for the session.
+  function dismissRecoveredBadge(paneId: string) {
+    setPanes((current) =>
+      current.map((pane) => (pane.id === paneId ? { ...pane, recovered: false } : pane)),
+    );
+  }
+
   async function closePane(paneToClose: PaneInfo) {
     setError(null);
     try {
@@ -1010,7 +1022,7 @@ export default function App() {
       className={`app-shell ${activeAgent ? "has-turn-sidebar" : ""}`}
       style={appStyle}
     >
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
         <div
           className="sidebar-resizer"
           role="separator"
@@ -1034,6 +1046,18 @@ export default function App() {
             // Agent panes live in a worktree; shells show the directory they
             // launched in (their spawn-time cwd).
             const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
+            // Git context shown under the path for worktree agents. The pane runs
+            // in the worktree, so label it by the worktree's folder name rather
+            // than repeating the full path; the tooltip carries the full dir.
+            const paneBranch = paneAgent?.branch ?? null;
+            const paneWorktreeName =
+              paneBranch && paneAgent?.worktreeDir
+                ? (paneAgent.worktreeDir.split("/").filter(Boolean).pop() ?? null)
+                : null;
+            const paneGitMeta = [paneBranch, paneWorktreeName].filter(Boolean).join(" · ");
+            const paneGitMetaTitle = [paneBranch, paneBranch ? paneAgent?.worktreeDir : null]
+              .filter(Boolean)
+              .join(" · ");
             return (
               <div
                 key={pane.id}
@@ -1049,7 +1073,24 @@ export default function App() {
                     <span className="pane-tab-title">{pane.title}</span>
                     <span className="pane-tab-meta">
                       {pane.recovered ? (
-                        <small className="pane-tab-recovered" title="Recovered after restart">
+                        <small
+                          className="pane-tab-recovered"
+                          role="button"
+                          tabIndex={0}
+                          title="Recovered after restart — click to dismiss"
+                          aria-label="Dismiss recovered label"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            dismissRecoveredBadge(pane.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              dismissRecoveredBadge(pane.id);
+                            }
+                          }}
+                        >
                           Recovered
                         </small>
                       ) : null}
@@ -1059,6 +1100,11 @@ export default function App() {
                   {paneDir ? (
                     <span className="pane-tab-path" title={paneDir}>
                       {formatPaneDir(paneDir)}
+                    </span>
+                  ) : null}
+                  {paneGitMeta ? (
+                    <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
+                      {paneGitMeta}
                     </span>
                   ) : null}
                 </button>
@@ -1099,25 +1145,31 @@ export default function App() {
           onMouseDown={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          {contextMenuAgent ? (
-            <div className={`pane-context-status status-${agentStatusTone(contextMenuAgent.status)}`}>
-              <span>Agent status</span>
-              <strong>{agentStatusLabel(contextMenuAgent.status) ?? "Stopped"}</strong>
-            </div>
-          ) : null}
           <dl className="pane-context-details">
+            {contextMenuAgent ? (
+              <div
+                className={`pane-context-status-row status-${agentStatusTone(contextMenuAgent.status)}`}
+              >
+                <dt>Agent status</dt>
+                <dd>{agentStatusLabel(contextMenuAgent.status) ?? "Stopped"}</dd>
+              </div>
+            ) : null}
             <div>
               <dt>Tab</dt>
               <dd>{contextMenuPane.title}</dd>
             </div>
-            <div>
-              <dt>Branch</dt>
-              <dd>{contextMenuAgent?.branch ?? "None"}</dd>
-            </div>
-            <div>
-              <dt>Worktree</dt>
-              <dd>{contextMenuAgent?.branch ? contextMenuAgent.worktreeDir : "None"}</dd>
-            </div>
+            {contextMenuAgent?.branch ? (
+              <div>
+                <dt>Branch</dt>
+                <dd>{contextMenuAgent.branch}</dd>
+              </div>
+            ) : null}
+            {contextMenuAgent?.branch && contextMenuAgent.worktreeDir ? (
+              <div>
+                <dt>Worktree</dt>
+                <dd>{contextMenuAgent.worktreeDir}</dd>
+              </div>
+            ) : null}
             <div>
               <dt>Directory</dt>
               <dd>{contextMenuPane.cwd}</dd>

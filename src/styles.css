@@ -233,7 +233,8 @@ button:disabled {
 
 .pane-tab-title,
 .pane-tab small,
-.pane-tab-path {
+.pane-tab-path,
+.pane-tab-gitmeta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -244,12 +245,14 @@ button:disabled {
   font-size: 11px;
 }
 
-.pane-tab-path {
+.pane-tab-path,
+.pane-tab-gitmeta {
   color: #6b736f;
   font-size: 11px;
 }
 
 .pane-tab-row.is-selected .pane-tab-path,
+.pane-tab-row.is-selected .pane-tab-gitmeta,
 .pane-tab-row.is-selected .pane-tab small {
   color: rgba(255, 255, 255, 0.72);
 }
@@ -270,11 +273,27 @@ button:disabled {
   color: #6cae9d;
   font-size: 10px;
   letter-spacing: 0.02em;
+  /* Clickable to dismiss. */
+  cursor: pointer;
+}
+
+.pane-tab-recovered:hover {
+  background: #1c2a27;
+  color: #8fd6c7;
+}
+
+.pane-tab-recovered:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent-color);
 }
 
 .pane-tab-row.is-selected .pane-tab-recovered {
   background: rgba(255, 255, 255, 0.18);
   color: #ffffff;
+}
+
+.pane-tab-row.is-selected .pane-tab-recovered:hover {
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .pane-context-menu {
@@ -297,33 +316,19 @@ button:disabled {
   user-select: text;
 }
 
-.pane-context-status {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 5px;
-  padding: 7px 8px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.pane-context-status span,
 .pane-context-details dt {
   color: #8a938e;
 }
 
-/* A small status dot with a neutral label, the way native apps show state —
-   rather than the whole word painted in the loud accent color. */
-.pane-context-status strong {
+/* Agent status is just another row now; a small status dot sits before its value. */
+.pane-context-status-row dd {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #d9ddd9;
-  font-weight: 600;
 }
 
-.pane-context-status strong::before {
+.pane-context-status-row dd::before {
+  flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -331,37 +336,38 @@ button:disabled {
   content: "";
 }
 
-.pane-context-status.status-active strong::before {
+.pane-context-status-row.status-active dd::before {
   background: #5fb89f;
 }
 
-.pane-context-status.status-pending strong::before {
+.pane-context-status-row.status-pending dd::before {
   background: #d8b878;
 }
 
-.pane-context-status.status-attention strong::before {
+.pane-context-status-row.status-attention dd::before {
   background: #e0a96d;
 }
 
-.pane-context-status.status-error strong::before {
+.pane-context-status-row.status-error dd::before {
   background: #e0796d;
 }
 
 .pane-context-details {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   margin: 0;
 }
 
 .pane-context-details div {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 84px minmax(0, 1fr);
   gap: 10px;
-  padding: 5px 6px;
+  padding: 3px 6px;
 }
 
 .pane-context-details dt {
   min-width: 0;
+  white-space: nowrap;
 }
 
 .pane-context-details dd {
@@ -428,6 +434,12 @@ button:disabled {
 .sidebar-actions button svg {
   flex: none;
   opacity: 0.8;
+}
+
+/* In a narrow sidebar there isn't room for both the icon and the label, so drop
+   the icons and let the labels have the space. */
+.sidebar.is-narrow .sidebar-actions button svg {
+  display: none;
 }
 
 /* Let the label ellipsize instead of wrapping under the icon when the sidebar is
