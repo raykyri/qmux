@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { EllipsisVertical } from "lucide-react";
+import { EllipsisVertical, X } from "lucide-react";
 import { removeQueuedAgentTurn, submitAgentTurn, submitPaneInput } from "../lib/api";
 import type { AgentInfo, PaneInfo } from "../types";
 
@@ -215,7 +215,7 @@ export default function NativeInput({
                     disabled={submitting}
                     onClick={() => void removeQueuedTurn(index, turn)}
                   >
-                    x
+                    <X size={13} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
@@ -253,19 +253,16 @@ export default function NativeInput({
       />
       <div className="native-input-actions">
         <div className="composer-menu" ref={menuRef}>
-          <a
-            href="#"
+          <button
+            type="button"
             className="composer-menu-trigger"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-label="More actions"
-            onClick={(event) => {
-              event.preventDefault();
-              setMenuOpen((open) => !open);
-            }}
+            onClick={() => setMenuOpen((open) => !open)}
           >
             <EllipsisVertical size={18} aria-hidden="true" />
-          </a>
+          </button>
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">
               <button

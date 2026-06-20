@@ -5,6 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
+import { Sparkles, SquareTerminal, X } from "lucide-react";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -971,7 +972,7 @@ export default function App() {
                     void requestClosePane(pane);
                   }}
                 >
-                  x
+                  <X size={13} aria-hidden="true" />
                 </button>
               </div>
             );
@@ -980,10 +981,12 @@ export default function App() {
 
         <div className="sidebar-actions">
           <button type="button" onClick={addShellPane}>
-            New shell
+            <SquareTerminal size={14} aria-hidden="true" />
+            <span>New shell</span>
           </button>
           <button type="button" onClick={() => setLauncherOpen(true)}>
-            New agent
+            <Sparkles size={14} aria-hidden="true" />
+            <span>New agent</span>
           </button>
         </div>
       </aside>
