@@ -178,11 +178,24 @@ button:disabled {
      bleeding through. Degrades to a plain dark panel if vibrancy is
      unavailable. Lower the alpha for a stronger see-through effect. */
   background: rgba(14, 16, 17, 0.72);
-  /* Top trimmed to 10px so the first tab lines up with the right pane's
-     transcript top padding. */
-  padding: 10px 10px 12px;
+  /* Top padding clears the macOS traffic-light buttons, which the Overlay
+     title bar draws over the top-left of the window (i.e. over the sidebar). */
+  padding: 30px 10px 12px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
+}
+
+/* Draggable strip over the cleared area at the top of the sidebar so the
+   frameless window can still be moved. Sits below the resizer (z-index 2) so
+   the top-right resize grab keeps working, and below the native traffic-light
+   buttons, which the OS keeps clickable on top of the webview. */
+.titlebar-drag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 28px;
 }
 
 .sidebar-resizer {
