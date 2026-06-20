@@ -16,6 +16,21 @@ use tauri::{AppHandle, Emitter};
 pub type SharedChild = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 pub type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+pub type SharedBacklog = Arc<Mutex<PaneBacklog>>;
+
+/// Holds PTY output produced before the webview's listener is attached.
+///
+/// A pane's reader thread starts emitting the instant the process spawns, but on
+/// a cold start (and for panes recovered before the UI exists) that happens
+/// before the frontend has registered its `qmux-event` listener, so the very
+/// first prompt would be emitted into the void and lost. Until `ready` flips —
+/// the frontend signals this via `pane_attach` once its listener is live — the
+/// reader buffers here instead of emitting.
+#[derive(Default)]
+pub struct PaneBacklog {
+    pub ready: bool,
+    pub buffer: Vec<u8>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -100,6 +115,7 @@ pub struct PaneRuntime {
     pub child: SharedChild,
     pub master: SharedMaster,
     pub writer: SharedWriter,
+    pub backlog: SharedBacklog,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -903,6 +919,15 @@ impl AppState {
         Ok(model.panes.get(pane_id).map(|pane| pane.child.clone()))
     }
 
+    pub fn pane_backlog(&self, pane_id: &str) -> Result<Option<SharedBacklog>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.panes.get(pane_id).map(|pane| pane.backlog.clone()))
+    }
+
     pub fn update_pane_size(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         {
             let mut model = self
@@ -1171,6 +1196,7 @@ mod tests {
             child: Arc::new(Mutex::new(Box::new(FakeChild))),
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+            backlog: Default::default(),
         }
     }
 
