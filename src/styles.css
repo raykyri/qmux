@@ -1238,13 +1238,11 @@ button:disabled {
 .queued-turn-text {
   display: block;
   min-width: 0;
+  /* overflow:hidden lets the JS height tween clip content cleanly while it eases
+     open/closed (see QueuedTurnText). */
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-  /* Light, subtle height ease when expanding/collapsing. The generous cap clears
-     any realistic prompt without clipping; the motion is meant to be barely-there. */
-  max-height: 800px;
-  transition: max-height 160ms ease;
 }
 
 .queued-turn.is-collapsed .queued-turn-text {
@@ -1252,7 +1250,6 @@ button:disabled {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-  max-height: 2.9em;
 }
 
 .queued-turn-actions {
