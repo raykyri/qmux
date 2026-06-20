@@ -562,14 +562,17 @@ export default function App() {
     setError(null);
     try {
       await killPane(paneToClose.id);
-      setPanes((current) => current.filter((pane) => pane.id !== paneToClose.id));
-      setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
-      setActivePaneId((current) => {
-        if (current !== paneToClose.id) {
-          return current;
-        }
-        return panes.find((pane) => pane.id !== paneToClose.id)?.id ?? null;
+      setPanes((current) => {
+        const nextPanes = current.filter((pane) => pane.id !== paneToClose.id);
+        setActivePaneId((currentActivePaneId) => {
+          if (currentActivePaneId !== paneToClose.id) {
+            return currentActivePaneId;
+          }
+          return nextPanes[0]?.id ?? null;
+        });
+        return nextPanes;
       });
+      setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -771,6 +774,9 @@ export default function App() {
       event.stopPropagation();
 
       if (key === "t") {
+        if (!event.metaKey || event.ctrlKey) {
+          return;
+        }
         void addShellPane();
       } else {
         setLauncherOpen(true);
