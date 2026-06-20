@@ -1238,6 +1238,25 @@ export default function App() {
     await closePane(paneToClose);
   }
 
+  function handlePaneTabClosePointerDown(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    pane: PaneInfo,
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void requestClosePane(pane);
+  }
+
+  function handlePaneTabCloseClick(event: ReactMouseEvent<HTMLButtonElement>, pane: PaneInfo) {
+    event.stopPropagation();
+    if (event.detail === 0) {
+      void requestClosePane(pane);
+    }
+  }
+
   // Resolves the worktree close dialog: always closes the pane, and additionally
   // deletes the worktree when the user chose to.
   async function resolveCloseDialog(choice: "keep" | "delete") {
@@ -1760,10 +1779,8 @@ export default function App() {
                   type="button"
                   className="pane-tab-close"
                   aria-label={`Close ${pane.title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void requestClosePane(pane);
-                  }}
+                  onPointerDown={(event) => handlePaneTabClosePointerDown(event, pane)}
+                  onClick={(event) => handlePaneTabCloseClick(event, pane)}
                 >
                   <X size={13} aria-hidden="true" />
                 </button>

@@ -534,6 +534,7 @@ button:disabled {
   position: absolute;
   top: 50%;
   right: 5px;
+  z-index: 1;
   width: 22px;
   min-height: 22px;
   padding: 0;
@@ -560,6 +561,8 @@ button:disabled {
   color: #ffffff;
   background: #357565;
   background: color-mix(in srgb, AccentColor, #000 15%);
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .pane-tab-row.is-selected .pane-tab-close:hover {
