@@ -154,6 +154,7 @@ impl CodexAdapter {
             ));
         }
 
+        let has_initial_prompt = prompt_has_initial_text(&request.prompt);
         let tail_args = prompt_tail_args(&request.prompt);
         let args = build_codex_args(&cwd, request.model.as_deref(), &options, tail_args);
         let pane_id = state.next_id("pane");
@@ -180,7 +181,7 @@ impl CodexAdapter {
 
         match spawn_result {
             Ok(pane) => {
-                attach_agent_pane(state, &agent.id, pane.id.clone())?;
+                attach_codex_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
                 Ok(pane)
             }
             Err(err) => {
@@ -280,7 +281,12 @@ impl CodexAdapter {
                 use_worktree: false,
             },
         )?;
-        let agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
+        let agent = attach_codex_agent_pane(
+            state,
+            &agent.id,
+            request.pane_id.clone(),
+            args_contain_prompt(&request.args),
+        )?;
 
         let options = CodexLaunchOptions::default();
         let args = build_codex_args(&cwd, None, &options, request.args);
@@ -333,7 +339,12 @@ impl CodexAdapter {
                         .or_else(|| string_field(&notification.payload, "sessionId"))
                         .or_else(|| string_field(&notification.payload, "resource_id"))
                         .or_else(|| string_field(&notification.payload, "resourceId"));
-                    agent.status = AgentStatus::Running;
+                    // A startup hook only means Codex is ready. Interactive launches
+                    // without an initial prompt should stay sendable until the first
+                    // real turn starts.
+                    if agent.status != AgentStatus::AwaitingInput {
+                        agent.status = AgentStatus::Running;
+                    }
                     state.update_agent(agent.clone())?;
                 }
                 "agent.session_start"
@@ -531,6 +542,75 @@ fn prompt_tail_args(prompt: &str) -> Vec<String> {
     }
 }
 
+fn prompt_has_initial_text(prompt: &str) -> bool {
+    !prompt.trim().is_empty()
+}
+
+fn attach_codex_agent_pane(
+    state: &AppState,
+    agent_id: &str,
+    pane_id: String,
+    has_initial_prompt: bool,
+) -> Result<AgentInfo, String> {
+    let mut agent = attach_agent_pane(state, agent_id, pane_id)?;
+    if !has_initial_prompt {
+        agent.status = AgentStatus::AwaitingInput;
+        state.update_agent(agent.clone())?;
+    }
+    Ok(agent)
+}
+
+/// Whether a manual `codex ...` invocation carries an inline prompt. Value-taking
+/// flags are skipped so `codex --model gpt-5` is treated as interactive.
+fn args_contain_prompt(args: &[String]) -> bool {
+    let mut after_delimiter = false;
+    let mut skip_next = false;
+    for arg in args {
+        if after_delimiter {
+            return true;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--" {
+            after_delimiter = true;
+            continue;
+        }
+        if codex_value_flag(arg) {
+            skip_next = true;
+            continue;
+        }
+        if codex_inline_value_flag(arg) || arg.starts_with('-') {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn codex_value_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--cd" | "-C" | "--model" | "-m" | "--sandbox" | "--ask-for-approval" | "--config" | "-c"
+    )
+}
+
+fn codex_inline_value_flag(arg: &str) -> bool {
+    [
+        "--cd=",
+        "--model=",
+        "--sandbox=",
+        "--ask-for-approval=",
+        "--config=",
+    ]
+    .iter()
+    .any(|prefix| arg.starts_with(prefix))
+        || (arg.starts_with("-C") && arg.len() > 2)
+        || (arg.starts_with("-m") && arg.len() > 2)
+        || (arg.starts_with("-c") && arg.len() > 2)
+}
+
 fn ensure_codex_integration() -> Result<PathBuf, String> {
     let codex_home = codex_home()?;
     let qmux_cli = env::current_exe()
@@ -709,6 +789,10 @@ mod tests {
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    fn svec(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
     #[test]
     fn launch_options_reject_unknown_fields() {
         let err = CodexLaunchOptions::from_value(json!({ "bogus": true })).unwrap_err();
@@ -783,6 +867,22 @@ mod tests {
             prompt_tail_args("  start here  "),
             vec!["--".to_string(), "start here".to_string()]
         );
+    }
+
+    #[test]
+    fn args_contain_prompt_detects_interactive_codex_launches() {
+        assert!(!args_contain_prompt(&[]));
+        assert!(!args_contain_prompt(&svec(&["--model", "gpt-5"])));
+        assert!(!args_contain_prompt(&svec(&["--sandbox=workspace-write"])));
+        assert!(!args_contain_prompt(&svec(&["--search"])));
+
+        assert!(args_contain_prompt(&svec(&["fix the bug"])));
+        assert!(args_contain_prompt(&svec(&[
+            "--model",
+            "gpt-5",
+            "fix the bug"
+        ])));
+        assert!(args_contain_prompt(&svec(&["--", "after separator"])));
     }
 
     #[test]
@@ -898,6 +998,38 @@ mod tests {
     }
 
     #[test]
+    fn interactive_codex_attach_marks_agent_awaiting_input() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        agent.pane_id = None;
+        state.insert_agent(agent).unwrap();
+
+        let attached =
+            attach_codex_agent_pane(&state, "agent-1", "pane-1".to_string(), false).unwrap();
+
+        assert!(matches!(attached.status, AgentStatus::AwaitingInput));
+        let stored = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(stored.status, AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn prompted_codex_attach_marks_agent_running() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        agent.pane_id = None;
+        state.insert_agent(agent).unwrap();
+
+        let attached =
+            attach_codex_agent_pane(&state, "agent-1", "pane-1".to_string(), true).unwrap();
+
+        assert!(matches!(attached.status, AgentStatus::Running));
+        let stored = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(stored.status, AgentStatus::Running));
+    }
+
+    #[test]
     fn session_start_captures_codex_resource_id() {
         let state = test_state();
         let mut agent = sample_agent();
@@ -917,6 +1049,28 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("codex-session-1"));
         assert!(matches!(agent.status, AgentStatus::Running));
+    }
+
+    #[test]
+    fn session_start_preserves_interactive_codex_status() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::AwaitingInput;
+        state.insert_agent(agent).unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "resource_id": "codex-session-1" }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.session_start");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id.as_deref(), Some("codex-session-1"));
+        assert!(matches!(agent.status, AgentStatus::AwaitingInput));
     }
 
     #[test]
