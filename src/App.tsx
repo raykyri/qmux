@@ -267,7 +267,6 @@ function RecoveredQueuePanel({
       <div className="recovered-queue-list">
         {queues.map(({ agent, queuedTurns }) => (
           <div key={agent.id} className="recovered-queue-group">
-            <div className="recovered-queue-source">Previous Claude session</div>
             {queuedTurns.map((turn, index) => (
               <div key={`${agent.id}-${index}-${turn}`} className="recovered-queue-item">
                 <p>{turn}</p>
@@ -277,12 +276,12 @@ function RecoveredQueuePanel({
                     disabled={!hasTargetAgent}
                     title={
                       hasTargetAgent
-                        ? "Move to the current agent"
-                        : "Launch Claude in this tab before moving"
+                        ? "Queue to the current agent"
+                        : "Launch Claude in this tab before queueing"
                     }
                     onClick={() => onMoveTurn(agent.id, index, turn)}
                   >
-                    Move
+                    Queue
                   </button>
                   <button type="button" onClick={() => onDiscardTurn(agent.id, index, turn)}>
                     Discard
@@ -1438,7 +1437,7 @@ export default function App() {
                 aria-label="Launch Claude"
                 title="Launch Claude"
               >
-                <span aria-hidden="true">⌘↵</span>
+                <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
               </button>
             </div>
           </form>

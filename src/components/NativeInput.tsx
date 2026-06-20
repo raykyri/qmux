@@ -601,7 +601,7 @@ export default function NativeInput({
             <button type="button" onClick={() => void submitTurn(value, "send")}>
               <span>Send</span>
               <span className="shortcut-hint" aria-label="Command Enter">
-                ⌘↵
+                ⌘<span className="enter-glyph" aria-hidden="true">↵</span>
               </span>
             </button>
           ) : null}
@@ -624,7 +624,7 @@ export default function NativeInput({
             <span>Queue</span>
             {canQueue ? (
               <span className="shortcut-hint" aria-label="Command Enter">
-                ⌘↵
+                ⌘<span className="enter-glyph" aria-hidden="true">↵</span>
               </span>
             ) : null}
           </button>
