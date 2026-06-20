@@ -1211,7 +1211,7 @@ export default function App() {
     });
   }
 
-  // The "Recovered" badge is a one-time, post-restart hint. Clicking it just
+  // The "Restored" badge is a one-time, post-restart hint. Clicking it just
   // clears the flag locally (panes are only fetched once at startup), so the
   // acknowledgement sticks for the session.
   function dismissRecoveredBadge(paneId: string) {
@@ -1917,8 +1917,8 @@ export default function App() {
                           className="pane-tab-recovered"
                           role="button"
                           tabIndex={0}
-                          title="Recovered after restart — click to dismiss"
-                          aria-label="Dismiss recovered label"
+                          title="Restored after restart — click to dismiss"
+                          aria-label="Dismiss restored label"
                           onClick={(event) => {
                             event.stopPropagation();
                             dismissRecoveredBadge(pane.id);
@@ -1931,7 +1931,7 @@ export default function App() {
                             }
                           }}
                         >
-                          Recovered
+                          Restored
                         </small>
                       ) : null}
                       {paneStatus ? (
