@@ -75,8 +75,13 @@ pub struct PrepareAgentWorkspaceRequest {
 
 pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<GroupInfo, String> {
     let id = state.next_id("group");
-    let name = request.name.unwrap_or_else(default_group_name);
-    let dir = unique_group_dir(&state.config().workspace_root, &name)?;
+    let dir = match request.name.as_deref() {
+        // An explicitly requested name keeps the numeric-suffix collision policy.
+        Some(name) => unique_group_dir(&state.config().workspace_root, name)?,
+        // Otherwise generate a fresh, human-readable name, regenerating until one
+        // doesn't collide with an existing worktree.
+        None => unique_friendly_group_dir(&state.config().workspace_root)?,
+    };
     fs::create_dir_all(dir.join(".qmux"))
         .map_err(|err| format!("failed to create group dir {}: {err}", dir.display()))?;
 
@@ -323,8 +328,31 @@ fn default_base_repo() -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
+/// A friendly, human-readable name for a new group / worktree, e.g.
+/// "brave-otter" (two hyphenated words). Falls back to a timestamped name only
+/// if generation somehow yields nothing, which the bundled word lists make
+/// unreachable in practice.
 fn default_group_name() -> String {
-    format!("group-{}", now_millis())
+    names::Generator::default()
+        .next()
+        .unwrap_or_else(|| format!("group-{}", now_millis()))
+}
+
+/// Allocates a directory under `root` named with a freshly generated friendly
+/// name, regenerating on collision so a new worktree never reuses the name of an
+/// existing one.
+fn unique_friendly_group_dir(root: &Path) -> Result<PathBuf, String> {
+    let mut generator = names::Generator::default();
+    for _ in 0..1000 {
+        let Some(name) = generator.next() else { break };
+        let candidate = root.join(sanitize_path_segment(&name));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    // Pathological case (every generated name collided): fall back to numeric
+    // suffixing to guarantee forward progress.
+    unique_group_dir(root, &default_group_name())
 }
 
 fn unique_group_dir(root: &Path, requested_name: &str) -> Result<PathBuf, String> {
@@ -498,5 +526,44 @@ mod tests {
     fn stopped_status_deserializes_as_idle() {
         let status: AgentStatus = serde_json::from_str("\"stopped\"").unwrap();
         assert!(matches!(status, AgentStatus::Idle));
+    }
+
+    #[test]
+    fn default_group_name_is_a_human_readable_hyphenated_name() {
+        // Sample several times since generation is random.
+        for _ in 0..50 {
+            let name = default_group_name();
+            let words: Vec<&str> = name.split('-').collect();
+            // Hyphenated words (typically two: adjective-noun), each a non-empty
+            // run of lowercase letters — not the old "group-<millis>" form.
+            assert!(words.len() >= 2, "expected a hyphenated name, got {name:?}");
+            assert!(
+                words
+                    .iter()
+                    .all(|word| !word.is_empty() && word.chars().all(|ch| ch.is_ascii_lowercase())),
+                "unexpected friendly name {name:?}"
+            );
+            assert!(
+                !name.starts_with("group-"),
+                "name should not use the group- prefix: {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unique_friendly_group_dir_skips_existing_worktrees() {
+        let root = std::env::temp_dir().join(format!("qmux-friendly-{}", now_millis()));
+        fs::create_dir_all(&root).unwrap();
+
+        // Occupy a directory, then assert the allocator never hands it back.
+        let taken = unique_friendly_group_dir(&root).unwrap();
+        fs::create_dir_all(&taken).unwrap();
+        for _ in 0..20 {
+            let next = unique_friendly_group_dir(&root).unwrap();
+            assert_ne!(next, taken, "allocator returned an existing worktree dir");
+            assert!(!next.exists());
+        }
+
+        fs::remove_dir_all(&root).ok();
     }
 }
