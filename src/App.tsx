@@ -22,7 +22,16 @@ import {
   spawnShell,
   worktreeStatus,
 } from "./lib/api";
-import type { AgentInfo, InitialPaneSize, PaneInfo, RuntimeConfig, Turn } from "./types";
+import type {
+  AgentInfo,
+  InitialPaneSize,
+  PaneInfo,
+  QmuxEvent,
+  RuntimeConfig,
+  TranscriptCopyPayload,
+  TranscriptHookEvent,
+  Turn,
+} from "./types";
 
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 const LEFT_SIDEBAR_MIN_WIDTH = 208;
@@ -44,6 +53,7 @@ const MAX_INITIAL_COLS = 500;
 const MAX_INITIAL_ROWS = 200;
 const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
+const TRANSCRIPT_COPY_VERSION = 1;
 
 let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
@@ -140,6 +150,33 @@ function agentStatusLabel(status: AgentInfo["status"]) {
   }
 }
 
+function transcriptHookEvent(event: QmuxEvent): TranscriptHookEvent | null {
+  const hookEvent = event.payload.hookEvent;
+  if (!event.agentId || typeof hookEvent !== "string") {
+    return null;
+  }
+
+  return {
+    type: event.type,
+    paneId: event.paneId ?? null,
+    agentId: event.agentId,
+    hookEvent,
+    payload: event.payload.payload ?? null,
+    timestamp: event.timestamp,
+  };
+}
+
+function formatTranscriptCopyJson(
+  input: Omit<TranscriptCopyPayload, "version" | "exportedAt">,
+) {
+  const payload: TranscriptCopyPayload = {
+    version: TRANSCRIPT_COPY_VERSION,
+    exportedAt: new Date().toISOString(),
+    ...input,
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
 // The close-confirmation dialog covers two cases: a worktree agent (offer to keep
 // or delete the worktree) and a live agent without a worktree (just confirm the
 // stop). Both render in-app — window.confirm is a no-op in the Tauri webview.
@@ -176,6 +213,9 @@ export default function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, string[]>>({});
+  const [hookEventsByAgent, setHookEventsByAgent] = useState<
+    Record<string, TranscriptHookEvent[]>
+  >({});
   const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
     Record<string, boolean[]>
   >({});
@@ -201,6 +241,10 @@ export default function App() {
     [activeAgent?.id, turns],
   );
   const activeTranscript = useMemo(() => formatTurnsTranscript(activeTurns), [activeTurns]);
+  const activeHookEvents = useMemo(
+    () => (activeAgent ? hookEventsByAgent[activeAgent.id] ?? [] : []),
+    [activeAgent?.id, hookEventsByAgent],
+  );
   const activeQueuedTurns = useMemo(
     () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, queuedTurnsByAgent],
@@ -426,6 +470,13 @@ export default function App() {
     void listenToEvents((event) => {
       if (disposed) {
         return;
+      }
+      const hookEvent = transcriptHookEvent(event);
+      if (hookEvent) {
+        setHookEventsByAgent((current) => ({
+          ...current,
+          [hookEvent.agentId]: [...(current[hookEvent.agentId] ?? []), hookEvent],
+        }));
       }
       if (event.type === "pty.exit" && event.paneId) {
         setPanes((current) =>
@@ -1158,6 +1209,15 @@ export default function App() {
                   queuedTurns={activeQueuedTurns}
                   collapsedQueuedTurns={activeCollapsedQueuedTurns}
                   transcriptText={activeTranscript}
+                  transcriptCopyText={() =>
+                    formatTranscriptCopyJson({
+                      agent: activeAgent,
+                      pane: activePane,
+                      transcriptText: activeTranscript,
+                      turns: activeTurns,
+                      hooks: activeHookEvents,
+                    })
+                  }
                   onQueueChange={setAgentQueuedTurns}
                   onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                   onError={setError}
