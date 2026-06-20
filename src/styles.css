@@ -348,17 +348,21 @@ button:disabled {
   gap: 6px;
 }
 
-/* The sidebar is monospace terminal chrome, but its action buttons opt back into
-   the UI sans + neutral skin so they read as native controls and match the right
-   pane's buttons. */
-.sidebar-actions button {
+/* The sidebar action buttons (New shell/New agent) and the composer submit
+   buttons (Send/Steer/Queue/Approve/Deny) share one skin so both panes read as the
+   same control set — same height, padding, gap, and UI-sans font. The sidebar is
+   otherwise monospace terminal chrome, so it has to opt back into the UI sans here. */
+.sidebar-actions button,
+.native-input-submit-actions button {
   flex-wrap: nowrap;
   gap: 6px;
+  min-height: var(--control-h-md);
   padding: 0 8px;
   font-family: var(--font-ui);
 }
 
-.sidebar-actions button:hover {
+.sidebar-actions button:hover,
+.native-input-submit-actions button:hover:not(:disabled) {
   border-color: var(--accent-strong);
   background: var(--control-bg-hover);
   color: #f4f3ec;
@@ -1255,26 +1259,13 @@ button:disabled {
 
 .native-input-submit-actions {
   display: flex;
+  /* Center the buttons in the row so their own height (shared with the sidebar
+     actions) wins instead of being stretched to the taller composer-menu trigger. */
+  align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
   margin-left: auto;
-}
-
-.native-input-submit-actions button {
-  min-height: var(--control-h-lg);
-  /* Label sits 1px tighter to the bottom edge than the top. */
-  padding-top: 1px;
-  padding-bottom: 0;
-}
-
-/* Every composer button (Send, Steer, Queue, Approve, Deny) shares the neutral
-   skin and accent-on-hover of the sidebar's action buttons, so the two panes read
-   as one control set. */
-.native-input-submit-actions button:hover:not(:disabled) {
-  border-color: var(--accent-strong);
-  background: var(--control-bg-hover);
-  color: #f4f3ec;
 }
 
 .queue-button {
