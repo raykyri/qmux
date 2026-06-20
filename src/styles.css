@@ -126,11 +126,11 @@ button:disabled {
   min-width: 0;
   flex-direction: column;
   gap: 14px;
-  /* Slightly darker than the terminal surface, like native terminal chrome. */
+  /* Slightly darker than the terminal surface, like a native source list. */
   background: #0e1011;
   padding: 12px 10px;
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* System font (not monospace) so the pane list reads as a native sidebar. */
+  font-family: var(--font-ui);
 }
 
 .sidebar-resizer {
@@ -194,10 +194,14 @@ button:disabled {
 
 .pane-tab-row.is-selected .pane-tab {
   border-color: transparent;
-  background: #16201e;
-  color: #f4f3ec;
-  /* Left accent stripe, like the active tab marker in a terminal. */
-  box-shadow: inset 2px 0 0 #6cae9d;
+  /* Native macOS source-list selection: a solid, full-width, accent-filled
+     rounded row that tracks the user's system accent color. Falls back to the
+     app teal if AccentColor isn't supported. */
+  background: #3f8a78;
+  background: AccentColor;
+  color: #ffffff;
+  color: AccentColorText;
+  box-shadow: none;
 }
 
 .pane-tab-line {
@@ -226,8 +230,10 @@ button:disabled {
   font-size: 11px;
 }
 
-.pane-tab-row.is-selected .pane-tab-path {
-  color: #8a938e;
+.pane-tab-row.is-selected .pane-tab-path,
+.pane-tab-row.is-selected .pane-tab small {
+  color: rgba(255, 255, 255, 0.72);
+  color: color-mix(in srgb, AccentColorText, transparent 28%);
 }
 
 .pane-tab-meta {
@@ -249,7 +255,10 @@ button:disabled {
 }
 
 .pane-tab-row.is-selected .pane-tab-recovered {
-  background: #1b2a27;
+  background: rgba(255, 255, 255, 0.18);
+  background: color-mix(in srgb, AccentColorText, transparent 82%);
+  color: #ffffff;
+  color: AccentColorText;
 }
 
 .pane-context-menu {
@@ -258,12 +267,16 @@ button:disabled {
   width: min(320px, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow: auto;
-  padding: 7px;
-  border: 1px solid var(--accent-color);
-  border-radius: 6px;
-  background: #15191b;
+  padding: 6px;
+  /* Native menu chrome: a hairline edge + a soft drop shadow, instead of a
+     bright accent border and a heavy 48px shadow. */
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #1c1f22;
   color: #d9ddd9;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
   font-size: 12px;
   user-select: text;
 }
@@ -275,8 +288,8 @@ button:disabled {
   align-items: center;
   margin-bottom: 5px;
   padding: 7px 8px;
-  border-radius: 4px;
-  background: #16201e;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .pane-context-status span,
@@ -284,9 +297,38 @@ button:disabled {
   color: #8a938e;
 }
 
+/* A small status dot with a neutral label, the way native apps show state —
+   rather than the whole word painted in the loud accent color. */
 .pane-context-status strong {
-  color: var(--accent-color);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #d9ddd9;
   font-weight: 600;
+}
+
+.pane-context-status strong::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8a938e;
+  content: "";
+}
+
+.pane-context-status.status-active strong::before {
+  background: #5fb89f;
+}
+
+.pane-context-status.status-pending strong::before {
+  background: #d8b878;
+}
+
+.pane-context-status.status-attention strong::before {
+  background: #e0a96d;
+}
+
+.pane-context-status.status-error strong::before {
+  background: #e0796d;
 }
 
 .pane-context-details {
@@ -350,8 +392,7 @@ button:disabled {
 
 /* The sidebar action buttons (New shell/New agent) and the composer submit
    buttons (Send/Steer/Queue/Approve/Deny) share one skin so both panes read as the
-   same control set — same height, padding, gap, and UI-sans font. The sidebar is
-   otherwise monospace terminal chrome, so it has to opt back into the UI sans here. */
+   same control set — same height, padding, gap, and UI-sans font. */
 .sidebar-actions button,
 .native-input-submit-actions button {
   flex-wrap: nowrap;

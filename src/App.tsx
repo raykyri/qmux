@@ -157,6 +157,24 @@ function agentStatusLabel(status: AgentInfo["status"]) {
   }
 }
 
+// Maps an agent status onto the status-dot tones used by the pane detail popover.
+function agentStatusTone(status: AgentInfo["status"]) {
+  switch (status) {
+    case "running":
+      return "active";
+    case "starting":
+      return "pending";
+    case "awaitingInput":
+    case "awaitingPermission":
+      return "attention";
+    case "failed":
+      return "error";
+    case "stopped":
+    default:
+      return "idle";
+  }
+}
+
 function transcriptHookEvent(event: QmuxEvent): TranscriptHookEvent | null {
   const hookEvent = event.payload.hookEvent;
   if (!event.agentId || typeof hookEvent !== "string") {
@@ -1081,7 +1099,7 @@ export default function App() {
           onContextMenu={(event) => event.preventDefault()}
         >
           {contextMenuAgent ? (
-            <div className="pane-context-status">
+            <div className={`pane-context-status status-${agentStatusTone(contextMenuAgent.status)}`}>
               <span>Agent status</span>
               <strong>{agentStatusLabel(contextMenuAgent.status) ?? "Stopped"}</strong>
             </div>
