@@ -339,7 +339,15 @@ impl AppState {
         self.inner
             .model
             .lock()
-            .map(|model| model.panes.len())
+            .map(|model| {
+                model
+                    .panes
+                    .values()
+                    .filter(|pane| {
+                        matches!(pane.info.status, PaneStatus::Starting | PaneStatus::Running)
+                    })
+                    .count()
+            })
             .unwrap_or_default()
     }
 
@@ -1235,6 +1243,36 @@ mod tests {
                 "pane-c".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn exit_confirmation_counts_only_live_panes() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut starting = sample_pane_runtime("pane-starting");
+        starting.info.status = PaneStatus::Starting;
+        state.insert_pane(starting).unwrap();
+        assert!(state.should_confirm_exit());
+
+        state
+            .mark_pane_status("pane-starting", PaneStatus::Exited)
+            .unwrap();
+        assert!(!state.should_confirm_exit());
+
+        state.insert_pane(sample_pane_runtime("pane-running")).unwrap();
+        assert!(state.should_confirm_exit());
+
+        state
+            .mark_pane_status("pane-running", PaneStatus::Killed)
+            .unwrap();
+        assert!(!state.should_confirm_exit());
+
+        state.insert_pane(sample_pane_runtime("pane-failed")).unwrap();
+        state
+            .mark_pane_status("pane-failed", PaneStatus::Failed)
+            .unwrap();
+        assert!(!state.should_confirm_exit());
     }
 
     #[test]
