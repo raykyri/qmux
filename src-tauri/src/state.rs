@@ -163,7 +163,11 @@ impl AppState {
     /// process), so the pane metadata is returned for the caller to respawn into
     /// fresh PTYs. Returns the recoverable pane infos in a stable order.
     pub fn restore_session(&self) -> Vec<PaneInfo> {
-        let persisted = persistence::load(&self.inner.config.workspace_root);
+        let outcome = persistence::load_with_diagnostics(&self.inner.config.workspace_root);
+        if let Some(warning) = outcome.warning.as_ref() {
+            eprintln!("qmux: {}", warning.message);
+        }
+        let persisted = outcome.state;
         let shell_pane_ids = persisted
             .panes
             .iter()

@@ -1,10 +1,13 @@
 use crate::state::PaneInfo;
 use crate::workspace::{AgentInfo, GroupInfo};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Distinguishes the scratch file of each in-flight `save` so concurrent writers
 /// never share (and then race to rename) the same temp path.
@@ -58,21 +61,157 @@ pub fn state_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(STATE_DIR).join(STATE_FILE)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadWarning {
+    pub message: String,
+    pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadOutcome {
+    pub state: PersistedState,
+    pub warning: Option<LoadWarning>,
+}
+
 /// Reads persisted state, degrading to an empty snapshot whenever the file is
 /// missing, unreadable, corrupt, or written by an unrecognized version. Recovery
-/// must never abort startup, so this function does not surface errors.
+/// must never abort startup, so this function keeps the old state-only API.
 pub fn load(workspace_root: &Path) -> PersistedState {
+    load_with_diagnostics(workspace_root).state
+}
+
+/// Reads persisted state and reports why recovery had to fall back to an empty
+/// snapshot. Missing state is expected on first run and does not produce a warning.
+/// Corrupt or unsupported state files are renamed aside before future saves can
+/// overwrite them.
+pub fn load_with_diagnostics(workspace_root: &Path) -> LoadOutcome {
     let path = state_path(workspace_root);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(_) => return PersistedState::default(),
+        Err(err) if err.kind() == ErrorKind::NotFound => return load_ok(PersistedState::default()),
+        Err(err) => {
+            return load_warning(
+                path.clone(),
+                format!(
+                    "failed to read persisted state {}; recovery will start empty: {err}",
+                    path.display()
+                ),
+                None,
+            );
+        }
     };
 
-    match serde_json::from_str::<PersistedState>(&raw) {
-        Ok(state) if state.version == STATE_VERSION => state,
-        // Unknown version or malformed JSON: start clean instead of guessing.
-        _ => PersistedState::default(),
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(err) => {
+            return discard_state_file(
+                &path,
+                "corrupt",
+                format!("invalid JSON in persisted state {}: {err}", path.display()),
+            );
+        }
+    };
+
+    let Some(version) = value
+        .get("version")
+        .and_then(Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+    else {
+        return discard_state_file(
+            &path,
+            "corrupt",
+            format!(
+                "persisted state {} is missing a valid version",
+                path.display()
+            ),
+        );
+    };
+
+    if version != STATE_VERSION {
+        return discard_state_file(
+            &path,
+            "unsupported-version",
+            format!(
+                "persisted state {} was written by unsupported version {version}; current version is {STATE_VERSION}",
+                path.display()
+            ),
+        );
     }
+
+    match serde_json::from_value::<PersistedState>(value) {
+        Ok(state) => load_ok(state),
+        Err(err) => discard_state_file(
+            &path,
+            "corrupt",
+            format!(
+                "persisted state {} does not match the expected schema: {err}",
+                path.display()
+            ),
+        ),
+    }
+}
+
+fn load_ok(state: PersistedState) -> LoadOutcome {
+    LoadOutcome {
+        state,
+        warning: None,
+    }
+}
+
+fn load_warning(path: PathBuf, message: String, backup_path: Option<PathBuf>) -> LoadOutcome {
+    LoadOutcome {
+        state: PersistedState::default(),
+        warning: Some(LoadWarning {
+            message,
+            path,
+            backup_path,
+        }),
+    }
+}
+
+fn discard_state_file(path: &Path, label: &str, reason: String) -> LoadOutcome {
+    let (message, backup_path) = match preserve_rejected_state(path, label) {
+        Ok(backup_path) => (
+            format!(
+                "{reason}; preserved rejected state at {}",
+                backup_path.display()
+            ),
+            Some(backup_path),
+        ),
+        Err(err) => (
+            format!("{reason}; failed to preserve rejected state: {err}"),
+            None,
+        ),
+    };
+    load_warning(path.to_path_buf(), message, backup_path)
+}
+
+fn preserve_rejected_state(path: &Path, label: &str) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("state path {} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(STATE_FILE);
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let backup_path = parent.join(format!(
+        "{file_name}.{label}.{millis}.{}.{seq}.bak",
+        std::process::id()
+    ));
+    fs::rename(path, &backup_path).map_err(|err| {
+        format!(
+            "failed to rename {} to {}: {err}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+    Ok(backup_path)
 }
 
 /// Writes state atomically: serialize to a sibling `.tmp` file then rename over
@@ -146,26 +285,44 @@ mod tests {
     }
 
     #[test]
-    fn load_corrupt_file_returns_empty() {
+    fn load_corrupt_file_returns_empty_and_preserves_rejected_file() {
         let root = temp_root();
         let path = state_path(&root);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "{ this is not json").unwrap();
+        let bad_state = "{ this is not json";
+        fs::write(&path, bad_state).unwrap();
 
-        let state = load(&root);
-        assert_eq!(state.version, STATE_VERSION);
-        assert!(state.panes.is_empty());
+        let outcome = load_with_diagnostics(&root);
+        assert_eq!(outcome.state.version, STATE_VERSION);
+        assert!(outcome.state.panes.is_empty());
+        let warning = outcome.warning.expect("corrupt state should warn");
+        assert!(warning.message.contains("invalid JSON"));
+        let backup_path = warning
+            .backup_path
+            .expect("corrupt state should be preserved");
+        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(backup_path).unwrap(), bad_state);
     }
 
     #[test]
-    fn load_unknown_version_is_discarded() {
+    fn load_unknown_version_returns_empty_and_preserves_rejected_file() {
         let root = temp_root();
         let path = state_path(&root);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, r#"{"version":99999,"panes":[{"id":"x"}]}"#).unwrap();
+        let bad_state = r#"{"version":99999,"panes":[{"id":"x"}]}"#;
+        fs::write(&path, bad_state).unwrap();
 
-        let state = load(&root);
-        assert!(state.panes.is_empty());
+        let outcome = load_with_diagnostics(&root);
+        assert!(outcome.state.panes.is_empty());
+        let warning = outcome
+            .warning
+            .expect("unsupported state version should warn");
+        assert!(warning.message.contains("unsupported version 99999"));
+        let backup_path = warning
+            .backup_path
+            .expect("unsupported state should be preserved");
+        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(backup_path).unwrap(), bad_state);
     }
 
     #[test]
