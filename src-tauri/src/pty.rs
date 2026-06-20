@@ -501,7 +501,7 @@ fn start_reader_thread(state: AppState, pane_id: String, mut reader: Box<dyn Rea
                 }
             }
         }
-        let _ = state.mark_pane_status(&pane_id, PaneStatus::Exited);
+        let _ = state.remove_pane(&pane_id);
         state.emit(QmuxEvent::pty_exit(pane_id, None));
     });
 }

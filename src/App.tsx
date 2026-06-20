@@ -843,11 +843,18 @@ export default function App() {
         }));
       }
       if (event.type === "pty.exit" && event.paneId) {
-        setPanes((current) =>
-          current.map((pane) =>
-            pane.id === event.paneId ? { ...pane, status: "exited" } : pane,
-          ),
-        );
+        const exitedPaneId = event.paneId;
+        setPanes((current) => {
+          const nextPanes = current.filter((pane) => pane.id !== exitedPaneId);
+          setActivePaneId((currentActivePaneId) => {
+            if (currentActivePaneId !== exitedPaneId) {
+              return currentActivePaneId;
+            }
+            return nextPanes[0]?.id ?? null;
+          });
+          return nextPanes;
+        });
+        setPaneContextMenu((current) => (current?.paneId === exitedPaneId ? null : current));
       }
       if (event.type === "app.exit_confirmation_requested") {
         const paneCount =
