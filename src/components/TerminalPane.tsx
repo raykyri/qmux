@@ -37,6 +37,11 @@ export interface TerminalPaneHandle {
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 
+// Prefix for the terminal renderer/font diagnostics. These trace the WebGL
+// lifecycle and font changes so an app-blanking report can be pinned to a
+// context loss, a renderer fallback, or a specific font switch.
+const LOG_PREFIX = "[qmux:terminal]";
+
 // Colors for search highlights, tuned to read against the terminal background.
 // The overview-ruler colors are required by the addon's types even though qmux
 // does not render a ruler.
@@ -151,27 +156,38 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // the initial setup and the font-change path build it identically (same
   // context-loss handling). The canvas renderer is a fine fallback if WebGL is
   // unavailable, so any failure is swallowed.
-  const attachWebglAddon = useCallback((terminal: Terminal) => {
-    try {
-      const webgl = new WebglAddon();
-      // macOS WKWebView can drop the GL context (e.g. while rebuilding the glyph
-      // atlas for a new font). xterm leaves a blank/gray canvas behind, which —
-      // because the window is translucent — reads as the app going see-through.
-      // Dispose the addon to fall back to the DOM renderer, then force a repaint
-      // since the fallback won't redraw on its own.
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        if (webglAddonRef.current === webgl) {
-          webglAddonRef.current = null;
-        }
-        stabilizeTerminalRef.current?.();
-      });
-      terminal.loadAddon(webgl);
-      webglAddonRef.current = webgl;
-    } catch {
-      webglAddonRef.current = null;
-    }
-  }, []);
+  const attachWebglAddon = useCallback(
+    (terminal: Terminal) => {
+      try {
+        const webgl = new WebglAddon();
+        // macOS WKWebView can drop the GL context (e.g. while rebuilding the glyph
+        // atlas for a new font). xterm leaves a blank/gray canvas behind, which —
+        // because the window is translucent — reads as the app going see-through.
+        // Dispose the addon to fall back to the DOM renderer, then force a repaint
+        // since the fallback won't redraw on its own.
+        webgl.onContextLoss(() => {
+          console.warn(`${LOG_PREFIX} WebGL context lost; falling back to DOM renderer`, {
+            paneId: pane.id,
+          });
+          webgl.dispose();
+          if (webglAddonRef.current === webgl) {
+            webglAddonRef.current = null;
+          }
+          stabilizeTerminalRef.current?.();
+        });
+        terminal.loadAddon(webgl);
+        webglAddonRef.current = webgl;
+        console.info(`${LOG_PREFIX} WebGL renderer attached`, { paneId: pane.id });
+      } catch (err) {
+        webglAddonRef.current = null;
+        console.warn(`${LOG_PREFIX} WebGL renderer unavailable; using DOM renderer`, {
+          paneId: pane.id,
+          error: err,
+        });
+      }
+    },
+    [pane.id],
+  );
 
   const findNext = () => {
     if (searchTerm) {
@@ -548,6 +564,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     if (!terminal) {
       return;
     }
+    const previousFontFamily = terminal.options.fontFamily;
+    const previousFontSize = terminal.options.fontSize;
     let changed = false;
     if (terminal.options.fontSize !== fontSize) {
       terminal.options.fontSize = fontSize;
@@ -558,6 +576,13 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       changed = true;
     }
     if (changed) {
+      const recreatedWebgl = webglAddonRef.current !== null;
+      console.info(`${LOG_PREFIX} applying font change`, {
+        paneId: pane.id,
+        from: { fontFamily: previousFontFamily, fontSize: previousFontSize },
+        to: { fontFamily, fontSize },
+        recreatedWebgl,
+      });
       // The WebGL renderer's glyph atlas and GL state are keyed to the previous
       // font metrics. Clearing the atlas in place is not enough on macOS
       // WKWebView — it can blank the canvas to a translucent gray — so tear the
@@ -570,7 +595,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       }
       stabilizeTerminalRef.current?.();
     }
-  }, [fontSize, fontFamily, attachWebglAddon]);
+  }, [fontSize, fontFamily, attachWebglAddon, pane.id]);
 
   const matchLabel =
     searchTerm === ""
