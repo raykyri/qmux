@@ -180,7 +180,7 @@ button:disabled {
   background: rgba(14, 16, 17, 0.72);
   /* Top padding clears the macOS traffic-light buttons, which the Overlay
      title bar draws over the top-left of the window (i.e. over the sidebar). */
-  padding: 30px 10px 12px;
+  padding: 32px 10px 12px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
 }
@@ -195,7 +195,7 @@ button:disabled {
   left: 0;
   right: 0;
   z-index: 1;
-  height: 28px;
+  height: 30px;
 }
 
 .sidebar-resizer {
@@ -1175,7 +1175,9 @@ button:disabled {
 
 .turn-empty-notice {
   max-width: 260px;
-  color: #e0b341;
+  /* Same muted gray as the placeholder above it (.empty-state); a missing
+     transcript is an ordinary state, not a warning. */
+  color: #aab1ad;
   font-size: 12px;
   line-height: 1.4;
 }
