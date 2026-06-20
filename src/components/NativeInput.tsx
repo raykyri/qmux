@@ -13,6 +13,7 @@ import {
   submitAgentTurn,
   submitPaneInput,
 } from "../lib/api";
+import type { ComposerPolicy } from "../adapters";
 import type { AgentInfo, PaneInfo } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
@@ -100,6 +101,7 @@ interface NativeInputProps {
   collapsedQueuedTurns: boolean[];
   transcriptText: string;
   transcriptCopyText: () => string;
+  composerPolicy: ComposerPolicy;
   onQueueChange: (agentId: string, queuedTurns: string[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
@@ -114,6 +116,7 @@ export default function NativeInput({
   collapsedQueuedTurns,
   transcriptText,
   transcriptCopyText,
+  composerPolicy,
   onQueueChange,
   onDraftChange,
   onQueuedTurnCollapseToggle,
@@ -142,17 +145,12 @@ export default function NativeInput({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const awaitingPermission = agent.status === "awaitingPermission";
-  const canSend =
-    agent.status === "awaitingInput" || agent.status === "done" || agent.status === "idle";
-  const canQueue =
-    agent.status === "starting" ||
-    agent.status === "running" ||
-    agent.status === "awaitingPermission";
-  // Send is disabled while the agent is actively working; offer Steer to inject
-  // the message into the running turn anyway instead of only being able to queue.
-  const isWorking = agent.status === "starting" || agent.status === "running";
+  const canSend = composerPolicy.readyStatuses.includes(agent.status);
+  const canQueue = composerPolicy.queueStatuses.includes(agent.status);
+  const canSteer = composerPolicy.steerStatuses.includes(agent.status);
   const hasTranscript = transcriptText.trim().length > 0;
   const sendDisabled = submitting || !canSend || value.trim().length === 0;
+  const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
 
   // Close the actions menu on an outside click or Escape while it is open.
@@ -657,23 +655,17 @@ export default function NativeInput({
           ) : null}
         </div>
         <div className="native-input-submit-actions">
-          {awaitingPermission ? (
-            <>
+          {permissionActions.length > 0 ? (
+            permissionActions.map((action) => (
               <button
+                key={action.id}
                 type="button"
-                onClick={() => void submitPermissionResponse("y")}
+                onClick={() => void submitPermissionResponse(action.input)}
                 disabled={submitting}
               >
-                Approve
+                {action.label}
               </button>
-              <button
-                type="button"
-                onClick={() => void submitPermissionResponse("n")}
-                disabled={submitting}
-              >
-                Deny
-              </button>
-            </>
+            ))
           ) : null}
           {!sendDisabled ? (
             <button type="button" onClick={() => void submitTurn(value, "send")}>
@@ -683,7 +675,7 @@ export default function NativeInput({
               </span>
             </button>
           ) : null}
-          {isWorking ? (
+          {canSteer ? (
             <button
               type="button"
               disabled={submitting || value.trim().length === 0}

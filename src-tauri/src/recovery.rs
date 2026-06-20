@@ -1,4 +1,4 @@
-use crate::claude::respawn_agent_pane;
+use crate::adapters::adapter_registry;
 use crate::events::QmuxEvent;
 use crate::pty::respawn_shell_pane;
 use crate::state::{AppState, PaneInfo, PaneKind, PaneStatus};
@@ -54,4 +54,17 @@ pub fn respawn_session(state: &AppState, panes: Vec<PaneInfo>) {
             json!({ "recovered": recovered, "failed": failed }),
         ));
     }
+}
+
+fn respawn_agent_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo, String> {
+    let agent_id = pane
+        .agent_id
+        .as_deref()
+        .ok_or_else(|| "recovered agent pane is missing an agent id".to_string())?;
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found in persisted state"))?;
+    adapter_registry(state.config())
+        .get(&agent.adapter)?
+        .resume(state, pane, &agent)
 }
