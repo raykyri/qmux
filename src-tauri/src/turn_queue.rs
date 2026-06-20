@@ -204,7 +204,10 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
 }
 
 fn should_queue(status: AgentStatus) -> bool {
-    !matches!(status, AgentStatus::AwaitingInput | AgentStatus::Stopped)
+    !matches!(
+        status,
+        AgentStatus::AwaitingInput | AgentStatus::Done | AgentStatus::Idle
+    )
 }
 
 fn queue_agent_turn(
@@ -261,7 +264,8 @@ mod tests {
     #[test]
     fn ready_agent_statuses_send_immediately() {
         assert!(!should_queue(AgentStatus::AwaitingInput));
-        assert!(!should_queue(AgentStatus::Stopped));
+        assert!(!should_queue(AgentStatus::Done));
+        assert!(!should_queue(AgentStatus::Idle));
     }
 
     #[test]

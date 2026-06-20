@@ -16,6 +16,7 @@ import {
   TERMINAL_FONT_SIZE,
 } from "./lib/terminalFont";
 import {
+  acknowledgeAgent,
   confirmAppExit,
   getAgentDraft,
   getRuntimeConfig,
@@ -43,6 +44,7 @@ import type {
   TranscriptCopyPayload,
   TranscriptHookEvent,
   Turn,
+  WorktreeStatus,
 } from "./types";
 
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
@@ -154,7 +156,7 @@ function statusLabel(status: PaneInfo["status"]) {
   }
 }
 
-function agentStatusLabel(status: AgentInfo["status"]) {
+function agentStatusLabel(status: AgentInfo["status"], reviewStatus?: WorktreeStatus | null) {
   switch (status) {
     case "starting":
       return "Starting";
@@ -164,7 +166,9 @@ function agentStatusLabel(status: AgentInfo["status"]) {
       return "Awaiting input";
     case "awaitingPermission":
       return "Approval needed";
-    case "stopped":
+    case "done":
+      return reviewStatus?.hasChanges ? `Review (${reviewStatus.changedFiles})` : "Done";
+    case "idle":
       return null;
     case "failed":
       return "Failed";
@@ -181,9 +185,11 @@ function agentStatusTone(status: AgentInfo["status"]) {
     case "awaitingInput":
     case "awaitingPermission":
       return "attention";
+    case "done":
+      return "done";
     case "failed":
       return "error";
-    case "stopped":
+    case "idle":
     default:
       return "idle";
   }
@@ -310,6 +316,7 @@ export default function App() {
   const paneListRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
+  const agentsRef = useRef<AgentInfo[]>([]);
   const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
   // Composer drafts live here keyed by agent so they survive tab switches; the
   // ref mirrors the state for synchronous reads from the debounced disk flush.
@@ -329,6 +336,9 @@ export default function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, string[]>>({});
+  const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
+    Record<string, WorktreeStatus>
+  >({});
   const [hookEventsByAgent, setHookEventsByAgent] = useState<
     Record<string, TranscriptHookEvent[]>
   >({});
@@ -394,6 +404,10 @@ export default function App() {
     [activePane?.id, agents, queuedTurnsByAgent],
   );
   const hasTurnSidebar = Boolean(activeAgent) || activeOrphanedQueues.length > 0;
+
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
 
   function replaceQueuedTurnsByAgent(nextQueues: Record<string, string[]>) {
     const previousQueues = queuedTurnsByAgentRef.current;
@@ -553,6 +567,31 @@ export default function App() {
     }
   }
 
+  function replaceAgent(updatedAgent: AgentInfo) {
+    setAgents((current) =>
+      current.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent)),
+    );
+  }
+
+  async function acknowledgeAgentStatus(agentId: string, includeFailed = false) {
+    setError(null);
+    try {
+      replaceAgent(await acknowledgeAgent(agentId, includeFailed));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function acknowledgePaneIfDone(paneId: string | null) {
+    if (!paneId || !document.hasFocus()) {
+      return;
+    }
+    const agent = agentsRef.current.find((candidate) => candidate.paneId === paneId);
+    if (agent?.status === "done") {
+      void acknowledgeAgentStatus(agent.id);
+    }
+  }
+
   function focusActiveTerminal() {
     const paneId = activePane?.id;
     if (!paneId) {
@@ -700,6 +739,60 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    acknowledgePaneIfDone(activePaneId);
+  }, [activePaneId]);
+
+  useEffect(() => {
+    const handleFocus = () => acknowledgePaneIfDone(activePaneId);
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [activePaneId]);
+
+  useEffect(() => {
+    const doneWorktreeAgents = agents.filter((agent) => agent.status === "done");
+    const doneWorktreeAgentIds = new Set(doneWorktreeAgents.map((agent) => agent.id));
+
+    setWorktreeStatusByAgent((current) => {
+      let changed = false;
+      const next: Record<string, WorktreeStatus> = {};
+      for (const [agentId, status] of Object.entries(current)) {
+        if (doneWorktreeAgentIds.has(agentId)) {
+          next[agentId] = status;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+
+    let cancelled = false;
+    for (const agent of doneWorktreeAgents) {
+      if (worktreeStatusByAgent[agent.id]) {
+        continue;
+      }
+      void worktreeStatus(agent.id)
+        .then((status) => {
+          if (cancelled) {
+            return;
+          }
+          setWorktreeStatusByAgent((current) => ({ ...current, [agent.id]: status }));
+        })
+        .catch(() => {
+          if (cancelled) {
+            return;
+          }
+          setWorktreeStatusByAgent((current) => ({
+            ...current,
+            [agent.id]: { hasChanges: false, changedFiles: 0 },
+          }));
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [agents, worktreeStatusByAgent]);
+
+  useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
@@ -795,7 +888,7 @@ export default function App() {
     }
     if (
       event.target instanceof HTMLElement &&
-      event.target.closest(".pane-tab-close, .pane-tab-recovered")
+      event.target.closest(".pane-tab-close, .pane-tab-recovered, .pane-tab-status-clickable")
     ) {
       return;
     }
@@ -878,6 +971,7 @@ export default function App() {
       return;
     }
     setActivePaneId(paneId);
+    acknowledgePaneIfDone(paneId);
   }
 
   function handlePaneTabDoubleClick(pane: PaneInfo) {
@@ -1421,8 +1515,12 @@ export default function App() {
         >
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+            const paneAgentWorktreeStatus = paneAgent
+              ? worktreeStatusByAgent[paneAgent.id]
+              : undefined;
+            const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
             const rawStatus = paneAgent
-              ? agentStatusLabel(paneAgent.status)
+              ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
               : statusLabel(pane.status);
             // "Running" is the steady state for every pane, so it is just noise.
             const paneStatus = rawStatus === "Running" ? null : rawStatus;
@@ -1483,6 +1581,10 @@ export default function App() {
                   }}
                 >
                   <span className="pane-tab-line">
+                    <span
+                      className={`pane-tab-dot status-${paneAgentStatusTone}`}
+                      aria-hidden="true"
+                    />
                     <span className="pane-tab-title">{pane.title}</span>
                     <span className="pane-tab-meta">
                       {pane.recovered ? (
@@ -1507,7 +1609,32 @@ export default function App() {
                           Recovered
                         </small>
                       ) : null}
-                      {paneStatus ? <small>{paneStatus}</small> : null}
+                      {paneStatus ? (
+                        paneAgent?.status === "failed" ? (
+                          <small
+                            className="pane-tab-status pane-tab-status-clickable"
+                            role="button"
+                            tabIndex={0}
+                            title="Dismiss failed status"
+                            aria-label="Dismiss failed status"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void acknowledgeAgentStatus(paneAgent.id, true);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void acknowledgeAgentStatus(paneAgent.id, true);
+                              }
+                            }}
+                          >
+                            {paneStatus}
+                          </small>
+                        ) : (
+                          <small className="pane-tab-status">{paneStatus}</small>
+                        )
+                      ) : null}
                     </span>
                   </span>
                   {paneDir ? (
@@ -1564,7 +1691,12 @@ export default function App() {
                 className={`pane-context-status-row status-${agentStatusTone(contextMenuAgent.status)}`}
               >
                 <dt>Agent status</dt>
-                <dd>{agentStatusLabel(contextMenuAgent.status) ?? "Stopped"}</dd>
+                <dd>
+                  {agentStatusLabel(
+                    contextMenuAgent.status,
+                    worktreeStatusByAgent[contextMenuAgent.id],
+                  ) ?? "Idle"}
+                </dd>
               </div>
             ) : null}
             <div>

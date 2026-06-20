@@ -185,10 +185,9 @@ impl AppState {
                     .filter(|pane_id| shell_pane_ids.contains(pane_id))
                 {
                     agent.pane_id = None;
-                    agent.status = AgentStatus::Stopped;
-                    agent.orphaned_queue_pane_id = queued_agent_ids
-                        .contains(&agent.id)
-                        .then_some(pane_id);
+                    agent.status = AgentStatus::Idle;
+                    agent.orphaned_queue_pane_id =
+                        queued_agent_ids.contains(&agent.id).then_some(pane_id);
                 } else if !queued_agent_ids.contains(&agent.id) {
                     agent.orphaned_queue_pane_id = None;
                 }
@@ -1111,7 +1110,7 @@ mod tests {
         assert_eq!(agent.session_id.as_deref(), Some("session-abc"));
         assert_eq!(agent.pane_id, None);
         assert_eq!(agent.orphaned_queue_pane_id.as_deref(), Some("pane-7"));
-        assert!(matches!(agent.status, AgentStatus::Stopped));
+        assert!(matches!(agent.status, AgentStatus::Idle));
         assert_eq!(
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["queued turn".to_string()]

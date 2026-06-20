@@ -50,7 +50,8 @@ export interface AgentInfo {
     | "running"
     | "awaitingInput"
     | "awaitingPermission"
-    | "stopped"
+    | "done"
+    | "idle"
     | "failed";
   model?: string | null;
   createdAt: number;
