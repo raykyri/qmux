@@ -144,7 +144,9 @@ button:disabled {
      bleeding through. Degrades to a plain dark panel if vibrancy is
      unavailable. Lower the alpha for a stronger see-through effect. */
   background: rgba(14, 16, 17, 0.72);
-  padding: 12px 10px;
+  /* Top trimmed to 10px so the first tab lines up with the right pane's
+     transcript top padding. */
+  padding: 10px 10px 12px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
 }
@@ -215,8 +217,9 @@ button:disabled {
      app teal if AccentColor isn't supported. */
   background: #3f8a78;
   background: AccentColor;
+  /* Always white, the way macOS draws selected source-list text on the accent
+     fill. (AccentColorText resolved too dark to read against the accent here.) */
   color: #ffffff;
-  color: AccentColorText;
   box-shadow: none;
 }
 
@@ -249,7 +252,6 @@ button:disabled {
 .pane-tab-row.is-selected .pane-tab-path,
 .pane-tab-row.is-selected .pane-tab small {
   color: rgba(255, 255, 255, 0.72);
-  color: color-mix(in srgb, AccentColorText, transparent 28%);
 }
 
 .pane-tab-meta {
@@ -272,9 +274,7 @@ button:disabled {
 
 .pane-tab-row.is-selected .pane-tab-recovered {
   background: rgba(255, 255, 255, 0.18);
-  background: color-mix(in srgb, AccentColorText, transparent 82%);
   color: #ffffff;
-  color: AccentColorText;
 }
 
 .pane-context-menu {
@@ -1245,7 +1245,7 @@ button:disabled {
   flex: 0 0 auto;
   min-width: 0;
   /* Auto-grows with content (JS sets the height) up to a cap, then scrolls. */
-  min-height: 39px;
+  min-height: 40px;
   max-height: 200px;
   overflow-y: auto;
   resize: none;
