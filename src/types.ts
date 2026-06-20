@@ -115,6 +115,12 @@ export interface ReorderQueuedAgentTurnResult {
   queuedTurns: string[];
 }
 
+export interface SendNextQueuedAgentTurnResult {
+  sent: boolean;
+  pendingTurns: number;
+  queuedTurns: string[];
+}
+
 export interface TranscriptHookEvent {
   type: string;
   paneId?: string | null;
