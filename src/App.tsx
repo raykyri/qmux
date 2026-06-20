@@ -61,7 +61,7 @@ const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
 const TURN_PANE_MAX_WIDTH = 720;
-const TERMINAL_HORIZONTAL_PADDING = 20;
+const TERMINAL_HORIZONTAL_PADDING = 10;
 const TERMINAL_VERTICAL_PADDING = 20;
 const DEFAULT_INITIAL_COLS = 100;
 const DEFAULT_INITIAL_ROWS = 24;
@@ -224,9 +224,10 @@ function formatTranscriptCopyJson(
   return JSON.stringify(payload, null, 2);
 }
 
-// The close-confirmation dialog covers two cases: a worktree agent (offer to keep
-// or delete the worktree) and a live agent without a worktree (just confirm the
-// stop). Both render in-app — window.confirm is a no-op in the Tauri webview.
+// The close-confirmation dialog covers three cases: a worktree agent (offer to
+// keep or delete the worktree), a live agent without a worktree (just confirm the
+// stop), and the explicit tab close button (always confirm). These render in-app
+// because window.confirm is a no-op in the Tauri webview.
 type CloseDialogState =
   | {
       kind: "worktree";
@@ -236,7 +237,8 @@ type CloseDialogState =
       hasChanges: boolean;
       busy: boolean;
     }
-  | { kind: "stop"; pane: PaneInfo; reason: string };
+  | { kind: "stop"; pane: PaneInfo; reason: string }
+  | { kind: "pane"; pane: PaneInfo };
 
 type ExitDialogState = {
   paneCount: number;
@@ -1185,7 +1187,7 @@ export default function App() {
   // uncommitted changes first, then let the user delete or keep it (or cancel).
   // Other agent panes confirm only when a live agent would be interrupted; shell
   // panes and finished/failed agents close without a prompt.
-  async function requestClosePane(paneToClose: PaneInfo) {
+  async function requestClosePane(paneToClose: PaneInfo, options?: { confirmAlways?: boolean }) {
     const agent = agents.find((candidate) => candidate.paneId === paneToClose.id);
 
     if (agent && agent.branch) {
@@ -1242,7 +1244,30 @@ export default function App() {
       setCloseDialog({ kind: "stop", pane: paneToClose, reason });
       return;
     }
+    if (options?.confirmAlways) {
+      setCloseDialog({ kind: "pane", pane: paneToClose });
+      return;
+    }
     await closePane(paneToClose);
+  }
+
+  function handlePaneTabClosePointerDown(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    pane: PaneInfo,
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void requestClosePane(pane, { confirmAlways: true });
+  }
+
+  function handlePaneTabCloseClick(event: ReactMouseEvent<HTMLButtonElement>, pane: PaneInfo) {
+    event.stopPropagation();
+    if (event.detail === 0) {
+      void requestClosePane(pane, { confirmAlways: true });
+    }
   }
 
   // Resolves the worktree close dialog: always closes the pane, and additionally
@@ -1268,6 +1293,15 @@ export default function App() {
   async function confirmStopAndClose() {
     const dialog = closeDialog;
     if (!dialog || dialog.kind !== "stop") {
+      return;
+    }
+    setCloseDialog(null);
+    await closePane(dialog.pane);
+  }
+
+  async function confirmPaneClose() {
+    const dialog = closeDialog;
+    if (!dialog || dialog.kind !== "pane") {
       return;
     }
     setCloseDialog(null);
@@ -1695,12 +1729,24 @@ export default function App() {
                     handlePaneTabDoubleClick(pane);
                   }}
                 >
-                  <span className="pane-tab-line">
-                    <span
-                      className={`pane-tab-dot status-${paneAgentStatusTone}`}
-                      aria-hidden="true"
-                    />
+                  <span
+                    className={`pane-tab-dot status-${paneAgentStatusTone}`}
+                    aria-hidden="true"
+                  />
+                  <span className="pane-tab-content">
                     <span className="pane-tab-title">{pane.title}</span>
+                    {paneDir ? (
+                      <span className="pane-tab-path" title={paneDir}>
+                        {formatPaneDir(paneDir)}
+                      </span>
+                    ) : null}
+                    {paneGitMeta ? (
+                      <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
+                        {paneGitMeta}
+                      </span>
+                    ) : null}
+                  </span>
+                  {pane.recovered || paneStatus ? (
                     <span className="pane-tab-meta">
                       {pane.recovered ? (
                         <small
@@ -1751,26 +1797,14 @@ export default function App() {
                         )
                       ) : null}
                     </span>
-                  </span>
-                  {paneDir ? (
-                    <span className="pane-tab-path" title={paneDir}>
-                      {formatPaneDir(paneDir)}
-                    </span>
-                  ) : null}
-                  {paneGitMeta ? (
-                    <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
-                      {paneGitMeta}
-                    </span>
                   ) : null}
                 </button>
                 <button
                   type="button"
                   className="pane-tab-close"
                   aria-label={`Close ${pane.title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void requestClosePane(pane);
-                  }}
+                  onPointerDown={(event) => handlePaneTabClosePointerDown(event, pane)}
+                  onClick={(event) => handlePaneTabCloseClick(event, pane)}
                 >
                   <X size={13} aria-hidden="true" />
                 </button>
@@ -1984,7 +2018,7 @@ export default function App() {
                   </button>
                 </div>
               </>
-            ) : (
+            ) : closeDialog.kind === "stop" ? (
               <>
                 <p>This agent {closeDialog.reason}. Close the pane and stop it?</p>
                 <div className="confirm-dialog-actions">
@@ -1998,6 +2032,23 @@ export default function App() {
                     onClick={() => void confirmStopAndClose()}
                   >
                     Close pane
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>Close this tab?</p>
+                <div className="confirm-dialog-actions">
+                  <button type="button" onClick={() => setCloseDialog(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    autoFocus
+                    onClick={() => void confirmPaneClose()}
+                  >
+                    Close tab
                   </button>
                 </div>
               </>
