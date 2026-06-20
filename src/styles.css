@@ -868,6 +868,13 @@ button:disabled {
   overscroll-behavior: contain;
 }
 
+/* Pack the quiet disclosure rows (tool/thinking/assistant toggles) closer than the
+   8px timeline gap that surrounds the bordered message cards — it only applies
+   between two consecutive non-card rows, so cards keep their breathing room. */
+.turn-timeline > :not(.turn-card) + :not(.turn-card) {
+  margin-top: -5px;
+}
+
 .turn-sidebar-input {
   position: absolute;
   right: 0;
