@@ -1056,12 +1056,11 @@ button:disabled {
 }
 
 /* Only .turn-card (user/assistant messages) is a bordered "module". Everything
-   else in the timeline — individual tool entries, the tool-run/assistant-run group
-   headers, and thinking — renders as a quiet borderless disclosure row. */
+   else in the timeline — individual tool entries, the tool-run group header, and
+   thinking — renders as a quiet borderless disclosure row. */
 .tool-block,
 .thinking-block,
-.tool-run-block,
-.assistant-run-block {
+.tool-run-block {
   background: transparent;
   color: #d9ddd9;
   font-size: 12px;
@@ -1070,8 +1069,7 @@ button:disabled {
 
 .tool-block > summary,
 .thinking-block > summary,
-.tool-run-block > summary,
-.assistant-run-block > summary {
+.tool-run-block > summary {
   cursor: pointer;
   list-style-position: inside;
   border-radius: 6px;
@@ -1081,8 +1079,7 @@ button:disabled {
 /* Borderless rows still need a click affordance, so highlight on hover. */
 .tool-block > summary:hover,
 .thinking-block > summary:hover,
-.tool-run-block > summary:hover,
-.assistant-run-block > summary:hover {
+.tool-run-block > summary:hover {
   background: #15191b;
 }
 
@@ -1115,11 +1112,10 @@ button:disabled {
   font-weight: 650;
 }
 
-/* The collapsed group toggles ("N tool calls" / "N assistant updates") read as
-   quiet labels — regular weight in the same muted tone as thinking text — rather
-   than bold headings. Single tool entries keep the brighter treatment above. */
-.tool-run-block > summary .tool-summary-main,
-.assistant-run-block > summary .tool-summary-main {
+/* The collapsed "N tool calls" toggle reads as a quiet label — regular weight in
+   the same muted tone as thinking text — not a bold heading. Single tool entries
+   keep the brighter treatment above. */
+.tool-run-block > summary .tool-summary-main {
   color: #aab1ad;
   font-weight: 400;
 }
@@ -1185,15 +1181,6 @@ button:disabled {
 .thinking-block summary {
   color: #aab1ad;
   font-style: italic;
-}
-
-.assistant-run-items {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-  margin: 6px 0 0 8px;
-  border-left: 1px solid #2a2d2f;
-  padding: 0 0 0 12px;
 }
 
 .native-input {
