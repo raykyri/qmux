@@ -32,6 +32,11 @@ pub struct SpawnClaudeRequest {
 pub struct PrepareShellClaudeLaunchRequest {
     pub pane_id: String,
     pub cwd: String,
+    /// Whether the manual `claude …` invocation carried an inline prompt. A bare
+    /// launch drops into interactive mode, so the agent starts awaiting input
+    /// rather than working. Defaults to false (the safe, non-working state).
+    #[serde(default)]
+    pub has_prompt: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
