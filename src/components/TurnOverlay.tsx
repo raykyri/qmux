@@ -529,26 +529,19 @@ function summarizeToolNames(entries: ToolEntry[]) {
 
 function assistantRunMeta(messages: MessageItem[]) {
   let toolCalls = 0;
-  let thinkingBlocks = 0;
 
   for (const message of messages) {
     for (const activity of message.activities) {
       if (activity.type === "toolRun") {
         toolCalls += activity.entries.length;
-      } else {
-        thinkingBlocks += activity.values.length;
       }
     }
   }
 
-  const labels = [];
   if (toolCalls > 0) {
-    labels.push(`${toolCalls} tool ${toolCalls === 1 ? "call" : "calls"}`);
+    return `${toolCalls} tool ${toolCalls === 1 ? "call" : "calls"}`;
   }
-  if (thinkingBlocks > 0) {
-    labels.push(`${thinkingBlocks} thinking ${thinkingBlocks === 1 ? "block" : "blocks"}`);
-  }
-  return labels.length > 0 ? labels.join(" · ") : "collapsed";
+  return "collapsed";
 }
 
 function formatTurnTranscript(turn: Turn) {
