@@ -219,6 +219,24 @@ button:disabled {
   overflow: auto;
 }
 
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  color: #aab1ad;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.pane-list-empty {
+  flex: 1;
+  padding: 12px 8px;
+}
+
 .pane-tab-row {
   position: relative;
   min-width: 0;
@@ -818,6 +836,13 @@ button:disabled {
   background: #111315;
 }
 
+.terminal-empty-state {
+  position: absolute;
+  inset: 0;
+  padding: 24px;
+  pointer-events: none;
+}
+
 .terminal-pane {
   position: absolute;
   inset: 0;
@@ -992,6 +1017,11 @@ button:disabled {
   overscroll-behavior: contain;
 }
 
+.turn-timeline.is-empty {
+  align-content: center;
+  padding: 24px;
+}
+
 /* Pack the quiet disclosure rows (tool/thinking/assistant toggles) closer than the
    8px timeline gap that surrounds the bordered message cards — it only applies
    between two consecutive non-card rows, so cards keep their breathing room. */
@@ -1015,27 +1045,6 @@ button:disabled {
   /* Mostly opaque so the unwrapped queue/composer stay legible over the
      transcript, with only a short fade at the very top. */
   background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
-}
-
-.empty-turns {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  margin: 0;
-  /* Pushed down from the top of the pane rather than pinned to the very top. */
-  padding-top: 20vh;
-  color: #aab1ad;
-  text-align: center;
-}
-
-.empty-turns p {
-  margin: 0;
-  font-size: 14px;
-}
-
-.empty-turns-icon {
-  color: #5d6663;
 }
 
 .turn-card {

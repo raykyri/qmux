@@ -1506,6 +1506,7 @@ export default function App() {
           className={`pane-list${draggingPaneId ? " is-dragging" : ""}`}
           aria-label="Panes"
         >
+          {panes.length === 0 ? <div className="empty-state pane-list-empty">No tabs</div> : null}
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
             const paneAgentWorktreeStatus = paneAgent
@@ -1937,6 +1938,9 @@ export default function App() {
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div ref={terminalStageRef} className="terminal-stage">
+          {panes.length === 0 ? (
+            <div className="empty-state terminal-empty-state">No active tab</div>
+          ) : null}
           {panes.map((pane) => (
             <TerminalPane
               key={pane.id}
