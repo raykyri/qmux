@@ -1068,10 +1068,34 @@ button:disabled {
 
 .tool-block > summary,
 .thinking-block > summary {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
-  list-style-position: inside;
+  list-style: none;
   border-radius: 6px;
   padding: 5px 7px;
+}
+
+.tool-block > summary::-webkit-details-marker,
+.thinking-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-block > summary::marker,
+.thinking-block > summary::marker {
+  content: "";
+}
+
+.disclosure-chevron {
+  color: #8f9994;
+  transition: transform 120ms ease;
+}
+
+.tool-block[open] > summary .disclosure-chevron,
+.thinking-block[open] > summary .disclosure-chevron {
+  transform: rotate(90deg);
 }
 
 /* Borderless rows still need a click affordance, so highlight on hover. */
@@ -1091,8 +1115,7 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  width: calc(100% - 18px);
-  vertical-align: top;
+  width: 100%;
 }
 
 .tool-summary-main,
@@ -1157,7 +1180,6 @@ button:disabled {
 
 .thinking-block summary {
   color: #aab1ad;
-  font-style: italic;
 }
 
 .native-input {
@@ -1283,13 +1305,11 @@ button:disabled {
   transform: translateY(-0.5px);
 }
 
-/* The remove (×) button is destructive, so it gets a soft red glow on hover
-   instead of the neutral accent edge. */
+/* Keep the remove (×) button destructive without adding a glow. */
 .queued-turn-actions button.queued-turn-remove:hover:not(:disabled) {
   border-color: #7a3b34;
   background: #2c1a17;
   color: #ffd3c7;
-  box-shadow: 0 0 8px 1px rgba(208, 86, 68, 0.5);
 }
 
 .native-input textarea {
