@@ -22,11 +22,10 @@ export const claudeUiAdapter: AgentUiAdapter = {
 };
 
 function ClaudeLauncherOptions({ value, onChange }: LauncherOptionsProps) {
-  const permissionMode = typeof value.permissionMode === "string" ? value.permissionMode : "";
+  const permissionMode = typeof value.permissionMode === "string" ? value.permissionMode : "auto";
 
   return (
     <label className="command-launcher-option">
-      <span>Permission</span>
       <select
         value={permissionMode}
         onChange={(event) => {
@@ -39,11 +38,9 @@ function ClaudeLauncherOptions({ value, onChange }: LauncherOptionsProps) {
           onChange(next);
         }}
       >
-        <option value="">Default</option>
         <option value="auto">Auto</option>
         <option value="acceptEdits">Accept edits</option>
         <option value="dontAsk">Don't ask</option>
-        <option value="plan">Plan</option>
         <option value="bypassPermissions">Bypass</option>
       </select>
     </label>

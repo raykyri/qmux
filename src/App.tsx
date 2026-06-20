@@ -1779,7 +1779,7 @@ export default function App() {
           }}
         >
           <form
-            className={`command-launcher${LauncherOptions ? " has-options" : ""}`}
+            className="command-launcher"
             role="dialog"
             aria-modal="true"
             aria-label="New agent"
@@ -1808,28 +1808,30 @@ export default function App() {
               rows={2}
               placeholder="What do you want to do next?"
             />
-            {LauncherOptions ? (
-              <div className="command-launcher-options">
-                <LauncherOptions
-                  value={launcherOptions}
-                  onChange={(next) =>
-                    setLauncherOptionsByAdapter((current) => ({
-                      ...current,
-                      [launchAdapter.id]: next,
-                    }))
-                  }
-                />
-              </div>
-            ) : null}
             <div className="command-launcher-overlay">
-              <label className="command-launcher-worktree">
-                <input
-                  type="checkbox"
-                  checked={createInWorktree}
-                  onChange={(event) => setCreateInWorktree(event.currentTarget.checked)}
-                />
-                <span>Create a worktree</span>
-              </label>
+              <div className="command-launcher-overlay-group">
+                <label className="command-launcher-worktree">
+                  <input
+                    type="checkbox"
+                    checked={createInWorktree}
+                    onChange={(event) => setCreateInWorktree(event.currentTarget.checked)}
+                  />
+                  <span>New worktree</span>
+                </label>
+                {LauncherOptions ? (
+                  <div className="command-launcher-options">
+                    <LauncherOptions
+                      value={launcherOptions}
+                      onChange={(next) =>
+                        setLauncherOptionsByAdapter((current) => ({
+                          ...current,
+                          [launchAdapter.id]: next,
+                        }))
+                      }
+                    />
+                  </div>
+                ) : null}
+              </div>
               <div className="command-launcher-controls">
                 <div className="command-launcher-adapter-picker" role="group" aria-label="Agent">
                   {launcherAdapters.map((adapter) => (

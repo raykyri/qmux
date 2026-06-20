@@ -318,7 +318,10 @@ struct CodexLaunchOptions {
     profile: Option<String>,
     #[serde(default)]
     oss: bool,
+    // Kept only so saved launcher options that still carry `search: true` parse
+    // cleanly under `deny_unknown_fields`; --search is now always emitted.
     #[serde(default)]
+    #[allow(dead_code)]
     search: bool,
 }
 
@@ -382,10 +385,9 @@ fn build_codex_args(
         args.push("--profile".to_string());
         args.push(profile.to_string());
     }
-    if let Some(sandbox) = options.sandbox.as_deref() {
-        args.push("--sandbox".to_string());
-        args.push(sandbox.to_string());
-    }
+    let sandbox = options.sandbox.as_deref().unwrap_or("workspace-write");
+    args.push("--sandbox".to_string());
+    args.push(sandbox.to_string());
     if let Some(approval_policy) = options.approval_policy.as_deref() {
         args.push("--ask-for-approval".to_string());
         args.push(approval_policy.to_string());
@@ -393,9 +395,7 @@ fn build_codex_args(
     if options.oss {
         args.push("--oss".to_string());
     }
-    if options.search {
-        args.push("--search".to_string());
-    }
+    args.push("--search".to_string());
 
     args.extend(tail_args);
     args
