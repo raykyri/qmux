@@ -5,7 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { Bot, Minus, Plus, Settings, SquareTerminal, X } from "lucide-react";
+import { MessageSquareText, Minus, Plus, Settings, SquareTerminal, X } from "lucide-react";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
@@ -64,8 +64,8 @@ const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 const LEFT_SIDEBAR_MIN_WIDTH = 208;
 const LEFT_SIDEBAR_MAX_WIDTH = 420;
 // Below this width the New shell/New agent buttons drop their icons to keep the
-// labels readable.
-const LEFT_SIDEBAR_COMPACT_WIDTH = 230;
+// labels readable. (The icon-only Settings cog always keeps its icon.)
+const LEFT_SIDEBAR_COMPACT_WIDTH = 270;
 const PANE_TAB_DRAG_START_THRESHOLD = 4;
 const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 const TERMINAL_MIN_WIDTH = 380;
@@ -1539,6 +1539,16 @@ export default function App() {
         return;
       }
 
+      // Cmd-, / Ctrl-, opens the settings panel from anywhere, including terminal
+      // focus. Claimed in the capture phase so focus doesn't matter; Escape (handled
+      // separately) closes it again.
+      if (key === ",") {
+        event.preventDefault();
+        event.stopPropagation();
+        setSettingsOpen(true);
+        return;
+      }
+
       if (key !== "t" && key !== "n" && key !== "w") {
         return;
       }
@@ -1909,12 +1919,17 @@ export default function App() {
             <span>New shell</span>
           </button>
           <button type="button" onClick={() => setLauncherOpen(true)}>
-            <Bot size={14} aria-hidden="true" />
+            <MessageSquareText size={14} aria-hidden="true" />
             <span>New agent</span>
           </button>
-          <button type="button" onClick={() => setSettingsOpen(true)}>
+          <button
+            type="button"
+            className="sidebar-settings-button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
             <Settings size={14} aria-hidden="true" />
-            <span>Settings</span>
           </button>
         </div>
       </aside>
@@ -2365,6 +2380,7 @@ export default function App() {
               fontSize={terminalFontSize}
               fontFamily={terminalFontFamily}
               letterSpacing={terminalLetterSpacing}
+              inputBlocked={settingsOpen}
             />
           ))}
         </div>

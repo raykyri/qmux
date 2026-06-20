@@ -588,8 +588,14 @@ button:disabled {
 
 .sidebar-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr auto;
   gap: 6px;
+}
+
+/* The Settings cog sits inline to the right of New shell/New agent and shows
+   only its icon, so it stays square instead of stretching to a label width. */
+.sidebar-actions button.sidebar-settings-button {
+  padding: 0 6px;
 }
 
 /* The sidebar action buttons (New shell/New agent) and the composer submit
@@ -617,8 +623,9 @@ button:disabled {
 }
 
 /* In a narrow sidebar there isn't room for both the icon and the label, so drop
-   the icons and let the labels have the space. */
-.sidebar.is-narrow .sidebar-actions button svg {
+   the icons and let the labels have the space. The icon-only Settings cog is
+   exempt — hiding its icon would leave an empty button. */
+.sidebar.is-narrow .sidebar-actions button:not(.sidebar-settings-button) svg {
   display: none;
 }
 
