@@ -392,6 +392,9 @@ export default function App() {
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
+  // buttons disabled) until the close/delete actually finishes.
+  const [resolvingClose, setResolvingClose] = useState<"keep" | "delete" | null>(null);
   const [exitDialog, setExitDialog] = useState<ExitDialogState | null>(null);
   const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -1294,18 +1297,24 @@ export default function App() {
   // deletes the worktree when the user chose to.
   async function resolveCloseDialog(choice: "keep" | "delete") {
     const dialog = closeDialog;
-    if (!dialog || dialog.kind !== "worktree") {
+    if (!dialog || dialog.kind !== "worktree" || resolvingClose) {
       return;
     }
-    setCloseDialog(null);
     setError(null);
+    setResolvingClose(choice);
     try {
       await closePane(dialog.pane);
       if (choice === "delete") {
+        // Keep the dialog up until the worktree is actually gone, so it never
+        // dismisses while the deletion is still running.
         await removeWorktree(dialog.agentId);
       }
+      setCloseDialog(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setCloseDialog(null);
+    } finally {
+      setResolvingClose(null);
     }
   }
 
@@ -1415,13 +1424,16 @@ export default function App() {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        setCloseDialog(null);
+        // Don't dismiss the worktree dialog while its close/delete is running.
+        if (!resolvingClose) {
+          setCloseDialog(null);
+        }
         setExitDialog(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [closeDialog, exitDialog]);
+  }, [closeDialog, exitDialog, resolvingClose]);
 
   // Escape closes the settings panel. Separate from the dialog handler above so
   // it can run regardless of which other modals are open.
@@ -2127,7 +2139,7 @@ export default function App() {
           className="confirm-dialog-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+            if (event.target === event.currentTarget && !resolvingClose) {
               setCloseDialog(null);
             }
           }}
@@ -2161,18 +2173,28 @@ export default function App() {
                   Delete the worktree?
                 </p>
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setCloseDialog(null)}>
+                  <button
+                    type="button"
+                    disabled={resolvingClose !== null}
+                    onClick={() => setCloseDialog(null)}
+                  >
                     Cancel
                   </button>
                   <button
                     type="button"
                     className="danger"
+                    disabled={resolvingClose !== null}
                     onClick={() => void resolveCloseDialog("delete")}
                   >
-                    Delete worktree
+                    {resolvingClose === "delete" ? "Deleting…" : "Delete worktree"}
                   </button>
-                  <button type="button" autoFocus onClick={() => void resolveCloseDialog("keep")}>
-                    Keep worktree
+                  <button
+                    type="button"
+                    autoFocus
+                    disabled={resolvingClose !== null}
+                    onClick={() => void resolveCloseDialog("keep")}
+                  >
+                    {resolvingClose === "keep" ? "Closing…" : "Keep worktree"}
                   </button>
                 </div>
               </>
