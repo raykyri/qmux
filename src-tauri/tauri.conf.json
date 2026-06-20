@@ -10,13 +10,15 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "qmux",
         "width": 1280,
         "height": 840,
         "minWidth": 960,
-        "minHeight": 640
+        "minHeight": 640,
+        "transparent": true
       }
     ],
     "security": {
