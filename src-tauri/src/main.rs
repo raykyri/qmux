@@ -154,6 +154,15 @@ fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), S
 }
 
 #[tauri::command]
+fn pane_rename(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    title: String,
+) -> Result<PaneInfo, String> {
+    state.rename_pane(&pane_id, title)
+}
+
+#[tauri::command]
 fn agent_submit_turn(
     state: tauri::State<'_, AppState>,
     request: SubmitAgentTurnRequest,
@@ -273,6 +282,7 @@ fn main() {
             pane_write,
             pane_resize,
             pane_kill,
+            pane_rename,
             agent_submit_turn,
             agent_remove_queued_turn,
             agent_reorder_queued_turn,

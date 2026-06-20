@@ -20,6 +20,7 @@ import {
   listenToEvents,
   listPanes,
   removeWorktree,
+  renamePane,
   setAgentDraft as persistAgentDraft,
   spawnClaude,
   spawnShell,
@@ -260,6 +261,9 @@ export default function App() {
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
@@ -663,6 +667,41 @@ export default function App() {
     );
   }
 
+  function openRenameDialog(pane: PaneInfo) {
+    setRenameValue(pane.title);
+    setRenamePaneId(pane.id);
+  }
+
+  async function submitRename() {
+    const paneId = renamePaneId;
+    if (!paneId) {
+      return;
+    }
+    const title = renameValue.trim();
+    const previous = panes.find((pane) => pane.id === paneId);
+    setRenamePaneId(null);
+    if (!title || previous?.title === title) {
+      return;
+    }
+    // Optimistically rename, then persist; revert if the backend rejects it.
+    setPanes((current) =>
+      current.map((pane) => (pane.id === paneId ? { ...pane, title } : pane)),
+    );
+    try {
+      const updated = await renamePane(paneId, title);
+      setPanes((current) =>
+        current.map((pane) => (pane.id === paneId ? { ...pane, title: updated.title } : pane)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPanes((current) =>
+        current.map((pane) =>
+          pane.id === paneId ? { ...pane, title: previous?.title ?? pane.title } : pane,
+        ),
+      );
+    }
+  }
+
   async function closePane(paneToClose: PaneInfo) {
     setError(null);
     try {
@@ -832,6 +871,16 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [closeDialog]);
+
+  // Focus and select the name when the rename dialog opens, so the user can type
+  // a new name straight away.
+  useEffect(() => {
+    if (renamePaneId) {
+      const input = renameInputRef.current;
+      input?.focus();
+      input?.select();
+    }
+  }, [renamePaneId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1086,6 +1135,7 @@ export default function App() {
                   type="button"
                   className="pane-tab"
                   onClick={() => setActivePaneId(pane.id)}
+                  onDoubleClick={() => openRenameDialog(pane)}
                 >
                   <span className="pane-tab-line">
                     <span className="pane-tab-title">{pane.title}</span>
@@ -1331,6 +1381,50 @@ export default function App() {
               </>
             )}
           </div>
+        </div>
+      ) : null}
+
+      {renamePaneId ? (
+        <div
+          className="confirm-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setRenamePaneId(null);
+            }
+          }}
+        >
+          <form
+            className="confirm-dialog rename-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rename-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitRename();
+            }}
+          >
+            <h2 id="rename-dialog-title">Rename tab</h2>
+            <input
+              ref={renameInputRef}
+              className="rename-dialog-input"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setRenamePaneId(null);
+                }
+              }}
+              aria-label="Tab name"
+            />
+            <div className="confirm-dialog-actions">
+              <button type="button" onClick={() => setRenamePaneId(null)}>
+                Cancel
+              </button>
+              <button type="submit">Rename</button>
+            </div>
+          </form>
         </div>
       ) : null}
 

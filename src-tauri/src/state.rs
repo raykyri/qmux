@@ -820,6 +820,28 @@ impl AppState {
         Ok(())
     }
 
+    pub fn rename_pane(&self, pane_id: &str, title: String) -> Result<PaneInfo, String> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err("tab name cannot be empty".to_string());
+        }
+        let info = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let pane = model
+                .panes
+                .get_mut(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            pane.info.title = title;
+            pane.info.clone()
+        };
+        self.persist();
+        Ok(info)
+    }
+
     pub fn mark_pane_status(&self, pane_id: &str, status: PaneStatus) -> Result<(), String> {
         {
             let mut model = self
