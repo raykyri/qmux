@@ -10,16 +10,14 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
 import { confirmLargePaste } from "../lib/paste";
-import {
-  loadTerminalFont,
-  TERMINAL_FONT_FAMILY,
-  TERMINAL_FONT_SIZE,
-} from "../lib/terminalFont";
+import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
   active: boolean;
+  fontSize: number;
+  fontFamily: string;
 }
 
 export interface TerminalPaneHandle {
@@ -88,9 +86,16 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
 }
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active },
+  { pane, active, fontSize, fontFamily },
   ref,
 ) {
+  // The setup effect runs once (keyed on pane.id) and closes over its render's
+  // font settings; read the latest values through refs so a terminal created
+  // while the user has changed the font/size opens with the current choice.
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
+  const fontFamilyRef = useRef(fontFamily);
+  fontFamilyRef.current = fontFamily;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // xterm opens into this inner mount, which fills the host's content box with no
   // padding of its own. The visual breathing room lives as padding on the host;
@@ -218,8 +223,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         convertEol: false,
         cols: pane.cols,
         cursorBlink: false,
-        fontFamily: TERMINAL_FONT_FAMILY,
-        fontSize: TERMINAL_FONT_SIZE,
+        fontFamily: fontFamilyRef.current,
+        fontSize: fontSizeRef.current,
         rows: pane.rows,
         scrollback: 10000,
         theme: TERMINAL_THEME,
@@ -493,6 +498,30 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       stabilizeTerminalRef.current?.();
     }
   }, [active, pane.id]);
+
+  // Apply live font changes (settings panel / Cmd-+/Cmd--) to an already-open
+  // terminal, then re-fit so rows/cols and the PTY size track the new cell
+  // metrics. On first mount the terminal may not exist yet (it opens after the
+  // font loads); the constructor already used the current values, so the no-op
+  // here is fine.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    let changed = false;
+    if (terminal.options.fontSize !== fontSize) {
+      terminal.options.fontSize = fontSize;
+      changed = true;
+    }
+    if (terminal.options.fontFamily !== fontFamily) {
+      terminal.options.fontFamily = fontFamily;
+      changed = true;
+    }
+    if (changed) {
+      stabilizeTerminalRef.current?.();
+    }
+  }, [fontSize, fontFamily]);
 
   const matchLabel =
     searchTerm === ""

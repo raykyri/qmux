@@ -748,6 +748,143 @@ button:disabled {
   background: #3a221d;
 }
 
+/* Settings panel — a small modal reusing the confirm-dialog surface. */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(8, 10, 12, 0.58);
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 100%);
+  gap: 14px;
+  border: 1px solid #3b4447;
+  border-radius: 10px;
+  background: #1b2022;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  padding: 16px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 15px;
+  color: #f4f3ec;
+}
+
+.settings-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-h-md);
+  width: var(--control-h-md);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--control-fg-muted);
+}
+
+.settings-close:hover {
+  background: var(--control-bg-hover);
+  color: #e7e7e2;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-label {
+  color: var(--control-fg-muted);
+  font-size: var(--fs-base);
+}
+
+/* Dropdown styled to match the launcher's option selects. */
+.settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: var(--control-h-md);
+  min-width: 160px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background-color: #111315;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 10px;
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.settings-select:hover {
+  border-color: var(--control-border-hover);
+  background-color: #16191b;
+}
+
+/* Stepper — a bordered group matching the agent picker, with −/value/+. */
+.settings-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  min-height: var(--control-h-md);
+  overflow: hidden;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+}
+
+.settings-stepper button {
+  min-height: 0;
+  align-self: stretch;
+  width: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--control-fg-muted);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.settings-stepper button:hover:not(:disabled) {
+  background: var(--control-bg-hover);
+  color: #e7e7e2;
+}
+
+.settings-stepper button:disabled {
+  color: #5b615e;
+}
+
+.settings-stepper-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  padding: 0 4px;
+  border-left: 1px solid var(--control-border);
+  border-right: 1px solid var(--control-border);
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+  font-variant-numeric: tabular-nums;
+}
+
 .command-launcher-input {
   display: block;
   width: 100%;
