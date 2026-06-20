@@ -39,6 +39,7 @@ struct AppStateInner {
 #[derive(Default)]
 struct Model {
     panes: HashMap<String, PaneRuntime>,
+    pane_order: Vec<String>,
     groups: HashMap<String, GroupInfo>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
@@ -218,9 +219,7 @@ impl AppState {
         // file, but before respawn so respawned panes get persisted.
         self.inner.persist_enabled.store(true, Ordering::Relaxed);
 
-        let mut panes = persisted.panes;
-        panes.sort_by(|a, b| a.id.cmp(&b.id));
-        panes
+        persisted.panes
     }
 
     /// Snapshots the model to disk when persistence is enabled. Best-effort: a
@@ -237,7 +236,7 @@ impl AppState {
             PersistedState {
                 version: STATE_VERSION,
                 next_id: self.inner.next_id.load(Ordering::Relaxed),
-                panes: model.panes.values().map(|pane| pane.info.clone()).collect(),
+                panes: ordered_panes(&model),
                 groups: model.groups.values().cloned().collect(),
                 agents: model.agents.values().cloned().collect(),
                 queues: model
@@ -346,7 +345,7 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.panes.values().map(|pane| pane.info.clone()).collect())
+        Ok(ordered_panes(&model))
     }
 
     pub fn list_groups(&self) -> Result<Vec<GroupInfo>, String> {
@@ -422,7 +421,12 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
-            model.panes.insert(pane.info.id.clone(), pane);
+            let pane_id = pane.info.id.clone();
+            let is_new = !model.panes.contains_key(&pane_id);
+            model.panes.insert(pane_id.clone(), pane);
+            if is_new && !model.pane_order.iter().any(|id| id == &pane_id) {
+                model.pane_order.push(pane_id);
+            }
         }
         self.persist();
         Ok(())
@@ -436,9 +440,38 @@ impl AppState {
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
             model.panes.remove(pane_id);
+            model.pane_order.retain(|id| id != pane_id);
         }
         self.persist();
         Ok(())
+    }
+
+    pub fn reorder_panes(&self, pane_ids: Vec<String>) -> Result<Vec<PaneInfo>, String> {
+        let panes = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if pane_ids.len() != model.panes.len() {
+                return Err("pane order is stale; refresh before reordering".to_string());
+            }
+
+            let mut seen = HashSet::with_capacity(pane_ids.len());
+            for pane_id in &pane_ids {
+                if !seen.insert(pane_id.clone()) {
+                    return Err("pane order contains a duplicate pane".to_string());
+                }
+                if !model.panes.contains_key(pane_id) {
+                    return Err(format!("pane {pane_id} was not found"));
+                }
+            }
+
+            model.pane_order = pane_ids;
+            ordered_panes(&model)
+        };
+        self.persist();
+        Ok(panes)
     }
 
     pub fn insert_group(&self, group: GroupInfo) -> Result<(), String> {
@@ -938,6 +971,32 @@ impl AppState {
     }
 }
 
+fn ordered_panes(model: &Model) -> Vec<PaneInfo> {
+    let mut panes = Vec::with_capacity(model.panes.len());
+    let mut seen = HashSet::with_capacity(model.panes.len());
+
+    for pane_id in &model.pane_order {
+        if let Some(pane) = model.panes.get(pane_id) {
+            panes.push(pane.info.clone());
+            seen.insert(pane_id.clone());
+        }
+    }
+
+    let mut missing_from_order = model
+        .panes
+        .iter()
+        .filter(|(pane_id, _)| !seen.contains(*pane_id))
+        .collect::<Vec<_>>();
+    missing_from_order.sort_by(|(left, _), (right, _)| left.cmp(right));
+    panes.extend(
+        missing_from_order
+            .into_iter()
+            .map(|(_, pane)| pane.info.clone()),
+    );
+
+    panes
+}
+
 fn prompts_match(actual: &str, expected: &str) -> bool {
     let actual = normalize_prompt(actual);
     let expected = normalize_prompt(expected);
@@ -975,7 +1034,10 @@ mod tests {
     use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
     use crate::persistence::PersistedState;
     use crate::workspace::AgentStatus;
+    use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
+    use std::io;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1053,6 +1115,52 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FakeChild;
+
+    impl ChildKiller for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(FakeChild)
+        }
+    }
+
+    impl Child for FakeChild {
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            Ok(ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    fn sample_pane_runtime(id: &str) -> PaneRuntime {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+
+        PaneRuntime {
+            info: sample_pane(id, None),
+            child: Arc::new(Mutex::new(Box::new(FakeChild))),
+            master: Arc::new(Mutex::new(pair.master)),
+            writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+        }
+    }
+
     #[test]
     fn queue_mutations_round_trip_through_persistence() {
         let workspace = temp_workspace();
@@ -1099,6 +1207,93 @@ mod tests {
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["third".to_string()]
         );
+    }
+
+    #[test]
+    fn panes_list_in_inserted_order() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        state.insert_pane(sample_pane_runtime("pane-b")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-a")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-c")).unwrap();
+
+        assert_eq!(
+            state
+                .list_panes()
+                .unwrap()
+                .into_iter()
+                .map(|pane| pane.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "pane-b".to_string(),
+                "pane-a".to_string(),
+                "pane-c".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn pane_reorder_round_trips_through_persistence() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+            state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+            state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+
+            let reordered = state
+                .reorder_panes(vec![
+                    "pane-3".to_string(),
+                    "pane-1".to_string(),
+                    "pane-2".to_string(),
+                ])
+                .unwrap();
+            assert_eq!(
+                reordered
+                    .into_iter()
+                    .map(|pane| pane.id)
+                    .collect::<Vec<_>>(),
+                vec![
+                    "pane-3".to_string(),
+                    "pane-1".to_string(),
+                    "pane-2".to_string()
+                ]
+            );
+        }
+
+        let state = AppState::new(config);
+        let recovered = state.restore_session();
+        assert_eq!(
+            recovered
+                .into_iter()
+                .map(|pane| pane.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "pane-3".to_string(),
+                "pane-1".to_string(),
+                "pane-2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn pane_reorder_rejects_stale_or_duplicate_orders() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+
+        let duplicate = state
+            .reorder_panes(vec!["pane-1".to_string(), "pane-1".to_string()])
+            .unwrap_err();
+        assert!(duplicate.contains("duplicate"));
+
+        let stale = state.reorder_panes(vec!["pane-1".to_string()]).unwrap_err();
+        assert!(stale.contains("stale"));
     }
 
     #[test]

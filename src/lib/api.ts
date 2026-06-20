@@ -103,6 +103,10 @@ export function renamePane(paneId: string, title: string) {
   return invoke<PaneInfo>("pane_rename", { paneId, title });
 }
 
+export function reorderPanes(paneIds: string[]) {
+  return invoke<PaneInfo[]>("pane_reorder", { paneIds });
+}
+
 export function worktreeStatus(agentId: string) {
   return invoke<WorktreeStatus>("worktree_status", { agentId });
 }

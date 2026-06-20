@@ -30,6 +30,7 @@ import {
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
+  reorderPanes,
   setAgentDraft as persistAgentDraft,
   spawnAgent,
   spawnShell,
@@ -333,6 +334,8 @@ export default function App() {
   const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
   const paneTabDropIndexRef = useRef<number | null>(null);
+  const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
+  const paneReorderRequestSeqRef = useRef(0);
   const suppressPaneTabClickRef = useRef(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
@@ -1056,20 +1059,37 @@ export default function App() {
   }
 
   function reorderPaneTab(paneId: string, gap: number) {
-    setPanes((current) => {
-      const from = current.findIndex((pane) => pane.id === paneId);
-      if (from === -1) {
-        return current;
-      }
-      const to = from < gap ? gap - 1 : gap;
-      if (to === from || to < 0 || to >= current.length) {
-        return current;
-      }
-      const next = [...current];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
+    const from = panes.findIndex((pane) => pane.id === paneId);
+    if (from === -1) {
+      return;
+    }
+    const to = from < gap ? gap - 1 : gap;
+    if (to === from || to < 0 || to >= panes.length) {
+      return;
+    }
+
+    const next = [...panes];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const requestSeq = paneReorderRequestSeqRef.current + 1;
+    paneReorderRequestSeqRef.current = requestSeq;
+    setPanes(next);
+
+    const persist = paneReorderPersistChainRef.current
+      .catch(() => undefined)
+      .then(() => reorderPanes(next.map((pane) => pane.id)));
+    paneReorderPersistChainRef.current = persist
+      .then((orderedPanes) => {
+        if (paneReorderRequestSeqRef.current === requestSeq) {
+          setPanes(orderedPanes);
+        }
+      })
+      .catch((err) => {
+        if (paneReorderRequestSeqRef.current === requestSeq) {
+          setError(err instanceof Error ? err.message : String(err));
+          void listPanes().then(setPanes).catch(() => undefined);
+        }
+      });
   }
 
   function openPaneContextMenu(event: ReactMouseEvent, pane: PaneInfo) {
