@@ -1,4 +1,10 @@
-import { type DragEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { EllipsisVertical, X } from "lucide-react";
 import {
   listAgentTurnQueue,
@@ -16,6 +22,15 @@ const MAX_INPUT_HEIGHT = 200;
 // to/from `auto`, so we measure both layouts and tween between explicit pixel
 // heights, then hand control back to CSS once it settles.
 const QUEUED_TURN_ANIM_MS = 120;
+const QUEUE_DRAG_START_THRESHOLD = 4;
+const QUEUE_DRAG_CLICK_SUPPRESS_MS = 100;
+
+type QueuePointerDrag = {
+  pointerId: number;
+  from: number;
+  startY: number;
+  active: boolean;
+};
 
 function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean }) {
   const ref = useRef<HTMLSpanElement | null>(null);
@@ -114,6 +129,8 @@ export default function NativeInput({
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const draggingIndexRef = useRef<number | null>(null);
   const dropIndexRef = useRef<number | null>(null);
+  const queuePointerDragRef = useRef<QueuePointerDrag | null>(null);
+  const suppressQueuedTurnClickRef = useRef(false);
   // Recently sent or removed messages, per agent, so the menu can offer them for
   // quick re-copy. Kept here (not in the backend) as a session convenience.
   const [recentByAgent, setRecentByAgent] = useState<Record<string, string[]>>({});
@@ -326,41 +343,106 @@ export default function NativeInput({
     }
   }
 
-  function handleQueueDragStart(event: DragEvent<HTMLDivElement>, index: number) {
-    draggingIndexRef.current = index;
-    dropIndexRef.current = null;
-    setDraggingIndex(index);
-    setDropIndex(null);
-    event.dataTransfer.effectAllowed = "move";
-    // Firefox only begins a drag once some data has been set.
-    try {
-      event.dataTransfer.setData("text/plain", String(index));
-    } catch {
-      // Some platforms reject setData here; the drag still works without it.
-    }
-  }
-
-  function handleQueueDragOver(event: DragEvent<HTMLDivElement>) {
-    if (draggingIndexRef.current === null) {
+  function handleQueuePointerDown(event: ReactPointerEvent<HTMLDivElement>, index: number) {
+    if (event.button !== 0) {
       return;
     }
-    // Permit the drop across the whole queue stack, including the gaps between
-    // rows, and mark the nearest insertion gap.
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    setQueueDropIndex(queueDropIndexFromPoint(event.currentTarget, event.clientY));
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.closest(".queued-turn-actions")
+    ) {
+      return;
+    }
+    queuePointerDragRef.current = {
+      pointerId: event.pointerId,
+      from: index,
+      startY: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function handleQueueDrop(event: DragEvent<HTMLDivElement>) {
+  function handleQueuePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = queuePointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (!drag.active) {
+      if (Math.abs(event.clientY - drag.startY) < QUEUE_DRAG_START_THRESHOLD) {
+        return;
+      }
+      drag.active = true;
+      draggingIndexRef.current = drag.from;
+      dropIndexRef.current = null;
+      setDraggingIndex(drag.from);
+      setDropIndex(null);
+    }
+
     event.preventDefault();
-    const from = draggingIndexRef.current;
-    const gap = dropIndexRef.current ?? queueDropIndexFromPoint(event.currentTarget, event.clientY);
+    const stack = queueStackRef.current;
+    if (!stack) {
+      return;
+    }
+    setQueueDropIndex(queueDropIndexFromPoint(stack, event.clientY));
+  }
+
+  function handleQueuePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = queuePointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already have been released by the platform.
+    }
+
+    queuePointerDragRef.current = null;
+    if (!drag.active) {
+      return;
+    }
+
+    event.preventDefault();
+    suppressQueuedTurnClickRef.current = true;
+    window.setTimeout(() => {
+      suppressQueuedTurnClickRef.current = false;
+    }, QUEUE_DRAG_CLICK_SUPPRESS_MS);
+
+    const stack = queueStackRef.current;
+    const gap =
+      dropIndexRef.current ?? (stack ? queueDropIndexFromPoint(stack, event.clientY) : null);
     clearQueueDrag();
-    if (from === null) {
+    if (gap === null) {
+      return;
+    }
+    reorderQueuedTurn(drag.from, gap);
+  }
+
+  function handleQueuePointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = queuePointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    queuePointerDragRef.current = null;
+    clearQueueDrag();
+  }
+
+  function handleQueuedTurnToggleClick(index: number) {
+    if (suppressQueuedTurnClickRef.current) {
+      suppressQueuedTurnClickRef.current = false;
+      return;
+    }
+    onQueuedTurnCollapseToggle(agent.id, index);
+  }
+
+  function reorderQueuedTurn(from: number, gap: number) {
+    if (from < 0 || from >= queuedTurns.length) {
       return;
     }
     const to = from < gap ? gap - 1 : gap;
-    if (to === from) {
+    if (to === from || to < 0 || to >= queuedTurns.length) {
       return;
     }
     const next = [...queuedTurns];
@@ -369,10 +451,6 @@ export default function NativeInput({
     // Reorder the displayed queue immediately, then persist so a reload keeps it.
     onQueueChange(agent.id, next);
     void persistQueueReorder(from, to, moved);
-  }
-
-  function handleQueueDragEnd() {
-    clearQueueDrag();
   }
 
   function setQueueDropIndex(index: number | null) {
@@ -433,8 +511,6 @@ export default function NativeInput({
           ref={queueStackRef}
           className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
           aria-label="Queued turns"
-          onDragOver={handleQueueDragOver}
-          onDrop={handleQueueDrop}
         >
           {queuedTurns.map((turn, index) => {
             const collapsed = collapsedQueuedTurns[index] ?? false;
@@ -458,16 +534,17 @@ export default function NativeInput({
               <div
                 key={`${index}-${turn}`}
                 className={className}
-                draggable
-                onDragStart={(event) => handleQueueDragStart(event, index)}
-                onDragEnd={handleQueueDragEnd}
+                onPointerDown={(event) => handleQueuePointerDown(event, index)}
+                onPointerMove={handleQueuePointerMove}
+                onPointerUp={handleQueuePointerUp}
+                onPointerCancel={handleQueuePointerCancel}
               >
                 <button
                   type="button"
                   className="queued-turn-toggle"
                   aria-expanded={!collapsed}
                   aria-label={collapsed ? "Expand queued turn" : "Collapse queued turn"}
-                  onClick={() => onQueuedTurnCollapseToggle(agent.id, index)}
+                  onClick={() => handleQueuedTurnToggleClick(index)}
                 >
                   <QueuedTurnText turn={turn} collapsed={collapsed} />
                 </button>
