@@ -1202,7 +1202,7 @@ button:disabled {
 .turn-card header {
   color: #96e0cf;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   text-transform: uppercase;
 }
 
@@ -1367,7 +1367,7 @@ button:disabled {
   cursor: pointer;
   list-style: none;
   border-radius: 6px;
-  padding: 5px 7px;
+  padding: 4px 7px;
 }
 
 .tool-block > summary::-webkit-details-marker,
@@ -1419,8 +1419,8 @@ button:disabled {
 }
 
 .tool-summary-main {
-  color: #f1f0e8;
-  font-weight: 650;
+  color: #aab1ad;
+  font-weight: 400;
 }
 
 .tool-summary-meta {
