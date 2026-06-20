@@ -385,7 +385,7 @@ function ThinkingView({ item }: { item: ThinkingItem }) {
 }
 
 function DisclosureChevron() {
-  return <ChevronRight className="disclosure-chevron" size={13} aria-hidden="true" />;
+  return <ChevronRight className="disclosure-chevron" size={12} aria-hidden="true" />;
 }
 
 function toolEntryStatus(entry: ToolEntry) {
