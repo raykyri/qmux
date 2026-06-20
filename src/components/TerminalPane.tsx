@@ -20,6 +20,9 @@ interface TerminalPaneProps {
   fontFamily: string;
   /** Extra inter-character spacing in px, passed to xterm's `letterSpacing`. */
   letterSpacing: number;
+  /** When true (e.g. the settings panel is open), keystrokes and pastes are
+   *  dropped instead of being forwarded to the PTY. */
+  inputBlocked: boolean;
 }
 
 export interface TerminalPaneHandle {
@@ -88,7 +91,7 @@ function terminalDataFromPayload(data: unknown): string | Uint8Array | null {
 }
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active, fontSize, fontFamily, letterSpacing },
+  { pane, active, fontSize, fontFamily, letterSpacing, inputBlocked },
   ref,
 ) {
   // The setup effect runs once (keyed on pane.id) and closes over its render's
@@ -100,6 +103,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   fontFamilyRef.current = fontFamily;
   const letterSpacingRef = useRef(letterSpacing);
   letterSpacingRef.current = letterSpacing;
+  // Read through a ref so the once-per-pane setup effect's input handlers always
+  // see the current blocked state without being torn down and rebuilt.
+  const inputBlockedRef = useRef(inputBlocked);
+  inputBlockedRef.current = inputBlocked;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // xterm opens into this inner mount, which fills the host's content box with no
   // padding of its own. The visual breathing room lives as padding on the host;
@@ -397,6 +404,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       resizeObserver.observe(hostEl);
 
       const inputDisposable = terminal.onData((data) => {
+        if (inputBlockedRef.current) {
+          return;
+        }
         void writePane(pane.id, data);
       });
 
@@ -439,6 +449,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // capture phase instead: declining stops the event before it descends to
       // xterm, which never sees the paste.
       const handlePaste = (event: ClipboardEvent) => {
+        if (inputBlockedRef.current) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
         const text = event.clipboardData?.getData("text") ?? "";
         if (text && !confirmLargePaste(text)) {
           event.preventDefault();
