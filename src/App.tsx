@@ -33,6 +33,7 @@ import {
   getRuntimeConfig,
   killPane,
   listAgents,
+  listAgentTranscripts,
   listAgentTurnQueue,
   listTurns,
   listenToEvents,
@@ -42,6 +43,7 @@ import {
   renamePane,
   reorderPanes,
   setAgentDraft as persistAgentDraft,
+  setAgentTranscript,
   setPreventSleep,
   spawnAgent,
   spawnShell,
@@ -56,6 +58,7 @@ import type {
   RuntimeConfig,
   TranscriptCopyPayload,
   TranscriptHookEvent,
+  TranscriptOption,
   Turn,
   WorktreeStatus,
 } from "./types";
@@ -371,6 +374,11 @@ export default function App() {
   const [transcriptNoticeByAgent, setTranscriptNoticeByAgent] = useState<
     Record<string, string | null>
   >({});
+  // Sessions available per agent for the right pane's transcript picker. Fetched
+  // lazily when an agent is viewed and refreshed when its transcript rotates.
+  const [transcriptOptionsByAgent, setTranscriptOptionsByAgent] = useState<
+    Record<string, TranscriptOption[]>
+  >({});
   const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
     Record<string, boolean[]>
   >({});
@@ -448,6 +456,20 @@ export default function App() {
     () => (activeAgent ? transcriptNoticeByAgent[activeAgent.id] ?? null : null),
     [activeAgent?.id, transcriptNoticeByAgent],
   );
+  const activeTranscriptOptions = useMemo(
+    () => (activeAgent ? transcriptOptionsByAgent[activeAgent.id] ?? [] : []),
+    [activeAgent?.id, transcriptOptionsByAgent],
+  );
+  // Load the session list when an agent's pane is opened so the picker is ready
+  // without waiting for a recovery event.
+  const activeAgentId = activeAgent?.id;
+  useEffect(() => {
+    if (activeAgentId) {
+      void refreshTranscriptOptions(activeAgentId);
+    }
+    // refreshTranscriptOptions only touches stable setters/imports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgentId]);
   const activeQueuedTurns = useMemo(
     () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, queuedTurnsByAgent],
@@ -601,6 +623,31 @@ export default function App() {
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
+  }
+
+  async function refreshTranscriptOptions(agentId: string) {
+    try {
+      const options = await listAgentTranscripts(agentId);
+      setTranscriptOptionsByAgent((current) => ({ ...current, [agentId]: options }));
+    } catch {
+      // The picker is a best-effort aid; a failed scan just leaves it hidden.
+    }
+  }
+
+  async function handleSelectTranscript(agentId: string, path: string) {
+    setError(null);
+    try {
+      const updated = await setAgentTranscript(agentId, path);
+      // The command repoints the agent but emits no agent.* event, so apply the
+      // returned agent directly to keep the dropdown's selection in sync.
+      setAgents((current) =>
+        current.map((agent) => (agent.id === updated.id ? updated : agent)),
+      );
+      // Re-read the session list so the active flag follows the new binding.
+      await refreshTranscriptOptions(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function discardRecoveredQueuedTurn(agentId: string, index: number, turn: string) {
@@ -943,6 +990,12 @@ export default function App() {
               ? event.payload.message
               : null;
         setTranscriptNoticeByAgent((current) => ({ ...current, [agentId]: message }));
+        // A notice usually follows a recovery/rotation; refresh the picker so the
+        // active session and any new candidates are reflected.
+        void refreshTranscriptOptions(agentId);
+      }
+      if (event.agentId && event.type === "agent.transcript_recovered") {
+        void refreshTranscriptOptions(event.agentId);
       }
     }).then((cleanup) => {
       if (disposed) {
@@ -2404,6 +2457,13 @@ export default function App() {
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
             notice={activeAgent ? activeTranscriptNotice : null}
+            transcriptOptions={activeAgent ? activeTranscriptOptions : []}
+            activeTranscriptPath={activeAgent?.transcriptPath ?? null}
+            onSelectTranscript={
+              activeAgent
+                ? (path) => void handleSelectTranscript(activeAgent.id, path)
+                : undefined
+            }
             input={
               <div className="turn-pane-input-stack">
                 {activeOrphanedQueues.length > 0 ? (

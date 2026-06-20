@@ -78,6 +78,20 @@ export interface Turn {
   sourceIndex: number;
 }
 
+// A selectable past/parallel session for the right pane's transcript picker, used
+// to correct an agent that auto-recovered onto the wrong session file.
+export interface TranscriptOption {
+  path: string;
+  sessionId?: string | null;
+  modifiedMs: number;
+  preview?: string | null;
+  lineCount: number;
+  // The transcript the agent is currently bound to.
+  isActive: boolean;
+  // Another agent is tailing this file; selecting it would collide.
+  boundToOtherAgent: boolean;
+}
+
 export interface SpawnAgentRequest {
   adapterId: string;
   prompt: string;
