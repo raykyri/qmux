@@ -112,6 +112,8 @@ export default function NativeInput({
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const draggingIndexRef = useRef<number | null>(null);
+  const dropIndexRef = useRef<number | null>(null);
   // Recently sent or removed messages, per agent, so the menu can offer them for
   // quick re-copy. Kept here (not in the backend) as a session convenience.
   const [recentByAgent, setRecentByAgent] = useState<Record<string, string[]>>({});
@@ -325,6 +327,8 @@ export default function NativeInput({
   }
 
   function handleQueueDragStart(event: DragEvent<HTMLDivElement>, index: number) {
+    draggingIndexRef.current = index;
+    dropIndexRef.current = null;
     setDraggingIndex(index);
     setDropIndex(null);
     event.dataTransfer.effectAllowed = "move";
@@ -336,26 +340,23 @@ export default function NativeInput({
     }
   }
 
-  function handleQueueDragOver(event: DragEvent<HTMLDivElement>, index: number) {
-    if (draggingIndex === null) {
+  function handleQueueDragOver(event: DragEvent<HTMLDivElement>) {
+    if (draggingIndexRef.current === null) {
       return;
     }
-    // Permit the drop and mark the gap the row would land in — above or below the
-    // hovered row depending on which half the cursor is over.
+    // Permit the drop across the whole queue stack, including the gaps between
+    // rows, and mark the nearest insertion gap.
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    const rect = event.currentTarget.getBoundingClientRect();
-    const after = event.clientY - rect.top > rect.height / 2;
-    setDropIndex(after ? index + 1 : index);
+    setQueueDropIndex(queueDropIndexFromPoint(event.currentTarget, event.clientY));
   }
 
   function handleQueueDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    const from = draggingIndex;
-    const gap = dropIndex;
-    setDraggingIndex(null);
-    setDropIndex(null);
-    if (from === null || gap === null) {
+    const from = draggingIndexRef.current;
+    const gap = dropIndexRef.current ?? queueDropIndexFromPoint(event.currentTarget, event.clientY);
+    clearQueueDrag();
+    if (from === null) {
       return;
     }
     const to = from < gap ? gap - 1 : gap;
@@ -371,8 +372,33 @@ export default function NativeInput({
   }
 
   function handleQueueDragEnd() {
+    clearQueueDrag();
+  }
+
+  function setQueueDropIndex(index: number | null) {
+    dropIndexRef.current = index;
+    setDropIndex(index);
+  }
+
+  function clearQueueDrag() {
+    draggingIndexRef.current = null;
+    dropIndexRef.current = null;
     setDraggingIndex(null);
     setDropIndex(null);
+  }
+
+  function queueDropIndexFromPoint(container: HTMLDivElement, clientY: number) {
+    const rows = Array.from(container.children).filter(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && child.classList.contains("queued-turn"),
+    );
+    for (const [index, row] of rows.entries()) {
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        return index;
+      }
+    }
+    return rows.length;
   }
 
   async function persistQueueReorder(from: number, to: number, turn: string) {
@@ -407,6 +433,8 @@ export default function NativeInput({
           ref={queueStackRef}
           className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
           aria-label="Queued turns"
+          onDragOver={handleQueueDragOver}
+          onDrop={handleQueueDrop}
         >
           {queuedTurns.map((turn, index) => {
             const collapsed = collapsedQueuedTurns[index] ?? false;
@@ -432,8 +460,6 @@ export default function NativeInput({
                 className={className}
                 draggable
                 onDragStart={(event) => handleQueueDragStart(event, index)}
-                onDragOver={(event) => handleQueueDragOver(event, index)}
-                onDrop={handleQueueDrop}
                 onDragEnd={handleQueueDragEnd}
               >
                 <button
