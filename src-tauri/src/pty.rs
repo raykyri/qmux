@@ -362,6 +362,15 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     let mut command = CommandBuilder::new(spec.program);
     command.args(spec.args);
     command.cwd(spec.cwd.clone());
+    // The PTY is driven by xterm.js, so advertise its capabilities explicitly.
+    // CommandBuilder inherits the parent env, which means TERM was only ever
+    // present when qmux itself was launched from a terminal; a Finder/.app launch
+    // has no TERM, leaving full-screen TUIs (e.g. claude) unable to determine the
+    // terminal type and rendering as garbage. Set it (and truecolor) unconditionally
+    // so bundle and bare-binary launches behave identically. spec.envs below can
+    // still override if an adapter ever needs to.
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
     if let Some(path) = crate::launch_path::child_path() {
         command.env("PATH", path);
     }
