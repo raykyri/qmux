@@ -226,6 +226,21 @@ fn main() {
                 if let Err(err) = route_window_close_to_frontend(app) {
                     eprintln!("qmux: failed to reroute window close shortcut: {err}");
                 }
+                // On macOS, give the window an NSVisualEffectView so the sidebar can
+                // read as a native, translucent source list (Finder/Mail/Xcode). The
+                // frontend paints the content panes opaque and leaves the sidebar
+                // column transparent, so the material only shows through there.
+                #[cfg(target_os = "macos")]
+                {
+                    use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
+                    if let Some(window) = app.get_webview_window("main") {
+                        if let Err(err) =
+                            apply_vibrancy(&window, NSVisualEffectMaterial::Sidebar, None, None)
+                        {
+                            eprintln!("qmux: failed to apply window vibrancy: {err}");
+                        }
+                    }
+                }
                 start_control_socket(state.clone()).map_err(std::io::Error::other)?;
                 // Restore persisted groups/agents/queues, then respawn recoverable
                 // panes into fresh PTYs before the command handlers go live so the

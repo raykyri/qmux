@@ -36,7 +36,9 @@
     sans-serif;
 
   color: #e7e7e2;
-  background: #16181a;
+  /* Transparent so the macOS window vibrancy (NSVisualEffectView) composites
+     through the webview. The opaque app background is painted by .app-shell. */
+  background: transparent;
   font-family: var(--font-ui);
   font-synthesis: none;
   line-height: 1.5;
@@ -111,7 +113,15 @@ button:disabled {
   height: 100%;
   min-height: 0;
   border-top: 1px solid #2a2d2f;
-  background: #17191b;
+  /* Paint the content opaque but leave the sidebar column transparent, so the
+     window's vibrancy material shows through only behind the sidebar. The hard
+     stop tracks the same --sidebar-width the grid uses. */
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    transparent var(--sidebar-width, 268px),
+    #17191b var(--sidebar-width, 268px)
+  );
 }
 
 .app-shell.has-turn-sidebar {
@@ -126,8 +136,11 @@ button:disabled {
   min-width: 0;
   flex-direction: column;
   gap: 14px;
-  /* Slightly darker than the terminal surface, like a native source list. */
-  background: #0e1011;
+  /* Mostly-opaque tint over the macOS vibrancy material: just a hint of
+     translucency so it reads as a native source list without the desktop
+     bleeding through. Degrades to a plain dark panel if vibrancy is
+     unavailable. Lower the alpha for a stronger see-through effect. */
+  background: rgba(14, 16, 17, 0.72);
   padding: 12px 10px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
