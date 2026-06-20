@@ -57,13 +57,13 @@ impl ClaudeAdapter {
     }
 
     fn ensure_binary(&self) -> Result<String, String> {
-        ensure_on_path(&self.binary).ok_or_else(|| {
+        let binary = ensure_on_path(&self.binary).ok_or_else(|| {
             format!(
-                "Claude adapter binary '{}' was not found on PATH. Install Claude Code or update adapters.claude.binary in qmux.config.json.",
+                "Claude adapter binary '{}' was not found on PATH or standard macOS tool paths. Install Claude Code or update adapters.claude.binary in qmux.config.json.",
                 self.binary
             )
         })?;
-        Ok(self.binary.clone())
+        Ok(binary.display().to_string())
     }
 }
 
@@ -947,7 +947,11 @@ mod tests {
 
         // A positional token is an inline prompt, even after value-taking flags.
         assert!(args_contain_prompt(&svec(&["fix the bug"])));
-        assert!(args_contain_prompt(&svec(&["--model", "sonnet", "fix the bug"])));
+        assert!(args_contain_prompt(&svec(&[
+            "--model",
+            "sonnet",
+            "fix the bug"
+        ])));
         assert!(args_contain_prompt(&svec(&["--continue", "keep going"])));
         assert!(args_contain_prompt(&svec(&["--", "after separator"])));
     }

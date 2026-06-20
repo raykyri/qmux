@@ -11,7 +11,6 @@ use claude::ClaudeAdapter;
 use codex::CodexAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::env;
 use std::path::{Path, PathBuf};
 
 pub use claude::{PrepareShellClaudeLaunchRequest, SpawnClaudeRequest};
@@ -218,10 +217,7 @@ pub(crate) fn ensure_on_path(binary: &str) -> Option<PathBuf> {
         return binary_path.is_file().then(|| binary_path.to_path_buf());
     }
 
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path)
-        .map(|dir| dir.join(binary))
-        .find(|candidate| candidate.is_file())
+    crate::launch_path::resolve_binary(binary)
 }
 
 pub fn agent_spawn(state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {

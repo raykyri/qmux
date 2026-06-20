@@ -356,6 +356,9 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     let mut command = CommandBuilder::new(spec.program);
     command.args(spec.args);
     command.cwd(spec.cwd.clone());
+    if let Some(path) = crate::launch_path::child_path() {
+        command.env("PATH", path);
+    }
     for (key, value) in spec.envs {
         command.env(key, value);
     }
