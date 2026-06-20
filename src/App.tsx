@@ -41,6 +41,7 @@ import {
   renamePane,
   reorderPanes,
   setAgentDraft as persistAgentDraft,
+  setPreventSleep,
   spawnAgent,
   spawnShell,
   submitAgentTurn,
@@ -1407,6 +1408,18 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
 
+  // Keep the machine awake while the toggle is on and at least one agent is
+  // actively working (running or starting up). Releasing the lock the moment no
+  // agent is busy lets normal power management resume.
+  const anyAgentBusy = useMemo(
+    () => agents.some((agent) => agent.status === "running" || agent.status === "starting"),
+    [agents],
+  );
+  useEffect(() => {
+    const active = settings.preventSleep && anyAgentBusy;
+    void setPreventSleep(active).catch(() => undefined);
+  }, [settings.preventSleep, anyAgentBusy]);
+
   // Escape cancels the worktree close dialog. Capture phase so it wins over the
   // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
   useEffect(() => {
@@ -2123,6 +2136,21 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Keep awake while agents run</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.preventSleep}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    preventSleep: event.currentTarget.checked,
+                  }))
+                }
+              />
+            </label>
           </div>
         </div>
       ) : null}

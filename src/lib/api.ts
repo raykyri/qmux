@@ -124,6 +124,11 @@ export function confirmAppExit() {
   return invoke<void>("app_confirm_exit");
 }
 
+/** Arms (or releases) the macOS wake lock that keeps the machine awake. */
+export function setPreventSleep(active: boolean) {
+  return invoke<void>("app_set_prevent_sleep", { active });
+}
+
 export function listenToEvents(onEvent: (event: QmuxEvent) => void): Promise<UnlistenFn> {
   return listen<QmuxEvent>("qmux-event", (event) => onEvent(event.payload));
 }
