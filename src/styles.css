@@ -238,6 +238,8 @@ button:disabled {
   color: #b9c0bc;
   font-size: 12.5px;
   text-align: left;
+  cursor: grab;
+  user-select: none;
 }
 
 .pane-tab:hover {
@@ -255,6 +257,23 @@ button:disabled {
      fill. (AccentColorText resolved too dark to read against the accent here.) */
   color: #ffffff;
   box-shadow: none;
+}
+
+.pane-tab-row.is-dragging {
+  opacity: 0.5;
+}
+
+.pane-tab-row.is-drop-before .pane-tab {
+  box-shadow: inset 0 2px 0 0 var(--accent-color);
+}
+
+.pane-tab-row.is-drop-after .pane-tab {
+  box-shadow: inset 0 -2px 0 0 var(--accent-color);
+}
+
+.pane-list.is-dragging,
+.pane-list.is-dragging * {
+  cursor: grabbing !important;
 }
 
 .pane-tab-line {

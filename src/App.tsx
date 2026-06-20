@@ -51,6 +51,8 @@ const LEFT_SIDEBAR_MAX_WIDTH = 420;
 // Below this width the New shell/New agent buttons drop their icons to keep the
 // labels readable.
 const LEFT_SIDEBAR_COMPACT_WIDTH = 230;
+const PANE_TAB_DRAG_START_THRESHOLD = 4;
+const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -238,6 +240,13 @@ type PaneContextMenuState = {
   y: number;
 };
 
+type PaneTabPointerDrag = {
+  pointerId: number;
+  paneId: string;
+  startY: number;
+  active: boolean;
+};
+
 type OrphanedQueueGroup = {
   agent: AgentInfo;
   queuedTurns: string[];
@@ -298,6 +307,7 @@ function RecoveredQueuePanel({
 
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
+  const paneListRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
   const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
@@ -311,6 +321,9 @@ export default function App() {
   // listener without re-registering it on every state change.
   const activePaneRef = useRef<PaneInfo | undefined>(undefined);
   const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
+  const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
+  const paneTabDropIndexRef = useRef<number | null>(null);
+  const suppressPaneTabClickRef = useRef(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -336,6 +349,8 @@ export default function App() {
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
+  const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
+  const [paneDropIndex, setPaneDropIndex] = useState<number | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -598,6 +613,9 @@ export default function App() {
   const contextMenuAgent = contextMenuPane
     ? agents.find((agent) => agent.paneId === contextMenuPane.id)
     : undefined;
+  const draggingPaneIndex = draggingPaneId
+    ? panes.findIndex((pane) => pane.id === draggingPaneId)
+    : -1;
 
   useEffect(() => {
     let cancelled = false;
@@ -762,6 +780,147 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  function handlePaneTabPointerDown(event: ReactPointerEvent<HTMLDivElement>, paneId: string) {
+    if (event.button !== 0) {
+      return;
+    }
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.closest(".pane-tab-close, .pane-tab-recovered")
+    ) {
+      return;
+    }
+    paneTabPointerDragRef.current = {
+      pointerId: event.pointerId,
+      paneId,
+      startY: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePaneTabPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = paneTabPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (!drag.active) {
+      if (Math.abs(event.clientY - drag.startY) < PANE_TAB_DRAG_START_THRESHOLD) {
+        return;
+      }
+      drag.active = true;
+      setDraggingPaneId(drag.paneId);
+      setPaneTabDropIndex(null);
+    }
+
+    event.preventDefault();
+    const list = paneListRef.current;
+    if (!list) {
+      return;
+    }
+    setPaneTabDropIndex(paneTabDropIndexFromPoint(list, event.clientY));
+  }
+
+  function handlePaneTabPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = paneTabPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already have been released by the platform.
+    }
+
+    paneTabPointerDragRef.current = null;
+    if (!drag.active) {
+      return;
+    }
+
+    event.preventDefault();
+    suppressPaneTabClickRef.current = true;
+    window.setTimeout(() => {
+      suppressPaneTabClickRef.current = false;
+    }, PANE_TAB_DRAG_CLICK_SUPPRESS_MS);
+
+    const list = paneListRef.current;
+    const gap =
+      paneTabDropIndexRef.current ?? (list ? paneTabDropIndexFromPoint(list, event.clientY) : null);
+    clearPaneTabDrag();
+    if (gap === null) {
+      return;
+    }
+    reorderPaneTab(drag.paneId, gap);
+  }
+
+  function handlePaneTabPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = paneTabPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    paneTabPointerDragRef.current = null;
+    clearPaneTabDrag();
+  }
+
+  function handlePaneTabClick(paneId: string) {
+    if (suppressPaneTabClickRef.current) {
+      suppressPaneTabClickRef.current = false;
+      return;
+    }
+    setActivePaneId(paneId);
+  }
+
+  function handlePaneTabDoubleClick(pane: PaneInfo) {
+    if (suppressPaneTabClickRef.current) {
+      return;
+    }
+    openRenameDialog(pane);
+  }
+
+  function setPaneTabDropIndex(index: number | null) {
+    paneTabDropIndexRef.current = index;
+    setPaneDropIndex(index);
+  }
+
+  function clearPaneTabDrag() {
+    paneTabDropIndexRef.current = null;
+    setDraggingPaneId(null);
+    setPaneDropIndex(null);
+  }
+
+  function paneTabDropIndexFromPoint(container: HTMLElement, clientY: number) {
+    const rows = Array.from(container.children).filter(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && child.classList.contains("pane-tab-row"),
+    );
+    for (const [index, row] of rows.entries()) {
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        return index;
+      }
+    }
+    return rows.length;
+  }
+
+  function reorderPaneTab(paneId: string, gap: number) {
+    setPanes((current) => {
+      const from = current.findIndex((pane) => pane.id === paneId);
+      if (from === -1) {
+        return current;
+      }
+      const to = from < gap ? gap - 1 : gap;
+      if (to === from || to < 0 || to >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
   }
 
   function openPaneContextMenu(event: ReactMouseEvent, pane: PaneInfo) {
@@ -1249,8 +1408,12 @@ export default function App() {
           onPointerDown={startSidebarResize}
           onKeyDown={resizeSidebarWithKeyboard}
         />
-        <nav className="pane-list" aria-label="Panes">
-          {panes.map((pane) => {
+        <nav
+          ref={paneListRef}
+          className={`pane-list${draggingPaneId ? " is-dragging" : ""}`}
+          aria-label="Panes"
+        >
+          {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
             const rawStatus = paneAgent
               ? agentStatusLabel(paneAgent.status)
@@ -1272,17 +1435,38 @@ export default function App() {
             const paneGitMetaTitle = [paneBranch, paneBranch ? paneAgent?.worktreeDir : null]
               .filter(Boolean)
               .join(" · ");
+            const activeDrop =
+              paneDropIndex === null ||
+              paneDropIndex === draggingPaneIndex ||
+              paneDropIndex === draggingPaneIndex + 1
+                ? null
+                : paneDropIndex;
+            const className = [
+              "pane-tab-row",
+              pane.id === activePane?.id ? "is-selected" : "",
+              pane.id === draggingPaneId ? "is-dragging" : "",
+              activeDrop === index ? "is-drop-before" : "",
+              activeDrop === panes.length && index === panes.length - 1
+                ? "is-drop-after"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
             return (
               <div
                 key={pane.id}
-                className={pane.id === activePane?.id ? "pane-tab-row is-selected" : "pane-tab-row"}
+                className={className}
                 onContextMenu={(event) => openPaneContextMenu(event, pane)}
+                onPointerDown={(event) => handlePaneTabPointerDown(event, pane.id)}
+                onPointerMove={handlePaneTabPointerMove}
+                onPointerUp={handlePaneTabPointerUp}
+                onPointerCancel={handlePaneTabPointerCancel}
               >
                 <button
                   type="button"
                   className="pane-tab"
-                  onClick={() => setActivePaneId(pane.id)}
-                  onDoubleClick={() => openRenameDialog(pane)}
+                  onClick={() => handlePaneTabClick(pane.id)}
+                  onDoubleClick={() => handlePaneTabDoubleClick(pane)}
                 >
                   <span className="pane-tab-line">
                     <span className="pane-tab-title">{pane.title}</span>
