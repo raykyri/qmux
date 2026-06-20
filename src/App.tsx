@@ -355,6 +355,9 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
+  const [launcherOptionsByAdapter, setLauncherOptionsByAdapter] = useState<
+    Record<string, Record<string, unknown>>
+  >({});
   const [createInWorktree, setCreateInWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
@@ -380,6 +383,8 @@ export default function App() {
     () => getAgentUiAdapter(selectedLauncherAdapterId),
     [selectedLauncherAdapterId],
   );
+  const launcherOptions = launcherOptionsByAdapter[launchAdapter.id] ?? {};
+  const LauncherOptions = launchAdapter.LauncherOptions;
   const launcherAdapters = useMemo(() => {
     const runtimeAdapters = config?.adapters
       .map((adapter) => findAgentUiAdapter(adapter.id))
@@ -1237,6 +1242,7 @@ export default function App() {
         baseRef: "HEAD",
         initialSize: estimateInitialPaneSize(true),
         useWorktree: createInWorktree,
+        options: launcherOptions,
       });
       setPanes((current) => [...current, pane]);
       setActivePaneId(pane.id);
@@ -1773,7 +1779,7 @@ export default function App() {
           }}
         >
           <form
-            className="command-launcher"
+            className={`command-launcher${LauncherOptions ? " has-options" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-label="New agent"
@@ -1802,6 +1808,19 @@ export default function App() {
               rows={2}
               placeholder="What do you want to do next?"
             />
+            {LauncherOptions ? (
+              <div className="command-launcher-options">
+                <LauncherOptions
+                  value={launcherOptions}
+                  onChange={(next) =>
+                    setLauncherOptionsByAdapter((current) => ({
+                      ...current,
+                      [launchAdapter.id]: next,
+                    }))
+                  }
+                />
+              </div>
+            ) : null}
             <div className="command-launcher-overlay">
               <label className="command-launcher-worktree">
                 <input

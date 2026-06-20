@@ -1,4 +1,4 @@
-import type { AgentUiAdapter, ComposerPolicy } from ".";
+import type { AgentUiAdapter, ComposerPolicy, LauncherOptionsProps } from ".";
 import type { Turn } from "../types";
 
 export const CLAUDE_ADAPTER_ID = "claude";
@@ -16,9 +16,39 @@ const claudeComposerPolicy: ComposerPolicy = {
 export const claudeUiAdapter: AgentUiAdapter = {
   id: CLAUDE_ADAPTER_ID,
   label: "Claude",
+  LauncherOptions: ClaudeLauncherOptions,
   normalizeTurns: normalizeClaudeTurns,
   composerPolicy: () => claudeComposerPolicy,
 };
+
+function ClaudeLauncherOptions({ value, onChange }: LauncherOptionsProps) {
+  const permissionMode = typeof value.permissionMode === "string" ? value.permissionMode : "";
+
+  return (
+    <label className="command-launcher-option">
+      <span>Permission</span>
+      <select
+        value={permissionMode}
+        onChange={(event) => {
+          const next = { ...value };
+          if (event.currentTarget.value) {
+            next.permissionMode = event.currentTarget.value;
+          } else {
+            delete next.permissionMode;
+          }
+          onChange(next);
+        }}
+      >
+        <option value="">Default</option>
+        <option value="auto">Auto</option>
+        <option value="acceptEdits">Accept edits</option>
+        <option value="dontAsk">Don't ask</option>
+        <option value="plan">Plan</option>
+        <option value="bypassPermissions">Bypass</option>
+      </select>
+    </label>
+  );
+}
 
 // Claude's transcript logs a queued prompt twice: once as a `queue-operation`
 // entry when it is enqueued, then again as a `user` turn when it is actually
