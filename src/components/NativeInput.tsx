@@ -10,6 +10,7 @@ import {
   listAgentTurnQueue,
   removeQueuedAgentTurn,
   reorderQueuedAgentTurn,
+  sendNextQueuedAgentTurn,
   submitAgentTurn,
   submitPaneInput,
 } from "../lib/api";
@@ -305,6 +306,26 @@ export default function NativeInput({
       showToast("Copied to clipboard");
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function sendNextQueuedTurn() {
+    if (submitting || queuedTurns.length === 0) {
+      return;
+    }
+
+    const nextTurn = queuedTurns[0];
+    setSubmitting(true);
+    try {
+      const result = await sendNextQueuedAgentTurn(agent.id);
+      onQueueChange(agent.id, result.queuedTurns);
+      if (result.sent) {
+        recordRecentMessage(nextTurn);
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -618,6 +639,20 @@ export default function NativeInput({
           </button>
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">
+              {queuedTurns.length > 0 ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composer-menu-item"
+                  disabled={submitting}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void sendNextQueuedTurn();
+                  }}
+                >
+                  Send next queued
+                </button>
+              ) : null}
               <button
                 type="button"
                 role="menuitem"

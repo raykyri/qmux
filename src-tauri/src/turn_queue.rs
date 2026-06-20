@@ -65,6 +65,14 @@ pub struct ReorderQueuedAgentTurnResult {
     pub queued_turns: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendNextQueuedAgentTurnResult {
+    pub sent: bool,
+    pub pending_turns: usize,
+    pub queued_turns: Vec<String>,
+}
+
 pub fn submit_agent_turn(
     state: &AppState,
     request: SubmitAgentTurnRequest,
@@ -210,6 +218,19 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
     ));
     Ok(true)
+}
+
+pub fn send_next_queued_agent_turn(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    let sent = drain_agent_turn_queue(state, agent_id)?;
+    let queued_turns = state.list_agent_turn_queue(agent_id)?;
+    Ok(SendNextQueuedAgentTurnResult {
+        sent,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
 }
 
 fn queue_agent_turn(
