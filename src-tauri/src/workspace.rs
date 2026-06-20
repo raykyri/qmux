@@ -47,7 +47,9 @@ pub enum AgentStatus {
     Running,
     AwaitingInput,
     AwaitingPermission,
-    Stopped,
+    Done,
+    #[serde(alias = "stopped")]
+    Idle,
     Failed,
 }
 
@@ -189,7 +191,7 @@ pub fn attach_agent_pane(
             let has_queue = !state.list_agent_turn_queue(&previous.id)?.is_empty();
             previous.pane_id = None;
             previous.orphaned_queue_pane_id = has_queue.then(|| pane_id.clone());
-            previous.status = AgentStatus::Stopped;
+            previous.status = AgentStatus::Idle;
             state.update_agent(previous)?;
         }
     }
@@ -210,6 +212,29 @@ pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, 
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
     agent.status = AgentStatus::Failed;
     state.update_agent(agent.clone())?;
+    Ok(agent)
+}
+
+pub fn acknowledge_agent(
+    state: &AppState,
+    agent_id: &str,
+    include_failed: bool,
+) -> Result<AgentInfo, String> {
+    let mut agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    if matches!(agent.status, AgentStatus::Done)
+        || (include_failed && matches!(agent.status, AgentStatus::Failed))
+    {
+        agent.status = AgentStatus::Idle;
+        state.update_agent(agent.clone())?;
+        state.emit(crate::events::QmuxEvent::new(
+            "agent.acknowledged",
+            agent.pane_id.clone(),
+            Some(agent.id.clone()),
+            serde_json::json!({ "agent": agent.clone() }),
+        ));
+    }
     Ok(agent)
 }
 
@@ -458,6 +483,12 @@ mod tests {
         let old = state.agent("agent-old").unwrap().expect("old agent exists");
         assert_eq!(old.pane_id, None);
         assert_eq!(old.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
-        assert!(matches!(old.status, AgentStatus::Stopped));
+        assert!(matches!(old.status, AgentStatus::Idle));
+    }
+
+    #[test]
+    fn stopped_status_deserializes_as_idle() {
+        let status: AgentStatus = serde_json::from_str("\"stopped\"").unwrap();
+        assert!(matches!(status, AgentStatus::Idle));
     }
 }

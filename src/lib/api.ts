@@ -87,6 +87,10 @@ export function getAgentDraft(agentId: string) {
   return invoke<string | null>("agent_get_draft", { agentId });
 }
 
+export function acknowledgeAgent(agentId: string, includeFailed = false) {
+  return invoke<AgentInfo>("agent_acknowledge", { agentId, includeFailed });
+}
+
 export function resizePane(paneId: string, cols: number, rows: number) {
   return invoke<void>("pane_resize", { paneId, cols, rows });
 }

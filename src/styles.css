@@ -278,10 +278,53 @@ button:disabled {
 
 .pane-tab-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
+}
+
+.pane-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.pane-tab-dot.status-active {
+  background: #d7a84f;
+  animation: status-dot-pulse 1.3s ease-in-out infinite;
+}
+
+.pane-tab-dot.status-pending {
+  background: #7f8884;
+  animation: status-dot-pulse 1.5s ease-in-out infinite;
+}
+
+.pane-tab-dot.status-attention {
+  background: #e0796d;
+  animation: status-dot-pulse 1s ease-in-out infinite;
+}
+
+.pane-tab-dot.status-done {
+  background: #6cae9d;
+}
+
+.pane-tab-dot.status-error {
+  background: #e08a5f;
+}
+
+@keyframes status-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 }
 
 .pane-tab-title,
@@ -298,6 +341,23 @@ button:disabled {
   font-size: 11px;
 }
 
+.pane-tab-status-clickable {
+  padding: 1px 6px;
+  border-radius: 999px;
+  /* Clickable to dismiss. */
+  cursor: pointer;
+}
+
+.pane-tab-status-clickable:hover {
+  background: #2c1a17;
+  color: #ffd3c7;
+}
+
+.pane-tab-status-clickable:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px #e08a5f;
+}
+
 .pane-tab-path,
 .pane-tab-gitmeta {
   color: #6b736f;
@@ -308,6 +368,11 @@ button:disabled {
 .pane-tab-row.is-selected .pane-tab-gitmeta,
 .pane-tab-row.is-selected .pane-tab small {
   color: rgba(255, 255, 255, 0.72);
+}
+
+.pane-tab-row.is-selected .pane-tab-status-clickable:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
 }
 
 .pane-tab-meta {
@@ -399,6 +464,10 @@ button:disabled {
 
 .pane-context-status-row.status-attention dd::before {
   background: #e0a96d;
+}
+
+.pane-context-status-row.status-done dd::before {
+  background: #6cae9d;
 }
 
 .pane-context-status-row.status-error dd::before {

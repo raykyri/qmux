@@ -27,8 +27,8 @@ use turn_queue::{
     remove_queued_agent_turn, reorder_queued_agent_turn, submit_agent_turn,
 };
 use workspace::{
-    AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, agent_worktree_status, create_group,
-    remove_agent_worktree,
+    AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
+    agent_worktree_status, create_group, remove_agent_worktree,
 };
 
 /// Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) out of
@@ -204,6 +204,15 @@ fn agent_get_draft(
 }
 
 #[tauri::command]
+fn agent_acknowledge(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    include_failed: bool,
+) -> Result<AgentInfo, String> {
+    acknowledge_agent(&state, &agent_id, include_failed)
+}
+
+#[tauri::command]
 fn worktree_status(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -308,6 +317,7 @@ fn main() {
             agent_reorder_queued_turn,
             agent_set_draft,
             agent_get_draft,
+            agent_acknowledge,
             worktree_status,
             worktree_remove,
             app_confirm_exit,

@@ -152,22 +152,36 @@ pub fn ingest_hook_notification(
         }
         event if event.starts_with("Notification") => {
             let notification_kind = notification_kind(&notification);
-            if let Some(agent) = agent.as_mut() {
-                agent.status = notification_status(notification_kind);
-                state.update_agent(agent.clone())?;
-                if matches!(notification_kind, NotificationKind::IdlePrompt) {
-                    drain_queued_turn_after_idle(state, agent);
+            if matches!(notification_kind, NotificationKind::IdlePrompt) {
+                let drained = if let Some(agent) = agent.as_mut() {
+                    finish_agent_after_idle(state, agent)?
+                } else {
+                    false
+                };
+                if drained {
+                    "agent.running"
+                } else {
+                    "agent.done"
                 }
+            } else {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = notification_status(notification_kind);
+                    state.update_agent(agent.clone())?;
+                }
+                notification_event_type(notification_kind)
             }
-            notification_event_type(notification_kind)
         }
         "Stop" => {
-            if let Some(agent) = agent.as_mut() {
-                agent.status = AgentStatus::Stopped;
-                state.update_agent(agent.clone())?;
-                drain_queued_turn_after_idle(state, agent);
+            let drained = if let Some(agent) = agent.as_mut() {
+                finish_agent_after_idle(state, agent)?
+            } else {
+                false
+            };
+            if drained {
+                "agent.running"
+            } else {
+                "agent.done"
             }
-            "agent.stopped"
         }
         "SubagentStop" => "agent.subagent_stopped",
         other => {
@@ -205,22 +219,37 @@ pub fn ingest_hook_notification(
     ))
 }
 
-fn drain_queued_turn_after_idle(state: &AppState, agent: &AgentInfo) {
+fn finish_agent_after_idle(state: &AppState, agent: &mut AgentInfo) -> Result<bool, String> {
+    let drained = drain_queued_turn_after_idle(state, agent);
+    agent.status = if drained {
+        AgentStatus::Running
+    } else {
+        AgentStatus::Done
+    };
+    state.update_agent(agent.clone())?;
+    Ok(drained)
+}
+
+fn drain_queued_turn_after_idle(state: &AppState, agent: &AgentInfo) -> bool {
     let _ = state.clear_agent_outstanding_sends(&agent.id);
-    if let Err(err) = drain_agent_turn_queue(state, &agent.id) {
-        state.emit(QmuxEvent::new(
-            "agent.queue_error",
-            agent.pane_id.clone(),
-            Some(agent.id.clone()),
-            json!({ "error": err }),
-        ));
+    match drain_agent_turn_queue(state, &agent.id) {
+        Ok(drained) => drained,
+        Err(err) => {
+            state.emit(QmuxEvent::new(
+                "agent.queue_error",
+                agent.pane_id.clone(),
+                Some(agent.id.clone()),
+                json!({ "error": err }),
+            ));
+            false
+        }
     }
 }
 
 fn notification_event_type(notification_kind: NotificationKind) -> &'static str {
     match notification_kind {
         NotificationKind::PermissionPrompt => "agent.awaiting_permission",
-        NotificationKind::IdlePrompt => "agent.idle",
+        NotificationKind::IdlePrompt => "agent.done",
         NotificationKind::ElicitationDialog => "agent.awaiting_input",
         NotificationKind::Other => "agent.notification",
     }
@@ -229,7 +258,7 @@ fn notification_event_type(notification_kind: NotificationKind) -> &'static str 
 fn notification_status(notification_kind: NotificationKind) -> AgentStatus {
     match notification_kind {
         NotificationKind::PermissionPrompt => AgentStatus::AwaitingPermission,
-        NotificationKind::IdlePrompt => AgentStatus::Stopped,
+        NotificationKind::IdlePrompt => AgentStatus::Done,
         NotificationKind::ElicitationDialog => AgentStatus::AwaitingInput,
         NotificationKind::Other => AgentStatus::AwaitingInput,
     }
@@ -443,14 +472,28 @@ mod tests {
 
         let event = ingest_hook_notification(&state, hook("Stop", json!({}))).unwrap();
 
-        assert_eq!(event.event_type, "agent.stopped");
+        assert_eq!(event.event_type, "agent.running");
         assert_eq!(
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["second".to_string()]
         );
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Running));
         let written = written_text(&bytes);
         assert!(written.contains("first"));
         assert!(!written.contains("second"));
+    }
+
+    #[test]
+    fn stop_marks_agent_done_without_queued_turns() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        let event = ingest_hook_notification(&state, hook("Stop", json!({}))).unwrap();
+
+        assert_eq!(event.event_type, "agent.done");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
     }
 
     #[test]
@@ -470,9 +513,30 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(event.event_type, "agent.idle");
+        assert_eq!(event.event_type, "agent.running");
         assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Running));
         assert!(written_text(&bytes).contains("queued"));
+    }
+
+    #[test]
+    fn idle_prompt_marks_agent_done_without_queued_turns() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        let event = ingest_hook_notification(
+            &state,
+            hook(
+                "Notification.idle_prompt",
+                json!({ "hook_event_name": "Notification" }),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(event.event_type, "agent.done");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
     }
 
     #[test]
