@@ -1582,6 +1582,7 @@ export default function App() {
       style={appStyle}
     >
       <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
+        <div className="titlebar-drag" data-tauri-drag-region aria-hidden="true" />
         <div
           className="sidebar-resizer"
           role="separator"
