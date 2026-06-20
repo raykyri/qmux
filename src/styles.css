@@ -759,13 +759,139 @@ button:disabled {
   margin-top: 5px;
 }
 
-.turn-text {
-  margin: 0;
+.turn-text,
+.turn-markdown {
   min-width: 0;
   color: #f1f0e8;
   font-size: 13px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.turn-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.turn-markdown {
+  line-height: 1.48;
+}
+
+.turn-markdown > :first-child {
+  margin-top: 0;
+}
+
+.turn-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.turn-markdown p,
+.turn-markdown ul,
+.turn-markdown ol,
+.turn-markdown blockquote,
+.turn-markdown pre,
+.turn-markdown table {
+  margin: 0 0 8px;
+}
+
+.turn-markdown h1,
+.turn-markdown h2,
+.turn-markdown h3,
+.turn-markdown h4,
+.turn-markdown h5,
+.turn-markdown h6 {
+  margin: 10px 0 5px;
+  color: #f4f3ec;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.turn-markdown ul,
+.turn-markdown ol {
+  padding-left: 18px;
+}
+
+.turn-markdown li {
+  margin: 2px 0;
+}
+
+.turn-markdown li > p {
+  margin: 0;
+}
+
+.turn-markdown a {
+  color: var(--accent-color);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.turn-markdown blockquote {
+  border-left: 2px solid #3d4a4d;
+  padding-left: 9px;
+  color: #c4cbc6;
+}
+
+.turn-markdown code {
+  border: 1px solid #323a3d;
+  border-radius: 4px;
+  background: #111416;
+  padding: 1px 4px;
+  color: #e7e7e2;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.turn-markdown pre {
+  overflow: auto;
+  border: 1px solid #30383b;
+  border-radius: 6px;
+  background: #111416;
+  padding: 8px;
+}
+
+.turn-markdown pre code {
+  display: block;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.turn-markdown-table-wrap {
+  max-width: 100%;
+  margin: 0 0 8px;
+  overflow: auto;
+}
+
+.turn-markdown-table-wrap table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+}
+
+.turn-markdown th,
+.turn-markdown td {
+  border: 1px solid #30383b;
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.turn-markdown th {
+  background: #15191b;
+  color: #f4f3ec;
+}
+
+.turn-markdown hr {
+  height: 1px;
+  margin: 10px 0;
+  border: 0;
+  background: #30383b;
+}
+
+.turn-markdown input[type="checkbox"] {
+  margin-right: 6px;
 }
 
 .assistant-activity {

@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
@@ -61,6 +65,15 @@ interface AssistantRunItem {
 
 type ActivityItem = ToolRunItem | ThinkingItem;
 type TimelineItem = MessageItem | AssistantRunItem;
+
+const markdownComponents: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+  table: ({ node: _node, ...props }) => (
+    <div className="turn-markdown-table-wrap">
+      <table {...props} />
+    </div>
+  ),
+};
 
 export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
@@ -353,7 +366,7 @@ function MessageItemView({ item }: { item: MessageItem }) {
       {item.blocks.length > 0 ? (
         <div className="turn-blocks">
           {item.blocks.map((block, index) => (
-            <MessageBlockView key={`${item.key}-${index}`} block={block} />
+            <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
           ))}
         </div>
       ) : null}
@@ -377,9 +390,18 @@ function ActivityItemView({ item }: { item: ActivityItem }) {
   }
 }
 
-function MessageBlockView({ block }: { block: MessageBlock }) {
+function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
   if (block.type === "text") {
-    return <p className="turn-text">{block.text}</p>;
+    if (role !== "assistant") {
+      return <p className="turn-text">{block.text}</p>;
+    }
+    return (
+      <div className="turn-markdown">
+        <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm, remarkBreaks]}>
+          {block.text}
+        </ReactMarkdown>
+      </div>
+    );
   }
 
   return (
