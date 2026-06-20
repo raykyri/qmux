@@ -37,6 +37,7 @@ interface MessageItem {
 }
 
 interface ToolEntry {
+  type: "tool";
   key: string;
   id?: string | null;
   name: string;
@@ -45,19 +46,13 @@ interface ToolEntry {
   isError: boolean;
 }
 
-interface ToolRunItem {
-  type: "toolRun";
-  key: string;
-  entries: ToolEntry[];
-}
-
 interface ThinkingItem {
   type: "thinking";
   key: string;
   values: unknown[];
 }
 
-type ActivityItem = ToolRunItem | ThinkingItem;
+type ActivityItem = ToolEntry | ThinkingItem;
 
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
@@ -249,21 +244,13 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
   };
 
   const pushToolEntry = (entry: ToolEntry) => {
-    const owner = assistantActivityOwner();
-    const previousActivity = owner.activities[owner.activities.length - 1];
-    if (previousActivity?.type === "toolRun") {
-      previousActivity.entries.push(entry);
-      return;
-    }
-    owner.activities.push({
-      type: "toolRun",
-      key: nextKey("tool-run"),
-      entries: [entry],
-    });
+    // Each tool call is its own activity row — no "N tool calls" grouping layer.
+    assistantActivityOwner().activities.push(entry);
   };
 
   const registerToolUse = (block: ToolUseBlock) => {
     const entry: ToolEntry = {
+      type: "tool",
       key: nextKey("tool"),
       id: block.id ?? null,
       name: block.name,
@@ -296,6 +283,7 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
     }
 
     pushToolEntry({
+      type: "tool",
       key: nextKey("tool-result"),
       id: toolUseId,
       name: block.isError ? "Tool error" : "Tool result",
@@ -356,8 +344,8 @@ function MessageItemView({ item }: { item: MessageItem }) {
 
 function ActivityItemView({ item }: { item: ActivityItem }) {
   switch (item.type) {
-    case "toolRun":
-      return <ToolRunView item={item} />;
+    case "tool":
+      return <ToolEntryView entry={item} />;
     case "thinking":
       return <ThinkingView item={item} />;
   }
@@ -381,30 +369,6 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
     <details className="tool-block">
       <summary>Raw</summary>
       <pre>{stringify(block.value)}</pre>
-    </details>
-  );
-}
-
-function ToolRunView({ item }: { item: ToolRunItem }) {
-  if (item.entries.length === 1) {
-    return <ToolEntryView entry={item.entries[0]} />;
-  }
-
-  return (
-    <details
-      className={`tool-run-block ${item.entries.some((entry) => entry.isError) ? "is-error" : ""}`}
-    >
-      <summary>
-        <span className="tool-summary">
-          <span className="tool-summary-main">{item.entries.length} tool calls</span>
-          <span className="tool-summary-meta">{summarizeToolNames(item.entries)}</span>
-        </span>
-      </summary>
-      <div className="tool-run-items">
-        {item.entries.map((entry) => (
-          <ToolEntryView key={entry.key} entry={entry} />
-        ))}
-      </div>
     </details>
   );
 }
@@ -452,13 +416,6 @@ function toolEntryStatus(entry: ToolEntry) {
   }
   const status = entry.isError ? "error" : "done";
   return `${status}, ${stringify(entry.result).length} chars`;
-}
-
-function summarizeToolNames(entries: ToolEntry[]) {
-  const names = entries.map((entry) => entry.name);
-  const visibleNames = names.slice(0, 4).join(", ");
-  const remaining = names.length - 4;
-  return remaining > 0 ? `${visibleNames}, +${remaining}` : visibleNames;
 }
 
 function formatTurnTranscript(turn: Turn) {
