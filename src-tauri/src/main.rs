@@ -7,6 +7,7 @@ mod launch_path;
 mod persistence;
 mod pty;
 mod recovery;
+mod sleep;
 mod state;
 mod transcript;
 mod turn_queue;
@@ -18,6 +19,7 @@ use control_socket::start_control_socket;
 use pty::{
     InitialPaneSize, PaneWriteOptions, kill_pane, resize_pane, spawn_shell_pane, write_pane,
 };
+use sleep::SleepGuard;
 use state::{AppState, PaneInfo};
 use tauri::Manager;
 use transcript::Turn;
@@ -260,6 +262,16 @@ fn app_confirm_exit(
     Ok(())
 }
 
+/// Arms or releases the macOS wake lock. The frontend calls this whenever its
+/// "prevent sleep" setting or the set of running agents changes.
+#[tauri::command]
+fn app_set_prevent_sleep(
+    guard: tauri::State<'_, SleepGuard>,
+    active: bool,
+) -> Result<(), String> {
+    guard.set_active(active)
+}
+
 fn main() {
     match cli::run_cli_if_requested() {
         Ok(true) => return,
@@ -323,6 +335,7 @@ fn main() {
                 let recovered_panes = state.restore_session();
                 recovery::respawn_session(&state, recovered_panes);
                 app.manage(state.clone());
+                app.manage(SleepGuard::default());
                 Ok(())
             }
         })
@@ -352,6 +365,7 @@ fn main() {
             worktree_status,
             worktree_remove,
             app_confirm_exit,
+            app_set_prevent_sleep,
         ])
         .build(tauri::generate_context!())
         .expect("error while building qmux")

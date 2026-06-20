@@ -814,6 +814,12 @@ button:disabled {
   font-size: var(--fs-base);
 }
 
+/* A whole-row label whose checkbox sits at the trailing edge. */
+.settings-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
 /* Dropdown styled to match the launcher's option selects. */
 .settings-select {
   appearance: none;
@@ -948,7 +954,8 @@ button:disabled {
    hairline border) instead of a bright native control, and the checked state
    matches the launcher's teal accent. Shared by the worktree + option toggles. */
 .command-launcher-worktree input,
-.command-launcher-option-toggle input {
+.command-launcher-option-toggle input,
+.settings-checkbox {
   appearance: none;
   -webkit-appearance: none;
   width: 14px;
@@ -962,7 +969,8 @@ button:disabled {
 }
 
 .command-launcher-worktree input:checked,
-.command-launcher-option-toggle input:checked {
+.command-launcher-option-toggle input:checked,
+.settings-checkbox:checked {
   border-color: var(--accent-strong);
   background-color: var(--accent-strong);
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3.5 7.3 5.9 9.7 10.5 4.6' fill='none' stroke='%2310211c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
@@ -972,7 +980,8 @@ button:disabled {
 }
 
 .command-launcher-worktree input:focus-visible,
-.command-launcher-option-toggle input:focus-visible {
+.command-launcher-option-toggle input:focus-visible,
+.settings-checkbox:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
