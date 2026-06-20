@@ -64,6 +64,13 @@ Build the app:
 npm run build
 ```
 
+Try the Finder-based DMG window layout, falling back to the default
+non-interactive DMG build if Finder automation fails:
+
+```sh
+QMUX_DMG_FINDER_LAYOUT=1 npm run build
+```
+
 Run a release build directly:
 
 ```sh
