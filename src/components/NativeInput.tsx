@@ -1,4 +1,5 @@
 import {
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useLayoutEffect,
@@ -27,6 +28,7 @@ const MAX_INPUT_HEIGHT = 200;
 const QUEUED_TURN_ANIM_MS = 120;
 const QUEUE_DRAG_START_THRESHOLD = 4;
 const QUEUE_DRAG_CLICK_SUPPRESS_MS = 100;
+const QUEUED_TURN_CLICK_DELAY_MS = 220;
 
 type QueuePointerDrag = {
   pointerId: number;
@@ -136,6 +138,7 @@ export default function NativeInput({
   const dropIndexRef = useRef<number | null>(null);
   const queuePointerDragRef = useRef<QueuePointerDrag | null>(null);
   const suppressQueuedTurnClickRef = useRef(false);
+  const queuedTurnClickTimer = useRef<number | null>(null);
   // Recently sent or removed messages, per agent, so the menu can offer them for
   // quick re-copy. Kept here (not in the backend) as a session convenience.
   const [recentByAgent, setRecentByAgent] = useState<Record<string, string[]>>({});
@@ -206,6 +209,7 @@ export default function NativeInput({
       if (toastTimer.current !== null) {
         window.clearTimeout(toastTimer.current);
       }
+      clearQueuedTurnClickTimer();
     };
   }, []);
 
@@ -450,12 +454,46 @@ export default function NativeInput({
     clearQueueDrag();
   }
 
-  function handleQueuedTurnToggleClick(index: number) {
+  function clearQueuedTurnClickTimer() {
+    if (queuedTurnClickTimer.current === null) {
+      return;
+    }
+    window.clearTimeout(queuedTurnClickTimer.current);
+    queuedTurnClickTimer.current = null;
+  }
+
+  function handleQueuedTurnToggleClick(
+    event: ReactMouseEvent<HTMLButtonElement>,
+    index: number,
+  ) {
     if (suppressQueuedTurnClickRef.current) {
       suppressQueuedTurnClickRef.current = false;
       return;
     }
-    onQueuedTurnCollapseToggle(agent.id, index);
+    if (event.detail > 1) {
+      return;
+    }
+    clearQueuedTurnClickTimer();
+    queuedTurnClickTimer.current = window.setTimeout(() => {
+      queuedTurnClickTimer.current = null;
+      onQueuedTurnCollapseToggle(agent.id, index);
+    }, QUEUED_TURN_CLICK_DELAY_MS);
+  }
+
+  function handleQueuedTurnDoubleClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    clearQueuedTurnClickTimer();
+
+    const text = event.currentTarget.querySelector(".queued-turn-text");
+    if (!text) {
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
   }
 
   function reorderQueuedTurn(from: number, gap: number) {
@@ -565,7 +603,8 @@ export default function NativeInput({
                   className="queued-turn-toggle"
                   aria-expanded={!collapsed}
                   aria-label={collapsed ? "Expand queued turn" : "Collapse queued turn"}
-                  onClick={() => handleQueuedTurnToggleClick(index)}
+                  onClick={(event) => handleQueuedTurnToggleClick(event, index)}
+                  onDoubleClick={handleQueuedTurnDoubleClick}
                 >
                   <QueuedTurnText turn={turn} collapsed={collapsed} />
                 </button>
