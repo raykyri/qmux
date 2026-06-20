@@ -101,6 +101,25 @@ export interface RemoveQueuedAgentTurnResult {
   queuedTurns: string[];
 }
 
+export interface TranscriptHookEvent {
+  type: string;
+  paneId?: string | null;
+  agentId: string;
+  hookEvent: string;
+  payload: unknown;
+  timestamp: number;
+}
+
+export interface TranscriptCopyPayload {
+  version: 1;
+  exportedAt: string;
+  agent: AgentInfo;
+  pane: PaneInfo;
+  transcriptText: string;
+  turns: Turn[];
+  hooks: TranscriptHookEvent[];
+}
+
 export interface QmuxEvent {
   type: string;
   paneId?: string | null;

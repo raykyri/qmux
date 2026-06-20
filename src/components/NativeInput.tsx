@@ -12,6 +12,7 @@ interface NativeInputProps {
   queuedTurns: string[];
   collapsedQueuedTurns: boolean[];
   transcriptText: string;
+  transcriptCopyText: () => string;
   onQueueChange: (agentId: string, queuedTurns: string[]) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onError: (message: string) => void;
@@ -23,6 +24,7 @@ export default function NativeInput({
   queuedTurns,
   collapsedQueuedTurns,
   transcriptText,
+  transcriptCopyText,
   onQueueChange,
   onQueuedTurnCollapseToggle,
   onError,
@@ -170,7 +172,7 @@ export default function NativeInput({
     }
 
     try {
-      await writeClipboardText(transcriptText);
+      await writeClipboardText(transcriptCopyText());
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
