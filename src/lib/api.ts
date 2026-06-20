@@ -96,6 +96,15 @@ export function acknowledgeAgent(agentId: string, includeFailed = false) {
   return invoke<AgentInfo>("agent_acknowledge", { agentId, includeFailed });
 }
 
+/**
+ * Tells the backend the listener for this pane is live, flushing any PTY output
+ * buffered before the webview subscribed (e.g. the cold-start prompt). Must be
+ * called only after listenToEvents has resolved.
+ */
+export function attachPane(paneId: string) {
+  return invoke<void>("pane_attach", { paneId });
+}
+
 export function resizePane(paneId: string, cols: number, rows: number) {
   return invoke<void>("pane_resize", { paneId, cols, rows });
 }

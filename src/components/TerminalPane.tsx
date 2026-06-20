@@ -8,7 +8,7 @@ import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { listenToEvents, resizePane, writePane } from "../lib/api";
+import { attachPane, listenToEvents, resizePane, writePane } from "../lib/api";
 import { confirmLargePaste } from "../lib/paste";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
@@ -501,6 +501,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         cleanup();
       } else {
         unlisten = cleanup;
+        // The listener is live now, so it is safe to release the backend's
+        // pre-attach buffer: any output produced before this point is flushed
+        // through the listener (into pendingDataRef until the terminal opens),
+        // and everything after streams live.
+        void attachPane(pane.id).catch(() => undefined);
       }
     });
 
