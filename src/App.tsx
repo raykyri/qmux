@@ -641,7 +641,7 @@ export default function App() {
     }
   }
 
-  async function handleSelectTranscript(agentId: string, path: string) {
+  async function handleSelectTranscript(agentId: string, path: string | null) {
     setError(null);
     try {
       const updated = await setAgentTranscript(agentId, path);
@@ -650,8 +650,21 @@ export default function App() {
       setAgents((current) =>
         current.map((agent) => (agent.id === updated.id ? updated : agent)),
       );
-      // Re-read the session list so the active flag follows the new binding.
-      await refreshTranscriptOptions(agentId);
+      if (path) {
+        // Re-read the session list so the active flag follows the new binding.
+        await refreshTranscriptOptions(agentId);
+      } else {
+        // With no bound transcript there is no directory to rescan from; keep the
+        // already-loaded menu visible, just without an active row.
+        setTranscriptOptionsByAgent((current) => ({
+          ...current,
+          [agentId]: (current[agentId] ?? []).map((option) => ({
+            ...option,
+            isActive: false,
+          })),
+        }));
+        setTranscriptNoticeByAgent((current) => ({ ...current, [agentId]: null }));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -2464,13 +2477,6 @@ export default function App() {
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
             notice={activeAgent ? activeTranscriptNotice : null}
-            transcriptOptions={activeAgent ? activeTranscriptOptions : []}
-            activeTranscriptPath={activeAgent?.transcriptPath ?? null}
-            onSelectTranscript={
-              activeAgent
-                ? (path) => void handleSelectTranscript(activeAgent.id, path)
-                : undefined
-            }
             input={
               <div className="turn-pane-input-stack">
                 {activeOrphanedQueues.length > 0 ? (
@@ -2506,6 +2512,10 @@ export default function App() {
                     composerPolicy={getAgentUiAdapter(activeAgent.adapter).composerPolicy(
                       activeAgent,
                     )}
+                    transcriptOptions={activeTranscriptOptions}
+                    onSelectTranscript={(path) =>
+                      void handleSelectTranscript(activeAgent.id, path)
+                    }
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}

@@ -1,0 +1,123 @@
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown } from "lucide-react";
+
+export interface LauncherSelectOption {
+  value: string;
+  label: string;
+  tone?: "danger";
+}
+
+interface LauncherSelectProps {
+  value: string;
+  options: LauncherSelectOption[];
+  onChange: (value: string) => void;
+  ariaLabel?: string;
+}
+
+const toneClass = (tone?: string) => (tone ? ` is-${tone}` : "");
+
+/* A native <select> can't tint a single option, so this is a custom listbox styled
+   like the launcher's controls. The popover is portaled to <body> (the launcher modal
+   and its options row both clip overflow) and pinned below the trigger like the
+   composer menu. */
+export function LauncherSelect({ value, options, onChange, ariaLabel }: LauncherSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  const measure = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      // Pin the popover's top just below the trigger so it opens downward, left edge aligned.
+      setAnchor({ left: rect.left, top: rect.bottom + 6, width: rect.width });
+    }
+  };
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", measure);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", measure);
+    };
+  }, [open]);
+
+  return (
+    <div className="launcher-select">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`launcher-select-trigger${toneClass(selected?.tone)}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => {
+          if (!open) {
+            measure();
+          }
+          setOpen((prev) => !prev);
+        }}
+      >
+        <span className="launcher-select-value">{selected?.label}</span>
+        <ChevronDown size={13} className="launcher-select-chevron" aria-hidden="true" />
+      </button>
+      {open && anchor
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="launcher-select-popover"
+              role="listbox"
+              aria-label={ariaLabel}
+              style={{ left: anchor.left, top: anchor.top, minWidth: anchor.width }}
+            >
+              {options.map((option) => {
+                const active = option.value === value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    className={`launcher-select-item${toneClass(option.tone)}${
+                      active ? " is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setOpen(false);
+                      if (option.value !== value) {
+                        onChange(option.value);
+                      }
+                    }}
+                  >
+                    <span className="launcher-select-item-label">{option.label}</span>
+                    {active ? (
+                      <Check size={14} className="launcher-select-check" aria-hidden="true" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}

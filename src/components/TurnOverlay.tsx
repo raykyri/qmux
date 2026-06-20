@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import type { TranscriptOption, Turn, TurnBlock } from "../types";
+import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
   turns: Turn[];
@@ -16,20 +16,10 @@ interface TurnOverlayProps {
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
-  // Sessions in this agent's folder, newest first. When more than one exists the
-  // pane offers a picker so a wrong auto-recovered session can be corrected.
-  transcriptOptions?: TranscriptOption[];
-  // Path of the session currently bound to the agent (the picker's selected value).
-  activeTranscriptPath?: string | null;
-  // Repoints the agent at the chosen transcript path.
-  onSelectTranscript?: (path: string) => void;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
 const COMPOSER_CLEARANCE = 16;
-
-// Gap kept between the floating session-switcher header and the first turn.
-const HEADER_CLEARANCE = 10;
 
 // How close to the bottom (in px) the user must be for new turns or a growing
 // composer to keep the transcript pinned to the bottom.
@@ -81,27 +71,13 @@ export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
 }
 
-export default function TurnOverlay({
-  turns,
-  input,
-  agentId,
-  notice,
-  transcriptOptions,
-  activeTranscriptPath,
-  onSelectTranscript,
-}: TurnOverlayProps) {
+export default function TurnOverlay({ turns, input, agentId, notice }: TurnOverlayProps) {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
-  const headerRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   // Whether the view is parked near the bottom, so incoming content can keep it
   // pinned there. Starts true (we load at the bottom) and tracks user scrolling.
   const stickToBottomRef = useRef(true);
   const [composerHeight, setComposerHeight] = useState(0);
-  const [headerHeight, setHeaderHeight] = useState(0);
-
-  // A picker is only worth showing once there's more than one session to choose
-  // from; with a single session there is nothing to switch to.
-  const canPickTranscript = Boolean(onSelectTranscript) && (transcriptOptions?.length ?? 0) > 1;
 
   const scrollToBottom = () => {
     const timeline = timelineRef.current;
@@ -155,49 +131,12 @@ export default function TurnOverlay({
     return () => observer.disconnect();
   }, [Boolean(input)]);
 
+  const timelineStyle: CSSProperties | undefined =
+    composerHeight > 0 ? { paddingBottom: composerHeight + COMPOSER_CLEARANCE } : undefined;
   const timelineItems = useMemo(() => buildTimelineItems(turns), [turns]);
-  // The session switcher floats over the top of a non-empty transcript (when
-  // empty, the picker lives inside the placeholder instead). Show it whenever
-  // there's something to switch to, or a notice to surface alongside it.
-  const showHeader = timelineItems.length > 0 && (canPickTranscript || Boolean(notice));
-
-  // Mirror the composer's reserved space at the top so the floating header never
-  // covers the first turn when the user scrolls up.
-  useEffect(() => {
-    const element = headerRef.current;
-    if (!element) {
-      setHeaderHeight(0);
-      return;
-    }
-    const measure = () => setHeaderHeight(element.offsetHeight);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [showHeader]);
-
-  const timelineStyle: CSSProperties = {};
-  if (composerHeight > 0) {
-    timelineStyle.paddingBottom = composerHeight + COMPOSER_CLEARANCE;
-  }
-  if (headerHeight > 0) {
-    timelineStyle.paddingTop = headerHeight + HEADER_CLEARANCE;
-  }
 
   return (
     <section className="turn-sidebar" aria-label="Agent turns">
-      {showHeader ? (
-        <div className="turn-sidebar-header" ref={headerRef}>
-          {canPickTranscript ? (
-            <TranscriptPicker
-              options={transcriptOptions ?? []}
-              activePath={activeTranscriptPath ?? null}
-              onSelect={onSelectTranscript}
-            />
-          ) : null}
-          {notice ? <span className="turn-header-notice">{notice}</span> : null}
-        </div>
-      ) : null}
       <div
         ref={timelineRef}
         className={`turn-timeline${timelineItems.length === 0 ? " is-empty" : ""}`}
@@ -208,14 +147,6 @@ export default function TurnOverlay({
           <div className="empty-state turn-empty-state">
             <span>No turns yet</span>
             {notice ? <span className="turn-empty-notice">{notice}</span> : null}
-            {canPickTranscript ? (
-              <TranscriptPicker
-                options={transcriptOptions ?? []}
-                activePath={activeTranscriptPath ?? null}
-                onSelect={onSelectTranscript}
-                label="Wrong session? Pick the live one:"
-              />
-            ) : null}
           </div>
         ) : (
           timelineItems.map((item) => <MessageTimelineItemView key={item.key} item={item} />)
@@ -228,53 +159,6 @@ export default function TurnOverlay({
       ) : null}
     </section>
   );
-}
-
-function TranscriptPicker({
-  options,
-  activePath,
-  onSelect,
-  label,
-}: {
-  options: TranscriptOption[];
-  activePath: string | null;
-  onSelect?: (path: string) => void;
-  label?: string;
-}) {
-  const selectId = "transcript-picker";
-  return (
-    <div className="transcript-picker">
-      <label className="transcript-picker-label" htmlFor={selectId}>
-        {label ?? "Session"}
-      </label>
-      <select
-        id={selectId}
-        className="transcript-picker-select"
-        value={activePath ?? ""}
-        onChange={(event) => onSelect?.(event.target.value)}
-      >
-        {options.map((option) => (
-          <option key={option.path} value={option.path}>
-            {transcriptOptionLabel(option)}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function transcriptOptionLabel(option: TranscriptOption) {
-  const id = option.sessionId ? option.sessionId.split("-")[0] : "session";
-  const parts = [id];
-  if (option.preview) {
-    parts.push(`“${option.preview}”`);
-  } else {
-    parts.push(`${option.lineCount} lines`);
-  }
-  if (option.boundToOtherAgent) {
-    parts.push("· in use by another agent");
-  }
-  return parts.join("  ");
 }
 
 function buildTimelineItems(turns: Turn[]): MessageItem[] {
