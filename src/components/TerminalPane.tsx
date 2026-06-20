@@ -1,8 +1,13 @@
 import { FitAddon, Terminal } from "ghostty-web";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ensureGhosttyReady } from "../lib/ghostty";
 import { listenToEvents, resizePane, writePane } from "../lib/api";
+import { ensureGhosttyReady } from "../lib/ghostty";
+import {
+  loadTerminalFont,
+  TERMINAL_FONT_FAMILY,
+  TERMINAL_FONT_SIZE,
+} from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 
 interface TerminalPaneProps {
@@ -302,7 +307,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     let cancelled = false;
     let teardown: (() => void) | null = null;
 
-    void ensureGhosttyReady()
+    void Promise.all([ensureGhosttyReady(), loadTerminalFont()])
       .then(() => {
         if (cancelled || !mountRef.current) {
           return;
@@ -322,11 +327,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         convertEol: true,
         cols: pane.cols,
         rows: pane.rows,
-        cursorBlink: true,
+        cursorBlink: false,
         scrollback: 10000,
-        fontFamily:
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
-        fontSize: 13,
+        fontFamily: TERMINAL_FONT_FAMILY,
+        fontSize: TERMINAL_FONT_SIZE,
         theme: {
           background: "#111315",
           foreground: "#e7e7e2",

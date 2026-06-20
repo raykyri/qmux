@@ -11,6 +11,11 @@ import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
 import {
+  isTerminalFontLoaded,
+  TERMINAL_FONT_FAMILY,
+  TERMINAL_FONT_SIZE,
+} from "./lib/terminalFont";
+import {
   confirmAppExit,
   getAgentDraft,
   getRuntimeConfig,
@@ -52,9 +57,6 @@ const TURN_PANE_DEFAULT_WIDTH = 420;
 const TURN_PANE_MAX_WIDTH = 720;
 const TERMINAL_HORIZONTAL_PADDING = 20;
 const TERMINAL_VERTICAL_PADDING = 20;
-const TERMINAL_FONT_SIZE = 13;
-const TERMINAL_FONT_FAMILY =
-  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace";
 const DEFAULT_INITIAL_COLS = 100;
 const DEFAULT_INITIAL_ROWS = 24;
 const MIN_INITIAL_COLS = 20;
@@ -109,7 +111,7 @@ function isTerminalTarget(target: EventTarget | null) {
 }
 
 function measureTerminalCellSize() {
-  if (measuredTerminalCellSize) {
+  if (measuredTerminalCellSize && isTerminalFontLoaded()) {
     return measuredTerminalCellSize;
   }
 
@@ -125,11 +127,14 @@ function measureTerminalCellSize() {
   const rect = probe.getBoundingClientRect();
   probe.remove();
 
-  measuredTerminalCellSize = {
+  const cellSize = {
     width: rect.width > 0 ? rect.width / 10 : 8,
     height: rect.height > 0 ? rect.height : 16,
   };
-  return measuredTerminalCellSize;
+  if (isTerminalFontLoaded()) {
+    measuredTerminalCellSize = cellSize;
+  }
+  return cellSize;
 }
 
 function statusLabel(status: PaneInfo["status"]) {
