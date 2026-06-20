@@ -875,7 +875,6 @@ export default function App() {
 
   function handlePaneTabClick(paneId: string) {
     if (suppressPaneTabClickRef.current) {
-      suppressPaneTabClickRef.current = false;
       return;
     }
     setActivePaneId(paneId);
@@ -1468,12 +1467,20 @@ export default function App() {
                 onPointerMove={handlePaneTabPointerMove}
                 onPointerUp={handlePaneTabPointerUp}
                 onPointerCancel={handlePaneTabPointerCancel}
+                onClick={() => handlePaneTabClick(pane.id)}
+                onDoubleClick={() => handlePaneTabDoubleClick(pane)}
               >
                 <button
                   type="button"
                   className="pane-tab"
-                  onClick={() => handlePaneTabClick(pane.id)}
-                  onDoubleClick={() => handlePaneTabDoubleClick(pane)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handlePaneTabClick(pane.id);
+                  }}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    handlePaneTabDoubleClick(pane);
+                  }}
                 >
                   <span className="pane-tab-line">
                     <span className="pane-tab-title">{pane.title}</span>
