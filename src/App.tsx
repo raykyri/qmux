@@ -1488,6 +1488,16 @@ export default function App() {
   useEffect(() => {
     const active = settings.preventSleep && anyAgentBusy;
     void setPreventSleep(active).catch(() => undefined);
+    if (!active) {
+      return;
+    }
+    // Re-assert periodically while the lock is wanted: the backend declines (and
+    // releases) it while on battery under 10%, so this lets a drop below — or a
+    // recovery / plugging in — take effect without waiting for an agent state change.
+    const interval = window.setInterval(() => {
+      void setPreventSleep(true).catch(() => undefined);
+    }, 30_000);
+    return () => window.clearInterval(interval);
   }, [settings.preventSleep, anyAgentBusy]);
 
   // Escape cancels the worktree close dialog. Capture phase so it wins over the
@@ -2316,7 +2326,7 @@ export default function App() {
             </div>
 
             <label className="settings-row settings-toggle">
-              <span className="settings-label">Keep awake while agents run</span>
+              <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
               <input
                 type="checkbox"
                 className="settings-checkbox"
