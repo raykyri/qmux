@@ -598,6 +598,46 @@ impl AppState {
         Ok(panes)
     }
 
+    /// Moves `pane_id` to sit immediately after `parent_pane_id` at one level deeper
+    /// (its first child), then re-levels the tree. Used when a fork should appear
+    /// nested under the session it forked from.
+    pub fn nest_pane_under(
+        &self,
+        pane_id: &str,
+        parent_pane_id: &str,
+    ) -> Result<Vec<PaneInfo>, String> {
+        let panes = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.panes.contains_key(pane_id) {
+                return Err(format!("pane {pane_id} was not found"));
+            }
+            if !model.panes.contains_key(parent_pane_id) {
+                return Err(format!("pane {parent_pane_id} was not found"));
+            }
+
+            let mut ids = ordered_pane_ids(&model);
+            ids.retain(|id| id != pane_id);
+            let parent_index = ids
+                .iter()
+                .position(|id| id == parent_pane_id)
+                .ok_or_else(|| format!("pane {parent_pane_id} was not found"))?;
+            ids.insert(parent_index + 1, pane_id.to_string());
+
+            let parent_depth = model.pane_depth.get(parent_pane_id).copied().unwrap_or(0);
+            let new_depth = (parent_depth + 1).min(MAX_PANE_DEPTH);
+            model.pane_order = ids;
+            model.pane_depth.insert(pane_id.to_string(), new_depth);
+            normalize_pane_depths(&mut model);
+            ordered_panes(&model)
+        };
+        self.persist();
+        Ok(panes)
+    }
+
     /// Clamps persisted nesting depths to a valid tree over the panes that actually
     /// exist. Called once after session restore/respawn, since some persisted panes
     /// (already-exited ones) are intentionally not recreated.
@@ -1709,6 +1749,37 @@ mod tests {
         assert_eq!(
             id_depths(&state.list_panes().unwrap()),
             vec![("pane-2".to_string(), 0), ("pane-3".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn nest_pane_under_moves_and_indents_beneath_parent() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+
+        // Nest the last pane under the first; it moves directly after it at depth 1.
+        let panes = state.nest_pane_under("pane-3", "pane-1").unwrap();
+        assert_eq!(
+            id_depths(&panes),
+            vec![
+                ("pane-1".to_string(), 0),
+                ("pane-3".to_string(), 1),
+                ("pane-2".to_string(), 0),
+            ]
+        );
+
+        // Nesting under a deeper parent indents one further (a child of the child).
+        let panes = state.nest_pane_under("pane-2", "pane-3").unwrap();
+        assert_eq!(
+            id_depths(&panes),
+            vec![
+                ("pane-1".to_string(), 0),
+                ("pane-3".to_string(), 1),
+                ("pane-2".to_string(), 2),
+            ]
         );
     }
 
