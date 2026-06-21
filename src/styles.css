@@ -2253,6 +2253,36 @@ button:disabled {
   color: #f4f3ec;
 }
 
+/* Queue-height toggle: same flat icon-button style as the ⋮ menu trigger, but pinned
+   to the left of the actions row (the composer menu's margin-left:auto pushes the
+   rest right). */
+.queue-height-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-lg);
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--control-fg-muted);
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.queue-height-toggle:hover {
+  color: #f4f3ec;
+}
+
+.queue-height-toggle[aria-pressed="true"] {
+  color: var(--accent-color);
+}
+
+.queue-height-toggle:focus-visible {
+  outline: none;
+  color: #f4f3ec;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+  border-radius: 4px;
+}
+
 .composer-menu-trigger:focus-visible {
   outline: none;
   color: #f4f3ec;
