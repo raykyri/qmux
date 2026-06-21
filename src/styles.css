@@ -231,6 +231,8 @@ button:disabled {
   flex-direction: column;
   gap: 2px;
   overflow: auto;
+  /* Horizontal step applied per nesting level (sidebar tab indentation). */
+  --pane-indent: 14px;
 }
 
 .empty-state {
@@ -272,6 +274,9 @@ button:disabled {
   text-align: left;
   cursor: grab;
   user-select: none;
+  /* Nested tabs indent their content by depth × indent; the row (and its full-width
+     selection highlight) still spans the sidebar. --pane-depth is set per row. */
+  padding-left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
 }
 
 .pane-tab:hover {
@@ -301,6 +306,42 @@ button:disabled {
 
 .pane-tab-row.is-drop-after .pane-tab {
   box-shadow: inset 0 -2px 0 0 var(--accent-color);
+}
+
+/* Nest drop indicator: a solid rounded outline over the target tab whose left edge
+   is one indent step in, with the remaining left gutter drawn as a dashed border and
+   a → arrow centered in it — signaling the dragged tab will land as a child. */
+.pane-tab-nest-indicator {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pane-tab-nest-indicator::before {
+  content: "";
+  position: absolute;
+  left: var(--pane-indent, 14px);
+  right: 0;
+  top: 0;
+  bottom: 0;
+  border: 1px solid var(--accent-color);
+  border-radius: 4px;
+}
+
+.pane-tab-nest-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--pane-indent, 14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--accent-color);
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+  color: var(--accent-color);
 }
 
 .pane-list.is-dragging,
@@ -533,6 +574,38 @@ button:disabled {
   margin: 0;
   color: #f1f0e8;
   overflow-wrap: anywhere;
+}
+
+.pane-context-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 6px 2px;
+  border-top: 0.5px solid rgba(255, 255, 255, 0.12);
+}
+
+.pane-context-actions button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 8px;
+  border: 0.5px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #d9ddd9;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pane-context-actions button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.pane-context-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* The close affordance is a plain linkified glyph that sits directly over the

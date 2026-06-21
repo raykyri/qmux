@@ -455,6 +455,9 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
         rows: initial_size.rows,
         status: PaneStatus::Running,
         recovered: spec.recovered,
+        // Real depth is stamped from Model.pane_depth by ordered_panes; the runtime
+        // copy is never consulted for it.
+        depth: 0,
     };
 
     let runtime = PaneRuntime {

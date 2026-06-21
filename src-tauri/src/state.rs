@@ -60,6 +60,9 @@ struct AppStateInner {
 struct Model {
     panes: HashMap<String, PaneRuntime>,
     pane_order: Vec<String>,
+    /// Sidebar nesting depth per pane (0 = root). Source of truth for the tab tree;
+    /// `ordered_panes` stamps it onto each returned `PaneInfo`. Absent id == depth 0.
+    pane_depth: HashMap<String, u16>,
     groups: HashMap<String, GroupInfo>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
@@ -138,6 +141,23 @@ pub struct PaneInfo {
     /// time only; the persisted value is never consulted when reloading.
     #[serde(default)]
     pub recovered: bool,
+    /// Sidebar nesting depth (0 = root). Stamped from `Model.pane_depth` by
+    /// `ordered_panes`; persisted so the tree survives a restart.
+    #[serde(default)]
+    pub depth: u16,
+}
+
+/// Hard cap on nesting depth so a deep chain can never make the sidebar unusable.
+/// Mirrored by `MAX_PANE_DEPTH` in the frontend's pane-tree helpers.
+pub const MAX_PANE_DEPTH: u16 = 8;
+
+/// One entry in a `set_pane_layout` request: a pane and its target nesting depth,
+/// in sidebar order.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneLayoutEntry {
+    pub pane_id: String,
+    pub depth: u16,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -229,6 +249,14 @@ impl AppState {
             for (agent_id, draft) in persisted.drafts {
                 if !draft.trim().is_empty() {
                     model.agent_drafts.insert(agent_id, draft);
+                }
+            }
+            // Seed nesting depth from the persisted panes. Panes are re-inserted by
+            // the respawn pass that follows; depths for panes that don't come back
+            // (e.g. already-exited panes) are pruned by the post-respawn normalize.
+            for pane in &persisted.panes {
+                if pane.depth != 0 {
+                    model.pane_depth.insert(pane.id.clone(), pane.depth);
                 }
             }
         }
@@ -478,6 +506,9 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
+            // Re-level any children orphaned by the removal so the tree stays valid
+            // (a closed parent must not leave its children at an unreachable depth).
+            normalize_pane_depths(&mut model);
         }
         self.persist();
         Ok(())
@@ -509,6 +540,69 @@ impl AppState {
         };
         self.persist();
         Ok(panes)
+    }
+
+    /// Atomically replaces the full sidebar tab tree: order + nesting depth. The
+    /// `layout` must list exactly the current panes (no missing/duplicate/unknown id)
+    /// and form a valid tree (first depth 0; each depth <= previous + 1; capped at
+    /// `MAX_PANE_DEPTH`). Every structural tab operation — reorder, indent, outdent,
+    /// nest — is expressed as one of these layouts so a multi-pane indent applies in
+    /// a single locked mutation.
+    pub fn set_pane_layout(&self, layout: Vec<PaneLayoutEntry>) -> Result<Vec<PaneInfo>, String> {
+        let panes = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if layout.len() != model.panes.len() {
+                return Err("pane layout is stale; refresh before updating".to_string());
+            }
+
+            let mut seen = HashSet::with_capacity(layout.len());
+            let mut prev_depth: Option<u16> = None;
+            for entry in &layout {
+                if !seen.insert(entry.pane_id.clone()) {
+                    return Err("pane layout contains a duplicate pane".to_string());
+                }
+                if !model.panes.contains_key(&entry.pane_id) {
+                    return Err(format!("pane {} was not found", entry.pane_id));
+                }
+                if entry.depth > MAX_PANE_DEPTH {
+                    return Err(format!(
+                        "pane depth {} exceeds the maximum of {MAX_PANE_DEPTH}",
+                        entry.depth
+                    ));
+                }
+                let ceiling = prev_depth.map_or(0, |prev| prev + 1);
+                if entry.depth > ceiling {
+                    return Err(
+                        "pane layout is not a valid tree (a depth skips a level)".to_string()
+                    );
+                }
+                prev_depth = Some(entry.depth);
+            }
+
+            model.pane_order = layout.iter().map(|entry| entry.pane_id.clone()).collect();
+            model.pane_depth = layout
+                .iter()
+                .filter(|entry| entry.depth != 0)
+                .map(|entry| (entry.pane_id.clone(), entry.depth))
+                .collect();
+            ordered_panes(&model)
+        };
+        self.persist();
+        Ok(panes)
+    }
+
+    /// Clamps persisted nesting depths to a valid tree over the panes that actually
+    /// exist. Called once after session restore/respawn, since some persisted panes
+    /// (already-exited ones) are intentionally not recreated.
+    pub fn normalize_pane_layout(&self) {
+        if let Ok(mut model) = self.inner.model.lock() {
+            normalize_pane_depths(&mut model);
+        }
+        self.persist();
     }
 
     pub fn insert_group(&self, group: GroupInfo) -> Result<(), String> {
@@ -1058,30 +1152,69 @@ impl AppState {
     }
 }
 
-fn ordered_panes(model: &Model) -> Vec<PaneInfo> {
-    let mut panes = Vec::with_capacity(model.panes.len());
+/// The effective sidebar order: every live pane id, `pane_order` first, then any
+/// panes missing from it (sorted by id for determinism). Shared by `ordered_panes`
+/// and depth normalization so they always agree on ordering.
+fn ordered_pane_ids(model: &Model) -> Vec<String> {
+    let mut ids = Vec::with_capacity(model.panes.len());
     let mut seen = HashSet::with_capacity(model.panes.len());
 
     for pane_id in &model.pane_order {
-        if let Some(pane) = model.panes.get(pane_id) {
-            panes.push(pane.info.clone());
-            seen.insert(pane_id.clone());
+        if model.panes.contains_key(pane_id) && seen.insert(pane_id.clone()) {
+            ids.push(pane_id.clone());
         }
     }
 
     let mut missing_from_order = model
         .panes
-        .iter()
-        .filter(|(pane_id, _)| !seen.contains(*pane_id))
+        .keys()
+        .filter(|pane_id| !seen.contains(*pane_id))
+        .cloned()
         .collect::<Vec<_>>();
-    missing_from_order.sort_by(|(left, _), (right, _)| left.cmp(right));
-    panes.extend(
-        missing_from_order
-            .into_iter()
-            .map(|(_, pane)| pane.info.clone()),
-    );
+    missing_from_order.sort();
+    ids.extend(missing_from_order);
 
-    panes
+    ids
+}
+
+fn ordered_panes(model: &Model) -> Vec<PaneInfo> {
+    ordered_pane_ids(model)
+        .into_iter()
+        .filter_map(|pane_id| {
+            model.panes.get(&pane_id).map(|pane| {
+                let mut info = pane.info.clone();
+                info.depth = model.pane_depth.get(&pane_id).copied().unwrap_or(0);
+                info
+            })
+        })
+        .collect()
+}
+
+/// Clamps `pane_depth` to the validity invariant along the effective order (first
+/// pane depth 0; each depth <= previous + 1; capped at `MAX_PANE_DEPTH`) and drops
+/// entries for panes that no longer exist. Idempotent. This is what re-levels
+/// orphaned children when their parent pane is removed.
+fn normalize_pane_depths(model: &mut Model) {
+    let ids = ordered_pane_ids(model);
+    let id_set: HashSet<&String> = ids.iter().collect();
+    model.pane_depth.retain(|id, _| id_set.contains(id));
+
+    let mut prev_depth: u16 = 0;
+    for (index, id) in ids.iter().enumerate() {
+        let raw = model.pane_depth.get(id).copied().unwrap_or(0);
+        let ceiling = if index == 0 {
+            0
+        } else {
+            (prev_depth + 1).min(MAX_PANE_DEPTH)
+        };
+        let depth = raw.min(ceiling);
+        if depth == 0 {
+            model.pane_depth.remove(id);
+        } else {
+            model.pane_depth.insert(id.clone(), depth);
+        }
+        prev_depth = depth;
+    }
 }
 
 fn prompts_match(actual: &str, expected: &str) -> bool {
@@ -1202,6 +1335,7 @@ mod tests {
             rows: 43,
             status: PaneStatus::Running,
             recovered: false,
+            depth: 0,
         }
     }
 
@@ -1453,6 +1587,123 @@ mod tests {
 
         let stale = state.reorder_panes(vec!["pane-1".to_string()]).unwrap_err();
         assert!(stale.contains("stale"));
+    }
+
+    fn layout(items: &[(&str, u16)]) -> Vec<PaneLayoutEntry> {
+        items
+            .iter()
+            .map(|(id, depth)| PaneLayoutEntry {
+                pane_id: id.to_string(),
+                depth: *depth,
+            })
+            .collect()
+    }
+
+    fn id_depths(panes: &[PaneInfo]) -> Vec<(String, u16)> {
+        panes
+            .iter()
+            .map(|pane| (pane.id.clone(), pane.depth))
+            .collect()
+    }
+
+    #[test]
+    fn set_pane_layout_applies_and_round_trips_depth() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+            state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+            state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+
+            let panes = state
+                .set_pane_layout(layout(&[("pane-3", 0), ("pane-1", 1), ("pane-2", 2)]))
+                .unwrap();
+            assert_eq!(
+                id_depths(&panes),
+                vec![
+                    ("pane-3".to_string(), 0),
+                    ("pane-1".to_string(), 1),
+                    ("pane-2".to_string(), 2),
+                ]
+            );
+        }
+
+        // Depth and order survive a restart via the persisted pane list.
+        let state = AppState::new(config);
+        let recovered = state.restore_session();
+        assert_eq!(
+            id_depths(&recovered),
+            vec![
+                ("pane-3".to_string(), 0),
+                ("pane-1".to_string(), 1),
+                ("pane-2".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_pane_layout_rejects_invalid_layouts() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+
+        // The first pane must be at the root.
+        assert!(
+            state
+                .set_pane_layout(layout(&[("pane-1", 1), ("pane-2", 1)]))
+                .unwrap_err()
+                .contains("valid tree")
+        );
+        // A depth may not skip a level.
+        assert!(
+            state
+                .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", 2)]))
+                .unwrap_err()
+                .contains("valid tree")
+        );
+        // Depth is capped.
+        assert!(
+            state
+                .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", MAX_PANE_DEPTH + 1)]))
+                .unwrap_err()
+                .contains("maximum")
+        );
+        // Membership must match the live panes exactly.
+        assert!(
+            state
+                .set_pane_layout(layout(&[("pane-1", 0), ("pane-1", 0)]))
+                .unwrap_err()
+                .contains("duplicate")
+        );
+        assert!(
+            state
+                .set_pane_layout(layout(&[("pane-1", 0)]))
+                .unwrap_err()
+                .contains("stale")
+        );
+    }
+
+    #[test]
+    fn remove_pane_relevels_orphaned_children() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+        state
+            .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", 1), ("pane-3", 2)]))
+            .unwrap();
+
+        // Closing the root parent promotes its subtree so the tree stays valid.
+        state.remove_pane("pane-1").unwrap();
+        assert_eq!(
+            id_depths(&state.list_panes().unwrap()),
+            vec![("pane-2".to_string(), 0), ("pane-3".to_string(), 1)]
+        );
     }
 
     #[test]
