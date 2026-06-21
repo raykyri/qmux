@@ -118,6 +118,10 @@ interface NativeInputProps {
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onUserInput: (agentId: string) => void;
+  // Read/write a tab's last queue scroll position (kept in App so it survives the
+  // composer unmounting when switching through a shell pane).
+  getQueueScroll: (agentId: string) => number | undefined;
+  saveQueueScroll: (agentId: string, scrollTop: number) => void;
   onError: (message: string) => void;
 }
 
@@ -136,6 +140,8 @@ export default function NativeInput({
   onDraftChange,
   onQueuedTurnCollapseToggle,
   onUserInput,
+  getQueueScroll,
+  saveQueueScroll,
   onError,
 }: NativeInputProps) {
   const value = draft;
@@ -272,6 +278,17 @@ export default function NativeInput({
       queueStackRef.current.scrollTop = queueStackRef.current.scrollHeight;
     }
   }, [queuedTurns.length, agent.id]);
+
+  // Restore this tab's saved queue scroll position on switch. A layout effect so it
+  // lands before paint; it keys only on agent.id, so same-agent content changes are
+  // left to the scroll-to-bottom effect above (which an agent switch skips).
+  useLayoutEffect(() => {
+    const stack = queueStackRef.current;
+    if (!stack) {
+      return;
+    }
+    stack.scrollTop = getQueueScroll(agent.id) ?? 0;
+  }, [agent.id, getQueueScroll]);
 
   // Measures whether the queue's content would exceed half the right pane (the cap),
   // and records that 50% height in pixels. `scrollHeight` is the full content height
@@ -740,6 +757,7 @@ export default function NativeInput({
           ref={queueStackRef}
           className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
           aria-label="Queued turns"
+          onScroll={(event) => saveQueueScroll(agent.id, event.currentTarget.scrollTop)}
           style={
             queueOverflows && !queueExpanded && queueCapPx
               ? { maxHeight: queueCapPx }

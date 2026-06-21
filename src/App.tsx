@@ -158,6 +158,10 @@ export default function App() {
   // ref mirrors the state for synchronous reads from the debounced disk flush.
   const draftsByAgentRef = useRef<Record<string, string>>({});
   const draftFlushTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Per-agent queue scroll positions, so switching tabs (even through a shell pane,
+  // which unmounts the composer) restores where each queue was left. Ephemeral: a ref
+  // so scroll updates never re-render, and the whole thing is dropped on app restart.
+  const queueScrollByAgentRef = useRef<Record<string, number>>({});
   const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Keep the latest active pane / close handler reachable from the global keydown
@@ -349,6 +353,14 @@ export default function App() {
       return { ...current, [paneId]: { ...prev, reloadNonce: prev.reloadNonce + 1 } };
     });
   }
+
+  const getQueueScroll = useCallback(
+    (agentId: string) => queueScrollByAgentRef.current[agentId],
+    [],
+  );
+  const saveQueueScroll = useCallback((agentId: string, scrollTop: number) => {
+    queueScrollByAgentRef.current[agentId] = scrollTop;
+  }, []);
 
   // Navigate the overlay to a typed address. A bare host (no scheme) gets http://
   // so `localhost:5173` works; file paths still go through `qmux open`.
@@ -2573,6 +2585,8 @@ export default function App() {
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                     onUserInput={noteUserInput}
+                    getQueueScroll={getQueueScroll}
+                    saveQueueScroll={saveQueueScroll}
                     onError={setError}
                   />
                 ) : null}
