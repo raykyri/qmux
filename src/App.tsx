@@ -2689,11 +2689,13 @@ export default function App() {
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
           onNavigate={navigateActiveBrowserOverlay}
+          onRefresh={refreshActiveBrowserOverlay}
+          onClose={toggleActiveBrowserOverlay}
         />
       ) : null}
-      {activePane ? (
+      {activePane && !activeBrowserOverlay?.open ? (
         <BrowserOverlayControls
-          open={activeBrowserOverlay?.open ?? false}
+          open={false}
           onToggle={toggleActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
         />
