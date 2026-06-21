@@ -244,13 +244,13 @@ impl ClaudeAdapter {
 
         match spawn_result {
             Ok(pane) => {
-                let mut agent = attach_agent_pane(state, &agent.id, pane.id.clone())?;
+                attach_agent_pane(state, &agent.id, pane.id.clone())?;
                 if !has_prompt {
                     // Launched without a prompt: Claude opens interactively and waits
                     // for input, so present the tab as having an agent that is awaiting
-                    // input rather than working.
-                    agent.status = AgentStatus::AwaitingInput;
-                    state.update_agent(agent)?;
+                    // input rather than working. Field-scoped write — a full-struct
+                    // update here would race the SessionStart hook recording session_id.
+                    state.set_agent_status(&agent.id, AgentStatus::AwaitingInput)?;
                 }
                 Ok(pane)
             }
@@ -510,14 +510,20 @@ impl ClaudeAdapter {
                 return Err(err);
             }
         };
-        let mut agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
-        if !args_contain_prompt(&request.args) {
+        let agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
+        let agent = if !args_contain_prompt(&request.args) {
             // A bare `claude` (no inline prompt) drops into interactive mode and
             // waits for the user, so present the tab as having an agent that is
             // awaiting input rather than working. The first real turn promotes it.
-            agent.status = AgentStatus::AwaitingInput;
-            state.update_agent(agent.clone())?;
-        }
+            // Field-scoped write — a full-struct update here would race the
+            // SessionStart hook recording session_id; carry the post-write state so
+            // the agent.spawned event below ships the right status.
+            state
+                .set_agent_status(&agent.id, AgentStatus::AwaitingInput)?
+                .unwrap_or(agent)
+        } else {
+            agent
+        };
 
         let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
@@ -566,32 +572,37 @@ impl ClaudeAdapter {
             });
         let event_type = match notification.event.as_str() {
             "SessionStart" => {
-                if let Some(agent) = agent.as_mut() {
-                    agent.session_id = string_field(&notification.payload, "session_id")
+                if let Some(current) = agent.as_ref() {
+                    let session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"));
-                    // Only overwrite a known-good transcript path when this event
-                    // actually carries one. A SessionStart whose payload omits the
-                    // field must not blank the path out from under a running tail,
-                    // which would silently freeze the timeline while the agent runs.
-                    if let Some(transcript_path) =
-                        string_field(&notification.payload, "transcript_path")
-                            .or_else(|| string_field(&notification.payload, "transcriptPath"))
-                    {
-                        agent.transcript_path = Some(transcript_path);
-                    }
-                    // A session starting doesn't mean a turn is running. When the agent
-                    // was launched without a prompt it is idle and awaiting input, so
-                    // don't promote that to Running here — the first real turn
-                    // (UserPromptSubmit/PreToolUse) does. Resume keeps its Starting
-                    // status, which still advances to Running.
-                    if agent.status != AgentStatus::AwaitingInput {
-                        agent.status = AgentStatus::Running;
-                    }
-                    state.update_agent(agent.clone())?;
-                    if let Some(transcript_path) = agent.transcript_path.clone() {
+                    let transcript_path = string_field(&notification.payload, "transcript_path")
+                        .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                    // Field-scoped mutation, not a full-struct `update_agent`: this
+                    // freshly spawned process's pane is being bound by attach_agent_pane
+                    // on another thread, and a stale-snapshot write here would race it —
+                    // wiping either the pane_id it set or the session_id we set.
+                    let updated = state.mutate_agent(&current.id, |agent| {
+                        agent.session_id = session_id;
+                        // Only overwrite a known-good transcript path when this event
+                        // actually carries one. A SessionStart whose payload omits the
+                        // field must not blank the path out from under a running tail,
+                        // which would silently freeze the timeline while the agent runs.
+                        if let Some(transcript_path) = transcript_path {
+                            agent.transcript_path = Some(transcript_path);
+                        }
+                        // A session starting doesn't mean a turn is running. When the
+                        // agent was launched without a prompt it is idle and awaiting
+                        // input, so don't promote that to Running here — the first real
+                        // turn (UserPromptSubmit/PreToolUse) does. Resume keeps its
+                        // Starting status, which still advances to Running.
+                        if agent.status != AgentStatus::AwaitingInput {
+                            agent.status = AgentStatus::Running;
+                        }
+                    })?;
+                    if let Some(transcript_path) = updated.and_then(|agent| agent.transcript_path) {
                         start_transcript_tail(
                             state.clone(),
-                            agent.id.clone(),
+                            current.id.clone(),
                             transcript_path,
                             self.id().to_string(),
                         );

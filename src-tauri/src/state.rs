@@ -842,16 +842,17 @@ impl AppState {
         Ok(())
     }
 
-    /// Updates only an agent's status under the lock, leaving every other field as it
-    /// stands. Unlike `update_agent` (which writes a whole struct snapshot), this
-    /// can't clobber fields a concurrent writer just set — e.g. the `session_id` /
-    /// `transcript_path` a freshly spawned fork's SessionStart hook records. Returns
+    /// Mutates an agent in place under the lock, applying `f` to the live entry and
+    /// leaving every field `f` doesn't touch exactly as it stands. Unlike `update_agent`
+    /// (which inserts a whole struct snapshot the caller read earlier, outside the lock),
+    /// this can't clobber a field a concurrent writer set in the meantime — e.g. the
+    /// `session_id` / `transcript_path` a freshly spawned agent's SessionStart hook
+    /// records on another thread while `attach_agent_pane` is binding its pane. Returns
     /// the updated agent, or `None` if it no longer exists.
-    pub fn set_agent_status(
-        &self,
-        agent_id: &str,
-        status: AgentStatus,
-    ) -> Result<Option<AgentInfo>, String> {
+    pub fn mutate_agent<F>(&self, agent_id: &str, f: F) -> Result<Option<AgentInfo>, String>
+    where
+        F: FnOnce(&mut AgentInfo),
+    {
         let updated = {
             let mut model = self
                 .inner
@@ -860,7 +861,7 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             match model.agents.get_mut(agent_id) {
                 Some(agent) => {
-                    agent.status = status;
+                    f(agent);
                     Some(agent.clone())
                 }
                 None => None,
@@ -870,6 +871,17 @@ impl AppState {
             self.persist();
         }
         Ok(updated)
+    }
+
+    /// Field-scoped status write — a thin wrapper over [`AppState::mutate_agent`] that
+    /// touches only `status`. Returns the updated agent, or `None` if it no longer
+    /// exists.
+    pub fn set_agent_status(
+        &self,
+        agent_id: &str,
+        status: AgentStatus,
+    ) -> Result<Option<AgentInfo>, String> {
+        self.mutate_agent(agent_id, |agent| agent.status = status)
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
@@ -2234,6 +2246,63 @@ mod tests {
         assert!(
             state
                 .set_agent_status("missing", AgentStatus::Idle)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mutate_agent_only_touches_fields_the_closure_writes() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        let agent = AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/x".to_string(),
+            branch: None,
+            pane_id: None,
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status: AgentStatus::Starting,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            paused: false,
+            created_at: 1,
+        };
+        state.insert_agent(agent).unwrap();
+
+        // Two interleaved field-scoped writers on a freshly spawned agent: the
+        // SessionStart hook records the session id/transcript, then attach_agent_pane
+        // binds the pane. Because each only writes its own fields, neither clobbers the
+        // other — the bug a full-struct update_agent (read snapshot, write it back) had.
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.session_id = Some("sess-1".to_string());
+                agent.transcript_path = Some("/tmp/a.jsonl".to_string());
+                agent.status = AgentStatus::Running;
+            })
+            .unwrap()
+            .expect("agent exists");
+        let bound = state
+            .mutate_agent("agent-1", |agent| {
+                agent.pane_id = Some("pane-1".to_string());
+                agent.status = AgentStatus::Running;
+            })
+            .unwrap()
+            .expect("agent exists");
+
+        assert_eq!(bound.pane_id.as_deref(), Some("pane-1"));
+        assert_eq!(bound.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(bound.transcript_path.as_deref(), Some("/tmp/a.jsonl"));
+
+        // A missing agent yields None and never persists.
+        assert!(
+            state
+                .mutate_agent("missing", |agent| agent.paused = true)
                 .unwrap()
                 .is_none()
         );
