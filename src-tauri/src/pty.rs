@@ -140,7 +140,7 @@ pub fn recoverable_dir(path: &str) -> Option<PathBuf> {
 }
 
 pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, String)>, String> {
-    Ok(vec![
+    let mut envs = vec![
         ("QMUX_PANE_ID".to_string(), pane_id.to_string()),
         (
             "QMUX_SOCK".to_string(),
@@ -151,7 +151,13 @@ pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, St
             "QMUX_WORKSPACE_ROOT".to_string(),
             state.config().workspace_root.display().to_string(),
         ),
-    ])
+    ];
+    // Expose the qmux executable so in-pane tooling (e.g. the fork skill) can call it
+    // without depending on `qmux` being on PATH. Best-effort: omitted if unresolved.
+    if let Ok(exe) = std::env::current_exe() {
+        envs.push(("QMUX_CLI".to_string(), exe.display().to_string()));
+    }
+    Ok(envs)
 }
 
 fn shell_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, String)>, String> {

@@ -1,6 +1,6 @@
 use crate::adapters::{
     AdapterNotification, PrepareShellAgentLaunchRequest, PrepareShellClaudeLaunchRequest,
-    agent_prepare_shell_launch, ingest_adapter_notification,
+    agent_fork, agent_prepare_shell_launch, ingest_adapter_notification,
 };
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
@@ -212,8 +212,24 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             }
             Ok(json!({ "notified": true }))
         }
-        // Spawning agents and queueing turns are management operations that belong to the
-        // trusted GUI (Tauri commands), not to processes holding a pane token.
+        "agent.fork" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct ForkPayload {
+                #[serde(default)]
+                use_worktree: bool,
+            }
+            let payload = serde_json::from_value::<ForkPayload>(request.payload)
+                .map_err(|err| format!("invalid agent.fork payload: {err}"))?;
+            // The one spawn the control plane allows: it forks ONLY the authenticated
+            // pane's own session (the source is resolved from the token, not the
+            // payload), so a token can never spawn off another pane's session. This is
+            // the same authority the user already has acting in their own terminal.
+            let pane = agent_fork(state, &authed_pane, payload.use_worktree)?;
+            serde_json::to_value(pane).map_err(|err| format!("failed to encode forked pane: {err}"))
+        }
+        // Other agent spawning and turn queueing are management operations that belong
+        // to the trusted GUI (Tauri commands), not to processes holding a pane token.
         other => Err(format!("unknown control command '{other}'")),
     }
 }
