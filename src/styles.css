@@ -2610,7 +2610,16 @@ button:disabled {
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+/* Keep the icon at full size so the label stays on the same line beside it
+   instead of wrapping below a collapsed icon. */
+.link-context-menu-item svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 
 .link-context-menu-item:hover {
