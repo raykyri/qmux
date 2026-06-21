@@ -145,6 +145,24 @@ const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 
+// The internal browser overlay can only load what the webview CSP's frame-src allows:
+// http over loopback (127.0.0.1 / localhost), which covers file-server URLs and local
+// dev servers. Anything else — external hosts, https, mailto, custom schemes — would be
+// blocked by CSP and render as a blank iframe, so it must hand off to the OS browser.
+// Keep this in lockstep with `frame-src` in tauri.conf.json.
+function canRenderInInternalBrowser(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === "http:" &&
+    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
+  );
+}
+
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
@@ -379,7 +397,14 @@ export default function App() {
       return;
     }
     const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-    openBrowserOverlay(paneId, url);
+    // The overlay can only render loopback http (CSP frame-src). Hand a typed external
+    // URL to the OS browser rather than loading a blank, CSP-blocked iframe; the
+    // external opener itself rejects anything but http(s)/mailto.
+    if (canRenderInInternalBrowser(url)) {
+      openBrowserOverlay(paneId, url);
+    } else {
+      void openExternalUrl(url);
+    }
   }
 
   // Link actions shared by transcript markdown and the terminal. Left-click opens
@@ -390,7 +415,7 @@ export default function App() {
     () => ({
       openLink: (url) => {
         const paneId = activePane?.id;
-        if (paneId && (url.startsWith("http://") || url.startsWith("https://"))) {
+        if (paneId && canRenderInInternalBrowser(url)) {
           openBrowserOverlay(paneId, url);
         } else {
           void openExternalUrl(url);
@@ -1713,6 +1738,18 @@ export default function App() {
     setSkillPrefixWidth(skillPrefixRef.current?.getBoundingClientRect().width ?? 0);
   }, [selectedSkill, launcherOpen]);
 
+  // Grow the launcher textarea to fit its content so a multi-line prompt expands the
+  // whole launcher (the CSS max-height caps it, after which the field scrolls). The
+  // skill prefix changes the first line's indent, so re-measure when it changes too.
+  useLayoutEffect(() => {
+    const textarea = launcherInputRef.current;
+    if (!launcherOpen || !textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [prompt, launcherOpen, skillPrefixWidth]);
+
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
     if (runtimeAdapterIds.length === 0) {
@@ -2133,6 +2170,14 @@ export default function App() {
               if (event.key === "Escape") {
                 event.preventDefault();
                 setLauncherOpen(false);
+                return;
+              }
+              // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is a
+              // controlled input, so the WebView's native undo has no field-local history
+              // to act on and instead blurs the textarea — which hands focus back to the
+              // terminal. Trapping the combo here keeps focus (and the caret) put.
+              if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+                event.preventDefault();
                 return;
               }
               if (event.metaKey && event.key === "Enter") {
@@ -2665,6 +2710,7 @@ export default function App() {
         <LinkContextMenu
           x={linkMenu.x}
           y={linkMenu.y}
+          canOpenInternal={canRenderInInternalBrowser(linkMenu.url)}
           onOpenInternal={() => {
             linkActions.openLink(linkMenu.url);
             setLinkMenu(null);

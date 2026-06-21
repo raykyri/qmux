@@ -7,6 +7,9 @@ import { ExternalLink, Globe } from "lucide-react";
 interface LinkContextMenuProps {
   x: number;
   y: number;
+  // Whether the link can render in the internal overlay (http/https). When false the
+  // bare "Open" entry is hidden and only the external-browser choice remains.
+  canOpenInternal: boolean;
   onOpenInternal: () => void;
   onOpenExternal: () => void;
   onClose: () => void;
@@ -15,6 +18,7 @@ interface LinkContextMenuProps {
 export default function LinkContextMenu({
   x,
   y,
+  canOpenInternal,
   onOpenInternal,
   onOpenExternal,
   onClose,
@@ -42,15 +46,17 @@ export default function LinkContextMenu({
 
   return (
     <div ref={ref} className="link-context-menu" style={{ left: x, top: y }} role="menu">
-      <button
-        type="button"
-        role="menuitem"
-        className="link-context-menu-item"
-        onClick={onOpenInternal}
-      >
-        <Globe size={14} aria-hidden="true" />
-        <span>Open in internal browser</span>
-      </button>
+      {canOpenInternal ? (
+        <button
+          type="button"
+          role="menuitem"
+          className="link-context-menu-item"
+          onClick={onOpenInternal}
+        >
+          <Globe size={14} aria-hidden="true" />
+          <span>Open</span>
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -58,7 +64,7 @@ export default function LinkContextMenu({
         onClick={onOpenExternal}
       >
         <ExternalLink size={14} aria-hidden="true" />
-        <span>Open in external browser</span>
+        <span>Open in browser</span>
       </button>
     </div>
   );
