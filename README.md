@@ -122,6 +122,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `src/lib/settings.ts`: persisted app settings (font, sleep behavior).
 - `src-tauri/src/`: Rust backend modules.
 - `src-tauri/src/adapters/`: per-agent backend adapters and the adapter registry.
+- `qmux-plugin/`: qmux-owned Claude plugin whose `skills/` are injected into launched
+  Claude agents (see [Skills](#skills)).
 - `qmux.config.json`: repo-local development config.
 
 ## Local Config
@@ -144,6 +146,28 @@ Relative paths are resolved from the process working directory. Each adapter's
 top-level `claudeBinary` is still honored for backward compatibility. If the
 config file is absent, qmux falls back to `~/qmux/workspaces` for workspace state
 and a temporary `qmux.sock` control socket.
+
+## Skills
+
+qmux can inject [Claude Code Agent Skills](https://code.claude.com/docs/en/skills)
+into the Claude agents it launches, without touching the user's `~/.claude` or the
+project's `.claude`. Skills live in a qmux-owned plugin directory and are passed to
+every launched Claude instance via `--plugin-dir`:
+
+```
+qmux-plugin/
+├── .claude-plugin/plugin.json   # plugin name -> skill namespace (default "qmux")
+└── skills/
+    └── <skill-name>/SKILL.md     # add skills here
+```
+
+Each skill is offered as a checkbox in the agent launcher (one selection at a time);
+choosing one prepends its namespaced slash command (e.g. `/qmux:deep-research`) to the
+prompt. Skills are also available to `claude` started inside a qmux shell pane.
+
+The directory is resolved from `QMUX_CLAUDE_PLUGIN_DIR`, or defaults to `qmux-plugin`
+relative to the process working directory (the same anchor used for `workspaceRoot`).
+Drop in a new `<skill-name>/SKILL.md` and reopen the launcher — no restart needed.
 
 ## Runtime Model
 

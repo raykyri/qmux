@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentInfo,
+  ClaudeSkill,
   GroupInfo,
   InitialPaneSize,
   MoveQueuedAgentTurnResult,
@@ -21,6 +22,11 @@ import type {
 
 export function getRuntimeConfig() {
   return invoke<RuntimeConfig>("get_runtime_config");
+}
+
+/** Skills the qmux-managed Claude plugin can inject into launched Claude agents. */
+export function listClaudeSkills() {
+  return invoke<ClaudeSkill[]>("list_claude_skills");
 }
 
 export function listPanes() {
