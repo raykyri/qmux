@@ -334,18 +334,24 @@ impl CodexAdapter {
         let hook_event = notification.event.clone();
         let event_type = match hook_event.as_str() {
             "SessionStart" => {
-                if let Some(agent) = agent.as_mut() {
-                    agent.session_id = string_field(&notification.payload, "session_id")
+                if let Some(current) = agent.as_ref() {
+                    let session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"))
                         .or_else(|| string_field(&notification.payload, "resource_id"))
                         .or_else(|| string_field(&notification.payload, "resourceId"));
-                    // A startup hook only means Codex is ready. Interactive launches
-                    // without an initial prompt should stay sendable until the first
-                    // real turn starts.
-                    if agent.status != AgentStatus::AwaitingInput {
-                        agent.status = AgentStatus::Running;
-                    }
-                    state.update_agent(agent.clone())?;
+                    // Field-scoped mutation, not a full-struct `update_agent`: this
+                    // freshly spawned process's pane is being bound by attach_agent_pane
+                    // on another thread, and a stale-snapshot write here would race it —
+                    // wiping either the pane_id it set or the session_id we set.
+                    state.mutate_agent(&current.id, |agent| {
+                        agent.session_id = session_id;
+                        // A startup hook only means Codex is ready. Interactive launches
+                        // without an initial prompt should stay sendable until the first
+                        // real turn starts.
+                        if agent.status != AgentStatus::AwaitingInput {
+                            agent.status = AgentStatus::Running;
+                        }
+                    })?;
                 }
                 "agent.session_start"
             }
@@ -570,10 +576,14 @@ fn attach_codex_agent_pane(
     pane_id: String,
     has_initial_prompt: bool,
 ) -> Result<AgentInfo, String> {
-    let mut agent = attach_agent_pane(state, agent_id, pane_id)?;
+    let agent = attach_agent_pane(state, agent_id, pane_id)?;
     if !has_initial_prompt {
-        agent.status = AgentStatus::AwaitingInput;
-        state.update_agent(agent.clone())?;
+        // Field-scoped write — a full-struct update here would race the SessionStart
+        // hook recording session_id on another thread. Return the post-write state so
+        // callers see the final AwaitingInput status.
+        if let Some(updated) = state.set_agent_status(agent_id, AgentStatus::AwaitingInput)? {
+            return Ok(updated);
+        }
     }
     Ok(agent)
 }
