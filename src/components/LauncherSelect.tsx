@@ -26,7 +26,18 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
   const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
+  const match = options.find((option) => option.value === value);
+  const selected = match ?? options[0];
+
+  // If the current value matches no option (e.g. a persisted choice that has since
+  // been removed), the trigger would display options[0]'s label while the stored
+  // value stayed orphaned — and launching would still send the stale value. Reconcile
+  // to the displayed default so what's shown is what gets used.
+  useEffect(() => {
+    if (!match && options.length > 0 && options[0].value !== value) {
+      onChange(options[0].value);
+    }
+  }, [match, options, value, onChange]);
 
   const measure = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
