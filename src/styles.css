@@ -1017,7 +1017,8 @@ button:disabled {
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
-.command-launcher-options {
+.command-launcher-options,
+.command-launcher-skills {
   display: inline-flex;
   align-items: center;
   flex: 0 1 auto;
