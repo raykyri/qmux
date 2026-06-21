@@ -11,7 +11,7 @@ use crate::transcript::{Turn, TurnBlock, start_transcript_tail};
 use crate::turn_queue::{IdleResolution, advance_after_idle};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
-    prepare_agent_workspace,
+    mark_agent_spawn_failed, prepare_agent_workspace,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -226,6 +226,8 @@ impl ClaudeAdapter {
         let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
 
+        attach_agent_pane(state, &agent.id, pane_id.clone())?;
+
         let spawn_result = spawn_pty(
             state,
             PtySpawnSpec {
@@ -244,7 +246,6 @@ impl ClaudeAdapter {
 
         match spawn_result {
             Ok(pane) => {
-                attach_agent_pane(state, &agent.id, pane.id.clone())?;
                 if !has_prompt {
                     // Launched without a prompt: Claude opens interactively and waits
                     // for input, so present the tab as having an agent that is awaiting
@@ -255,7 +256,7 @@ impl ClaudeAdapter {
                 Ok(pane)
             }
             Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
+                let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
                 Err(err)
             }
         }
@@ -346,6 +347,8 @@ impl ClaudeAdapter {
         let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
 
+        attach_agent_pane(state, &agent.id, pane_id.clone())?;
+
         let spawn_result = spawn_pty(
             state,
             PtySpawnSpec {
@@ -365,17 +368,16 @@ impl ClaudeAdapter {
         let pane = match spawn_result {
             Ok(pane) => pane,
             Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
+                let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
                 return Err(err);
             }
         };
 
-        // Bind the pane, then restore AwaitingInput (attach promotes to Running, but a
-        // resumed fork with no prompt is sitting idle waiting for the user). Use a
+        // Restore AwaitingInput after the early pane bind (attach promotes to Running,
+        // but a resumed fork with no prompt is sitting idle waiting for the user). Use a
         // field-scoped status write, not a full-struct update: the spawned fork's
         // SessionStart hook may already be recording its new session_id/transcript on
         // another thread, and a stale snapshot write here would wipe them.
-        attach_agent_pane(state, &agent.id, pane.id.clone())?;
         let forked = state
             .set_agent_status(&agent.id, AgentStatus::AwaitingInput)?
             .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?;
