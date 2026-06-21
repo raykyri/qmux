@@ -73,6 +73,11 @@ fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
 }
 
 #[tauri::command]
+fn list_claude_skills(state: tauri::State<'_, AppState>) -> Vec<adapters::claude::ClaudeSkill> {
+    adapters::claude::list_skills(state.config())
+}
+
+#[tauri::command]
 fn list_panes(state: tauri::State<'_, AppState>) -> Result<Vec<PaneInfo>, String> {
     state.list_panes()
 }
@@ -375,6 +380,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_runtime_config,
+            list_claude_skills,
             list_panes,
             list_groups,
             list_agents,

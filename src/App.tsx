@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -7,6 +7,7 @@ import type {
 } from "react";
 import { MessageSquareText, Minus, Plus, Settings, SquareTerminal, X } from "lucide-react";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
+import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import NativeInput from "./components/NativeInput";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -53,6 +54,7 @@ import {
   getRuntimeConfig,
   killPane,
   listAgents,
+  listClaudeSkills,
   listAgentTranscripts,
   listAgentTurnQueue,
   listTurns,
@@ -71,6 +73,7 @@ import {
 } from "./lib/api";
 import type {
   AgentInfo,
+  ClaudeSkill,
   InitialPaneSize,
   PaneInfo,
   RuntimeConfig,
@@ -178,6 +181,15 @@ export default function App() {
     Record<string, Record<string, unknown>>
   >({});
   const [createInWorktree, setCreateInWorktree] = useState(false);
+  // Skills the qmux-managed Claude plugin can inject, and the single one selected
+  // for this launch (prepended to the prompt as `/<plugin>:<skill>`). Single-select
+  // because a leading slash command can only invoke one skill.
+  const [availableSkills, setAvailableSkills] = useState<ClaudeSkill[]>([]);
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  // Measured width of the faint skill-command prefix, used to indent the first line
+  // of the composer so typed text starts after the immutable command.
+  const [skillPrefixWidth, setSkillPrefixWidth] = useState(0);
+  const skillPrefixRef = useRef<HTMLSpanElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
@@ -207,6 +219,12 @@ export default function App() {
   );
   const launcherOptions = launcherOptionsByAdapter[launchAdapter.id] ?? {};
   const LauncherOptions = launchAdapter.LauncherOptions;
+  // Skills only apply to Claude (the only adapter with a qmux plugin today).
+  const skillsEnabled = launchAdapter.id === CLAUDE_ADAPTER_ID;
+  const selectedSkill =
+    skillsEnabled && selectedSkillId
+      ? availableSkills.find((skill) => skill.id === selectedSkillId) ?? null
+      : null;
   const launcherAdapters = useMemo(() => {
     const runtimeAdapters = config?.adapters
       .map((adapter) => findAgentUiAdapter(adapter.id))
@@ -1154,11 +1172,14 @@ export default function App() {
 
   async function addAgentPane() {
     const trimmed = prompt.trim();
+    // A selected skill is sent as a leading slash command so the launched agent
+    // invokes it before the user's prompt (e.g. `/qmux:deep-research <prompt>`).
+    const finalPrompt = selectedSkill ? `${selectedSkill.command} ${trimmed}`.trim() : trimmed;
     setError(null);
     try {
       const pane = await spawnAgent({
         adapterId: launchAdapter.id,
-        prompt: trimmed,
+        prompt: finalPrompt,
         baseRepo: null,
         baseRef: "HEAD",
         initialSize: estimateInitialPaneSize(true),
@@ -1171,6 +1192,7 @@ export default function App() {
         setAgentQueuedTurns(pane.agentId, []);
       }
       setPrompt("");
+      setSelectedSkillId(null);
       setLauncherOpen(false);
       setAgents(await listAgents());
     } catch (err) {
@@ -1406,13 +1428,35 @@ export default function App() {
       return;
     }
 
-    // New agents default to no worktree each time the launcher opens.
+    // New agents default to no worktree and no skill each time the launcher opens.
     setCreateInWorktree(false);
+    setSelectedSkillId(null);
+    // Re-read the plugin's skills on open so newly added ones show up without a
+    // restart. Failures (e.g. no plugin dir) just leave the list empty.
+    void listClaudeSkills()
+      .then(setAvailableSkills)
+      .catch(() => setAvailableSkills([]));
     requestAnimationFrame(() => {
       launcherInputRef.current?.focus();
       launcherInputRef.current?.select();
     });
   }, [launcherOpen]);
+
+  // Selecting a non-Claude adapter clears any chosen skill; measure the faint
+  // command prefix so the composer's first line is indented past it.
+  useEffect(() => {
+    if (!skillsEnabled) {
+      setSelectedSkillId(null);
+    }
+  }, [skillsEnabled]);
+
+  useLayoutEffect(() => {
+    if (!selectedSkill) {
+      setSkillPrefixWidth(0);
+      return;
+    }
+    setSkillPrefixWidth(skillPrefixRef.current?.getBoundingClientRect().width ?? 0);
+  }, [selectedSkill, launcherOpen]);
 
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
@@ -1820,6 +1864,15 @@ export default function App() {
               void addAgentPane();
             }}
           >
+            {selectedSkill ? (
+              <span
+                ref={skillPrefixRef}
+                className="command-launcher-skill-prefix"
+                aria-hidden="true"
+              >
+                {`${selectedSkill.command} `}
+              </span>
+            ) : null}
             <textarea
               ref={launcherInputRef}
               id="agent-prompt"
@@ -1828,6 +1881,7 @@ export default function App() {
               onChange={(event) => setPrompt(event.currentTarget.value)}
               rows={2}
               placeholder="What do you want to research or build?"
+              style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
             />
             <div className="command-launcher-overlay">
               <div className="command-launcher-overlay-group">
@@ -1842,6 +1896,30 @@ export default function App() {
                   />
                   <span>New worktree</span>
                 </label>
+                {skillsEnabled && availableSkills.length > 0 ? (
+                  <div className="command-launcher-skills">
+                    {availableSkills.map((skill) => (
+                      <label
+                        key={skill.id}
+                        className="command-launcher-worktree command-launcher-skill"
+                        title={skill.command}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedSkillId === skill.id}
+                          onChange={() => {
+                            // Single-select: re-clicking the active skill clears it.
+                            setSelectedSkillId((current) =>
+                              current === skill.id ? null : skill.id,
+                            );
+                            focusLauncherInput();
+                          }}
+                        />
+                        <span>{skill.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
                 {LauncherOptions ? (
                   <div className="command-launcher-options">
                     <LauncherOptions
