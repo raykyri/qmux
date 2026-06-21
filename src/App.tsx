@@ -1712,6 +1712,18 @@ export default function App() {
     setSkillPrefixWidth(skillPrefixRef.current?.getBoundingClientRect().width ?? 0);
   }, [selectedSkill, launcherOpen]);
 
+  // Grow the launcher textarea to fit its content so a multi-line prompt expands the
+  // whole launcher (the CSS max-height caps it, after which the field scrolls). The
+  // skill prefix changes the first line's indent, so re-measure when it changes too.
+  useLayoutEffect(() => {
+    const textarea = launcherInputRef.current;
+    if (!launcherOpen || !textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [prompt, launcherOpen, skillPrefixWidth]);
+
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
     if (runtimeAdapterIds.length === 0) {
