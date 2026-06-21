@@ -2473,14 +2473,16 @@ button:disabled {
 .browser-overlay-url {
   flex: 1;
   min-width: 0;
-  height: 26px;
-  padding: 0 10px;
+  /* Match the height of the floating toggle buttons (28px) to its right. The font
+     only grows 1px; the rest of the height comes from extra vertical padding. */
+  height: 28px;
+  padding: 6px 10px;
   border: 1px solid var(--control-border);
   border-radius: 6px;
   background: #0e1113;
   color: #e9efe9;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
 }
 
@@ -2550,6 +2552,14 @@ button:disabled {
   color: #c4cbc6;
   cursor: pointer;
   backdrop-filter: blur(6px);
+}
+
+/* Pin the icon to its intended size; as a flex item it otherwise collapses to a
+   sliver (showing just a dot) inside the fixed-size button. */
+.browser-overlay-button svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 
 .browser-overlay-button:hover {
