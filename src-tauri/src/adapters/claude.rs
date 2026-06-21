@@ -204,7 +204,7 @@ impl ClaudeAdapter {
             args.push(prompt.to_string());
         }
 
-        let mut envs = qmux_pane_envs(state, &pane_id);
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
 
         let spawn_result = spawn_pty(
@@ -281,7 +281,7 @@ impl ClaudeAdapter {
             None => false,
         };
 
-        let mut envs = qmux_pane_envs(state, &pane.id);
+        let mut envs = qmux_pane_envs(state, &pane.id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
 
         let info = spawn_pty(
@@ -377,7 +377,7 @@ impl ClaudeAdapter {
             state.update_agent(agent.clone())?;
         }
 
-        let mut envs = qmux_pane_envs(state, &request.pane_id);
+        let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         let agent_id = agent.id.clone();
         let worktree_dir = agent.worktree_dir.clone();

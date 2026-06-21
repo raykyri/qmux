@@ -158,7 +158,7 @@ impl CodexAdapter {
         let tail_args = prompt_tail_args(&request.prompt);
         let args = build_codex_args(&cwd, request.model.as_deref(), &options, tail_args);
         let pane_id = state.next_id("pane");
-        let mut envs = qmux_pane_envs(state, &pane_id);
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
@@ -213,7 +213,7 @@ impl CodexAdapter {
             agent.session_id.as_deref(),
         );
 
-        let mut envs = qmux_pane_envs(state, &pane.id);
+        let mut envs = qmux_pane_envs(state, &pane.id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
@@ -290,7 +290,7 @@ impl CodexAdapter {
 
         let options = CodexLaunchOptions::default();
         let args = build_codex_args(&cwd, None, &options, request.args);
-        let mut envs = qmux_pane_envs(state, &request.pane_id);
+        let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));

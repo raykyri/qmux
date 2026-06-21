@@ -135,6 +135,12 @@ export interface SendNextQueuedAgentTurnResult {
   queuedTurns: string[];
 }
 
+export interface MoveQueuedAgentTurnResult {
+  sent: boolean;
+  sourceQueuedTurns: string[];
+  targetQueuedTurns: string[];
+}
+
 export interface TranscriptHookEvent {
   type: string;
   paneId?: string | null;

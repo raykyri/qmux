@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn complete_request_still_receives_response() {
         let state = test_state();
-        let token = state.pane_token("pane-1");
+        let token = state.pane_token("pane-1").unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         let (done_tx, done_rx) = mpsc::channel();
 

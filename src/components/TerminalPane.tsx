@@ -8,8 +8,9 @@ import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { resizePane, writePane } from "../lib/api";
-import { confirmLargePaste } from "../lib/paste";
+import { pastePaneInput, resizePane, writePane } from "../lib/api";
+import { largePastePrompt } from "../lib/paste";
+import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 
@@ -95,6 +96,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // see the current blocked state without being torn down and rebuilt.
   const inputBlockedRef = useRef(inputBlocked);
   inputBlockedRef.current = inputBlocked;
+  // In-app confirm (window.confirm is a no-op in the webview), reached from the
+  // paste handler inside the once-per-pane setup effect via a ref so it stays current.
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const confirmRef = useRef(confirm);
+  confirmRef.current = confirm;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // xterm opens into this inner mount, which fills the host's content box with no
   // padding of its own. The visual breathing room lives as padding on the host;
@@ -453,10 +459,22 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           return;
         }
         const text = event.clipboardData?.getData("text") ?? "";
-        if (text && !confirmLargePaste(text)) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
+        const prompt = text ? largePastePrompt(text) : null;
+        if (!prompt) {
+          // Small/empty paste: let xterm handle it normally.
+          return;
         }
+        // Large paste: stop xterm from pasting now (the in-app confirm is async),
+        // then re-inject to the PTY only if the user accepts. Match xterm's own
+        // bracketed-paste behavior so the program sees the same framing.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const bracketed = terminal.modes.bracketedPasteMode;
+        void confirmRef.current({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
+          if (ok) {
+            void pastePaneInput(pane.id, text, bracketed).catch(() => undefined);
+          }
+        });
       };
       hostEl.addEventListener("paste", handlePaste, true);
 
@@ -557,6 +575,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       <div ref={hostRef} className="terminal-host">
         <div ref={mountRef} className="terminal-mount" />
       </div>
+      {confirmDialog}
       {searchOpen ? (
         <div className="terminal-search" role="search">
           <input

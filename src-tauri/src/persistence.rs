@@ -207,8 +207,12 @@ fn preserve_rejected_state(path: &Path, label: &str) -> Result<PathBuf, String> 
     Ok(backup_path)
 }
 
-/// Writes state atomically: serialize to a sibling `.tmp` file then rename over
-/// the target so a crash mid-write can never leave a half-written state.json.
+/// Writes state atomically: serialize to a sibling `.tmp` file, flush it to disk,
+/// then rename over the target so a crash mid-write can never leave a half-written
+/// state.json. The temp file is fsync'd before the rename and the directory is
+/// fsync'd after, so the swap is durable across power loss too — without the fsync
+/// the filesystem may order the rename ahead of the data write and surface a
+/// zero-length or stale file on recovery.
 ///
 /// The scratch file name is unique per call (pid + sequence). Two saves can run
 /// concurrently — `persist` releases the model lock before writing — and a shared
@@ -225,12 +229,33 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
         .map_err(|err| format!("failed to encode state: {err}"))?;
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
-    fs::write(&tmp, raw).map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
+
+    write_synced(&tmp, raw.as_bytes())
+        .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
     fs::rename(&tmp, &path).map_err(|err| {
         // Don't strand the scratch file if the commit itself fails.
         let _ = fs::remove_file(&tmp);
         format!("failed to commit {}: {err}", path.display())
-    })
+    })?;
+
+    // Persist the directory entry so the rename itself survives a crash. Best
+    // effort: some platforms don't allow fsync on a directory handle.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to `path` and fsyncs the file before returning, so the contents
+/// are on disk before the caller renames it into place.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]

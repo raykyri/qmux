@@ -16,7 +16,8 @@ import {
   submitPaneInput,
 } from "../lib/api";
 import type { ComposerPolicy } from "../adapters";
-import { confirmLargePaste } from "../lib/paste";
+import { largePastePrompt } from "../lib/paste";
+import { useConfirm } from "../hooks/useConfirm";
 import type { AgentInfo, PaneInfo, TranscriptOption } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
@@ -134,6 +135,7 @@ export default function NativeInput({
 }: NativeInputProps) {
   const value = draft;
   const setValue = (next: string) => onDraftChange(agent.id, next);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
@@ -283,7 +285,10 @@ export default function NativeInput({
 
     if (
       value.length > 0 &&
-      !window.confirm("Replace the current input with this queued item?")
+      !(await confirm({
+        message: "Replace the current input with this queued item?",
+        confirmLabel: "Replace",
+      }))
     ) {
       return;
     }
@@ -644,13 +649,32 @@ export default function NativeInput({
         value={value}
         onChange={(event) => setValue(event.currentTarget.value)}
         onPaste={(event) => {
-          // A confirmed paste falls through to the default insert; a declined one
-          // is cancelled here. window.confirm blocks synchronously, so the native
-          // paste is still pending and obeys preventDefault when the handler returns.
           const text = event.clipboardData.getData("text");
-          if (text && !confirmLargePaste(text)) {
-            event.preventDefault();
+          const prompt = largePastePrompt(text);
+          if (!prompt) {
+            // Small paste: let the browser insert it normally.
+            return;
           }
+          // Large paste: the in-app confirm is async, so cancel the native paste now
+          // and re-insert at the caret only if the user accepts.
+          event.preventDefault();
+          const start = event.currentTarget.selectionStart ?? value.length;
+          const end = event.currentTarget.selectionEnd ?? value.length;
+          void confirm({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
+            if (!ok) {
+              return;
+            }
+            setValue(value.slice(0, start) + text + value.slice(end));
+            requestAnimationFrame(() => {
+              const textarea = textareaRef.current;
+              if (!textarea) {
+                return;
+              }
+              const caret = start + text.length;
+              textarea.focus();
+              textarea.setSelectionRange(caret, caret);
+            });
+          });
         }}
         onKeyDown={(event) => {
           if (event.metaKey && event.key === "Enter") {
@@ -829,6 +853,7 @@ export default function NativeInput({
           {toast}
         </div>
       ) : null}
+      {confirmDialog}
     </form>
   );
 }
