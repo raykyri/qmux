@@ -14,7 +14,10 @@ mod transcript;
 mod turn_queue;
 mod workspace;
 
-use adapters::{SpawnAgentRequest, SpawnClaudeRequest, agent_spawn as spawn_agent_pane};
+use adapters::{
+    SpawnAgentRequest, SpawnClaudeRequest, agent_fork as fork_agent_pane,
+    agent_spawn as spawn_agent_pane,
+};
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use pty::{
@@ -198,6 +201,19 @@ fn spawn_claude(
     request: SpawnClaudeRequest,
 ) -> Result<PaneInfo, String> {
     spawn_agent_pane(&state, request.into_agent_request())
+}
+
+/// Forks the Claude session in `pane_id` into a new tab and resumes it. `nest`
+/// places the fork as a child of the source; otherwise it lands as a sibling
+/// immediately after it.
+#[tauri::command]
+fn agent_fork(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    use_worktree: bool,
+    nest: bool,
+) -> Result<PaneInfo, String> {
+    fork_agent_pane(&state, &pane_id, use_worktree, nest)
 }
 
 #[tauri::command]
@@ -494,6 +510,7 @@ fn main() {
             spawn_shell,
             agent_spawn,
             spawn_claude,
+            agent_fork,
             pane_write,
             pane_attach,
             pane_resize,
