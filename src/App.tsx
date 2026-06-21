@@ -311,6 +311,11 @@ export default function App() {
   function focusLauncherInput() {
     requestAnimationFrame(() => launcherInputRef.current?.focus());
   }
+  // The launcher renders in two places: the modal (Cmd-N / sidebar button) and,
+  // when there are no panes, inline as the content-pane placeholder. Only one is
+  // ever mounted at a time (the inline one yields to the modal), so they can share
+  // the launcher refs/state and the focus/auto-grow effects below.
+  const launcherVisible = launcherOpen || panes.length === 0;
 
   // Called on each keystroke in an agent's composer or terminal. Sets a backend
   // "typing" hold (so a finishing turn won't auto-drain into what the user is typing)
@@ -1704,7 +1709,7 @@ export default function App() {
   }, [panes]);
 
   useEffect(() => {
-    if (!launcherOpen) {
+    if (!launcherVisible) {
       return;
     }
 
@@ -1720,7 +1725,7 @@ export default function App() {
       launcherInputRef.current?.focus();
       launcherInputRef.current?.select();
     });
-  }, [launcherOpen]);
+  }, [launcherVisible]);
 
   // Selecting a non-Claude adapter clears any chosen skill; measure the faint
   // command prefix so the composer's first line is indented past it.
@@ -1736,19 +1741,19 @@ export default function App() {
       return;
     }
     setSkillPrefixWidth(skillPrefixRef.current?.getBoundingClientRect().width ?? 0);
-  }, [selectedSkill, launcherOpen]);
+  }, [selectedSkill, launcherVisible]);
 
   // Grow the launcher textarea to fit its content so a multi-line prompt expands the
   // whole launcher (the CSS max-height caps it, after which the field scrolls). The
   // skill prefix changes the first line's indent, so re-measure when it changes too.
   useLayoutEffect(() => {
     const textarea = launcherInputRef.current;
-    if (!launcherOpen || !textarea) {
+    if (!launcherVisible || !textarea) {
       return;
     }
     textarea.style.height = "auto";
     textarea.style.height = `${textarea.scrollHeight}px`;
-  }, [prompt, launcherOpen, skillPrefixWidth]);
+  }, [prompt, launcherVisible, skillPrefixWidth]);
 
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
@@ -1871,6 +1876,142 @@ export default function App() {
     );
   }
 
+  // The launcher form, shared by the modal overlay and the inline content-pane
+  // placeholder. The inline variant drops the modal semantics (no Escape-to-close,
+  // no aria-modal) and wears a plain border instead of the accent ring.
+  const renderLauncher = (variant: "modal" | "inline") => (
+    <form
+      className={`command-launcher${variant === "inline" ? " command-launcher--inline" : ""}`}
+      role="dialog"
+      aria-modal={variant === "modal" ? true : undefined}
+      aria-label="New agent"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          if (variant === "modal") {
+            event.preventDefault();
+            setLauncherOpen(false);
+          }
+          return;
+        }
+        // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is a
+        // controlled input, so the WebView's native undo has no field-local history
+        // to act on and instead blurs the textarea — which hands focus back to the
+        // terminal. Trapping the combo here keeps focus (and the caret) put.
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          return;
+        }
+        if (event.metaKey && event.key === "Enter") {
+          event.preventDefault();
+          void addAgentPane();
+        }
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void addAgentPane();
+      }}
+    >
+      {selectedSkill ? (
+        <span
+          ref={skillPrefixRef}
+          className="command-launcher-skill-prefix"
+          aria-hidden="true"
+        >
+          {`${selectedSkill.command} `}
+        </span>
+      ) : null}
+      <textarea
+        ref={launcherInputRef}
+        id="agent-prompt"
+        className="command-launcher-input"
+        value={prompt}
+        onChange={(event) => setPrompt(event.currentTarget.value)}
+        rows={2}
+        placeholder="What do you want to research or build?"
+        style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
+      />
+      <div className="command-launcher-overlay">
+        <div className="command-launcher-overlay-group">
+          <label className="command-launcher-worktree">
+            <input
+              type="checkbox"
+              checked={createInWorktree}
+              onChange={(event) => {
+                setCreateInWorktree(event.currentTarget.checked);
+                focusLauncherInput();
+              }}
+            />
+            <span>New worktree</span>
+          </label>
+          {skillsEnabled && availableSkills.length > 0 ? (
+            <div className="command-launcher-skills">
+              {availableSkills.map((skill) => (
+                <label
+                  key={skill.id}
+                  className="command-launcher-worktree command-launcher-skill"
+                  title={skill.command}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedSkillId === skill.id}
+                    onChange={() => {
+                      // Single-select: re-clicking the active skill clears it.
+                      setSelectedSkillId((current) =>
+                        current === skill.id ? null : skill.id,
+                      );
+                      focusLauncherInput();
+                    }}
+                  />
+                  <span>{skill.name}</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+          {LauncherOptions ? (
+            <div className="command-launcher-options">
+              <LauncherOptions
+                value={launcherOptions}
+                onChange={(next) => {
+                  setLauncherOptionsByAdapter((current) => ({
+                    ...current,
+                    [launchAdapter.id]: next,
+                  }));
+                  focusLauncherInput();
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+        <div className="command-launcher-controls">
+          <div className="command-launcher-adapter-picker" role="group" aria-label="Agent">
+            {launcherAdapters.map((adapter) => (
+              <button
+                key={adapter.id}
+                type="button"
+                className={adapter.id === launchAdapter.id ? "is-active" : ""}
+                aria-pressed={adapter.id === launchAdapter.id}
+                onClick={() => {
+                  setLauncherAdapterId(adapter.id);
+                  focusLauncherInput();
+                }}
+              >
+                {adapter.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="submit"
+            className="command-launcher-send"
+            aria-label={`Launch ${launchAdapter.label}`}
+            title={`Launch ${launchAdapter.label}`}
+          >
+            <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+
   return (
     <main
       ref={appRef}
@@ -1896,7 +2037,23 @@ export default function App() {
           className={`pane-list${draggingPaneId ? " is-dragging" : ""}`}
           aria-label="Panes"
         >
-          {panes.length === 0 ? <div className="empty-state pane-list-empty">No tabs</div> : null}
+          {panes.length === 0 ? (
+            <div className="empty-state pane-list-empty">
+              <div className="pane-list-empty-content">
+                <div>No tabs</div>
+                <div className="terminal-empty-actions">
+                  <button type="button" onClick={addShellPane}>
+                    <SquareTerminal size={14} aria-hidden="true" />
+                    <span>New shell</span>
+                  </button>
+                  <button type="button" onClick={() => setLauncherOpen(true)}>
+                    <MessageSquareText size={14} aria-hidden="true" />
+                    <span>New agent</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
             const paneAgentWorktreeStatus = paneAgent
@@ -2161,134 +2318,7 @@ export default function App() {
             }
           }}
         >
-          <form
-            className="command-launcher"
-            role="dialog"
-            aria-modal="true"
-            aria-label="New agent"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setLauncherOpen(false);
-                return;
-              }
-              // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is a
-              // controlled input, so the WebView's native undo has no field-local history
-              // to act on and instead blurs the textarea — which hands focus back to the
-              // terminal. Trapping the combo here keeps focus (and the caret) put.
-              if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
-                event.preventDefault();
-                return;
-              }
-              if (event.metaKey && event.key === "Enter") {
-                event.preventDefault();
-                void addAgentPane();
-              }
-            }}
-            onSubmit={(event) => {
-              event.preventDefault();
-              void addAgentPane();
-            }}
-          >
-            {selectedSkill ? (
-              <span
-                ref={skillPrefixRef}
-                className="command-launcher-skill-prefix"
-                aria-hidden="true"
-              >
-                {`${selectedSkill.command} `}
-              </span>
-            ) : null}
-            <textarea
-              ref={launcherInputRef}
-              id="agent-prompt"
-              className="command-launcher-input"
-              value={prompt}
-              onChange={(event) => setPrompt(event.currentTarget.value)}
-              rows={2}
-              placeholder="What do you want to research or build?"
-              style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
-            />
-            <div className="command-launcher-overlay">
-              <div className="command-launcher-overlay-group">
-                <label className="command-launcher-worktree">
-                  <input
-                    type="checkbox"
-                    checked={createInWorktree}
-                    onChange={(event) => {
-                      setCreateInWorktree(event.currentTarget.checked);
-                      focusLauncherInput();
-                    }}
-                  />
-                  <span>New worktree</span>
-                </label>
-                {skillsEnabled && availableSkills.length > 0 ? (
-                  <div className="command-launcher-skills">
-                    {availableSkills.map((skill) => (
-                      <label
-                        key={skill.id}
-                        className="command-launcher-worktree command-launcher-skill"
-                        title={skill.command}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedSkillId === skill.id}
-                          onChange={() => {
-                            // Single-select: re-clicking the active skill clears it.
-                            setSelectedSkillId((current) =>
-                              current === skill.id ? null : skill.id,
-                            );
-                            focusLauncherInput();
-                          }}
-                        />
-                        <span>{skill.name}</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : null}
-                {LauncherOptions ? (
-                  <div className="command-launcher-options">
-                    <LauncherOptions
-                      value={launcherOptions}
-                      onChange={(next) => {
-                        setLauncherOptionsByAdapter((current) => ({
-                          ...current,
-                          [launchAdapter.id]: next,
-                        }));
-                        focusLauncherInput();
-                      }}
-                    />
-                  </div>
-                ) : null}
-              </div>
-              <div className="command-launcher-controls">
-                <div className="command-launcher-adapter-picker" role="group" aria-label="Agent">
-                  {launcherAdapters.map((adapter) => (
-                    <button
-                      key={adapter.id}
-                      type="button"
-                      className={adapter.id === launchAdapter.id ? "is-active" : ""}
-                      aria-pressed={adapter.id === launchAdapter.id}
-                      onClick={() => {
-                        setLauncherAdapterId(adapter.id);
-                        focusLauncherInput();
-                      }}
-                    >
-                      {adapter.label}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="submit"
-                  className="command-launcher-send"
-                  aria-label={`Launch ${launchAdapter.label}`}
-                  title={`Launch ${launchAdapter.label}`}
-                >
-                  <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
-                </button>
-              </div>
-            </div>
-          </form>
+          {renderLauncher("modal")}
         </div>
       ) : null}
 
@@ -2581,22 +2611,8 @@ export default function App() {
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div ref={terminalStageRef} className="terminal-stage">
-          {panes.length === 0 ? (
-            <div className="empty-state terminal-empty-state">
-              <div className="terminal-empty-content">
-                <div>No active tab</div>
-                <div className="terminal-empty-actions">
-                  <button type="button" onClick={addShellPane}>
-                    <SquareTerminal size={14} aria-hidden="true" />
-                    <span>New shell</span>
-                  </button>
-                  <button type="button" onClick={() => setLauncherOpen(true)}>
-                    <MessageSquareText size={14} aria-hidden="true" />
-                    <span>New agent</span>
-                  </button>
-                </div>
-              </div>
-            </div>
+          {panes.length === 0 && !launcherOpen ? (
+            <div className="terminal-empty-state">{renderLauncher("inline")}</div>
           ) : null}
           {panes.map((pane) => (
             <TerminalPane

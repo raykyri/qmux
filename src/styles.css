@@ -765,6 +765,15 @@ button:disabled {
     0 26px 80px rgba(0, 0, 0, 0.55);
 }
 
+/* Inline (content-pane placeholder) launcher: same surface and controls as the
+   modal, but a plain border and no accent focus ring, since it's a resting
+   placeholder rather than a summoned overlay. */
+.command-launcher--inline,
+.command-launcher--inline:focus-within {
+  border-color: var(--control-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
 .confirm-dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -1384,6 +1393,14 @@ button:disabled {
   inset: 0;
   padding: 24px;
   pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The inline launcher is interactive even though its placeholder wrapper isn't. */
+.terminal-empty-state .command-launcher {
+  pointer-events: auto;
 }
 
 .terminal-empty-content {
@@ -1396,6 +1413,21 @@ button:disabled {
   display: flex;
   gap: 8px;
   pointer-events: auto;
+}
+
+/* Sidebar "No tabs" placeholder: the New shell/New agent buttons sit stacked
+   under the label so they fit the narrow column. */
+.pane-list-empty-content {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.pane-list-empty-content .terminal-empty-actions {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
 }
 
 .terminal-pane {
