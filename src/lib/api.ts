@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { PaneLayoutItem } from "./paneTree";
 import type {
   AgentInfo,
   ClaudeSkill,
@@ -156,6 +157,11 @@ export function renamePane(paneId: string, title: string) {
 
 export function reorderPanes(paneIds: string[]) {
   return invoke<PaneInfo[]>("pane_reorder", { paneIds });
+}
+
+/** Atomically sets the sidebar tab tree (order + nesting depth) in one call. */
+export function setPaneLayout(items: PaneLayoutItem[]) {
+  return invoke<PaneInfo[]>("pane_set_layout", { items });
 }
 
 export function worktreeStatus(agentId: string) {

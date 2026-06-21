@@ -5,7 +5,16 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { MessageSquareText, Minus, Plus, Settings, SquareTerminal, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  MessageSquareText,
+  Minus,
+  Plus,
+  Settings,
+  SquareTerminal,
+  X,
+} from "lucide-react";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import NativeInput from "./components/NativeInput";
@@ -30,8 +39,20 @@ import type {
   CloseDialogState,
   ExitDialogState,
   PaneContextMenuState,
+  PaneDropTarget,
   PaneTabPointerDrag,
 } from "./appTypes";
+import {
+  canIndent,
+  canOutdent,
+  indentAt,
+  moveToGap,
+  nestUnder,
+  outdentAt,
+  type PaneLayoutItem,
+  subtreeEnd,
+  toLayout,
+} from "./lib/paneTree";
 import {
   TERMINAL_FONT_SIZE,
   TERMINAL_FONT_SIZE_MAX,
@@ -63,7 +84,7 @@ import {
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
-  reorderPanes,
+  setPaneLayout,
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
   setPreventSleep,
@@ -133,7 +154,7 @@ export default function App() {
   const activePaneRef = useRef<PaneInfo | undefined>(undefined);
   const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
-  const paneTabDropIndexRef = useRef<number | null>(null);
+  const paneDropTargetRef = useRef<PaneDropTarget | null>(null);
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const suppressPaneTabClickRef = useRef(false);
@@ -201,7 +222,7 @@ export default function App() {
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
-  const [paneDropIndex, setPaneDropIndex] = useState<number | null>(null);
+  const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -584,6 +605,13 @@ export default function App() {
   const draggingPaneIndex = draggingPaneId
     ? panes.findIndex((pane) => pane.id === draggingPaneId)
     : -1;
+  // The dragged tab moves with its whole subtree, so dim that contiguous range.
+  const draggingSubtreeEnd =
+    draggingPaneIndex >= 0 ? subtreeEnd(panes, draggingPaneIndex) : -1;
+  // Context-menu pane index, for enabling/disabling Indent/Outdent.
+  const contextMenuPaneIndex = paneContextMenu
+    ? panes.findIndex((pane) => pane.id === paneContextMenu.paneId)
+    : -1;
 
   useEffect(() => {
     let cancelled = false;
@@ -819,7 +847,7 @@ export default function App() {
       }
       drag.active = true;
       setDraggingPaneId(drag.paneId);
-      setPaneTabDropIndex(null);
+      updatePaneDropTarget(null);
     }
 
     event.preventDefault();
@@ -827,7 +855,7 @@ export default function App() {
     if (!list) {
       return;
     }
-    setPaneTabDropIndex(paneTabDropIndexFromPoint(list, event.clientY));
+    updatePaneDropTarget(computeDropTarget(list, event.clientY, drag.paneId));
   }
 
   function handlePaneTabPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
@@ -854,13 +882,14 @@ export default function App() {
     }, PANE_TAB_DRAG_CLICK_SUPPRESS_MS);
 
     const list = paneListRef.current;
-    const gap =
-      paneTabDropIndexRef.current ?? (list ? paneTabDropIndexFromPoint(list, event.clientY) : null);
+    const target =
+      paneDropTargetRef.current ??
+      (list ? computeDropTarget(list, event.clientY, drag.paneId) : null);
     clearPaneTabDrag();
-    if (gap === null) {
+    if (target === null) {
       return;
     }
-    reorderPaneTab(drag.paneId, gap);
+    applyDropTarget(drag.paneId, target);
   }
 
   function handlePaneTabPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
@@ -887,63 +916,129 @@ export default function App() {
     openRenameDialog(pane);
   }
 
-  function setPaneTabDropIndex(index: number | null) {
-    paneTabDropIndexRef.current = index;
-    setPaneDropIndex(index);
+  function updatePaneDropTarget(target: PaneDropTarget | null) {
+    paneDropTargetRef.current = target;
+    setPaneDropTarget(target);
   }
 
   function clearPaneTabDrag() {
-    paneTabDropIndexRef.current = null;
+    paneDropTargetRef.current = null;
     setDraggingPaneId(null);
-    setPaneDropIndex(null);
+    setPaneDropTarget(null);
   }
 
-  function paneTabDropIndexFromPoint(container: HTMLElement, clientY: number) {
+  // Classifies a pointer position during a drag into a drop target: the top/bottom
+  // ~30% of a row is a reorder gap, the middle ~40% nests into that row. Rows inside
+  // the dragged tab's own subtree are never targets (can't nest into self), and gaps
+  // adjacent to that block are suppressed (would be a no-op move).
+  function computeDropTarget(
+    container: HTMLElement,
+    clientY: number,
+    dragId: string,
+  ): PaneDropTarget | null {
     const rows = Array.from(container.children).filter(
       (child): child is HTMLElement =>
         child instanceof HTMLElement && child.classList.contains("pane-tab-row"),
     );
+    if (rows.length === 0) {
+      return null;
+    }
+    const dragIndex = panes.findIndex((pane) => pane.id === dragId);
+    const dragEnd = dragIndex >= 0 ? subtreeEnd(panes, dragIndex) : -1;
+    const inDraggedSubtree = (index: number) =>
+      dragIndex >= 0 && index >= dragIndex && index < dragEnd;
+
+    const gapTarget = (index: number): PaneDropTarget | null =>
+      dragIndex >= 0 && index >= dragIndex && index <= dragEnd
+        ? null // dropping into/adjacent to its own block is a no-op
+        : { kind: "gap", index };
+
     for (const [index, row] of rows.entries()) {
       const rect = row.getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) {
-        return index;
+      if (clientY >= rect.bottom) {
+        continue;
       }
+      const fraction = (clientY - rect.top) / rect.height;
+      if (fraction < 0.3) {
+        return gapTarget(index);
+      }
+      if (fraction > 0.7) {
+        return gapTarget(index + 1);
+      }
+      const pane = panes[index];
+      if (!pane || inDraggedSubtree(index)) {
+        return null;
+      }
+      return { kind: "nest", paneId: pane.id };
     }
-    return rows.length;
+    return gapTarget(rows.length);
   }
 
-  function reorderPaneTab(paneId: string, gap: number) {
-    const from = panes.findIndex((pane) => pane.id === paneId);
-    if (from === -1) {
-      return;
-    }
-    const to = from < gap ? gap - 1 : gap;
-    if (to === from || to < 0 || to >= panes.length) {
-      return;
-    }
+  function applyDropTarget(dragId: string, target: PaneDropTarget) {
+    const next =
+      target.kind === "nest"
+        ? nestUnder(panes, dragId, target.paneId)
+        : moveToGap(panes, dragId, target.index);
+    applyPaneLayout(next);
+  }
 
-    const next = [...panes];
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
+  // Optimistically applies a new tab layout (order + depth) and persists it, with the
+  // same request-sequence guard the old reorder used so stale responses never clobber
+  // a newer local state.
+  function applyPaneLayout(next: PaneInfo[]) {
+    const nextLayout = toLayout(next);
+    if (sameLayout(nextLayout, toLayout(panes))) {
+      return; // structural no-op — don't churn a backend round-trip
+    }
     const requestSeq = paneReorderRequestSeqRef.current + 1;
     paneReorderRequestSeqRef.current = requestSeq;
     setPanes(next);
 
     const persist = paneReorderPersistChainRef.current
       .catch(() => undefined)
-      .then(() => reorderPanes(next.map((pane) => pane.id)));
+      .then(() => setPaneLayout(nextLayout));
     paneReorderPersistChainRef.current = persist
       .then((orderedPanes) => {
         if (paneReorderRequestSeqRef.current === requestSeq) {
           setPanes(orderedPanes);
         }
       })
-      .catch((err) => {
-        if (paneReorderRequestSeqRef.current === requestSeq) {
-          setError(err instanceof Error ? err.message : String(err));
-          void listPanes().then(setPanes).catch(() => undefined);
+      .catch(() => {
+        // A layout change is non-critical, and a pane added/closed mid-edit makes the
+        // request "stale" — both are benign, so resync from the backend instead of
+        // surfacing an error. Only the latest request's resync is allowed to land.
+        if (paneReorderRequestSeqRef.current !== requestSeq) {
+          return;
         }
+        void listPanes()
+          .then((latest) => {
+            if (paneReorderRequestSeqRef.current === requestSeq) {
+              setPanes(latest);
+            }
+          })
+          .catch(() => undefined);
       });
+  }
+
+  function sameLayout(a: PaneLayoutItem[], b: PaneLayoutItem[]) {
+    return (
+      a.length === b.length &&
+      a.every((item, index) => item.id === b[index].id && item.depth === b[index].depth)
+    );
+  }
+
+  function indentContextMenuPane() {
+    if (contextMenuPaneIndex < 0) {
+      return;
+    }
+    applyPaneLayout(indentAt(panes, contextMenuPaneIndex));
+  }
+
+  function outdentContextMenuPane() {
+    if (contextMenuPaneIndex < 0) {
+      return;
+    }
+    applyPaneLayout(outdentAt(panes, contextMenuPaneIndex));
   }
 
   function openPaneContextMenu(event: ReactMouseEvent, pane: PaneInfo) {
@@ -1624,20 +1719,20 @@ export default function App() {
             const paneGitMetaTitle = [paneBranch, paneBranch ? paneAgent?.worktreeDir : null]
               .filter(Boolean)
               .join(" · ");
-            const activeDrop =
-              paneDropIndex === null ||
-              paneDropIndex === draggingPaneIndex ||
-              paneDropIndex === draggingPaneIndex + 1
-                ? null
-                : paneDropIndex;
+            const dropGap = paneDropTarget?.kind === "gap" ? paneDropTarget.index : null;
+            const isNestTarget =
+              paneDropTarget?.kind === "nest" && paneDropTarget.paneId === pane.id;
+            const isDraggingRow =
+              draggingPaneIndex >= 0 &&
+              index >= draggingPaneIndex &&
+              index < draggingSubtreeEnd;
             const className = [
               "pane-tab-row",
               pane.id === activePane?.id ? "is-selected" : "",
-              pane.id === draggingPaneId ? "is-dragging" : "",
-              activeDrop === index ? "is-drop-before" : "",
-              activeDrop === panes.length && index === panes.length - 1
-                ? "is-drop-after"
-                : "",
+              isDraggingRow ? "is-dragging" : "",
+              dropGap === index ? "is-drop-before" : "",
+              dropGap === panes.length && index === panes.length - 1 ? "is-drop-after" : "",
+              isNestTarget ? "is-drop-nest" : "",
             ]
               .filter(Boolean)
               .join(" ");
@@ -1645,6 +1740,7 @@ export default function App() {
               <div
                 key={pane.id}
                 className={className}
+                style={{ "--pane-depth": pane.depth ?? 0 } as CSSProperties}
                 onContextMenu={(event) => openPaneContextMenu(event, pane)}
                 onPointerDown={(event) => handlePaneTabPointerDown(event, pane.id)}
                 onPointerMove={handlePaneTabPointerMove}
@@ -1653,6 +1749,13 @@ export default function App() {
                 onClick={() => handlePaneTabClick(pane.id)}
                 onDoubleClick={() => handlePaneTabDoubleClick(pane)}
               >
+                {isNestTarget ? (
+                  <div className="pane-tab-nest-indicator" aria-hidden="true">
+                    <span className="pane-tab-nest-gutter">
+                      <ChevronRight size={12} aria-hidden="true" />
+                    </span>
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   className="pane-tab"
@@ -1823,6 +1926,24 @@ export default function App() {
               <dd>{contextMenuPane.cwd}</dd>
             </div>
           </dl>
+          <div className="pane-context-actions">
+            <button
+              type="button"
+              disabled={!canOutdent(panes, contextMenuPaneIndex)}
+              onClick={outdentContextMenuPane}
+            >
+              <ChevronLeft size={13} aria-hidden="true" />
+              <span>Outdent</span>
+            </button>
+            <button
+              type="button"
+              disabled={!canIndent(panes, contextMenuPaneIndex)}
+              onClick={indentContextMenuPane}
+            >
+              <ChevronRight size={13} aria-hidden="true" />
+              <span>Indent</span>
+            </button>
+          </div>
         </div>
       ) : null}
 

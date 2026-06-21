@@ -29,6 +29,8 @@ export interface PaneInfo {
   status: "starting" | "running" | "exited" | "killed" | "failed";
   // True for panes recreated from persisted state after a qmux restart.
   recovered?: boolean;
+  // Sidebar nesting depth (0 = root). Stamped by the backend.
+  depth?: number;
 }
 
 export interface InitialPaneSize {
