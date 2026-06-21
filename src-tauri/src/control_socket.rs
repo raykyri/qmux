@@ -244,8 +244,12 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // true for served files so the overlay loads them in an opaque origin (the
             // served URL carries the access token, so its scripts must not be able to
             // read other files back); passthrough URLs are not sandboxed.
-            let (url, sandbox) =
-                resolve_browser_target(state, payload.target.trim(), payload.cwd.as_deref())?;
+            let (url, sandbox) = resolve_browser_target(
+                state,
+                &authed_pane,
+                payload.target.trim(),
+                payload.cwd.as_deref(),
+            )?;
             state.emit(QmuxEvent::new(
                 "browser.open",
                 Some(authed_pane.clone()),
@@ -264,10 +268,12 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
 /// overlay should sandbox it. http(s) URLs pass through unchanged and unsandboxed
 /// (covering localhost dev servers; the webview CSP restricts which actually render).
 /// Anything else is treated as a file path: resolved against `cwd` when relative,
-/// required to live under an allowed root, served through the loopback file server, and
-/// flagged `sandbox = true` (its URL carries the file-server token).
+/// required to live under one of the requesting pane's own roots (not the global
+/// union — so a pane can't open another pane's directory), served through the loopback
+/// file server, and flagged `sandbox = true` (its URL carries the file-server token).
 fn resolve_browser_target(
     state: &AppState,
+    authed_pane: &str,
     target: &str,
     cwd: Option<&str>,
 ) -> Result<(String, bool), String> {
@@ -290,14 +296,20 @@ fn resolve_browser_target(
         }
     };
 
-    let roots = state.allowed_file_roots();
+    let roots = state.pane_file_roots(authed_pane);
     let canonical =
         crate::file_server::resolve_under_roots(&requested, &roots).ok_or_else(|| {
-            format!("'{target}' was not found under an allowed workspace root and cannot be opened")
+            format!(
+                "'{target}' was not found under this pane's working directory and cannot be opened"
+            )
         })?;
-    let (port, token) = state
-        .file_server_info()
+    let port = state
+        .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
+    // The URL carries this pane's own file token, so the file server scopes the request
+    // back to `pane_file_roots(authed_pane)` — a pane can never reach another pane's
+    // files even if some pane has widened its cwd via `pane.set_cwd`.
+    let token = state.pane_file_token(authed_pane)?;
     Ok((crate::file_server::file_url(port, &token, &canonical), true))
 }
 
