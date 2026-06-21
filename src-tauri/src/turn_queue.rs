@@ -128,15 +128,17 @@ pub fn move_queued_agent_turn(
         state,
         SubmitAgentTurnRequest {
             agent_id: request.to_agent_id.clone(),
-            data: removed_turn.clone(),
+            // Moving to another agent intentionally resets pause-after (it's contextual
+            // to the source queue), so hand over just the text.
+            data: removed_turn.text.clone(),
             mode: Some(SubmitAgentTurnMode::Auto),
         },
     );
     let target_result = match submit {
         Ok(result) => result,
         Err(err) => {
-            // Roll the turn back so the move can't lose it. Re-emit the source queue
-            // so the UI reflects the restored item.
+            // Roll the turn back so the move can't lose it (preserving its pause-after
+            // flag). Re-emit the source queue so the UI reflects the restored item.
             let pending =
                 state.insert_agent_turn_at(&request.from_agent_id, request.index, removed_turn)?;
             let restored = state.agent_queued_turns(&request.from_agent_id)?;
@@ -247,7 +249,7 @@ pub fn remove_queued_agent_turn(
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns.clone() }),
     ));
     Ok(RemoveQueuedAgentTurnResult {
-        removed_turn,
+        removed_turn: removed_turn.text,
         pending_turns,
         queued_turns,
     })
@@ -283,16 +285,20 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     let Some((turn, pending_turns)) = state.pop_agent_turn(agent_id)? else {
         return Ok(false);
     };
-    let data = turn.text;
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
-            requeue_after_failed_drain(state, agent_id, data);
+            requeue_after_failed_drain(state, agent_id, turn);
             return Err(format!("agent {agent_id} was not found"));
         }
     };
-    if let Err(err) = send_agent_turn(state, &agent, data.clone(), AgentSendSource::QueuedTurn) {
-        requeue_after_failed_drain(state, agent_id, data);
+    if let Err(err) = send_agent_turn(
+        state,
+        &agent,
+        turn.text.clone(),
+        AgentSendSource::QueuedTurn,
+    ) {
+        requeue_after_failed_drain(state, agent_id, turn);
         return Err(err);
     }
     // A pause-after turn arms the pause; it takes effect when this turn finishes
@@ -428,8 +434,8 @@ fn queue_agent_turn(
 /// deliver it. If even the rollback fails the turn is genuinely lost, so log it
 /// rather than dropping it silently — the caller already propagates the original
 /// send error.
-fn requeue_after_failed_drain(state: &AppState, agent_id: &str, data: String) {
-    if let Err(err) = state.prepend_agent_turn(agent_id, data) {
+fn requeue_after_failed_drain(state: &AppState, agent_id: &str, turn: QueuedTurn) {
+    if let Err(err) = state.prepend_agent_turn(agent_id, turn) {
         eprintln!("qmux: dropped queued turn for agent {agent_id} after failed re-queue: {err}");
     }
 }
@@ -621,6 +627,28 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().unwrap();
         assert!(matches!(agent.status, AgentStatus::Done));
         assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_drain_preserves_the_pause_after_flag() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+        state
+            .set_queued_turn_pause("agent-1", 0, true, Some("queued"))
+            .unwrap();
+
+        // The pane is missing, so the send fails and the turn is requeued.
+        let err = drain_agent_turn_queue(&state, "agent-1").unwrap_err();
+        assert!(err.contains("missing-pane"));
+
+        // The requeued turn keeps its pause-after flag (not reset to false).
+        let items = state.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "queued");
+        assert!(items[0].pause_after);
     }
 
     fn agent_with_id(id: &str, status: AgentStatus) -> AgentInfo {
