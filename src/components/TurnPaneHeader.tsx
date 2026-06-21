@@ -1,5 +1,9 @@
-import { GitFork, Globe, X } from "lucide-react";
+import { GitBranch, Globe } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { writeClipboardText } from "../lib/clipboard";
+
+// How long the "copied" toast stays up after clicking the session id.
+const COPIED_TOAST_MS = 1600;
 
 // The top bar across the right pane: the active session's id on the left, and on
 // the right a fork control (Claude sessions with a live id only) plus the browser
@@ -26,6 +30,17 @@ export default function TurnPaneHeader({
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
+
+  // Clear any pending toast timer on unmount so it can't fire into a gone component.
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current !== null) {
+        window.clearTimeout(toastTimer.current);
+      }
+    };
+  }, []);
 
   // Close the fork menu on an outside click or Escape while it is open.
   useEffect(() => {
@@ -55,11 +70,39 @@ export default function TurnPaneHeader({
     onFork(nest);
   };
 
+  const copySessionId = async () => {
+    if (!sessionId) {
+      return;
+    }
+    try {
+      await writeClipboardText(sessionId);
+      setToast("Copied session id");
+    } catch {
+      setToast("Couldn’t copy session id");
+    }
+    if (toastTimer.current !== null) {
+      window.clearTimeout(toastTimer.current);
+    }
+    toastTimer.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimer.current = null;
+    }, COPIED_TOAST_MS);
+  };
+
   return (
     <div className="turn-pane-header">
-      <span className="turn-pane-session" title={sessionId ?? undefined}>
-        {sessionId ?? "New session"}
-      </span>
+      {sessionId ? (
+        <button
+          type="button"
+          className="turn-pane-session turn-pane-session-copy"
+          title="Copy session id"
+          onClick={() => void copySessionId()}
+        >
+          {`Session: ${sessionId}`}
+        </button>
+      ) : (
+        <span className="turn-pane-session">New session</span>
+      )}
       <div className="turn-pane-header-controls">
         {canFork ? (
           <div className="turn-pane-fork" ref={menuRef}>
@@ -72,7 +115,7 @@ export default function TurnPaneHeader({
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((open) => !open)}
             >
-              <GitFork size={14} aria-hidden="true" />
+              <GitBranch size={14} aria-hidden="true" />
             </button>
             {menuOpen ? (
               <div className="turn-pane-fork-menu" role="menu">
@@ -104,13 +147,14 @@ export default function TurnPaneHeader({
           aria-pressed={browserOpen}
           onClick={onToggleBrowser}
         >
-          {browserOpen ? (
-            <X size={14} aria-hidden="true" />
-          ) : (
-            <Globe size={14} aria-hidden="true" />
-          )}
+          <Globe size={14} aria-hidden="true" />
         </button>
       </div>
+      {toast ? (
+        <div className="composer-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      ) : null}
     </div>
   );
 }

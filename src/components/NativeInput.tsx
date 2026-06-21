@@ -19,6 +19,7 @@ import {
   unpauseAgent,
 } from "../lib/api";
 import type { ComposerPolicy } from "../adapters";
+import { writeClipboardText } from "../lib/clipboard";
 import { largePastePrompt } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
 import type { AgentInfo, PaneInfo, QueuedTurn, TranscriptOption } from "../types";
@@ -1178,31 +1179,3 @@ function formatRelativeTime(modifiedMs: number): string {
   return `${years} yr ago`;
 }
 
-async function writeClipboardText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall back to the legacy command for WebViews without clipboard permission.
-    }
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  textarea.style.top = "0";
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-
-  try {
-    if (!document.execCommand("copy")) {
-      throw new Error("Copy command was rejected");
-    }
-  } finally {
-    textarea.remove();
-  }
-}
