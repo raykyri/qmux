@@ -21,7 +21,7 @@ use pty::{
     write_pane,
 };
 use sleep::SleepGuard;
-use state::{AppState, PaneInfo};
+use state::{AppState, PaneInfo, PaneLayoutEntry};
 use tauri::Manager;
 use transcript::{
     TranscriptOption, Turn, list_agent_transcripts as list_agent_transcript_options,
@@ -216,6 +216,14 @@ fn pane_reorder(
 }
 
 #[tauri::command]
+fn pane_set_layout(
+    state: tauri::State<'_, AppState>,
+    items: Vec<PaneLayoutEntry>,
+) -> Result<Vec<PaneInfo>, String> {
+    state.set_pane_layout(items)
+}
+
+#[tauri::command]
 fn agent_submit_turn(
     state: tauri::State<'_, AppState>,
     request: SubmitAgentTurnRequest,
@@ -373,6 +381,9 @@ fn main() {
                 // webview's first list_panes() already sees the recovered session.
                 let recovered_panes = state.restore_session();
                 recovery::respawn_session(&state, recovered_panes);
+                // Re-level persisted nesting now that we know which panes actually
+                // came back (exited panes are not respawned).
+                state.normalize_pane_layout();
                 app.manage(state.clone());
                 app.manage(SleepGuard::default());
                 Ok(())
@@ -398,6 +409,7 @@ fn main() {
             pane_kill,
             pane_rename,
             pane_reorder,
+            pane_set_layout,
             agent_submit_turn,
             agent_remove_queued_turn,
             agent_reorder_queued_turn,

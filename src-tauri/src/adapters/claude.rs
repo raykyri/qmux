@@ -1219,6 +1219,7 @@ mod tests {
                     rows: 24,
                     status: PaneStatus::Running,
                     recovered: false,
+                    depth: 0,
                 },
                 child: Arc::new(Mutex::new(Box::new(FakeChild))),
                 master: Arc::new(Mutex::new(pair.master)),

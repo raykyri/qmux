@@ -289,6 +289,7 @@ mod tests {
             rows: 40,
             status: PaneStatus::Running,
             recovered: false,
+            depth: 0,
         }
     }
 
