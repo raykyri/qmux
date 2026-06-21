@@ -320,10 +320,12 @@ export default function App() {
 
   // Opens (or replaces) a pane's browser overlay with a URL, bumping the reload nonce
   // so even re-opening the same URL reloads. Driven by the browser.open event.
-  function openBrowserOverlay(paneId: string, url: string) {
+  // `sandbox` is set for token-bearing file-server URLs so the iframe loads them in an
+  // opaque origin (see BrowserOverlay); plain http(s) URLs are not sandboxed.
+  function openBrowserOverlay(paneId: string, url: string, sandbox = false) {
     setBrowserOverlayByPane((current) => ({
       ...current,
-      [paneId]: { url, open: true, reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1 },
+      [paneId]: { url, open: true, reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1, sandbox },
     }));
   }
 
@@ -340,6 +342,7 @@ export default function App() {
           url: prev?.url ?? null,
           open: !(prev?.open ?? false),
           reloadNonce: prev?.reloadNonce ?? 0,
+          sandbox: prev?.sandbox ?? false,
         },
       };
     });
@@ -2629,6 +2632,7 @@ export default function App() {
         <BrowserOverlay
           url={activeBrowserOverlay.url}
           reloadNonce={activeBrowserOverlay.reloadNonce}
+          sandbox={activeBrowserOverlay.sandbox}
           onNavigate={navigateActiveBrowserOverlay}
         />
       ) : null}
