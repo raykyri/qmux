@@ -536,6 +536,9 @@ impl AppState {
             }
 
             model.pane_order = pane_ids;
+            // A bare reorder can move a nested pane to a position its depth no longer
+            // fits (e.g. a child to the top), so re-level depths to stay a valid tree.
+            normalize_pane_depths(&mut model);
             ordered_panes(&model)
         };
         self.persist();
@@ -599,7 +602,10 @@ impl AppState {
     /// exist. Called once after session restore/respawn, since some persisted panes
     /// (already-exited ones) are intentionally not recreated.
     pub fn normalize_pane_layout(&self) {
-        if let Ok(mut model) = self.inner.model.lock() {
+        {
+            let Ok(mut model) = self.inner.model.lock() else {
+                return;
+            };
             normalize_pane_depths(&mut model);
         }
         self.persist();
@@ -1703,6 +1709,36 @@ mod tests {
         assert_eq!(
             id_depths(&state.list_panes().unwrap()),
             vec![("pane-2".to_string(), 0), ("pane-3".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn reorder_panes_renormalizes_depth() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+        state
+            .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", 1), ("pane-3", 0)]))
+            .unwrap();
+
+        // Moving the nested child to the front would leave it at depth 1 with no
+        // parent above; the reorder must re-level it to a valid tree.
+        let panes = state
+            .reorder_panes(vec![
+                "pane-2".to_string(),
+                "pane-1".to_string(),
+                "pane-3".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(
+            id_depths(&panes),
+            vec![
+                ("pane-2".to_string(), 0),
+                ("pane-1".to_string(), 0),
+                ("pane-3".to_string(), 0),
+            ]
         );
     }
 
