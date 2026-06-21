@@ -10,15 +10,15 @@ function formatPasteSize(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-// Returns true if a paste of this text should be accepted. Small pastes always
-// pass; an oversized one prompts (reporting its size) and returns the user's
-// choice. Callers cancel the paste — preventDefault, or skip feeding xterm —
-// when this returns false. Size is measured in UTF-8 bytes so multibyte text is
-// counted at its real on-the-wire weight.
-export function confirmLargePaste(text: string): boolean {
+// Returns a confirmation prompt for an oversized paste, or null when the paste is
+// small enough to accept silently. Callers show the message in an in-app dialog and
+// only proceed if the user confirms. (window.confirm can't be used: it is a no-op
+// in the Tauri webview, which previously made large pastes silently fail.) Size is
+// measured in UTF-8 bytes so multibyte text is counted at its real on-the-wire weight.
+export function largePastePrompt(text: string): string | null {
   const bytes = new TextEncoder().encode(text).length;
   if (bytes <= LARGE_PASTE_THRESHOLD_BYTES) {
-    return true;
+    return null;
   }
-  return window.confirm(`This paste is ${formatPasteSize(bytes)}. Paste it anyway?`);
+  return `This paste is ${formatPasteSize(bytes)}. Paste it anyway?`;
 }

@@ -65,7 +65,7 @@ pub fn spawn_shell_pane(
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane_id, cwd, initial_size, false),
+        shell_spawn_spec(state, pane_id, cwd, initial_size, false)?,
     )
 }
 
@@ -82,7 +82,7 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     });
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane.id.clone(), cwd, initial_size, true),
+        shell_spawn_spec(state, pane.id.clone(), cwd, initial_size, true)?,
     )
 }
 
@@ -94,9 +94,9 @@ fn shell_spawn_spec(
     cwd: PathBuf,
     initial_size: Option<InitialPaneSize>,
     recovered: bool,
-) -> PtySpawnSpec {
+) -> Result<PtySpawnSpec, String> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut envs = shell_pane_envs(state, &pane_id);
+    let mut envs = shell_pane_envs(state, &pane_id)?;
     let mut args = Vec::new();
 
     let shell_commands = adapter_registry(state.config()).shell_commands();
@@ -118,7 +118,7 @@ fn shell_spawn_spec(
         }
     }
 
-    PtySpawnSpec {
+    Ok(PtySpawnSpec {
         pane_id: Some(pane_id),
         agent_id: None,
         kind: PaneKind::Shell,
@@ -129,7 +129,7 @@ fn shell_spawn_spec(
         envs,
         initial_size,
         recovered,
-    }
+    })
 }
 
 /// Returns the path only when it still resolves to a directory, so recovery can
@@ -139,25 +139,25 @@ pub fn recoverable_dir(path: &str) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
-    vec![
+pub fn qmux_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, String)>, String> {
+    Ok(vec![
         ("QMUX_PANE_ID".to_string(), pane_id.to_string()),
         (
             "QMUX_SOCK".to_string(),
             state.config().socket_path.display().to_string(),
         ),
-        ("QMUX_TOKEN".to_string(), state.pane_token(pane_id)),
+        ("QMUX_TOKEN".to_string(), state.pane_token(pane_id)?),
         (
             "QMUX_WORKSPACE_ROOT".to_string(),
             state.config().workspace_root.display().to_string(),
         ),
-    ]
+    ])
 }
 
-fn shell_pane_envs(state: &AppState, pane_id: &str) -> Vec<(String, String)> {
-    let mut envs = qmux_pane_envs(state, pane_id);
+fn shell_pane_envs(state: &AppState, pane_id: &str) -> Result<Vec<(String, String)>, String> {
+    let mut envs = qmux_pane_envs(state, pane_id)?;
     envs.push(("QMUX_SHELL_INTEGRATION".to_string(), "1".to_string()));
-    envs
+    Ok(envs)
 }
 
 struct ShellFunctionInjection {
@@ -841,7 +841,7 @@ mod tests {
     #[test]
     fn base_qmux_envs_include_pane_socket_token_and_workspace() {
         let state = test_state();
-        let envs = qmux_pane_envs(&state, "pane-123");
+        let envs = qmux_pane_envs(&state, "pane-123").expect("envs mint a token");
 
         assert_eq!(
             env_value(&envs, "QMUX_PANE_ID"),
@@ -852,9 +852,12 @@ mod tests {
             Some("/tmp/qmux.sock".to_string())
         );
         let token = env_value(&envs, "QMUX_TOKEN").expect("pane token env is present");
-        assert_eq!(token, state.pane_token("pane-123"));
+        assert_eq!(token, state.pane_token("pane-123").unwrap());
         assert_eq!(token.len(), 64);
-        assert_ne!(state.pane_token("pane-123"), state.pane_token("other-pane"));
+        assert_ne!(
+            state.pane_token("pane-123").unwrap(),
+            state.pane_token("other-pane").unwrap()
+        );
         assert_eq!(
             env_value(&envs, "QMUX_WORKSPACE_ROOT"),
             Some("/tmp/qmux-workspaces".to_string())
@@ -864,7 +867,7 @@ mod tests {
     #[test]
     fn shell_pane_envs_enable_shell_integration() {
         let state = test_state();
-        let envs = shell_pane_envs(&state, "pane-123");
+        let envs = shell_pane_envs(&state, "pane-123").expect("envs mint a token");
 
         assert_eq!(
             env_value(&envs, "QMUX_SHELL_INTEGRATION"),

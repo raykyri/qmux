@@ -281,16 +281,20 @@ impl AppState {
     /// Returns the control-socket token scoped to a single pane, minting one on first
     /// use. Each pane gets its own unguessable token so a process running in one pane
     /// cannot drive another pane (or the control plane) through the socket.
-    pub fn pane_token(&self, pane_id: &str) -> String {
+    pub fn pane_token(&self, pane_id: &str) -> Result<String, String> {
         let mut tokens = self
             .inner
             .pane_tokens
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        tokens
-            .entry(pane_id.to_string())
-            .or_insert_with(random_token)
-            .clone()
+        if let Some(existing) = tokens.get(pane_id) {
+            return Ok(existing.clone());
+        }
+        // Mint outside the entry API so a CSPRNG failure returns an error to this one
+        // call rather than panicking inside or_insert_with and aborting the whole
+        // app (killing every running agent and unsaved draft).
+        let token = random_token()?;
+        Ok(tokens.entry(pane_id.to_string()).or_insert(token).clone())
     }
 
     /// Resolves the pane a presented control token is authorized for, if any.
@@ -742,6 +746,33 @@ impl AppState {
         Ok(len)
     }
 
+    /// Inserts a turn into an agent's queue at `index` (clamped to the queue length),
+    /// returning the new length. Used to roll a moved turn back to its original spot
+    /// when handing it to another agent fails.
+    pub fn insert_agent_turn_at(
+        &self,
+        agent_id: &str,
+        index: usize,
+        data: String,
+    ) -> Result<usize, String> {
+        let len = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let queue = model
+                .agent_turn_queues
+                .entry(agent_id.to_string())
+                .or_default();
+            let at = index.min(queue.len());
+            queue.insert(at, data);
+            queue.len()
+        };
+        self.persist();
+        Ok(len)
+    }
+
     /// Stores the agent's composer draft and snapshots it to disk. A trimmed-empty
     /// draft drops the entry so recovery never restores stray whitespace and the
     /// map does not grow an entry per cleared composer.
@@ -1063,15 +1094,27 @@ fn normalize_prompt(prompt: &str) -> String {
     prompt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn random_token() -> String {
-    // 256 bits from the OS CSPRNG (getentropy/getrandom on macOS and Linux).
-    // getrandom only fails if the platform has no secure entropy source at all,
-    // in which case there is no safe token to mint: fail loudly rather than fall
-    // back to a predictable time/pid-derived secret that would leave the control
-    // socket guessable.
+fn random_token() -> Result<String, String> {
+    // 256 bits from the OS CSPRNG (getentropy/getrandom on macOS and Linux). A
+    // failure here is rare (no secure entropy source) but can be transient in some
+    // sandboxes, so retry a few times before giving up. We never fall back to a
+    // predictable time/pid-derived secret that would leave the control socket
+    // guessable; instead the error propagates so a single pane fails to launch
+    // rather than the whole process aborting.
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("OS CSPRNG unavailable; cannot mint a control token");
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut last_err = None;
+    for _ in 0..3 {
+        match getrandom::getrandom(&mut bytes) {
+            Ok(()) => return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(format!(
+        "OS CSPRNG unavailable; cannot mint a control token: {}",
+        last_err
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
 }
 
 #[cfg(test)]
