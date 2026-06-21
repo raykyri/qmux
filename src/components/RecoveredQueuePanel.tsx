@@ -1,8 +1,8 @@
-import type { AgentInfo } from "../types";
+import type { AgentInfo, QueuedTurn } from "../types";
 
 export type OrphanedQueueGroup = {
   agent: AgentInfo;
-  queuedTurns: string[];
+  queuedTurns: QueuedTurn[];
 };
 
 interface RecoveredQueuePanelProps {
@@ -32,8 +32,8 @@ export default function RecoveredQueuePanel({
         {queues.map(({ agent, queuedTurns }) => (
           <div key={agent.id} className="recovered-queue-group">
             {queuedTurns.map((turn, index) => (
-              <div key={`${agent.id}-${index}-${turn}`} className="recovered-queue-item">
-                <p>{turn}</p>
+              <div key={`${agent.id}-${index}-${turn.text}`} className="recovered-queue-item">
+                <p>{turn.text}</p>
                 <div className="recovered-queue-actions">
                   <button
                     type="button"
@@ -43,11 +43,11 @@ export default function RecoveredQueuePanel({
                         ? "Queue to the current agent"
                         : `Launch ${agentLabel} in this tab before queueing`
                     }
-                    onClick={() => onMoveTurn(agent.id, index, turn)}
+                    onClick={() => onMoveTurn(agent.id, index, turn.text)}
                   >
                     Queue
                   </button>
-                  <button type="button" onClick={() => onDiscardTurn(agent.id, index, turn)}>
+                  <button type="button" onClick={() => onDiscardTurn(agent.id, index, turn.text)}>
                     Discard
                   </button>
                 </div>

@@ -1,4 +1,4 @@
-use crate::state::PaneInfo;
+use crate::state::{PaneInfo, QueuedTurn};
 use crate::workspace::{AgentInfo, GroupInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -35,7 +35,7 @@ pub struct PersistedState {
     #[serde(default)]
     pub agents: Vec<AgentInfo>,
     #[serde(default)]
-    pub queues: HashMap<String, Vec<String>>,
+    pub queues: HashMap<String, Vec<QueuedTurn>>,
     /// Per-agent composer drafts: the unsent text sitting in the right-pane input.
     /// Persisted so an in-progress draft survives a restart, recovered alongside
     /// queues and transcripts.

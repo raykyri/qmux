@@ -9,6 +9,7 @@ import type {
   MoveQueuedAgentTurnResult,
   PaneInfo,
   QmuxEvent,
+  QueuedTurn,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   SendNextQueuedAgentTurnResult,
@@ -47,7 +48,27 @@ export function listTurns(agentId?: string | null) {
 }
 
 export function listAgentTurnQueue(agentId: string) {
-  return invoke<string[]>("list_agent_turn_queue", { agentId });
+  return invoke<QueuedTurn[]>("list_agent_turn_queue", { agentId });
+}
+
+/** Toggles the pause-after-send flag on one queued turn. */
+export function setQueuedTurnPause(
+  agentId: string,
+  index: number,
+  pauseAfter: boolean,
+  expectedData: string,
+) {
+  return invoke<QueuedTurn[]>("agent_set_queued_turn_pause", {
+    agentId,
+    index,
+    pauseAfter,
+    expectedData,
+  });
+}
+
+/** Clears an agent's paused state, draining the next queued turn if it is idle. */
+export function unpauseAgent(agentId: string) {
+  return invoke<SendNextQueuedAgentTurnResult>("agent_unpause", { agentId });
 }
 
 export function listAgentTranscripts(agentId: string) {
