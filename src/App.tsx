@@ -2011,7 +2011,7 @@ export default function App() {
                     }
                   }}
                 >
-                  <X size={11} aria-hidden="true" />
+                  <X size={13.5} aria-hidden="true" />
                 </a>
               </div>
             );
