@@ -1724,9 +1724,14 @@ button:disabled {
 }
 
 .turn-pane-fork-item {
+  /* Left-align the label: the shared button skin centers flex content, so
+     text-align alone isn't enough. min-height:0 drops the 30px control floor
+     that otherwise pads the rows taller than their text needs. */
+  justify-content: flex-start;
   width: 100%;
   min-width: 0;
-  padding: 6px 10px;
+  min-height: 0;
+  padding: 5px 10px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -2490,10 +2495,12 @@ button:disabled {
 
 .composer-menu-popover {
   /* Anchored above the trigger so it opens upward, away from the bottom edge.
-     Right edge pinned to the trigger so the menu always grows leftward. */
+     Horizontally centered over the trigger so its width grows evenly to both
+     sides instead of spilling off one edge of the (narrow) right pane. */
   position: absolute;
   bottom: calc(100% + 6px);
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 5;
   display: flex;
   width: 220px;
