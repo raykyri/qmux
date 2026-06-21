@@ -939,7 +939,7 @@ export default function NativeInput({
         placeholder={
           awaitingPermission
             ? "Approve or deny the pending tool use..."
-            : "What’s next?"
+            : "What do you want to do next?"
         }
         rows={1}
       />
