@@ -308,7 +308,7 @@ impl ClaudeAdapter {
         agent.root_session_id = source
             .root_session_id
             .clone()
-            .or_else(|| source.session_id.clone());
+            .or_else(|| Some(session_id.clone()));
         agent.status = AgentStatus::AwaitingInput;
         state.update_agent(agent.clone())?;
 
@@ -371,10 +371,14 @@ impl ClaudeAdapter {
         };
 
         // Bind the pane, then restore AwaitingInput (attach promotes to Running, but a
-        // resumed fork with no prompt is sitting idle waiting for the user).
-        let mut forked = attach_agent_pane(state, &agent.id, pane.id.clone())?;
-        forked.status = AgentStatus::AwaitingInput;
-        state.update_agent(forked.clone())?;
+        // resumed fork with no prompt is sitting idle waiting for the user). Use a
+        // field-scoped status write, not a full-struct update: the spawned fork's
+        // SessionStart hook may already be recording its new session_id/transcript on
+        // another thread, and a stale snapshot write here would wipe them.
+        attach_agent_pane(state, &agent.id, pane.id.clone())?;
+        let forked = state
+            .set_agent_status(&agent.id, AgentStatus::AwaitingInput)?
+            .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?;
 
         Ok((pane, forked))
     }
