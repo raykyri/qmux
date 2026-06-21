@@ -54,6 +54,9 @@ pub struct RuntimeConfig {
     pub workspace_root: String,
     pub socket_path: String,
     pub adapters: Vec<AdapterMetadata>,
+    // The user's home directory, so the UI can render home-relative paths as ~/…
+    // instead of bare relative segments. Empty if HOME is unset.
+    pub home_dir: String,
 }
 
 impl QmuxConfig {
@@ -102,6 +105,7 @@ impl QmuxConfig {
             workspace_root: self.workspace_root.display().to_string(),
             socket_path: self.socket_path.display().to_string(),
             adapters: adapter_registry(self).metadata(),
+            home_dir: env::var("HOME").unwrap_or_default(),
         }
     }
 

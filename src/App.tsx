@@ -610,7 +610,14 @@ export default function App() {
   function formatPaneDir(rawPath: string): string {
     const workspaceRoot = config?.workspaceRoot;
     if (workspaceRoot && rawPath.startsWith(`${workspaceRoot}/`)) {
-      return rawPath.slice(workspaceRoot.length + 1);
+      const relative = rawPath.slice(workspaceRoot.length + 1);
+      // When the workspace root is the home directory itself, the path is being
+      // shown relative to home, so anchor it with ~/ instead of leaving bare
+      // segments. A root that is a deeper child of home already reads clearly as
+      // a relative path, so it is left unchanged.
+      return config?.homeDir && workspaceRoot === config.homeDir
+        ? `~/${relative}`
+        : relative;
     }
     const segments = rawPath.split("/").filter(Boolean);
     if (segments.length <= 2) {
