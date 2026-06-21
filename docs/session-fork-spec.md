@@ -75,3 +75,12 @@ imperative — run the one command, report its output, do nothing else.
 - Worktree forks branch off the group's base repo at HEAD (like a launcher worktree),
   not off the source's uncommitted state.
 - Only Claude is supported (Codex has no equivalent fork flag wired up here).
+- `QMUX_CLI` is exported into a pane's environment at spawn time, so the skill only
+  works in panes started after this change. Sessions already running when qmux is
+  upgraded won't have it (and `qmux` isn't on `PATH`), so the skill there prints
+  "command not found" until qmux is restarted — restart re-spawns recovered panes with
+  the new env. New sessions work immediately.
+- The control plane's only spawn is `agent.fork`, scoped to the caller's own session.
+  There's intentionally no fork rate/count cap: it's the same authority the user has
+  in their terminal. A runaway agent could fork in a loop; revisit a backstop if that
+  becomes a problem in practice.
