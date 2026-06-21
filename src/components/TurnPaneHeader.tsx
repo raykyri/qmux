@@ -1,4 +1,4 @@
-import { GitFork, Globe, X } from "lucide-react";
+import { GitBranch, Globe } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 // The top bar across the right pane: the active session's id on the left, and on
@@ -72,7 +72,7 @@ export default function TurnPaneHeader({
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((open) => !open)}
             >
-              <GitFork size={14} aria-hidden="true" />
+              <GitBranch size={14} aria-hidden="true" />
             </button>
             {menuOpen ? (
               <div className="turn-pane-fork-menu" role="menu">
@@ -104,11 +104,7 @@ export default function TurnPaneHeader({
           aria-pressed={browserOpen}
           onClick={onToggleBrowser}
         >
-          {browserOpen ? (
-            <X size={14} aria-hidden="true" />
-          ) : (
-            <Globe size={14} aria-hidden="true" />
-          )}
+          <Globe size={14} aria-hidden="true" />
         </button>
       </div>
     </div>
