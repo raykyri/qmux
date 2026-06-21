@@ -228,10 +228,72 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             let pane = agent_fork(state, &authed_pane, payload.use_worktree)?;
             serde_json::to_value(pane).map_err(|err| format!("failed to encode forked pane: {err}"))
         }
+        "browser.open" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct BrowserOpen {
+                target: String,
+                #[serde(default)]
+                cwd: Option<String>,
+            }
+            let payload = serde_json::from_value::<BrowserOpen>(request.payload)
+                .map_err(|err| format!("invalid browser.open payload: {err}"))?;
+            // Resolve to a renderable URL: http(s) passes through (CSP gates it to
+            // loopback); a file is validated under an allowed root and served via the
+            // loopback file server. The overlay binds to the calling pane.
+            let url = resolve_browser_target(state, payload.target.trim(), payload.cwd.as_deref())?;
+            state.emit(QmuxEvent::new(
+                "browser.open",
+                Some(authed_pane.clone()),
+                None,
+                json!({ "url": url }),
+            ));
+            Ok(json!({ "url": url }))
+        }
         // Other agent spawning and turn queueing are management operations that belong
         // to the trusted GUI (Tauri commands), not to processes holding a pane token.
         other => Err(format!("unknown control command '{other}'")),
     }
+}
+
+/// Turns an `open` target into a URL the browser overlay can load. http(s) URLs pass
+/// through unchanged (covering localhost dev servers; the webview CSP restricts which
+/// actually render). Anything else is treated as a file path: resolved against `cwd`
+/// when relative, required to live under an allowed root, and served through the
+/// loopback file server.
+fn resolve_browser_target(
+    state: &AppState,
+    target: &str,
+    cwd: Option<&str>,
+) -> Result<String, String> {
+    if target.is_empty() {
+        return Err("nothing to open".to_string());
+    }
+    if target.starts_with("http://") || target.starts_with("https://") {
+        return Ok(target.to_string());
+    }
+
+    let requested = {
+        let path = std::path::Path::new(target);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            let base = cwd.ok_or_else(|| {
+                "cannot resolve a relative path without a working directory".to_string()
+            })?;
+            std::path::Path::new(base).join(path)
+        }
+    };
+
+    let roots = state.allowed_file_roots();
+    let canonical =
+        crate::file_server::resolve_under_roots(&requested, &roots).ok_or_else(|| {
+            format!("'{target}' was not found under an allowed workspace root and cannot be opened")
+        })?;
+    let (port, token) = state
+        .file_server_info()
+        .ok_or_else(|| "the file server is not running".to_string())?;
+    Ok(crate::file_server::file_url(port, &token, &canonical))
 }
 
 fn ensure_pane_scope(authed_pane: &str, requested_pane: &str) -> Result<(), String> {

@@ -38,3 +38,11 @@ export type PaneTabPointerDrag = {
 export type PaneDropTarget =
   | { kind: "gap"; index: number }
   | { kind: "nest"; paneId: string };
+
+// Per-pane browser overlay: the URL it's showing, whether it's visible, and a nonce
+// bumped on open/refresh to force the iframe to remount (reload).
+export type BrowserOverlayState = {
+  url: string | null;
+  open: boolean;
+  reloadNonce: number;
+};
