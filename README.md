@@ -112,11 +112,12 @@ cargo test --manifest-path src-tauri/Cargo.toml
   to route the agent through qmux, so transcripts and native follow-ups work.
 - Agent input is queued while an agent is busy. Use `Steer` to inject a turn
   immediately instead of waiting for the agent to become idle.
-- Browser overlay: run `qmux open <file|url>` inside a pane (or use the
-  `open-in-browser` skill) to render a file or a `http://localhost` dev server in a
-  panel that floats over the terminal, bound to that tab. The globe button at the
-  terminal's top-right toggles it; the button to its left refreshes it. Files are
-  served from a loopback-only static server and must live under the workspace.
+- Browser overlay: run `qmux open <file|url>` at a shell pane's prompt (the `qmux`
+  command is injected into shell panes, like `claude`/`codex`), or use the
+  `open-in-browser` skill from an agent, to render a file or a `http://localhost` dev
+  server in a panel that floats over the terminal, bound to that tab. The globe button
+  at the terminal's top-right toggles it; the button to its left refreshes it. Files
+  are served from a loopback-only static server and must live under the workspace.
 
 ## Repository Layout
 
