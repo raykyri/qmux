@@ -23,13 +23,24 @@ Implemented today:
   their own launch options, transcript parsing, and composer policy.
 - Launcher with per-agent adapter and model selection, and optional git worktree
   isolation.
+- Sidebar tab nesting: indent a tab under another by dragging it onto the tab, or
+  via the tab's right-click Indent/Outdent.
 - Hook settings generation and token-gated Unix-socket ingestion via
   `qmux notify <event>`.
 - Transcript JSONL tailing for native turn rendering.
 - Native follow-up composer: send, queue, steer, approve/deny, queued-turn
-  editing and reordering, per-agent drafts, and transcript copy actions.
+  editing/reordering, per-item "pause after send", a typing-aware hold that delays
+  auto-send while you type, per-agent drafts, and transcript copy actions (including
+  "Copy queued").
 - Optional git worktree creation for launched agents, with dirty-worktree checks
   (and soft branch deletion) before closing worktree-backed panes.
+- Session forking from inside a running Claude session (with or without a fresh git
+  worktree) into a tab nested under the source — see [Skills](#skills).
+- A tab-bound browser overlay that renders a local file or a `http://localhost` dev
+  server in a panel over the terminal (URL bar, refresh, toggle), served from a
+  loopback-only static file server.
+- Clickable links in the transcript and terminal: open in the browser overlay, or
+  right-click to choose the internal or external browser.
 - Session/transcript recovery, including a picker to correct a wrong guess.
 - Persisted pane, group, agent, transcript, and queued-turn metadata with
   best-effort restart recovery.
@@ -39,7 +50,7 @@ Implemented today:
 Still planned:
 
 - Full workspace/group lifecycle commands.
-- Session and workspace forking.
+- Workspace/group forking (session forking already ships via skills).
 - Clip, markup, and share flows.
 - More agent adapters.
 - Windows/Linux support. The current implementation targets macOS first.
@@ -108,28 +119,44 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch.
 - Enable `Worktree` to create an isolated git worktree for the agent.
-- In zsh/bash shell panes, the app injects `claude` and `codex` shell functions
-  to route the agent through qmux, so transcripts and native follow-ups work.
+- In zsh/bash shell panes, the app injects `qmux`, `claude`, and `codex` shell
+  functions to route the agent through qmux, so transcripts and native follow-ups
+  work without those commands being on `PATH`.
+- Nest tabs by dragging one onto another tab in the sidebar, or right-click a tab and
+  choose `Indent` / `Outdent`.
 - Agent input is queued while an agent is busy. Use `Steer` to inject a turn
-  immediately instead of waiting for the agent to become idle.
-- Browser overlay: run `qmux open <file|url>` at a shell pane's prompt (the `qmux`
-  command is injected into shell panes, like `claude`/`codex`), or use the
+  immediately instead of waiting for the agent to become idle. While you're typing,
+  the queue holds (it auto-sends ~1.5s after you stop) so a finishing turn doesn't
+  interrupt you.
+- A queued item's `⋮` menu can mark it `Pause after send`: after that turn is sent the
+  queue stops draining and shows `Unpause`. The composer's height toggle (left of the
+  `⋮` menu) caps the queue at half the pane or lets it grow.
+- Fork a running Claude session from inside its terminal with `/qmux:fork` (same
+  directory) or `/qmux:fork-worktree` (a fresh isolated worktree); the fork opens as a
+  tab nested under the source and inherits its transcript.
+- Click a link in the transcript or terminal to open it in the internal browser
+  overlay; right-click to choose internal vs. external browser.
+- Browser overlay: run `qmux open <file|url>` at a shell pane's prompt, or use the
   `open-in-browser` skill from an agent, to render a file or a `http://localhost` dev
-  server in a panel that floats over the terminal, bound to that tab. The globe button
-  at the terminal's top-right toggles it; the button to its left refreshes it. Files
-  are served from a loopback-only static server and must live under the workspace.
+  server in a panel that floats over the terminal, bound to that tab. It has a URL bar
+  at the top; the globe button at the terminal's top-right toggles it and the button
+  to its left refreshes it. Files are served from a loopback-only static server and
+  must live under the workspace.
 
 ## Repository Layout
 
 - `src/`: React frontend.
-- `src/components/`: terminal, native input, launcher, and turn overlay UI.
+- `src/components/`: terminal, native input, launcher, turn overlay, and browser
+  overlay UI.
 - `src/adapters/`: per-agent UI adapters (Claude, Codex) and the shared interface.
 - `src/lib/api.ts`: Tauri command/event client helpers.
 - `src/lib/settings.ts`: persisted app settings (font, sleep behavior).
-- `src-tauri/src/`: Rust backend modules.
+- `src-tauri/src/`: Rust backend modules (PTYs, control socket, file server,
+  persistence, turn queue).
 - `src-tauri/src/adapters/`: per-agent backend adapters and the adapter registry.
 - `qmux-plugin/`: qmux-owned Claude plugin whose `skills/` are injected into launched
   Claude agents (see [Skills](#skills)).
+- `docs/`: design specs for larger features (tab nesting, session fork, queue pauses).
 - `qmux.config.json`: repo-local development config.
 
 ## Local Config
@@ -169,7 +196,13 @@ qmux-plugin/
 
 Each skill is offered as a checkbox in the agent launcher (one selection at a time);
 choosing one prepends its namespaced slash command (e.g. `/qmux:deep-research`) to the
-prompt. Skills are also available to `claude` started inside a qmux shell pane.
+prompt. Skills are also available to `claude` started inside a qmux shell pane, and can
+be invoked mid-session by typing the slash command.
+
+Bundled skills: `deep-research`, `fork` and `fork-worktree` (fork the running session
+into a nested tab, optionally in a fresh worktree), and `open-in-browser` (render a
+file or URL in the browser overlay). `fork`/`fork-worktree`/`open-in-browser` are
+designed to be called from inside a running session rather than chosen in the launcher.
 
 The directory is resolved from `QMUX_CLAUDE_PLUGIN_DIR`, or defaults to `qmux-plugin`
 relative to the process working directory (the same anchor used for `workspaceRoot`).
@@ -186,9 +219,14 @@ Drop in a new `<skill-name>/SKILL.md` and reopen the launcher — no restart nee
   - `QMUX_SOCK`
   - `QMUX_TOKEN`
   - `QMUX_WORKSPACE_ROOT`
+  - `QMUX_CLI` (path to the qmux binary, for in-pane tooling)
 - Agent panes also receive `QMUX_AGENT_ID`.
 - Hooks call `qmux notify <event>` over the token-gated Unix socket; qmux routes
-  the notification to the owning agent's adapter.
+  the notification to the owning agent's adapter. The same socket, scoped to the
+  caller's pane, serves other in-pane commands (`qmux open`, `qmux fork`).
+- A loopback-only (`127.0.0.1`) HTTP server with a per-launch random token backs the
+  browser overlay's `file://`-style URLs; it only serves files under the workspace
+  roots. The frontend only ever sees fully-formed `http://127.0.0.1/...` URLs.
 - Transcript tailing starts once the agent reports a transcript path (for Claude,
   on its `SessionStart` hook).
 - Persisted state is written under `<workspaceRoot>/.qmux/state.json`.
