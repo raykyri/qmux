@@ -352,7 +352,7 @@ impl CodexAdapter {
             "UserPromptSubmit" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                     let prompt = string_field(&notification.payload, "prompt")
                         .or_else(|| string_field(&notification.payload, "input"));
                     send_tracking =
@@ -363,21 +363,21 @@ impl CodexAdapter {
             "PreToolUse" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.tool_use"
             }
             "PostToolUse" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.tool_result"
             }
             "PermissionRequest" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::AwaitingPermission;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.awaiting_permission"
             }

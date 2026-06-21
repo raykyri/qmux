@@ -602,7 +602,7 @@ impl ClaudeAdapter {
             "UserPromptSubmit" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                     if !is_subagent_payload(&notification.payload) {
                         let prompt = string_field(&notification.payload, "prompt");
                         send_tracking =
@@ -614,21 +614,21 @@ impl ClaudeAdapter {
             "PreToolUse" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.tool_use"
             }
             "PostToolUse" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.tool_result"
             }
             "PermissionRequest" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::AwaitingPermission;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.awaiting_permission"
             }
@@ -648,7 +648,7 @@ impl ClaudeAdapter {
                 } else {
                     if let Some(agent) = agent.as_mut() {
                         agent.status = notification_status(notification_kind);
-                        state.update_agent(agent.clone())?;
+                        state.set_agent_status(&agent.id, agent.status)?;
                     }
                     notification_event_type(notification_kind)
                 }
