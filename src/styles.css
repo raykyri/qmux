@@ -145,6 +145,7 @@ button:disabled {
 }
 
 .app-shell {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width, 268px) minmax(0, 1fr);
   height: 100%;
@@ -2408,4 +2409,88 @@ button:disabled {
 .enter-glyph {
   display: inline-block;
   transform: translateY(1px);
+}
+
+/* Browser overlay: floats over the sidebar (leaving a left strip for tab switching)
+   and the center terminal, stopping at the turn pane's left edge. */
+.browser-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--browser-overlay-left, 64px);
+  right: var(--turn-pane-width, 0px);
+  z-index: 8;
+  display: flex;
+  overflow: hidden;
+  background: #0e1011;
+  border-left: 1px solid #2a2d2f;
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.45);
+}
+
+.browser-overlay-frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* Most pages assume a white canvas; avoid a flash of the dark app behind them. */
+  background: #ffffff;
+}
+
+.browser-overlay-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  color: #aab1ad;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.browser-overlay-empty code {
+  margin: 0 3px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+}
+
+/* Toggle (+ refresh) pinned to the top-right of the terminal / browser. */
+.browser-overlay-controls {
+  position: absolute;
+  top: 8px;
+  right: calc(var(--turn-pane-width, 0px) + 12px);
+  z-index: 9;
+  display: flex;
+  gap: 6px;
+}
+
+.browser-overlay-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: rgba(20, 24, 26, 0.9);
+  color: #c4cbc6;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.browser-overlay-button:hover {
+  background: rgba(32, 38, 40, 0.95);
+  color: #f1f0e8;
+}
+
+.browser-overlay-button.is-active {
+  border-color: var(--accent-color);
+  color: #f1f0e8;
+}
+
+.browser-overlay-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
 }

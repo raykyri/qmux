@@ -18,6 +18,8 @@ import {
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import NativeInput from "./components/NativeInput";
+import BrowserOverlay from "./components/BrowserOverlay";
+import BrowserOverlayControls from "./components/BrowserOverlayControls";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
@@ -36,6 +38,7 @@ import {
 } from "./lib/appHelpers";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
+  BrowserOverlayState,
   CloseDialogState,
   ExitDialogState,
   PaneContextMenuState,
@@ -117,6 +120,9 @@ const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 // How long after the user's last keystroke we keep holding the queue before letting a
 // finished turn auto-send the next queued message.
 const INPUT_DEQUEUE_HOLD_MS = 1500;
+// Left strip of the sidebar the browser overlay leaves uncovered, so the first few
+// chars of each tab stay visible and clickable for switching tabs.
+const BROWSER_OVERLAY_LEFT_MARGIN = 64;
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -231,6 +237,10 @@ export default function App() {
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
+  // Per-pane browser overlay state, so each tab keeps its own page and open/closed.
+  const [browserOverlayByPane, setBrowserOverlayByPane] = useState<
+    Record<string, BrowserOverlayState>
+  >({});
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -239,6 +249,17 @@ export default function App() {
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
   );
+  const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
+  // Drop overlay state for panes that have closed so it can't leak or resurface.
+  useEffect(() => {
+    setBrowserOverlayByPane((current) => {
+      const ids = new Set(panes.map((pane) => pane.id));
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([paneId]) => ids.has(paneId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [panes]);
   const runtimeDefaultAdapterId =
     config?.adapters.find((adapter) => adapter.default)?.id ?? config?.adapters[0]?.id ?? "claude";
   const selectedLauncherAdapterId = launcherAdapterId ?? runtimeDefaultAdapterId;
@@ -287,6 +308,48 @@ export default function App() {
     }, INPUT_DEQUEUE_HOLD_MS);
     agentTypingRef.current = { agentId, timer };
   }
+
+  // Opens (or replaces) a pane's browser overlay with a URL, bumping the reload nonce
+  // so even re-opening the same URL reloads. Driven by the browser.open event.
+  function openBrowserOverlay(paneId: string, url: string) {
+    setBrowserOverlayByPane((current) => ({
+      ...current,
+      [paneId]: { url, open: true, reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1 },
+    }));
+  }
+
+  function toggleActiveBrowserOverlay() {
+    const paneId = activePane?.id;
+    if (!paneId) {
+      return;
+    }
+    setBrowserOverlayByPane((current) => {
+      const prev = current[paneId];
+      return {
+        ...current,
+        [paneId]: {
+          url: prev?.url ?? null,
+          open: !(prev?.open ?? false),
+          reloadNonce: prev?.reloadNonce ?? 0,
+        },
+      };
+    });
+  }
+
+  function refreshActiveBrowserOverlay() {
+    const paneId = activePane?.id;
+    if (!paneId) {
+      return;
+    }
+    setBrowserOverlayByPane((current) => {
+      const prev = current[paneId];
+      if (!prev) {
+        return current;
+      }
+      return { ...current, [paneId]: { ...prev, reloadNonce: prev.reloadNonce + 1 } };
+    });
+  }
+
   const activeTurns = useMemo(
     () => {
       const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
@@ -626,6 +689,7 @@ export default function App() {
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
+    "--browser-overlay-left": `${BROWSER_OVERLAY_LEFT_MARGIN}px`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
   const contextMenuPane = paneContextMenu
@@ -834,6 +898,7 @@ export default function App() {
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
     dispatchPtyData,
+    openBrowserOverlay,
     onEventsReady: handleEventsReady,
   });
 
@@ -2503,6 +2568,20 @@ export default function App() {
             }
           />
         </aside>
+      ) : null}
+
+      {activePane && activeBrowserOverlay?.open ? (
+        <BrowserOverlay
+          url={activeBrowserOverlay.url}
+          reloadNonce={activeBrowserOverlay.reloadNonce}
+        />
+      ) : null}
+      {activePane ? (
+        <BrowserOverlayControls
+          open={activeBrowserOverlay?.open ?? false}
+          onToggle={toggleActiveBrowserOverlay}
+          onRefresh={refreshActiveBrowserOverlay}
+        />
       ) : null}
     </main>
   );

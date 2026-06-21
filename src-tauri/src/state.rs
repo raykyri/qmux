@@ -54,6 +54,9 @@ struct AppStateInner {
     // snapshots to workspace_root/.qmux/state.json.
     persist_enabled: AtomicBool,
     exit_confirmed: AtomicBool,
+    // (port, token) of the loopback file server, set once at startup. The control
+    // socket uses it to build browser-overlay URLs.
+    file_server: Mutex<Option<(u16, String)>>,
 }
 
 #[derive(Default)]
@@ -241,8 +244,41 @@ impl AppState {
                 app_handle: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
                 exit_confirmed: AtomicBool::new(false),
+                file_server: Mutex::new(None),
             }),
         }
+    }
+
+    /// Records the loopback file server's port + access token (set once at startup).
+    pub fn set_file_server(&self, port: u16, token: String) {
+        if let Ok(mut slot) = self.inner.file_server.lock() {
+            *slot = Some((port, token));
+        }
+    }
+
+    pub fn file_server_info(&self) -> Option<(u16, String)> {
+        self.inner
+            .file_server
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Roots a file must live under to be served to the browser overlay: the
+    /// workspace root plus every pane's working directory and every agent's worktree.
+    /// `file_server::resolve_under_roots` canonicalizes these, so duplicates and
+    /// non-existent entries are harmless.
+    pub fn allowed_file_roots(&self) -> Vec<std::path::PathBuf> {
+        let mut roots = vec![self.inner.config.workspace_root.clone()];
+        if let Ok(model) = self.inner.model.lock() {
+            for pane in model.panes.values() {
+                roots.push(std::path::PathBuf::from(&pane.info.cwd));
+            }
+            for agent in model.agents.values() {
+                roots.push(std::path::PathBuf::from(&agent.worktree_dir));
+            }
+        }
+        roots
     }
 
     pub fn config(&self) -> &QmuxConfig {
