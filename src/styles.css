@@ -1625,6 +1625,31 @@ button:disabled {
   font-size: 12px;
 }
 
+/* The session id doubles as a copy-to-clipboard control: it drops the button
+   chrome so it still reads as the inline label, and only brightens on
+   hover/focus to hint that it's clickable. */
+.turn-pane-session-copy {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-pane-session-copy:hover,
+.turn-pane-session-copy:focus-visible {
+  color: #f1f0e8;
+}
+
+.turn-pane-session-copy:focus-visible {
+  outline: none;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
 .turn-pane-header-controls {
   flex: 0 0 auto;
   display: flex;
