@@ -58,7 +58,7 @@ export default function TurnPaneHeader({
   return (
     <div className="turn-pane-header">
       <span className="turn-pane-session" title={sessionId ?? undefined}>
-        {sessionId ?? "New session"}
+        {sessionId ? `Session: ${sessionId}` : "New session"}
       </span>
       <div className="turn-pane-header-controls">
         {canFork ? (
