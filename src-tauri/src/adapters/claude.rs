@@ -1054,20 +1054,19 @@ fn skill_shows_in_launcher(skill_md: &Path) -> bool {
     false
 }
 
-/// Turns a skill slug into a launcher label by splitting on `-`/`_` and capitalizing
-/// each word: `deep-research` -> `Deep Research`.
+/// Turns a skill slug into a launcher label by splitting on `-`/`_` and sentence-casing
+/// the result (only the first word is capitalized): `deep-research` -> `Deep research`.
 fn humanize_skill_slug(slug: &str) -> String {
-    slug.split(['-', '_'])
+    let joined = slug
+        .split(['-', '_'])
         .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    let mut chars = joined.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+        None => String::new(),
+    }
 }
 
 /// Resolves an idle agent: drains the next queued turn, or enters/stays paused.
@@ -1764,11 +1763,11 @@ mod tests {
     }
 
     #[test]
-    fn humanize_skill_slug_title_cases_each_word() {
-        assert_eq!(humanize_skill_slug("deep-research"), "Deep Research");
-        assert_eq!(humanize_skill_slug("hello_stub"), "Hello Stub");
+    fn humanize_skill_slug_sentence_cases_the_label() {
+        assert_eq!(humanize_skill_slug("deep-research"), "Deep research");
+        assert_eq!(humanize_skill_slug("hello_stub"), "Hello stub");
         assert_eq!(humanize_skill_slug("single"), "Single");
-        assert_eq!(humanize_skill_slug("a--b"), "A B");
+        assert_eq!(humanize_skill_slug("a--b"), "A b");
     }
 
     #[test]
@@ -1919,7 +1918,7 @@ mod tests {
         let skills = list_skills(&config);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "deep-research");
-        assert_eq!(skills[0].name, "Deep Research");
+        assert_eq!(skills[0].name, "Deep research");
         assert_eq!(skills[0].command, "/qmux:deep-research");
 
         let _ = fs::remove_dir_all(&plugin_dir);
