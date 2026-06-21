@@ -119,12 +119,27 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             println!("Forked {title} into a new tab nested under this one{suffix}.");
             Ok(true)
         }
+        "open" => {
+            let target = args
+                .next()
+                .ok_or_else(|| "usage: qmux open <file|url>".to_string())?;
+            let cwd = env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string());
+            let data = request_value("browser.open", json!({ "target": target, "cwd": cwd }))?;
+            let url = data
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or(target.as_str());
+            println!("Opened {url} in the qmux browser overlay.");
+            Ok(true)
+        }
         "ping" => {
             request_and_print("ping", json!({}))?;
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude|codex|fork]");
+            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude|codex|fork|open]");
             Ok(true)
         }
         _ => Ok(false),
