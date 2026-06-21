@@ -441,14 +441,23 @@ fn create_worktree(
     branch: &str,
     base_ref: &str,
 ) -> Result<(), String> {
+    // base_ref arrives from the frontend. Resolve it to a real commit first so an
+    // option-looking value (e.g. "--detach") can't be interpreted by git as a flag
+    // rather than a starting point. `--end-of-options` keeps a ref beginning with
+    // "-" from being parsed as an option by rev-parse itself.
+    verify_base_ref(base_repo, base_ref)?;
+
     let output = Command::new("git")
         .arg("-C")
         .arg(base_repo)
         .arg("worktree")
         .arg("add")
-        .arg(worktree_dir)
         .arg("-b")
         .arg(branch)
+        // Stop option parsing before the user-influenced positional arguments so
+        // neither the worktree path nor the ref can be mistaken for a flag.
+        .arg("--")
+        .arg(worktree_dir)
         .arg(base_ref)
         .output()
         .map_err(|err| format!("failed to run git worktree add: {err}"))?;
@@ -461,6 +470,28 @@ fn create_worktree(
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ))
+    }
+}
+
+/// Verifies that `base_ref` resolves to a commit in `base_repo`, rejecting values
+/// that don't (including option-looking input). `--end-of-options` ensures a ref
+/// starting with "-" is treated as a revision rather than a flag.
+fn verify_base_ref(base_repo: &str, base_ref: &str) -> Result<(), String> {
+    let resolved = Command::new("git")
+        .arg("-C")
+        .arg(base_repo)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg("--end-of-options")
+        .arg(format!("{base_ref}^{{commit}}"))
+        .output()
+        .map_err(|err| format!("failed to verify base ref: {err}"))?;
+
+    if resolved.status.success() {
+        Ok(())
+    } else {
+        Err(format!("base ref '{base_ref}' did not resolve to a commit"))
     }
 }
 

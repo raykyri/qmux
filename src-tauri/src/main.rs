@@ -28,9 +28,10 @@ use transcript::{
     set_agent_transcript as repoint_agent_transcript,
 };
 use turn_queue::{
-    RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest,
-    ReorderQueuedAgentTurnResult, SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest,
-    SubmitAgentTurnResult, remove_queued_agent_turn, reorder_queued_agent_turn,
+    MoveQueuedAgentTurnRequest, MoveQueuedAgentTurnResult, RemoveQueuedAgentTurnRequest,
+    RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult,
+    SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest, SubmitAgentTurnResult,
+    move_queued_agent_turn, remove_queued_agent_turn, reorder_queued_agent_turn,
     send_next_queued_agent_turn, submit_agent_turn,
 };
 use workspace::{
@@ -234,6 +235,14 @@ fn agent_reorder_queued_turn(
 }
 
 #[tauri::command]
+fn agent_move_queued_turn(
+    state: tauri::State<'_, AppState>,
+    request: MoveQueuedAgentTurnRequest,
+) -> Result<MoveQueuedAgentTurnResult, String> {
+    move_queued_agent_turn(&state, request)
+}
+
+#[tauri::command]
 fn agent_send_next_queued_turn(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -389,6 +398,7 @@ fn main() {
             agent_submit_turn,
             agent_remove_queued_turn,
             agent_reorder_queued_turn,
+            agent_move_queued_turn,
             agent_send_next_queued_turn,
             agent_set_draft,
             agent_get_draft,

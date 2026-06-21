@@ -57,6 +57,7 @@ import {
   listAgentTurnQueue,
   listTurns,
   listPanes,
+  moveQueuedAgentTurn,
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
@@ -66,7 +67,6 @@ import {
   setPreventSleep,
   spawnAgent,
   spawnShell,
-  submitAgentTurn,
   worktreeStatus,
 } from "./lib/api";
 import type {
@@ -468,10 +468,11 @@ export default function App() {
 
     setError(null);
     try {
-      const submitResult = await submitAgentTurn(targetAgent.id, turn);
-      setAgentQueuedTurns(targetAgent.id, submitResult.queuedTurns);
-      const removeResult = await removeQueuedAgentTurn(agentId, index, turn);
-      setAgentQueuedTurns(agentId, removeResult.queuedTurns);
+      // One atomic backend call removes from the source and hands the turn to the
+      // target (rolling back on failure), so the turn can't end up in both queues.
+      const result = await moveQueuedAgentTurn(agentId, targetAgent.id, index, turn);
+      setAgentQueuedTurns(agentId, result.sourceQueuedTurns);
+      setAgentQueuedTurns(targetAgent.id, result.targetQueuedTurns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
