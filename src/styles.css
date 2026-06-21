@@ -673,13 +673,13 @@ button:disabled {
 }
 
 .sidebar-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  display: flex;
+  justify-content: flex-end;
   gap: 6px;
 }
 
-/* The Settings cog sits inline to the right of New shell/New agent and shows
-   only its icon, so it stays square instead of stretching to a label width. */
+/* The Settings cog is the sole sidebar action now, so it shows only its icon
+   and stays square instead of stretching to a label width. */
 .sidebar-actions button.sidebar-settings-button {
   padding: 0 6px;
 }

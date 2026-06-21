@@ -2216,14 +2216,6 @@ export default function App() {
         </nav>
 
         <div className="sidebar-actions">
-          <button type="button" onClick={addShellPane}>
-            <SquareTerminal size={14} aria-hidden="true" />
-            <span>New shell</span>
-          </button>
-          <button type="button" onClick={() => setLauncherOpen(true)}>
-            <MessageSquareText size={14} aria-hidden="true" />
-            <span>New agent</span>
-          </button>
           <button
             type="button"
             className="sidebar-settings-button"
