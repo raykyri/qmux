@@ -459,7 +459,7 @@ fn main() {
                 // Loopback static server for the browser overlay. Best-effort: if it
                 // can't bind, the app still runs (file:// opens just won't work).
                 match file_server::start_file_server(state.clone()) {
-                    Ok(info) => state.set_file_server(info.port, info.token),
+                    Ok(info) => state.set_file_server(info.port),
                     Err(err) => eprintln!("qmux: failed to start file server: {err}"),
                 }
                 // Restore persisted groups/agents/queues, then respawn recoverable
