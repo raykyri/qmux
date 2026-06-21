@@ -1,7 +1,13 @@
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { listAgents, listenToEvents } from "../lib/api";
-import { isTurn, transcriptHookEvent } from "../lib/appHelpers";
+import {
+  isAgentInfo,
+  isTurn,
+  ptyDataFromPayload,
+  transcriptHookEvent,
+  upsertAgent,
+} from "../lib/appHelpers";
 import type { ExitDialogState, PaneContextMenuState } from "../appTypes";
 import type { AgentInfo, PaneInfo, TranscriptHookEvent, Turn } from "../types";
 
@@ -23,6 +29,12 @@ export interface UseQmuxEventsHandlers {
   setAgentQueuedTurns: (agentId: string, queuedTurns: string[]) => void;
   refreshAgentTurnQueue: (agentId: string) => Promise<void>;
   refreshTranscriptOptions: (agentId: string) => Promise<void>;
+  // Routes a decoded PTY chunk to the pane that owns it. Replaces the previous
+  // one-listener-per-pane model where every pane filtered the whole pty.data stream.
+  dispatchPtyData: (paneId: string, data: Uint8Array) => void;
+  // Fired once the single backend subscription is live, so panes can safely flush
+  // their pre-attach output backlog (attachPane) without dropping cold-start bytes.
+  onEventsReady: () => void;
 }
 
 export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
@@ -38,14 +50,28 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setAgentQueuedTurns,
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
+    dispatchPtyData,
+    onEventsReady,
   } = handlers;
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    // Sequences full agent-list refetches so a slow response can't overwrite a
+    // newer snapshot. Only bumped on events that don't already carry the agent.
+    let agentRefreshSeq = 0;
 
     void listenToEvents((event) => {
       if (disposed) {
+        return;
+      }
+      // pty.data is by far the highest-frequency event; handle and return early so
+      // it never runs the slower per-type matching below.
+      if (event.type === "pty.data" && event.paneId) {
+        const data = ptyDataFromPayload(event.payload);
+        if (data) {
+          dispatchPtyData(event.paneId, data);
+        }
         return;
       }
       const hookEvent = transcriptHookEvent(event);
@@ -75,7 +101,23 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         setExitDialog({ paneCount });
       }
       if (event.type.startsWith("agent.")) {
-        void listAgents().then(setAgents).catch(() => undefined);
+        // Status events now carry the updated agent: apply it surgically so a busy
+        // agent's stream of hook events doesn't refetch and replace the entire list
+        // (with the re-renders and ordering hazards that caused). Events without an
+        // agent fall back to a sequenced refetch.
+        const updatedAgent = event.payload.agent;
+        if (isAgentInfo(updatedAgent)) {
+          setAgents((current) => upsertAgent(current, updatedAgent));
+        } else {
+          const seq = (agentRefreshSeq += 1);
+          void listAgents()
+            .then((list) => {
+              if (!disposed && seq === agentRefreshSeq) {
+                setAgents(list);
+              }
+            })
+            .catch(() => undefined);
+        }
       }
       if (
         event.agentId &&
@@ -140,6 +182,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         cleanup();
       } else {
         unlisten = cleanup;
+        onEventsReady();
       }
     });
 
