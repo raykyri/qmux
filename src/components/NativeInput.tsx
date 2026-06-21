@@ -376,6 +376,19 @@ export default function NativeInput({
     }
   }
 
+  async function copyQueued() {
+    if (queuedTurns.length === 0) {
+      return;
+    }
+
+    try {
+      await writeClipboardText(queuedTurns.map((turn) => turn.text).join("\n\n"));
+      showToast("Copied to clipboard");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function sendNextQueuedTurn() {
     if (submitting || queuedTurns.length === 0) {
       return;
@@ -869,6 +882,18 @@ export default function NativeInput({
                   Send next queued
                 </button>
               ) : null}
+              <button
+                type="button"
+                role="menuitem"
+                className="composer-menu-item"
+                disabled={queuedTurns.length === 0}
+                onClick={() => {
+                  setMenuOpen(false);
+                  void copyQueued();
+                }}
+              >
+                Copy queued
+              </button>
               <button
                 type="button"
                 role="menuitem"
