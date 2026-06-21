@@ -703,6 +703,36 @@ impl AppState {
         Ok(())
     }
 
+    /// Updates only an agent's status under the lock, leaving every other field as it
+    /// stands. Unlike `update_agent` (which writes a whole struct snapshot), this
+    /// can't clobber fields a concurrent writer just set — e.g. the `session_id` /
+    /// `transcript_path` a freshly spawned fork's SessionStart hook records. Returns
+    /// the updated agent, or `None` if it no longer exists.
+    pub fn set_agent_status(
+        &self,
+        agent_id: &str,
+        status: AgentStatus,
+    ) -> Result<Option<AgentInfo>, String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            match model.agents.get_mut(agent_id) {
+                Some(agent) => {
+                    agent.status = status;
+                    Some(agent.clone())
+                }
+                None => None,
+            }
+        };
+        if updated.is_some() {
+            self.persist();
+        }
+        Ok(updated)
+    }
+
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
         let mut model = self
             .inner
@@ -1780,6 +1810,54 @@ mod tests {
                 ("pane-3".to_string(), 1),
                 ("pane-2".to_string(), 2),
             ]
+        );
+    }
+
+    #[test]
+    fn set_agent_status_preserves_other_fields() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        let mut agent = AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/x".to_string(),
+            branch: None,
+            pane_id: Some("pane-1".to_string()),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status: AgentStatus::Starting,
+            model: None,
+            parent_id: Some("agent-0".to_string()),
+            fork_point: Some("sess-src".to_string()),
+            root_session_id: Some("sess-src".to_string()),
+            created_at: 1,
+        };
+        state.insert_agent(agent.clone()).unwrap();
+
+        // Simulate the spawned fork's SessionStart landing: it records the new
+        // session id and transcript on the agent.
+        agent.session_id = Some("sess-fork".to_string());
+        agent.transcript_path = Some("/tmp/fork.jsonl".to_string());
+        agent.status = AgentStatus::Running;
+        state.update_agent(agent).unwrap();
+
+        // The post-attach status reset must not wipe what SessionStart just wrote.
+        let updated = state
+            .set_agent_status("agent-1", AgentStatus::AwaitingInput)
+            .unwrap()
+            .expect("agent exists");
+        assert!(matches!(updated.status, AgentStatus::AwaitingInput));
+        assert_eq!(updated.session_id.as_deref(), Some("sess-fork"));
+        assert_eq!(updated.transcript_path.as_deref(), Some("/tmp/fork.jsonl"));
+        assert_eq!(updated.parent_id.as_deref(), Some("agent-0"));
+
+        assert!(
+            state
+                .set_agent_status("missing", AgentStatus::Idle)
+                .unwrap()
+                .is_none()
         );
     }
 
