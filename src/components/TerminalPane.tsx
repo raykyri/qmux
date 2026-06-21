@@ -6,7 +6,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { pastePaneInput, resizePane, writePane } from "../lib/api";
 import { largePastePrompt } from "../lib/paste";
@@ -650,4 +650,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   );
 });
 
-export default TerminalPane;
+// Memoized so the frequent App re-renders (agent status, turns, draft typing) don't
+// reconcile every pane. Props are primitives plus the stable `pane` object and the
+// stable requestAttach/ref callbacks, so a pane only re-renders when its own inputs
+// (e.g. active state or font) actually change.
+export default memo(TerminalPane);
