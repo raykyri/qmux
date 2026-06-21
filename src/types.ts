@@ -68,7 +68,14 @@ export interface AgentInfo {
     | "idle"
     | "failed";
   model?: string | null;
+  // True when the queue has paused after a pause-after turn finished.
+  paused?: boolean;
   createdAt: number;
+}
+
+export interface QueuedTurn {
+  text: string;
+  pauseAfter: boolean;
 }
 
 export type TurnBlock =
@@ -123,30 +130,30 @@ export type SubmitAgentTurnMode = "auto" | "send" | "queue" | "steer";
 export interface SubmitAgentTurnResult {
   queued: boolean;
   pendingTurns: number;
-  queuedTurns: string[];
+  queuedTurns: QueuedTurn[];
 }
 
 export interface RemoveQueuedAgentTurnResult {
   removedTurn: string;
   pendingTurns: number;
-  queuedTurns: string[];
+  queuedTurns: QueuedTurn[];
 }
 
 export interface ReorderQueuedAgentTurnResult {
   pendingTurns: number;
-  queuedTurns: string[];
+  queuedTurns: QueuedTurn[];
 }
 
 export interface SendNextQueuedAgentTurnResult {
   sent: boolean;
   pendingTurns: number;
-  queuedTurns: string[];
+  queuedTurns: QueuedTurn[];
 }
 
 export interface MoveQueuedAgentTurnResult {
   sent: boolean;
-  sourceQueuedTurns: string[];
-  targetQueuedTurns: string[];
+  sourceQueuedTurns: QueuedTurn[];
+  targetQueuedTurns: QueuedTurn[];
 }
 
 export interface TranscriptHookEvent {
