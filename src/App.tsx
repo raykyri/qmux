@@ -2075,11 +2075,21 @@ export default function App() {
               ? worktreeStatusByAgent[paneAgent.id]
               : undefined;
             const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
+            const paneQueueCount = paneAgent
+              ? (queuedTurnsByAgent[paneAgent.id]?.length ?? 0)
+              : 0;
             const rawStatus = paneAgent
               ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
               : statusLabel(pane.status);
-            // "Running" is the steady state for every pane, so it is just noise.
-            const paneStatus = rawStatus === "Running" ? null : rawStatus;
+            // "Running" is the steady state for every pane, so it is just noise —
+            // except while turns are queued to send once the agent finishes, in
+            // which case surface the pending count in that otherwise-empty slot.
+            const paneStatus =
+              paneAgent?.status === "running" && paneQueueCount > 0
+                ? `${paneQueueCount} queued`
+                : rawStatus === "Running"
+                  ? null
+                  : rawStatus;
             // Agent panes live in a worktree; shells show the directory they
             // launched in (their spawn-time cwd).
             const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
