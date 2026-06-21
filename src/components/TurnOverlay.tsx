@@ -1,11 +1,34 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { ComponentPropsWithoutRef, CSSProperties, ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { Turn, TurnBlock } from "../types";
+
+// Link actions for rendered markdown, supplied by App through TurnOverlay. Markdown is
+// rendered deep in the timeline tree, so a context avoids threading these everywhere.
+export interface LinkActions {
+  // Primary (left-click) action — opens in the internal browser overlay.
+  openLink: (url: string) => void;
+  // Right-click — opens the internal/external chooser menu at the pointer.
+  openLinkMenu: (url: string, x: number, y: number) => void;
+}
+
+const LinkActionsContext = createContext<LinkActions>({
+  openLink: () => undefined,
+  openLinkMenu: () => undefined,
+});
 
 interface TurnOverlayProps {
   turns: Turn[];
@@ -16,6 +39,9 @@ interface TurnOverlayProps {
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
+  // How rendered-markdown links behave (left-click opens internally; right-click
+  // opens a chooser).
+  linkActions: LinkActions;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -78,14 +104,33 @@ function safeHref(href: unknown): string | undefined {
     : undefined;
 }
 
+function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<"a">) {
+  const { openLink, openLinkMenu } = useContext(LinkActionsContext);
+  const safe = safeHref(href);
+  if (!safe) {
+    return <span {...props} />;
+  }
+  // The webview can't navigate out (CSP), so intercept the click. Left-click opens the
+  // internal browser; right-click opens the internal/external chooser. href stays set
+  // for the hover/title affordance.
+  return (
+    <a
+      {...props}
+      href={safe}
+      onClick={(event) => {
+        event.preventDefault();
+        openLink(safe);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        openLinkMenu(safe, event.clientX, event.clientY);
+      }}
+    />
+  );
+}
+
 const markdownComponents: Components = {
-  a: ({ node: _node, href, ...props }) => {
-    const safe = safeHref(href);
-    if (!safe) {
-      return <span {...props} />;
-    }
-    return <a {...props} href={safe} target="_blank" rel="noreferrer" />;
-  },
+  a: ({ node: _node, href, ...props }) => <MarkdownLink href={href} {...props} />,
   table: ({ node: _node, ...props }) => (
     <div className="turn-markdown-table-wrap">
       <table {...props} />
@@ -97,7 +142,13 @@ export function formatTurnsTranscript(turns: Turn[]) {
   return turns.map(formatTurnTranscript).join("\n\n");
 }
 
-export default function TurnOverlay({ turns, input, agentId, notice }: TurnOverlayProps) {
+export default function TurnOverlay({
+  turns,
+  input,
+  agentId,
+  notice,
+  linkActions,
+}: TurnOverlayProps) {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   // Whether the view is parked near the bottom, so incoming content can keep it
@@ -162,6 +213,7 @@ export default function TurnOverlay({ turns, input, agentId, notice }: TurnOverl
   const timelineItems = useMemo(() => buildTimelineItems(turns), [turns]);
 
   return (
+    <LinkActionsContext.Provider value={linkActions}>
     <section className="turn-sidebar" aria-label="Agent turns">
       <div
         ref={timelineRef}
@@ -184,6 +236,7 @@ export default function TurnOverlay({ turns, input, agentId, notice }: TurnOverl
         </div>
       ) : null}
     </section>
+    </LinkActionsContext.Provider>
   );
 }
 

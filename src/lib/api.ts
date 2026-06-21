@@ -135,6 +135,11 @@ export function setAgentTyping(agentId: string, typing: boolean) {
   return invoke<SendNextQueuedAgentTurnResult>("agent_set_typing", { agentId, typing });
 }
 
+/** Opens an http(s)/mailto URL in the user's default external browser/mail client. */
+export function openExternalUrl(url: string) {
+  return invoke<void>("open_external_url", { url });
+}
+
 // Atomically moves a queued turn from one agent to another. The backend removes
 // from the source and hands it to the target in one call, rolling back on failure,
 // so the turn can never end up in both queues or be lost.

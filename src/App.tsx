@@ -20,9 +20,11 @@ import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import NativeInput from "./components/NativeInput";
 import BrowserOverlay from "./components/BrowserOverlay";
 import BrowserOverlayControls from "./components/BrowserOverlayControls";
+import LinkContextMenu from "./components/LinkContextMenu";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
+import type { LinkActions } from "./components/TurnOverlay";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
@@ -84,6 +86,7 @@ import {
   listTurns,
   listPanes,
   moveQueuedAgentTurn,
+  openExternalUrl,
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
@@ -245,6 +248,8 @@ export default function App() {
   const [browserOverlayByPane, setBrowserOverlayByPane] = useState<
     Record<string, BrowserOverlayState>
   >({});
+  // Right-click chooser for a link (transcript or terminal): internal vs external.
+  const [linkMenu, setLinkMenu] = useState<{ url: string; x: number; y: number } | null>(null);
   const activePane = useMemo(
     () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
     [activePaneId, panes],
@@ -373,6 +378,27 @@ export default function App() {
     const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
     openBrowserOverlay(paneId, url);
   }
+
+  // Link actions shared by transcript markdown and the terminal. Left-click opens
+  // http(s) in the internal overlay (bound to the active tab); anything the overlay
+  // can't render (mailto, etc.) falls back to the OS browser. Right-click opens the
+  // chooser. Memoized on the active pane so the markdown context value is stable.
+  const linkActions = useMemo<LinkActions>(
+    () => ({
+      openLink: (url) => {
+        const paneId = activePane?.id;
+        if (paneId && (url.startsWith("http://") || url.startsWith("https://"))) {
+          openBrowserOverlay(paneId, url);
+        } else {
+          void openExternalUrl(url);
+        }
+      },
+      openLinkMenu: (url, x, y) => setLinkMenu({ url, x, y }),
+    }),
+    // openBrowserOverlay just wraps a stable state setter; only the active pane matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activePane?.id],
+  );
 
   const activeTurns = useMemo(
     () => {
@@ -2526,6 +2552,8 @@ export default function App() {
               inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
               onUserInput={noteUserInput}
+              onOpenLink={linkActions.openLink}
+              onLinkContextMenu={linkActions.openLinkMenu}
             />
           ))}
         </div>
@@ -2549,6 +2577,7 @@ export default function App() {
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
             notice={activeAgent ? activeTranscriptNotice : null}
+            linkActions={linkActions}
             input={
               <div className="turn-pane-input-stack">
                 {activeOrphanedQueues.length > 0 ? (
@@ -2615,6 +2644,22 @@ export default function App() {
           open={activeBrowserOverlay?.open ?? false}
           onToggle={toggleActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
+        />
+      ) : null}
+
+      {linkMenu ? (
+        <LinkContextMenu
+          x={linkMenu.x}
+          y={linkMenu.y}
+          onOpenInternal={() => {
+            linkActions.openLink(linkMenu.url);
+            setLinkMenu(null);
+          }}
+          onOpenExternal={() => {
+            void openExternalUrl(linkMenu.url);
+            setLinkMenu(null);
+          }}
+          onClose={() => setLinkMenu(null)}
         />
       ) : null}
     </main>
