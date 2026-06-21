@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -311,7 +311,15 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
   return items;
 }
 
-function MessageTimelineItemView({ item }: { item: MessageItem }) {
+// Memoized on the item: buildTimelineItems is itself memoized on `turns`, so item
+// references are stable while turns are unchanged. That lets a re-render driven by
+// something else (e.g. each composer keystroke, which lives in a parent) skip
+// re-rendering — and re-running ReactMarkdown over — the whole timeline.
+const MessageTimelineItemView = memo(function MessageTimelineItemView({
+  item,
+}: {
+  item: MessageItem;
+}) {
   return (
     <>
       {item.blocks.length > 0 ? <MessageItemView item={item} /> : null}
@@ -320,7 +328,7 @@ function MessageTimelineItemView({ item }: { item: MessageItem }) {
       ))}
     </>
   );
-}
+});
 
 function MessageItemView({ item }: { item: MessageItem }) {
   return (
