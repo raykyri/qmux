@@ -350,6 +350,18 @@ export default function App() {
     });
   }
 
+  // Navigate the overlay to a typed address. A bare host (no scheme) gets http://
+  // so `localhost:5173` works; file paths still go through `qmux open`.
+  function navigateActiveBrowserOverlay(rawInput: string) {
+    const paneId = activePane?.id;
+    const trimmed = rawInput.trim();
+    if (!paneId || !trimmed) {
+      return;
+    }
+    const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+    openBrowserOverlay(paneId, url);
+  }
+
   const activeTurns = useMemo(
     () => {
       const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
@@ -2581,6 +2593,7 @@ export default function App() {
         <BrowserOverlay
           url={activeBrowserOverlay.url}
           reloadNonce={activeBrowserOverlay.reloadNonce}
+          onNavigate={navigateActiveBrowserOverlay}
         />
       ) : null}
       {activePane ? (
