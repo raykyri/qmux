@@ -729,6 +729,27 @@ export default function App() {
     }
   }, []);
 
+  // Stable per-pane ref callbacks. An inline `ref={(h) => ...}` is a new function
+  // each render, which would defeat TerminalPane's React.memo; returning the same
+  // callback per pane id keeps the ref prop stable.
+  const paneRefCallbacks = useRef(new Map<string, (handle: TerminalPaneHandle | null) => void>());
+  const terminalPaneRefCallback = useCallback((paneId: string) => {
+    const existing = paneRefCallbacks.current.get(paneId);
+    if (existing) {
+      return existing;
+    }
+    const callback = (handle: TerminalPaneHandle | null) => {
+      if (handle) {
+        terminalPaneRefs.current.set(paneId, handle);
+      } else {
+        terminalPaneRefs.current.delete(paneId);
+        paneRefCallbacks.current.delete(paneId);
+      }
+    };
+    paneRefCallbacks.current.set(paneId, callback);
+    return callback;
+  }, []);
+
   useQmuxEvents({
     setHookEventsByAgent,
     setPanes,
@@ -2176,13 +2197,7 @@ export default function App() {
           {panes.map((pane) => (
             <TerminalPane
               key={pane.id}
-              ref={(handle) => {
-                if (handle) {
-                  terminalPaneRefs.current.set(pane.id, handle);
-                } else {
-                  terminalPaneRefs.current.delete(pane.id);
-                }
-              }}
+              ref={terminalPaneRefCallback(pane.id)}
               pane={pane}
               active={pane.id === activePane?.id}
               fontSize={terminalFontSize}
