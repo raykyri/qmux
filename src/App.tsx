@@ -145,10 +145,22 @@ const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 
-// The internal browser overlay can only render http(s) pages; anything else (mailto,
-// file, custom schemes) must hand off to the OS browser.
+// The internal browser overlay can only load what the webview CSP's frame-src allows:
+// http over loopback (127.0.0.1 / localhost), which covers file-server URLs and local
+// dev servers. Anything else — external hosts, https, mailto, custom schemes — would be
+// blocked by CSP and render as a blank iframe, so it must hand off to the OS browser.
+// Keep this in lockstep with `frame-src` in tauri.conf.json.
 function canRenderInInternalBrowser(url: string): boolean {
-  return url.startsWith("http://") || url.startsWith("https://");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === "http:" &&
+    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
+  );
 }
 
 export default function App() {
@@ -385,7 +397,14 @@ export default function App() {
       return;
     }
     const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-    openBrowserOverlay(paneId, url);
+    // The overlay can only render loopback http (CSP frame-src). Hand a typed external
+    // URL to the OS browser rather than loading a blank, CSP-blocked iframe; the
+    // external opener itself rejects anything but http(s)/mailto.
+    if (canRenderInInternalBrowser(url)) {
+      openBrowserOverlay(paneId, url);
+    } else {
+      void openExternalUrl(url);
+    }
   }
 
   // Link actions shared by transcript markdown and the terminal. Left-click opens
