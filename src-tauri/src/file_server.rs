@@ -22,6 +22,10 @@ use std::thread;
 use std::time::Duration;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// Cap on the bytes consumed for a request's start line + headers, so a client can't
+/// stream an unbounded request head into memory within the read-timeout window.
+/// Generous next to any real percent-encoded file path.
+const MAX_REQUEST_HEAD_BYTES: u64 = 64 * 1024;
 /// Cap on a single full-file (non-range) response so a giant file can't balloon
 /// memory; browsers fetch large media via Range anyway.
 const MAX_INLINE_BYTES: u64 = 64 * 1024 * 1024;
@@ -123,7 +127,9 @@ fn handle_connection(state: &AppState, mut stream: TcpStream) {
 
 fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
     let cloned = stream.try_clone().ok()?;
-    let mut reader = BufReader::new(cloned);
+    // Bound the total request-head bytes: once the cap is hit, reads return EOF and the
+    // line below sees a truncated request, failing the parse and closing the connection.
+    let mut reader = BufReader::new(cloned.take(MAX_REQUEST_HEAD_BYTES));
 
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).ok()? == 0 {
@@ -205,11 +211,16 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     let content_type = mime_type(&canonical);
 
     if let Some(range_raw) = &head.range {
-        let Some((start, end)) = parse_range(range_raw, total) else {
+        let Some((start, requested_end)) = parse_range(range_raw, total) else {
             let mut response = Response::error(416, "Range Not Satisfiable");
             response.header("Content-Range", &format!("bytes */{total}"));
             return response;
         };
+        // Cap how much a single range response buffers. Without this, `Range: bytes=0-`
+        // on a huge file allocates the whole file in one Vec — bypassing MAX_INLINE_BYTES
+        // (which only guards the non-range path). Serving fewer bytes than requested is a
+        // valid 206; a client that wants the rest issues the next range from `end + 1`.
+        let end = cap_range_end(start, requested_end, MAX_INLINE_BYTES);
         let len = end - start + 1;
         let body = if is_head {
             Vec::new()
@@ -267,6 +278,12 @@ fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result
         stream.write_all(&response.body)?;
     }
     stream.flush()
+}
+
+/// Clamps a requested inclusive range end so one response never serves more than `cap`
+/// bytes starting at `start`. Returns the end actually served (≤ `requested_end`).
+fn cap_range_end(start: u64, requested_end: u64, cap: u64) -> u64 {
+    requested_end.min(start.saturating_add(cap - 1))
 }
 
 fn read_slice(mut file: File, start: u64, len: u64) -> std::io::Result<Vec<u8>> {
@@ -424,6 +441,17 @@ mod tests {
         // Start past the end, or an empty file, is unsatisfiable.
         assert_eq!(parse_range("bytes=1000-", 1000), None);
         assert_eq!(parse_range("bytes=-10", 0), None);
+    }
+
+    #[test]
+    fn cap_range_end_limits_a_single_response_to_the_inline_cap() {
+        // An open-ended range over a large total is capped to `cap` bytes from start.
+        assert_eq!(cap_range_end(0, 999, 100), 99);
+        assert_eq!(cap_range_end(50, 999, 100), 149);
+        // A range already within the cap is served whole.
+        assert_eq!(cap_range_end(0, 40, 100), 40);
+        // Clamping saturates near u64::MAX rather than overflowing.
+        assert_eq!(cap_range_end(u64::MAX - 1, u64::MAX, 100), u64::MAX);
     }
 
     fn http_get(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {

@@ -607,22 +607,40 @@ struct TranscriptRead {
 
 /// Reads a transcript incrementally: only the bytes appended past `offset`. When
 /// the file has shrunk below `offset` it reads the whole file and flags a reset so
-/// the caller rebuilds the timeline. `offset` is always a newline boundary, so a
-/// tail read from it is valid UTF-8.
+/// the caller rebuilds the timeline. `offset` is always a newline boundary, so the
+/// read starts on a valid-UTF-8 boundary; the *end* may land mid-record, so the read
+/// holds back any unterminated trailing bytes (see `read_complete_lines_utf8`).
 fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptRead> {
     let mut file = fs::File::open(path)?;
     let len = file.metadata()?.len();
     if len < offset {
-        let mut data = String::new();
-        file.read_to_string(&mut data)?;
+        let data = read_complete_lines_utf8(&mut file)?;
         return Ok(TranscriptRead { data, reset: true });
     }
     if offset > 0 {
         file.seek(SeekFrom::Start(offset))?;
     }
-    let mut data = String::new();
-    file.read_to_string(&mut data)?;
+    let data = read_complete_lines_utf8(&mut file)?;
     Ok(TranscriptRead { data, reset: false })
+}
+
+/// Reads from the file's current position to EOF and returns the longest prefix that
+/// ends on a newline, decoded as UTF-8. A transcript is appended one JSON line at a
+/// time, so the bytes after the final '\n' are an in-progress record that may end in
+/// the middle of a multi-byte UTF-8 character. `read_to_string` would reject the whole
+/// read as invalid UTF-8 — surfacing a spurious "Transcript unavailable" until the
+/// character completes — so instead we cut at the last newline (the unterminated tail
+/// is what `complete_lines`/`complete_len` discard anyway). The kept prefix ends on a
+/// line boundary and is valid UTF-8; `from_utf8_lossy` therefore substitutes nothing,
+/// while still keeping a malformed byte from ever aborting the tail.
+fn read_complete_lines_utf8(file: &mut fs::File) -> std::io::Result<String> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let cut = bytes
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |idx| idx + 1);
+    Ok(String::from_utf8_lossy(&bytes[..cut]).into_owned())
 }
 
 /// Byte length of the complete (newline-terminated) prefix of `raw`. Bytes after
@@ -745,6 +763,34 @@ mod tests {
         let third = read_transcript_from(&path, consumed).unwrap();
         assert!(third.reset);
         assert_eq!(third.data, "x\n");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn incremental_read_holds_back_a_partial_multibyte_tail_without_erroring() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-utf8-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+
+        // A complete record, then the first byte of '€' (E2 82 AC) with no terminating
+        // newline: the next record is mid-write and the read ends mid-character.
+        let mut bytes = b"{\"a\":1}\n".to_vec();
+        bytes.push(0xE2);
+        fs::write(&path, &bytes).unwrap();
+
+        // read_to_string would fail with InvalidData here (a spurious read failure);
+        // instead the read succeeds and defers the unterminated partial record.
+        let read = read_transcript_from(&path, 0).unwrap();
+        assert!(!read.reset);
+        assert_eq!(read.data, "{\"a\":1}\n");
+        assert_eq!(complete_len(&read.data), 8);
 
         fs::remove_dir_all(&dir).ok();
     }
