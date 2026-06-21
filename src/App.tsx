@@ -24,6 +24,7 @@ import LinkContextMenu from "./components/LinkContextMenu";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
+import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TurnOverlay";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
@@ -76,6 +77,7 @@ import {
   acknowledgeAgent,
   attachPane,
   confirmAppExit,
+  forkAgent,
   getAgentDraft,
   getRuntimeConfig,
   killPane,
@@ -1463,6 +1465,26 @@ export default function App() {
     }
   }
 
+  // Forks the active Claude session into a new tab (resuming it) — as a sibling
+  // right after the current tab, or nested under it when `nest` is set — and
+  // focuses the fork. The backend also emits agent.forked, which refetches the
+  // ordered pane list, so the optimistic append below is just to avoid a flicker.
+  async function forkActivePane(nest: boolean) {
+    if (!activePane || !activeAgent) {
+      return;
+    }
+    setError(null);
+    try {
+      const pane = await forkAgent(activePane.id, { nest });
+      setPanes((current) =>
+        current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
+      );
+      setActivePaneId(pane.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   // Mirror the latest active pane and close handler into refs so the always-on
   // keydown listener (registered once) never reads stale state.
   useEffect(() => {
@@ -2629,6 +2651,17 @@ export default function App() {
             agentId={activeAgent?.id ?? activePane?.id}
             notice={activeAgent ? activeTranscriptNotice : null}
             linkActions={linkActions}
+            header={
+              <TurnPaneHeader
+                sessionId={activeAgent?.sessionId ?? null}
+                canFork={Boolean(
+                  activePane && activeAgent?.adapter === "claude" && activeAgent?.sessionId,
+                )}
+                onFork={(nest) => void forkActivePane(nest)}
+                browserOpen={activeBrowserOverlay?.open ?? false}
+                onToggleBrowser={toggleActiveBrowserOverlay}
+              />
+            }
             input={
               <div className="turn-pane-input-stack">
                 {activeOrphanedQueues.length > 0 ? (
@@ -2693,7 +2726,9 @@ export default function App() {
           onClose={toggleActiveBrowserOverlay}
         />
       ) : null}
-      {activePane && !activeBrowserOverlay?.open ? (
+      {/* The floating toggle sits over the terminal only when the right pane is
+          closed; otherwise the toggle lives in the right pane's top bar. */}
+      {activePane && !activeBrowserOverlay?.open && !hasTurnSidebar ? (
         <BrowserOverlayControls
           open={false}
           onToggle={toggleActiveBrowserOverlay}

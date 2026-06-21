@@ -234,13 +234,16 @@ pub fn agent_spawn(state: &AppState, request: SpawnAgentRequest) -> Result<PaneI
         .launch(state, request)
 }
 
-/// Forks the agent running in `authed_pane` into a new tab nested under it. The
-/// source is resolved from the authenticated pane (never caller input), so a pane
-/// can only fork its own session. Claude only.
+/// Forks the agent running in `authed_pane` into a new tab and resumes its session.
+/// With `nest`, the new tab is nested under the source (a child); otherwise it lands
+/// immediately after the source as a sibling. The source is resolved from the
+/// authenticated pane (never caller input), so a pane can only fork its own session.
+/// Claude only.
 pub fn agent_fork(
     state: &AppState,
     authed_pane: &str,
     use_worktree: bool,
+    nest: bool,
 ) -> Result<PaneInfo, String> {
     let source = state
         .agent_by_pane(authed_pane)?
@@ -251,7 +254,11 @@ pub fn agent_fork(
 
     let (pane, agent) =
         ClaudeAdapter::new(state.config()).fork_pane(state, &source, use_worktree)?;
-    state.nest_pane_under(&pane.id, authed_pane)?;
+    if nest {
+        state.nest_pane_under(&pane.id, authed_pane)?;
+    } else {
+        state.place_pane_after(&pane.id, authed_pane)?;
+    }
     state.emit(QmuxEvent::new(
         "agent.forked",
         Some(pane.id.clone()),
@@ -371,7 +378,7 @@ mod tests {
         let state = AppState::new(test_config());
 
         // No agent bound to the pane: nothing to fork.
-        let err = agent_fork(&state, "pane-1", false).unwrap_err();
+        let err = agent_fork(&state, "pane-1", false, true).unwrap_err();
         assert!(err.contains("no agent"), "unexpected error: {err}");
 
         // A non-Claude agent is rejected before any spawn is attempted.
@@ -395,7 +402,7 @@ mod tests {
                 created_at: 1,
             })
             .unwrap();
-        let err = agent_fork(&state, "pane-1", false).unwrap_err();
+        let err = agent_fork(&state, "pane-1", false, true).unwrap_err();
         assert!(
             err.contains("only supported for Claude"),
             "unexpected error: {err}"

@@ -805,6 +805,45 @@ impl AppState {
         Ok(panes)
     }
 
+    /// Moves `pane_id` to sit immediately after `sibling_pane_id` at the same depth
+    /// (a sibling, not a child), then re-levels the tree. Used when a fork should
+    /// appear as a new tab right after the session it forked from.
+    pub fn place_pane_after(
+        &self,
+        pane_id: &str,
+        sibling_pane_id: &str,
+    ) -> Result<Vec<PaneInfo>, String> {
+        let panes = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.panes.contains_key(pane_id) {
+                return Err(format!("pane {pane_id} was not found"));
+            }
+            if !model.panes.contains_key(sibling_pane_id) {
+                return Err(format!("pane {sibling_pane_id} was not found"));
+            }
+
+            let mut ids = ordered_pane_ids(&model);
+            ids.retain(|id| id != pane_id);
+            let sibling_index = ids
+                .iter()
+                .position(|id| id == sibling_pane_id)
+                .ok_or_else(|| format!("pane {sibling_pane_id} was not found"))?;
+            ids.insert(sibling_index + 1, pane_id.to_string());
+
+            let sibling_depth = model.pane_depth.get(sibling_pane_id).copied().unwrap_or(0);
+            model.pane_order = ids;
+            model.pane_depth.insert(pane_id.to_string(), sibling_depth);
+            normalize_pane_depths(&mut model);
+            ordered_panes(&model)
+        };
+        self.persist();
+        Ok(panes)
+    }
+
     /// Clamps persisted nesting depths to a valid tree over the panes that actually
     /// exist. Called once after session restore/respawn, since some persisted panes
     /// (already-exited ones) are intentionally not recreated.
