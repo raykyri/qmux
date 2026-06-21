@@ -264,8 +264,10 @@ impl AppState {
             .and_then(|slot| slot.clone())
     }
 
-    /// Roots a file must live under to be served to the browser overlay: the
+    /// Roots a file must live under to be served by the loopback file server: the
     /// workspace root plus every pane's working directory and every agent's worktree.
+    /// This is the file server's (stateless) global gate; `browser.open` resolution is
+    /// scoped tighter, to the requesting pane only — see `pane_file_roots`.
     /// `file_server::resolve_under_roots` canonicalizes these, so duplicates and
     /// non-existent entries are harmless.
     pub fn allowed_file_roots(&self) -> Vec<std::path::PathBuf> {
@@ -276,6 +278,26 @@ impl AppState {
             }
             for agent in model.agents.values() {
                 roots.push(std::path::PathBuf::from(&agent.worktree_dir));
+            }
+        }
+        roots
+    }
+
+    /// Roots a `browser.open` from a specific pane may reach: the workspace root, that
+    /// pane's own working directory, and (if it has one) its agent's worktree — not the
+    /// union of every pane's cwd. This keeps one pane from opening files under another
+    /// pane's directory, so an in-pane process can only render files within its own
+    /// working area.
+    pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
+        let mut roots = vec![self.inner.config.workspace_root.clone()];
+        if let Ok(model) = self.inner.model.lock() {
+            if let Some(pane) = model.panes.get(pane_id) {
+                roots.push(std::path::PathBuf::from(&pane.info.cwd));
+            }
+            for agent in model.agents.values() {
+                if agent.pane_id.as_deref() == Some(pane_id) {
+                    roots.push(std::path::PathBuf::from(&agent.worktree_dir));
+                }
             }
         }
         roots
@@ -2107,6 +2129,33 @@ mod tests {
         assert_eq!(
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["later".to_string()]
+        );
+    }
+
+    #[test]
+    fn pane_file_roots_are_scoped_to_the_requesting_pane() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state
+            .update_pane_cwd("pane-1", "/tmp/proj-a".to_string())
+            .unwrap();
+        state
+            .update_pane_cwd("pane-2", "/tmp/proj-b".to_string())
+            .unwrap();
+
+        // A pane's browser-open roots include its own cwd but not another pane's.
+        let roots = state.pane_file_roots("pane-1");
+        assert!(
+            roots
+                .iter()
+                .any(|r| r == std::path::Path::new("/tmp/proj-a"))
+        );
+        assert!(
+            !roots
+                .iter()
+                .any(|r| r == std::path::Path::new("/tmp/proj-b"))
         );
     }
 
