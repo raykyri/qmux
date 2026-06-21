@@ -2566,3 +2566,48 @@ button:disabled {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
+
+/* Right-click chooser for a transcript/terminal link. Positioned at the pointer
+   (viewport coords), above the browser overlay and other chrome. */
+.link-context-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 200px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #1c1f22;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+}
+
+.link-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--control-h-md);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.link-context-menu-item:hover {
+  background: #283032;
+}
+
+.link-context-menu-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
