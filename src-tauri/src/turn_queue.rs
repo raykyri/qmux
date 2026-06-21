@@ -344,6 +344,13 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
         state.set_agent_status(agent_id, AgentStatus::Done)?;
         return Ok(IdleResolution::Idle);
     }
+    if state.agent_is_typing(agent_id)? {
+        // The user is mid-keystroke: hold the queue so a finishing turn doesn't spam
+        // a queued message into what they're typing. Draining resumes when the
+        // frontend clears the typing flag (1500ms after the last keystroke).
+        state.set_agent_status(agent_id, AgentStatus::Done)?;
+        return Ok(IdleResolution::Idle);
+    }
 
     let drained = drain_agent_turn_queue(state, agent_id)?;
     let status = if drained {
@@ -390,6 +397,35 @@ pub fn unpause_agent(
             "queuedTurns": queued_turns.clone(),
         }),
     ));
+    Ok(SendNextQueuedAgentTurnResult {
+        sent,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
+}
+
+/// Marks/clears whether the user is actively typing for an agent. While typing, the
+/// idle handler holds the queue. On clear, if the agent is idle (and not paused), the
+/// held turn is drained now; otherwise it resumes on the next idle. The frontend sets
+/// this on keystrokes and clears it 1500ms after typing stops.
+pub fn set_agent_typing(
+    state: &AppState,
+    agent_id: &str,
+    typing: bool,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    state.set_agent_typing(agent_id, typing)?;
+
+    let mut sent = false;
+    if !typing {
+        // Typing stopped: drain a held turn if the agent is idle and not paused.
+        if let Some(agent) = state.agent(agent_id)? {
+            if !agent.paused && agent_composer_policy(state, &agent)?.can_send(agent.status) {
+                sent = drain_agent_turn_queue(state, agent_id)?;
+            }
+        }
+    }
+
+    let queued_turns = state.agent_queued_turns(agent_id)?;
     Ok(SendNextQueuedAgentTurnResult {
         sent,
         pending_turns: queued_turns.len(),

@@ -129,6 +129,12 @@ export function sendNextQueuedAgentTurn(agentId: string) {
   return invoke<SendNextQueuedAgentTurnResult>("agent_send_next_queued_turn", { agentId });
 }
 
+/** Marks/clears that the user is actively typing for an agent, so the backend holds
+ *  off auto-draining its queue. Clearing drains a held turn if the agent is idle. */
+export function setAgentTyping(agentId: string, typing: boolean) {
+  return invoke<SendNextQueuedAgentTurnResult>("agent_set_typing", { agentId, typing });
+}
+
 // Atomically moves a queued turn from one agent to another. The backend removes
 // from the source and hands it to the target in one call, rolling back on failure,
 // so the turn can never end up in both queues or be lost.

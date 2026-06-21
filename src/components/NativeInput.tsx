@@ -116,6 +116,7 @@ interface NativeInputProps {
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
+  onUserInput: (agentId: string) => void;
   onError: (message: string) => void;
 }
 
@@ -133,6 +134,7 @@ export default function NativeInput({
   onQueueChange,
   onDraftChange,
   onQueuedTurnCollapseToggle,
+  onUserInput,
   onError,
 }: NativeInputProps) {
   const value = draft;
@@ -794,7 +796,10 @@ export default function NativeInput({
       <textarea
         ref={textareaRef}
         value={value}
-        onChange={(event) => setValue(event.currentTarget.value)}
+        onChange={(event) => {
+          setValue(event.currentTarget.value);
+          onUserInput(agent.id);
+        }}
         onPaste={(event) => {
           const text = event.clipboardData.getData("text");
           const prompt = largePastePrompt(text);
