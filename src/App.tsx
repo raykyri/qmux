@@ -2165,6 +2165,14 @@ export default function App() {
                 setLauncherOpen(false);
                 return;
               }
+              // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is a
+              // controlled input, so the WebView's native undo has no field-local history
+              // to act on and instead blurs the textarea — which hands focus back to the
+              // terminal. Trapping the combo here keeps focus (and the caret) put.
+              if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+                event.preventDefault();
+                return;
+              }
               if (event.metaKey && event.key === "Enter") {
                 event.preventDefault();
                 void addAgentPane();
