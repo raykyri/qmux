@@ -84,6 +84,7 @@ import {
   listTurns,
   listPanes,
   moveQueuedAgentTurn,
+  openExternalUrl,
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
@@ -2526,6 +2527,7 @@ export default function App() {
               inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
               onUserInput={noteUserInput}
+              onOpenLink={(url) => void openExternalUrl(url)}
             />
           ))}
         </div>
