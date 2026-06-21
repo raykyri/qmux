@@ -621,6 +621,8 @@ fn args_contain_prompt(args: &[String]) -> bool {
         "--output-format",
         "--max-turns",
         "--agents",
+        "--plugin-dir",
+        "--plugin-url",
     ];
 
     let mut iter = args.iter();
@@ -828,7 +830,9 @@ pub fn list_skills(config: &QmuxConfig) -> Vec<ClaudeSkill> {
 }
 
 /// The plugin's namespace, taken from `.claude-plugin/plugin.json`'s `name`, which
-/// is how Claude prefixes the skill's slash command. Defaults to `qmux`.
+/// is how Claude prefixes the skill's slash command. When the manifest is missing or
+/// nameless, fall back to the plugin directory name (Claude's own default) rather
+/// than a hardcoded `qmux`, so the displayed command matches what Claude registers.
 fn plugin_namespace(plugin_dir: &Path) -> String {
     let manifest = plugin_dir.join(".claude-plugin").join("plugin.json");
     fs::read_to_string(&manifest)
@@ -836,11 +840,18 @@ fn plugin_namespace(plugin_dir: &Path) -> String {
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|value| string_field(&value, "name"))
         .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            plugin_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "qmux".to_string())
 }
 
 /// Reads the `name:` value from a SKILL.md YAML frontmatter block. Cheap and safe:
-/// it only scans the leading `---` fenced block and never parses the body.
+/// it only scans the leading `---` fenced block and never parses the body. Matches
+/// the top-level (column-0) `name:` key only — a nested `metadata:\n  name: ...` is
+/// skipped — and strips inline `#` comments from unquoted values.
 fn skill_frontmatter_name(skill_md: &Path) -> Option<String> {
     let raw = fs::read_to_string(skill_md).ok()?;
     let mut lines = raw.lines();
@@ -848,15 +859,24 @@ fn skill_frontmatter_name(skill_md: &Path) -> Option<String> {
         return None;
     }
     for line in lines {
-        let trimmed = line.trim();
-        if trimmed == "---" {
+        if line.trim() == "---" {
             break;
         }
-        if let Some(rest) = trimmed.strip_prefix("name:") {
-            let name = rest.trim().trim_matches(['"', '\'']).trim();
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
+        // Use the raw line (not trimmed) so indented keys nested under another
+        // mapping are not mistaken for the top-level skill name.
+        let Some(rest) = line.strip_prefix("name:") else {
+            continue;
+        };
+        let value = rest.trim();
+        let name = if value.starts_with('"') || value.starts_with('\'') {
+            value.trim_matches(['"', '\'']).trim()
+        } else {
+            // An unescaped ` #` (or a leading `#`) starts a YAML comment.
+            let value = value.split(" #").next().unwrap_or(value).trim();
+            if value.starts_with('#') { "" } else { value }
+        };
+        if !name.is_empty() {
+            return Some(name.to_string());
         }
     }
     None
@@ -1072,9 +1092,20 @@ mod tests {
         assert!(!args_contain_prompt(&svec(&["--resume", "abc123"])));
         assert!(!args_contain_prompt(&svec(&["-r"])));
         assert!(!args_contain_prompt(&svec(&["--model=sonnet"])));
+        // Plugin flags take a value, so their argument is not a prompt.
+        assert!(!args_contain_prompt(&svec(&["--plugin-dir", "/tmp/p"])));
+        assert!(!args_contain_prompt(&svec(&[
+            "--plugin-url",
+            "https://x/p.zip"
+        ])));
 
         // A positional token is an inline prompt, even after value-taking flags.
         assert!(args_contain_prompt(&svec(&["fix the bug"])));
+        assert!(args_contain_prompt(&svec(&[
+            "--plugin-dir",
+            "/tmp/p",
+            "fix the bug"
+        ])));
         assert!(args_contain_prompt(&svec(&[
             "--model",
             "sonnet",
@@ -1533,7 +1564,44 @@ mod tests {
         fs::write(&path, "# No frontmatter\nname: ignored\n").unwrap();
         assert_eq!(skill_frontmatter_name(&path), None);
 
+        // A nested `name:` under another mapping is not the skill name; the
+        // top-level key wins.
+        fs::write(
+            &path,
+            "---\nmetadata:\n  name: nested\nname: top-level\n---\n",
+        )
+        .unwrap();
+        assert_eq!(skill_frontmatter_name(&path).as_deref(), Some("top-level"));
+
+        // Inline `#` comments on an unquoted value are stripped.
+        fs::write(&path, "---\nname: deep-research # rename later\n---\n").unwrap();
+        assert_eq!(
+            skill_frontmatter_name(&path).as_deref(),
+            Some("deep-research")
+        );
+
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plugin_namespace_falls_back_to_dir_name_without_manifest() {
+        let plugin_dir = env::temp_dir().join(format!("qmux-ns-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&plugin_dir);
+        fs::create_dir_all(&plugin_dir).unwrap();
+
+        // No manifest -> directory name (what Claude itself would use), not "qmux".
+        assert_eq!(
+            plugin_namespace(&plugin_dir),
+            plugin_dir.file_name().unwrap().to_string_lossy()
+        );
+
+        // A manifest name takes precedence.
+        let manifest_dir = plugin_dir.join(".claude-plugin");
+        fs::create_dir_all(&manifest_dir).unwrap();
+        fs::write(manifest_dir.join("plugin.json"), r#"{"name":"qmux"}"#).unwrap();
+        assert_eq!(plugin_namespace(&plugin_dir), "qmux");
+
+        let _ = fs::remove_dir_all(&plugin_dir);
     }
 
     #[test]
