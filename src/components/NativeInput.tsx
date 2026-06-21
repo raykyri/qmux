@@ -1,12 +1,13 @@
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { EllipsisVertical } from "lucide-react";
+import { EllipsisVertical, Rows2, SquareCenterlineDashedVertical } from "lucide-react";
 import {
   listAgentTurnQueue,
   removeQueuedAgentTurn,
@@ -164,6 +165,13 @@ export default function NativeInput({
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const queueStackRef = useRef<HTMLDivElement | null>(null);
+  // Queue-height cap: when capped (default), the queue stack is limited to half the
+  // right pane; the toggle lets it grow freely. `queueOverflows` gates the toggle's
+  // visibility (only shown when the queue would actually exceed the cap), and
+  // `queueCapPx` is the measured 50%-of-pane pixel cap applied while capped.
+  const [queueExpanded, setQueueExpanded] = useState(false);
+  const [queueOverflows, setQueueOverflows] = useState(false);
+  const [queueCapPx, setQueueCapPx] = useState<number | null>(null);
   const previousQueueLength = useRef(queuedTurns.length);
   const previousAgentId = useRef(agent.id);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -264,6 +272,60 @@ export default function NativeInput({
       queueStackRef.current.scrollTop = queueStackRef.current.scrollHeight;
     }
   }, [queuedTurns.length, agent.id]);
+
+  // Measures whether the queue's content would exceed half the right pane (the cap),
+  // and records that 50% height in pixels. `scrollHeight` is the full content height
+  // regardless of the applied cap, so this stays stable across the cap toggle (no
+  // feedback loop). Cheap (two layout reads) and called sparingly — see below.
+  const measureQueueOverflow = useCallback(() => {
+    const stack = queueStackRef.current;
+    if (!stack) {
+      setQueueOverflows(false);
+      setQueueCapPx(null);
+      return;
+    }
+    const pane = stack.closest(".turn-sidebar") as HTMLElement | null;
+    const paneHeight = pane?.clientHeight ?? 0;
+    if (paneHeight <= 0) {
+      setQueueOverflows(false);
+      setQueueCapPx(null);
+      return;
+    }
+    const cap = Math.round(paneHeight * 0.5);
+    setQueueCapPx(cap);
+    setQueueOverflows(stack.scrollHeight > cap);
+  }, []);
+
+  // Re-measure when the queue's content could have changed (items added/removed,
+  // collapsed/expanded). These are user-paced, so measuring per change is cheap.
+  useEffect(() => {
+    measureQueueOverflow();
+  }, [queuedTurns, collapsedQueuedTurns, measureQueueOverflow]);
+
+  // Re-measure when the pane resizes, but debounced: dragging the pane resizer fires
+  // a flood of events, and it's fine for the button to lag a touch. Only active while
+  // a queue exists (its stack must be mounted to find the pane).
+  const hasQueue = queuedTurns.length > 0;
+  useEffect(() => {
+    if (!hasQueue) {
+      setQueueOverflows(false);
+      return;
+    }
+    const pane = queueStackRef.current?.closest(".turn-sidebar") as HTMLElement | null;
+    if (!pane) {
+      return;
+    }
+    let timer: number | undefined;
+    const observer = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(measureQueueOverflow, 200);
+    });
+    observer.observe(pane);
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [hasQueue, measureQueueOverflow]);
 
   useEffect(() => {
     return () => {
@@ -678,6 +740,11 @@ export default function NativeInput({
           ref={queueStackRef}
           className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
           aria-label="Queued turns"
+          style={
+            queueOverflows && !queueExpanded && queueCapPx
+              ? { maxHeight: queueCapPx }
+              : undefined
+          }
         >
           {queuedTurns.map((turn, index) => {
             const collapsed = collapsedQueuedTurns[index] ?? false;
@@ -859,6 +926,22 @@ export default function NativeInput({
         rows={1}
       />
       <div className="native-input-actions">
+        {queueOverflows ? (
+          <button
+            type="button"
+            className="queue-height-toggle"
+            aria-pressed={queueExpanded}
+            aria-label={queueExpanded ? "Limit queue height to half the pane" : "Let the queue grow past half the pane"}
+            title={queueExpanded ? "Limit queue height to half the pane" : "Let the queue grow past half the pane"}
+            onClick={() => setQueueExpanded((expanded) => !expanded)}
+          >
+            {queueExpanded ? (
+              <Rows2 size={15} aria-hidden="true" />
+            ) : (
+              <SquareCenterlineDashedVertical size={15} aria-hidden="true" />
+            )}
+          </button>
+        ) : null}
         {paused ? <span className="composer-paused-label">Paused</span> : null}
         <div className="composer-menu" ref={menuRef}>
           <button
