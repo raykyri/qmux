@@ -37,6 +37,10 @@ pub struct AgentInfo {
     pub parent_id: Option<String>,
     pub fork_point: Option<String>,
     pub root_session_id: Option<String>,
+    /// True when the queue has paused after a pause-after turn finished; the backend
+    /// stops auto-draining until the user unpauses.
+    #[serde(default)]
+    pub paused: bool,
     pub created_at: u128,
 }
 
@@ -176,6 +180,7 @@ pub fn prepare_agent_workspace(
         parent_id: None,
         fork_point: None,
         root_session_id: None,
+        paused: false,
         created_at: now_millis(),
     };
 
@@ -548,6 +553,7 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            paused: false,
             created_at: 1,
         }
     }

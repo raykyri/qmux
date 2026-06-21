@@ -1,7 +1,7 @@
 use crate::adapters::agent_composer_policy;
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
-use crate::state::{AgentSendSource, AppState};
+use crate::state::{AgentSendSource, AppState, QueuedTurn};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,7 +30,7 @@ pub struct SubmitAgentTurnRequest {
 pub struct SubmitAgentTurnResult {
     pub queued: bool,
     pub pending_turns: usize,
-    pub queued_turns: Vec<String>,
+    pub queued_turns: Vec<QueuedTurn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,7 +46,7 @@ pub struct RemoveQueuedAgentTurnRequest {
 pub struct RemoveQueuedAgentTurnResult {
     pub removed_turn: String,
     pub pending_turns: usize,
-    pub queued_turns: Vec<String>,
+    pub queued_turns: Vec<QueuedTurn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +62,7 @@ pub struct ReorderQueuedAgentTurnRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ReorderQueuedAgentTurnResult {
     pub pending_turns: usize,
-    pub queued_turns: Vec<String>,
+    pub queued_turns: Vec<QueuedTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,7 +70,7 @@ pub struct ReorderQueuedAgentTurnResult {
 pub struct SendNextQueuedAgentTurnResult {
     pub sent: bool,
     pub pending_turns: usize,
-    pub queued_turns: Vec<String>,
+    pub queued_turns: Vec<QueuedTurn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,8 +87,8 @@ pub struct MoveQueuedAgentTurnRequest {
 pub struct MoveQueuedAgentTurnResult {
     /// Whether the moved turn was sent to the target immediately (vs. queued).
     pub sent: bool,
-    pub source_queued_turns: Vec<String>,
-    pub target_queued_turns: Vec<String>,
+    pub source_queued_turns: Vec<QueuedTurn>,
+    pub target_queued_turns: Vec<QueuedTurn>,
 }
 
 /// Atomically moves a queued turn from one agent to another. The turn is removed
@@ -128,18 +128,20 @@ pub fn move_queued_agent_turn(
         state,
         SubmitAgentTurnRequest {
             agent_id: request.to_agent_id.clone(),
-            data: removed_turn.clone(),
+            // Moving to another agent intentionally resets pause-after (it's contextual
+            // to the source queue), so hand over just the text.
+            data: removed_turn.text.clone(),
             mode: Some(SubmitAgentTurnMode::Auto),
         },
     );
     let target_result = match submit {
         Ok(result) => result,
         Err(err) => {
-            // Roll the turn back so the move can't lose it. Re-emit the source queue
-            // so the UI reflects the restored item.
+            // Roll the turn back so the move can't lose it (preserving its pause-after
+            // flag). Re-emit the source queue so the UI reflects the restored item.
             let pending =
                 state.insert_agent_turn_at(&request.from_agent_id, request.index, removed_turn)?;
-            let restored = state.list_agent_turn_queue(&request.from_agent_id)?;
+            let restored = state.agent_queued_turns(&request.from_agent_id)?;
             state.emit(QmuxEvent::new(
                 "agent.turn_queued",
                 source.pane_id.clone(),
@@ -187,7 +189,7 @@ pub fn submit_agent_turn(
                 ));
             }
             send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
-            let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+            let queued_turns = state.agent_queued_turns(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
                 pending_turns: queued_turns.len(),
@@ -199,7 +201,7 @@ pub fn submit_agent_turn(
                 return Err("agent is not ready for input; queue the turn instead".to_string());
             }
             send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
-            let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+            let queued_turns = state.agent_queued_turns(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
                 pending_turns: queued_turns.len(),
@@ -217,7 +219,7 @@ pub fn submit_agent_turn(
                 return Err("agent does not support steering in its current state".to_string());
             }
             send_agent_turn(state, &agent, data, AgentSendSource::Steer)?;
-            let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+            let queued_turns = state.agent_queued_turns(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
                 pending_turns: queued_turns.len(),
@@ -247,7 +249,7 @@ pub fn remove_queued_agent_turn(
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns.clone() }),
     ));
     Ok(RemoveQueuedAgentTurnResult {
-        removed_turn,
+        removed_turn: removed_turn.text,
         pending_turns,
         queued_turns,
     })
@@ -280,21 +282,31 @@ pub fn reorder_queued_agent_turn(
 }
 
 pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, String> {
-    let Some((data, pending_turns)) = state.pop_agent_turn(agent_id)? else {
+    let Some((turn, pending_turns)) = state.pop_agent_turn(agent_id)? else {
         return Ok(false);
     };
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
-            requeue_after_failed_drain(state, agent_id, data);
+            requeue_after_failed_drain(state, agent_id, turn);
             return Err(format!("agent {agent_id} was not found"));
         }
     };
-    if let Err(err) = send_agent_turn(state, &agent, data.clone(), AgentSendSource::QueuedTurn) {
-        requeue_after_failed_drain(state, agent_id, data);
+    if let Err(err) = send_agent_turn(
+        state,
+        &agent,
+        turn.text.clone(),
+        AgentSendSource::QueuedTurn,
+    ) {
+        requeue_after_failed_drain(state, agent_id, turn);
         return Err(err);
     }
-    let queued_turns = state.list_agent_turn_queue(agent_id)?;
+    // A pause-after turn arms the pause; it takes effect when this turn finishes
+    // (see `advance_after_idle`), not now.
+    if turn.pause_after {
+        state.mark_agent_pending_pause(agent_id)?;
+    }
+    let queued_turns = state.agent_queued_turns(agent_id)?;
     state.emit(QmuxEvent::new(
         "agent.queued_turn_sent",
         agent.pane_id.clone(),
@@ -304,12 +316,129 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     Ok(true)
 }
 
+/// What an agent going idle should do next.
+pub enum IdleResolution {
+    /// A queued turn was sent; the agent is running again.
+    Drained,
+    /// The just-finished turn requested a pause; the agent is now paused.
+    Paused,
+    /// Nothing to send (empty queue or already paused); the agent is idle.
+    Idle,
+}
+
+/// Decides what happens when an agent goes idle: enter paused mode if the turn that
+/// just finished requested it, stay idle while paused, otherwise drain the next
+/// queued turn. Writes status/paused with field-scoped setters so a concurrent hook
+/// update can't clobber them. Shared by the Claude and Codex idle handlers.
+pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolution, String> {
+    // Outstanding-send tracking is advisory; clear it best-effort on every idle.
+    let _ = state.clear_agent_outstanding_sends(agent_id);
+
+    if state.take_agent_pending_pause(agent_id)? {
+        state.set_agent_paused(agent_id, true)?;
+        state.set_agent_status(agent_id, AgentStatus::Done)?;
+        return Ok(IdleResolution::Paused);
+    }
+    if state.agent_is_paused(agent_id)? {
+        // Paused: leave the queue intact and don't auto-send.
+        state.set_agent_status(agent_id, AgentStatus::Done)?;
+        return Ok(IdleResolution::Idle);
+    }
+    if state.agent_is_typing(agent_id)? {
+        // The user is mid-keystroke: hold the queue so a finishing turn doesn't spam
+        // a queued message into what they're typing. Draining resumes when the
+        // frontend clears the typing flag (1500ms after the last keystroke).
+        state.set_agent_status(agent_id, AgentStatus::Done)?;
+        return Ok(IdleResolution::Idle);
+    }
+
+    let drained = drain_agent_turn_queue(state, agent_id)?;
+    let status = if drained {
+        AgentStatus::Running
+    } else {
+        AgentStatus::Done
+    };
+    state.set_agent_status(agent_id, status)?;
+    Ok(if drained {
+        IdleResolution::Drained
+    } else {
+        IdleResolution::Idle
+    })
+}
+
+/// Clears an agent's paused state. If the agent is in a ready (idle) state, the next
+/// queued turn is sent immediately; otherwise normal draining resumes once its
+/// current work finishes. Emits so the UI reflects the cleared pause and any send.
+pub fn unpause_agent(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    let agent = state.set_agent_paused(agent_id, false)?.unwrap_or(agent);
+
+    let policy = agent_composer_policy(state, &agent)?;
+    let sent = if policy.can_send(agent.status) {
+        drain_agent_turn_queue(state, agent_id)?
+    } else {
+        false
+    };
+
+    let queued_turns = state.agent_queued_turns(agent_id)?;
+    state.emit(QmuxEvent::new(
+        "agent.unpaused",
+        agent.pane_id.clone(),
+        Some(agent.id.clone()),
+        json!({
+            "agent": state.agent(agent_id)?,
+            "sent": sent,
+            "pendingTurns": queued_turns.len(),
+            "queuedTurns": queued_turns.clone(),
+        }),
+    ));
+    Ok(SendNextQueuedAgentTurnResult {
+        sent,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
+}
+
+/// Marks/clears whether the user is actively typing for an agent. While typing, the
+/// idle handler holds the queue. On clear, if the agent is idle (and not paused), the
+/// held turn is drained now; otherwise it resumes on the next idle. The frontend sets
+/// this on keystrokes and clears it 1500ms after typing stops.
+pub fn set_agent_typing(
+    state: &AppState,
+    agent_id: &str,
+    typing: bool,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    state.set_agent_typing(agent_id, typing)?;
+
+    let mut sent = false;
+    if !typing {
+        // Typing stopped: drain a held turn if the agent is idle and not paused.
+        if let Some(agent) = state.agent(agent_id)? {
+            if !agent.paused && agent_composer_policy(state, &agent)?.can_send(agent.status) {
+                sent = drain_agent_turn_queue(state, agent_id)?;
+            }
+        }
+    }
+
+    let queued_turns = state.agent_queued_turns(agent_id)?;
+    Ok(SendNextQueuedAgentTurnResult {
+        sent,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
+}
+
 pub fn send_next_queued_agent_turn(
     state: &AppState,
     agent_id: &str,
 ) -> Result<SendNextQueuedAgentTurnResult, String> {
     let sent = drain_agent_turn_queue(state, agent_id)?;
-    let queued_turns = state.list_agent_turn_queue(agent_id)?;
+    let queued_turns = state.agent_queued_turns(agent_id)?;
     Ok(SendNextQueuedAgentTurnResult {
         sent,
         pending_turns: queued_turns.len(),
@@ -323,7 +452,7 @@ fn queue_agent_turn(
     data: String,
 ) -> Result<SubmitAgentTurnResult, String> {
     let pending_turns = state.enqueue_agent_turn(&agent.id, data)?;
-    let queued_turns = state.list_agent_turn_queue(&agent.id)?;
+    let queued_turns = state.agent_queued_turns(&agent.id)?;
     state.emit(QmuxEvent::new(
         "agent.turn_queued",
         agent.pane_id.clone(),
@@ -341,8 +470,8 @@ fn queue_agent_turn(
 /// deliver it. If even the rollback fails the turn is genuinely lost, so log it
 /// rather than dropping it silently — the caller already propagates the original
 /// send error.
-fn requeue_after_failed_drain(state: &AppState, agent_id: &str, data: String) {
-    if let Err(err) = state.prepend_agent_turn(agent_id, data) {
+fn requeue_after_failed_drain(state: &AppState, agent_id: &str, turn: QueuedTurn) {
+    if let Err(err) = state.prepend_agent_turn(agent_id, turn) {
         eprintln!("qmux: dropped queued turn for agent {agent_id} after failed re-queue: {err}");
     }
 }
@@ -436,6 +565,7 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            paused: false,
             created_at: 1,
         }
     }
@@ -533,6 +663,28 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().unwrap();
         assert!(matches!(agent.status, AgentStatus::Done));
         assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_drain_preserves_the_pause_after_flag() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+        state
+            .set_queued_turn_pause("agent-1", 0, true, Some("queued"))
+            .unwrap();
+
+        // The pane is missing, so the send fails and the turn is requeued.
+        let err = drain_agent_turn_queue(&state, "agent-1").unwrap_err();
+        assert!(err.contains("missing-pane"));
+
+        // The requeued turn keeps its pause-after flag (not reset to false).
+        let items = state.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "queued");
+        assert!(items[0].pause_after);
     }
 
     fn agent_with_id(id: &str, status: AgentStatus) -> AgentInfo {

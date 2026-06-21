@@ -21,7 +21,7 @@ use pty::{
     write_pane,
 };
 use sleep::SleepGuard;
-use state::{AppState, PaneInfo, PaneLayoutEntry};
+use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn};
 use tauri::Manager;
 use transcript::{
     TranscriptOption, Turn, list_agent_transcripts as list_agent_transcript_options,
@@ -32,7 +32,7 @@ use turn_queue::{
     RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult,
     SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest, SubmitAgentTurnResult,
     move_queued_agent_turn, remove_queued_agent_turn, reorder_queued_agent_turn,
-    send_next_queued_agent_turn, submit_agent_turn,
+    send_next_queued_agent_turn, set_agent_typing, submit_agent_turn, unpause_agent,
 };
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
@@ -104,8 +104,8 @@ fn list_turns(
 fn list_agent_turn_queue(
     state: tauri::State<'_, AppState>,
     agent_id: String,
-) -> Result<Vec<String>, String> {
-    state.list_agent_turn_queue(&agent_id)
+) -> Result<Vec<QueuedTurn>, String> {
+    state.agent_queued_turns(&agent_id)
 }
 
 #[tauri::command]
@@ -264,6 +264,47 @@ fn agent_send_next_queued_turn(
 }
 
 #[tauri::command]
+fn agent_set_queued_turn_pause(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    index: usize,
+    pause_after: bool,
+    expected_data: Option<String>,
+) -> Result<Vec<QueuedTurn>, String> {
+    let queued_turns =
+        state.set_queued_turn_pause(&agent_id, index, pause_after, expected_data.as_deref())?;
+    if let Some(agent) = state.agent(&agent_id)? {
+        state.emit(events::QmuxEvent::new(
+            "agent.queued_turn_reordered",
+            agent.pane_id.clone(),
+            Some(agent.id),
+            serde_json::json!({
+                "pendingTurns": queued_turns.len(),
+                "queuedTurns": queued_turns.clone(),
+            }),
+        ));
+    }
+    Ok(queued_turns)
+}
+
+#[tauri::command]
+fn agent_unpause(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    unpause_agent(&state, &agent_id)
+}
+
+#[tauri::command]
+fn agent_set_typing(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    typing: bool,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    set_agent_typing(&state, &agent_id, typing)
+}
+
+#[tauri::command]
 fn agent_set_draft(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -415,6 +456,9 @@ fn main() {
             agent_reorder_queued_turn,
             agent_move_queued_turn,
             agent_send_next_queued_turn,
+            agent_set_queued_turn_pause,
+            agent_unpause,
+            agent_set_typing,
             agent_set_draft,
             agent_get_draft,
             agent_acknowledge,

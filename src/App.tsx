@@ -87,6 +87,7 @@ import {
   setPaneLayout,
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
+  setAgentTyping,
   setPreventSleep,
   spawnAgent,
   spawnShell,
@@ -97,6 +98,7 @@ import type {
   ClaudeSkill,
   InitialPaneSize,
   PaneInfo,
+  QueuedTurn,
   RuntimeConfig,
   TranscriptHookEvent,
   TranscriptOption,
@@ -112,6 +114,9 @@ const LEFT_SIDEBAR_MAX_WIDTH = 420;
 const LEFT_SIDEBAR_COMPACT_WIDTH = 270;
 const PANE_TAB_DRAG_START_THRESHOLD = 4;
 const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
+// How long after the user's last keystroke we keep holding the queue before letting a
+// finished turn auto-send the next queued message.
+const INPUT_DEQUEUE_HOLD_MS = 1500;
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -142,7 +147,7 @@ export default function App() {
   const eventsReadyRef = useRef(false);
   const pendingAttachRef = useRef<Set<string>>(new Set());
   const agentsRef = useRef<AgentInfo[]>([]);
-  const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
+  const queuedTurnsByAgentRef = useRef<Record<string, QueuedTurn[]>>({});
   // Composer drafts live here keyed by agent so they survive tab switches; the
   // ref mirrors the state for synchronous reads from the debounced disk flush.
   const draftsByAgentRef = useRef<Record<string, string>>({});
@@ -154,6 +159,9 @@ export default function App() {
   const activePaneRef = useRef<PaneInfo | undefined>(undefined);
   const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
+  // Debounced "user is typing" hold per agent: while active the backend won't
+  // auto-drain that agent's queue. Holds the agent id + the pending release timer.
+  const agentTypingRef = useRef<{ agentId: string; timer: number } | null>(null);
   const paneDropTargetRef = useRef<PaneDropTarget | null>(null);
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
@@ -162,7 +170,7 @@ export default function App() {
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, string[]>>({});
+  const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
     Record<string, WorktreeStatus>
   >({});
@@ -255,6 +263,30 @@ export default function App() {
   function focusLauncherInput() {
     requestAnimationFrame(() => launcherInputRef.current?.focus());
   }
+
+  // Called on each keystroke in an agent's composer or terminal. Sets a backend
+  // "typing" hold (so a finishing turn won't auto-drain into what the user is typing)
+  // and schedules its release INPUT_DEQUEUE_HOLD_MS after the last keystroke; the
+  // release drains a held turn if the agent is idle.
+  function noteUserInput(agentId: string) {
+    const current = agentTypingRef.current;
+    if (current && current.agentId !== agentId) {
+      // The user moved to a different agent; release the previous hold immediately.
+      window.clearTimeout(current.timer);
+      void setAgentTyping(current.agentId, false).catch(() => undefined);
+      agentTypingRef.current = null;
+    }
+    if (agentTypingRef.current) {
+      window.clearTimeout(agentTypingRef.current.timer);
+    } else {
+      void setAgentTyping(agentId, true).catch(() => undefined);
+    }
+    const timer = window.setTimeout(() => {
+      agentTypingRef.current = null;
+      void setAgentTyping(agentId, false).catch(() => undefined);
+    }, INPUT_DEQUEUE_HOLD_MS);
+    agentTypingRef.current = { agentId, timer };
+  }
   const activeTurns = useMemo(
     () => {
       const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
@@ -320,7 +352,7 @@ export default function App() {
     agentsRef.current = agents;
   }, [agents]);
 
-  function replaceQueuedTurnsByAgent(nextQueues: Record<string, string[]>) {
+  function replaceQueuedTurnsByAgent(nextQueues: Record<string, QueuedTurn[]>) {
     const previousQueues = queuedTurnsByAgentRef.current;
     queuedTurnsByAgentRef.current = nextQueues;
     setQueuedTurnsByAgentState(nextQueues);
@@ -337,7 +369,7 @@ export default function App() {
     });
   }
 
-  function setAgentQueuedTurns(agentId: string, queuedTurns: string[]) {
+  function setAgentQueuedTurns(agentId: string, queuedTurns: QueuedTurn[]) {
     const previousQueues = queuedTurnsByAgentRef.current;
     const nextQueues = {
       ...previousQueues,
@@ -2404,6 +2436,7 @@ export default function App() {
               letterSpacing={terminalLetterSpacing}
               inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
+              onUserInput={noteUserInput}
             />
           ))}
         </div>
@@ -2469,6 +2502,7 @@ export default function App() {
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
+                    onUserInput={noteUserInput}
                     onError={setError}
                   />
                 ) : null}

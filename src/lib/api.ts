@@ -9,6 +9,7 @@ import type {
   MoveQueuedAgentTurnResult,
   PaneInfo,
   QmuxEvent,
+  QueuedTurn,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   SendNextQueuedAgentTurnResult,
@@ -47,7 +48,27 @@ export function listTurns(agentId?: string | null) {
 }
 
 export function listAgentTurnQueue(agentId: string) {
-  return invoke<string[]>("list_agent_turn_queue", { agentId });
+  return invoke<QueuedTurn[]>("list_agent_turn_queue", { agentId });
+}
+
+/** Toggles the pause-after-send flag on one queued turn. */
+export function setQueuedTurnPause(
+  agentId: string,
+  index: number,
+  pauseAfter: boolean,
+  expectedData: string,
+) {
+  return invoke<QueuedTurn[]>("agent_set_queued_turn_pause", {
+    agentId,
+    index,
+    pauseAfter,
+    expectedData,
+  });
+}
+
+/** Clears an agent's paused state, draining the next queued turn if it is idle. */
+export function unpauseAgent(agentId: string) {
+  return invoke<SendNextQueuedAgentTurnResult>("agent_unpause", { agentId });
 }
 
 export function listAgentTranscripts(agentId: string) {
@@ -106,6 +127,12 @@ export function reorderQueuedAgentTurn(
 
 export function sendNextQueuedAgentTurn(agentId: string) {
   return invoke<SendNextQueuedAgentTurnResult>("agent_send_next_queued_turn", { agentId });
+}
+
+/** Marks/clears that the user is actively typing for an agent, so the backend holds
+ *  off auto-draining its queue. Clearing drains a held turn if the agent is idle. */
+export function setAgentTyping(agentId: string, typing: boolean) {
+  return invoke<SendNextQueuedAgentTurnResult>("agent_set_typing", { agentId, typing });
 }
 
 // Atomically moves a queued turn from one agent to another. The backend removes
