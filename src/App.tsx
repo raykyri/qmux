@@ -1889,8 +1889,9 @@ export default function App() {
                   />
                   <span>New worktree</span>
                 </label>
-                {skillsEnabled
-                  ? availableSkills.map((skill) => (
+                {skillsEnabled && availableSkills.length > 0 ? (
+                  <div className="command-launcher-skills">
+                    {availableSkills.map((skill) => (
                       <label
                         key={skill.id}
                         className="command-launcher-worktree command-launcher-skill"
@@ -1909,8 +1910,9 @@ export default function App() {
                         />
                         <span>{skill.name}</span>
                       </label>
-                    ))
-                  : null}
+                    ))}
+                  </div>
+                ) : null}
                 {LauncherOptions ? (
                   <div className="command-launcher-options">
                     <LauncherOptions

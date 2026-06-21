@@ -780,7 +780,9 @@ pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeSkill {
-    /// Skill slug as Claude knows it (e.g. `deep-research`).
+    /// Stable unique identifier — the skill's directory name. Used as the launcher
+    /// key and selection id, so it must be unique even if two skills declare the
+    /// same frontmatter `name:`.
     pub id: String,
     /// Human label for the launcher checkbox (e.g. `Deep Research`).
     pub name: String,
@@ -808,14 +810,16 @@ pub fn list_skills(config: &QmuxConfig) -> Vec<ClaudeSkill> {
             if !skill_md.is_file() {
                 return None;
             }
-            // Prefer the skill's declared frontmatter name (what Claude invokes it
-            // by); fall back to the directory name when it's absent.
+            // The slug that names the skill to Claude comes from frontmatter `name:`
+            // (falling back to the directory name); the command is namespaced by the
+            // plugin. The `id` is always the directory name so it stays unique even
+            // when two skills share a frontmatter name.
             let dir_name = entry.file_name().to_string_lossy().into_owned();
-            let slug = skill_frontmatter_name(&skill_md).unwrap_or(dir_name);
+            let slug = skill_frontmatter_name(&skill_md).unwrap_or_else(|| dir_name.clone());
             Some(ClaudeSkill {
                 command: format!("/{namespace}:{slug}"),
                 name: humanize_skill_slug(&slug),
-                id: slug,
+                id: dir_name,
             })
         })
         .collect();
@@ -1596,5 +1600,52 @@ mod tests {
         };
 
         assert!(list_skills(&config).is_empty());
+    }
+
+    #[test]
+    fn list_skills_keeps_ids_unique_when_frontmatter_names_collide() {
+        use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+
+        let plugin_dir = env::temp_dir().join(format!("qmux-plugin-dup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&plugin_dir);
+        let manifest_dir = plugin_dir.join(".claude-plugin");
+        fs::create_dir_all(&manifest_dir).unwrap();
+        fs::write(manifest_dir.join("plugin.json"), r#"{"name":"qmux"}"#).unwrap();
+
+        // Two distinct skill directories that declare the same frontmatter name.
+        for dir in ["alpha", "beta"] {
+            let skill_dir = plugin_dir.join("skills").join(dir);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: shared\ndescription: d\n---\n",
+            )
+            .unwrap();
+        }
+
+        let config = QmuxConfig {
+            workspace_root: env::temp_dir(),
+            socket_path: env::temp_dir().join("qmux-dup.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: plugin_dir.clone(),
+        };
+
+        let skills = list_skills(&config);
+        // Ids are the (unique) directory names, even though both share a command.
+        // Sort for an order-independent assertion (read_dir order is OS-dependent).
+        let mut ids: Vec<&str> = skills.iter().map(|skill| skill.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["alpha", "beta"]);
+        assert!(skills.iter().all(|skill| skill.command == "/qmux:shared"));
+
+        let _ = fs::remove_dir_all(&plugin_dir);
     }
 }
