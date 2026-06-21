@@ -855,6 +855,16 @@ button:disabled {
   background: #3a221d;
 }
 
+/* Keep the danger button's red border on focus instead of recoloring it to the
+   accent focus ring. The focus indicator becomes a second outline sitting 1px
+   outside the border, in a slightly brighter shade of the same red. */
+.confirm-dialog-actions .danger:focus-visible {
+  border-color: #7a3b34;
+  box-shadow: none;
+  outline: 1px solid #a55349;
+  outline-offset: 1px;
+}
+
 /* Settings panel — a small modal reusing the confirm-dialog surface. */
 .settings-backdrop {
   position: fixed;
