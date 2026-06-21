@@ -1473,6 +1473,31 @@ mod tests {
     }
 
     #[test]
+    fn typing_holds_the_queue_until_typing_stops() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+
+        // While the user is typing, a finishing turn must not drain the queue.
+        crate::turn_queue::set_agent_typing(&state, "agent-1", true).unwrap();
+        let event = ingest(&state, hook("Stop", json!({})));
+        assert_eq!(event.event_type, "agent.done");
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued".to_string()]
+        );
+        assert!(!written_text(&bytes).contains("queued"));
+
+        // Once typing stops, releasing the hold drains the held turn (agent is idle).
+        let result = crate::turn_queue::set_agent_typing(&state, "agent-1", false).unwrap();
+        assert!(result.sent);
+        assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
+        assert!(written_text(&bytes).contains("queued"));
+    }
+
+    #[test]
     fn idle_prompt_drains_one_queued_turn() {
         let state = test_state();
         let bytes = install_agent_pane(&state);
