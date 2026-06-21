@@ -221,6 +221,22 @@ pub fn attach_agent_pane(
         .ok_or_else(|| format!("agent {agent_id} was not found"))
 }
 
+pub fn mark_agent_spawn_failed(
+    state: &AppState,
+    agent_id: &str,
+    reserved_pane_id: &str,
+) -> Result<AgentInfo, String> {
+    state
+        .mutate_agent(agent_id, |agent| {
+            if agent.pane_id.as_deref() == Some(reserved_pane_id) {
+                agent.pane_id = None;
+                agent.orphaned_queue_pane_id = None;
+            }
+            agent.status = AgentStatus::Failed;
+        })?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))
+}
+
 pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
     let mut agent = state
         .agent(agent_id)?
@@ -609,6 +625,22 @@ mod tests {
         assert!(matches!(attached.status, AgentStatus::Running));
         assert_eq!(attached.session_id.as_deref(), Some("sess-xyz"));
         assert_eq!(attached.transcript_path.as_deref(), Some("/tmp/new.jsonl"));
+    }
+
+    #[test]
+    fn mark_agent_spawn_failed_clears_reserved_pane_binding() {
+        let state = test_state();
+        let mut agent = sample_agent("agent-new", Some("pane-1"), AgentStatus::Running);
+        agent.orphaned_queue_pane_id = Some("pane-1".to_string());
+        agent.session_id = Some("sess-xyz".to_string());
+        state.insert_agent(agent).unwrap();
+
+        let failed = mark_agent_spawn_failed(&state, "agent-new", "pane-1").unwrap();
+
+        assert_eq!(failed.pane_id, None);
+        assert_eq!(failed.orphaned_queue_pane_id, None);
+        assert!(matches!(failed.status, AgentStatus::Failed));
+        assert_eq!(failed.session_id.as_deref(), Some("sess-xyz"));
     }
 
     #[test]
