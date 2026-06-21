@@ -2004,7 +2004,7 @@ export default function App() {
                     }
                   }}
                 >
-                  <X size={11} aria-hidden="true" />
+                  <X size={16} aria-hidden="true" />
                 </a>
               </div>
             );
