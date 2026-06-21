@@ -497,17 +497,36 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
     let writer = state
         .pane_writer(&options.pane_id)?
         .ok_or_else(|| format!("pane {} was not found", options.pane_id))?;
-    let mut writer = writer
-        .lock()
-        .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
 
-    write_pane_input(&mut *writer, &options, SUBMIT_KEY_DELAY)
+    // Write the data (and paste markers) under the lock, then release it before the
+    // submit-key delay. The delay gives a TUI a beat to ingest a pasted turn before
+    // Return lands; holding the per-pane writer lock across that 15ms sleep would
+    // stall every other write to the same pane (live keystrokes, the next queued
+    // turn) behind it. The bracketed-paste body stays atomic within the first
+    // locked section; only the trailing Return is sent in a second short section.
+    {
+        let mut writer = writer
+            .lock()
+            .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
+        write_pane_data(&mut *writer, &options)?;
+    }
+
+    if options.submit {
+        if !SUBMIT_KEY_DELAY.is_zero() {
+            thread::sleep(SUBMIT_KEY_DELAY);
+        }
+        let mut writer = writer
+            .lock()
+            .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
+        write_pane_submit(&mut *writer)?;
+    }
+
+    Ok(())
 }
 
-fn write_pane_input<W: Write + ?Sized>(
+fn write_pane_data<W: Write + ?Sized>(
     writer: &mut W,
     options: &PaneWriteOptions,
-    submit_key_delay: Duration,
 ) -> Result<(), String> {
     if options.paste {
         writer
@@ -527,20 +546,34 @@ fn write_pane_input<W: Write + ?Sized>(
 
     writer
         .flush()
-        .map_err(|err| format!("failed to flush pane input: {err}"))?;
+        .map_err(|err| format!("failed to flush pane input: {err}"))
+}
 
+fn write_pane_submit<W: Write + ?Sized>(writer: &mut W) -> Result<(), String> {
+    writer
+        .write_all(SUBMIT_KEY)
+        .map_err(|err| format!("failed to submit pane input: {err}"))?;
+    writer
+        .flush()
+        .map_err(|err| format!("failed to flush pane submit key: {err}"))
+}
+
+/// Composes the data and submit-key writes for tests, mirroring `write_pane`'s
+/// sequencing without the per-pane lock handling. `submit_key_delay` lets a test
+/// skip the inter-write sleep.
+#[cfg(test)]
+fn write_pane_input<W: Write + ?Sized>(
+    writer: &mut W,
+    options: &PaneWriteOptions,
+    submit_key_delay: Duration,
+) -> Result<(), String> {
+    write_pane_data(writer, options)?;
     if options.submit {
         if !submit_key_delay.is_zero() {
             thread::sleep(submit_key_delay);
         }
-        writer
-            .write_all(SUBMIT_KEY)
-            .map_err(|err| format!("failed to submit pane input: {err}"))?;
-        writer
-            .flush()
-            .map_err(|err| format!("failed to flush pane submit key: {err}"))?;
+        write_pane_submit(writer)?;
     }
-
     Ok(())
 }
 
@@ -613,14 +646,29 @@ fn start_reader_thread(
                 }
             }
         }
+        // The PTY hit EOF, so the child has exited (or is about to). Reap it before
+        // dropping the handle so it does not linger as a zombie occupying a PID slot
+        // for the life of the qmux process, and report its real exit code rather
+        // than a blanket `None`. A pane killed via `kill_pane` is already reaped and
+        // removed there, so this returns None and emits the exit with no code.
+        let exit_code = reap_pane_child(&state, &pane_id);
         if let Err(err) = state.remove_pane(&pane_id) {
             // A failure here (e.g. a poisoned model lock) leaves a dead pane in
             // state; log it so the stale entry has a trace rather than vanishing.
             eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
         }
         remove_shell_integration_dir(&pane_id);
-        state.emit(QmuxEvent::pty_exit(pane_id, None));
+        state.emit(QmuxEvent::pty_exit(pane_id, exit_code));
     });
+}
+
+/// Waits on a pane's child so the exited process is reaped (no zombie) and returns
+/// its exit code. Best-effort: a pane already removed (e.g. by `kill_pane`) or a
+/// poisoned child lock yields `None`.
+fn reap_pane_child(state: &AppState, pane_id: &str) -> Option<i32> {
+    let child = state.pane_child(pane_id).ok().flatten()?;
+    let mut child = child.lock().ok()?;
+    child.wait().ok().map(|status| status.exit_code() as i32)
 }
 
 /// Appends to the pre-attach backlog, dropping the oldest bytes once it exceeds
@@ -653,7 +701,12 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
     }
 
     match child.kill() {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // Reap the just-killed child while we still hold its handle, so it does
+            // not become a zombie. The kill above signals it; wait collects it.
+            let _ = child.wait();
+            Ok(())
+        }
         Err(err) => {
             if child
                 .try_wait()
