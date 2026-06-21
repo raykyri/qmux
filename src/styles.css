@@ -2421,10 +2421,52 @@ button:disabled {
   right: var(--turn-pane-width, 0px);
   z-index: 8;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: #0e1011;
   border-left: 1px solid #2a2d2f;
   box-shadow: -10px 0 30px rgba(0, 0, 0, 0.45);
+}
+
+/* Navigation bar across the top; the right padding leaves room for the floating
+   refresh + toggle controls so the address field never slides under them. */
+.browser-overlay-nav {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 84px 0 12px;
+  border-bottom: 1px solid #2a2d2f;
+  background: #14171a;
+}
+
+.browser-overlay-url {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: #0e1113;
+  color: #e9efe9;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  outline: none;
+}
+
+.browser-overlay-url:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.browser-overlay-url::placeholder {
+  color: #6b726d;
+}
+
+.browser-overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .browser-overlay-frame {
