@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { openExternalUrl } from "../lib/api";
 import type { Turn, TurnBlock } from "../types";
 
 interface TurnOverlayProps {
@@ -84,7 +85,18 @@ const markdownComponents: Components = {
     if (!safe) {
       return <span {...props} />;
     }
-    return <a {...props} href={safe} target="_blank" rel="noreferrer" />;
+    // The webview can't navigate to external URLs (CSP), so intercept the click and
+    // hand it to the OS browser. href stays set for hover/title affordance.
+    return (
+      <a
+        {...props}
+        href={safe}
+        onClick={(event) => {
+          event.preventDefault();
+          void openExternalUrl(safe);
+        }}
+      />
+    );
   },
   table: ({ node: _node, ...props }) => (
     <div className="turn-markdown-table-wrap">

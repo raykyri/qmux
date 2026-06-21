@@ -73,6 +73,44 @@ fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
     state.config().runtime()
 }
 
+/// Opens a URL in the user's default external browser (or mail client). Only
+/// http(s)/mailto are accepted; the URL is passed as a single argv to the OS opener
+/// (no shell), so it can't trigger arbitrary scheme handlers or shell injection.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")) {
+        return Err("refusing to open a non-http(s)/mailto URL externally".to_string());
+    }
+    open_in_os_browser(&url)
+}
+
+#[cfg(target_os = "macos")]
+fn open_in_os_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open externally: {err}"))
+}
+
+#[cfg(target_os = "linux")]
+fn open_in_os_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open externally: {err}"))
+}
+
+#[cfg(target_os = "windows")]
+fn open_in_os_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open externally: {err}"))
+}
+
 #[tauri::command]
 fn list_claude_skills(state: tauri::State<'_, AppState>) -> Vec<adapters::claude::ClaudeSkill> {
     adapters::claude::list_skills(state.config())
@@ -439,6 +477,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_runtime_config,
+            open_external_url,
             list_claude_skills,
             list_panes,
             list_groups,
