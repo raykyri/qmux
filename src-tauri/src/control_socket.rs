@@ -303,9 +303,13 @@ fn resolve_browser_target(
                 "'{target}' was not found under this pane's working directory and cannot be opened"
             )
         })?;
-    let (port, token) = state
-        .file_server_info()
+    let port = state
+        .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
+    // The URL carries this pane's own file token, so the file server scopes the request
+    // back to `pane_file_roots(authed_pane)` — a pane can never reach another pane's
+    // files even if some pane has widened its cwd via `pane.set_cwd`.
+    let token = state.pane_file_token(authed_pane)?;
     Ok((crate::file_server::file_url(port, &token, &canonical), true))
 }
 

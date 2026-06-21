@@ -45,6 +45,11 @@ pub struct AppState {
 struct AppStateInner {
     config: QmuxConfig,
     pane_tokens: Mutex<HashMap<String, String>>,
+    // Per-pane file-server tokens, distinct from the control-socket `pane_tokens`.
+    // A browser-overlay URL carries one of these in its path, so the loopback file
+    // server can resolve which pane the request is for and scope the served roots to
+    // that pane only (see `pane_for_file_token` / `pane_file_roots`).
+    file_tokens: Mutex<HashMap<String, String>>,
     model: Mutex<Model>,
     transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
@@ -54,9 +59,9 @@ struct AppStateInner {
     // snapshots to workspace_root/.qmux/state.json.
     persist_enabled: AtomicBool,
     exit_confirmed: AtomicBool,
-    // (port, token) of the loopback file server, set once at startup. The control
-    // socket uses it to build browser-overlay URLs.
-    file_server: Mutex<Option<(u16, String)>>,
+    // Loopback file-server port, set once at startup. The control socket pairs it with
+    // a per-pane file token to build browser-overlay URLs.
+    file_server: Mutex<Option<u16>>,
 }
 
 #[derive(Default)]
@@ -238,6 +243,7 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 config,
                 pane_tokens: Mutex::new(HashMap::new()),
+                file_tokens: Mutex::new(HashMap::new()),
                 model: Mutex::new(Model::default()),
                 transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
@@ -250,37 +256,46 @@ impl AppState {
     }
 
     /// Records the loopback file server's port + access token (set once at startup).
-    pub fn set_file_server(&self, port: u16, token: String) {
+    pub fn set_file_server(&self, port: u16) {
         if let Ok(mut slot) = self.inner.file_server.lock() {
-            *slot = Some((port, token));
+            *slot = Some(port);
         }
     }
 
-    pub fn file_server_info(&self) -> Option<(u16, String)> {
-        self.inner
-            .file_server
+    pub fn file_server_port(&self) -> Option<u16> {
+        self.inner.file_server.lock().ok().and_then(|slot| *slot)
+    }
+
+    /// Returns the file-server token scoped to a single pane, minting one on first use.
+    /// This token rides in the path of the browser-overlay URLs that pane opens, so the
+    /// loopback file server can map a request back to its pane and serve only that
+    /// pane's roots (`pane_file_roots`) — never the union of every pane's directories.
+    /// It is deliberately separate from the pane's control-socket token (`pane_token`):
+    /// it lands in URLs that flow through the frontend, so its only authority is reading
+    /// files under the one pane's roots, not driving the control socket.
+    pub fn pane_file_token(&self, pane_id: &str) -> Result<String, String> {
+        let mut tokens = self
+            .inner
+            .file_tokens
             .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = tokens.get(pane_id) {
+            return Ok(existing.clone());
+        }
+        let token = random_token()?;
+        Ok(tokens.entry(pane_id.to_string()).or_insert(token).clone())
     }
 
-    /// Roots a file must live under to be served by the loopback file server: the
-    /// workspace root plus every pane's working directory and every agent's worktree.
-    /// This is the file server's (stateless) global gate; `browser.open` resolution is
-    /// scoped tighter, to the requesting pane only — see `pane_file_roots`.
-    /// `file_server::resolve_under_roots` canonicalizes these, so duplicates and
-    /// non-existent entries are harmless.
-    pub fn allowed_file_roots(&self) -> Vec<std::path::PathBuf> {
-        let mut roots = vec![self.inner.config.workspace_root.clone()];
-        if let Ok(model) = self.inner.model.lock() {
-            for pane in model.panes.values() {
-                roots.push(std::path::PathBuf::from(&pane.info.cwd));
-            }
-            for agent in model.agents.values() {
-                roots.push(std::path::PathBuf::from(&agent.worktree_dir));
-            }
-        }
-        roots
+    /// Resolves the pane a presented file-server token belongs to, if any.
+    pub fn pane_for_file_token(&self, token: &str) -> Option<String> {
+        let tokens = self
+            .inner
+            .file_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        tokens
+            .iter()
+            .find_map(|(pane_id, pane_token)| (pane_token == token).then(|| pane_id.clone()))
     }
 
     /// Roots a `browser.open` from a specific pane may reach: the workspace root, that
@@ -648,6 +663,12 @@ impl AppState {
             // Re-level any children orphaned by the removal so the tree stays valid
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
+        }
+        // The pane's file-server token can never be used again once the pane is gone
+        // (it resolves only via `pane_for_file_token`), so reclaim it rather than let
+        // a live credential outlive the pane it scopes. Separate lock from `model`.
+        if let Ok(mut tokens) = self.inner.file_tokens.lock() {
+            tokens.remove(pane_id);
         }
         self.persist();
         Ok(())
@@ -2169,6 +2190,26 @@ mod tests {
                 .iter()
                 .any(|r| r == std::path::Path::new("/tmp/proj-b"))
         );
+    }
+
+    #[test]
+    fn pane_file_token_round_trips_and_is_reclaimed_on_close() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        let token = state.pane_file_token("pane-1").unwrap();
+        // Stable across calls and resolvable back to its own pane.
+        assert_eq!(state.pane_file_token("pane-1").unwrap(), token);
+        assert_eq!(state.pane_for_file_token(&token).as_deref(), Some("pane-1"));
+        // A different pane gets a different token, distinct from the control token.
+        assert_ne!(state.pane_file_token("pane-2").unwrap(), token);
+        assert_ne!(state.pane_token("pane-1").unwrap(), token);
+
+        // Closing the pane reclaims the token so a live file credential can't outlive
+        // the pane it scopes.
+        state.remove_pane("pane-1").unwrap();
+        assert!(state.pane_for_file_token(&token).is_none());
     }
 
     #[test]

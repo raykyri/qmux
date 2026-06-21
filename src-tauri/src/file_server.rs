@@ -2,10 +2,12 @@
 //!
 //! Binds `127.0.0.1:0` (ephemeral, loopback-only) at startup and serves files via
 //! `http://127.0.0.1:<port>/<token>/<percent-encoded-abs-path>`. Because any local
-//! process can reach a loopback port, the random per-launch `token` (not loopback
-//! alone) is what gates access, and every resolved path must canonicalize to live
-//! under one of the app's allowed roots — so an agent can't render `~/.ssh/id_rsa`
-//! in the trusted webview via `..` or a symlink.
+//! process can reach a loopback port, a random `token` (not loopback alone) is what
+//! gates access. The token is *per pane* (minted in `AppState::pane_file_token`): the
+//! server resolves it back to the requesting pane and only serves paths that
+//! canonicalize under that pane's own roots (`pane_file_roots`). So a token an agent
+//! obtains for its own pane can't reach another pane's directory, and `..`/symlinks
+//! can't escape into `~/.ssh/id_rsa`.
 //!
 //! Hand-rolled GET/HEAD + Range over `TcpListener` to keep the dependency posture of
 //! the rest of the backend (cf. the hand-rolled base64 in events.rs). Each connection
@@ -17,7 +19,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(15);
 /// Cap on a single full-file (non-range) response so a giant file can't balloon
@@ -26,12 +28,13 @@ const MAX_INLINE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct FileServerInfo {
     pub port: u16,
-    pub token: String,
 }
 
-/// Starts the loopback file server and returns its port + access token. The caller
-/// stores these in `AppState` so the control socket can build URLs; the frontend
-/// never sees them (it only receives fully-formed URLs in `browser.open`).
+/// Starts the loopback file server and returns its port. The caller stores it in
+/// `AppState` so the control socket can build URLs; the frontend never sees the port
+/// or any token directly (it only receives fully-formed URLs in `browser.open`).
+/// Access is gated by the per-pane tokens carried in each URL's path, resolved against
+/// live state per request — so no token needs capturing at startup.
 pub fn start_file_server(state: AppState) -> Result<FileServerInfo, String> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(|err| format!("failed to bind file server: {err}"))?;
@@ -39,19 +42,16 @@ pub fn start_file_server(state: AppState) -> Result<FileServerInfo, String> {
         .local_addr()
         .map_err(|err| format!("failed to read file server address: {err}"))?
         .port();
-    let token = random_token();
-    let server_token = token.clone();
 
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let state = state.clone();
-            let token = server_token.clone();
-            thread::spawn(move || handle_connection(&state, &token, stream));
+            thread::spawn(move || handle_connection(&state, stream));
         }
     });
 
-    Ok(FileServerInfo { port, token })
+    Ok(FileServerInfo { port })
 }
 
 /// Builds the loopback URL for an absolute file path. `abs_path` must be absolute
@@ -111,13 +111,13 @@ impl Response {
     }
 }
 
-fn handle_connection(state: &AppState, token: &str, mut stream: TcpStream) {
+fn handle_connection(state: &AppState, mut stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECTION_READ_TIMEOUT));
     let Some(head) = read_request_head(&stream) else {
         return;
     };
-    let response = build_response(state, token, &head);
+    let response = build_response(state, &head);
     let _ = write_response(&mut stream, response);
 }
 
@@ -157,7 +157,7 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
     })
 }
 
-fn build_response(state: &AppState, token: &str, head: &RequestHead) -> Response {
+fn build_response(state: &AppState, head: &RequestHead) -> Response {
     if head.method != "GET" && head.method != "HEAD" {
         return Response::error(405, "Method Not Allowed");
     }
@@ -165,18 +165,27 @@ fn build_response(state: &AppState, token: &str, head: &RequestHead) -> Response
 
     // Drop any query string / fragment before routing.
     let path = head.target.split(['?', '#']).next().unwrap_or("");
-    // The token must be a full leading path segment: "/<token>/<abs path>".
-    let Some(rest) = path.strip_prefix(&format!("/{token}")) else {
+    // The path is "/<token>/<abs path>": the first segment is the per-pane token, and
+    // everything from the next '/' onward is the percent-encoded absolute path (with
+    // its leading slash preserved). Tokens are hex, so they never contain a slash.
+    let Some(after_root) = path.strip_prefix('/') else {
         return Response::error(404, "Not Found");
     };
-    if !rest.starts_with('/') {
+    let Some(slash) = after_root.find('/') else {
         return Response::error(404, "Not Found");
-    }
-    let Some(decoded) = percent_decode(rest) else {
+    };
+    let (token, encoded_path) = after_root.split_at(slash);
+    // Resolve the token to its pane and serve only that pane's roots, so a URL minted
+    // for one pane can never read another pane's files. An unknown token is an opaque
+    // 404, indistinguishable from a missing route.
+    let Some(pane_id) = state.pane_for_file_token(token) else {
+        return Response::error(404, "Not Found");
+    };
+    let Some(decoded) = percent_decode(encoded_path) else {
         return Response::error(400, "Bad Request");
     };
 
-    let roots = state.allowed_file_roots();
+    let roots = state.pane_file_roots(&pane_id);
     let Some(canonical) = resolve_under_roots(Path::new(&decoded), &roots) else {
         // Either it doesn't exist or it isn't under an allowed root — same opaque 403
         // so the server isn't a probe for which paths exist.
@@ -386,32 +395,6 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn random_token() -> String {
-    let mut bytes = [0_u8; 24];
-    if getrandom::getrandom(&mut bytes).is_err() {
-        // Fallback if the OS RNG is unavailable: time + pid mixed across the buffer.
-        // Far weaker, but the loopback bind already limits reach to local processes.
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let pid = std::process::id() as u128;
-        let mut seed = nanos ^ (pid << 64) ^ 0x9e37_79b9_7f4a_7c15;
-        for byte in bytes.iter_mut() {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            *byte = (seed >> 88) as u8;
-        }
-    }
-    let mut token = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        token.push(hex_digit(byte >> 4));
-        token.push(hex_digit(byte & 0x0f));
-    }
-    token
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,19 +485,23 @@ mod tests {
             claude_plugin_dir: PathBuf::new(),
         };
         let state = AppState::new(config);
-        let info = start_file_server(state).unwrap();
+        let info = start_file_server(state.clone()).unwrap();
+        // The URL token is a per-pane file token; mint one for a pane whose only root is
+        // the workspace root (it isn't in the model, so `pane_file_roots` falls back to
+        // just the workspace root).
+        let token = state.pane_file_token("pane-1").unwrap();
 
         let hello = std::fs::canonicalize(root.join("hello.txt")).unwrap();
 
         // Full GET returns the file.
-        let (status, body) = http_get(info.port, &url_path(info.port, &info.token, &hello), None);
+        let (status, body) = http_get(info.port, &url_path(info.port, &token, &hello), None);
         assert!(status.contains("200"), "status: {status}");
         assert_eq!(body, b"hello world");
 
         // Range GET returns the requested slice with 206.
         let (status, body) = http_get(
             info.port,
-            &url_path(info.port, &info.token, &hello),
+            &url_path(info.port, &token, &hello),
             Some("bytes=0-4"),
         );
         assert!(status.contains("206"), "status: {status}");
@@ -523,16 +510,16 @@ mod tests {
         // A file outside every root is forbidden (even though it exists).
         let (status, _) = http_get(
             info.port,
-            &url_path(info.port, &info.token, &outside.join("secret.txt")),
+            &url_path(info.port, &token, &outside.join("secret.txt")),
             None,
         );
         assert!(status.contains("403"), "status: {status}");
 
-        // The wrong token can't reach any file.
-        let correct = url_path(info.port, &info.token, &hello);
+        // An unknown token can't reach any file.
+        let correct = url_path(info.port, &token, &hello);
         let wrong = format!(
             "/deadbeef{}",
-            correct.strip_prefix(&format!("/{}", info.token)).unwrap()
+            correct.strip_prefix(&format!("/{token}")).unwrap()
         );
         let (status, _) = http_get(info.port, &wrong, None);
         assert!(status.contains("404"), "status: {status}");
