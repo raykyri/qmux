@@ -76,6 +76,12 @@ pub fn start_transcript_tail(
         let mut line_index: usize = 0;
         let mut read_failures: u32 = 0;
         let mut notice_active = false;
+        // The first successful read rebuilds the timeline from the whole file rather
+        // than appending. Turn ids are `agent-<line index>`, so they collide across a
+        // pane's transcripts; binding a new file (e.g. picking a past session) must
+        // replace the agent's turns wholesale, or the dedup-by-id on the frontend
+        // would keep the previously loaded transcript's turns.
+        let mut first_read = true;
         // Whether this tail has ever read its bound file. Recovery only makes sense
         // for a file we were actually following that then vanished (a rotation); a
         // file that has never appeared is a freshly launched session still warming
@@ -165,10 +171,11 @@ pub fn start_transcript_tail(
                     continue;
                 }
             };
-            if snapshot.reset {
-                // The file is now shorter than what we'd already consumed (a
-                // truncation or in-place rewrite), so our timeline no longer
-                // prefixes it: rebuild from the whole file.
+            if snapshot.reset || first_read {
+                // Rebuild from the whole file: either this is the tail's first read of
+                // a freshly bound transcript (which must replace any prior timeline), or
+                // the file is now shorter than what we'd already consumed (a truncation
+                // or in-place rewrite) so our timeline no longer prefixes it.
                 let lines = complete_lines(&snapshot.data);
                 let turns = lines
                     .iter()
@@ -214,6 +221,7 @@ pub fn start_transcript_tail(
                 }
                 consumed += complete_len(&snapshot.data);
             }
+            first_read = false;
 
             thread::sleep(Duration::from_millis(350));
         }
