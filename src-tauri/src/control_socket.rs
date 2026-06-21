@@ -259,6 +259,7 @@ fn write_response(stream: &mut UnixStream, result: Result<Value, String>) -> std
 mod tests {
     use super::*;
     use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
+    use crate::workspace::{AgentInfo, AgentStatus};
     use std::io::Read;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -292,6 +293,86 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qmux-control-{nanos}-{seq}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn agent_bound_to(pane_id: &str) -> AgentInfo {
+        AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/agent-1".to_string(),
+            branch: None,
+            pane_id: Some(pane_id.to_string()),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status: AgentStatus::Running,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            created_at: 0,
+        }
+    }
+
+    fn request_line(token: &str, command: &str, payload: Value) -> String {
+        json!({ "token": token, "command": command, "payload": payload }).to_string()
+    }
+
+    #[test]
+    fn handle_line_rejects_an_unknown_token() {
+        let state = test_state();
+        let err = handle_line(&state, &request_line("nope", "ping", Value::Null)).unwrap_err();
+        assert!(
+            err.contains("invalid QMUX_TOKEN"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_line_accepts_ping_from_a_valid_token() {
+        let state = test_state();
+        let token = state.pane_token("pane-1").unwrap();
+        let data = handle_line(&state, &request_line(&token, "ping", Value::Null)).unwrap();
+        assert_eq!(data, json!({ "status": "ok" }));
+    }
+
+    #[test]
+    fn pane_write_rejects_a_cross_pane_token() {
+        let state = test_state();
+        // pane-1's token must not be able to drive pane-2.
+        let token = state.pane_token("pane-1").unwrap();
+        let payload = json!({ "paneId": "pane-2", "data": "x", "paste": false, "submit": false });
+        let err = handle_line(&state, &request_line(&token, "pane.write", payload)).unwrap_err();
+        assert!(
+            err.contains("not authorized for that pane"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn hook_notify_rejects_a_token_for_another_agents_pane() {
+        let state = test_state();
+        // The agent lives in pane-2, but the caller presents pane-1's token.
+        state.insert_agent(agent_bound_to("pane-2")).unwrap();
+        let token = state.pane_token("pane-1").unwrap();
+        let payload = json!({ "event": "Stop", "agentId": "agent-1", "payload": Value::Null });
+        let err = handle_line(&state, &request_line(&token, "hook.notify", payload)).unwrap_err();
+        assert!(
+            err.contains("not authorized for that agent"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_line_rejects_an_unknown_command() {
+        let state = test_state();
+        let token = state.pane_token("pane-1").unwrap();
+        let err = handle_line(&state, &request_line(&token, "bogus", Value::Null)).unwrap_err();
+        assert!(
+            err.contains("unknown control command"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
