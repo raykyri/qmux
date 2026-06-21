@@ -32,7 +32,7 @@ use turn_queue::{
     RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult,
     SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest, SubmitAgentTurnResult,
     move_queued_agent_turn, remove_queued_agent_turn, reorder_queued_agent_turn,
-    send_next_queued_agent_turn, submit_agent_turn, unpause_agent,
+    send_next_queued_agent_turn, set_agent_typing, submit_agent_turn, unpause_agent,
 };
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
@@ -296,6 +296,15 @@ fn agent_unpause(
 }
 
 #[tauri::command]
+fn agent_set_typing(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    typing: bool,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    set_agent_typing(&state, &agent_id, typing)
+}
+
+#[tauri::command]
 fn agent_set_draft(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -449,6 +458,7 @@ fn main() {
             agent_send_next_queued_turn,
             agent_set_queued_turn_pause,
             agent_unpause,
+            agent_set_typing,
             agent_set_draft,
             agent_get_draft,
             agent_acknowledge,

@@ -72,6 +72,11 @@ struct Model {
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
     /// that turn finishes the agent enters paused mode. Transient (not persisted).
     agent_pending_pause: HashSet<String>,
+    /// Agents whose user is actively typing (in the composer or terminal). While set,
+    /// the queue is not auto-drained on idle, so a finishing turn can't spam a queued
+    /// message into what the user is typing. Set/cleared by the frontend (debounced);
+    /// transient (not persisted).
+    agent_typing: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1101,6 +1106,31 @@ impl AppState {
             .get(agent_id)
             .map(|agent| agent.paused)
             .unwrap_or(false))
+    }
+
+    /// Records whether the user is actively typing for an agent; while set, the idle
+    /// handler holds off auto-draining the queue.
+    pub fn set_agent_typing(&self, agent_id: &str, typing: bool) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        if typing {
+            model.agent_typing.insert(agent_id.to_string());
+        } else {
+            model.agent_typing.remove(agent_id);
+        }
+        Ok(())
+    }
+
+    pub fn agent_is_typing(&self, agent_id: &str) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.agent_typing.contains(agent_id))
     }
 
     /// Stores the agent's composer draft and snapshots it to disk. A trimmed-empty

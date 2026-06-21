@@ -28,6 +28,9 @@ interface TerminalPaneProps {
    *  subscription is live. The app calls attachPane on our behalf so we no longer
    *  each register a listener that filters the whole pty.data stream. */
   requestAttach: (paneId: string) => void;
+  /** Called with the owning agent id on each user keystroke into this pane's
+   *  terminal, so the app can hold the agent's queue while the user is typing. */
+  onUserInput?: (agentId: string) => void;
 }
 
 export interface TerminalPaneHandle {
@@ -80,7 +83,7 @@ const TERMINAL_THEME: ITheme = {
 };
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active, fontSize, fontFamily, letterSpacing, inputBlocked, requestAttach },
+  { pane, active, fontSize, fontFamily, letterSpacing, inputBlocked, requestAttach, onUserInput },
   ref,
 ) {
   // The setup effect runs once (keyed on pane.id) and closes over its render's
@@ -96,6 +99,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // see the current blocked state without being torn down and rebuilt.
   const inputBlockedRef = useRef(inputBlocked);
   inputBlockedRef.current = inputBlocked;
+  // Likewise read the typing-notifier through a ref so the once-per-pane input
+  // handler always calls the latest one.
+  const onUserInputRef = useRef(onUserInput);
+  onUserInputRef.current = onUserInput;
   // In-app confirm (window.confirm is a no-op in the webview), reached from the
   // paste handler inside the once-per-pane setup effect via a ref so it stays current.
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -410,6 +417,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       const inputDisposable = terminal.onData((data) => {
         if (inputBlockedRef.current) {
           return;
+        }
+        // A keystroke into an agent pane's terminal counts as the user typing, so
+        // hold that agent's queue from auto-draining mid-input.
+        if (pane.agentId) {
+          onUserInputRef.current?.(pane.agentId);
         }
         void writePane(pane.id, data);
       });
