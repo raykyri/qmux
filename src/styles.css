@@ -2453,29 +2453,45 @@ button:disabled {
    and the center terminal, stopping at the turn pane's left edge. */
 .browser-overlay {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  /* Float inset from the app edges: 20px from the top and bottom of the app, and
+     20px in from the right edge of the terminal (left of the turn sidebar). */
+  top: 20px;
+  bottom: 20px;
   left: var(--browser-overlay-left, 64px);
-  right: var(--turn-pane-width, 0px);
+  right: calc(var(--turn-pane-width, 0px) + 20px);
   z-index: 8;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: #0e1011;
-  border-left: 1px solid #2a2d2f;
-  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.45);
+  border: 1px solid #2a2d2f;
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
 }
 
-/* Navigation bar across the top; the right padding leaves room for the floating
-   refresh + toggle controls so the address field never slides under them. */
+/* Navigation bar across the top; refresh + close controls sit on the right. */
 .browser-overlay-nav {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  gap: 8px;
   height: 40px;
-  padding: 0 84px 0 12px;
+  padding: 0 12px;
   border-bottom: 1px solid #2a2d2f;
   background: #14171a;
+}
+
+.browser-overlay-nav-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.browser-overlay-nav-controls {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
 }
 
 .browser-overlay-url {
