@@ -932,6 +932,25 @@ button:disabled {
   box-shadow: none;
 }
 
+/* Faint, non-editable skill command pinned over the composer's first-line origin
+   (matching the textarea's 16px/18px padding). The textarea's first line is
+   text-indented by this span's measured width so typed text starts right after it. */
+.command-launcher-skill-prefix {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  z-index: 1;
+  /* No max-width: the span sizes to its content so the measured width used for the
+     textarea's text-indent matches the rendered command exactly (a clamped width
+     would undershoot and let typed text overlap the command's tail). */
+  font-size: var(--fs-input);
+  line-height: 1.5;
+  color: var(--placeholder-color);
+  white-space: pre;
+  pointer-events: none;
+  user-select: none;
+}
+
 .command-launcher-overlay {
   position: absolute;
   right: 10px;
@@ -1000,7 +1019,8 @@ button:disabled {
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
-.command-launcher-options {
+.command-launcher-options,
+.command-launcher-skills {
   display: inline-flex;
   align-items: center;
   flex: 0 1 auto;

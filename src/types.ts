@@ -12,6 +12,12 @@ export interface AgentAdapterMetadata {
   default: boolean;
 }
 
+export interface ClaudeSkill {
+  id: string;
+  name: string;
+  command: string;
+}
+
 export interface PaneInfo {
   id: string;
   title: string;
