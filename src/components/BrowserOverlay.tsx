@@ -8,11 +8,21 @@ interface BrowserOverlayProps {
   url: string | null;
   // Bumped on open/refresh so the iframe key changes and the page reloads.
   reloadNonce: number;
+  // True for token-bearing file-server URLs: sandbox the frame so served (possibly
+  // untrusted) content gets an opaque origin and can't read the token back to fetch
+  // other workspace files. Left off for trusted localhost dev servers, which need a
+  // real same-origin context to function.
+  sandbox: boolean;
   // Navigate to a typed address (a URL, or a bare host that gets http:// prefixed).
   onNavigate: (rawInput: string) => void;
 }
 
-export default function BrowserOverlay({ url, reloadNonce, onNavigate }: BrowserOverlayProps) {
+export default function BrowserOverlay({
+  url,
+  reloadNonce,
+  sandbox,
+  onNavigate,
+}: BrowserOverlayProps) {
   // Editable copy of the address, re-synced whenever the loaded URL changes so the
   // bar tracks navigation without clobbering what the user is mid-typing.
   const [draft, setDraft] = useState(url ?? "");
@@ -55,6 +65,10 @@ export default function BrowserOverlay({ url, reloadNonce, onNavigate }: Browser
             className="browser-overlay-frame"
             src={url}
             title="Browser overlay"
+            // allow-scripts (so scripted reports still render) without
+            // allow-same-origin (opaque origin → can't read the token-gated server).
+            sandbox={sandbox ? "allow-scripts" : undefined}
+            referrerPolicy="no-referrer"
           />
         ) : (
           <div className="browser-overlay-empty">
