@@ -959,6 +959,14 @@ pub fn list_skills(config: &QmuxConfig) -> Vec<ClaudeSkill> {
             if !skill_md.is_file() {
                 return None;
             }
+            // Skills are inline-only by default — invoked mid-conversation as a slash
+            // command (fork, open-in-browser, …), which makes no sense as a "New agent"
+            // launch. Only skills that explicitly opt in with `qmux-launcher: true`
+            // appear in the cmd-; launcher. Filtering here does not affect Claude's own
+            // ability to run any skill inline; it loads the plugin dir independently.
+            if !skill_shows_in_launcher(&skill_md) {
+                return None;
+            }
             // The slug that names the skill to Claude comes from frontmatter `name:`
             // (falling back to the directory name); the command is namespaced by the
             // plugin. The `id` is always the directory name so it stays unique even
@@ -1027,6 +1035,40 @@ fn skill_frontmatter_name(skill_md: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether a skill opts into the cmd-; launcher via a top-level `qmux-launcher: true`
+/// frontmatter key. Skills are inline-only (invoked mid-conversation) by default, so a
+/// skill is hidden from the "New agent" launcher unless it explicitly opts in. Scans
+/// the same leading `---` block as `skill_frontmatter_name` and, like it, matches only
+/// the column-0 key — an indented `metadata:\n  qmux-launcher: ...` does not count.
+fn skill_shows_in_launcher(skill_md: &Path) -> bool {
+    let Ok(raw) = fs::read_to_string(skill_md) else {
+        return false;
+    };
+    let mut lines = raw.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        // Use the raw line so an indented key nested under another mapping is ignored.
+        let Some(rest) = line.strip_prefix("qmux-launcher:") else {
+            continue;
+        };
+        // Strip an inline `#` comment and optional quotes, then require an explicit
+        // `true` (case-insensitive) — anything else, including absent, reads as opt-out.
+        let value = rest
+            .split(" #")
+            .next()
+            .unwrap_or(rest)
+            .trim()
+            .trim_matches(['"', '\'']);
+        return value.eq_ignore_ascii_case("true");
+    }
+    false
 }
 
 /// Turns a skill slug into a launcher label by splitting on `-`/`_` and capitalizing
@@ -1815,6 +1857,40 @@ mod tests {
     }
 
     #[test]
+    fn skill_shows_in_launcher_requires_explicit_opt_in() {
+        let dir = env::temp_dir().join(format!("qmux-skill-launch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+
+        // Opted in.
+        fs::write(&path, "---\nname: x\nqmux-launcher: true\n---\n").unwrap();
+        assert!(skill_shows_in_launcher(&path));
+
+        // Case-insensitive, with an inline comment stripped.
+        fs::write(&path, "---\nqmux-launcher: TRUE # opt in\n---\n").unwrap();
+        assert!(skill_shows_in_launcher(&path));
+
+        // Absent key -> inline-only by default.
+        fs::write(&path, "---\nname: x\ndescription: d\n---\n").unwrap();
+        assert!(!skill_shows_in_launcher(&path));
+
+        // Explicit false stays hidden.
+        fs::write(&path, "---\nqmux-launcher: false\n---\n").unwrap();
+        assert!(!skill_shows_in_launcher(&path));
+
+        // A nested key under another mapping does not opt the skill in.
+        fs::write(&path, "---\nmetadata:\n  qmux-launcher: true\n---\n").unwrap();
+        assert!(!skill_shows_in_launcher(&path));
+
+        // No frontmatter fence -> hidden.
+        fs::write(&path, "# No frontmatter\nqmux-launcher: true\n").unwrap();
+        assert!(!skill_shows_in_launcher(&path));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn plugin_namespace_falls_back_to_dir_name_without_manifest() {
         let plugin_dir = env::temp_dir().join(format!("qmux-ns-{}", std::process::id()));
         let _ = fs::remove_dir_all(&plugin_dir);
@@ -1849,11 +1925,19 @@ mod tests {
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: deep-research\ndescription: d\n---\n",
+            "---\nname: deep-research\ndescription: d\nqmux-launcher: true\n---\n",
         )
         .unwrap();
         // A subdirectory without SKILL.md is not a skill.
         fs::create_dir_all(plugin_dir.join("skills").join("scratch")).unwrap();
+        // An inline-only skill (no `qmux-launcher: true`) is excluded from the launcher.
+        let inline_dir = plugin_dir.join("skills").join("fork");
+        fs::create_dir_all(&inline_dir).unwrap();
+        fs::write(
+            inline_dir.join("SKILL.md"),
+            "---\nname: fork\ndescription: d\n---\n",
+        )
+        .unwrap();
 
         let config = QmuxConfig {
             workspace_root: env::temp_dir(),
@@ -1917,7 +2001,7 @@ mod tests {
             fs::create_dir_all(&skill_dir).unwrap();
             fs::write(
                 skill_dir.join("SKILL.md"),
-                "---\nname: shared\ndescription: d\n---\n",
+                "---\nname: shared\ndescription: d\nqmux-launcher: true\n---\n",
             )
             .unwrap();
         }
