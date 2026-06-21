@@ -334,25 +334,36 @@ impl CodexAdapter {
         let hook_event = notification.event.clone();
         let event_type = match hook_event.as_str() {
             "SessionStart" => {
-                if let Some(agent) = agent.as_mut() {
-                    agent.session_id = string_field(&notification.payload, "session_id")
+                if let Some(current) = agent.as_ref() {
+                    let session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"))
                         .or_else(|| string_field(&notification.payload, "resource_id"))
                         .or_else(|| string_field(&notification.payload, "resourceId"));
-                    // A startup hook only means Codex is ready. Interactive launches
-                    // without an initial prompt should stay sendable until the first
-                    // real turn starts.
-                    if agent.status != AgentStatus::AwaitingInput {
-                        agent.status = AgentStatus::Running;
-                    }
-                    state.update_agent(agent.clone())?;
+                    // Field-scoped mutation, not a full-struct `update_agent`: this
+                    // freshly spawned process's pane is being bound by attach_agent_pane
+                    // on another thread, and a stale-snapshot write here would race it —
+                    // wiping either the pane_id it set or the session_id we set.
+                    state.mutate_agent(&current.id, |agent| {
+                        // Only overwrite when this event carries a session id; a
+                        // late/duplicate SessionStart that omits it must not blank a
+                        // recorded one, which fork + recovery key off.
+                        if let Some(session_id) = session_id {
+                            agent.session_id = Some(session_id);
+                        }
+                        // A startup hook only means Codex is ready. Interactive launches
+                        // without an initial prompt should stay sendable until the first
+                        // real turn starts.
+                        if agent.status != AgentStatus::AwaitingInput {
+                            agent.status = AgentStatus::Running;
+                        }
+                    })?;
                 }
                 "agent.session_start"
             }
             "UserPromptSubmit" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                     let prompt = string_field(&notification.payload, "prompt")
                         .or_else(|| string_field(&notification.payload, "input"));
                     send_tracking =
@@ -363,21 +374,21 @@ impl CodexAdapter {
             "PreToolUse" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.tool_use"
             }
             "PostToolUse" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.tool_result"
             }
             "PermissionRequest" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::AwaitingPermission;
-                    state.update_agent(agent.clone())?;
+                    state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.awaiting_permission"
             }
@@ -570,10 +581,14 @@ fn attach_codex_agent_pane(
     pane_id: String,
     has_initial_prompt: bool,
 ) -> Result<AgentInfo, String> {
-    let mut agent = attach_agent_pane(state, agent_id, pane_id)?;
+    let agent = attach_agent_pane(state, agent_id, pane_id)?;
     if !has_initial_prompt {
-        agent.status = AgentStatus::AwaitingInput;
-        state.update_agent(agent.clone())?;
+        // Field-scoped write — a full-struct update here would race the SessionStart
+        // hook recording session_id on another thread. Return the post-write state so
+        // callers see the final AwaitingInput status.
+        if let Some(updated) = state.set_agent_status(agent_id, AgentStatus::AwaitingInput)? {
+            return Ok(updated);
+        }
     }
     Ok(agent)
 }
@@ -1076,6 +1091,35 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("codex-session-1"));
         assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn session_start_without_resource_id_keeps_a_recorded_one() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        state.insert_agent(agent).unwrap();
+
+        // The first SessionStart records the resource/session id.
+        ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "resource_id": "codex-session-1" }),
+            ),
+        );
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("codex-session-1")
+        );
+
+        // A late/duplicate SessionStart that omits the id must not blank it.
+        ingest(&state, hook_for_agent("SessionStart", "agent-1", json!({})));
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("codex-session-1")
+        );
     }
 
     #[test]

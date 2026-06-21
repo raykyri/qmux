@@ -496,11 +496,11 @@ fn send_agent_turn(
             submit: true,
         },
     )?;
-    let mut updated = state
-        .agent(&agent.id)?
-        .ok_or_else(|| format!("agent {} was not found", agent.id))?;
-    updated.status = AgentStatus::Running;
-    state.update_agent(updated)?;
+    // Field-scoped status write: a full-struct update_agent here would drop the lock
+    // between read and write and could clobber a concurrent SessionStart hook's
+    // session_id/transcript_path (leaving the session unresumable/unforkable). Only
+    // the status changes, so write only the status.
+    state.set_agent_status(&agent.id, AgentStatus::Running)?;
     // Send tracking is advisory (it feeds de-dup/echo suppression), so a failure
     // here must not fail the send the user already sees in the pane — but log it
     // rather than discarding it without a trace.
