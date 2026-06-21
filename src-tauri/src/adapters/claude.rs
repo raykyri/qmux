@@ -8,7 +8,7 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::{Turn, TurnBlock, start_transcript_tail};
-use crate::turn_queue::drain_agent_turn_queue;
+use crate::turn_queue::{IdleResolution, advance_after_idle};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     prepare_agent_workspace,
@@ -1020,21 +1020,14 @@ fn humanize_skill_slug(slug: &str) -> String {
         .join(" ")
 }
 
-fn finish_agent_after_idle(state: &AppState, agent: &mut AgentInfo) -> Result<bool, String> {
-    let drained = drain_queued_turn_after_idle(state, agent);
-    agent.status = if drained {
-        AgentStatus::Running
-    } else {
-        AgentStatus::Done
-    };
-    state.update_agent(agent.clone())?;
-    Ok(drained)
-}
-
-fn drain_queued_turn_after_idle(state: &AppState, agent: &AgentInfo) -> bool {
-    let _ = state.clear_agent_outstanding_sends(&agent.id);
-    match drain_agent_turn_queue(state, &agent.id) {
-        Ok(drained) => drained,
+/// Resolves an idle agent: drains the next queued turn, or enters/stays paused.
+/// Returns whether a turn was drained (→ `agent.running`), else not (→ `agent.done`).
+/// Status/paused are written by `advance_after_idle`; nothing is set on the passed
+/// agent (its only later use is its id for the emitted event).
+fn finish_agent_after_idle(state: &AppState, agent: &AgentInfo) -> Result<bool, String> {
+    match advance_after_idle(state, &agent.id) {
+        Ok(IdleResolution::Drained) => Ok(true),
+        Ok(IdleResolution::Paused | IdleResolution::Idle) => Ok(false),
         Err(err) => {
             state.emit(QmuxEvent::new(
                 "agent.queue_error",
@@ -1042,7 +1035,7 @@ fn drain_queued_turn_after_idle(state: &AppState, agent: &AgentInfo) -> bool {
                 Some(agent.id.clone()),
                 json!({ "error": err }),
             ));
-            false
+            Ok(false)
         }
     }
 }
@@ -1312,6 +1305,7 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            paused: false,
             created_at: 1,
         }
     }
@@ -1425,6 +1419,46 @@ mod tests {
         assert_eq!(event.event_type, "agent.done");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::Done));
+    }
+
+    #[test]
+    fn pause_after_turn_pauses_the_queue_then_unpause_resumes() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "first".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "second".to_string())
+            .unwrap();
+        // Pause after the first queued turn.
+        state
+            .set_queued_turn_pause("agent-1", 0, true, Some("first"))
+            .unwrap();
+
+        // First idle drains the pause-after turn and the agent runs it.
+        let event = ingest(&state, hook("Stop", json!({})));
+        assert_eq!(event.event_type, "agent.running");
+        assert!(written_text(&bytes).contains("first"));
+
+        // When that turn finishes, the queue pauses instead of sending "second".
+        let event = ingest(&state, hook("Stop", json!({})));
+        assert_eq!(event.event_type, "agent.done");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(agent.paused);
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["second".to_string()]
+        );
+        assert!(!written_text(&bytes).contains("second"));
+
+        // Unpausing (agent idle) clears the pause and sends the next turn now.
+        let result = crate::turn_queue::unpause_agent(&state, "agent-1").unwrap();
+        assert!(result.sent);
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(!agent.paused);
+        assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
+        assert!(written_text(&bytes).contains("second"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ import type {
   AgentInfo,
   PaneInfo,
   QmuxEvent,
+  QueuedTurn,
   TranscriptCopyPayload,
   TranscriptHookEvent,
   Turn,
@@ -74,6 +75,14 @@ export function isAgentInfo(value: unknown): value is AgentInfo {
   );
 }
 
+export function isQueuedTurn(value: unknown): value is QueuedTurn {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).text === "string"
+  );
+}
+
 // Applies a single updated agent to the list: replaces it in place when present,
 // otherwise appends it (e.g. a freshly spawned agent), preserving order.
 export function upsertAgent(agents: AgentInfo[], updated: AgentInfo): AgentInfo[] {
@@ -89,14 +98,15 @@ export function upsertAgent(agents: AgentInfo[], updated: AgentInfo): AgentInfo[
 }
 
 export function reconcileQueuedTurnCollapse(
-  previousTurns: string[],
-  nextTurns: string[],
+  previousTurns: QueuedTurn[],
+  nextTurns: QueuedTurn[],
   previousCollapsed: boolean[],
 ) {
   const usedPreviousIndexes = new Set<number>();
   return nextTurns.map((nextTurn) => {
     const previousIndex = previousTurns.findIndex(
-      (previousTurn, index) => previousTurn === nextTurn && !usedPreviousIndexes.has(index),
+      (previousTurn, index) =>
+        previousTurn.text === nextTurn.text && !usedPreviousIndexes.has(index),
     );
     if (previousIndex === -1) {
       return false;

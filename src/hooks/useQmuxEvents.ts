@@ -3,13 +3,14 @@ import type { Dispatch, SetStateAction } from "react";
 import { listAgents, listPanes, listenToEvents } from "../lib/api";
 import {
   isAgentInfo,
+  isQueuedTurn,
   isTurn,
   ptyDataFromPayload,
   transcriptHookEvent,
   upsertAgent,
 } from "../lib/appHelpers";
 import type { ExitDialogState, PaneContextMenuState } from "../appTypes";
-import type { AgentInfo, PaneInfo, TranscriptHookEvent, Turn } from "../types";
+import type { AgentInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, Turn } from "../types";
 
 // The backend event stream drives most of the app's live state. This hook owns
 // the single global subscription: it is intentionally set up once (empty deps),
@@ -26,7 +27,7 @@ export interface UseQmuxEventsHandlers {
   setAgents: Dispatch<SetStateAction<AgentInfo[]>>;
   setTurns: Dispatch<SetStateAction<Turn[]>>;
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
-  setAgentQueuedTurns: (agentId: string, queuedTurns: string[]) => void;
+  setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   refreshAgentTurnQueue: (agentId: string) => Promise<void>;
   refreshTranscriptOptions: (agentId: string) => Promise<void>;
   // Routes a decoded PTY chunk to the pane that owns it. Replaces the previous
@@ -139,10 +140,11 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           event.type === "agent.queued_turn_sent" ||
           event.type === "agent.queued_turn_removed" ||
           event.type === "agent.queued_turn_reordered" ||
+          event.type === "agent.unpaused" ||
           event.type === "agent.queue_error")
       ) {
         const queuedTurns = Array.isArray(event.payload.queuedTurns)
-          ? event.payload.queuedTurns.filter((turn): turn is string => typeof turn === "string")
+          ? event.payload.queuedTurns.filter(isQueuedTurn)
           : null;
         if (queuedTurns) {
           setAgentQueuedTurns(event.agentId, queuedTurns);

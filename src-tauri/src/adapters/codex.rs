@@ -8,7 +8,7 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::Turn;
-use crate::turn_queue::drain_agent_turn_queue;
+use crate::turn_queue::{IdleResolution, advance_after_idle};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     prepare_agent_workspace,
@@ -745,21 +745,13 @@ fn validate_shell_tail_args(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn finish_agent_after_stop(state: &AppState, agent: &mut AgentInfo) -> Result<bool, String> {
-    let drained = drain_queued_turn_after_stop(state, agent);
-    agent.status = if drained {
-        AgentStatus::Running
-    } else {
-        AgentStatus::Done
-    };
-    state.update_agent(agent.clone())?;
-    Ok(drained)
-}
-
-fn drain_queued_turn_after_stop(state: &AppState, agent: &AgentInfo) -> bool {
-    let _ = state.clear_agent_outstanding_sends(&agent.id);
-    match drain_agent_turn_queue(state, &agent.id) {
-        Ok(drained) => drained,
+/// Resolves an idle Codex agent: drains the next queued turn, or enters/stays paused.
+/// Returns whether a turn was drained. Status/paused are written by
+/// `advance_after_idle`; the passed agent is only used for its id afterward.
+fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, String> {
+    match advance_after_idle(state, &agent.id) {
+        Ok(IdleResolution::Drained) => Ok(true),
+        Ok(IdleResolution::Paused | IdleResolution::Idle) => Ok(false),
         Err(err) => {
             state.emit(QmuxEvent::new(
                 "agent.queue_error",
@@ -767,7 +759,7 @@ fn drain_queued_turn_after_stop(state: &AppState, agent: &AgentInfo) -> bool {
                 Some(agent.id.clone()),
                 json!({ "error": err }),
             ));
-            false
+            Ok(false)
         }
     }
 }
@@ -1167,6 +1159,7 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            paused: false,
             created_at: 1,
         }
     }
