@@ -1,0 +1,6 @@
+{
+  "name": "qmux",
+  "version": "0.1.0",
+  "description": "Skills injected by qmux into the agents it launches.",
+  "author": { "name": "qmux" }
+}

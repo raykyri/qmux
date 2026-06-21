@@ -13,11 +13,11 @@ use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     prepare_agent_workspace,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
@@ -47,12 +47,30 @@ const CLAUDE_PERMISSION_MODES: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct ClaudeAdapter {
     binary: String,
+    plugin_dir: PathBuf,
 }
 
 impl ClaudeAdapter {
     pub fn new(config: &QmuxConfig) -> Self {
         Self {
             binary: config.claude_binary(),
+            plugin_dir: config.claude_plugin_dir.clone(),
+        }
+    }
+
+    /// `--plugin-dir` args that inject the qmux-managed plugin (and its skills)
+    /// into a launched Claude instance. Emitted only when the plugin directory
+    /// actually exists, so a checkout without one launches cleanly. This is the
+    /// sole skill-injection vector: it points at a qmux-owned directory and never
+    /// touches the user's `~/.claude` or the project's `.claude`.
+    fn plugin_dir_args(&self) -> Vec<String> {
+        if self.plugin_dir.is_dir() {
+            vec![
+                "--plugin-dir".to_string(),
+                self.plugin_dir.display().to_string(),
+            ]
+        } else {
+            Vec::new()
         }
     }
 
@@ -188,6 +206,7 @@ impl ClaudeAdapter {
             "--settings".to_string(),
             settings_path.display().to_string(),
         ];
+        args.extend(self.plugin_dir_args());
 
         if let Some(model) = request.model.filter(|model| !model.trim().is_empty()) {
             args.push("--model".to_string());
@@ -262,6 +281,7 @@ impl ClaudeAdapter {
             "--settings".to_string(),
             settings_path.display().to_string(),
         ];
+        args.extend(self.plugin_dir_args());
 
         if let Some(model) = agent.model.clone().filter(|model| !model.trim().is_empty()) {
             args.push("--model".to_string());
@@ -392,6 +412,7 @@ impl ClaudeAdapter {
             "--settings".to_string(),
             settings_path.display().to_string(),
         ];
+        args.extend(self.plugin_dir_args());
         args.extend(request.args);
 
         Ok(PreparedShellAgentLaunch {
@@ -755,6 +776,104 @@ pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
     Ok(settings_path)
 }
 
+/// A skill the qmux-managed plugin makes available to launched Claude agents.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSkill {
+    /// Skill slug as Claude knows it (e.g. `deep-research`).
+    pub id: String,
+    /// Human label for the launcher checkbox (e.g. `Deep Research`).
+    pub name: String,
+    /// Slash command that invokes the skill, namespaced by the plugin
+    /// (e.g. `/qmux:deep-research`).
+    pub command: String,
+}
+
+/// Enumerates the skills inside the qmux-managed Claude plugin (`<plugin>/skills/*`).
+/// Returns an empty list when the plugin directory is absent so the launcher simply
+/// shows no skill checkboxes rather than erroring.
+pub fn list_skills(config: &QmuxConfig) -> Vec<ClaudeSkill> {
+    let plugin_dir = &config.claude_plugin_dir;
+    let skills_dir = plugin_dir.join("skills");
+    let Ok(entries) = fs::read_dir(&skills_dir) else {
+        return Vec::new();
+    };
+    let namespace = plugin_namespace(plugin_dir);
+
+    let mut skills: Vec<ClaudeSkill> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .filter_map(|entry| {
+            let skill_md = entry.path().join("SKILL.md");
+            if !skill_md.is_file() {
+                return None;
+            }
+            // Prefer the skill's declared frontmatter name (what Claude invokes it
+            // by); fall back to the directory name when it's absent.
+            let dir_name = entry.file_name().to_string_lossy().into_owned();
+            let slug = skill_frontmatter_name(&skill_md).unwrap_or(dir_name);
+            Some(ClaudeSkill {
+                command: format!("/{namespace}:{slug}"),
+                name: humanize_skill_slug(&slug),
+                id: slug,
+            })
+        })
+        .collect();
+    skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    skills
+}
+
+/// The plugin's namespace, taken from `.claude-plugin/plugin.json`'s `name`, which
+/// is how Claude prefixes the skill's slash command. Defaults to `qmux`.
+fn plugin_namespace(plugin_dir: &Path) -> String {
+    let manifest = plugin_dir.join(".claude-plugin").join("plugin.json");
+    fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| string_field(&value, "name"))
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "qmux".to_string())
+}
+
+/// Reads the `name:` value from a SKILL.md YAML frontmatter block. Cheap and safe:
+/// it only scans the leading `---` fenced block and never parses the body.
+fn skill_frontmatter_name(skill_md: &Path) -> Option<String> {
+    let raw = fs::read_to_string(skill_md).ok()?;
+    let mut lines = raw.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return None;
+    }
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            let name = rest.trim().trim_matches(['"', '\'']).trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Turns a skill slug into a launcher label by splitting on `-`/`_` and capitalizing
+/// each word: `deep-research` -> `Deep Research`.
+fn humanize_skill_slug(slug: &str) -> String {
+    slug.split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn finish_agent_after_idle(state: &AppState, agent: &mut AgentInfo) -> Result<bool, String> {
     let drained = drain_queued_turn_after_idle(state, agent);
     agent.status = if drained {
@@ -1016,6 +1135,7 @@ mod tests {
                 },
             },
             legacy_claude_binary: None,
+            claude_plugin_dir: PathBuf::new(),
         })
     }
 
@@ -1371,5 +1491,110 @@ mod tests {
             ClaudeLaunchOptions::from_value(json!({ "permissionMode": "always" })).unwrap_err();
 
         assert!(err.contains("invalid Claude adapter option permissionMode"));
+    }
+
+    #[test]
+    fn humanize_skill_slug_title_cases_each_word() {
+        assert_eq!(humanize_skill_slug("deep-research"), "Deep Research");
+        assert_eq!(humanize_skill_slug("hello_stub"), "Hello Stub");
+        assert_eq!(humanize_skill_slug("single"), "Single");
+        assert_eq!(humanize_skill_slug("a--b"), "A B");
+    }
+
+    #[test]
+    fn skill_frontmatter_name_reads_declared_name_or_none() {
+        let dir = env::temp_dir().join(format!("qmux-skill-fm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+
+        fs::write(
+            &path,
+            "---\nname: deep-research\ndescription: x\n---\n# Body\n",
+        )
+        .unwrap();
+        assert_eq!(
+            skill_frontmatter_name(&path).as_deref(),
+            Some("deep-research")
+        );
+
+        // Quoted values are unwrapped.
+        fs::write(&path, "---\nname: \"Quoted Name\"\n---\n").unwrap();
+        assert_eq!(
+            skill_frontmatter_name(&path).as_deref(),
+            Some("Quoted Name")
+        );
+
+        // No frontmatter fence -> no name.
+        fs::write(&path, "# No frontmatter\nname: ignored\n").unwrap();
+        assert_eq!(skill_frontmatter_name(&path), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_skills_enumerates_named_namespaced_skills() {
+        use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+
+        let plugin_dir = env::temp_dir().join(format!("qmux-plugin-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&plugin_dir);
+        let manifest_dir = plugin_dir.join(".claude-plugin");
+        fs::create_dir_all(&manifest_dir).unwrap();
+        fs::write(manifest_dir.join("plugin.json"), r#"{"name":"qmux"}"#).unwrap();
+
+        let skill_dir = plugin_dir.join("skills").join("deep-research");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: deep-research\ndescription: d\n---\n",
+        )
+        .unwrap();
+        // A subdirectory without SKILL.md is not a skill.
+        fs::create_dir_all(plugin_dir.join("skills").join("scratch")).unwrap();
+
+        let config = QmuxConfig {
+            workspace_root: env::temp_dir(),
+            socket_path: env::temp_dir().join("qmux-list.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: plugin_dir.clone(),
+        };
+
+        let skills = list_skills(&config);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "deep-research");
+        assert_eq!(skills[0].name, "Deep Research");
+        assert_eq!(skills[0].command, "/qmux:deep-research");
+
+        let _ = fs::remove_dir_all(&plugin_dir);
+    }
+
+    #[test]
+    fn list_skills_is_empty_without_a_plugin_dir() {
+        use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+
+        let config = QmuxConfig {
+            workspace_root: env::temp_dir(),
+            socket_path: env::temp_dir().join("qmux-empty.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: env::temp_dir().join("qmux-nonexistent-plugin-dir"),
+        };
+
+        assert!(list_skills(&config).is_empty());
     }
 }

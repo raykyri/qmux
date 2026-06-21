@@ -932,6 +932,23 @@ button:disabled {
   box-shadow: none;
 }
 
+/* Faint, non-editable skill command pinned over the composer's first-line origin
+   (matching the textarea's 16px/18px padding). The textarea's first line is
+   text-indented by this span's measured width so typed text starts right after it. */
+.command-launcher-skill-prefix {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  z-index: 1;
+  max-width: calc(100% - 36px);
+  font-size: var(--fs-input);
+  line-height: 1.5;
+  color: var(--placeholder-color);
+  white-space: pre;
+  pointer-events: none;
+  user-select: none;
+}
+
 .command-launcher-overlay {
   position: absolute;
   right: 10px;

@@ -17,6 +17,12 @@ pub struct QmuxConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub legacy_claude_binary: Option<String>,
+    /// Directory of the qmux-managed Claude plugin whose `skills/` are injected
+    /// into launched Claude agents via `--plugin-dir`. Resolved at load time from
+    /// `QMUX_CLAUDE_PLUGIN_DIR` or `<cwd>/qmux-plugin`; never read from or written
+    /// to the config JSON (it is derived, not configured).
+    #[serde(skip)]
+    pub claude_plugin_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -66,6 +72,7 @@ impl QmuxConfig {
 
         config.workspace_root = absolutize(&cwd, &config.workspace_root);
         config.socket_path = absolutize(&cwd, &config.socket_path);
+        config.claude_plugin_dir = resolve_claude_plugin_dir(&cwd);
 
         fs::create_dir_all(&config.workspace_root).map_err(|err| {
             format!(
@@ -129,7 +136,21 @@ impl QmuxConfig {
                 },
             },
             legacy_claude_binary: None,
+            // Overwritten by load() once the cwd is known; this default is only a
+            // placeholder for the no-config-file path.
+            claude_plugin_dir: PathBuf::new(),
         })
+    }
+}
+
+/// Resolves the qmux-managed Claude plugin directory. Honors an explicit
+/// `QMUX_CLAUDE_PLUGIN_DIR` override (absolutized against the cwd when relative),
+/// otherwise defaults to `<cwd>/qmux-plugin`, matching how the workspace root and
+/// control socket are anchored to the process working directory.
+fn resolve_claude_plugin_dir(cwd: &Path) -> PathBuf {
+    match env::var_os("QMUX_CLAUDE_PLUGIN_DIR") {
+        Some(value) if !value.is_empty() => absolutize(cwd, Path::new(&value)),
+        _ => cwd.join("qmux-plugin"),
     }
 }
 
