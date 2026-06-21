@@ -549,6 +549,16 @@ impl ClaudeAdapter {
                 );
             }
         }
+        // Carry the updated agent so the frontend can apply this status change
+        // surgically instead of refetching the entire agent list on every hook
+        // event (which also avoids out-of-order refetches clobbering newer state).
+        if let (Value::Object(payload), Some(agent)) = (&mut event_payload, agent.as_ref()) {
+            payload.insert(
+                "agent".to_string(),
+                serde_json::to_value(agent)
+                    .map_err(|err| format!("failed to encode agent: {err}"))?,
+            );
+        }
 
         Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
             event_type,

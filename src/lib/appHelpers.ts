@@ -39,6 +39,55 @@ export function isTurn(value: unknown): value is Turn {
   );
 }
 
+// Decodes a `pty.data` event payload (base64-encoded raw PTY bytes) into the
+// Uint8Array xterm writes. The backend sends base64 rather than a JSON integer
+// array to keep this hottest-path payload compact and the decode a single step.
+export function ptyDataFromPayload(payload: Record<string, unknown>): Uint8Array | null {
+  const encoded = payload.dataBase64;
+  if (typeof encoded !== "string") {
+    return null;
+  }
+  try {
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+// Validates an agent payload arriving on an event before it is applied to local
+// state, mirroring isTurn. Status events now carry the updated agent so the UI can
+// apply changes surgically instead of refetching the whole list every time.
+export function isAgentInfo(value: unknown): value is AgentInfo {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const agent = value as Record<string, unknown>;
+  return (
+    typeof agent.id === "string" &&
+    typeof agent.adapter === "string" &&
+    typeof agent.status === "string"
+  );
+}
+
+// Applies a single updated agent to the list: replaces it in place when present,
+// otherwise appends it (e.g. a freshly spawned agent), preserving order.
+export function upsertAgent(agents: AgentInfo[], updated: AgentInfo): AgentInfo[] {
+  let replaced = false;
+  const next = agents.map((agent) => {
+    if (agent.id === updated.id) {
+      replaced = true;
+      return updated;
+    }
+    return agent;
+  });
+  return replaced ? next : [...next, updated];
+}
+
 export function reconcileQueuedTurnCollapse(
   previousTurns: string[],
   nextTurns: string[],

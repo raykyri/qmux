@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -47,6 +47,7 @@ import {
 } from "./lib/settings";
 import {
   acknowledgeAgent,
+  attachPane,
   confirmAppExit,
   getAgentDraft,
   getRuntimeConfig,
@@ -111,6 +112,11 @@ export default function App() {
   const paneListRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
+  // Becomes true once the single backend event subscription is live. Until then,
+  // panes that want to attach are parked here so their pre-attach backlog is only
+  // released after the listener can actually deliver it.
+  const eventsReadyRef = useRef(false);
+  const pendingAttachRef = useRef<Set<string>>(new Set());
   const agentsRef = useRef<AgentInfo[]>([]);
   const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
   // Composer drafts live here keyed by agent so they survive tab switches; the
@@ -689,6 +695,32 @@ export default function App() {
     };
   }, [agents, worktreeStatusByAgent]);
 
+  // Routes a decoded PTY chunk from the app's single event subscription to the
+  // pane that owns it. Stable so TerminalPane's attach effect doesn't re-run.
+  const dispatchPtyData = useCallback((paneId: string, data: Uint8Array) => {
+    terminalPaneRefs.current.get(paneId)?.write(data);
+  }, []);
+
+  // Releases a pane's pre-attach output backlog. While the backend subscription is
+  // still being set up, the request is parked and flushed by handleEventsReady, so
+  // no cold-start output is delivered before a listener exists to receive it.
+  const requestPaneAttach = useCallback((paneId: string) => {
+    if (eventsReadyRef.current) {
+      void attachPane(paneId).catch(() => undefined);
+    } else {
+      pendingAttachRef.current.add(paneId);
+    }
+  }, []);
+
+  const handleEventsReady = useCallback(() => {
+    eventsReadyRef.current = true;
+    const pending = pendingAttachRef.current;
+    pendingAttachRef.current = new Set();
+    for (const paneId of pending) {
+      void attachPane(paneId).catch(() => undefined);
+    }
+  }, []);
+
   useQmuxEvents({
     setHookEventsByAgent,
     setPanes,
@@ -701,6 +733,8 @@ export default function App() {
     setAgentQueuedTurns,
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
+    dispatchPtyData,
+    onEventsReady: handleEventsReady,
   });
 
   async function addShellPane() {
@@ -2147,6 +2181,7 @@ export default function App() {
               fontFamily={terminalFontFamily}
               letterSpacing={terminalLetterSpacing}
               inputBlocked={settingsOpen}
+              requestAttach={requestPaneAttach}
             />
           ))}
         </div>
