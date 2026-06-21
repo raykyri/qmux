@@ -627,10 +627,39 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [pane.id, requestAttach]);
 
   useEffect(() => {
-    if (active) {
-      terminalRef.current?.focus();
-      stabilizeTerminalRef.current?.();
+    if (!active) {
+      return;
     }
+    terminalRef.current?.focus();
+    stabilizeTerminalRef.current?.();
+    // While this pane was inactive it was display:none, so PTY output kept growing the
+    // buffer but xterm's viewport metrics went stale (its cached viewport height drops
+    // toward 0 on a 0x0 element). After re-showing, fit()+refresh() repaint the rows
+    // but don't re-sync the scroll area, so the scrollbar can't reach the true bottom
+    // and the first scroll jumps — until a keypress nudges it. Replicate that nudge:
+    // scrollToBottom() fires onScroll, which re-measures the now-visible viewport. If
+    // the user had scrolled up, restore that position afterward (both happen in one
+    // frame, so there's no visible jump). Run after the fit's frame, and again once
+    // layout/fonts settle.
+    const resync = () => {
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        return;
+      }
+      const buffer = terminal.buffer.active;
+      const previousTop = buffer.viewportY;
+      const wasFollowing = previousTop >= buffer.baseY;
+      terminal.scrollToBottom();
+      if (!wasFollowing) {
+        terminal.scrollToLine(previousTop);
+      }
+    };
+    const frame = requestAnimationFrame(resync);
+    const settle = window.setTimeout(resync, 80);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
   }, [active, pane.id]);
 
   // Apply live font changes (settings panel / Cmd-+/Cmd--) to an already-open
