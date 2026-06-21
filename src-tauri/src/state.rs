@@ -891,7 +891,7 @@ impl AppState {
         agent_id: &str,
         index: usize,
         expected_data: Option<&str>,
-    ) -> Result<(String, Vec<QueuedTurn>), String> {
+    ) -> Result<(QueuedTurn, Vec<QueuedTurn>), String> {
         let mut model = self
             .inner
             .model
@@ -914,8 +914,7 @@ impl AppState {
 
             let removed = queue
                 .remove(index)
-                .ok_or_else(|| format!("queued turn {index} was not found"))?
-                .text;
+                .ok_or_else(|| format!("queued turn {index} was not found"))?;
             let queued_turns = queue.iter().cloned().collect::<Vec<_>>();
             (removed, queued_turns, queue.is_empty())
         };
@@ -997,7 +996,7 @@ impl AppState {
         Ok(Some(popped))
     }
 
-    pub fn prepend_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
+    pub fn prepend_agent_turn(&self, agent_id: &str, turn: QueuedTurn) -> Result<usize, String> {
         let len = {
             let mut model = self
                 .inner
@@ -1008,7 +1007,7 @@ impl AppState {
                 .agent_turn_queues
                 .entry(agent_id.to_string())
                 .or_default();
-            queue.push_front(QueuedTurn::new(data));
+            queue.push_front(turn);
             queue.len()
         };
         self.persist();
@@ -1017,12 +1016,12 @@ impl AppState {
 
     /// Inserts a turn into an agent's queue at `index` (clamped to the queue length),
     /// returning the new length. Used to roll a moved turn back to its original spot
-    /// when handing it to another agent fails.
+    /// when handing it to another agent fails (preserving its pause-after flag).
     pub fn insert_agent_turn_at(
         &self,
         agent_id: &str,
         index: usize,
-        data: String,
+        turn: QueuedTurn,
     ) -> Result<usize, String> {
         let len = {
             let mut model = self
@@ -1035,7 +1034,7 @@ impl AppState {
                 .entry(agent_id.to_string())
                 .or_default();
             let at = index.min(queue.len());
-            queue.insert(at, QueuedTurn::new(data));
+            queue.insert(at, turn);
             queue.len()
         };
         self.persist();
