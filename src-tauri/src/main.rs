@@ -104,8 +104,12 @@ fn open_in_os_browser(url: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_in_os_browser(url: &str) -> Result<(), String> {
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
+    // Avoid `cmd /C start`: Rust quotes argv by MSVCRT rules, but cmd.exe re-parses
+    // `&|<>^` outside double quotes, so a URL like https://x/?a=1&b=2 would be split
+    // (and the tail run as a separate command). Invoke the protocol handler directly
+    // via rundll32 — no shell is involved, so the URL reaches the handler intact.
+    std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn()
         .map(|_| ())
         .map_err(|err| format!("failed to open externally: {err}"))
