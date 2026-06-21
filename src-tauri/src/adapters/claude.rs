@@ -582,7 +582,13 @@ impl ClaudeAdapter {
                     // on another thread, and a stale-snapshot write here would race it —
                     // wiping either the pane_id it set or the session_id we set.
                     let updated = state.mutate_agent(&current.id, |agent| {
-                        agent.session_id = session_id;
+                        // Same guard as transcript_path below: only overwrite when this
+                        // event carries a session id. A late/duplicate SessionStart that
+                        // omits it must not blank a recorded one, which fork + recovery
+                        // key off.
+                        if let Some(session_id) = session_id {
+                            agent.session_id = Some(session_id);
+                        }
                         // Only overwrite a known-good transcript path when this event
                         // actually carries one. A SessionStart whose payload omits the
                         // field must not blank the path out from under a running tail,
@@ -1467,6 +1473,27 @@ mod tests {
         let written = written_text(&bytes);
         assert!(written.contains("first"));
         assert!(!written.contains("second"));
+    }
+
+    #[test]
+    fn session_start_without_session_id_keeps_a_recorded_one() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        // The first SessionStart records the session id.
+        ingest(&state, hook("SessionStart", json!({ "session_id": "sess-abc" })));
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("sess-abc")
+        );
+
+        // A late/duplicate SessionStart that omits session_id must not blank it
+        // (fork + recovery key off the recorded id).
+        ingest(&state, hook("SessionStart", json!({})));
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("sess-abc")
+        );
     }
 
     #[test]

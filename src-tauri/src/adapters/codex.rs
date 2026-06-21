@@ -344,7 +344,12 @@ impl CodexAdapter {
                     // on another thread, and a stale-snapshot write here would race it —
                     // wiping either the pane_id it set or the session_id we set.
                     state.mutate_agent(&current.id, |agent| {
-                        agent.session_id = session_id;
+                        // Only overwrite when this event carries a session id; a
+                        // late/duplicate SessionStart that omits it must not blank a
+                        // recorded one, which fork + recovery key off.
+                        if let Some(session_id) = session_id {
+                            agent.session_id = Some(session_id);
+                        }
                         // A startup hook only means Codex is ready. Interactive launches
                         // without an initial prompt should stay sendable until the first
                         // real turn starts.
@@ -1086,6 +1091,35 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("codex-session-1"));
         assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn session_start_without_resource_id_keeps_a_recorded_one() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        state.insert_agent(agent).unwrap();
+
+        // The first SessionStart records the resource/session id.
+        ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "resource_id": "codex-session-1" }),
+            ),
+        );
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("codex-session-1")
+        );
+
+        // A late/duplicate SessionStart that omits the id must not blank it.
+        ingest(&state, hook_for_agent("SessionStart", "agent-1", json!({})));
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("codex-session-1")
+        );
     }
 
     #[test]
