@@ -420,7 +420,7 @@ button:disabled {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .pane-tab small {
@@ -853,6 +853,16 @@ button:disabled {
 
 .confirm-dialog-actions .danger:hover {
   background: #3a221d;
+}
+
+/* Keep the danger button's red border on focus instead of recoloring it to the
+   accent focus ring. The focus indicator becomes a second outline sitting 1px
+   outside the border, in a slightly brighter shade of the same red. */
+.confirm-dialog-actions .danger:focus-visible {
+  border-color: #7a3b34;
+  box-shadow: none;
+  outline: 1px solid #a55349;
+  outline-offset: 1px;
 }
 
 /* Settings panel — a small modal reusing the confirm-dialog surface. */
@@ -1615,6 +1625,31 @@ button:disabled {
   font-size: 12px;
 }
 
+/* The session id doubles as a copy-to-clipboard control: it drops the button
+   chrome so it still reads as the inline label, and only brightens on
+   hover/focus to hint that it's clickable. */
+.turn-pane-session-copy {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-pane-session-copy:hover,
+.turn-pane-session-copy:focus-visible {
+  color: #f1f0e8;
+}
+
+.turn-pane-session-copy:focus-visible {
+  outline: none;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
 .turn-pane-header-controls {
   flex: 0 0 auto;
   display: flex;
@@ -1646,8 +1681,18 @@ button:disabled {
   color: #f1f0e8;
 }
 
+/* Browser toggle when the overlay is open: reads as locked on / pushed in rather
+   than swapping to a close icon. An accent-tinted fill plus an inset shadow gives
+   the depressed look; it returns to the neutral skin once toggled off. */
 .turn-pane-header-button.is-active {
   border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: #f1f0e8;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.turn-pane-header-button.is-active:hover {
+  background: var(--accent-shadow);
   color: #f1f0e8;
 }
 
@@ -1679,9 +1724,14 @@ button:disabled {
 }
 
 .turn-pane-fork-item {
+  /* Left-align the label: the shared button skin centers flex content, so
+     text-align alone isn't enough. min-height:0 drops the 30px control floor
+     that otherwise pads the rows taller than their text needs. */
+  justify-content: flex-start;
   width: 100%;
   min-width: 0;
-  padding: 6px 10px;
+  min-height: 0;
+  padding: 5px 10px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -2445,10 +2495,12 @@ button:disabled {
 
 .composer-menu-popover {
   /* Anchored above the trigger so it opens upward, away from the bottom edge.
-     Right edge pinned to the trigger so the menu always grows leftward. */
+     Horizontally centered over the trigger so its width grows evenly to both
+     sides instead of spilling off one edge of the (narrow) right pane. */
   position: absolute;
   bottom: calc(100% + 6px);
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 5;
   display: flex;
   width: 220px;

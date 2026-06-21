@@ -4,6 +4,9 @@ export interface RuntimeConfig {
   workspaceRoot: string;
   socketPath: string;
   adapters: AgentAdapterMetadata[];
+  // The user's home directory (empty if HOME is unset), used to render
+  // home-relative paths as ~/… rather than bare relative segments.
+  homeDir: string;
 }
 
 export interface AgentAdapterMetadata {
