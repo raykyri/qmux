@@ -4,7 +4,7 @@ import type { ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
-import type { ITheme } from "@xterm/xterm";
+import type { ILink, ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -31,6 +31,37 @@ interface TerminalPaneProps {
   /** Called with the owning agent id on each user keystroke into this pane's
    *  terminal, so the app can hold the agent's queue while the user is typing. */
   onUserInput?: (agentId: string) => void;
+  /** Primary action for a clicked terminal link (open it). */
+  onOpenLink?: (url: string) => void;
+}
+
+// Matches http(s) URLs in terminal text. Conservative: stops at whitespace and a few
+// delimiters so it doesn't swallow surrounding punctuation/markup.
+const TERMINAL_URL_REGEX = /\bhttps?:\/\/[^\s<>"'`)\]}]+/g;
+
+// Finds clickable links in one terminal line (1-based buffer row `y`). Single-line
+// only: a URL wrapped across rows is detected per-row (the common case — a URL on one
+// line — works exactly). x/y are 1-based; end.x is inclusive of the last cell.
+function findLineLinks(
+  lineText: string,
+  y: number,
+  onActivate: (url: string) => void,
+): ILink[] {
+  const links: ILink[] = [];
+  for (const match of lineText.matchAll(TERMINAL_URL_REGEX)) {
+    const start = match.index ?? 0;
+    // Drop trailing punctuation that's usually sentence/markup, not part of the URL.
+    const url = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
+    if (url.length === 0) {
+      continue;
+    }
+    links.push({
+      text: url,
+      range: { start: { x: start + 1, y }, end: { x: start + url.length, y } },
+      activate: (_event, text) => onActivate(text),
+    });
+  }
+  return links;
 }
 
 export interface TerminalPaneHandle {
@@ -83,7 +114,17 @@ const TERMINAL_THEME: ITheme = {
 };
 
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { pane, active, fontSize, fontFamily, letterSpacing, inputBlocked, requestAttach, onUserInput },
+  {
+    pane,
+    active,
+    fontSize,
+    fontFamily,
+    letterSpacing,
+    inputBlocked,
+    requestAttach,
+    onUserInput,
+    onOpenLink,
+  },
   ref,
 ) {
   // The setup effect runs once (keyed on pane.id) and closes over its render's
@@ -103,6 +144,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // handler always calls the latest one.
   const onUserInputRef = useRef(onUserInput);
   onUserInputRef.current = onUserInput;
+  // Same for the link handler: the link provider is registered once per pane.
+  const onOpenLinkRef = useRef(onOpenLink);
+  onOpenLinkRef.current = onOpenLink;
   // In-app confirm (window.confirm is a no-op in the webview), reached from the
   // paste handler inside the once-per-pane setup effect via a ref so it stays current.
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -426,6 +470,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         void writePane(pane.id, data);
       });
 
+      // Make http(s) URLs in the scrollback clickable (hover underlines them).
+      const linkProviderDisposable = terminal.registerLinkProvider({
+        provideLinks(bufferLineNumber, callback) {
+          const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
+          if (!line) {
+            callback(undefined);
+            return;
+          }
+          const links = findLineLinks(line.translateToString(true), bufferLineNumber, (url) =>
+            onOpenLinkRef.current?.(url),
+          );
+          callback(links.length > 0 ? links : undefined);
+        },
+      });
+
       stabilizeTerminalRef.current = scheduleSettledFits;
 
       // xterm paints inside requestAnimationFrame, which the OS/webview throttles
@@ -493,6 +552,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       return () => {
         hostEl.removeEventListener("paste", handlePaste, true);
         inputDisposable.dispose();
+        linkProviderDisposable.dispose();
         resultsDisposable.dispose();
         resizeObserver.disconnect();
         if (resizeFrame !== null) {
