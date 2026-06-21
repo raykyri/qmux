@@ -24,7 +24,7 @@ use sleep::SleepGuard;
 use state::{AppState, PaneInfo};
 use tauri::Manager;
 use transcript::{
-    Turn, TranscriptOption, list_agent_transcripts as list_agent_transcript_options,
+    TranscriptOption, Turn, list_agent_transcripts as list_agent_transcript_options,
     set_agent_transcript as repoint_agent_transcript,
 };
 use turn_queue::{
@@ -302,10 +302,7 @@ fn app_confirm_exit(
 /// Arms or releases the macOS wake lock. The frontend calls this whenever its
 /// "prevent sleep" setting or the set of running agents changes.
 #[tauri::command]
-fn app_set_prevent_sleep(
-    guard: tauri::State<'_, SleepGuard>,
-    active: bool,
-) -> Result<(), String> {
+fn app_set_prevent_sleep(guard: tauri::State<'_, SleepGuard>, active: bool) -> Result<(), String> {
     guard.set_active(active)
 }
 
