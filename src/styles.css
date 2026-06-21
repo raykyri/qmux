@@ -318,10 +318,13 @@ button:disabled {
   pointer-events: none;
 }
 
+/* Anchored to the target tab's own content (9px base + its depth), so the gutter
+   marks the one extra step the child indents and the solid outline sits where the
+   child's content will start — correct even when the target is already nested. */
 .pane-tab-nest-indicator::before {
   content: "";
   position: absolute;
-  left: var(--pane-indent, 14px);
+  left: calc(9px + (var(--pane-depth, 0) + 1) * var(--pane-indent, 14px));
   right: 0;
   top: 0;
   bottom: 0;
@@ -331,7 +334,7 @@ button:disabled {
 
 .pane-tab-nest-gutter {
   position: absolute;
-  left: 0;
+  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
   top: 0;
   bottom: 0;
   width: var(--pane-indent, 14px);

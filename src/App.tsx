@@ -49,6 +49,7 @@ import {
   moveToGap,
   nestUnder,
   outdentAt,
+  type PaneLayoutItem,
   subtreeEnd,
   toLayout,
 } from "./lib/paneTree";
@@ -985,8 +986,9 @@ export default function App() {
   // same request-sequence guard the old reorder used so stale responses never clobber
   // a newer local state.
   function applyPaneLayout(next: PaneInfo[]) {
-    if (next === panes) {
-      return;
+    const nextLayout = toLayout(next);
+    if (sameLayout(nextLayout, toLayout(panes))) {
+      return; // structural no-op — don't churn a backend round-trip
     }
     const requestSeq = paneReorderRequestSeqRef.current + 1;
     paneReorderRequestSeqRef.current = requestSeq;
@@ -994,19 +996,35 @@ export default function App() {
 
     const persist = paneReorderPersistChainRef.current
       .catch(() => undefined)
-      .then(() => setPaneLayout(toLayout(next)));
+      .then(() => setPaneLayout(nextLayout));
     paneReorderPersistChainRef.current = persist
       .then((orderedPanes) => {
         if (paneReorderRequestSeqRef.current === requestSeq) {
           setPanes(orderedPanes);
         }
       })
-      .catch((err) => {
-        if (paneReorderRequestSeqRef.current === requestSeq) {
-          setError(err instanceof Error ? err.message : String(err));
-          void listPanes().then(setPanes).catch(() => undefined);
+      .catch(() => {
+        // A layout change is non-critical, and a pane added/closed mid-edit makes the
+        // request "stale" — both are benign, so resync from the backend instead of
+        // surfacing an error. Only the latest request's resync is allowed to land.
+        if (paneReorderRequestSeqRef.current !== requestSeq) {
+          return;
         }
+        void listPanes()
+          .then((latest) => {
+            if (paneReorderRequestSeqRef.current === requestSeq) {
+              setPanes(latest);
+            }
+          })
+          .catch(() => undefined);
       });
+  }
+
+  function sameLayout(a: PaneLayoutItem[], b: PaneLayoutItem[]) {
+    return (
+      a.length === b.length &&
+      a.every((item, index) => item.id === b[index].id && item.depth === b[index].depth)
+    );
   }
 
   function indentContextMenuPane() {
