@@ -664,6 +664,13 @@ impl AppState {
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
         }
+        // The pane's control-socket token is captured by its in-pane process as
+        // QMUX_TOKEN; once the pane is gone for good it can never legitimately be used
+        // again, so drop it rather than leave a live credential resolving (via
+        // `pane_for_token`) to a pane that no longer exists. Separate lock from `model`.
+        if let Ok(mut tokens) = self.inner.pane_tokens.lock() {
+            tokens.remove(pane_id);
+        }
         // The pane's file-server token can never be used again once the pane is gone
         // (it resolves only via `pane_for_file_token`), so reclaim it rather than let
         // a live credential outlive the pane it scopes. Separate lock from `model`.
@@ -2210,6 +2217,20 @@ mod tests {
         // the pane it scopes.
         state.remove_pane("pane-1").unwrap();
         assert!(state.pane_for_file_token(&token).is_none());
+    }
+
+    #[test]
+    fn remove_pane_reclaims_its_control_token() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        let token = state.pane_token("pane-1").unwrap();
+        assert_eq!(state.pane_for_token(&token).as_deref(), Some("pane-1"));
+
+        // The captured QMUX_TOKEN must not outlive its pane.
+        state.remove_pane("pane-1").unwrap();
+        assert!(state.pane_for_token(&token).is_none());
     }
 
     #[test]
