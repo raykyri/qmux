@@ -781,6 +781,42 @@ mod tests {
     }
 
     #[test]
+    fn truncate_preview_collapses_whitespace_and_caps_length() {
+        assert_eq!(truncate_preview("  hello   world \n"), "hello world");
+        let long = "x ".repeat(120);
+        let preview = truncate_preview(&long);
+        assert!(preview.ends_with('…'));
+        assert_eq!(preview.chars().count(), PREVIEW_MAX_CHARS + 1);
+    }
+
+    #[test]
+    fn read_transcript_meta_extracts_first_user_message_and_line_count() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-meta-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first prompt\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"reply\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let (preview, line_count) = read_transcript_meta(&path);
+        assert_eq!(preview.as_deref(), Some("first prompt"));
+        assert_eq!(line_count, 2);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn session_id_comes_from_transcript_filename() {
         assert_eq!(
             session_id_from_transcript_path(Path::new(

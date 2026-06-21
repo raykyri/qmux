@@ -931,6 +931,63 @@ mod tests {
         assert_eq!(writer.flush_offsets, vec![1, 2]);
     }
 
+    fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
+        spawn_pty(
+            state,
+            PtySpawnSpec {
+                pane_id: Some(pane_id.to_string()),
+                agent_id: None,
+                kind: PaneKind::Shell,
+                title: "test".to_string(),
+                program: "/bin/sh".to_string(),
+                args,
+                cwd: std::env::temp_dir(),
+                envs: Vec::new(),
+                initial_size: None,
+                recovered: false,
+            },
+        )
+        .expect("spawning a test PTY")
+    }
+
+    #[test]
+    fn reader_thread_reaps_and_removes_pane_after_child_exits() {
+        let state = test_state();
+        let pane = spawn_test_pty(
+            &state,
+            "pane-exit",
+            vec!["-c".to_string(), "exit 0".to_string()],
+        );
+
+        // The child exits immediately; the reader thread should observe EOF, reap the
+        // child (no zombie), and remove the pane from state.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while state.pane_child(&pane.id).unwrap().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pane was not removed after the child exited"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn kill_pane_terminates_a_running_child_and_removes_it() {
+        let state = test_state();
+        let pane = spawn_test_pty(
+            &state,
+            "pane-kill",
+            vec!["-c".to_string(), "sleep 30".to_string()],
+        );
+        assert!(state.pane_child(&pane.id).unwrap().is_some());
+
+        kill_pane(&state, pane.id.clone()).expect("killing the pane");
+        assert!(
+            state.pane_child(&pane.id).unwrap().is_none(),
+            "pane should be gone after kill_pane"
+        );
+    }
+
     #[test]
     fn append_capped_keeps_recent_bytes_under_cap() {
         let mut buffer = Vec::new();
