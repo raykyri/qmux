@@ -10,7 +10,7 @@ use crate::workspace::{AgentInfo, AgentStatus};
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub use claude::{PrepareShellClaudeLaunchRequest, SpawnClaudeRequest};
@@ -234,6 +234,33 @@ pub fn agent_spawn(state: &AppState, request: SpawnAgentRequest) -> Result<PaneI
         .launch(state, request)
 }
 
+/// Forks the agent running in `authed_pane` into a new tab nested under it. The
+/// source is resolved from the authenticated pane (never caller input), so a pane
+/// can only fork its own session. Claude only.
+pub fn agent_fork(
+    state: &AppState,
+    authed_pane: &str,
+    use_worktree: bool,
+) -> Result<PaneInfo, String> {
+    let source = state
+        .agent_by_pane(authed_pane)?
+        .ok_or_else(|| "no agent is running in this pane to fork".to_string())?;
+    if source.adapter != "claude" {
+        return Err("fork is only supported for Claude sessions".to_string());
+    }
+
+    let (pane, agent) =
+        ClaudeAdapter::new(state.config()).fork_pane(state, &source, use_worktree)?;
+    state.nest_pane_under(&pane.id, authed_pane)?;
+    state.emit(QmuxEvent::new(
+        "agent.forked",
+        Some(pane.id.clone()),
+        Some(agent.id.clone()),
+        json!({ "agent": agent, "pane": pane, "sourceAgentId": source.id }),
+    ));
+    Ok(pane)
+}
+
 pub fn agent_prepare_shell_launch(
     state: &AppState,
     request: PrepareShellAgentLaunchRequest,
@@ -337,5 +364,40 @@ mod tests {
         assert!(metadata[0].default);
         assert_eq!(metadata[1].id, "codex");
         assert!(!metadata[1].default);
+    }
+
+    #[test]
+    fn agent_fork_requires_a_claude_agent_in_the_pane() {
+        let state = AppState::new(test_config());
+
+        // No agent bound to the pane: nothing to fork.
+        let err = agent_fork(&state, "pane-1", false).unwrap_err();
+        assert!(err.contains("no agent"), "unexpected error: {err}");
+
+        // A non-Claude agent is rejected before any spawn is attempted.
+        state
+            .insert_agent(AgentInfo {
+                id: "agent-1".to_string(),
+                group_id: "group-1".to_string(),
+                adapter: "codex".to_string(),
+                worktree_dir: "/tmp/qmux-adapter-tests".to_string(),
+                branch: None,
+                pane_id: Some("pane-1".to_string()),
+                orphaned_queue_pane_id: None,
+                session_id: Some("session-1".to_string()),
+                transcript_path: None,
+                status: AgentStatus::Running,
+                model: None,
+                parent_id: None,
+                fork_point: None,
+                root_session_id: None,
+                created_at: 1,
+            })
+            .unwrap();
+        let err = agent_fork(&state, "pane-1", false).unwrap_err();
+        assert!(
+            err.contains("only supported for Claude"),
+            "unexpected error: {err}"
+        );
     }
 }
