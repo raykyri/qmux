@@ -97,6 +97,7 @@ import type {
   ClaudeSkill,
   InitialPaneSize,
   PaneInfo,
+  QueuedTurn,
   RuntimeConfig,
   TranscriptHookEvent,
   TranscriptOption,
@@ -142,7 +143,7 @@ export default function App() {
   const eventsReadyRef = useRef(false);
   const pendingAttachRef = useRef<Set<string>>(new Set());
   const agentsRef = useRef<AgentInfo[]>([]);
-  const queuedTurnsByAgentRef = useRef<Record<string, string[]>>({});
+  const queuedTurnsByAgentRef = useRef<Record<string, QueuedTurn[]>>({});
   // Composer drafts live here keyed by agent so they survive tab switches; the
   // ref mirrors the state for synchronous reads from the debounced disk flush.
   const draftsByAgentRef = useRef<Record<string, string>>({});
@@ -162,7 +163,7 @@ export default function App() {
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, string[]>>({});
+  const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
     Record<string, WorktreeStatus>
   >({});
@@ -320,7 +321,7 @@ export default function App() {
     agentsRef.current = agents;
   }, [agents]);
 
-  function replaceQueuedTurnsByAgent(nextQueues: Record<string, string[]>) {
+  function replaceQueuedTurnsByAgent(nextQueues: Record<string, QueuedTurn[]>) {
     const previousQueues = queuedTurnsByAgentRef.current;
     queuedTurnsByAgentRef.current = nextQueues;
     setQueuedTurnsByAgentState(nextQueues);
@@ -337,7 +338,7 @@ export default function App() {
     });
   }
 
-  function setAgentQueuedTurns(agentId: string, queuedTurns: string[]) {
+  function setAgentQueuedTurns(agentId: string, queuedTurns: QueuedTurn[]) {
     const previousQueues = queuedTurnsByAgentRef.current;
     const nextQueues = {
       ...previousQueues,

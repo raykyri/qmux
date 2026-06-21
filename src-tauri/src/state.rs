@@ -66,9 +66,12 @@ struct Model {
     groups: HashMap<String, GroupInfo>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
-    agent_turn_queues: HashMap<String, VecDeque<String>>,
+    agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
     agent_send_tracking: HashMap<String, AgentSendTracking>,
     agent_drafts: HashMap<String, String>,
+    /// Agents whose currently-running (just-sent) queued turn requested a pause; when
+    /// that turn finishes the agent enters paused mode. Transient (not persisted).
+    agent_pending_pause: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -91,6 +94,50 @@ pub struct AgentOutstandingSend {
     pub text: String,
     pub sent_at_seq: u64,
     pub source: AgentSendSource,
+}
+
+/// A queued turn: the text to send plus whether the queue should pause once this
+/// turn's agent work finishes. Deserializes from either a bare string (the legacy
+/// persisted format) or a `{ text, pauseAfter }` object, so old state still loads.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedTurn {
+    pub text: String,
+    pub pause_after: bool,
+}
+
+impl QueuedTurn {
+    pub fn new(text: String) -> Self {
+        Self {
+            text,
+            pause_after: false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for QueuedTurn {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Text(String),
+            Full {
+                text: String,
+                #[serde(default, rename = "pauseAfter")]
+                pause_after: bool,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Text(text) => QueuedTurn {
+                text,
+                pause_after: false,
+            },
+            Repr::Full { text, pause_after } => QueuedTurn { text, pause_after },
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -768,14 +815,31 @@ impl AppState {
                 .agent_turn_queues
                 .entry(agent_id.to_string())
                 .or_default();
-            queue.push_back(data);
+            queue.push_back(QueuedTurn::new(data));
             queue.len()
         };
         self.persist();
         Ok(len)
     }
 
+    /// Queued turn texts only — used by the drain path, expected-data matching, and
+    /// tests. The structured view (with pause flags) is `agent_queued_turns`.
     pub fn list_agent_turn_queue(&self, agent_id: &str) -> Result<Vec<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_turn_queues
+            .get(agent_id)
+            .map(|queue| queue.iter().map(|turn| turn.text.clone()).collect())
+            .unwrap_or_default())
+    }
+
+    /// Structured queued turns (text + pause flag) for events, command results, and
+    /// the frontend.
+    pub fn agent_queued_turns(&self, agent_id: &str) -> Result<Vec<QueuedTurn>, String> {
         let model = self
             .inner
             .model
@@ -788,12 +852,46 @@ impl AppState {
             .unwrap_or_default())
     }
 
+    /// Toggles the pause-after-send flag on a single queued turn, guarding against a
+    /// stale index with the expected text. Returns the updated structured queue.
+    pub fn set_queued_turn_pause(
+        &self,
+        agent_id: &str,
+        index: usize,
+        pause_after: bool,
+        expected_text: Option<&str>,
+    ) -> Result<Vec<QueuedTurn>, String> {
+        let queued_turns = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let queue = model
+                .agent_turn_queues
+                .get_mut(agent_id)
+                .ok_or_else(|| format!("agent {agent_id} does not have queued turns"))?;
+            let turn = queue
+                .get_mut(index)
+                .ok_or_else(|| format!("queued turn {index} was not found"))?;
+            if let Some(expected_text) = expected_text {
+                if turn.text != expected_text {
+                    return Err("queued turn changed; refresh before updating".to_string());
+                }
+            }
+            turn.pause_after = pause_after;
+            queue.iter().cloned().collect::<Vec<_>>()
+        };
+        self.persist();
+        Ok(queued_turns)
+    }
+
     pub fn remove_agent_turn_queue_item(
         &self,
         agent_id: &str,
         index: usize,
         expected_data: Option<&str>,
-    ) -> Result<(String, Vec<String>), String> {
+    ) -> Result<(QueuedTurn, Vec<QueuedTurn>), String> {
         let mut model = self
             .inner
             .model
@@ -809,7 +907,7 @@ impl AppState {
                 .get(index)
                 .ok_or_else(|| format!("queued turn {index} was not found"))?;
             if let Some(expected_data) = expected_data {
-                if current != expected_data {
+                if current.text != expected_data {
                     return Err("queued turn changed; refresh before editing".to_string());
                 }
             }
@@ -839,7 +937,7 @@ impl AppState {
         from: usize,
         to: usize,
         expected_data: Option<&str>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<QueuedTurn>, String> {
         let queued_turns = {
             let mut model = self
                 .inner
@@ -858,7 +956,7 @@ impl AppState {
                 let current = queue
                     .get(from)
                     .ok_or_else(|| format!("queued turn {from} was not found"))?;
-                if current != expected_data {
+                if current.text != expected_data {
                     return Err("queued turn changed; refresh before reordering".to_string());
                 }
             }
@@ -872,7 +970,7 @@ impl AppState {
         Ok(queued_turns)
     }
 
-    pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(String, usize)>, String> {
+    pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(QueuedTurn, usize)>, String> {
         let popped = {
             let mut model = self
                 .inner
@@ -898,7 +996,7 @@ impl AppState {
         Ok(Some(popped))
     }
 
-    pub fn prepend_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
+    pub fn prepend_agent_turn(&self, agent_id: &str, turn: QueuedTurn) -> Result<usize, String> {
         let len = {
             let mut model = self
                 .inner
@@ -909,7 +1007,7 @@ impl AppState {
                 .agent_turn_queues
                 .entry(agent_id.to_string())
                 .or_default();
-            queue.push_front(data);
+            queue.push_front(turn);
             queue.len()
         };
         self.persist();
@@ -918,12 +1016,12 @@ impl AppState {
 
     /// Inserts a turn into an agent's queue at `index` (clamped to the queue length),
     /// returning the new length. Used to roll a moved turn back to its original spot
-    /// when handing it to another agent fails.
+    /// when handing it to another agent fails (preserving its pause-after flag).
     pub fn insert_agent_turn_at(
         &self,
         agent_id: &str,
         index: usize,
-        data: String,
+        turn: QueuedTurn,
     ) -> Result<usize, String> {
         let len = {
             let mut model = self
@@ -936,11 +1034,73 @@ impl AppState {
                 .entry(agent_id.to_string())
                 .or_default();
             let at = index.min(queue.len());
-            queue.insert(at, data);
+            queue.insert(at, turn);
             queue.len()
         };
         self.persist();
         Ok(len)
+    }
+
+    /// Sets an agent's paused flag without disturbing its other fields (a field-scoped
+    /// write, so a concurrent hook update can't clobber it). Returns the updated agent.
+    pub fn set_agent_paused(
+        &self,
+        agent_id: &str,
+        paused: bool,
+    ) -> Result<Option<AgentInfo>, String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            match model.agents.get_mut(agent_id) {
+                Some(agent) => {
+                    agent.paused = paused;
+                    Some(agent.clone())
+                }
+                None => None,
+            }
+        };
+        if updated.is_some() {
+            self.persist();
+        }
+        Ok(updated)
+    }
+
+    /// Marks that the agent's currently-running queued turn requested a pause; the
+    /// agent enters paused mode when that turn finishes (see `take_agent_pending_pause`).
+    pub fn mark_agent_pending_pause(&self, agent_id: &str) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.agent_pending_pause.insert(agent_id.to_string());
+        Ok(())
+    }
+
+    /// Consumes the pending-pause marker, returning whether one was set.
+    pub fn take_agent_pending_pause(&self, agent_id: &str) -> Result<bool, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.agent_pending_pause.remove(agent_id))
+    }
+
+    pub fn agent_is_paused(&self, agent_id: &str) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agents
+            .get(agent_id)
+            .map(|agent| agent.paused)
+            .unwrap_or(false))
     }
 
     /// Stores the agent's composer draft and snapshots it to disk. A trimmed-empty
@@ -1383,6 +1543,7 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            paused: false,
             created_at: 1,
         }
     }
@@ -1463,6 +1624,42 @@ mod tests {
     }
 
     #[test]
+    fn queued_turn_pause_flag_and_pending_pause() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state
+            .enqueue_agent_turn("agent-1", "a".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "b".to_string())
+            .unwrap();
+
+        let items = state
+            .set_queued_turn_pause("agent-1", 1, true, Some("b"))
+            .unwrap();
+        assert!(!items[0].pause_after);
+        assert!(items[1].pause_after);
+        // The text list is unaffected by the flag.
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+
+        // A stale expected-text guards against editing the wrong item.
+        assert!(
+            state
+                .set_queued_turn_pause("agent-1", 1, false, Some("wrong"))
+                .is_err()
+        );
+
+        // Pending-pause is a one-shot marker.
+        assert!(!state.take_agent_pending_pause("agent-1").unwrap());
+        state.mark_agent_pending_pause("agent-1").unwrap();
+        assert!(state.take_agent_pending_pause("agent-1").unwrap());
+        assert!(!state.take_agent_pending_pause("agent-1").unwrap());
+    }
+
+    #[test]
     fn queue_mutations_round_trip_through_persistence() {
         let workspace = temp_workspace();
         let config = test_config(workspace.clone());
@@ -1495,9 +1692,9 @@ mod tests {
                 vec!["first".to_string(), "third".to_string()]
             );
             let (data, pending) = state.pop_agent_turn("agent-1").unwrap().unwrap();
-            assert_eq!(data, "first");
+            assert_eq!(data.text, "first");
             assert_eq!(pending, 1);
-            data
+            data.text
         };
         assert_eq!(popped, "first");
 
@@ -1832,6 +2029,7 @@ mod tests {
             parent_id: Some("agent-0".to_string()),
             fork_point: Some("sess-src".to_string()),
             root_session_id: Some("sess-src".to_string()),
+            paused: false,
             created_at: 1,
         };
         state.insert_agent(agent.clone()).unwrap();
@@ -1902,7 +2100,10 @@ mod tests {
             groups: vec![sample_group()],
             agents: vec![sample_agent("agent-1")],
             panes: vec![sample_pane("pane-7", Some("agent-1"))],
-            queues: HashMap::from([("agent-1".to_string(), vec!["queued turn".to_string()])]),
+            queues: HashMap::from([(
+                "agent-1".to_string(),
+                vec![QueuedTurn::new("queued turn".to_string())],
+            )]),
             ..PersistedState::default()
         };
         crate::persistence::save(&workspace, &persisted).unwrap();
