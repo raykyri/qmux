@@ -940,7 +940,9 @@ button:disabled {
   top: 16px;
   left: 18px;
   z-index: 1;
-  max-width: calc(100% - 36px);
+  /* No max-width: the span sizes to its content so the measured width used for the
+     textarea's text-indent matches the rendered command exactly (a clamped width
+     would undershoot and let typed text overlap the command's tail). */
   font-size: var(--fs-input);
   line-height: 1.5;
   color: var(--placeholder-color);
