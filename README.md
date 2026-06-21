@@ -45,7 +45,7 @@ Implemented today:
 - Persisted pane, group, agent, transcript, and queued-turn metadata with
   best-effort restart recovery.
 - App settings: terminal font and size, plus a macOS wake lock that keeps the
-  machine awake while agents are running.
+  machine awake while agents are running (skipped on battery below 10%).
 
 Still planned:
 
