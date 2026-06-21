@@ -145,6 +145,12 @@ const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 
+// The internal browser overlay can only render http(s) pages; anything else (mailto,
+// file, custom schemes) must hand off to the OS browser.
+function canRenderInInternalBrowser(url: string): boolean {
+  return url.startsWith("http://") || url.startsWith("https://");
+}
+
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
@@ -390,7 +396,7 @@ export default function App() {
     () => ({
       openLink: (url) => {
         const paneId = activePane?.id;
-        if (paneId && (url.startsWith("http://") || url.startsWith("https://"))) {
+        if (paneId && canRenderInInternalBrowser(url)) {
           openBrowserOverlay(paneId, url);
         } else {
           void openExternalUrl(url);
@@ -1706,6 +1712,18 @@ export default function App() {
     setSkillPrefixWidth(skillPrefixRef.current?.getBoundingClientRect().width ?? 0);
   }, [selectedSkill, launcherOpen]);
 
+  // Grow the launcher textarea to fit its content so a multi-line prompt expands the
+  // whole launcher (the CSS max-height caps it, after which the field scrolls). The
+  // skill prefix changes the first line's indent, so re-measure when it changes too.
+  useLayoutEffect(() => {
+    const textarea = launcherInputRef.current;
+    if (!launcherOpen || !textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [prompt, launcherOpen, skillPrefixWidth]);
+
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
     if (runtimeAdapterIds.length === 0) {
@@ -2658,6 +2676,7 @@ export default function App() {
         <LinkContextMenu
           x={linkMenu.x}
           y={linkMenu.y}
+          canOpenInternal={canRenderInInternalBrowser(linkMenu.url)}
           onOpenInternal={() => {
             linkActions.openLink(linkMenu.url);
             setLinkMenu(null);
