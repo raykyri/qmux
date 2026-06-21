@@ -196,24 +196,29 @@ pub fn attach_agent_pane(
     agent_id: &str,
     pane_id: String,
 ) -> Result<AgentInfo, String> {
-    for mut previous in state.list_agents()? {
+    for previous in state.list_agents()? {
         if previous.id != agent_id && previous.pane_id.as_deref() == Some(&pane_id) {
             let has_queue = !state.list_agent_turn_queue(&previous.id)?.is_empty();
-            previous.pane_id = None;
-            previous.orphaned_queue_pane_id = has_queue.then(|| pane_id.clone());
-            previous.status = AgentStatus::Idle;
-            state.update_agent(previous)?;
+            let orphaned_queue_pane_id = has_queue.then(|| pane_id.clone());
+            state.mutate_agent(&previous.id, |agent| {
+                agent.pane_id = None;
+                agent.orphaned_queue_pane_id = orphaned_queue_pane_id;
+                agent.status = AgentStatus::Idle;
+            })?;
         }
     }
 
-    let mut agent = state
-        .agent(agent_id)?
-        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
-    agent.pane_id = Some(pane_id);
-    agent.orphaned_queue_pane_id = None;
-    agent.status = AgentStatus::Running;
-    state.update_agent(agent.clone())?;
-    Ok(agent)
+    // Field-scoped mutation, not a full-struct `update_agent`: a freshly spawned agent's
+    // SessionStart hook may be recording its session_id / transcript_path on another
+    // thread right now, and a stale-snapshot write here would race it and wipe them. Only
+    // touch the pane-binding fields.
+    state
+        .mutate_agent(agent_id, |agent| {
+            agent.pane_id = Some(pane_id);
+            agent.orphaned_queue_pane_id = None;
+            agent.status = AgentStatus::Running;
+        })?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))
 }
 
 pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
@@ -583,6 +588,27 @@ mod tests {
         assert_eq!(old.pane_id, None);
         assert_eq!(old.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
         assert!(matches!(old.status, AgentStatus::Idle));
+    }
+
+    #[test]
+    fn attach_agent_pane_preserves_session_id_and_transcript() {
+        // attach binds the pane via a field-scoped write, so the session id/transcript a
+        // freshly spawned agent's SessionStart hook records on another thread survive —
+        // attach never touches those fields. (The clobber it guards against is a
+        // concurrent interleaving, which a single-threaded test can't reproduce; this
+        // asserts the structural invariant that attach only writes pane-binding fields.)
+        let state = test_state();
+        let mut spawned = sample_agent("agent-new", None, AgentStatus::Starting);
+        spawned.session_id = Some("sess-xyz".to_string());
+        spawned.transcript_path = Some("/tmp/new.jsonl".to_string());
+        state.insert_agent(spawned).unwrap();
+
+        let attached = attach_agent_pane(&state, "agent-new", "pane-1".to_string()).unwrap();
+
+        assert_eq!(attached.pane_id.as_deref(), Some("pane-1"));
+        assert!(matches!(attached.status, AgentStatus::Running));
+        assert_eq!(attached.session_id.as_deref(), Some("sess-xyz"));
+        assert_eq!(attached.transcript_path.as_deref(), Some("/tmp/new.jsonl"));
     }
 
     #[test]

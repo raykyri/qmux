@@ -240,15 +240,23 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                 .map_err(|err| format!("invalid browser.open payload: {err}"))?;
             // Resolve to a renderable URL: http(s) passes through (CSP gates it to
             // loopback); a file is validated under an allowed root and served via the
-            // loopback file server. The overlay binds to the calling pane.
-            let url = resolve_browser_target(state, payload.target.trim(), payload.cwd.as_deref())?;
+            // loopback file server. The overlay binds to the calling pane. `sandbox` is
+            // true for served files so the overlay loads them in an opaque origin (the
+            // served URL carries the access token, so its scripts must not be able to
+            // read other files back); passthrough URLs are not sandboxed.
+            let (url, sandbox) = resolve_browser_target(
+                state,
+                &authed_pane,
+                payload.target.trim(),
+                payload.cwd.as_deref(),
+            )?;
             state.emit(QmuxEvent::new(
                 "browser.open",
                 Some(authed_pane.clone()),
                 None,
-                json!({ "url": url }),
+                json!({ "url": url, "sandbox": sandbox }),
             ));
-            Ok(json!({ "url": url }))
+            Ok(json!({ "url": url, "sandbox": sandbox }))
         }
         // Other agent spawning and turn queueing are management operations that belong
         // to the trusted GUI (Tauri commands), not to processes holding a pane token.
@@ -256,21 +264,24 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
     }
 }
 
-/// Turns an `open` target into a URL the browser overlay can load. http(s) URLs pass
-/// through unchanged (covering localhost dev servers; the webview CSP restricts which
-/// actually render). Anything else is treated as a file path: resolved against `cwd`
-/// when relative, required to live under an allowed root, and served through the
-/// loopback file server.
+/// Turns an `open` target into a URL the browser overlay can load, plus whether the
+/// overlay should sandbox it. http(s) URLs pass through unchanged and unsandboxed
+/// (covering localhost dev servers; the webview CSP restricts which actually render).
+/// Anything else is treated as a file path: resolved against `cwd` when relative,
+/// required to live under one of the requesting pane's own roots (not the global
+/// union — so a pane can't open another pane's directory), served through the loopback
+/// file server, and flagged `sandbox = true` (its URL carries the file-server token).
 fn resolve_browser_target(
     state: &AppState,
+    authed_pane: &str,
     target: &str,
     cwd: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     if target.is_empty() {
         return Err("nothing to open".to_string());
     }
     if target.starts_with("http://") || target.starts_with("https://") {
-        return Ok(target.to_string());
+        return Ok((target.to_string(), false));
     }
 
     let requested = {
@@ -285,15 +296,21 @@ fn resolve_browser_target(
         }
     };
 
-    let roots = state.allowed_file_roots();
+    let roots = state.pane_file_roots(authed_pane);
     let canonical =
         crate::file_server::resolve_under_roots(&requested, &roots).ok_or_else(|| {
-            format!("'{target}' was not found under an allowed workspace root and cannot be opened")
+            format!(
+                "'{target}' was not found under this pane's working directory and cannot be opened"
+            )
         })?;
-    let (port, token) = state
-        .file_server_info()
+    let port = state
+        .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
-    Ok(crate::file_server::file_url(port, &token, &canonical))
+    // The URL carries this pane's own file token, so the file server scopes the request
+    // back to `pane_file_roots(authed_pane)` — a pane can never reach another pane's
+    // files even if some pane has widened its cwd via `pane.set_cwd`.
+    let token = state.pane_file_token(authed_pane)?;
+    Ok((crate::file_server::file_url(port, &token, &canonical), true))
 }
 
 fn ensure_pane_scope(authed_pane: &str, requested_pane: &str) -> Result<(), String> {

@@ -45,6 +45,11 @@ pub struct AppState {
 struct AppStateInner {
     config: QmuxConfig,
     pane_tokens: Mutex<HashMap<String, String>>,
+    // Per-pane file-server tokens, distinct from the control-socket `pane_tokens`.
+    // A browser-overlay URL carries one of these in its path, so the loopback file
+    // server can resolve which pane the request is for and scope the served roots to
+    // that pane only (see `pane_for_file_token` / `pane_file_roots`).
+    file_tokens: Mutex<HashMap<String, String>>,
     model: Mutex<Model>,
     transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
@@ -54,9 +59,9 @@ struct AppStateInner {
     // snapshots to workspace_root/.qmux/state.json.
     persist_enabled: AtomicBool,
     exit_confirmed: AtomicBool,
-    // (port, token) of the loopback file server, set once at startup. The control
-    // socket uses it to build browser-overlay URLs.
-    file_server: Mutex<Option<(u16, String)>>,
+    // Loopback file-server port, set once at startup. The control socket pairs it with
+    // a per-pane file token to build browser-overlay URLs.
+    file_server: Mutex<Option<u16>>,
 }
 
 #[derive(Default)]
@@ -238,6 +243,7 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 config,
                 pane_tokens: Mutex::new(HashMap::new()),
+                file_tokens: Mutex::new(HashMap::new()),
                 model: Mutex::new(Model::default()),
                 transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
@@ -250,32 +256,63 @@ impl AppState {
     }
 
     /// Records the loopback file server's port + access token (set once at startup).
-    pub fn set_file_server(&self, port: u16, token: String) {
+    pub fn set_file_server(&self, port: u16) {
         if let Ok(mut slot) = self.inner.file_server.lock() {
-            *slot = Some((port, token));
+            *slot = Some(port);
         }
     }
 
-    pub fn file_server_info(&self) -> Option<(u16, String)> {
-        self.inner
-            .file_server
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+    pub fn file_server_port(&self) -> Option<u16> {
+        self.inner.file_server.lock().ok().and_then(|slot| *slot)
     }
 
-    /// Roots a file must live under to be served to the browser overlay: the
-    /// workspace root plus every pane's working directory and every agent's worktree.
-    /// `file_server::resolve_under_roots` canonicalizes these, so duplicates and
-    /// non-existent entries are harmless.
-    pub fn allowed_file_roots(&self) -> Vec<std::path::PathBuf> {
+    /// Returns the file-server token scoped to a single pane, minting one on first use.
+    /// This token rides in the path of the browser-overlay URLs that pane opens, so the
+    /// loopback file server can map a request back to its pane and serve only that
+    /// pane's roots (`pane_file_roots`) — never the union of every pane's directories.
+    /// It is deliberately separate from the pane's control-socket token (`pane_token`):
+    /// it lands in URLs that flow through the frontend, so its only authority is reading
+    /// files under the one pane's roots, not driving the control socket.
+    pub fn pane_file_token(&self, pane_id: &str) -> Result<String, String> {
+        let mut tokens = self
+            .inner
+            .file_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = tokens.get(pane_id) {
+            return Ok(existing.clone());
+        }
+        let token = random_token()?;
+        Ok(tokens.entry(pane_id.to_string()).or_insert(token).clone())
+    }
+
+    /// Resolves the pane a presented file-server token belongs to, if any.
+    pub fn pane_for_file_token(&self, token: &str) -> Option<String> {
+        let tokens = self
+            .inner
+            .file_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        tokens
+            .iter()
+            .find_map(|(pane_id, pane_token)| (pane_token == token).then(|| pane_id.clone()))
+    }
+
+    /// Roots a `browser.open` from a specific pane may reach: the workspace root, that
+    /// pane's own working directory, and (if it has one) its agent's worktree — not the
+    /// union of every pane's cwd. This keeps one pane from opening files under another
+    /// pane's directory, so an in-pane process can only render files within its own
+    /// working area.
+    pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
         let mut roots = vec![self.inner.config.workspace_root.clone()];
         if let Ok(model) = self.inner.model.lock() {
-            for pane in model.panes.values() {
+            if let Some(pane) = model.panes.get(pane_id) {
                 roots.push(std::path::PathBuf::from(&pane.info.cwd));
             }
             for agent in model.agents.values() {
-                roots.push(std::path::PathBuf::from(&agent.worktree_dir));
+                if agent.pane_id.as_deref() == Some(pane_id) {
+                    roots.push(std::path::PathBuf::from(&agent.worktree_dir));
+                }
             }
         }
         roots
@@ -594,9 +631,44 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
+
+            // The pane is gone for good (kill or PTY EOF — never a respawn), so reclaim
+            // the agent it owned and its per-agent state, which would otherwise live for
+            // the rest of the process. Always drop the purely-runtime tracking; if the
+            // agent has no queued turns, drop it entirely (its transcript tail then
+            // self-stops, since `tail_should_continue` is false once the agent is gone).
+            // An agent with queued turns is kept so its queue stays restart-recoverable
+            // via the orphaned-queue panel.
+            if let Some(agent_id) = model
+                .agents
+                .values()
+                .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
+                .map(|agent| agent.id.clone())
+            {
+                model.agent_typing.remove(&agent_id);
+                model.agent_pending_pause.remove(&agent_id);
+                model.agent_send_tracking.remove(&agent_id);
+                let has_queue = model
+                    .agent_turn_queues
+                    .get(&agent_id)
+                    .is_some_and(|queue| !queue.is_empty());
+                if !has_queue {
+                    model.agents.remove(&agent_id);
+                    model.turns.remove(&agent_id);
+                    model.agent_drafts.remove(&agent_id);
+                    model.agent_turn_queues.remove(&agent_id);
+                }
+            }
+
             // Re-level any children orphaned by the removal so the tree stays valid
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
+        }
+        // The pane's file-server token can never be used again once the pane is gone
+        // (it resolves only via `pane_for_file_token`), so reclaim it rather than let
+        // a live credential outlive the pane it scopes. Separate lock from `model`.
+        if let Ok(mut tokens) = self.inner.file_tokens.lock() {
+            tokens.remove(pane_id);
         }
         self.persist();
         Ok(())
@@ -791,16 +863,17 @@ impl AppState {
         Ok(())
     }
 
-    /// Updates only an agent's status under the lock, leaving every other field as it
-    /// stands. Unlike `update_agent` (which writes a whole struct snapshot), this
-    /// can't clobber fields a concurrent writer just set — e.g. the `session_id` /
-    /// `transcript_path` a freshly spawned fork's SessionStart hook records. Returns
+    /// Mutates an agent in place under the lock, applying `f` to the live entry and
+    /// leaving every field `f` doesn't touch exactly as it stands. Unlike `update_agent`
+    /// (which inserts a whole struct snapshot the caller read earlier, outside the lock),
+    /// this can't clobber a field a concurrent writer set in the meantime — e.g. the
+    /// `session_id` / `transcript_path` a freshly spawned agent's SessionStart hook
+    /// records on another thread while `attach_agent_pane` is binding its pane. Returns
     /// the updated agent, or `None` if it no longer exists.
-    pub fn set_agent_status(
-        &self,
-        agent_id: &str,
-        status: AgentStatus,
-    ) -> Result<Option<AgentInfo>, String> {
+    pub fn mutate_agent<F>(&self, agent_id: &str, f: F) -> Result<Option<AgentInfo>, String>
+    where
+        F: FnOnce(&mut AgentInfo),
+    {
         let updated = {
             let mut model = self
                 .inner
@@ -809,7 +882,7 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             match model.agents.get_mut(agent_id) {
                 Some(agent) => {
-                    agent.status = status;
+                    f(agent);
                     Some(agent.clone())
                 }
                 None => None,
@@ -819,6 +892,17 @@ impl AppState {
             self.persist();
         }
         Ok(updated)
+    }
+
+    /// Field-scoped status write — a thin wrapper over [`AppState::mutate_agent`] that
+    /// touches only `status`. Returns the updated agent, or `None` if it no longer
+    /// exists.
+    pub fn set_agent_status(
+        &self,
+        agent_id: &str,
+        status: AgentStatus,
+    ) -> Result<Option<AgentInfo>, String> {
+        self.mutate_agent(agent_id, |agent| agent.status = status)
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
@@ -2046,6 +2130,89 @@ mod tests {
     }
 
     #[test]
+    fn remove_pane_prunes_its_idle_agent_and_runtime_state() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state.set_agent_typing("agent-1", true).unwrap();
+        state.mark_agent_pending_pause("agent-1").unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        // The closed pane's agent (no queued turns) is reclaimed with its runtime state.
+        assert!(state.agent("agent-1").unwrap().is_none());
+        assert!(!state.agent_is_typing("agent-1").unwrap());
+    }
+
+    #[test]
+    fn remove_pane_keeps_its_agent_when_turns_are_queued() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "later".to_string())
+            .unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        // Kept so the queue stays restart-recoverable via the orphaned-queue panel.
+        assert!(state.agent("agent-1").unwrap().is_some());
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["later".to_string()]
+        );
+    }
+
+    #[test]
+    fn pane_file_roots_are_scoped_to_the_requesting_pane() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state
+            .update_pane_cwd("pane-1", "/tmp/proj-a".to_string())
+            .unwrap();
+        state
+            .update_pane_cwd("pane-2", "/tmp/proj-b".to_string())
+            .unwrap();
+
+        // A pane's browser-open roots include its own cwd but not another pane's.
+        let roots = state.pane_file_roots("pane-1");
+        assert!(
+            roots
+                .iter()
+                .any(|r| r == std::path::Path::new("/tmp/proj-a"))
+        );
+        assert!(
+            !roots
+                .iter()
+                .any(|r| r == std::path::Path::new("/tmp/proj-b"))
+        );
+    }
+
+    #[test]
+    fn pane_file_token_round_trips_and_is_reclaimed_on_close() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        let token = state.pane_file_token("pane-1").unwrap();
+        // Stable across calls and resolvable back to its own pane.
+        assert_eq!(state.pane_file_token("pane-1").unwrap(), token);
+        assert_eq!(state.pane_for_file_token(&token).as_deref(), Some("pane-1"));
+        // A different pane gets a different token, distinct from the control token.
+        assert_ne!(state.pane_file_token("pane-2").unwrap(), token);
+        assert_ne!(state.pane_token("pane-1").unwrap(), token);
+
+        // Closing the pane reclaims the token so a live file credential can't outlive
+        // the pane it scopes.
+        state.remove_pane("pane-1").unwrap();
+        assert!(state.pane_for_file_token(&token).is_none());
+    }
+
+    #[test]
     fn nest_pane_under_moves_and_indents_beneath_parent() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
@@ -2120,6 +2287,63 @@ mod tests {
         assert!(
             state
                 .set_agent_status("missing", AgentStatus::Idle)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mutate_agent_only_touches_fields_the_closure_writes() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        let agent = AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/x".to_string(),
+            branch: None,
+            pane_id: None,
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status: AgentStatus::Starting,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            paused: false,
+            created_at: 1,
+        };
+        state.insert_agent(agent).unwrap();
+
+        // Two interleaved field-scoped writers on a freshly spawned agent: the
+        // SessionStart hook records the session id/transcript, then attach_agent_pane
+        // binds the pane. Because each only writes its own fields, neither clobbers the
+        // other — the bug a full-struct update_agent (read snapshot, write it back) had.
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.session_id = Some("sess-1".to_string());
+                agent.transcript_path = Some("/tmp/a.jsonl".to_string());
+                agent.status = AgentStatus::Running;
+            })
+            .unwrap()
+            .expect("agent exists");
+        let bound = state
+            .mutate_agent("agent-1", |agent| {
+                agent.pane_id = Some("pane-1".to_string());
+                agent.status = AgentStatus::Running;
+            })
+            .unwrap()
+            .expect("agent exists");
+
+        assert_eq!(bound.pane_id.as_deref(), Some("pane-1"));
+        assert_eq!(bound.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(bound.transcript_path.as_deref(), Some("/tmp/a.jsonl"));
+
+        // A missing agent yields None and never persists.
+        assert!(
+            state
+                .mutate_agent("missing", |agent| agent.paused = true)
                 .unwrap()
                 .is_none()
         );
