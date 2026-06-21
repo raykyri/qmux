@@ -104,12 +104,27 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             run_agent_exec("codex".to_string(), args.collect())?;
             Ok(true)
         }
+        "fork" => {
+            let use_worktree = args.any(|arg| arg == "--worktree" || arg == "-w");
+            let pane = request_value("agent.fork", json!({ "useWorktree": use_worktree }))?;
+            let title = pane
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("the session");
+            let suffix = if use_worktree {
+                " in a fresh worktree"
+            } else {
+                ""
+            };
+            println!("Forked {title} into a new tab nested under this one{suffix}.");
+            Ok(true)
+        }
         "ping" => {
             request_and_print("ping", json!({}))?;
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude|codex]");
+            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude|codex|fork]");
             Ok(true)
         }
         _ => Ok(false),

@@ -261,6 +261,124 @@ impl ClaudeAdapter {
         }
     }
 
+    /// Forks `source` into a new agent pane: a fresh Claude started with
+    /// `--resume <source session> --fork-session`, so it inherits the source's
+    /// transcript but writes to a new session id (the source is unaffected). Runs in
+    /// the source's directory, or a fresh worktree when `use_worktree` is set.
+    pub fn fork_pane(
+        &self,
+        state: &AppState,
+        source: &AgentInfo,
+        use_worktree: bool,
+    ) -> Result<(PaneInfo, AgentInfo), String> {
+        let binary = self.ensure_binary()?;
+        let session_id = source
+            .session_id
+            .clone()
+            .map(|session| session.trim().to_string())
+            .filter(|session| !session.is_empty())
+            .ok_or_else(|| {
+                "this Claude session isn't ready to fork yet (no session id); send a turn first"
+                    .to_string()
+            })?;
+
+        let mut agent = prepare_agent_workspace(
+            state,
+            PrepareAgentWorkspaceRequest {
+                group_id: Some(source.group_id.clone()),
+                // Worktree forks branch off the group's base repo; in-place forks run
+                // in the source's own directory so they see the same files.
+                base_repo: if use_worktree {
+                    None
+                } else {
+                    Some(source.worktree_dir.clone())
+                },
+                base_ref: Some("HEAD".to_string()),
+                adapter: self.id().to_string(),
+                model: source.model.clone(),
+                use_worktree,
+            },
+        )?;
+
+        // Record fork lineage and the awaiting-input status before the process starts,
+        // so the fork's own SessionStart hook (which overwrites session_id) can't race
+        // ahead of the lineage write.
+        agent.parent_id = Some(source.id.clone());
+        agent.fork_point = Some(session_id.clone());
+        agent.root_session_id = source
+            .root_session_id
+            .clone()
+            .or_else(|| source.session_id.clone());
+        agent.status = AgentStatus::AwaitingInput;
+        state.update_agent(agent.clone())?;
+
+        let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
+            format!(
+                "fork working directory {} does not exist",
+                agent.worktree_dir
+            )
+        })?;
+
+        let settings_path = match write_hook_settings(&agent) {
+            Ok(settings_path) => settings_path,
+            Err(err) => {
+                let _ = mark_agent_failed(state, &agent.id);
+                return Err(err);
+            }
+        };
+
+        let pane_id = state.next_id("pane");
+        let mut args = vec![
+            "--settings".to_string(),
+            settings_path.display().to_string(),
+        ];
+        args.extend(self.plugin_dir_args());
+        if let Some(model) = agent.model.clone().filter(|model| !model.trim().is_empty()) {
+            args.push("--model".to_string());
+            args.push(model);
+        }
+        args.push("--permission-mode".to_string());
+        args.push("auto".to_string());
+        args.push("--resume".to_string());
+        args.push(session_id);
+        args.push("--fork-session".to_string());
+
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
+        envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+
+        let spawn_result = spawn_pty(
+            state,
+            PtySpawnSpec {
+                pane_id: Some(pane_id.clone()),
+                agent_id: Some(agent.id.clone()),
+                kind: PaneKind::Agent,
+                title: self.display_name().to_string(),
+                program: binary,
+                args,
+                cwd,
+                envs,
+                initial_size: None,
+                recovered: false,
+            },
+        );
+
+        let pane = match spawn_result {
+            Ok(pane) => pane,
+            Err(err) => {
+                let _ = mark_agent_failed(state, &agent.id);
+                return Err(err);
+            }
+        };
+
+        // Bind the pane, then restore AwaitingInput (attach promotes to Running, but a
+        // resumed fork with no prompt is sitting idle waiting for the user).
+        let mut forked = attach_agent_pane(state, &agent.id, pane.id.clone())?;
+        forked.status = AgentStatus::AwaitingInput;
+        state.update_agent(forked.clone())?;
+
+        Ok((pane, forked))
+    }
+
     fn respawn_pane(
         &self,
         state: &AppState,

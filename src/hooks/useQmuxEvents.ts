@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { listAgents, listenToEvents } from "../lib/api";
+import { listAgents, listPanes, listenToEvents } from "../lib/api";
 import {
   isAgentInfo,
   isTurn,
@@ -60,6 +60,8 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     // Sequences full agent-list refetches so a slow response can't overwrite a
     // newer snapshot. Only bumped on events that don't already carry the agent.
     let agentRefreshSeq = 0;
+    // Same idea for pane-list refetches (a fork adds a pane backend-side).
+    let panesRefreshSeq = 0;
 
     void listenToEvents((event) => {
       if (disposed) {
@@ -118,6 +120,18 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
             })
             .catch(() => undefined);
         }
+      }
+      if (event.type === "agent.forked") {
+        // The fork created a new pane backend-side; refetch the ordered list so the
+        // nested tab appears (with its depth) without stealing focus from the source.
+        const seq = (panesRefreshSeq += 1);
+        void listPanes()
+          .then((latest) => {
+            if (!disposed && seq === panesRefreshSeq) {
+              setPanes(latest);
+            }
+          })
+          .catch(() => undefined);
       }
       if (
         event.agentId &&
