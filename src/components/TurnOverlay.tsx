@@ -32,6 +32,8 @@ const LinkActionsContext = createContext<LinkActions>({
 
 interface TurnOverlayProps {
   turns: Turn[];
+  // Top bar pinned across the top of the pane (session id + fork/browser controls).
+  header?: ReactNode;
   input?: ReactNode;
   // Identifies the agent whose transcript is shown; a change means a different
   // transcript loaded, which is when we jump the view to the latest turn.
@@ -144,6 +146,7 @@ export function formatTurnsTranscript(turns: Turn[]) {
 
 export default function TurnOverlay({
   turns,
+  header,
   input,
   agentId,
   notice,
@@ -214,7 +217,11 @@ export default function TurnOverlay({
 
   return (
     <LinkActionsContext.Provider value={linkActions}>
-    <section className="turn-sidebar" aria-label="Agent turns">
+    <section
+      className={`turn-sidebar${header ? " has-header" : ""}`}
+      aria-label="Agent turns"
+    >
+      {header}
       <div
         ref={timelineRef}
         className={`turn-timeline${timelineItems.length === 0 ? " is-empty" : ""}`}
