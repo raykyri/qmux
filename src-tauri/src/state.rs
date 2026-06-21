@@ -594,6 +594,35 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
+
+            // The pane is gone for good (kill or PTY EOF — never a respawn), so reclaim
+            // the agent it owned and its per-agent state, which would otherwise live for
+            // the rest of the process. Always drop the purely-runtime tracking; if the
+            // agent has no queued turns, drop it entirely (its transcript tail then
+            // self-stops, since `tail_should_continue` is false once the agent is gone).
+            // An agent with queued turns is kept so its queue stays restart-recoverable
+            // via the orphaned-queue panel.
+            if let Some(agent_id) = model
+                .agents
+                .values()
+                .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
+                .map(|agent| agent.id.clone())
+            {
+                model.agent_typing.remove(&agent_id);
+                model.agent_pending_pause.remove(&agent_id);
+                model.agent_send_tracking.remove(&agent_id);
+                let has_queue = model
+                    .agent_turn_queues
+                    .get(&agent_id)
+                    .is_some_and(|queue| !queue.is_empty());
+                if !has_queue {
+                    model.agents.remove(&agent_id);
+                    model.turns.remove(&agent_id);
+                    model.agent_drafts.remove(&agent_id);
+                    model.agent_turn_queues.remove(&agent_id);
+                }
+            }
+
             // Re-level any children orphaned by the removal so the tree stays valid
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
@@ -2054,6 +2083,42 @@ mod tests {
         assert_eq!(
             id_depths(&state.list_panes().unwrap()),
             vec![("pane-2".to_string(), 0), ("pane-3".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn remove_pane_prunes_its_idle_agent_and_runtime_state() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state.set_agent_typing("agent-1", true).unwrap();
+        state.mark_agent_pending_pause("agent-1").unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        // The closed pane's agent (no queued turns) is reclaimed with its runtime state.
+        assert!(state.agent("agent-1").unwrap().is_none());
+        assert!(!state.agent_is_typing("agent-1").unwrap());
+    }
+
+    #[test]
+    fn remove_pane_keeps_its_agent_when_turns_are_queued() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "later".to_string())
+            .unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        // Kept so the queue stays restart-recoverable via the orphaned-queue panel.
+        assert!(state.agent("agent-1").unwrap().is_some());
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["later".to_string()]
         );
     }
 
