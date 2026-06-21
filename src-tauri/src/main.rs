@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod control_socket;
 mod events;
+mod file_server;
 mod launch_path;
 mod persistence;
 mod pty;
@@ -417,6 +418,12 @@ fn main() {
                     }
                 }
                 start_control_socket(state.clone()).map_err(std::io::Error::other)?;
+                // Loopback static server for the browser overlay. Best-effort: if it
+                // can't bind, the app still runs (file:// opens just won't work).
+                match file_server::start_file_server(state.clone()) {
+                    Ok(info) => state.set_file_server(info.port, info.token),
+                    Err(err) => eprintln!("qmux: failed to start file server: {err}"),
+                }
                 // Restore persisted groups/agents/queues, then respawn recoverable
                 // panes into fresh PTYs before the command handlers go live so the
                 // webview's first list_panes() already sees the recovered session.

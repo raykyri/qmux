@@ -33,6 +33,8 @@ export interface UseQmuxEventsHandlers {
   // Routes a decoded PTY chunk to the pane that owns it. Replaces the previous
   // one-listener-per-pane model where every pane filtered the whole pty.data stream.
   dispatchPtyData: (paneId: string, data: Uint8Array) => void;
+  // Binds a browser-overlay URL to a pane (the backend emits the fully-formed URL).
+  openBrowserOverlay: (paneId: string, url: string) => void;
   // Fired once the single backend subscription is live, so panes can safely flush
   // their pre-attach output backlog (attachPane) without dropping cold-start bytes.
   onEventsReady: () => void;
@@ -52,6 +54,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
     dispatchPtyData,
+    openBrowserOverlay,
     onEventsReady,
   } = handlers;
 
@@ -120,6 +123,12 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
               }
             })
             .catch(() => undefined);
+        }
+      }
+      if (event.type === "browser.open" && event.paneId) {
+        const url = event.payload.url;
+        if (typeof url === "string") {
+          openBrowserOverlay(event.paneId, url);
         }
       }
       if (event.type === "agent.forked") {
