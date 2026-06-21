@@ -201,7 +201,10 @@ export default function NativeInput({
     };
   }, [menuOpen]);
 
-  // Close an open per-item ⋮ menu on an outside click or Escape.
+  // Close an open per-item ⋮ menu on an outside click or Escape. Also close on scroll
+  // or resize: the popover is position:fixed at coordinates captured when it opened,
+  // so once the row moves under it those coordinates are stale — closing is cleaner
+  // than letting it strand over an unrelated row.
   useEffect(() => {
     if (openItemMenu === null) {
       return;
@@ -217,13 +220,25 @@ export default function NativeInput({
         setOpenItemMenu(null);
       }
     };
+    const close = () => setOpenItemMenu(null);
     document.addEventListener("mousedown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
+    // Capture phase so a scroll on the inner queue stack (not just window) closes it.
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
     };
   }, [openItemMenu]);
+
+  // The menu is keyed by queue index; if the queue changes (a drain, reorder, or new
+  // turn) or the agent switches, that index would point at a different turn, so close.
+  useEffect(() => {
+    setOpenItemMenu(null);
+  }, [queuedTurns, agent.id]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
