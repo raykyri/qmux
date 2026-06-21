@@ -34,7 +34,8 @@ export interface UseQmuxEventsHandlers {
   // one-listener-per-pane model where every pane filtered the whole pty.data stream.
   dispatchPtyData: (paneId: string, data: Uint8Array) => void;
   // Binds a browser-overlay URL to a pane (the backend emits the fully-formed URL).
-  openBrowserOverlay: (paneId: string, url: string) => void;
+  // `sandbox` marks token-bearing file-server URLs so the iframe is sandboxed.
+  openBrowserOverlay: (paneId: string, url: string, sandbox?: boolean) => void;
   // Fired once the single backend subscription is live, so panes can safely flush
   // their pre-attach output backlog (attachPane) without dropping cold-start bytes.
   onEventsReady: () => void;
@@ -128,7 +129,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (event.type === "browser.open" && event.paneId) {
         const url = event.payload.url;
         if (typeof url === "string") {
-          openBrowserOverlay(event.paneId, url);
+          openBrowserOverlay(event.paneId, url, event.payload.sandbox === true);
         }
       }
       if (event.type === "agent.forked") {

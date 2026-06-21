@@ -39,10 +39,12 @@ export type PaneDropTarget =
   | { kind: "gap"; index: number }
   | { kind: "nest"; paneId: string };
 
-// Per-pane browser overlay: the URL it's showing, whether it's visible, and a nonce
-// bumped on open/refresh to force the iframe to remount (reload).
+// Per-pane browser overlay: the URL it's showing, whether it's visible, a nonce
+// bumped on open/refresh to force the iframe to remount (reload), and whether the
+// iframe should be sandboxed (true for token-bearing file-server URLs).
 export type BrowserOverlayState = {
   url: string | null;
   open: boolean;
   reloadNonce: number;
+  sandbox: boolean;
 };

@@ -246,6 +246,11 @@ fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result
     for (key, value) in &response.headers {
         head.push_str(&format!("{key}: {value}\r\n"));
     }
+    // Don't let a text file be MIME-sniffed into HTML, and never leak the token-bearing
+    // URL in a Referer when served content fetches something. (The overlay also
+    // sandboxes file content into an opaque origin — see BrowserOverlay.)
+    head.push_str("X-Content-Type-Options: nosniff\r\n");
+    head.push_str("Referrer-Policy: no-referrer\r\n");
     // One request per connection keeps the hand-rolled server simple and correct.
     head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes())?;
