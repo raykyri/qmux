@@ -38,6 +38,7 @@ const LinkActionsContext = createContext<LinkActions>({
 
 interface TurnOverlayProps {
   turns: Turn[];
+  assistantLabel: string;
   // Top bar pinned across the top of the pane (session id + fork/browser controls).
   header?: ReactNode;
   input?: ReactNode;
@@ -178,12 +179,13 @@ const markdownComponents: Components = {
   ),
 };
 
-export function formatTurnsTranscript(turns: Turn[]) {
-  return turns.map(formatTurnTranscript).join("\n\n");
+export function formatTurnsTranscript(turns: Turn[], assistantLabel: string) {
+  return turns.map((turn) => formatTurnTranscript(turn, assistantLabel)).join("\n\n");
 }
 
 export default function TurnOverlay({
   turns,
+  assistantLabel,
   header,
   input,
   agentId,
@@ -409,7 +411,13 @@ export default function TurnOverlay({
             {notice ? <span className="turn-empty-notice">{notice}</span> : null}
           </div>
         ) : (
-          timelineItems.map((item) => <MessageTimelineItemView key={item.key} item={item} />)
+          timelineItems.map((item) => (
+            <MessageTimelineItemView
+              key={item.key}
+              item={item}
+              assistantLabel={assistantLabel}
+            />
+          ))
         )}
       </div>
       {input ? (
@@ -593,12 +601,16 @@ function countUniqueToolCalls(items: ActivityLeafItem[]) {
 // re-rendering — and re-running ReactMarkdown over — the whole timeline.
 const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
+  assistantLabel,
 }: {
   item: MessageItem;
+  assistantLabel: string;
 }) {
   return (
     <>
-      {item.blocks.length > 0 ? <MessageItemView item={item} /> : null}
+      {item.blocks.length > 0 ? (
+        <MessageItemView item={item} assistantLabel={assistantLabel} />
+      ) : null}
       {item.activities.map((activity) => (
         <ActivityItemView key={activity.key} item={activity} />
       ))}
@@ -606,10 +618,10 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   );
 });
 
-function MessageItemView({ item }: { item: MessageItem }) {
+function MessageItemView({ item, assistantLabel }: { item: MessageItem; assistantLabel: string }) {
   return (
     <article className={`turn-card role-${item.role}`}>
-      <header>{item.role}</header>
+      <header>{turnRoleLabel(item.role, assistantLabel)}</header>
       <div className="turn-blocks">
         {item.blocks.map((block, index) => (
           <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
@@ -617,6 +629,10 @@ function MessageItemView({ item }: { item: MessageItem }) {
       </div>
     </article>
   );
+}
+
+function turnRoleLabel(role: string, assistantLabel: string) {
+  return role === "assistant" ? assistantLabel : role;
 }
 
 function ActivityItemView({ item }: { item: ActivityItem }) {
@@ -770,8 +786,10 @@ function toolEntryStatus(entry: ToolEntry) {
   return `${status}, ${stringify(entry.result).length} chars`;
 }
 
-function formatTurnTranscript(turn: Turn) {
-  return [turn.role, ...turn.blocks.map(formatTurnBlockTranscript)].join("\n").trimEnd();
+function formatTurnTranscript(turn: Turn, assistantLabel: string) {
+  return [turnRoleLabel(turn.role, assistantLabel), ...turn.blocks.map(formatTurnBlockTranscript)]
+    .join("\n")
+    .trimEnd();
 }
 
 function formatTurnBlockTranscript(block: TurnBlock) {

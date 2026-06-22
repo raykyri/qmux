@@ -643,7 +643,11 @@ export default function App() {
     },
     [activeAgent?.id, activeAgent?.adapter, turns],
   );
-  const activeTranscript = useMemo(() => formatTurnsTranscript(activeTurns), [activeTurns]);
+  const activeAssistantLabel = activeAgent ? getAgentUiAdapter(activeAgent.adapter).label : "Claude";
+  const activeTranscript = useMemo(
+    () => formatTurnsTranscript(activeTurns, activeAssistantLabel),
+    [activeTurns, activeAssistantLabel],
+  );
   const activeHookEvents = useMemo(
     () => (activeAgent ? hookEventsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, hookEventsByAgent],
@@ -2287,7 +2291,7 @@ export default function App() {
           launcherDictation.stop();
         }}
         rows={2}
-        placeholder="What do you want to research or build?"
+        placeholder="What should we look at next?"
         style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
       />
       <DictationMicButton dictation={launcherDictation} className="command-launcher-mic" />
@@ -3031,6 +3035,7 @@ export default function App() {
           <TurnOverlay
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
+            assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
             queueSplit={activeQueueSplit}
             queueSplitHeight={activeQueueSplitHeight}
