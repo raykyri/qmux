@@ -525,37 +525,6 @@ button:disabled {
   min-width: 0;
 }
 
-.pane-tab-recovered {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: #16201e;
-  color: #6cae9d;
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  /* Clickable to dismiss. */
-  cursor: pointer;
-}
-
-.pane-tab-recovered:hover {
-  background: #1c2a27;
-  color: #8fd6c7;
-}
-
-.pane-tab-recovered:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 1px var(--accent-color);
-}
-
-.pane-tab-row.is-selected .pane-tab-recovered {
-  background: rgba(255, 255, 255, 0.18);
-  color: #ffffff;
-}
-
-.pane-tab-row.is-selected .pane-tab-recovered:hover {
-  background: rgba(255, 255, 255, 0.28);
-}
-
 .pane-context-menu {
   position: fixed;
   z-index: 15;
@@ -2092,7 +2061,7 @@ button:disabled {
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0 0 0 4px;
+  padding: 0 0 0 10px;
 }
 
 .turn-card header {

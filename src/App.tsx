@@ -1197,6 +1197,15 @@ export default function App() {
     acknowledgePaneIfDone(activePaneId);
   }, [activePaneId]);
 
+  // Selecting a pane clears its one-time "Restored" badge automatically — the same
+  // dismiss-on-select behavior as a done agent's review status — so it's never a
+  // manual click. Guarded so it only fires for a pane that still carries the badge.
+  useEffect(() => {
+    if (activePaneId && panes.some((pane) => pane.id === activePaneId && pane.recovered)) {
+      dismissRecoveredBadge(activePaneId);
+    }
+  }, [activePaneId, panes]);
+
   useEffect(() => {
     const handleFocus = () => acknowledgePaneIfDone(activePaneId);
     window.addEventListener("focus", handleFocus);
@@ -1350,7 +1359,7 @@ export default function App() {
     }
     if (
       event.target instanceof HTMLElement &&
-      event.target.closest(".pane-tab-close, .pane-tab-recovered, .pane-tab-status-clickable")
+      event.target.closest(".pane-tab-close, .pane-tab-status-clickable")
     ) {
       return;
     }
@@ -1586,9 +1595,10 @@ export default function App() {
     });
   }
 
-  // The "Restored" badge is a one-time, post-restart hint. Clicking it clears
-  // the flag locally and records the pane id so later backend pane refetches do
-  // not resurrect the badge during this app session.
+  // The "Restored" badge is a one-time, post-restart hint, cleared automatically
+  // when its pane is selected (see the activePaneId effect). Clearing the flag
+  // locally and recording the pane id keeps later backend pane refetches from
+  // resurrecting the badge during this app session.
   function dismissRecoveredBadge(paneId: string) {
     dismissedRecoveredPaneIdsRef.current.add(paneId);
     setPanesPreservingRecoveredDismissals((current) =>
@@ -2905,24 +2915,7 @@ export default function App() {
                   {pane.recovered || paneStatus ? (
                     <span className="pane-tab-meta">
                       {pane.recovered ? (
-                        <small
-                          className="pane-tab-recovered"
-                          role="button"
-                          tabIndex={0}
-                          title="Restored after restart — click to dismiss"
-                          aria-label="Dismiss restored label"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            dismissRecoveredBadge(pane.id);
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              dismissRecoveredBadge(pane.id);
-                            }
-                          }}
-                        >
+                        <small className="pane-tab-status" title="Restored after restart">
                           Restored
                         </small>
                       ) : null}
