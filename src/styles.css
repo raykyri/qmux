@@ -293,18 +293,16 @@ button:disabled {
 }
 
 .pane-tab:hover {
-  background: #0c0e0f;
+  /* A touch lighter than the sidebar rather than darker, so hover lifts off the
+     panel — but kept below the selected fill so the two stay distinct. */
+  background: #1b1f21;
 }
 
 .pane-tab-row.is-selected .pane-tab {
-  border-color: transparent;
-  /* Native macOS source-list selection: a solid, full-width, accent-filled
-     rounded row that tracks the user's system accent color. Falls back to the
-     app teal if AccentColor isn't supported. */
-  background: #3f8a78;
-  background: AccentColor;
-  /* Always white, the way macOS draws selected source-list text on the accent
-     fill. (AccentColorText resolved too dark to read against the accent here.) */
+  /* A moderate selected state instead of the bright system accent fill: a slightly
+     lighter shade of the button gray with a soft, slightly lighter border. */
+  border-color: var(--control-border);
+  background: var(--control-bg-hover);
   color: #ffffff;
   box-shadow: none;
 }
