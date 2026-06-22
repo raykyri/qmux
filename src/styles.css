@@ -2216,6 +2216,10 @@ header + .turn-blocks {
   padding-left: 18px;
 }
 
+.turn-markdown ol {
+  padding-left: 20px;
+}
+
 .turn-markdown li {
   margin: 2px 0;
 }
@@ -2226,8 +2230,12 @@ header + .turn-blocks {
 
 .turn-markdown a {
   color: var(--accent-color);
-  text-decoration: underline;
+  text-decoration: none;
   text-underline-offset: 2px;
+}
+
+.turn-markdown a:hover {
+  text-decoration: underline;
 }
 
 .turn-markdown blockquote {
@@ -2401,6 +2409,10 @@ header + .turn-blocks {
   color: #8f9994;
 }
 
+.activity-group-label.is-thinking-group {
+  color: #8f9994;
+}
+
 .tool-summary-arg {
   color: #d9ddd9;
 }
@@ -2453,11 +2465,11 @@ header + .turn-blocks {
 }
 
 .thinking-block {
-  color: #aab1ad;
+  color: #8f9994;
 }
 
 .thinking-block summary {
-  color: #aab1ad;
+  color: #8f9994;
 }
 
 .thinking-block > summary > span {
