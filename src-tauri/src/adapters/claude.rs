@@ -447,12 +447,13 @@ impl ClaudeAdapter {
             },
         )?;
 
-        // Re-bind the agent to its restored pane. Status returns to Starting until the
-        // resumed session's hooks report otherwise; that also keeps queued turns held
-        // (rather than sent) until the agent is idle again.
+        // Re-bind the agent to its restored pane. A recovered Claude process is
+        // launched without an inline prompt, even when resuming a session, so it is
+        // waiting for input once the TUI appears. The first real prompt/tool hook will
+        // promote it to Running.
         let mut restored = agent.clone();
         restored.pane_id = Some(pane.id.clone());
-        restored.status = AgentStatus::Starting;
+        restored.status = AgentStatus::AwaitingInput;
         state.update_agent(restored.clone())?;
 
         if let Some(transcript_path) = restored.transcript_path.clone() {
@@ -598,14 +599,9 @@ impl ClaudeAdapter {
                         if let Some(transcript_path) = transcript_path {
                             agent.transcript_path = Some(transcript_path);
                         }
-                        // A session starting doesn't mean a turn is running. When the
-                        // agent was launched without a prompt it is idle and awaiting
-                        // input, so don't promote that to Running here — the first real
-                        // turn (UserPromptSubmit/PreToolUse) does. Resume keeps its
-                        // Starting status, which still advances to Running.
-                        if agent.status != AgentStatus::AwaitingInput {
-                            agent.status = AgentStatus::Running;
-                        }
+                        // A session starting doesn't mean a turn is running. Keep
+                        // status unchanged here; the first real prompt/tool hook
+                        // promotes the agent to Running.
                     })?;
                     if let Some(transcript_path) = updated.and_then(|agent| agent.transcript_path) {
                         start_transcript_tail(
@@ -1259,6 +1255,7 @@ mod tests {
     use crate::state::{AgentSendSource, PaneInfo, PaneRuntime, PaneStatus};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io::{self, Write};
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
 
     fn svec(items: &[&str]) -> Vec<String> {
@@ -1355,6 +1352,45 @@ mod tests {
             legacy_claude_binary: None,
             claude_plugin_dir: PathBuf::new(),
         })
+    }
+
+    fn test_state_with_claude_binary(binary: &Path) -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: unique_test_dir("qmux-claude-workspace"),
+            socket_path: unique_test_dir("qmux-claude-socket").join("qmux.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some(binary.display().to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: PathBuf::new(),
+        })
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    fn fake_claude_binary(dir: &Path) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let binary = dir.join("fake-claude");
+        fs::write(
+            &binary,
+            "#!/bin/sh\nprintf 'fake claude ready\\n'\nsleep 1\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        binary
     }
 
     fn sample_agent() -> AgentInfo {
@@ -1509,6 +1545,59 @@ mod tests {
                 .as_deref(),
             Some("sess-abc")
         );
+    }
+
+    #[test]
+    fn session_start_preserves_awaiting_input_status() {
+        let state = test_state();
+        install_agent_pane(&state);
+        state
+            .set_agent_status("agent-1", AgentStatus::AwaitingInput)
+            .unwrap();
+
+        let event = ingest(
+            &state,
+            hook("SessionStart", json!({ "session_id": "sess-abc" })),
+        );
+
+        assert_eq!(event.event_type, "agent.session_start");
+        assert_eq!(event.payload["agent"]["status"], json!("awaitingInput"));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+        assert_eq!(agent.session_id.as_deref(), Some("sess-abc"));
+    }
+
+    #[test]
+    fn recovered_claude_resume_waits_for_input() {
+        let dir = unique_test_dir("qmux-claude-recover");
+        let fake_claude = fake_claude_binary(&dir);
+        let state = test_state_with_claude_binary(&fake_claude);
+        let mut agent = sample_agent();
+        agent.worktree_dir = dir.display().to_string();
+        agent.session_id = Some("sess-abc".to_string());
+        agent.status = AgentStatus::Running;
+        state.insert_agent(agent.clone()).unwrap();
+
+        let pane = PaneInfo {
+            id: "pane-recovered".to_string(),
+            title: "Claude".to_string(),
+            kind: PaneKind::Agent,
+            agent_id: Some(agent.id.clone()),
+            cwd: dir.display().to_string(),
+            cols: 80,
+            rows: 24,
+            status: PaneStatus::Running,
+            recovered: true,
+            depth: 0,
+        };
+
+        ClaudeAdapter::new(state.config())
+            .respawn_pane(&state, &pane, &agent)
+            .unwrap();
+
+        let restored = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(restored.pane_id.as_deref(), Some("pane-recovered"));
+        assert!(matches!(restored.status, AgentStatus::AwaitingInput));
     }
 
     #[test]
