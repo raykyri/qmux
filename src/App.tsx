@@ -3153,17 +3153,19 @@ export default function App() {
       <DictationMicButton dictation={launcherDictation} className="command-launcher-mic" />
       <div className="command-launcher-overlay">
         <div className="command-launcher-overlay-group">
-          <label className="command-launcher-worktree">
-            <input
-              type="checkbox"
-              checked={createInWorktree}
-              onChange={(event) => {
-                setCreateInWorktree(event.currentTarget.checked);
-                focusLauncherInput();
-              }}
-            />
-            <span>New worktree</span>
-          </label>
+          {settings.codeMode ? (
+            <label className="command-launcher-worktree">
+              <input
+                type="checkbox"
+                checked={createInWorktree}
+                onChange={(event) => {
+                  setCreateInWorktree(event.currentTarget.checked);
+                  focusLauncherInput();
+                }}
+              />
+              <span>New worktree</span>
+            </label>
+          ) : null}
           {skillsEnabled && availableSkills.length > 0 ? (
             <div className="command-launcher-skills">
               {availableSkills.map((skill) => (
@@ -3289,17 +3291,19 @@ export default function App() {
         <div className="command-launcher-overlay-group">
           {state.mode === "newThread" ? (
             <>
-              <label className="command-launcher-worktree">
-                <input
-                  type="checkbox"
-                  checked={askCreateInWorktree}
-                  onChange={(event) => {
-                    setAskCreateInWorktree(event.currentTarget.checked);
-                    focusAskInput();
-                  }}
-                />
-                <span>New worktree</span>
-              </label>
+              {settings.codeMode ? (
+                <label className="command-launcher-worktree">
+                  <input
+                    type="checkbox"
+                    checked={askCreateInWorktree}
+                    onChange={(event) => {
+                      setAskCreateInWorktree(event.currentTarget.checked);
+                      focusAskInput();
+                    }}
+                  />
+                  <span>New worktree</span>
+                </label>
+              ) : null}
               {availableSkills.length > 0 ? (
                 <div className="command-launcher-skills">
                   {availableSkills.map((skill) => (
@@ -3502,12 +3506,12 @@ export default function App() {
                     >
                       {paneDisplayTitle}
                     </span>
-                    {paneDir ? (
+                    {settings.codeMode && paneDir ? (
                       <span className="pane-tab-path" title={paneDir}>
                         {formatPaneDir(paneDir)}
                       </span>
                     ) : null}
-                    {paneGitMeta ? (
+                    {settings.codeMode && paneGitMeta ? (
                       <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
                         {paneGitMeta}
                       </span>
@@ -3824,6 +3828,19 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Code mode</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.codeMode}
+                onChange={(event) => {
+                  const codeMode = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, codeMode }));
+                }}
+              />
+            </label>
 
             <label className="settings-row settings-toggle">
               <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
