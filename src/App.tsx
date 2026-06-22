@@ -383,7 +383,7 @@ export default function App() {
     Record<string, TranscriptHookEvent[]>
   >({});
   // Latest unexpected-state message per agent (stalled/unreadable transcript,
-  // adapter failure). Shown under the right pane's "No turns yet" placeholder;
+  // adapter failure). Shown under the right pane's "No activity yet" placeholder;
   // null clears it once the transcript tail recovers.
   const [transcriptNoticeByAgent, setTranscriptNoticeByAgent] = useState<
     Record<string, string | null>

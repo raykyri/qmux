@@ -316,24 +316,25 @@ button:disabled {
   align-items: center;
   justify-content: center;
   min-width: 25px;
-  height: 18px;
-  padding: 0 6px;
+  min-height: 18px;
+  padding: 1px 6px;
   transform: translateY(-50%);
   border: 1px solid #3a4245;
   border-radius: 6px;
   background: #111416;
-  color: #d9ddd9;
+  color: #c4cbc6;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
+  opacity: 0.88;
   pointer-events: none;
   user-select: none;
 }
 
 .pane-tab-row.is-selected .pane-tab-shortcut-hint {
   border-color: #566165;
-  color: #ffffff;
+  color: #e7e7e2;
 }
 
 .pane-tab-row.is-dragging {
@@ -2053,7 +2054,7 @@ button:disabled {
 
 /* Empty-queue placeholder shown above the composer when the queue and transcript
    are split into view together; grows to fill the reserved queue area so the text
-   sits centered like the transcript's "No turns yet". */
+   sits centered like the transcript's "No activity yet". */
 .queue-empty-state {
   flex: 1 1 auto;
 }
