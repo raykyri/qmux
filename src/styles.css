@@ -2085,7 +2085,7 @@ button:disabled {
 .turn-markdown {
   min-width: 0;
   color: #f1f0e8;
-  font-size: calc(13.5px + var(--turn-font-delta, 0px));
+  font-size: calc(14px + var(--turn-font-delta, 0px));
   overflow-wrap: anywhere;
 }
 
@@ -2096,10 +2096,6 @@ button:disabled {
 
 .turn-text.is-tagged-instruction {
   color: #aab1ad;
-}
-
-.turn-markdown {
-  line-height: 1.48;
 }
 
 .turn-markdown > :first-child {
