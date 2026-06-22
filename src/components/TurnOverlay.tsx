@@ -765,7 +765,11 @@ function ActivityGroupView({
     <details className={`activity-group-block${showChevron ? "" : " is-root-activity"}`}>
       <summary>
         {showChevron ? <DisclosureChevron /> : null}
-        <span className={group.toolCallCount > 0 ? "activity-group-label is-tool-group" : undefined}>
+        <span
+          className={`activity-group-label ${
+            group.toolCallCount > 0 ? "is-tool-group" : "is-thinking-group"
+          }`}
+        >
           {activityGroupLabel(group)}
         </span>
       </summary>
