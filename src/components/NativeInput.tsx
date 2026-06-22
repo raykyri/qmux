@@ -109,6 +109,10 @@ interface NativeInputProps {
   draft: string;
   queuedTurns: QueuedTurn[];
   collapsedQueuedTurns: boolean[];
+  // When the queue and transcript are shown together (the top-right "show both"
+  // toggle), an empty queue gets a centered placeholder instead of collapsing to
+  // nothing above the composer.
+  queueSplit: boolean;
   transcriptText: string;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
@@ -133,6 +137,7 @@ export default function NativeInput({
   draft,
   queuedTurns,
   collapsedQueuedTurns,
+  queueSplit,
   transcriptText,
   transcriptCopyText,
   composerPolicy,
@@ -752,6 +757,10 @@ export default function NativeInput({
             );
           })}
         </div>
+      ) : queueSplit ? (
+        <div className="empty-state turn-empty-state queue-empty-state">
+          <span>No turns queued</span>
+        </div>
       ) : null}
       <div className="native-input-composer">
         <textarea
@@ -841,6 +850,8 @@ export default function NativeInput({
         <div className="native-input-actions">
           <DictationMicButton dictation={dictation} className="native-input-mic" />
           {paused ? <span className="composer-paused-label">Paused</span> : null}
+        </div>
+        <div className="native-input-submit-actions">
           <div className="composer-menu" ref={menuRef}>
             <button
               type="button"
@@ -971,8 +982,6 @@ export default function NativeInput({
               </div>
             ) : null}
           </div>
-        </div>
-        <div className="native-input-submit-actions">
           {permissionActions.length > 0 ? (
             permissionActions.map((action) => (
               <button

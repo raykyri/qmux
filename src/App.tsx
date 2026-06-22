@@ -2297,7 +2297,7 @@ export default function App() {
                 setActivePaneId(HOME_TAB_ID);
               }}
             >
-              <House size={14} aria-hidden="true" />
+              <House size={13} aria-hidden="true" />
               <span className="pane-tab-title">Home</span>
             </button>
           </div>
@@ -2956,6 +2956,7 @@ export default function App() {
                     draft={activeDraft}
                     queuedTurns={activeQueuedTurns}
                     collapsedQueuedTurns={activeCollapsedQueuedTurns}
+                    queueSplit={activeQueueSplit}
                     transcriptText={activeTranscript}
                     transcriptCopyText={() =>
                       formatTranscriptCopyJson({
