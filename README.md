@@ -182,8 +182,22 @@ Relative paths are resolved from the process working directory. Each adapter's
 `binary` is optional and defaults to the command name (`claude`, `codex`,
 `opencode`); a top-level `claudeBinary` is still honored for backward
 compatibility. If the config file is absent, qmux falls back to
-`~/qmux/workspaces` for workspace state and a temporary `qmux.sock` control
-socket.
+`~/qmux/workspaces` for workspace state and `~/qmux/run/qmux.sock` for the
+control socket.
+
+Runtime directories:
+
+- `<workspaceRoot>/`: qmux groups and optional agent worktrees.
+- `<workspaceRoot>/.qmux/`: persisted app state, scrollback, and adapter
+  transcripts (`state.json`, `terminal/*.pty`, `opencode/*.jsonl`).
+- `<socketPath>` parent: the owner-only Unix socket directory; the socket file is
+  recreated on startup.
+- `$TMPDIR/qmux-shell-init/<pane-id>/`: temporary generated shell rc files,
+  removed best-effort when panes exit.
+- `<agent cwd>/.qmux/qmux-hooks.json`: Claude hook settings; when worktree mode is
+  off, this may be in the selected project directory.
+- `$CODEX_HOME/qmux/` or `~/.codex/qmux/`: Codex hook shim, created when launching
+  Codex agents.
 
 ## Skills
 
