@@ -22,6 +22,7 @@ import { inspectPaste } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
+import type { SelectionAnchor } from "../appTypes";
 import { bytesFromBase64 } from "../lib/appHelpers";
 import {
   RESTORED_SCROLLBACK_TERMINAL_RESET,
@@ -49,6 +50,10 @@ interface TerminalPaneProps {
   onOpenLink?: (url: string) => void;
   /** Right-click on a terminal link: open the internal/external chooser. */
   onLinkContextMenu?: (url: string, x: number, y: number) => void;
+  /** Called on mouse-up when the user has a non-whitespace selection in this
+   *  terminal, with the selected text and its viewport bounding box, so the app
+   *  can offer to ask the agent about it. */
+  onAskSelection?: (paneId: string, quote: string, anchor: SelectionAnchor) => void;
   /** Called when xterm parses an OSC 0/2 window-title update from PTY output. */
   onTerminalTitleChange?: (paneId: string, title: string) => void;
 }
@@ -148,6 +153,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     onUserInput,
     onOpenLink,
     onLinkContextMenu,
+    onAskSelection,
     onTerminalTitleChange,
   },
   ref,
@@ -174,6 +180,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onOpenLinkRef.current = onOpenLink;
   const onLinkContextMenuRef = useRef(onLinkContextMenu);
   onLinkContextMenuRef.current = onLinkContextMenu;
+  const onAskSelectionRef = useRef(onAskSelection);
+  onAskSelectionRef.current = onAskSelection;
   const onTerminalTitleChangeRef = useRef(onTerminalTitleChange);
   onTerminalTitleChangeRef.current = onTerminalTitleChange;
   // The URL the mouse is currently over (set by the link provider's hover/leave), so a
@@ -565,6 +573,40 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       };
       hostEl.addEventListener("contextmenu", handleContextMenu, true);
 
+      // Offer an "ask the agent about this" action when the user selects terminal
+      // text. Fire on mouse-up (selection finalized) rather than on every
+      // intermediate change during a drag.
+      const handleSelectionMouseUp = (event: MouseEvent) => {
+        const handler = onAskSelectionRef.current;
+        const term = terminalRef.current;
+        if (!handler || !term || !term.hasSelection()) {
+          return;
+        }
+        const text = term.getSelection();
+        if (!text.trim()) {
+          return;
+        }
+        // Prefer the DOM range's rect (DOM renderer); the WebGL renderer paints the
+        // selection on a canvas with no DOM range, so fall back to the mouse-up
+        // point, which is at the end of the drag.
+        const selection = window.getSelection();
+        const rect =
+          selection && selection.rangeCount > 0 && !selection.isCollapsed
+            ? selection.getRangeAt(0).getBoundingClientRect()
+            : null;
+        const anchor: SelectionAnchor =
+          rect && (rect.width > 0 || rect.height > 0)
+            ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+            : {
+                left: event.clientX,
+                right: event.clientX,
+                top: event.clientY,
+                bottom: event.clientY,
+              };
+        handler(pane.id, text, anchor);
+      };
+      hostEl.addEventListener("mouseup", handleSelectionMouseUp, true);
+
       stabilizeTerminalRef.current = scheduleSettledFits;
 
       // xterm paints inside requestAnimationFrame, which the OS/webview throttles
@@ -640,6 +682,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       return () => {
         hostEl.removeEventListener("paste", handlePaste, true);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
+        hostEl.removeEventListener("mouseup", handleSelectionMouseUp, true);
         inputDisposable.dispose();
         titleDisposable.dispose();
         linkProviderDisposable.dispose();

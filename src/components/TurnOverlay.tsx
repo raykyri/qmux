@@ -21,6 +21,7 @@ import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { Turn, TurnBlock } from "../types";
+import type { SelectionAnchor } from "../appTypes";
 
 // Link actions for rendered markdown, supplied by App through TurnOverlay. Markdown is
 // rendered deep in the timeline tree, so a context avoids threading these everywhere.
@@ -56,6 +57,10 @@ interface TurnOverlayProps {
   // How rendered-markdown links behave (left-click opens internally; right-click
   // opens a chooser).
   linkActions: LinkActions;
+  // Called on mouse-up when the user selects non-whitespace text within an
+  // assistant message, with the text and its viewport bounding box, so the app can
+  // offer to ask the agent about it.
+  onAskSelection?: (quote: string, anchor: SelectionAnchor) => void;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -199,10 +204,46 @@ export default function TurnOverlay({
   queueSplitHeight,
   onQueueSplitHeightChange,
   linkActions,
+  onAskSelection,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+
+  // On mouse-up, offer an "ask about this" action for a non-whitespace selection
+  // that lies entirely within an assistant message (not a user turn, not spanning
+  // the gap between cards).
+  const handleSelectionMouseUp = () => {
+    if (!onAskSelection) {
+      return;
+    }
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return;
+    }
+    const text = selection.toString();
+    if (!text.trim()) {
+      return;
+    }
+    const assistantCard = (node: Node | null) => {
+      const el = node instanceof Element ? node : node?.parentElement ?? null;
+      return el?.closest(".turn-card.role-assistant") ?? null;
+    };
+    // Require both endpoints in the *same* assistant card, so a selection that
+    // spans a user turn or the gap between cards (or two different assistant
+    // messages) is ignored.
+    const anchorCard = assistantCard(selection.anchorNode);
+    if (!anchorCard || anchorCard !== assistantCard(selection.focusNode)) {
+      return;
+    }
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    onAskSelection(text, {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+    });
+  };
   const queueSplitDragRef = useRef<QueueSplitDrag | null>(null);
   // Whether the view is parked near the bottom, so incoming content can keep it
   // pinned there. Starts true (we load at the bottom) and tracks user scrolling.
@@ -384,6 +425,10 @@ export default function TurnOverlay({
       ref={sidebarRef}
       className={`turn-sidebar${header ? " has-header" : ""}${queueSplit ? " has-queue-split" : ""}`}
       aria-label="Agent turns"
+      // Listen on the whole pane, not just the timeline, so a selection that starts
+      // in a message but is released over the composer below still registers. The
+      // Ask popup is portaled outside this section, so clicking it can't re-fire.
+      onMouseUp={handleSelectionMouseUp}
     >
       {header}
       {queueSplit ? (
