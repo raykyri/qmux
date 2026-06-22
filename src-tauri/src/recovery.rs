@@ -24,10 +24,23 @@ pub fn respawn_session(state: &AppState, panes: Vec<PaneInfo>) {
             continue;
         }
 
-        let result = match pane.kind {
+        // Isolate a panic the same way an `Err` is isolated: a panic in one pane's
+        // respawn (e.g. an index/unwrap on malformed persisted metadata) would
+        // otherwise unwind `respawn_session` and silently skip every later pane,
+        // which is exactly the "one bad pane blocks the rest" failure this loop
+        // exists to prevent.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match pane.kind {
             PaneKind::Shell => respawn_shell_pane(state, &pane).map(|_| ()),
             PaneKind::Agent => respawn_agent_pane(state, &pane).map(|_| ()),
-        };
+        }))
+        .unwrap_or_else(|payload| {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            Err(format!("recovery panicked: {detail}"))
+        });
 
         match result {
             Ok(()) => recovered += 1,

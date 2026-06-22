@@ -19,7 +19,7 @@ import {
 } from "../lib/api";
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
-import { largePastePrompt } from "../lib/paste";
+import { inspectPaste } from "../lib/paste";
 import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
@@ -791,17 +791,22 @@ export default function NativeInput({
           }}
           onPaste={(event) => {
             const text = event.clipboardData.getData("text");
-            const prompt = largePastePrompt(text);
-            if (!prompt) {
+            const verdict = inspectPaste(text);
+            if (verdict.action === "accept") {
               // Small paste: let the browser insert it normally.
               return;
             }
-            // Large paste: the in-app confirm is async, so cancel the native paste now
-            // and re-insert at the caret only if the user accepts.
+            // Large/oversized paste: the in-app dialog is async, so cancel the
+            // native paste now and handle it ourselves.
             event.preventDefault();
+            if (verdict.action === "reject") {
+              void confirm({ message: verdict.message, confirmLabel: "OK" });
+              return;
+            }
+            // Confirmed-large: re-insert at the caret only if the user accepts.
             const start = event.currentTarget.selectionStart ?? value.length;
             const end = event.currentTarget.selectionEnd ?? value.length;
-            void confirm({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
+            void confirm({ message: verdict.message, confirmLabel: "Paste" }).then((ok) => {
               if (!ok) {
                 return;
               }

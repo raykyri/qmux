@@ -140,8 +140,13 @@ function safeHref(href: unknown): string | undefined {
   } catch {
     return undefined;
   }
+  // Return the resolved absolute URL, not the raw href: a relative ("/path") or
+  // protocol-relative ("//host") href passes the protocol check once resolved
+  // against the base, but handing the raw string downstream would let it resolve
+  // unpredictably. Normalizing here means openLink always receives a fully
+  // qualified http(s)/mailto URL.
   return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:"
-    ? href
+    ? url.href
     : undefined;
 }
 
