@@ -1973,6 +1973,16 @@ button:disabled {
   padding: 8px 9px;
 }
 
+/* The agent's own turns read as plain text in the transcript rather than in a
+   bubble: keep the role header and text, but drop the card's border, fill, and
+   padding. (User turns keep the bubble so they still stand out.) */
+.turn-card.role-assistant {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .turn-card header {
   color: #96e0cf;
   font-size: 11px;
