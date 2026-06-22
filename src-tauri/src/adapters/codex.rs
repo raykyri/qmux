@@ -7,7 +7,10 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
-use crate::transcript::Turn;
+use crate::transcript::{
+    Turn, TurnBlock, codex_transcript_session_id, gather_transcript_candidates_recursive,
+    read_codex_transcript_session_id, start_transcript_tail, string_field,
+};
 use crate::turn_queue::{IdleResolution, advance_after_idle};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
@@ -19,6 +22,8 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 const CODEX_QMUX_PROFILE: &str = "qmux-codex";
 const CODEX_HOOK_EVENTS: &[&str] = &[
@@ -100,11 +105,11 @@ impl AgentAdapter for CodexAdapter {
 
     fn parse_transcript_line(
         &self,
-        _agent_id: &str,
-        _source_index: usize,
-        _line: &str,
+        agent_id: &str,
+        source_index: usize,
+        line: &str,
     ) -> Option<Turn> {
-        None
+        parse_transcript_line(agent_id, source_index, line)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -238,6 +243,14 @@ impl CodexAdapter {
         )?;
 
         let restored = attach_agent_pane(state, &agent.id, pane.id.clone())?;
+        if let Some(transcript_path) = restored.transcript_path.clone() {
+            start_transcript_tail(
+                state.clone(),
+                restored.id.clone(),
+                transcript_path,
+                self.id().to_string(),
+            );
+        }
         state.emit(QmuxEvent::new(
             "agent.recovered",
             Some(pane.id.clone()),
@@ -339,6 +352,10 @@ impl CodexAdapter {
                         .or_else(|| string_field(&notification.payload, "sessionId"))
                         .or_else(|| string_field(&notification.payload, "resource_id"))
                         .or_else(|| string_field(&notification.payload, "resourceId"));
+                    let transcript_path = string_field(&notification.payload, "transcript_path")
+                        .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                    let session_id_for_tail = session_id.clone();
+                    let transcript_path_for_tail = transcript_path.clone();
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
@@ -357,6 +374,12 @@ impl CodexAdapter {
                             agent.status = AgentStatus::Running;
                         }
                     })?;
+                    start_codex_transcript_binding(
+                        state.clone(),
+                        current.id.clone(),
+                        session_id_for_tail,
+                        transcript_path_for_tail,
+                    );
                 }
                 "agent.session_start"
             }
@@ -807,13 +830,371 @@ fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, 
     }
 }
 
-fn string_field(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+const CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS: usize = 40;
+const CODEX_TRANSCRIPT_DISCOVERY_DELAY: Duration = Duration::from_millis(250);
+
+fn start_codex_transcript_binding(
+    state: AppState,
+    agent_id: String,
+    session_id: Option<String>,
+    transcript_path: Option<String>,
+) {
+    if let Some(transcript_path) = transcript_path {
+        if codex_binding_should_continue(&state, &agent_id, false) {
+            start_explicit_codex_transcript_binding(
+                state,
+                agent_id,
+                session_id,
+                transcript_path,
+            );
+        }
+        return;
+    }
+
+    let Some(session_id) = session_id.filter(|id| looks_like_codex_session_id(id)) else {
+        return;
+    };
+    if !codex_binding_should_continue(&state, &agent_id, true) {
+        return;
+    }
+    let Ok(codex_home) = codex_home() else {
+        return;
+    };
+
+    thread::spawn(move || {
+        for attempt in 0..CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS {
+            if !codex_binding_should_continue(&state, &agent_id, true) {
+                return;
+            }
+            match find_codex_transcript_path(&codex_home, &session_id) {
+                Ok(Some(path)) => {
+                    let path_string = path.display().to_string();
+                    if let Err(err) =
+                        bind_codex_transcript_path(&state, &agent_id, Some(&session_id), &path)
+                    {
+                        emit_codex_transcript_notice(
+                            &state,
+                            &agent_id,
+                            Some(&err),
+                            Some(&path_string),
+                        );
+                    }
+                    return;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    emit_codex_transcript_notice(&state, &agent_id, Some(&err), None);
+                    return;
+                }
+            }
+
+            if attempt + 1 < CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS {
+                thread::sleep(CODEX_TRANSCRIPT_DISCOVERY_DELAY);
+            }
+        }
+
+        emit_codex_transcript_notice(&state, &agent_id, Some("Transcript unavailable"), None);
+    });
+}
+
+fn start_explicit_codex_transcript_binding(
+    state: AppState,
+    agent_id: String,
+    expected_session_id: Option<String>,
+    transcript_path: String,
+) {
+    thread::spawn(move || {
+        let path = PathBuf::from(&transcript_path);
+        for attempt in 0..CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS {
+            if !codex_binding_should_continue(&state, &agent_id, false) {
+                return;
+            }
+            match codex_transcript_path_ready(&path, expected_session_id.as_deref()) {
+                Ok(true) => {
+                    if let Err(err) = bind_codex_transcript_path(
+                        &state,
+                        &agent_id,
+                        expected_session_id.as_deref(),
+                        &path,
+                    ) {
+                        emit_codex_transcript_notice(
+                            &state,
+                            &agent_id,
+                            Some(&err),
+                            Some(&transcript_path),
+                        );
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    emit_codex_transcript_notice(
+                        &state,
+                        &agent_id,
+                        Some(&err),
+                        Some(&transcript_path),
+                    );
+                    return;
+                }
+            }
+
+            if attempt + 1 < CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS {
+                thread::sleep(CODEX_TRANSCRIPT_DISCOVERY_DELAY);
+            }
+        }
+
+        emit_codex_transcript_notice(
+            &state,
+            &agent_id,
+            Some("Transcript unavailable"),
+            Some(&transcript_path),
+        );
+    });
+}
+
+/// Whether a Codex transcript binding loop should keep running. Returns false
+/// once the agent is gone, or — when `require_unbound` is set — once the agent
+/// already has a transcript path (a duplicate SessionStart or prior iteration
+/// bound it). A poisoned model lock is treated as transient so a momentary
+/// failure does not tear down discovery.
+fn codex_binding_should_continue(
+    state: &AppState,
+    agent_id: &str,
+    require_unbound: bool,
+) -> bool {
+    match state.agent(agent_id) {
+        Ok(Some(agent)) => !require_unbound || agent.transcript_path.is_none(),
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
+fn codex_transcript_path_ready(
+    path: &Path,
+    expected_session_id: Option<&str>,
+) -> Result<bool, String> {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        return Err("Codex transcript must be a .jsonl file".to_string());
+    }
+
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(format!(
+                "failed to inspect Codex transcript {}: {err}",
+                path.display()
+            ));
+        }
+    };
+    if !metadata.is_file() {
+        return Err(format!("Codex transcript {} is not a file", path.display()));
+    }
+
+    if let Some(expected_session_id) = expected_session_id {
+        let Some(actual_session_id) = read_codex_transcript_session_id(path)? else {
+            return Ok(false);
+        };
+        if actual_session_id != expected_session_id {
+            return Err(format!(
+                "Codex transcript {} belongs to session {actual_session_id}, expected {expected_session_id}",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(true)
+}
+
+fn bind_codex_transcript_path(
+    state: &AppState,
+    agent_id: &str,
+    expected_session_id: Option<&str>,
+    path: &Path,
+) -> Result<(), String> {
+    let path_string = path.display().to_string();
+    let mut should_start = false;
+    let updated = state.mutate_agent(agent_id, |agent| {
+        if let Some(expected_session_id) = expected_session_id {
+            if agent
+                .session_id
+                .as_deref()
+                .is_some_and(|current| current != expected_session_id)
+            {
+                return;
+            }
+            if agent.session_id.is_none() {
+                agent.session_id = Some(expected_session_id.to_string());
+            }
+        }
+        if agent.transcript_path.as_deref() != Some(path_string.as_str()) {
+            agent.transcript_path = Some(path_string.clone());
+        }
+        should_start = true;
+    })?;
+
+    if should_start {
+        if let Some(agent) = updated {
+            state.emit(QmuxEvent::new(
+                "agent.transcript_bound",
+                agent.pane_id.clone(),
+                Some(agent.id.clone()),
+                json!({ "agent": agent, "transcriptPath": path_string }),
+            ));
+        }
+        emit_codex_transcript_notice(state, agent_id, None, Some(&path_string));
+        start_transcript_tail(
+            state.clone(),
+            agent_id.to_string(),
+            path_string,
+            "codex".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn emit_codex_transcript_notice(
+    state: &AppState,
+    agent_id: &str,
+    message: Option<&str>,
+    path: Option<&str>,
+) {
+    state.emit(QmuxEvent::new(
+        "transcript.notice",
+        None,
+        Some(agent_id.to_string()),
+        json!({ "message": message, "path": path }),
+    ));
+}
+
+fn find_codex_transcript_path(
+    codex_home: &Path,
+    session_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+    let root = codex_home.join("sessions");
+    if !root.exists() {
+        return Ok(None);
+    }
+
+    let mut candidates = gather_transcript_candidates_recursive(&root)?
+        .into_iter()
+        .filter(|candidate| {
+            codex_transcript_session_id(&candidate.path).as_deref() == Some(session_id)
+        })
+        .map(|candidate| (candidate.modified, candidate.path))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    Ok(candidates.into_iter().map(|(_, path)| path).next())
+}
+
+fn looks_like_codex_session_id(value: &str) -> bool {
+    let value = value.trim();
+    value.len() == 36
+        && value.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-')
+        && value.chars().filter(|&ch| ch == '-').count() == 4
+}
+
+fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("response_item") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let item_type = payload.get("type").and_then(Value::as_str)?;
+    let session_id =
+        string_field(&value, "session_id").or_else(|| string_field(&value, "sessionId"));
+
+    let (role, blocks) = match item_type {
+        "message" => {
+            let role = payload.get("role").and_then(Value::as_str)?;
+            if role == "developer" || role == "system" {
+                return None;
+            }
+            let blocks = parse_codex_message_blocks(payload.get("content"))?;
+            (role.to_string(), blocks)
+        }
+        "function_call" | "custom_tool_call" => {
+            let name = string_field(payload, "name").unwrap_or_else(|| "tool".to_string());
+            (
+                "assistant".to_string(),
+                vec![TurnBlock::ToolUse {
+                    id: string_field(payload, "call_id")
+                        .or_else(|| string_field(payload, "callId"))
+                        .or_else(|| string_field(payload, "id")),
+                    name,
+                    input: codex_tool_input(payload),
+                }],
+            )
+        }
+        "function_call_output" | "custom_tool_call_output" => (
+            "assistant".to_string(),
+            vec![TurnBlock::ToolResult {
+                tool_use_id: string_field(payload, "call_id")
+                    .or_else(|| string_field(payload, "callId")),
+                content: payload.get("output").cloned().unwrap_or(Value::Null),
+                is_error: payload
+                    .get("is_error")
+                    .or_else(|| payload.get("isError"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            }],
+        ),
+        _ => return None,
+    };
+
+    if blocks.is_empty() {
+        return None;
+    }
+
+    Some(Turn {
+        id: format!("{agent_id}-{source_index}"),
+        agent_id: agent_id.to_string(),
+        session_id,
+        role,
+        blocks,
+        source_index,
+    })
+}
+
+fn parse_codex_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBlock>> {
+    match content? {
+        Value::String(text) => Some(vec![TurnBlock::Text { text: text.clone() }]),
+        Value::Array(items) => {
+            let blocks = items
+                .iter()
+                .filter_map(|item| {
+                    let block_type = item.get("type").and_then(Value::as_str);
+                    match block_type {
+                        Some("input_text" | "output_text" | "text") => item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(|text| TurnBlock::Text {
+                                text: text.to_string(),
+                            }),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            Some(blocks)
+        }
+        _ => None,
+    }
+}
+
+fn codex_tool_input(payload: &Value) -> Value {
+    if let Some(arguments) = payload.get("arguments") {
+        if let Some(arguments) = arguments.as_str() {
+            return serde_json::from_str(arguments)
+                .unwrap_or_else(|_| Value::String(arguments.to_string()));
+        }
+        return arguments.clone();
+    }
+    payload.get("input").cloned().unwrap_or(Value::Null)
 }
 
 #[cfg(test)]
@@ -1188,6 +1569,372 @@ trusted_hash = "sha256:trusted"
     }
 
     #[test]
+    fn session_start_binds_explicit_codex_transcript_path() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        state.insert_agent(agent).unwrap();
+        let transcript_path = temp_dir().join("codex-session.jsonl");
+        fs::write(
+            &transcript_path,
+            r#"{"type":"session_meta","payload":{"id":"019eeca7-d820-7b91-b1e8-9c954fb1a105"}}"#,
+        )
+        .unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({
+                    "resource_id": "019eeca7-d820-7b91-b1e8-9c954fb1a105",
+                    "transcript_path": transcript_path.display().to_string()
+                }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.session_start");
+        let agent = wait_for_agent_transcript_path(&state, "agent-1", &transcript_path);
+        assert_eq!(
+            agent.session_id.as_deref(),
+            Some("019eeca7-d820-7b91-b1e8-9c954fb1a105")
+        );
+        assert_eq!(
+            agent.transcript_path.as_deref(),
+            Some(transcript_path.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn explicit_codex_transcript_path_rejects_session_mismatch() {
+        let transcript_path = temp_dir().join("codex-session.jsonl");
+        fs::write(
+            &transcript_path,
+            r#"{"type":"session_meta","payload":{"id":"019eeca7-d820-7b91-b1e8-9c954fb1a105"}}"#,
+        )
+        .unwrap();
+
+        let err = codex_transcript_path_ready(
+            &transcript_path,
+            Some("029eeca7-d820-7b91-b1e8-9c954fb1a105"),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("belongs to session"));
+    }
+
+    #[test]
+    fn codex_binding_continues_for_alive_unbound_agent() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.transcript_path = None;
+        state.insert_agent(agent).unwrap();
+
+        assert!(codex_binding_should_continue(&state, "agent-1", true));
+        assert!(codex_binding_should_continue(&state, "agent-1", false));
+    }
+
+    #[test]
+    fn codex_binding_stops_when_agent_is_gone() {
+        let state = test_state();
+
+        assert!(!codex_binding_should_continue(&state, "missing", true));
+        assert!(!codex_binding_should_continue(&state, "missing", false));
+    }
+
+    #[test]
+    fn codex_binding_stops_when_transcript_bound_only_with_require_unbound() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.transcript_path = Some("/tmp/session.jsonl".to_string());
+        state.insert_agent(agent).unwrap();
+
+        assert!(
+            !codex_binding_should_continue(&state, "agent-1", true),
+            "discovery should stop when transcript is already bound"
+        );
+        assert!(
+            codex_binding_should_continue(&state, "agent-1", false),
+            "explicit path binding should continue even when transcript is bound"
+        );
+    }
+
+    #[test]
+    fn bind_codex_transcript_path_skips_when_session_id_mismatches() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.session_id = Some("different-session".to_string());
+        state.insert_agent(agent).unwrap();
+        let transcript_path = temp_dir().join("codex-mismatch.jsonl");
+        fs::write(
+            &transcript_path,
+            r#"{"type":"session_meta","payload":{"id":"target-session"}}"#,
+        )
+        .unwrap();
+
+        bind_codex_transcript_path(
+            &state,
+            "agent-1",
+            Some("target-session"),
+            &transcript_path,
+        )
+        .unwrap();
+
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(
+            agent.transcript_path,
+            None,
+            "transcript should not be bound when session_id mismatches"
+        );
+        assert_eq!(
+            agent.session_id.as_deref(),
+            Some("different-session"),
+            "session_id should not be overwritten"
+        );
+    }
+
+    #[test]
+    fn explicit_codex_transcript_binding_retries_until_file_appears() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        state.insert_agent(agent).unwrap();
+        let transcript_path = temp_dir().join("codex-late.jsonl");
+        let session_id = "019eeca7-d820-7b91-b1e8-9c954fb1a105";
+        let path_for_writer = transcript_path.clone();
+        let sid_for_writer = session_id.to_string();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(400));
+            fs::write(
+                &path_for_writer,
+                format!(r#"{{"type":"session_meta","payload":{{"id":"{sid_for_writer}"}}}}"#),
+            )
+            .unwrap();
+        });
+
+        start_codex_transcript_binding(
+            state.clone(),
+            "agent-1".to_string(),
+            Some(session_id.to_string()),
+            Some(transcript_path.display().to_string()),
+        );
+
+        let agent = wait_for_agent_transcript_path(&state, "agent-1", &transcript_path);
+        assert_eq!(agent.session_id.as_deref(), Some(session_id));
+    }
+
+    #[test]
+    fn codex_discovery_binds_when_file_appears_late() {
+        let codex_home = temp_dir();
+        let session_id = "019eeca7-d820-7b91-b1e8-9c954fb1a105";
+        let session_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("21");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript_path =
+            session_dir.join(format!("rollout-2026-06-21T20-08-03-{session_id}.jsonl"));
+        let path_for_writer = transcript_path.clone();
+        let sid_for_writer = session_id.to_string();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(400));
+            fs::write(
+                &path_for_writer,
+                format!(r#"{{"type":"session_meta","payload":{{"id":"{sid_for_writer}"}}}}"#),
+            )
+            .unwrap();
+        });
+
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        agent.session_id = Some(session_id.to_string());
+        state.insert_agent(agent).unwrap();
+
+        let prev = env::var_os("CODEX_HOME");
+        unsafe { env::set_var("CODEX_HOME", &codex_home); }
+
+        start_codex_transcript_binding(
+            state.clone(),
+            "agent-1".to_string(),
+            Some(session_id.to_string()),
+            None,
+        );
+
+        let agent = wait_for_agent_transcript_path(&state, "agent-1", &transcript_path);
+        assert_eq!(agent.session_id.as_deref(), Some(session_id));
+
+        unsafe {
+            match prev {
+                Some(val) => env::set_var("CODEX_HOME", val),
+                None => env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn codex_discovery_skips_when_transcript_already_bound() {
+        let state = test_state();
+        let existing_path = temp_dir().join("existing.jsonl");
+        let mut agent = sample_agent();
+        agent.transcript_path = Some(existing_path.display().to_string());
+        state.insert_agent(agent).unwrap();
+
+        start_codex_transcript_binding(
+            state.clone(),
+            "agent-1".to_string(),
+            Some("019eeca7-d820-7b91-b1e8-9c954fb1a105".to_string()),
+            None,
+        );
+
+        thread::sleep(Duration::from_millis(300));
+
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(
+            agent.transcript_path.as_deref(),
+            Some(existing_path.to_str().unwrap()),
+            "transcript_path should not be overridden by discovery when already bound"
+        );
+    }
+
+    #[test]
+    fn codex_transcript_discovery_matches_session_meta_id() {
+        let codex_home = temp_dir();
+        let session_id = "019eeca7-d820-7b91-b1e8-9c954fb1a105";
+        let session_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("21");
+        fs::create_dir_all(&session_dir).unwrap();
+        let matching = session_dir.join("rollout-2026-06-21T20-08-03-short-id.jsonl");
+        let wrong = session_dir.join(format!("rollout-2026-06-21T20-08-04-{session_id}.jsonl"));
+        fs::write(
+            &matching,
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{session_id}"}}}}"#),
+        )
+        .unwrap();
+        fs::write(
+            &wrong,
+            r#"{"type":"session_meta","payload":{"id":"not-the-session"}}"#,
+        )
+        .unwrap();
+
+        let found = find_codex_transcript_path(&codex_home, session_id)
+            .unwrap()
+            .expect("matching transcript found");
+
+        assert_eq!(found, matching);
+    }
+
+    #[test]
+    fn parse_codex_message_response_items() {
+        let user_line = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "fix the bug" }]
+            }
+        })
+        .to_string();
+        let assistant_line = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Done." }]
+            }
+        })
+        .to_string();
+
+        let user = parse_transcript_line("agent-1", 3, &user_line).expect("user turn");
+        let assistant =
+            parse_transcript_line("agent-1", 4, &assistant_line).expect("assistant turn");
+
+        assert_eq!(user.role, "user");
+        assert_eq!(assistant.role, "assistant");
+        assert_text_block(&user.blocks[0], "fix the bug");
+        assert_text_block(&assistant.blocks[0], "Done.");
+    }
+
+    #[test]
+    fn parse_codex_tool_call_and_result_response_items() {
+        let call_line = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call-1",
+                "arguments": "{\"cmd\":\"npm test\"}"
+            }
+        })
+        .to_string();
+        let result_line = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": "ok"
+            }
+        })
+        .to_string();
+
+        let call = parse_transcript_line("agent-1", 5, &call_line).expect("tool call");
+        let result = parse_transcript_line("agent-1", 6, &result_line).expect("tool result");
+
+        assert_eq!(call.role, "assistant");
+        match &call.blocks[0] {
+            TurnBlock::ToolUse { id, name, input } => {
+                assert_eq!(id.as_deref(), Some("call-1"));
+                assert_eq!(name, "exec_command");
+                assert_eq!(input["cmd"], "npm test");
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+        match &result.blocks[0] {
+            TurnBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id.as_deref(), Some("call-1"));
+                assert_eq!(content, "ok");
+                assert!(!is_error);
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_codex_transcript_skips_duplicates_and_private_context() {
+        let event_line = json!({
+            "type": "event_msg",
+            "payload": { "type": "user_message", "message": "fix the bug" }
+        })
+        .to_string();
+        let developer_line = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "hidden" }]
+            }
+        })
+        .to_string();
+        let reasoning_line = json!({
+            "type": "response_item",
+            "payload": { "type": "reasoning", "summary": [] }
+        })
+        .to_string();
+
+        assert!(parse_transcript_line("agent-1", 1, &event_line).is_none());
+        assert!(parse_transcript_line("agent-1", 2, &developer_line).is_none());
+        assert!(parse_transcript_line("agent-1", 3, &reasoning_line).is_none());
+    }
+
+    #[test]
     fn permission_request_marks_codex_awaiting_permission() {
         let state = test_state();
         state.insert_agent(sample_agent()).unwrap();
@@ -1339,6 +2086,29 @@ trusted_hash = "sha256:trusted"
             Ok(AdapterNotificationOutcome::Events(mut events)) => events.remove(0),
             Err(err) => panic!("{err}"),
         }
+    }
+
+    fn assert_text_block(block: &TurnBlock, expected: &str) {
+        match block {
+            TurnBlock::Text { text } => assert_eq!(text, expected),
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    fn wait_for_agent_transcript_path(
+        state: &AppState,
+        agent_id: &str,
+        expected_path: &Path,
+    ) -> AgentInfo {
+        let expected = expected_path.to_str().expect("test path is utf-8");
+        for _ in 0..20 {
+            let agent = state.agent(agent_id).unwrap().expect("agent exists");
+            if agent.transcript_path.as_deref() == Some(expected) {
+                return agent;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("agent transcript path was not bound to {expected}");
     }
 
     fn temp_dir() -> PathBuf {
