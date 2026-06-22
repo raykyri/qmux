@@ -108,6 +108,21 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         });
         setPaneContextMenu((current) => (current?.paneId === exitedPaneId ? null : current));
       }
+      if (event.type === "pane.cwd_changed" && event.paneId) {
+        // A shell tab reported a directory change (the user cd'd). The backend has
+        // already persisted it for restart recovery; patch the live pane so the tab
+        // path and context-menu working dir track the current directory instead of
+        // lagging at the spawn-time cwd until the next full pane-list load.
+        const cwdPaneId = event.paneId;
+        const nextCwd = event.payload.cwd;
+        if (typeof nextCwd === "string") {
+          setPanes((current) =>
+            current.map((pane) =>
+              pane.id === cwdPaneId ? { ...pane, cwd: nextCwd } : pane,
+            ),
+          );
+        }
+      }
       if (event.type === "app.exit_confirmation_requested") {
         const paneCount =
           typeof event.payload.paneCount === "number" ? event.payload.paneCount : 1;
