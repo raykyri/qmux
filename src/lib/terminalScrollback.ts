@@ -112,7 +112,7 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
       byte === PM_8BIT ||
       byte === APC_8BIT
     ) {
-      const end = findStringControlEnd(bytes, index + (c1?.length ?? 1), true);
+      const end = findStringControlEnd(bytes, index + (c1?.length ?? 1));
       if (end === -1) {
         if (inAlternateScreen) {
           dropThrough(bytes.length);
@@ -177,7 +177,7 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
       next === ESC_PM ||
       next === ESC_APC
     ) {
-      const end = findStringControlEnd(bytes, index + 2, true);
+      const end = findStringControlEnd(bytes, index + 2);
       if (end === -1) {
         if (inAlternateScreen) {
           dropThrough(bytes.length);
@@ -297,11 +297,14 @@ function isAlternateScreenMode(csi: ParsedCsi, final: number): boolean {
   );
 }
 
-function findStringControlEnd(bytes: Uint8Array, start: number, allowC1St: boolean): number {
+function findStringControlEnd(bytes: Uint8Array, start: number): number {
   for (let index = start; index < bytes.length; index += 1) {
     const c1 = c1ControlAt(bytes, index);
     if (c1) {
-      if (allowC1St && c1.code === ST_8BIT) {
+      // ST (8-bit or its UTF-8-encoded form) terminates the string control.
+      // c1ControlAt covers the bare 0x9c byte too, so there's no separate
+      // single-byte ST check below.
+      if (c1.code === ST_8BIT) {
         return index + c1.length;
       }
       index += c1.length - 1;
@@ -313,9 +316,6 @@ function findStringControlEnd(bytes: Uint8Array, start: number, allowC1St: boole
       continue;
     }
     if (bytes[index] === BEL) {
-      return index + 1;
-    }
-    if (allowC1St && bytes[index] === ST_8BIT) {
       return index + 1;
     }
     if (bytes[index] === ESC && index + 1 < bytes.length && bytes[index + 1] === ESC_ST) {
