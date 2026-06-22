@@ -62,6 +62,7 @@ import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
   AskLauncherState,
   BrowserOverlayState,
+  BrowserOverlaySize,
   CloseDialogState,
   ExitDialogState,
   PaneContextMenuState,
@@ -736,7 +737,13 @@ export default function App() {
   function openBrowserOverlay(paneId: string, url: string, sandbox = false) {
     setBrowserOverlayByPane((current) => ({
       ...current,
-      [paneId]: { url, open: true, reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1, sandbox },
+      [paneId]: {
+        url,
+        open: true,
+        reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1,
+        sandbox,
+        size: current[paneId]?.size ?? null,
+      },
     }));
   }
 
@@ -754,8 +761,19 @@ export default function App() {
           open: !(prev?.open ?? false),
           reloadNonce: prev?.reloadNonce ?? 0,
           sandbox: prev?.sandbox ?? false,
+          size: prev?.size ?? null,
         },
       };
+    });
+  }
+
+  function setBrowserOverlaySize(paneId: string, size: BrowserOverlaySize) {
+    setBrowserOverlayByPane((current) => {
+      const prev = current[paneId];
+      if (!prev) {
+        return current;
+      }
+      return { ...current, [paneId]: { ...prev, size } };
     });
   }
 
@@ -3656,9 +3674,11 @@ export default function App() {
           url={activeBrowserOverlay.url}
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
+          size={activeBrowserOverlay.size}
           onNavigate={navigateActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
           onClose={toggleActiveBrowserOverlay}
+          onResize={(size) => setBrowserOverlaySize(activePane.id, size)}
         />
       ) : null}
       {/* The floating toggle sits over the terminal only when the right pane is

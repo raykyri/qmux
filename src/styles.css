@@ -3055,12 +3055,14 @@ header + .turn-blocks {
    and the center terminal, stopping at the turn pane's left edge. */
 .browser-overlay {
   position: absolute;
-  /* Float inset from the app edges: 20px from the top and bottom of the app, and
+  /* Float inset from the app edges: 20px from the top, 50px from the bottom, and
      20px in from the right edge of the terminal (left of the turn sidebar). */
   top: 20px;
-  bottom: 20px;
-  left: var(--browser-overlay-left, 64px);
   right: calc(var(--turn-pane-width, 0px) + 20px);
+  width: calc(100% - var(--browser-overlay-left, 64px) - var(--turn-pane-width, 0px) - 20px);
+  height: calc(100% - 70px);
+  max-width: calc(100% - var(--browser-overlay-left, 64px) - var(--turn-pane-width, 0px) - 20px);
+  max-height: calc(100% - 70px);
   z-index: 8;
   display: flex;
   flex-direction: column;
@@ -3082,7 +3084,7 @@ header + .turn-blocks {
   align-items: center;
   gap: 8px;
   height: 40px;
-  padding: 0 12px;
+  padding: 0 10px;
   border-bottom: 1px solid #2a2d2f;
   background: #14171a;
 }
@@ -3129,6 +3131,10 @@ header + .turn-blocks {
   display: flex;
 }
 
+.browser-overlay.is-resizing .browser-overlay-frame {
+  pointer-events: none;
+}
+
 .browser-overlay-frame {
   flex: 1;
   width: 100%;
@@ -3156,6 +3162,32 @@ header + .turn-blocks {
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.08);
   font-size: 12px;
+}
+
+.browser-overlay-resize-handle {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nesw-resize;
+}
+
+.browser-overlay-resize-handle::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  width: 9px;
+  height: 9px;
+  border-left: 1px solid #596165;
+  border-bottom: 1px solid #596165;
+  opacity: 0.75;
+}
+
+.browser-overlay-resize-handle:hover::before {
+  border-color: var(--accent-color);
+  opacity: 1;
 }
 
 /* Toggle (+ refresh) pinned to the top-right of the terminal / browser. */
