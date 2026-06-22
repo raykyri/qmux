@@ -40,6 +40,8 @@ export interface AppSettings {
   fontId: string;
   /** terminal font size in px */
   fontSize: number;
+  /** show Cmd-held shortcut badges in the sidebar */
+  showShortcutHints: boolean;
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
 }
@@ -47,6 +49,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   fontId: DEFAULT_FONT_ID,
   fontSize: TERMINAL_FONT_SIZE,
+  showShortcutHints: true,
   preventSleep: true,
 };
 
@@ -96,7 +99,11 @@ export function loadSettings(): AppSettings {
       typeof parsed.preventSleep === "boolean"
         ? parsed.preventSleep
         : DEFAULT_SETTINGS.preventSleep;
-    return { fontId, fontSize, preventSleep };
+    const showShortcutHints =
+      typeof parsed.showShortcutHints === "boolean"
+        ? parsed.showShortcutHints
+        : DEFAULT_SETTINGS.showShortcutHints;
+    return { fontId, fontSize, showShortcutHints, preventSleep };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

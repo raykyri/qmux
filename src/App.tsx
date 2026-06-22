@@ -434,6 +434,7 @@ export default function App() {
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
+  const shortcutHintsShown = settings.showShortcutHints && shortcutHintsVisible;
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
@@ -3269,7 +3270,7 @@ export default function App() {
               <House size={12} aria-hidden="true" />
               <span className="pane-tab-title">Home</span>
             </button>
-            {shortcutHintsVisible ? (
+            {shortcutHintsShown ? (
               <span className="pane-tab-shortcut-hint" aria-hidden="true">
                 ⌘N
               </span>
@@ -3465,7 +3466,7 @@ export default function App() {
                 >
                   <X size={13.5} aria-hidden="true" />
                 </a>
-                {shortcutHintsVisible && index < 9 ? (
+                {shortcutHintsShown && index < 9 ? (
                   <span className="pane-tab-shortcut-hint" aria-hidden="true">
                     ⌘{index + 1}
                   </span>
@@ -3481,7 +3482,7 @@ export default function App() {
               <SquareTerminal size={14} aria-hidden="true" />
               <span>New shell</span>
             </button>
-            {shortcutHintsVisible ? (
+            {shortcutHintsShown ? (
               <span
                 className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
                 aria-hidden="true"
@@ -3495,7 +3496,7 @@ export default function App() {
               <MessageSquareText size={14} aria-hidden="true" />
               <span>New agent</span>
             </button>
-            {shortcutHintsVisible ? (
+            {shortcutHintsShown ? (
               <span
                 className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
                 aria-hidden="true"
@@ -3711,6 +3712,19 @@ export default function App() {
                   // runs after currentTarget has been nulled out.
                   const preventSleep = event.currentTarget.checked;
                   setSettings((current) => ({ ...current, preventSleep }));
+                }}
+              />
+            </label>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Show keyboard shortcut hints</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.showShortcutHints}
+                onChange={(event) => {
+                  const showShortcutHints = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, showShortcutHints }));
                 }}
               />
             </label>
