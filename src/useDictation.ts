@@ -78,6 +78,17 @@ const TICK_MS = 400; // How often we re-transcribe the growing window.
 const SILENCE_COMMIT_MS = 900; // A pause this long finalizes the current phrase.
 const MAX_WINDOW_S = 24; // Hard cap so one long breath can't grow the buffer forever.
 const VOICE_RMS = 0.008; // Crude voice-activity gate: below this a frame is "silence".
+// Once a phrase has run this long without finalizing, segment it at a shorter
+// inter-clause gap (below) instead of holding out for a full SILENCE_COMMIT_MS
+// pause. This bounds the live re-transcription window: left unbounded, a phrase
+// spoken without a clear ~900ms pause grows toward the 24s cap, and since every
+// pass re-transcribes the whole window, on the CPU/WASM backend each pass gets
+// slower and falls seconds behind (dictation appears to stop around 15-20 words)
+// while a degraded long-window result overwrites the text already shown in place
+// (the phrase clears). People pause between clauses, so a shorter gap finalizes a
+// long phrase at a natural boundary, freezing it before the window grows unwieldy.
+const LONG_PHRASE_S = 5; // A phrase longer than this finalizes at the shorter gap.
+const LONG_PHRASE_COMMIT_MS = 500; // Inter-clause gap that finalizes a long phrase.
 
 type AudioCtxCtor = typeof AudioContext;
 
@@ -524,7 +535,11 @@ export function useDictation(target: DictationTarget): Dictation {
     const silence = now - lastVoiceRef.current;
     const seconds = total / inputRateRef.current;
 
-    const paused = silence > SILENCE_COMMIT_MS;
+    // Treat a shorter gap as a finalizing pause once the phrase has run long, so
+    // the live window stays bounded (see LONG_PHRASE_S). Short phrases keep the
+    // full 900ms pause so a brief mid-thought hesitation doesn't cut them off.
+    const commitGapMs = seconds > LONG_PHRASE_S ? LONG_PHRASE_COMMIT_MS : SILENCE_COMMIT_MS;
+    const paused = silence > commitGapMs;
 
     // A pause before any voice was captured is just leading/standalone silence —
     // drop it so the buffer doesn't fill with it.
