@@ -35,7 +35,7 @@ export default function SelectionAskPopup({
     if (!el) {
       return;
     }
-    const gap = 8;
+    const gap = 7;
     const { width, height } = el.getBoundingClientRect();
     const centerX = (anchor.left + anchor.right) / 2;
     let left = centerX - width / 2;
@@ -92,6 +92,7 @@ export default function SelectionAskPopup({
       >
         Ask
       </button>
+      <span className="selection-ask-divider" aria-hidden="true" />
       <button
         type="button"
         className="selection-ask-button"
