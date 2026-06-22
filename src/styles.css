@@ -1497,6 +1497,23 @@ button:disabled {
   justify-content: center;
 }
 
+/* Stack the app title above the inline launcher, both centered. */
+.home-launcher {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: min(680px, 100%);
+}
+
+.home-title {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 600;
+  text-align: center;
+  color: #e7e7e2;
+}
+
 /* The inline launcher is interactive even though its placeholder wrapper isn't. */
 .terminal-empty-state .command-launcher {
   pointer-events: auto;

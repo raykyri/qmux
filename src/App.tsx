@@ -3366,7 +3366,12 @@ export default function App() {
 
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
-            <div className="terminal-empty-state">{renderLauncher("inline")}</div>
+            <div className="terminal-empty-state">
+              <div className="home-launcher">
+                <h1 className="home-title">qmux</h1>
+                {renderLauncher("inline")}
+              </div>
+            </div>
           ) : null}
           {panes.map((pane) => (
             <TerminalPane
