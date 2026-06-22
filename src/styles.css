@@ -283,7 +283,7 @@ button:disabled {
   border-radius: 4px;
   background: transparent;
   color: #b9c0bc;
-  font-size: 12.5px;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
   cursor: grab;
   user-select: none;
@@ -478,7 +478,7 @@ button:disabled {
 
 .pane-tab small {
   color: #7f8884;
-  font-size: 11px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
 }
 
 .pane-tab-status-clickable {
@@ -501,7 +501,7 @@ button:disabled {
 .pane-tab-path,
 .pane-tab-gitmeta {
   color: #6b736f;
-  font-size: 11px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
 }
 
 .pane-tab-row.is-selected .pane-tab-path,
@@ -698,6 +698,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
   gap: 6px;
+  --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 /* The Settings cog sits inline to the right of New shell/New agent and shows
