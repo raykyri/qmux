@@ -1940,6 +1940,10 @@ button:disabled {
 .turn-sidebar-input.is-split {
   overflow: hidden;
   background: #171b1d;
+  /* The split divider already separates the queue from the transcript, so drop the
+     floating composer's top padding that otherwise leaves a gap below the
+     splitter. */
+  padding-top: 0;
 }
 
 .turn-card {
