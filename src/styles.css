@@ -1607,6 +1607,35 @@ button:disabled {
   background: #171b1d;
 }
 
+.turn-queue-resizer {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.turn-queue-resizer::before {
+  position: absolute;
+  top: 5px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: #2a2d2f;
+  content: "";
+}
+
+.turn-queue-resizer:hover::before,
+.turn-queue-resizer:focus-visible::before {
+  background: var(--control-border-hover-accent);
+}
+
+.turn-queue-resizer:focus-visible {
+  outline: none;
+}
+
 /* Top bar across the right pane. Height matches the browser overlay's address bar
    so the two line up when the browser is open. */
 .turn-pane-header {
@@ -1821,6 +1850,11 @@ button:disabled {
   /* Mostly opaque so the unwrapped queue/composer stay legible over the
      transcript, with only a short fade at the very top. */
   background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
+}
+
+.turn-sidebar-input.is-split {
+  overflow: hidden;
+  background: #171b1d;
 }
 
 .turn-card {
@@ -2109,12 +2143,21 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  justify-content: flex-end;
   min-width: 0;
   min-height: 0;
   /* Sits directly in the floating composer area (.turn-sidebar-input owns the
      background and padding) — no extra card border or padding layer. The queue
      claims the height above the composer. */
   flex: 1 1 auto;
+}
+
+.native-input-composer {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .turn-pane-input-stack {
@@ -2326,8 +2369,6 @@ button:disabled {
   gap: 4px;
 }
 
-/* Direct-child only, so the ⋮ menu's popover items (descendants) keep their own
-   composer-menu-item styling instead of these compact action-button rules. */
 .queued-turn-actions > button {
   min-height: var(--control-h-sm);
   padding: 2px 7px;
@@ -2344,45 +2385,6 @@ button:disabled {
 .queued-turn-remove {
   padding-left: 6px;
   padding-right: 6px;
-}
-
-/* The per-item ⋮ menu: a narrow icon trigger plus a small upward popover. */
-.queued-turn-menu {
-  position: relative;
-  display: inline-flex;
-}
-
-.queued-turn-menu-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: var(--control-h-sm);
-  /* Narrower than the text action buttons — it only holds the dots glyph. */
-  padding: 2px 3px;
-  color: #aab1ad;
-}
-
-.queued-turn-menu-trigger:hover:not(:disabled) {
-  border-color: var(--control-border-hover-accent);
-  background: var(--control-bg-hover);
-  color: #f4f3ec;
-}
-
-.queued-turn-menu-popover {
-  /* Fixed (not absolute) so the scrolling, overflow:auto queue stack can't clip it;
-     its right/bottom are set inline from the trigger's position. */
-  position: fixed;
-  z-index: 20;
-  display: flex;
-  width: 200px;
-  max-width: calc(100vw - 24px);
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px;
-  border: 1px solid #2a2d2f;
-  border-radius: 8px;
-  background: #1d2224;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
 }
 
 /* "Pause after send" caption centered under a pause-after queued item, spanning the
@@ -2537,36 +2539,6 @@ button:disabled {
 
 .composer-menu-trigger:hover {
   color: #f4f3ec;
-}
-
-/* Queue-height toggle: same flat icon-button style as the ⋮ menu trigger, but pinned
-   to the left of the actions row (the composer menu's margin-left:auto pushes the
-   rest right). */
-.queue-height-toggle {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--control-h-lg);
-  padding: 0 2px;
-  border: 0;
-  background: transparent;
-  color: var(--control-fg-muted);
-  cursor: pointer;
-  transition: color 120ms ease;
-}
-
-.queue-height-toggle:hover {
-  color: #f4f3ec;
-}
-
-.queue-height-toggle[aria-pressed="true"] {
-  color: var(--accent-color);
-}
-
-.queue-height-toggle:focus-visible {
-  outline: none;
-  color: #f4f3ec;
-  box-shadow: 0 0 0 2px var(--accent-shadow);
-  border-radius: 4px;
 }
 
 .composer-menu-trigger:focus-visible {
@@ -2766,6 +2738,10 @@ button:disabled {
   border: 1px solid #2a2d2f;
   border-radius: 12px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+.browser-overlay.is-empty {
+  background: rgba(14, 16, 17, 0.95);
 }
 
 /* Navigation bar across the top; refresh + close controls sit on the right. */

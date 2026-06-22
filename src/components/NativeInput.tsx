@@ -1,13 +1,12 @@
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { EllipsisVertical, LoaderCircle, Mic, Rows2, SquareCenterlineDashedVertical } from "lucide-react";
+import { EllipsisVertical, LoaderCircle, Mic, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   removeQueuedAgentTurn,
@@ -152,13 +151,6 @@ export default function NativeInput({
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  // The open queued-item ⋮ menu: its row index and the fixed-position anchor
-  // (computed from the trigger so the overflow:auto stack can't clip the popover).
-  const [openItemMenu, setOpenItemMenu] = useState<{
-    index: number;
-    right: number;
-    bottom: number;
-  } | null>(null);
   // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -174,13 +166,6 @@ export default function NativeInput({
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const queueStackRef = useRef<HTMLDivElement | null>(null);
-  // Queue-height cap: when capped (default), the queue stack is limited to half the
-  // right pane; the toggle lets it grow freely. `queueOverflows` gates the toggle's
-  // visibility (only shown when the queue would actually exceed the cap), and
-  // `queueCapPx` is the measured 50%-of-pane pixel cap applied while capped.
-  const [queueExpanded, setQueueExpanded] = useState(false);
-  const [queueOverflows, setQueueOverflows] = useState(false);
-  const [queueCapPx, setQueueCapPx] = useState<number | null>(null);
   const previousQueueLength = useRef(queuedTurns.length);
   const previousAgentId = useRef(agent.id);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -251,45 +236,6 @@ export default function NativeInput({
     };
   }, [menuOpen]);
 
-  // Close an open per-item ⋮ menu on an outside click or Escape. Also close on scroll
-  // or resize: the popover is position:fixed at coordinates captured when it opened,
-  // so once the row moves under it those coordinates are stale — closing is cleaner
-  // than letting it strand over an unrelated row.
-  useEffect(() => {
-    if (openItemMenu === null) {
-      return;
-    }
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest(".queued-turn-menu")) {
-        setOpenItemMenu(null);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpenItemMenu(null);
-      }
-    };
-    const close = () => setOpenItemMenu(null);
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    // Capture phase so a scroll on the inner queue stack (not just window) closes it.
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [openItemMenu]);
-
-  // The menu is keyed by queue index; if the queue changes (a drain, reorder, or new
-  // turn) or the agent switches, that index would point at a different turn, so close.
-  useEffect(() => {
-    setOpenItemMenu(null);
-  }, [queuedTurns, agent.id]);
-
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
   useEffect(() => {
@@ -323,60 +269,6 @@ export default function NativeInput({
     }
     stack.scrollTop = getQueueScroll(agent.id) ?? 0;
   }, [agent.id, getQueueScroll]);
-
-  // Measures whether the queue's content would exceed half the right pane (the cap),
-  // and records that 50% height in pixels. `scrollHeight` is the full content height
-  // regardless of the applied cap, so this stays stable across the cap toggle (no
-  // feedback loop). Cheap (two layout reads) and called sparingly — see below.
-  const measureQueueOverflow = useCallback(() => {
-    const stack = queueStackRef.current;
-    if (!stack) {
-      setQueueOverflows(false);
-      setQueueCapPx(null);
-      return;
-    }
-    const pane = stack.closest(".turn-sidebar") as HTMLElement | null;
-    const paneHeight = pane?.clientHeight ?? 0;
-    if (paneHeight <= 0) {
-      setQueueOverflows(false);
-      setQueueCapPx(null);
-      return;
-    }
-    const cap = Math.round(paneHeight * 0.5);
-    setQueueCapPx(cap);
-    setQueueOverflows(stack.scrollHeight > cap);
-  }, []);
-
-  // Re-measure when the queue's content could have changed (items added/removed,
-  // collapsed/expanded). These are user-paced, so measuring per change is cheap.
-  useEffect(() => {
-    measureQueueOverflow();
-  }, [queuedTurns, collapsedQueuedTurns, measureQueueOverflow]);
-
-  // Re-measure when the pane resizes, but debounced: dragging the pane resizer fires
-  // a flood of events, and it's fine for the button to lag a touch. Only active while
-  // a queue exists (its stack must be mounted to find the pane).
-  const hasQueue = queuedTurns.length > 0;
-  useEffect(() => {
-    if (!hasQueue) {
-      setQueueOverflows(false);
-      return;
-    }
-    const pane = queueStackRef.current?.closest(".turn-sidebar") as HTMLElement | null;
-    if (!pane) {
-      return;
-    }
-    let timer: number | undefined;
-    const observer = new ResizeObserver(() => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(measureQueueOverflow, 200);
-    });
-    observer.observe(pane);
-    return () => {
-      window.clearTimeout(timer);
-      observer.disconnect();
-    };
-  }, [hasQueue, measureQueueOverflow]);
 
   useEffect(() => {
     return () => {
@@ -747,7 +639,6 @@ export default function NativeInput({
   }
 
   async function setItemPauseAfter(index: number, turn: QueuedTurn, pauseAfter: boolean) {
-    setOpenItemMenu(null);
     if (submitting) {
       return;
     }
@@ -795,11 +686,6 @@ export default function NativeInput({
           className={`queued-turn-stack${draggingIndex !== null ? " is-dragging" : ""}`}
           aria-label="Queued turns"
           onScroll={(event) => saveQueueScroll(agent.id, event.currentTarget.scrollTop)}
-          style={
-            queueOverflows && !queueExpanded && queueCapPx
-              ? { maxHeight: queueCapPx }
-              : undefined
-          }
         >
           {queuedTurns.map((turn, index) => {
             const collapsed = collapsedQueuedTurns[index] ?? false;
@@ -819,7 +705,6 @@ export default function NativeInput({
             ]
               .filter(Boolean)
               .join(" ");
-            const menuOpenHere = openItemMenu?.index === index;
             return (
               <div
                 key={`${index}-${turn.text}`}
@@ -842,68 +727,21 @@ export default function NativeInput({
                 <div className="queued-turn-actions">
                   <button
                     type="button"
+                    className="queued-turn-remove"
+                    disabled={submitting}
+                    aria-label="Remove queued turn"
+                    title="Remove"
+                    onClick={() => void removeQueuedTurn(index, turn.text)}
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
                     disabled={submitting}
                     onClick={() => void editQueuedTurn(index, turn.text)}
                   >
                     Edit
                   </button>
-                  <div className="queued-turn-menu">
-                    <button
-                      type="button"
-                      className="queued-turn-menu-trigger"
-                      aria-haspopup="menu"
-                      aria-expanded={menuOpenHere}
-                      aria-label="Queued turn actions"
-                      onClick={(event) => {
-                        if (menuOpenHere) {
-                          setOpenItemMenu(null);
-                          return;
-                        }
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        setOpenItemMenu({
-                          index,
-                          right: window.innerWidth - rect.right,
-                          bottom: window.innerHeight - rect.top + 4,
-                        });
-                      }}
-                    >
-                      <EllipsisVertical size={13} aria-hidden="true" />
-                    </button>
-                    {menuOpenHere && openItemMenu ? (
-                      <div
-                        className="queued-turn-menu-popover"
-                        role="menu"
-                        style={{
-                          right: `${openItemMenu.right}px`,
-                          bottom: `${openItemMenu.bottom}px`,
-                        }}
-                      >
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="composer-menu-item"
-                          disabled={submitting}
-                          onClick={() =>
-                            void setItemPauseAfter(index, turn, !turn.pauseAfter)
-                          }
-                        >
-                          {turn.pauseAfter ? "Remove pause after send" : "Pause after send"}
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="composer-menu-item"
-                          disabled={submitting}
-                          onClick={() => {
-                            setOpenItemMenu(null);
-                            void removeQueuedTurn(index, turn.text);
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
                 </div>
                 {turn.pauseAfter ? (
                   <div className="queued-turn-pause-label" aria-hidden="true">
@@ -915,215 +753,224 @@ export default function NativeInput({
           })}
         </div>
       ) : null}
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(event) => {
-          setValue(event.currentTarget.value);
-          onUserInput(agent.id);
-        }}
-        // While dictation is live, the first real keystroke hands control back to
-        // the keyboard: stop transcribing so it stops overwriting the caret, then
-        // let the key do its normal thing. Bare modifiers don't count — holding
-        // Shift to capitalize the next spoken word shouldn't end dictation.
-        onKeyDownCapture={(event) => {
-          if (!dictation.listening) {
-            return;
-          }
-          if (
-            event.key === "Shift" ||
-            event.key === "Control" ||
-            event.key === "Alt" ||
-            event.key === "Meta" ||
-            event.key === "CapsLock"
-          ) {
-            return;
-          }
-          dictation.stop();
-        }}
-        onPaste={(event) => {
-          const text = event.clipboardData.getData("text");
-          const prompt = largePastePrompt(text);
-          if (!prompt) {
-            // Small paste: let the browser insert it normally.
-            return;
-          }
-          // Large paste: the in-app confirm is async, so cancel the native paste now
-          // and re-insert at the caret only if the user accepts.
-          event.preventDefault();
-          const start = event.currentTarget.selectionStart ?? value.length;
-          const end = event.currentTarget.selectionEnd ?? value.length;
-          void confirm({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
-            if (!ok) {
+      <div className="native-input-composer">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(event) => {
+            setValue(event.currentTarget.value);
+            onUserInput(agent.id);
+          }}
+          // While dictation is live, the first real keystroke hands control back to
+          // the keyboard: stop transcribing so it stops overwriting the caret, then
+          // let the key do its normal thing. Bare modifiers don't count — holding
+          // Shift to capitalize the next spoken word shouldn't end dictation.
+          onKeyDownCapture={(event) => {
+            if (!dictation.listening) {
               return;
             }
-            setValue(value.slice(0, start) + text + value.slice(end));
-            requestAnimationFrame(() => {
-              const textarea = textareaRef.current;
-              if (!textarea) {
+            if (
+              event.key === "Shift" ||
+              event.key === "Control" ||
+              event.key === "Alt" ||
+              event.key === "Meta" ||
+              event.key === "CapsLock"
+            ) {
+              return;
+            }
+            dictation.stop();
+          }}
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            const prompt = largePastePrompt(text);
+            if (!prompt) {
+              // Small paste: let the browser insert it normally.
+              return;
+            }
+            // Large paste: the in-app confirm is async, so cancel the native paste now
+            // and re-insert at the caret only if the user accepts.
+            event.preventDefault();
+            const start = event.currentTarget.selectionStart ?? value.length;
+            const end = event.currentTarget.selectionEnd ?? value.length;
+            void confirm({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
+              if (!ok) {
                 return;
               }
-              const caret = start + text.length;
-              textarea.focus();
-              textarea.setSelectionRange(caret, caret);
+              setValue(value.slice(0, start) + text + value.slice(end));
+              requestAnimationFrame(() => {
+                const textarea = textareaRef.current;
+                if (!textarea) {
+                  return;
+                }
+                const caret = start + text.length;
+                textarea.focus();
+                textarea.setSelectionRange(caret, caret);
+              });
             });
-          });
-        }}
-        onKeyDown={(event) => {
-          if (event.metaKey && event.key === "Enter") {
-            event.preventDefault();
-            if (canSend) {
-              void submitTurn(value, "send");
-            } else if (canQueue) {
-              void submitTurn(value, "queue");
+          }}
+          onKeyDown={(event) => {
+            if (event.metaKey && event.key === "Enter") {
+              event.preventDefault();
+              if (canSend) {
+                void submitTurn(value, "send");
+              } else if (canQueue) {
+                void submitTurn(value, "queue");
+              }
+              return;
             }
-            return;
+            // With an empty composer, Up pulls the most recently queued item back in
+            // to edit (dequeuing it), like recalling the last line in a shell.
+            if (
+              event.key === "ArrowUp" &&
+              !event.repeat &&
+              value.length === 0 &&
+              queuedTurns.length > 0
+            ) {
+              event.preventDefault();
+              const lastIndex = queuedTurns.length - 1;
+              void editQueuedTurn(lastIndex, queuedTurns[lastIndex].text);
+            }
+          }}
+          placeholder={
+            awaitingPermission
+              ? "Approve or deny the pending tool use..."
+              : "What do you want to do next?"
           }
-          // With an empty composer, Up pulls the most recently queued item back in
-          // to edit (dequeuing it), like recalling the last line in a shell.
-          if (
-            event.key === "ArrowUp" &&
-            !event.repeat &&
-            value.length === 0 &&
-            queuedTurns.length > 0
-          ) {
-            event.preventDefault();
-            const lastIndex = queuedTurns.length - 1;
-            void editQueuedTurn(lastIndex, queuedTurns[lastIndex].text);
-          }
-        }}
-        placeholder={
-          awaitingPermission
-            ? "Approve or deny the pending tool use..."
-            : "What do you want to do next?"
-        }
-        rows={1}
-      />
-      <div className="native-input-actions">
-        <DictationMicButton dictation={dictation} className="native-input-mic" />
-        {queueOverflows ? (
-          <button
-            type="button"
-            className="queue-height-toggle"
-            aria-pressed={queueExpanded}
-            aria-label={queueExpanded ? "Limit queue height to half the pane" : "Let the queue grow past half the pane"}
-            title={queueExpanded ? "Limit queue height to half the pane" : "Let the queue grow past half the pane"}
-            onClick={() => setQueueExpanded((expanded) => !expanded)}
-          >
-            {queueExpanded ? (
-              <Rows2 size={15} aria-hidden="true" />
-            ) : (
-              <SquareCenterlineDashedVertical size={15} aria-hidden="true" />
-            )}
-          </button>
-        ) : null}
-        {paused ? <span className="composer-paused-label">Paused</span> : null}
-        <div className="composer-menu" ref={menuRef}>
-          <button
-            type="button"
-            className="composer-menu-trigger"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            aria-label="More actions"
-            onClick={() => setMenuOpen((open) => !open)}
-          >
-            <EllipsisVertical size={15} aria-hidden="true" />
-          </button>
-          {menuOpen ? (
-            <div className="composer-menu-popover" role="menu">
-              {queuedTurns.length > 0 ? (
+          rows={1}
+        />
+        <div className="native-input-actions">
+          <DictationMicButton dictation={dictation} className="native-input-mic" />
+          {paused ? <span className="composer-paused-label">Paused</span> : null}
+          <div className="composer-menu" ref={menuRef}>
+            <button
+              type="button"
+              className="composer-menu-trigger"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="More actions"
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <EllipsisVertical size={15} aria-hidden="true" />
+            </button>
+            {menuOpen ? (
+              <div className="composer-menu-popover" role="menu">
+                {queuedTurns.length > 0 ? (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="composer-menu-item"
+                      disabled={submitting}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void sendNextQueuedTurn();
+                      }}
+                    >
+                      Send next queued
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="composer-menu-item"
+                      disabled={submitting}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        const lastIndex = queuedTurns.length - 1;
+                        const lastTurn = queuedTurns[lastIndex];
+                        void setItemPauseAfter(lastIndex, lastTurn, !lastTurn.pauseAfter);
+                      }}
+                    >
+                      {queuedTurns[queuedTurns.length - 1]?.pauseAfter
+                        ? "Remove pause after send"
+                        : "Pause after send"}
+                    </button>
+                    <div className="composer-menu-divider" role="separator" />
+                  </>
+                ) : null}
                 <button
                   type="button"
                   role="menuitem"
                   className="composer-menu-item"
-                  disabled={submitting}
+                  disabled={queuedTurns.length === 0}
                   onClick={() => {
                     setMenuOpen(false);
-                    void sendNextQueuedTurn();
+                    void copyQueued();
                   }}
                 >
-                  Send next queued
+                  Copy queued
                 </button>
-              ) : null}
-              <button
-                type="button"
-                role="menuitem"
-                className="composer-menu-item"
-                disabled={queuedTurns.length === 0}
-                onClick={() => {
-                  setMenuOpen(false);
-                  void copyQueued();
-                }}
-              >
-                Copy queued
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="composer-menu-item"
-                disabled={!hasTranscript}
-                onClick={() => {
-                  setMenuOpen(false);
-                  void copyTranscript();
-                }}
-              >
-                Copy transcript
-              </button>
-              {transcriptOptions.length > 0 ? (
-                <>
-                  <div className="composer-menu-divider" role="separator" />
-                  <div className="composer-menu-label">Past sessions</div>
-                  <div className="composer-menu-sessions" role="group" aria-label="Past sessions">
-                    {sessionOptions.map((option) => {
-                      const active = option.path === agent.transcriptPath;
-                      return (
-                        <button
-                          key={option.path}
-                          type="button"
-                          role="menuitemcheckbox"
-                          aria-checked={active}
-                          className={`composer-menu-item session-menu-item${
-                            active ? " is-active" : ""
-                          }`}
-                          onClick={() => {
-                            setMenuOpen(false);
-                            onSelectTranscript(active ? null : option.path);
-                          }}
-                        >
-                          <span className="session-menu-title">{sessionMenuTitle(option)}</span>
-                          <span className="session-menu-meta">
-                            {formatRelativeTime(option.modifiedMs)}
-                            {option.boundToOtherAgent ? " · in use by another agent" : ""}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : null}
-              {recentMessages.length > 0 ? (
-                <>
-                  <div className="composer-menu-divider" role="separator" />
-                  <div className="composer-menu-label">Recent messages</div>
-                  {recentMessages.map((message, index) => (
-                    <button
-                      key={`${index}-${message}`}
-                      type="button"
-                      role="menuitem"
-                      className="composer-menu-item composer-menu-recent"
-                      title={message}
-                      onClick={() => {
-                        setMenuOpen(false);
-                        void copyRecentMessage(message);
-                      }}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composer-menu-item"
+                  disabled={!hasTranscript}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void copyTranscript();
+                  }}
+                >
+                  Copy transcript
+                </button>
+                {transcriptOptions.length > 0 ? (
+                  <>
+                    <div className="composer-menu-divider" role="separator" />
+                    <div className="composer-menu-label">Past sessions</div>
+                    <div
+                      className="composer-menu-sessions"
+                      role="group"
+                      aria-label="Past sessions"
                     >
-                      {message}
-                    </button>
-                  ))}
-                </>
-              ) : null}
-            </div>
-          ) : null}
+                      {sessionOptions.map((option) => {
+                        const active = option.path === agent.transcriptPath;
+                        return (
+                          <button
+                            key={option.path}
+                            type="button"
+                            role="menuitemcheckbox"
+                            aria-checked={active}
+                            className={`composer-menu-item session-menu-item${
+                              active ? " is-active" : ""
+                            }`}
+                            onClick={() => {
+                              setMenuOpen(false);
+                              onSelectTranscript(active ? null : option.path);
+                            }}
+                          >
+                            <span className="session-menu-title">{sessionMenuTitle(option)}</span>
+                            <span className="session-menu-meta">
+                              {formatRelativeTime(option.modifiedMs)}
+                              {option.boundToOtherAgent ? " · in use by another agent" : ""}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+                {recentMessages.length > 0 ? (
+                  <>
+                    <div className="composer-menu-divider" role="separator" />
+                    <div className="composer-menu-label">Recent messages</div>
+                    {recentMessages.map((message, index) => (
+                      <button
+                        key={`${index}-${message}`}
+                        type="button"
+                        role="menuitem"
+                        className="composer-menu-item composer-menu-recent"
+                        title={message}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          void copyRecentMessage(message);
+                        }}
+                      >
+                        {message}
+                      </button>
+                    ))}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="native-input-submit-actions">
           {permissionActions.length > 0 ? (
@@ -1234,4 +1081,3 @@ function formatRelativeTime(modifiedMs: number): string {
   const years = Math.floor(days / 365);
   return `${years} yr ago`;
 }
-

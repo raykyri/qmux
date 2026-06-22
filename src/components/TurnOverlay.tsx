@@ -8,7 +8,13 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ComponentPropsWithoutRef, CSSProperties, ReactNode } from "react";
+import type {
+  ComponentPropsWithoutRef,
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -41,6 +47,11 @@ interface TurnOverlayProps {
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
+  // When true, the queue/composer area is reserved below the transcript instead of
+  // floating over it, with a draggable divider between the two regions.
+  queueSplit?: boolean;
+  queueSplitHeight?: number;
+  onQueueSplitHeightChange?: (height: number) => void;
   // How rendered-markdown links behave (left-click opens internally; right-click
   // opens a chooser).
   linkActions: LinkActions;
@@ -52,6 +63,17 @@ const COMPOSER_CLEARANCE = 16;
 // How close to the bottom (in px) the user must be for new turns or a growing
 // composer to keep the transcript pinned to the bottom.
 const STICK_TO_BOTTOM_THRESHOLD = 100;
+const MIN_TRANSCRIPT_SPLIT_HEIGHT = 96;
+const MIN_QUEUE_SPLIT_HEIGHT = 120;
+const MIN_QUEUE_AREA_HEIGHT = 56;
+const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
+const SPLIT_KEYBOARD_STEP = 16;
+
+interface QueueSplitDrag {
+  pointerId: number;
+  startY: number;
+  startHeight: number;
+}
 
 type TextBlock = Extract<TurnBlock, { type: "text" }>;
 type ToolUseBlock = Extract<TurnBlock, { type: "toolUse" }>;
@@ -150,14 +172,20 @@ export default function TurnOverlay({
   input,
   agentId,
   notice,
+  queueSplit = false,
+  queueSplitHeight,
+  onQueueSplitHeightChange,
   linkActions,
 }: TurnOverlayProps) {
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const queueSplitDragRef = useRef<QueueSplitDrag | null>(null);
   // Whether the view is parked near the bottom, so incoming content can keep it
   // pinned there. Starts true (we load at the bottom) and tracks user scrolling.
   const stickToBottomRef = useRef(true);
   const [composerHeight, setComposerHeight] = useState(0);
+  const [composerBaseHeight, setComposerBaseHeight] = useState(0);
 
   const scrollToBottom = () => {
     const timeline = timelineRef.current;
@@ -173,6 +201,75 @@ export default function TurnOverlay({
     }
     const distanceFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
     stickToBottomRef.current = distanceFromBottom <= STICK_TO_BOTTOM_THRESHOLD;
+  };
+
+  const splitBounds = () => {
+    const sidebar = sidebarRef.current;
+    const timeline = timelineRef.current;
+    const totalHeight = Math.max(0, (sidebar?.clientHeight ?? 0) - (timeline?.offsetTop ?? 0));
+    const composerMinHeight = Math.ceil(composerBaseHeight || 0);
+    const min = Math.max(MIN_QUEUE_SPLIT_HEIGHT, composerMinHeight + MIN_QUEUE_AREA_HEIGHT);
+    const max = Math.max(min, totalHeight - MIN_TRANSCRIPT_SPLIT_HEIGHT);
+    return { min, max };
+  };
+
+  const clampQueueSplitHeight = (height: number) => {
+    const { min, max } = splitBounds();
+    return Math.max(min, Math.min(max, Math.round(height)));
+  };
+
+  const defaultQueueSplitHeight = () => {
+    const sidebar = sidebarRef.current;
+    const timeline = timelineRef.current;
+    const totalHeight = Math.max(0, (sidebar?.clientHeight ?? 0) - (timeline?.offsetTop ?? 0));
+    const preferred = totalHeight > 0 ? Math.round(totalHeight * 0.38) : 320;
+    return clampQueueSplitHeight(Math.max(preferred, composerBaseHeight + 180));
+  };
+
+  const effectiveQueueSplitHeight = queueSplit
+    ? clampQueueSplitHeight(queueSplitHeight ?? defaultQueueSplitHeight())
+    : 0;
+
+  const startQueueSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!queueSplit) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    queueSplitDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: effectiveQueueSplitHeight,
+    };
+  };
+
+  const moveQueueSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = queueSplitDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const nextHeight = drag.startHeight + (drag.startY - event.clientY);
+    onQueueSplitHeightChange?.(clampQueueSplitHeight(nextHeight));
+  };
+
+  const endQueueSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = queueSplitDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    queueSplitDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const resizeQueueSplitWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!queueSplit || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) {
+      return;
+    }
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" ? SPLIT_KEYBOARD_STEP : -SPLIT_KEYBOARD_STEP;
+    onQueueSplitHeightChange?.(clampQueueSplitHeight(effectiveQueueSplitHeight + delta));
   };
 
   // When a different transcript loads, start at the bottom so the latest turn is
@@ -192,36 +289,98 @@ export default function TurnOverlay({
     if (stickToBottomRef.current) {
       scrollToBottom();
     }
-  }, [turns, composerHeight]);
+  }, [turns, composerHeight, effectiveQueueSplitHeight, queueSplit]);
 
-  // The composer floats over the transcript, so reserve scroll room beneath the
-  // last message equal to the composer's live height (it changes as the queue
-  // grows and as the textarea expands). Without this, queued turns hide the
-  // bottom of the transcript with no way to scroll to it.
+  // The composer normally floats over the transcript, so reserve scroll room
+  // beneath the last message equal to the live input height. In split mode, also
+  // measure the composer-only portion so the divider cannot be dragged down over it.
   useEffect(() => {
     const element = inputWrapRef.current;
     if (!element) {
       setComposerHeight(0);
+      setComposerBaseHeight(0);
       return;
     }
-    const measure = () => setComposerHeight(element.offsetHeight);
+    const measure = () => {
+      setComposerHeight(element.offsetHeight);
+      const composer = element.querySelector(".native-input-composer") as HTMLElement | null;
+      const styles = window.getComputedStyle(element);
+      const paddingY =
+        Number.parseFloat(styles.paddingTop || "0") +
+        Number.parseFloat(styles.paddingBottom || "0");
+      setComposerBaseHeight((composer?.offsetHeight ?? 0) + paddingY);
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
+    const composer = element.querySelector(".native-input-composer");
+    if (composer) {
+      observer.observe(composer);
+    }
     return () => observer.disconnect();
   }, [Boolean(input)]);
 
-  const timelineStyle: CSSProperties | undefined =
-    composerHeight > 0 ? { paddingBottom: composerHeight + COMPOSER_CLEARANCE } : undefined;
+  useLayoutEffect(() => {
+    if (!queueSplit || !onQueueSplitHeightChange) {
+      return;
+    }
+    const clamped = clampQueueSplitHeight(queueSplitHeight ?? defaultQueueSplitHeight());
+    if (queueSplitHeight !== clamped) {
+      onQueueSplitHeightChange(clamped);
+    }
+    const sidebar = sidebarRef.current;
+    if (!sidebar) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      const next = clampQueueSplitHeight(queueSplitHeight ?? clamped);
+      if (next !== queueSplitHeight) {
+        onQueueSplitHeightChange(next);
+      }
+    });
+    observer.observe(sidebar);
+    return () => observer.disconnect();
+    // The clamp intentionally depends on live measurements read from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueSplit, queueSplitHeight, composerBaseHeight, agentId, Boolean(input)]);
+
+  const timelineStyle: CSSProperties | undefined = queueSplit
+    ? { bottom: effectiveQueueSplitHeight, paddingBottom: 10 }
+    : composerHeight > 0
+      ? { paddingBottom: composerHeight + COMPOSER_CLEARANCE }
+      : undefined;
+  const inputStyle: CSSProperties | undefined = queueSplit
+    ? { height: effectiveQueueSplitHeight }
+    : undefined;
+  const splitBoundsNow = queueSplit ? splitBounds() : null;
   const timelineItems = useMemo(() => buildTimelineItems(turns), [turns]);
 
   return (
     <LinkActionsContext.Provider value={linkActions}>
     <section
-      className={`turn-sidebar${header ? " has-header" : ""}`}
+      ref={sidebarRef}
+      className={`turn-sidebar${header ? " has-header" : ""}${queueSplit ? " has-queue-split" : ""}`}
       aria-label="Agent turns"
     >
       {header}
+      {queueSplit ? (
+        <div
+          className="turn-queue-resizer"
+          role="separator"
+          aria-label="Resize queue split"
+          aria-orientation="horizontal"
+          aria-valuemin={splitBoundsNow?.min ?? 0}
+          aria-valuemax={splitBoundsNow?.max ?? 0}
+          aria-valuenow={effectiveQueueSplitHeight}
+          tabIndex={0}
+          style={{ bottom: effectiveQueueSplitHeight - QUEUE_SPLIT_RESIZER_HALF_HEIGHT }}
+          onPointerDown={startQueueSplitResize}
+          onPointerMove={moveQueueSplitResize}
+          onPointerUp={endQueueSplitResize}
+          onPointerCancel={endQueueSplitResize}
+          onKeyDown={resizeQueueSplitWithKeyboard}
+        />
+      ) : null}
       <div
         ref={timelineRef}
         className={`turn-timeline${timelineItems.length === 0 ? " is-empty" : ""}`}
@@ -238,7 +397,11 @@ export default function TurnOverlay({
         )}
       </div>
       {input ? (
-        <div className="turn-sidebar-input" ref={inputWrapRef}>
+        <div
+          className={`turn-sidebar-input${queueSplit ? " is-split" : ""}`}
+          ref={inputWrapRef}
+          style={inputStyle}
+        >
           {input}
         </div>
       ) : null}
