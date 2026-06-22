@@ -1,11 +1,13 @@
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { EllipsisVertical, LoaderCircle, Mic, X } from "lucide-react";
 import {
   listAgentTurnQueue,
@@ -174,6 +176,16 @@ export default function NativeInput({
   const previousQueueLength = useRef(queuedTurns.length);
   const previousAgentId = useRef(agent.id);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuPopoverRef = useRef<HTMLDivElement | null>(null);
+  // The actions popover is portaled to <body> (to escape the right pane's
+  // overflow:hidden clipping) and positioned in fixed coordinates, clamped to
+  // stay within the right pane. Null until measured, so it stays offscreen.
+  const [menuPos, setMenuPos] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number;
+  } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Live voice dictation streamed into the composer at the caret. The mic is
@@ -218,13 +230,18 @@ export default function NativeInput({
   // Sorted newest first so recent sessions appear at the top of the menu.
   const sessionOptions = [...transcriptOptions].sort((a, b) => b.modifiedMs - a.modifiedMs);
 
-  // Close the actions menu on an outside click or Escape while it is open.
+  // Close the actions menu on an outside click or Escape while it is open. The
+  // popover is portaled out of menuRef, so a click counts as "inside" if it lands
+  // on either the trigger wrapper or the portaled popover.
   useEffect(() => {
     if (!menuOpen) {
       return;
     }
     const handlePointerDown = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const insideTrigger = menuRef.current?.contains(target);
+      const insidePopover = menuPopoverRef.current?.contains(target);
+      if (!insideTrigger && !insidePopover) {
         setMenuOpen(false);
       }
     };
@@ -240,6 +257,46 @@ export default function NativeInput({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [menuOpen]);
+
+  // Place the portaled popover above the ⋮ trigger, opening upward (away from the
+  // bottom edge). It right-aligns to the trigger, then clamps horizontally within
+  // the right pane (falling back to the viewport) so it never spills off either
+  // edge. If there isn't room above, it caps its height and scrolls.
+  const positionMenu = useCallback(() => {
+    const trigger = menuTriggerRef.current;
+    const popover = menuPopoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const margin = 8;
+    const gap = 6;
+    const triggerRect = trigger.getBoundingClientRect();
+    const pane = trigger.closest(".turn-pane");
+    const paneRect = pane?.getBoundingClientRect();
+    const boundLeft = (paneRect ? paneRect.left : 0) + margin;
+    const boundRight = (paneRect ? paneRect.right : window.innerWidth) - margin;
+    const { width, height } = popover.getBoundingClientRect();
+    let left = triggerRect.right - width;
+    left = Math.max(boundLeft, Math.min(left, boundRight - width));
+    const availableAbove = triggerRect.top - gap - margin;
+    const top = Math.max(margin, triggerRect.top - gap - height);
+    setMenuPos({ left, top, maxHeight: availableAbove });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!menuOpen) {
+      setMenuPos(null);
+      return;
+    }
+    positionMenu();
+    const onReflow = () => positionMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [menuOpen, positionMenu]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -274,6 +331,33 @@ export default function NativeInput({
     }
     stack.scrollTop = getQueueScroll(agent.id) ?? 0;
   }, [agent.id, getQueueScroll]);
+
+  // After queueing a long item, older turns collapse and the stack gets shorter —
+  // which can strand the scroll position past the new end, leaving the queue stuck
+  // showing empty space below the last item. Watch the stack and its rows for size
+  // changes and, whenever the scroll has fallen past the bottom, snap it back down
+  // so the latest item stays in view. Only acts on the invalid over-scrolled
+  // region, so it never fights a user who has scrolled up to read earlier items.
+  useEffect(() => {
+    const stack = queueStackRef.current;
+    if (!stack) {
+      return;
+    }
+    const clampToBottom = () => {
+      const max = stack.scrollHeight - stack.clientHeight;
+      if (max >= 0 && stack.scrollTop > max + 1) {
+        stack.scrollTop = stack.scrollHeight;
+      }
+    };
+    const observer = new ResizeObserver(clampToBottom);
+    observer.observe(stack);
+    // The stack's own box doesn't change when a row collapses; observe the rows so
+    // their height animations are caught too.
+    for (const child of Array.from(stack.children)) {
+      observer.observe(child);
+    }
+    return () => observer.disconnect();
+  }, [queuedTurns.length]);
 
   useEffect(() => {
     return () => {
@@ -857,6 +941,7 @@ export default function NativeInput({
           {paused ? <span className="composer-paused-label">Paused</span> : null}
           <div className="composer-menu" ref={menuRef}>
             <button
+              ref={menuTriggerRef}
               type="button"
               className="composer-menu-trigger"
               aria-haspopup="menu"
@@ -866,8 +951,23 @@ export default function NativeInput({
             >
               <EllipsisVertical size={15} aria-hidden="true" />
             </button>
-            {menuOpen ? (
-              <div className="composer-menu-popover" role="menu">
+            {menuOpen
+              ? createPortal(
+                  <div
+                    ref={menuPopoverRef}
+                    className="composer-menu-popover"
+                    role="menu"
+                    // Offscreen until measured so it doesn't flash at the origin.
+                    style={
+                      menuPos
+                        ? {
+                            left: menuPos.left,
+                            top: menuPos.top,
+                            maxHeight: menuPos.maxHeight,
+                          }
+                        : { left: -9999, top: -9999 }
+                    }
+                  >
                 {queuedTurns.length > 0 ? (
                   <>
                     <button
@@ -982,8 +1082,10 @@ export default function NativeInput({
                     ))}
                   </>
                 ) : null}
-              </div>
-            ) : null}
+                  </div>,
+                  document.body,
+                )
+              : null}
           </div>
           {permissionActions.length > 0 ? (
             permissionActions.map((action) => (

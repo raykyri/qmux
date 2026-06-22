@@ -87,7 +87,7 @@
 }
 
 ::selection {
-  background: #032042;
+  background: #6DA7EC;
 }
 
 /* lucide-react renders its icons with width/height attributes, but as a flex item an
@@ -293,18 +293,16 @@ button:disabled {
 }
 
 .pane-tab:hover {
-  background: #0c0e0f;
+  /* A touch lighter than the sidebar rather than darker, so hover lifts off the
+     panel — but kept below the selected fill so the two stay distinct. */
+  background: #1b1f21;
 }
 
 .pane-tab-row.is-selected .pane-tab {
-  border-color: transparent;
-  /* Native macOS source-list selection: a solid, full-width, accent-filled
-     rounded row that tracks the user's system accent color. Falls back to the
-     app teal if AccentColor isn't supported. */
-  background: #3f8a78;
-  background: AccentColor;
-  /* Always white, the way macOS draws selected source-list text on the accent
-     fill. (AccentColorText resolved too dark to read against the accent here.) */
+  /* A moderate selected state instead of the bright system accent fill: a slightly
+     lighter shade of the button gray with a soft, slightly lighter border. */
+  border-color: var(--control-border);
+  background: var(--control-bg-hover);
   color: #ffffff;
   box-shadow: none;
 }
@@ -1499,6 +1497,23 @@ button:disabled {
   justify-content: center;
 }
 
+/* Stack the app title above the inline launcher, both centered. */
+.home-launcher {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: min(680px, 100%);
+}
+
+.home-title {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 600;
+  text-align: center;
+  color: #e7e7e2;
+}
+
 /* The inline launcher is interactive even though its placeholder wrapper isn't. */
 .terminal-empty-state .command-launcher {
   pointer-events: auto;
@@ -1942,6 +1957,10 @@ button:disabled {
 .turn-sidebar-input.is-split {
   overflow: hidden;
   background: #171b1d;
+  /* The split divider already separates the queue from the transcript, so drop the
+     floating composer's top padding that otherwise leaves a gap below the
+     splitter. */
+  padding-top: 0;
 }
 
 .turn-card {
@@ -2651,14 +2670,13 @@ button:disabled {
 }
 
 .composer-menu-popover {
-  /* Anchored above the trigger so it opens upward, away from the bottom edge.
-     Horizontally centered over the trigger so its width grows evenly to both
-     sides instead of spilling off one edge of the (narrow) right pane. */
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 5;
+  /* Portaled to <body> and positioned in fixed coordinates by JS (see
+     positionMenu in NativeInput): opened upward from the ⋮ trigger and clamped
+     to stay within the right pane, so it never spills off either edge or gets
+     clipped by the pane's overflow:hidden. left/top/max-height come from the
+     inline style. */
+  position: fixed;
+  z-index: 15;
   display: flex;
   width: 220px;
   max-width: calc(100vw - 24px);
@@ -2670,6 +2688,7 @@ button:disabled {
   border-radius: 8px;
   background: #1d2224;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
 }
 
 .composer-menu-item {
