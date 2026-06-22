@@ -389,8 +389,9 @@ fn select_newest_transcript_candidate(
 /// accumulate hundreds of JSONL files and the user only ever wants a recent one.
 const MAX_TRANSCRIPT_OPTIONS: usize = 30;
 
-/// Characters of the first user message shown as a session preview.
+/// Characters of the first usable user message shown as a session preview.
 const PREVIEW_MAX_CHARS: usize = 90;
+const PREVIEW_USER_MESSAGE_LOOKAHEAD_LIMIT: usize = 5;
 
 /// One selectable session for the right pane's transcript picker.
 #[derive(Clone, Debug, Serialize)]
@@ -615,17 +616,19 @@ pub fn set_agent_transcript(
     Ok(agent)
 }
 
-/// Reads a transcript's first user-message preview and total line count without
-/// holding the file open — best-effort, so an unreadable file yields `(None, 0)`.
+/// Reads a transcript's first usable user-message preview and total line count
+/// without holding the file open — best-effort, so an unreadable file yields
+/// `(None, 0)`.
 fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
     let Ok(raw) = fs::read_to_string(path) else {
         return (None, 0);
     };
     let mut line_count = 0;
     let mut preview = None;
+    let mut user_messages_seen = 0;
     for line in raw.lines() {
         line_count += 1;
-        if preview.is_some() {
+        if preview.is_some() || user_messages_seen >= PREVIEW_USER_MESSAGE_LOOKAHEAD_LIMIT {
             continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -643,7 +646,10 @@ fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
         if let Some(text) = first_text_block(message.and_then(|message| message.get("content"))) {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
-                preview = Some(truncate_preview(trimmed));
+                user_messages_seen += 1;
+                if !is_tagged_user_instruction(&text) {
+                    preview = Some(truncate_preview(trimmed));
+                }
             }
         }
     }
@@ -686,6 +692,115 @@ fn truncate_preview(text: &str) -> String {
     }
     let head: String = collapsed.chars().take(PREVIEW_MAX_CHARS).collect();
     format!("{head}…")
+}
+
+fn is_tagged_user_instruction(text: &str) -> bool {
+    let Some(content_start) = tagged_instruction_content_start(text) else {
+        return false;
+    };
+
+    if is_inline_tagged_instruction_sequence(&text[content_start..]) {
+        return true;
+    }
+
+    let content = &text[content_start..];
+    let Some(first_line_end) = content.find('\n') else {
+        return false;
+    };
+    let first_line =
+        trim_horizontal_whitespace(strip_trailing_carriage_return(&content[..first_line_end]));
+    let last_line_start = text.rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let last_line =
+        trim_horizontal_whitespace(strip_trailing_carriage_return(&text[last_line_start..]));
+    let Some(opening_tag) = parse_opening_tag(first_line) else {
+        return false;
+    };
+    parse_closing_tag(last_line) == Some(opening_tag)
+}
+
+fn is_inline_tagged_instruction_sequence(text: &str) -> bool {
+    let mut saw_tag = false;
+    for raw_line in text.split('\n') {
+        let line = trim_horizontal_whitespace(strip_trailing_carriage_return(raw_line));
+        if line.is_empty() {
+            continue;
+        }
+        if parse_inline_tag(line).is_none() {
+            return false;
+        }
+        saw_tag = true;
+    }
+    saw_tag
+}
+
+fn tagged_instruction_content_start(text: &str) -> Option<usize> {
+    let mut start = 0;
+    while start < text.len() {
+        let line_end = text[start..]
+            .find('\n')
+            .map(|index| start + index)
+            .unwrap_or(text.len());
+        let line = strip_trailing_carriage_return(&text[start..line_end]);
+        if !is_tagged_instruction_prefix_line(line) {
+            return Some(start);
+        }
+        if line_end == text.len() {
+            return None;
+        }
+        start = line_end + 1;
+    }
+    None
+}
+
+fn is_tagged_instruction_prefix_line(line: &str) -> bool {
+    line.starts_with("# ") || trim_horizontal_whitespace(line).is_empty()
+}
+
+fn strip_trailing_carriage_return(value: &str) -> &str {
+    value.strip_suffix('\r').unwrap_or(value)
+}
+
+fn trim_horizontal_whitespace(value: &str) -> &str {
+    value.trim_matches(|char: char| char != '\n' && char != '\r' && char.is_whitespace())
+}
+
+fn parse_inline_tag(line: &str) -> Option<&str> {
+    if line.len() < 7 || !line.starts_with('<') {
+        return None;
+    }
+    let opening_end = line.find('>')?;
+    if opening_end < 2 {
+        return None;
+    }
+    let tag = &line[1..opening_end];
+    if !is_instruction_tag_name(tag) {
+        return None;
+    }
+    let closing = format!("</{tag}>");
+    line.ends_with(&closing).then_some(tag)
+}
+
+fn parse_opening_tag(line: &str) -> Option<&str> {
+    if line.len() < 3 || !line.starts_with('<') || !line.ends_with('>') {
+        return None;
+    }
+    let tag = &line[1..line.len() - 1];
+    is_instruction_tag_name(tag).then_some(tag)
+}
+
+fn parse_closing_tag(line: &str) -> Option<&str> {
+    if line.len() < 4 || !line.starts_with("</") || !line.ends_with('>') {
+        return None;
+    }
+    let tag = &line[2..line.len() - 1];
+    is_instruction_tag_name(tag).then_some(tag)
+}
+
+fn is_instruction_tag_name(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || char == '_' || char == '-')
 }
 
 fn session_id_from_transcript_path(path: &Path) -> Option<String> {
@@ -1028,6 +1143,66 @@ mod tests {
         let (preview, line_count) = read_transcript_meta(&path);
         assert_eq!(preview.as_deref(), Some("codex prompt"));
         assert_eq!(line_count, 3);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_transcript_meta_skips_tagged_instruction_previews() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-tagged-meta-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<context>ignore</context>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"# comment\\n<instructions>ignore</instructions>\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"reply\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"real prompt\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let (preview, line_count) = read_transcript_meta(&path);
+        assert_eq!(preview.as_deref(), Some("real prompt"));
+        assert_eq!(line_count, 4);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_transcript_meta_stops_preview_scan_after_five_user_messages() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-preview-limit-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<one>ignore</one>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<two>ignore</two>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<three>ignore</three>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<four>ignore</four>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<five>ignore</five>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"sixth prompt\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let (preview, line_count) = read_transcript_meta(&path);
+        assert_eq!(preview, None);
+        assert_eq!(line_count, 6);
 
         fs::remove_dir_all(&dir).ok();
     }
