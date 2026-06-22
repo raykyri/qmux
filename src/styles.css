@@ -1141,7 +1141,9 @@ button:disabled {
   padding: 5px 7px;
   border-radius: var(--radius-lg);
   color: #c4cbc6;
-  font-size: var(--fs-sm);
+  /* Sits between --fs-sm and --fs-base so it matches the link-style option
+     selectors next to it (which step down to the same size). */
+  font-size: 12.5px;
   cursor: pointer;
   user-select: none;
 }
@@ -1405,6 +1407,24 @@ button:disabled {
 
 .launcher-select-trigger.is-danger {
   color: #e0796d;
+}
+
+/* Every launcher select except the model (adapter) selector — sandbox mode,
+   permission/approval level, etc. — reads as a plain link: a label and a light
+   chevron, with no pill, padding, or hover chrome. Its text steps down to match
+   the adjacent checkbox labels so the two line up in the row. */
+.command-launcher-options .launcher-select-trigger {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.command-launcher-options .launcher-select-trigger:hover {
+  border-color: transparent;
+  background: transparent;
 }
 
 .launcher-select-popover {
