@@ -467,7 +467,7 @@ export default function TurnOverlay({
       >
         {timelineItems.length === 0 ? (
           <div className="empty-state turn-empty-state">
-            <span>No turns yet</span>
+            <span>No activity yet</span>
             {notice === "Transcript unavailable" && onSelectTranscript ? (
               <TranscriptPickerLink
                 options={transcriptOptions}

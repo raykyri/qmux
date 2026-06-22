@@ -307,6 +307,36 @@ button:disabled {
   box-shadow: none;
 }
 
+.pane-tab-shortcut-hint {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 25px;
+  min-height: 18px;
+  padding: 1px 6px;
+  transform: translateY(-50%);
+  border: 1px solid #3a4245;
+  border-radius: 6px;
+  background: #111416;
+  color: #c4cbc6;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 0.88;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pane-tab-row.is-selected .pane-tab-shortcut-hint {
+  border-color: #566165;
+  color: #e7e7e2;
+}
+
 .pane-tab-row.is-dragging {
   opacity: 0.5;
 }
@@ -335,7 +365,7 @@ button:disabled {
   justify-self: center;
   flex: none;
   color: #8a938e;
-  transform: translateX(-1px) translateY(-1px);
+  transform: translateX(-1px);
 }
 
 .pane-home-row.is-selected .pane-tab svg {
@@ -2024,7 +2054,7 @@ button:disabled {
 
 /* Empty-queue placeholder shown above the composer when the queue and transcript
    are split into view together; grows to fill the reserved queue area so the text
-   sits centered like the transcript's "No turns yet". */
+   sits centered like the transcript's "No activity yet". */
 .queue-empty-state {
   flex: 1 1 auto;
 }
@@ -2341,7 +2371,7 @@ header + .turn-blocks {
   cursor: pointer;
   list-style: none;
   border-radius: 6px;
-  padding: 4px 9px;
+  padding: 4px 10px;
 }
 
 .tool-block.is-root-activity > summary,
@@ -3190,6 +3220,7 @@ header + .turn-blocks {
   height: 9px;
   border-left: 1px solid #596165;
   border-bottom: 1px solid #596165;
+  border-bottom-left-radius: 4px;
   opacity: 0.75;
 }
 
