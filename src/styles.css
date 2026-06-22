@@ -1508,6 +1508,7 @@ button:disabled {
 
 .home-title {
   margin: 0;
+  font-family: var(--font-mono);
   font-size: 32px;
   font-weight: 600;
   text-align: center;

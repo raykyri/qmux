@@ -1,5 +1,6 @@
 import { Globe, Split, SquareCenterlineDashedVertical } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { writeClipboardText } from "../lib/clipboard";
 
 // How long the "copied" toast stays up after clicking the session id.
@@ -168,11 +169,18 @@ export default function TurnPaneHeader({
           <Globe size={14} aria-hidden="true" />
         </button>
       </div>
-      {toast ? (
-        <div className="composer-toast" role="status" aria-live="polite">
-          {toast}
-        </div>
-      ) : null}
+      {/* Portaled to <body> so the fixed-position toast escapes the header's
+          stacking context (position:absolute + z-index), which would otherwise
+          trap it and keep it from showing — unlike the composer toast, whose
+          wrapper sets no z-index. */}
+      {toast
+        ? createPortal(
+            <div className="composer-toast" role="status" aria-live="polite">
+              {toast}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
