@@ -2054,14 +2054,15 @@ button:disabled {
   padding: 8px 9px;
 }
 
-/* The agent's own turns read as plain text in the transcript rather than in a
+/* Agent and system turns read as plain text in the transcript rather than in a
    bubble: keep the role header and text, but drop the card's border, fill, and
    padding. (User turns keep the bubble so they still stand out.) */
-.turn-card.role-assistant {
+.turn-card.role-assistant,
+.turn-card.role-system {
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 2px 0 0 10px;
+  padding: 2px 10px 0;
 }
 
 .turn-card header {
@@ -2230,6 +2231,10 @@ button:disabled {
   color: #d9ddd9;
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
   overflow: visible;
+}
+
+.activity-group-block {
+  font-size: calc(14px + var(--turn-font-delta, 0px));
 }
 
 .tool-block > summary,
