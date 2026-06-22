@@ -2258,6 +2258,13 @@ header + .turn-blocks {
   padding: 4px 7px;
 }
 
+.tool-block.is-root-activity > summary,
+.thinking-block.is-root-activity > summary,
+.activity-group-block.is-root-activity > summary {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
 .tool-block > summary::-webkit-details-marker,
 .thinking-block > summary::-webkit-details-marker,
 .activity-group-block > summary::-webkit-details-marker {
@@ -2318,6 +2325,7 @@ header + .turn-blocks {
   color: #aab1ad;
   font-size: calc(13.5px + var(--turn-font-delta, 0px));
   font-weight: 400;
+  padding-left: 1px;
 }
 
 .activity-group-label.is-tool-group {

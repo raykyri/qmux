@@ -696,7 +696,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
         <MessageItemView item={item} assistantLabel={assistantLabel} showName={showName} />
       ) : null}
       {item.activities.map((activity) => (
-        <ActivityItemView key={activity.key} item={activity} />
+        <ActivityItemView key={activity.key} item={activity} isRootActivity />
       ))}
     </>
   );
@@ -738,22 +738,34 @@ function turnRoleLabel(role: string, assistantLabel: string) {
   return role === "assistant" ? assistantLabel : role;
 }
 
-function ActivityItemView({ item }: { item: ActivityItem }) {
+function ActivityItemView({
+  item,
+  isRootActivity = false,
+}: {
+  item: ActivityItem;
+  isRootActivity?: boolean;
+}) {
   switch (item.type) {
     case "tool":
-      return <ToolEntryView entry={item} />;
+      return <ToolEntryView entry={item} showChevron={!isRootActivity} />;
     case "thinking":
-      return <ThinkingView item={item} />;
+      return <ThinkingView item={item} showChevron={!isRootActivity} />;
     case "activityGroup":
-      return <ActivityGroupView group={item} />;
+      return <ActivityGroupView group={item} showChevron={!isRootActivity} />;
   }
 }
 
-function ActivityGroupView({ group }: { group: ActivityGroupItem }) {
+function ActivityGroupView({
+  group,
+  showChevron,
+}: {
+  group: ActivityGroupItem;
+  showChevron: boolean;
+}) {
   return (
-    <details className="activity-group-block">
+    <details className={`activity-group-block${showChevron ? "" : " is-root-activity"}`}>
       <summary>
-        <DisclosureChevron />
+        {showChevron ? <DisclosureChevron /> : null}
         <span className={group.toolCallCount > 0 ? "activity-group-label is-tool-group" : undefined}>
           {activityGroupLabel(group)}
         </span>
@@ -928,13 +940,21 @@ function isHorizontalWhitespace(char: string) {
   return char !== "\n" && char !== "\r" && char.trim() === "";
 }
 
-function ToolEntryView({ entry }: { entry: ToolEntry }) {
+function ToolEntryView({
+  entry,
+  showChevron,
+}: {
+  entry: ToolEntry;
+  showChevron: boolean;
+}) {
   const summaryArgument = toolSummaryArgument(entry);
   const summaryLabel = summaryArgument ? `${entry.name} ${summaryArgument}` : entry.name;
   return (
-    <details className={`tool-block tool-pair ${entry.isError ? "is-error" : ""}`}>
+    <details
+      className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${showChevron ? "" : " is-root-activity"}`}
+    >
       <summary>
-        <DisclosureChevron />
+        {showChevron ? <DisclosureChevron /> : null}
         <span className="tool-summary">
           <span className="tool-summary-main" title={summaryLabel}>
             <span>{entry.name}</span>
@@ -989,11 +1009,17 @@ function ToolPayload({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-function ThinkingView({ item }: { item: ThinkingItem }) {
+function ThinkingView({
+  item,
+  showChevron,
+}: {
+  item: ThinkingItem;
+  showChevron: boolean;
+}) {
   return (
-    <details className="thinking-block">
+    <details className={`thinking-block${showChevron ? "" : " is-root-activity"}`}>
       <summary>
-        <DisclosureChevron />
+        {showChevron ? <DisclosureChevron /> : null}
         <span>Thinking...</span>
       </summary>
       {item.values.map((value, index) => (
