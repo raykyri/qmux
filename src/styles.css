@@ -1367,6 +1367,11 @@ button:disabled {
   min-width: 0;
 }
 
+/* Nudge the model logo 1px off the trigger's left edge. */
+.command-launcher-adapter-select .launcher-select-trigger {
+  padding-left: 12px;
+}
+
 /* Send reads as quiet chrome that matches the picker pill, with the accent reserved
    for the keyboard hint instead of a competing CTA fill. */
 .command-launcher-send {
@@ -1561,7 +1566,9 @@ button:disabled {
    as danger. */
 .launcher-select-chevron {
   flex: 0 0 auto;
-  margin-left: 2px;
+  /* Halve the space between the chevron and its label: the trigger's 6px flex gap
+     plus the prior 2px margin was 8px; a -2px margin nets the 6px gap down to 4px. */
+  margin-left: -2px;
   color: var(--placeholder-color);
 }
 
