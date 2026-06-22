@@ -281,7 +281,7 @@ mod tests {
             "claude",
             Some(OsStr::new("/usr/bin:/bin")),
             Some(&home),
-            &[login_bin.clone()],
+            std::slice::from_ref(&login_bin),
         );
 
         assert_eq!(resolved, Some(login_binary));

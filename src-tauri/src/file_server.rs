@@ -72,10 +72,10 @@ pub fn file_url(port: u16, token: &str, abs_path: &Path) -> String {
 pub fn resolve_under_roots(requested: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
     let canonical = std::fs::canonicalize(requested).ok()?;
     for root in roots {
-        if let Ok(root_canonical) = std::fs::canonicalize(root) {
-            if canonical.starts_with(&root_canonical) {
-                return Some(canonical);
-            }
+        if let Ok(root_canonical) = std::fs::canonicalize(root)
+            && canonical.starts_with(&root_canonical)
+        {
+            return Some(canonical);
         }
     }
     None
@@ -149,10 +149,10 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
         if trimmed.is_empty() {
             break;
         }
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("range") {
-                range = Some(value.trim().to_string());
-            }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.trim().eq_ignore_ascii_case("range")
+        {
+            range = Some(value.trim().to_string());
         }
     }
 

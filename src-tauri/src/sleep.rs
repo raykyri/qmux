@@ -51,11 +51,11 @@ impl SleepGuard {
 
 impl Drop for SleepGuard {
     fn drop(&mut self) {
-        if let Ok(mut slot) = self.child.lock() {
-            if let Some(mut child) = slot.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if let Ok(mut slot) = self.child.lock()
+            && let Some(mut child) = slot.take()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
