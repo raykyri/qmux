@@ -2914,7 +2914,10 @@ export default function App() {
       launcherInputRef.current?.focus();
       launcherInputRef.current?.select();
     });
-  }, [launcherVisible]);
+    // Depend on launcherOpen too: on Home the launcher is already visible inline, so
+    // opening the modal (e.g. ⌘;) doesn't flip launcherVisible. Without this the modal's
+    // freshly-mounted textarea — a different node than the inline one — never gets focus.
+  }, [launcherVisible, launcherOpen]);
 
   // The ask launcher's "new thread" mode shows the same Claude skill toggles, but
   // opening it doesn't pass through the launcher-visible effect above — so load the
@@ -3147,7 +3150,7 @@ export default function App() {
           launcherDictation.stop();
         }}
         rows={2}
-        placeholder="What should we look at next?"
+        placeholder="What should we investigate next?"
         style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
       />
       <DictationMicButton dictation={launcherDictation} className="command-launcher-mic" />
