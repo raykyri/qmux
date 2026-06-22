@@ -357,6 +357,9 @@ export default function App() {
   // open.
   const askLauncherOpenRef = useRef(false);
   askLauncherOpenRef.current = askLauncher !== null;
+  // Guards `submitAsk` against re-entry (held Cmd+Enter, a double-click) so a single
+  // ask never sends twice or — worse, in "new thread" mode — forks twice.
+  const askSubmittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
@@ -1928,7 +1931,7 @@ export default function App() {
     focusActiveTerminal();
   }
   async function submitAsk() {
-    if (!askLauncher) {
+    if (!askLauncher || askSubmittingRef.current) {
       return;
     }
     const question = askPrompt.trim();
@@ -1946,6 +1949,7 @@ export default function App() {
       message = `${skill.command} ${message}`;
     }
     setError(null);
+    askSubmittingRef.current = true;
     try {
       if (target.mode === "ask") {
         // "auto": the backend sends now if the agent is ready, or queues onto the
@@ -1977,6 +1981,8 @@ export default function App() {
       // Keep the launcher open on failure so the question isn't lost and the user
       // can retry.
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      askSubmittingRef.current = false;
     }
   }
 
@@ -2603,7 +2609,7 @@ export default function App() {
           event.preventDefault();
           return;
         }
-        if (event.metaKey && event.key === "Enter") {
+        if (event.metaKey && event.key === "Enter" && !event.repeat) {
           event.preventDefault();
           void submitAsk();
         }
