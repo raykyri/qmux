@@ -804,6 +804,10 @@ function isTaggedUserInstruction(text: string) {
     return false;
   }
 
+  if (isInlineTaggedInstructionSequence(text, contentStart)) {
+    return true;
+  }
+
   const firstLineEnd = text.indexOf("\n", contentStart);
   if (firstLineEnd === -1) {
     return false;
@@ -816,6 +820,21 @@ function isTaggedUserInstruction(text: string) {
   const lastLine = trimHorizontalWhitespace(text.slice(lastLineStart));
   const openingTag = parseOpeningTag(firstLine);
   return openingTag !== null && parseClosingTag(lastLine) === openingTag;
+}
+
+function isInlineTaggedInstructionSequence(text: string, contentStart: number) {
+  let sawTag = false;
+  for (const rawLine of text.slice(contentStart).split("\n")) {
+    const line = trimHorizontalWhitespace(stripTrailingCarriageReturn(rawLine));
+    if (line.length === 0) {
+      continue;
+    }
+    if (parseInlineTag(line) === null) {
+      return false;
+    }
+    sawTag = true;
+  }
+  return sawTag;
 }
 
 function taggedInstructionContentStart(text: string) {
@@ -853,6 +872,22 @@ function trimHorizontalWhitespace(value: string) {
     end -= 1;
   }
   return value.slice(start, end);
+}
+
+function parseInlineTag(line: string) {
+  if (line.length < 7 || line[0] !== "<") {
+    return null;
+  }
+  const openingEnd = line.indexOf(">");
+  if (openingEnd < 2) {
+    return null;
+  }
+  const tag = line.slice(1, openingEnd);
+  if (!isInstructionTagName(tag)) {
+    return null;
+  }
+  const closing = `</${tag}>`;
+  return line.endsWith(closing) ? tag : null;
 }
 
 function parseOpeningTag(line: string) {
