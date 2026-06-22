@@ -507,7 +507,7 @@ export default function TurnOverlay({
       ) : null}
       <div
         ref={timelineRef}
-        className={`turn-timeline${timelineItems.length === 0 ? " is-empty" : ""}`}
+        className={`turn-timeline${timelineItems.length === 0 && !thinking ? " is-empty" : ""}`}
         style={timelineStyle}
         onScroll={handleTimelineScroll}
       >

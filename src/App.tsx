@@ -189,6 +189,9 @@ const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
   [CODEX_ADAPTER_ID]: openAiModelIconUrl,
   [OPENCODE_ADAPTER_ID]: openCodeModelIconUrl,
 };
+const ADAPTER_ICON_CLASS_BY_ID: Record<string, string | undefined> = {
+  [CODEX_ADAPTER_ID]: "is-mono-light",
+};
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
@@ -4097,6 +4100,7 @@ export default function App() {
                     sessions={recentSessions}
                     config={config}
                     adapterIconById={LAUNCHER_ADAPTER_ICON_BY_ID}
+                    adapterIconClassById={ADAPTER_ICON_CLASS_BY_ID}
                     onOpenSession={openRecentSession}
                     formatPath={formatPaneDir}
                   />

@@ -6,6 +6,7 @@ interface RecentSessionsPanelProps {
   sessions: RecentSessionInfo[];
   config: RuntimeConfig | null;
   adapterIconById: Record<string, string>;
+  adapterIconClassById?: Record<string, string | undefined>;
   onOpenSession: (session: RecentSessionInfo) => void;
   formatPath: (path: string) => string;
 }
@@ -35,6 +36,7 @@ export default function RecentSessionsPanel({
   sessions,
   config,
   adapterIconById,
+  adapterIconClassById = {},
   onOpenSession,
   formatPath,
 }: RecentSessionsPanelProps) {
@@ -50,6 +52,7 @@ export default function RecentSessionsPanel({
         <div className="recent-sessions-list">
           {sessions.map((session) => {
             const icon = adapterIconById[session.adapter];
+            const iconClassName = adapterIconClassById[session.adapter];
             const label = adapterLabel(config, session.adapter);
             const isOpen = Boolean(session.paneId);
             return (
@@ -62,7 +65,11 @@ export default function RecentSessionsPanel({
                 onClick={() => onOpenSession(session)}
               >
                 <span className="recent-session-icon" title={label}>
-                  {icon ? <img src={icon} alt="" /> : label.slice(0, 1).toUpperCase()}
+                  {icon ? (
+                    <img className={iconClassName} src={icon} alt="" />
+                  ) : (
+                    label.slice(0, 1).toUpperCase()
+                  )}
                 </span>
                 <span className="recent-session-copy">
                   <span className="recent-session-title">{sessionTitle(session)}</span>
