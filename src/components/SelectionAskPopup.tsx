@@ -22,6 +22,11 @@ export default function SelectionAskPopup({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  // App passes a fresh `onClose` arrow each render and re-renders often (streaming
+  // agent events). Read it through a ref so the listener effect can subscribe once
+  // instead of tearing down and re-adding all four listeners on every render.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   // Measure self once mounted and place it centered over the selection, preferring
   // above; flip below when there isn't room. Then clamp into the viewport.
@@ -46,17 +51,17 @@ export default function SelectionAskPopup({
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
     // Dismiss on any key, not just Escape: the popup has no text input, so any
     // keystroke means the user has moved on (typing in the composer, or opening
     // another overlay via a shortcut like Cmd-;, which the popup would otherwise
     // float over).
-    const onKey = () => onClose();
+    const onKey = () => onCloseRef.current();
     // Any scroll (capture, so nested scrollers count) or resize moves the anchor,
     // so just dismiss rather than chase it.
-    const onReflow = () => onClose();
+    const onReflow = () => onCloseRef.current();
     document.addEventListener("mousedown", onDown, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("scroll", onReflow, true);
@@ -67,7 +72,7 @@ export default function SelectionAskPopup({
       window.removeEventListener("scroll", onReflow, true);
       window.removeEventListener("resize", onReflow);
     };
-  }, [onClose]);
+  }, []);
 
   return createPortal(
     <div
