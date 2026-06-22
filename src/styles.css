@@ -1304,6 +1304,13 @@ button:disabled {
   border-color: var(--control-border-hover);
 }
 
+/* The label (Queue / Ask in fork) is 2px larger than the rest of the button —
+   the button text is already --fs-base + 1px, so the label is + 3px. Scoped to
+   the label span so the ⌘↵ glyph stays at the button size. */
+.command-launcher--ask .command-launcher-send-label {
+  font-size: calc(var(--fs-base) + 3px);
+}
+
 /* Ask launcher: a launcher seeded with a quoted selection. The quote sits above
    the question field as a scroll-capped blockquote with padding so it never
    crowds the input. */
