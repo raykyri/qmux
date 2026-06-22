@@ -246,6 +246,7 @@ impl ClaudeAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
+                skip_scrollback_restore: false,
             },
         );
 
@@ -367,6 +368,7 @@ impl ClaudeAdapter {
                 envs,
                 initial_size: None,
                 recovered: false,
+                skip_scrollback_restore: false,
             },
         );
 
@@ -449,6 +451,7 @@ impl ClaudeAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
+                skip_scrollback_restore: resumed,
             },
         )?;
 
@@ -1514,6 +1517,7 @@ mod tests {
                     bytes: bytes.clone(),
                 }))),
                 backlog: Default::default(),
+                skip_scrollback_restore: false,
             })
             .unwrap();
         bytes

@@ -49,6 +49,7 @@ pub struct PtySpawnSpec {
     pub envs: Vec<(String, String)>,
     pub initial_size: Option<InitialPaneSize>,
     pub recovered: bool,
+    pub skip_scrollback_restore: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +130,7 @@ fn shell_spawn_spec(
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut envs = shell_pane_envs(state, &pane_id)?;
     let mut args = Vec::new();
+    let mut skip_scrollback_restore = false;
 
     let shell_commands = adapter_registry(state.config()).shell_commands();
     match agent_shell_function_injection(
@@ -141,6 +143,7 @@ fn shell_spawn_spec(
             args = injection.args;
             envs.extend(injection.envs);
             envs.push(("QMUX_AGENT_FUNCTIONS".to_string(), "1".to_string()));
+            skip_scrollback_restore = resume_command.is_some();
         }
         Ok(None) => {
             envs.push((
@@ -165,6 +168,7 @@ fn shell_spawn_spec(
         envs,
         initial_size,
         recovered,
+        skip_scrollback_restore,
     })
 }
 
@@ -555,6 +559,7 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
         master,
         writer,
         backlog: backlog.clone(),
+        skip_scrollback_restore: spec.skip_scrollback_restore,
     };
 
     state.insert_pane(runtime)?;
@@ -1114,6 +1119,15 @@ mod tests {
     }
 
     fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
+        spawn_test_pty_with_restore_skip(state, pane_id, args, false)
+    }
+
+    fn spawn_test_pty_with_restore_skip(
+        state: &AppState,
+        pane_id: &str,
+        args: Vec<String>,
+        skip_scrollback_restore: bool,
+    ) -> PaneInfo {
         spawn_pty(
             state,
             PtySpawnSpec {
@@ -1127,9 +1141,32 @@ mod tests {
                 envs: Vec::new(),
                 initial_size: None,
                 recovered: false,
+                skip_scrollback_restore,
             },
         )
         .expect("spawning a test PTY")
+    }
+
+    #[test]
+    fn spawn_pty_tracks_scrollback_restore_skip_flag() {
+        let state = test_state();
+        let pane = spawn_test_pty_with_restore_skip(
+            &state,
+            "pane-skip-scrollback",
+            vec!["-c".to_string(), "sleep 5".to_string()],
+            true,
+        );
+
+        assert_eq!(
+            state.pane_skips_scrollback_restore(&pane.id).unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            state.pane_skips_scrollback_restore("missing").unwrap(),
+            None
+        );
+
+        kill_pane(&state, pane.id).expect("cleanup test pane");
     }
 
     #[test]

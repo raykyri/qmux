@@ -191,6 +191,7 @@ impl OpencodeAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
+                skip_scrollback_restore: false,
             },
         );
 
@@ -245,6 +246,7 @@ impl OpencodeAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
+                skip_scrollback_restore: resumed,
             },
         )?;
 
