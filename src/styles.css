@@ -1546,8 +1546,8 @@ button:disabled {
 
 .launcher-select-icon {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   object-fit: contain;
 }
 
@@ -1790,6 +1790,11 @@ button:disabled {
   width: 15px;
   height: 15px;
   object-fit: contain;
+}
+
+.recent-session-icon img.is-mono-light {
+  filter: brightness(0) invert(1);
+  opacity: 0.9;
 }
 
 .recent-session-copy {
