@@ -2197,6 +2197,15 @@ export default function App() {
         return;
       }
 
+      // Cmd-Shift-H also jumps to Home. Claimed before the editable-target bail so
+      // it works from terminal and composer focus too.
+      if (event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey && key === "h") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusHomeTab();
+        return;
+      }
+
       // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser,
       // skipping Home. Claimed here in the capture phase (before the
       // terminal/editable bail) so it works regardless of focus; Tab with Ctrl is
