@@ -100,6 +100,21 @@ struct Model {
     /// message into what the user is typing. Set/cleared by the frontend (debounced);
     /// transient (not persisted).
     agent_typing: HashSet<String>,
+    /// Agent-session resumes queued at restore, keyed by the recovered shell pane id;
+    /// each is drained by that pane's respawn. Transient (not persisted).
+    shell_agent_resumes: HashMap<String, ShellAgentResume>,
+}
+
+/// A pending request to resume an agent session inside a recovered shell pane.
+/// Captured during `restore_session` for a shell pane whose agent was still bound at
+/// shutdown — the wrapper clears the binding when the agent process exits, so a
+/// still-bound agent means it was running live — and consumed once by the pane's
+/// respawn, which injects the adapter's resume command (`claude --resume <id>`,
+/// `codex resume <id>`) into the new shell. Transient: never persisted.
+#[derive(Clone, Debug)]
+pub struct ShellAgentResume {
+    pub adapter: String,
+    pub session_id: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -372,6 +387,13 @@ impl AppState {
                     .clone()
                     .filter(|pane_id| shell_pane_ids.contains(pane_id))
                 {
+                    // The agent was still bound to its shell pane at shutdown, so it was
+                    // running live (the wrapper detaches on the agent process exiting).
+                    // Queue a resume for the pane's respawn when the session is still
+                    // recoverable, before clearing the now-stale binding.
+                    if let Some(resume) = shell_agent_resume(&agent) {
+                        model.shell_agent_resumes.insert(pane_id.clone(), resume);
+                    }
                     agent.pane_id = None;
                     agent.status = AgentStatus::Idle;
                     agent.orphaned_queue_pane_id =
@@ -571,6 +593,14 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.agents.values().cloned().collect())
+    }
+
+    /// Removes and returns the agent-session resume queued for `pane_id` at restore, if
+    /// any. One-shot: consumed by the pane's respawn so a later relaunch of the same
+    /// pane id never re-triggers it.
+    pub fn take_shell_agent_resume(&self, pane_id: &str) -> Option<ShellAgentResume> {
+        let mut model = self.inner.model.lock().ok()?;
+        model.shell_agent_resumes.remove(pane_id)
     }
 
     pub fn list_turns(&self, agent_id: Option<&str>) -> Result<Vec<Turn>, String> {
@@ -1627,6 +1657,27 @@ impl AppState {
     }
 }
 
+/// Builds a resume request for an agent that was bound to a shell pane at shutdown,
+/// when its session is still resumable. Requires a non-empty session id and skips a
+/// session whose recorded transcript file no longer exists, since resuming a deleted
+/// session would just error out in the new shell.
+fn shell_agent_resume(agent: &AgentInfo) -> Option<ShellAgentResume> {
+    let session_id = agent
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?;
+    if let Some(transcript_path) = agent.transcript_path.as_deref()
+        && !std::path::Path::new(transcript_path).exists()
+    {
+        return None;
+    }
+    Some(ShellAgentResume {
+        adapter: agent.adapter.clone(),
+        session_id: session_id.to_string(),
+    })
+}
+
 /// The effective sidebar order: every live pane id, `pane_order` first, then any
 /// panes missing from it (sorted by id for determinism). Shared by `ordered_panes`
 /// and depth normalization so they always agree on ordering.
@@ -2547,6 +2598,62 @@ mod tests {
         let raw = state.next_id("pane");
         let seq: u64 = raw.rsplit('-').next().unwrap().parse().unwrap();
         assert!(seq >= 99, "expected next_id >= persisted high-water mark");
+    }
+
+    #[test]
+    fn restore_captures_a_one_shot_resume_for_a_live_shell_agent() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        // A transcript on disk marks the session as still resumable.
+        let transcript = workspace.join("session-abc.jsonl");
+        std::fs::write(&transcript, b"{}\n").unwrap();
+        let mut agent = sample_agent("agent-1");
+        agent.branch = None;
+        agent.transcript_path = Some(transcript.display().to_string());
+
+        let persisted = PersistedState {
+            next_id: 99,
+            groups: vec![sample_group()],
+            // The agent is still bound to its shell pane (it was running at shutdown).
+            agents: vec![agent],
+            panes: vec![sample_pane("pane-7", None)],
+            ..PersistedState::default()
+        };
+        crate::persistence::save(&workspace, &persisted).unwrap();
+
+        let state = AppState::new(config);
+        state.restore_session();
+
+        let resume = state
+            .take_shell_agent_resume("pane-7")
+            .expect("a resume was captured for the live shell agent");
+        assert_eq!(resume.adapter, "claude");
+        assert_eq!(resume.session_id, "session-abc");
+        // One-shot: a later relaunch of the same pane id never re-triggers the resume.
+        assert!(state.take_shell_agent_resume("pane-7").is_none());
+    }
+
+    #[test]
+    fn restore_skips_resume_when_the_session_transcript_is_gone() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        // sample_agent points at a transcript that does not exist; resuming it would
+        // only error in the new shell, so no resume should be captured.
+        let persisted = PersistedState {
+            next_id: 99,
+            groups: vec![sample_group()],
+            agents: vec![sample_agent("agent-1")],
+            panes: vec![sample_pane("pane-7", None)],
+            ..PersistedState::default()
+        };
+        crate::persistence::save(&workspace, &persisted).unwrap();
+
+        let state = AppState::new(config);
+        state.restore_session();
+
+        assert!(state.take_shell_agent_resume("pane-7").is_none());
     }
 
     #[test]

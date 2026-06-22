@@ -3,6 +3,7 @@ use crate::events::QmuxEvent;
 use crate::scrollback::append_pane_scrollback;
 use crate::state::{
     AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
+    ShellAgentResume,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
@@ -66,7 +67,7 @@ pub fn spawn_shell_pane(
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane_id, cwd, initial_size, false)?,
+        shell_spawn_spec(state, pane_id, cwd, initial_size, false, None)?,
     )
 }
 
@@ -74,17 +75,44 @@ pub fn spawn_shell_pane(
 /// queues keep lining up), reopened in its last-known cwd when that still exists,
 /// at its persisted geometry. Marked recovered so the UI can label it.
 pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo, String> {
-    let cwd = recoverable_dir(&pane.cwd)
+    let recovered_cwd = recoverable_dir(&pane.cwd);
+    let cwd = recovered_cwd
+        .clone()
         .or_else(|| env::current_dir().ok())
         .ok_or_else(|| "no usable working directory for recovered shell".to_string())?;
+    // Resume an agent session that was running in this pane only when it reopened in
+    // its original directory: Claude/Codex sessions are keyed by project dir, so a
+    // resume from a fallback cwd wouldn't find the session. The hint is taken (drained)
+    // either way so it can't linger and fire on a later relaunch of the same pane id.
+    let resume_command = state
+        .take_shell_agent_resume(&pane.id)
+        .filter(|_| recovered_cwd.is_some())
+        .and_then(|resume| shell_resume_command(state, &resume));
     let initial_size = Some(InitialPaneSize {
         cols: pane.cols,
         rows: pane.rows,
     });
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane.id.clone(), cwd, initial_size, true)?,
+        shell_spawn_spec(
+            state,
+            pane.id.clone(),
+            cwd,
+            initial_size,
+            true,
+            resume_command,
+        )?,
     )
+}
+
+/// Resolves the shell command that resumes a captured agent session through its
+/// adapter's injected wrapper (e.g. `claude --resume <id>`). `None` when the adapter
+/// has no resume command.
+fn shell_resume_command(state: &AppState, resume: &ShellAgentResume) -> Option<String> {
+    adapter_registry(state.config())
+        .get(&resume.adapter)
+        .ok()?
+        .shell_resume_command(&resume.session_id)
 }
 
 /// Builds the spawn spec for a shell pane, including adapter wrapper-function
@@ -95,13 +123,19 @@ fn shell_spawn_spec(
     cwd: PathBuf,
     initial_size: Option<InitialPaneSize>,
     recovered: bool,
+    resume_command: Option<String>,
 ) -> Result<PtySpawnSpec, String> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut envs = shell_pane_envs(state, &pane_id)?;
     let mut args = Vec::new();
 
     let shell_commands = adapter_registry(state.config()).shell_commands();
-    match agent_shell_function_injection(&shell, &pane_id, &shell_commands) {
+    match agent_shell_function_injection(
+        &shell,
+        &pane_id,
+        &shell_commands,
+        resume_command.as_deref(),
+    ) {
         Ok(Some(injection)) => {
             args = injection.args;
             envs.extend(injection.envs);
@@ -244,6 +278,7 @@ fn agent_shell_function_injection(
     shell: &str,
     pane_id: &str,
     shell_commands: &[ShellCommandIntegration],
+    resume_command: Option<&str>,
 ) -> Result<Option<ShellFunctionInjection>, String> {
     let shell_kind = shell_kind(shell);
     if matches!(shell_kind, ShellKind::Unsupported) {
@@ -264,7 +299,11 @@ fn agent_shell_function_injection(
                 )
             })?;
             let rcfile = zdotdir.join(".zshrc");
-            fs::write(&rcfile, zsh_init_script(&qmux_cli, shell_commands)).map_err(|err| {
+            fs::write(
+                &rcfile,
+                zsh_init_script(&qmux_cli, shell_commands, resume_command),
+            )
+            .map_err(|err| {
                 format!(
                     "failed to write zsh integration file {}: {err}",
                     rcfile.display()
@@ -281,7 +320,11 @@ fn agent_shell_function_injection(
         }
         ShellKind::Bash => {
             let rcfile = root.join("bashrc");
-            fs::write(&rcfile, bash_init_script(&qmux_cli, shell_commands)).map_err(|err| {
+            fs::write(
+                &rcfile,
+                bash_init_script(&qmux_cli, shell_commands, resume_command),
+            )
+            .map_err(|err| {
                 format!(
                     "failed to write bash integration file {}: {err}",
                     rcfile.display()
@@ -316,10 +359,15 @@ fn shell_kind(shell: &str) -> ShellKind {
     }
 }
 
-fn zsh_init_script(qmux_cli: &Path, shell_commands: &[ShellCommandIntegration]) -> String {
+fn zsh_init_script(
+    qmux_cli: &Path,
+    shell_commands: &[ShellCommandIntegration],
+    resume_command: Option<&str>,
+) -> String {
     let cli = shell_quote(qmux_cli);
     let qmux_function = shell_qmux_function(&cli);
     let agent_functions = shell_agent_functions(&cli, shell_commands);
+    let resume = shell_resume_startup(resume_command);
     format!(
         r#"# Generated by qmux. Do not edit.
 if [ -n "${{QMUX_ORIGINAL_ZDOTDIR:-}}" ]; then
@@ -340,14 +388,19 @@ if [ -n "${{QMUX_PANE_ID:-}}" ]; then
   }}
   autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __qmux_report_cwd
 fi
-"#,
+{resume}"#,
     )
 }
 
-fn bash_init_script(qmux_cli: &Path, shell_commands: &[ShellCommandIntegration]) -> String {
+fn bash_init_script(
+    qmux_cli: &Path,
+    shell_commands: &[ShellCommandIntegration],
+    resume_command: Option<&str>,
+) -> String {
     let cli = shell_quote(qmux_cli);
     let qmux_function = shell_qmux_function(&cli);
     let agent_functions = shell_agent_functions(&cli, shell_commands);
+    let resume = shell_resume_startup(resume_command);
     format!(
         r#"# Generated by qmux. Do not edit.
 if [ -n "${{QMUX_ORIGINAL_BASHRC:-}}" ] && [ -r "$QMUX_ORIGINAL_BASHRC" ]; then
@@ -368,8 +421,19 @@ if [ -n "${{QMUX_PANE_ID:-}}" ]; then
     *) PROMPT_COMMAND="__qmux_report_cwd${{PROMPT_COMMAND:+; $PROMPT_COMMAND}}" ;;
   esac
 fi
-"#,
+{resume}"#,
     )
+}
+
+/// A trailing line that re-runs an agent's resume command in a recovered shell. It
+/// goes through the injected `claude`/`codex` wrapper defined above, so the resumed
+/// session is tracked exactly like a fresh in-shell launch and the shell drops back to
+/// a normal prompt once it exits. Empty when there is nothing to resume.
+fn shell_resume_startup(resume_command: Option<&str>) -> String {
+    match resume_command {
+        Some(command) => format!("{command}\n"),
+        None => String::new(),
+    }
 }
 
 fn shell_agent_functions(cli: &str, shell_commands: &[ShellCommandIntegration]) -> String {
@@ -907,8 +971,8 @@ mod tests {
             },
         ];
 
-        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands);
-        let bash_script = bash_init_script(&qmux_cli, &shell_commands);
+        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, None);
+        let bash_script = bash_init_script(&qmux_cli, &shell_commands, None);
 
         for script in [zsh_script, bash_script] {
             assert!(script.contains("codex() {"));
@@ -930,6 +994,28 @@ mod tests {
             // Shell integration reports cwd changes so restarts reopen the last dir.
             assert!(script.contains("'/Applications/qmux app/qmux' cwd"));
             assert!(script.contains("__qmux_report_cwd"));
+            // No resume requested: the script must not auto-run an agent on startup.
+            assert!(!script.contains("--resume"));
+        }
+    }
+
+    #[test]
+    fn init_scripts_append_resume_command_when_requested() {
+        let qmux_cli = PathBuf::from("/Applications/qmux app/qmux");
+        let shell_commands = [ShellCommandIntegration {
+            command_name: "claude",
+            adapter_id: "claude",
+        }];
+        let resume = "claude --resume 'sess-1'";
+
+        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, Some(resume));
+        let bash_script = bash_init_script(&qmux_cli, &shell_commands, Some(resume));
+
+        for script in [zsh_script, bash_script] {
+            // The resume runs through the wrapper defined earlier in the script, and as
+            // the final line so the shell is fully initialized before the agent starts.
+            assert!(script.contains("claude() {"));
+            assert!(script.trim_end().ends_with(resume));
         }
     }
 

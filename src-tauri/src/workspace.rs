@@ -701,7 +701,10 @@ mod tests {
         assert_eq!(detached.id, "agent-shell");
         assert_eq!(detached.pane_id, None);
         assert!(matches!(detached.status, AgentStatus::Idle));
-        let stored = state.agent("agent-shell").unwrap().expect("agent still exists");
+        let stored = state
+            .agent("agent-shell")
+            .unwrap()
+            .expect("agent still exists");
         assert_eq!(stored.pane_id, None);
         assert!(matches!(stored.status, AgentStatus::Idle));
     }
@@ -712,7 +715,11 @@ mod tests {
         // queue as an orphaned queue on the pane rather than discarding it.
         let state = test_state();
         state
-            .insert_agent(sample_agent("agent-shell", Some("pane-1"), AgentStatus::Running))
+            .insert_agent(sample_agent(
+                "agent-shell",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
             .unwrap();
         state
             .enqueue_agent_turn("agent-shell", "queued turn".to_string())

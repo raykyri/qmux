@@ -1,7 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
-    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path, shell_quote_path,
+    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path, reusable_session_agent,
+    shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -120,6 +121,10 @@ impl AgentAdapter for ClaudeAdapter {
             command_name: "claude",
             adapter_id: self.id(),
         }]
+    }
+
+    fn shell_resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("claude --resume {}", shell_quote_arg(session_id)))
     }
 
     fn ingest_notification(
@@ -494,18 +499,30 @@ impl ClaudeAdapter {
             ));
         }
 
-        let agent = prepare_agent_workspace(
+        // A restart-driven resume (`claude --resume <id>`) rebinds the original agent
+        // for that session instead of minting a duplicate; any other invocation starts
+        // a fresh agent in the current directory.
+        let cwd_str = cwd.display().to_string();
+        let agent = match reusable_session_agent(
             state,
-            PrepareAgentWorkspaceRequest {
-                group_id: None,
-                base_repo: Some(cwd.display().to_string()),
-                base_ref: Some("HEAD".to_string()),
-                adapter: self.id().to_string(),
-                model: None,
-                // Typing `claude` in a shell runs in the current directory; no worktree.
-                use_worktree: false,
-            },
-        )?;
+            self.id(),
+            claude_resume_session_id(&request.args),
+            &cwd_str,
+        )? {
+            Some(existing) => existing,
+            None => prepare_agent_workspace(
+                state,
+                PrepareAgentWorkspaceRequest {
+                    group_id: None,
+                    base_repo: Some(cwd_str.clone()),
+                    base_ref: Some("HEAD".to_string()),
+                    adapter: self.id().to_string(),
+                    model: None,
+                    // Typing `claude` in a shell runs in the current directory; no worktree.
+                    use_worktree: false,
+                },
+            )?,
+        };
         let settings_path = match write_hook_settings(&agent) {
             Ok(settings_path) => settings_path,
             Err(err) => {
@@ -787,6 +804,22 @@ fn args_contain_prompt(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// Extracts the session id from a `--resume <id>` / `-r <id>` / `--resume=<id>` shell
+/// argument list, so a resume launch can rebind the original agent. `None` when the
+/// invocation isn't resuming a specific session.
+fn claude_resume_session_id(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(id) = arg.strip_prefix("--resume=") {
+            return Some(id);
+        }
+        if arg == "--resume" || arg == "-r" {
+            return iter.next().map(String::as_str);
+        }
+    }
+    None
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1295,6 +1328,30 @@ mod tests {
         ])));
         assert!(args_contain_prompt(&svec(&["--continue", "keep going"])));
         assert!(args_contain_prompt(&svec(&["--", "after separator"])));
+    }
+
+    #[test]
+    fn claude_resume_session_id_reads_the_resumed_session() {
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--resume", "sess-1"])),
+            Some("sess-1")
+        );
+        assert_eq!(
+            claude_resume_session_id(&svec(&["-r", "sess-2"])),
+            Some("sess-2")
+        );
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--resume=sess-3"])),
+            Some("sess-3")
+        );
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--model", "sonnet", "--resume", "sess-4"])),
+            Some("sess-4")
+        );
+        // Not a resume invocation, or no id supplied.
+        assert_eq!(claude_resume_session_id(&svec(&[])), None);
+        assert_eq!(claude_resume_session_id(&svec(&["--continue"])), None);
+        assert_eq!(claude_resume_session_id(&svec(&["--resume"])), None);
     }
 
     #[derive(Debug)]
