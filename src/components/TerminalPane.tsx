@@ -209,6 +209,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const pendingDataRef = useRef<Array<string | Uint8Array>>([]);
   const scrollbackBytesPromiseRef = useRef<Promise<Uint8Array | null> | null>(null);
   const scrollbackReplayedRef = useRef(false);
+  const restoreScrollToBottomPendingRef = useRef(false);
+  const restoreScrollToBottomFrameRef = useRef<number | null>(null);
+  const restoreScrollToBottomTimersRef = useRef<Set<number>>(new Set());
+  const restoreScrollToBottomDoneTimerRef = useRef<number | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
@@ -248,16 +252,83 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     }
   }, []);
 
+  const clearRestoreScrollToBottomTimers = useCallback(() => {
+    if (restoreScrollToBottomFrameRef.current !== null) {
+      window.cancelAnimationFrame(restoreScrollToBottomFrameRef.current);
+      restoreScrollToBottomFrameRef.current = null;
+    }
+    for (const timer of restoreScrollToBottomTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    restoreScrollToBottomTimersRef.current.clear();
+    if (restoreScrollToBottomDoneTimerRef.current !== null) {
+      window.clearTimeout(restoreScrollToBottomDoneTimerRef.current);
+      restoreScrollToBottomDoneTimerRef.current = null;
+    }
+  }, []);
+
+  const scrollRestoredTerminalToBottom = useCallback(() => {
+    terminalRef.current?.scrollToBottom();
+  }, []);
+
+  const scheduleRestoreScrollToBottom = useCallback(() => {
+    if (!restoreScrollToBottomPendingRef.current) {
+      return;
+    }
+    scrollRestoredTerminalToBottom();
+    if (restoreScrollToBottomFrameRef.current === null) {
+      restoreScrollToBottomFrameRef.current = window.requestAnimationFrame(() => {
+        restoreScrollToBottomFrameRef.current = null;
+        scrollRestoredTerminalToBottom();
+      });
+    }
+    for (const timer of restoreScrollToBottomTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    restoreScrollToBottomTimersRef.current.clear();
+    for (const delay of [80, 250]) {
+      const timer = window.setTimeout(() => {
+        restoreScrollToBottomTimersRef.current.delete(timer);
+        scrollRestoredTerminalToBottom();
+      }, delay);
+      restoreScrollToBottomTimersRef.current.add(timer);
+    }
+  }, [scrollRestoredTerminalToBottom]);
+
+  const finishRestoreScrollToBottom = useCallback(() => {
+    scrollRestoredTerminalToBottom();
+    restoreScrollToBottomPendingRef.current = false;
+    clearRestoreScrollToBottomTimers();
+  }, [clearRestoreScrollToBottomTimers, scrollRestoredTerminalToBottom]);
+
+  const startRestoreScrollToBottom = useCallback(() => {
+    if (!restoreScrollToBottomPendingRef.current) {
+      return;
+    }
+    scheduleRestoreScrollToBottom();
+    if (restoreScrollToBottomDoneTimerRef.current !== null) {
+      window.clearTimeout(restoreScrollToBottomDoneTimerRef.current);
+    }
+    restoreScrollToBottomDoneTimerRef.current = window.setTimeout(() => {
+      restoreScrollToBottomDoneTimerRef.current = null;
+      finishRestoreScrollToBottom();
+    }, 750);
+  }, [finishRestoreScrollToBottom, scheduleRestoreScrollToBottom]);
+
   const writeTerminalData = useCallback((data: string | Uint8Array) => {
     const terminal = terminalRef.current;
     if (terminal && terminalReadyRef.current) {
-      terminal.write(data);
+      if (restoreScrollToBottomPendingRef.current) {
+        terminal.write(data, scheduleRestoreScrollToBottom);
+      } else {
+        terminal.write(data);
+      }
     } else {
       // Output can arrive before the bundled font loads and xterm opens; buffer
       // it and flush once the terminal is ready (see the setup effect).
       pendingDataRef.current.push(data);
     }
-  }, []);
+  }, [scheduleRestoreScrollToBottom]);
 
   useImperativeHandle(
     ref,
@@ -330,6 +401,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [searchOpen]);
 
   useEffect(() => {
+    clearRestoreScrollToBottomTimers();
+    restoreScrollToBottomPendingRef.current = Boolean(pane.recovered);
+
     const mount = mountRef.current;
     const host = hostRef.current;
     if (!mount || !host || terminalRef.current) {
@@ -446,7 +520,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       const pending = pendingDataRef.current;
       pendingDataRef.current = [];
       for (const chunk of pending) {
-        terminal.write(chunk);
+        if (restoreScrollToBottomPendingRef.current) {
+          terminal.write(chunk, scheduleRestoreScrollToBottom);
+        } else {
+          terminal.write(chunk);
+        }
       }
 
       let resizeFrame: number | null = null;
@@ -709,6 +787,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         searchRef.current = null;
         stabilizeTerminalRef.current = null;
         scrollbackReplayedRef.current = false;
+        restoreScrollToBottomPendingRef.current = false;
+        clearRestoreScrollToBottomTimers();
       };
     }
 
@@ -718,8 +798,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       teardown = null;
       terminalReadyWaitersRef.current = [];
       pendingDataRef.current = [];
+      restoreScrollToBottomPendingRef.current = false;
+      clearRestoreScrollToBottomTimers();
     };
-  }, [pane.id, resolveTerminalReady]);
+  }, [pane.id, pane.recovered, resolveTerminalReady, clearRestoreScrollToBottomTimers, scheduleRestoreScrollToBottom]);
 
   // Replay durable scrollback before releasing the backend's pre-attach backlog.
   // A recovered pane starts a fresh PTY immediately, but its output stays buffered
@@ -745,13 +827,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         }
         if (!cancelled) {
           requestAttach(pane.id);
+          startRestoreScrollToBottom();
         }
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [pane.id, requestAttach, waitForTerminalReady, writeTerminalData]);
+  }, [pane.id, requestAttach, startRestoreScrollToBottom, waitForTerminalReady, writeTerminalData]);
 
   useEffect(() => {
     if (!active) {
