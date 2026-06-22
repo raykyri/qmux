@@ -374,6 +374,14 @@ export default function App() {
     () => new Set(),
   );
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  // Agents we believe are actively working *right now*, used to show the
+  // "Thinking…" indicator at the bottom of the transcript. This is driven by live
+  // status transitions (see useQmuxEvents), not the raw status field: an agent
+  // restored into a working status — or loaded that way from the boot snapshot —
+  // must not light up, since it isn't genuinely doing work. Membership is added
+  // only on a live event that moves the agent into a working status (and on the
+  // user's own send), and cleared on any non-working event.
+  const [thinkingAgentIds, setThinkingAgentIds] = useState<Set<string>>(() => new Set());
   const [turns, setTurns] = useState<Turn[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
@@ -457,6 +465,9 @@ export default function App() {
   // Per-pane browser overlay state, so each tab keeps its own page and open/closed.
   const [browserOverlayByPane, setBrowserOverlayByPane] = useState<
     Record<string, BrowserOverlayState>
+  >({});
+  const [transcriptExpandedByPane, setTranscriptExpandedByPane] = useState<
+    Record<string, boolean>
   >({});
   const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
   const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
@@ -626,6 +637,12 @@ export default function App() {
       );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
+    setTranscriptExpandedByPane((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([paneId]) => ids.has(paneId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
     for (const [agentId, pending] of pendingFirstTitleByAgentRef.current) {
       if (!ids.has(pending.paneId)) {
         pendingFirstTitleByAgentRef.current.delete(agentId);
@@ -646,6 +663,10 @@ export default function App() {
     setTranscriptNoticeByAgent(pruneRecord);
     setTranscriptOptionsByAgent(pruneRecord);
     setCollapsedQueuedTurnsByAgent(pruneRecord);
+    setThinkingAgentIds((current) => {
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
     for (const id of Object.keys(queuedTurnsByAgentRef.current)) {
       if (!ids.has(id)) delete queuedTurnsByAgentRef.current[id];
     }
@@ -858,6 +879,23 @@ export default function App() {
     setQueueSplitByAgent((current) => ({ ...current, [agentId]: !(current[agentId] ?? false) }));
   }
 
+  function toggleActiveTranscriptExpanded() {
+    const paneId = activePane?.id;
+    if (!paneId || !hasTurnSidebar) {
+      return;
+    }
+
+    setTranscriptExpandedByPane((current) => {
+      const next = { ...current };
+      if (next[paneId]) {
+        delete next[paneId];
+      } else {
+        next[paneId] = true;
+      }
+      return next;
+    });
+  }
+
   function setActiveQueueSplitHeight(height: number) {
     const agentId = activeAgent?.id;
     if (!agentId) {
@@ -992,6 +1030,9 @@ export default function App() {
     [activePane?.id, agents, queuedTurnsByAgent],
   );
   const hasTurnSidebar = Boolean(activeAgent) || activeOrphanedQueues.length > 0;
+  const activeTranscriptExpanded = Boolean(
+    activePane && hasTurnSidebar && transcriptExpandedByPane[activePane.id],
+  );
 
   useEffect(() => {
     agentsRef.current = agents;
@@ -1284,9 +1325,9 @@ export default function App() {
   }
 
   // Grow the right pane's text by 0.25px for every 1px the terminal font is above
-  // its base size, capped at +1.5px, so the transcript/composer track the terminal
+  // its base size, capped at +1px, so the transcript/composer track the terminal
   // zoom without overpowering it. No change at or below the base size.
-  const turnFontDelta = Math.min(1.5, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
+  const turnFontDelta = Math.min(1, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
@@ -1531,6 +1572,7 @@ export default function App() {
     setPaneContextMenu,
     setExitDialog,
     setAgents,
+    setThinkingAgentIds,
     setTurns,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
@@ -3026,7 +3068,9 @@ export default function App() {
   return (
     <main
       ref={appRef}
-      className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}`}
+      className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}${
+        activeTranscriptExpanded ? " has-expanded-transcript" : ""
+      }`}
       style={appStyle}
     >
       <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
@@ -3655,10 +3699,7 @@ export default function App() {
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
             <div className="terminal-empty-state">
-              <div className="home-launcher">
-                <h1 className="home-title">qmux</h1>
-                {renderLauncher("inline")}
-              </div>
+              <div className="home-launcher">{renderLauncher("inline")}</div>
             </div>
           ) : null}
           {panes.map((pane) => (
@@ -3683,21 +3724,24 @@ export default function App() {
       </section>
 
       {hasTurnSidebar ? (
-        <aside className="turn-pane">
-          <div
-            className="turn-pane-resizer"
-            role="separator"
-            aria-label="Resize command queue"
-            aria-orientation="vertical"
-            aria-valuemin={TURN_PANE_MIN_WIDTH}
-            aria-valuemax={maxTurnPaneWidth()}
-            aria-valuenow={turnPaneWidth}
-            tabIndex={0}
-            onPointerDown={startTurnPaneResize}
-            onKeyDown={resizeTurnPaneWithKeyboard}
-          />
+        <aside className={`turn-pane${activeTranscriptExpanded ? " is-expanded" : ""}`}>
+          {activeTranscriptExpanded ? null : (
+            <div
+              className="turn-pane-resizer"
+              role="separator"
+              aria-label="Resize command queue"
+              aria-orientation="vertical"
+              aria-valuemin={TURN_PANE_MIN_WIDTH}
+              aria-valuemax={maxTurnPaneWidth()}
+              aria-valuenow={turnPaneWidth}
+              tabIndex={0}
+              onPointerDown={startTurnPaneResize}
+              onKeyDown={resizeTurnPaneWithKeyboard}
+            />
+          )}
           <TurnOverlay
             turns={activeAgent ? activeTurns : []}
+            thinking={Boolean(activeAgent && thinkingAgentIds.has(activeAgent.id))}
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
@@ -3713,6 +3757,7 @@ export default function App() {
             onQueueSplitHeightChange={setActiveQueueSplitHeight}
             linkActions={linkActions}
             onAskSelection={showSelectionAsk}
+            onDismissSelection={() => setSelectionAsk(null)}
             header={
               <TurnPaneHeader
                 sessionId={activeAgent?.sessionId ?? null}
@@ -3732,6 +3777,8 @@ export default function App() {
                 onToggleQueueSplit={toggleActiveQueueSplit}
                 browserOpen={activeBrowserOverlay?.open ?? false}
                 onToggleBrowser={toggleActiveBrowserOverlay}
+                transcriptExpanded={activeTranscriptExpanded}
+                onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
               />
             }
             input={
@@ -3773,7 +3820,25 @@ export default function App() {
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
-                    onTurnSubmitted={applyPendingFirstMessageTitle}
+                    onTurnSubmitted={(agentId, text) => {
+                      // Show "Thinking…" the instant a send starts a run, before the
+                      // backend's status event round-trips. Gate on the agent being
+                      // ready to receive (a plain send): queued turns don't start work,
+                      // and an already-running agent is marked by its live status
+                      // events instead. The next status event reconciles either way.
+                      const policy = getAgentUiAdapter(activeAgent.adapter).composerPolicy(
+                        activeAgent,
+                      );
+                      if (
+                        activeAgent.id === agentId &&
+                        policy.readyStatuses.includes(activeAgent.status)
+                      ) {
+                        setThinkingAgentIds((prev) =>
+                          prev.has(agentId) ? prev : new Set(prev).add(agentId),
+                        );
+                      }
+                      applyPendingFirstMessageTitle(agentId, text);
+                    }}
                     onUserInput={noteUserInput}
                     getQueueScroll={getQueueScroll}
                     saveQueueScroll={saveQueueScroll}
@@ -3829,6 +3894,9 @@ export default function App() {
         <SelectionAskPopup
           anchor={selectionAsk.anchor}
           canAskNewThread={selectionAsk.canFork}
+          // The transcript is a re-selection surface: a mousedown there keeps the popup
+          // mounted so it glides to the next selection instead of flashing.
+          reselectWithin=".turn-timeline"
           onAsk={() => openAskLauncher("ask")}
           onAskNewThread={() => openAskLauncher("newThread")}
           onClose={() => setSelectionAsk(null)}

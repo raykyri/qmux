@@ -1357,12 +1357,26 @@ button:disabled {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
+/* Present only for a position update that should animate: a re-selection whose box
+   overlaps the previous one. The popup slides to a nearby selection but snaps to a
+   far one (and on first placement), so it never flies across the pane. */
+.selection-ask-popup.is-gliding {
+  transition: left 120ms ease, top 120ms ease;
+}
+
+.selection-ask-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 0;
+  background: var(--control-border);
+}
+
 .selection-ask-button {
   appearance: none;
   border: none;
   border-radius: 6px;
   background: transparent;
-  padding: 5px 10px;
+  padding: 3px 10px 4px;
   color: #e7e7e2;
   font-size: calc(var(--fs-sm) + 2px);
   white-space: nowrap;
@@ -1543,22 +1557,10 @@ button:disabled {
   justify-content: center;
 }
 
-/* Stack the app title above the inline launcher, both centered. */
 .home-launcher {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 18px;
   width: min(680px, 100%);
-}
-
-.home-title {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 32px;
-  font-weight: 600;
-  text-align: center;
-  color: #e7e7e2;
 }
 
 /* The inline launcher is interactive even though its placeholder wrapper isn't. */
@@ -1718,6 +1720,17 @@ button:disabled {
   --fs-xs: calc(11.5px + var(--turn-font-delta, 0px));
   --fs-sm: calc(12.5px + var(--turn-font-delta, 0px));
   --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
+}
+
+.turn-pane.is-expanded {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--sidebar-width, 268px);
+  z-index: 7;
+  width: auto;
+  box-shadow: inset 1px 0 0 #2a2d2f;
 }
 
 /* The pane's left edge is drawn solely by the resizer's ::before line so there's
@@ -1925,7 +1938,7 @@ button:disabled {
   gap: 6px;
 }
 
-/* Shared by the fork button and the browser toggle so they match in size/style. */
+/* Shared by the fork, queue split, browser, and transcript buttons. */
 .turn-pane-header-button {
   display: inline-flex;
   align-items: center;
@@ -2068,6 +2081,32 @@ button:disabled {
   line-height: 1.4;
 }
 
+/* "Thinking…" indicator pinned to the bottom of the transcript while the agent is
+   actively working. Left-aligned like an assistant row, with a pulsing amber dot
+   matching the working-status dot in the tab list (.pane-tab-dot.status-active). */
+.turn-thinking {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 2px;
+  user-select: none;
+}
+
+.turn-thinking-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d7a84f;
+  animation: status-dot-pulse 1.3s ease-in-out infinite;
+}
+
+.turn-thinking-label {
+  color: #aab1ad;
+  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-style: italic;
+}
+
 /* "No transcript loaded" picker: a quiet link (matching .turn-empty-notice's
    color and size) with a chevron, opening a portaled dropdown of past sessions. */
 .turn-empty-picker {
@@ -2148,6 +2187,14 @@ button:disabled {
   background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
 }
 
+.turn-sidebar-input-rail {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .turn-sidebar-input.is-split {
   overflow: hidden;
   background: #171b1d;
@@ -2155,6 +2202,19 @@ button:disabled {
      floating composer's top padding that otherwise leaves a gap below the
      splitter. */
   padding-top: 0;
+}
+
+.turn-pane.is-expanded .turn-timeline {
+  grid-template-columns: minmax(0, min(700px, 100%));
+  justify-content: center;
+  padding-right: 24px;
+  padding-left: 24px;
+}
+
+.turn-pane.is-expanded .turn-sidebar-input-rail {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
 }
 
 .turn-card {
@@ -2218,6 +2278,57 @@ header + .turn-blocks {
 
 .turn-text.is-tagged-instruction {
   color: #8f9994;
+}
+
+.long-user-message {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.long-user-message-toggle {
+  display: grid;
+  grid-template-columns: 13px minmax(0, auto) auto;
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+  color: #d9ddd9;
+  font: inherit;
+  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  cursor: pointer;
+}
+
+.long-user-message-toggle:hover {
+  background: #252b2d;
+}
+
+.long-user-message-toggle[aria-expanded="true"] .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.long-user-message-size {
+  min-width: 0;
+  overflow: hidden;
+  color: #8f9994;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.long-user-message-preview {
+  min-width: 0;
+  max-height: 96px;
+  margin: 0;
+  color: #bfc7c2;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .turn-markdown > :first-child {
@@ -3115,6 +3226,12 @@ header + .turn-blocks {
   background: rgba(14, 16, 17, 0.95);
 }
 
+.app-shell.has-expanded-transcript .browser-overlay {
+  right: 20px;
+  width: calc(100% - var(--browser-overlay-left, 64px) - 20px);
+  max-width: calc(100% - var(--browser-overlay-left, 64px) - 20px);
+}
+
 /* Navigation bar across the top; refresh + close controls sit on the right. */
 .browser-overlay-nav {
   flex: 0 0 auto;
@@ -3180,6 +3297,13 @@ header + .turn-blocks {
   border: 0;
   /* Most pages assume a white canvas; avoid a flash of the dark app behind them. */
   background: #ffffff;
+}
+
+.browser-overlay-frame.is-file-content {
+  /* Bare text/plain files have no authored CSS. In a dark Tauri/WebKit appearance,
+     the UA plaintext renderer can choose light text; keep file previews matched to
+     the white iframe canvas without touching localhost dev-server pages. */
+  color-scheme: light;
 }
 
 .browser-overlay-empty {

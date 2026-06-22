@@ -65,10 +65,18 @@ interface TurnOverlayProps {
   // How rendered-markdown links behave (left-click opens internally; right-click
   // opens a chooser).
   linkActions: LinkActions;
-  // Called on mouse-up when the user selects non-whitespace text within an
-  // assistant message, with the text and its viewport bounding box, so the app can
-  // offer to ask the agent about it.
+  // Called on mouse-up when the user selects non-whitespace text within the
+  // transcript, with the text and its viewport bounding box, so the app can offer to
+  // ask the agent about it.
   onAskSelection?: (quote: string, anchor: SelectionAnchor) => void;
+  // Called on a mouse-up that leaves no usable transcript selection, so the app can
+  // dismiss an open Ask popup (the popup stays mounted across re-selections, so a
+  // click that just clears the selection has to be reported here to close it).
+  onDismissSelection?: () => void;
+  // When true, the agent is actively working, so a "Thinking…" indicator is pinned
+  // to the bottom of the transcript. Driven by live status transitions upstream, so
+  // an agent merely restored into a working status does not light it up.
+  thinking?: boolean;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -82,13 +90,32 @@ const MIN_QUEUE_SPLIT_HEIGHT = 120;
 const MIN_QUEUE_AREA_HEIGHT = 56;
 const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
+const LONG_USER_MESSAGE_COLLAPSE_THRESHOLD = 12_000;
+const LONG_USER_MESSAGE_PREVIEW_CHARS = 1_200;
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
+  "functions.exec_command": "cmd",
   Bash: "command",
   WebFetch: "url",
   // Claude's file tools: show the path being read/edited as the argument.
   Read: "file_path",
   Edit: "file_path",
+  MultiEdit: "file_path",
+  Write: "file_path",
+} as const;
+
+const TOOL_ACTION_NAMES = {
+  readFile: new Set(["read", "read_file", "glob", "grep", "ls"]),
+  editFile: new Set([
+    "edit",
+    "multi_edit",
+    "multiedit",
+    "notebook_edit",
+    "notebookedit",
+    "write",
+    "apply_patch",
+  ]),
+  runCommand: new Set(["bash", "exec_command", "shell", "run_command"]),
 } as const;
 
 interface QueueSplitDrag {
@@ -121,6 +148,8 @@ interface ToolEntry {
   result?: unknown;
   isError: boolean;
 }
+
+type ToolActionKind = keyof typeof TOOL_ACTION_NAMES;
 
 interface ThinkingItem {
   type: "thinking";
@@ -216,42 +245,59 @@ export default function TurnOverlay({
   onQueueSplitHeightChange,
   linkActions,
   onAskSelection,
+  onDismissSelection,
+  thinking = false,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
-  // On mouse-up, offer an "ask about this" action for a non-whitespace selection
-  // that lies entirely within an assistant or system message (not a user turn, not
-  // spanning the gap between cards).
+  // On mouse-up, offer an "ask about this" action for any non-whitespace selection
+  // within the transcript — any message (user, assistant, or system), tool output, or
+  // thinking. Only the composer/input below the transcript is excluded.
   const handleSelectionMouseUp = () => {
     if (!onAskSelection) {
       return;
     }
+    const timeline = timelineRef.current;
+    if (!timeline) {
+      return;
+    }
     const selection = document.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    const text = selection ? selection.toString() : "";
+    // Require the selection to *start* inside the transcript, so a drag that begins in a
+    // message but is released over the composer still registers, while a selection made
+    // inside the composer itself is ignored. The start (not the mouse-up target) is what
+    // matters, since the highlighted text stays in the transcript even when the release
+    // lands below it.
+    const range =
+      selection && !selection.isCollapsed && selection.rangeCount > 0 && text.trim()
+        ? selection.getRangeAt(0)
+        : null;
+    if (!range || !timeline.contains(range.startContainer)) {
+      // No usable transcript selection (e.g. a click that collapsed the previous one).
+      // The popup stays mounted across re-selections, so dismiss it explicitly rather
+      // than leaving it stranded over text that is no longer highlighted.
+      onDismissSelection?.();
       return;
     }
-    const text = selection.toString();
-    if (!text.trim()) {
-      return;
-    }
-    const askableCard = (node: Node | null) => {
-      const el = node instanceof Element ? node : node?.parentElement ?? null;
-      return el?.closest(".turn-card.role-assistant, .turn-card.role-system") ?? null;
-    };
-    // Require both endpoints in the *same* askable card, so a selection that spans
-    // a user turn or the gap between cards (or two different messages) is ignored.
-    const anchorCard = askableCard(selection.anchorNode);
-    if (!anchorCard || anchorCard !== askableCard(selection.focusNode)) {
-      return;
-    }
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    // Anchor over the highlighted text. A triple-click selects a whole block and leaves
+    // a zero-width caret rect at the start of the following block, which would stretch
+    // the box past the selection, so union only the rects that actually cover something.
+    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
+    const box = rects.length
+      ? {
+          left: Math.min(...rects.map((r) => r.left)),
+          right: Math.max(...rects.map((r) => r.right)),
+          top: Math.min(...rects.map((r) => r.top)),
+          bottom: Math.max(...rects.map((r) => r.bottom)),
+        }
+      : range.getBoundingClientRect();
     onAskSelection(text, {
-      left: rect.left,
-      right: rect.right,
-      top: rect.top,
-      bottom: rect.bottom,
+      left: box.left,
+      right: box.right,
+      top: box.top,
+      bottom: box.bottom,
     });
   };
   const queueSplitDragRef = useRef<QueueSplitDrag | null>(null);
@@ -363,7 +409,7 @@ export default function TurnOverlay({
     if (stickToBottomRef.current) {
       scrollToBottom();
     }
-  }, [turns, composerHeight, effectiveQueueSplitHeight, queueSplit]);
+  }, [turns, composerHeight, effectiveQueueSplitHeight, queueSplit, thinking]);
 
   // The composer normally floats over the transcript, so reserve scroll room
   // beneath the last message equal to the live input height. In split mode, also
@@ -465,7 +511,7 @@ export default function TurnOverlay({
         style={timelineStyle}
         onScroll={handleTimelineScroll}
       >
-        {timelineItems.length === 0 ? (
+        {timelineItems.length === 0 && !thinking ? (
           <div className="empty-state turn-empty-state">
             <span>No activity yet</span>
             {notice === "Transcript unavailable" && onSelectTranscript ? (
@@ -501,6 +547,12 @@ export default function TurnOverlay({
             );
           })
         )}
+        {thinking ? (
+          <div className="turn-thinking" aria-live="polite">
+            <span className="turn-thinking-dot" aria-hidden="true" />
+            <span className="turn-thinking-label">Thinking…</span>
+          </div>
+        ) : null}
       </div>
       {input ? (
         <div
@@ -508,7 +560,7 @@ export default function TurnOverlay({
           ref={inputWrapRef}
           style={inputStyle}
         >
-          {input}
+          <div className="turn-sidebar-input-rail">{input}</div>
         </div>
       ) : null}
     </section>
@@ -677,6 +729,23 @@ function countUniqueToolCalls(items: ActivityLeafItem[]) {
   return counted.size;
 }
 
+function uniqueToolEntries(items: ActivityLeafItem[]) {
+  const seen = new Set<string>();
+  const entries: ToolEntry[] = [];
+  for (const item of items) {
+    if (item.type !== "tool") {
+      continue;
+    }
+    const key = item.id ? `id:${item.id}` : `entry:${item.key}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    entries.push(item);
+  }
+  return entries;
+}
+
 // Memoized on the item: buildTimelineItems is itself memoized on `turns`, so item
 // references are stable while turns are unchanged. That lets a re-render driven by
 // something else (e.g. each composer keystroke, which lives in a parent) skip
@@ -784,15 +853,92 @@ function ActivityGroupView({
 }
 
 function activityGroupLabel(group: ActivityGroupItem) {
-  if (group.toolCallCount === 0) {
+  const entries = uniqueToolEntries(group.children);
+  if (entries.length === 0) {
     return "Thinking...";
   }
-  return `Used ${group.toolCallCount} tool${group.toolCallCount === 1 ? "" : "s"}`;
+  return toolActionGroupLabel(entries) ?? usedToolsLabel(group.toolCallCount);
+}
+
+function toolActionGroupLabel(entries: ToolEntry[]) {
+  const counts: Record<ToolActionKind, number> = {
+    readFile: 0,
+    editFile: 0,
+    runCommand: 0,
+  };
+  let unknownCount = 0;
+
+  for (const entry of entries) {
+    const kind = classifyToolAction(entry);
+    if (kind) {
+      counts[kind] += 1;
+    } else {
+      unknownCount += 1;
+    }
+  }
+
+  const recognizedCount = counts.readFile + counts.editFile + counts.runCommand;
+  if (recognizedCount === 0) {
+    return null;
+  }
+
+  const parts = [
+    fileActionLabel("read", counts.readFile),
+    fileActionLabel("edited", counts.editFile),
+    commandActionLabel(counts.runCommand),
+    unknownCount > 0 ? `used ${unknownCount} other tool${unknownCount === 1 ? "" : "s"}` : null,
+  ].filter((part): part is string => Boolean(part));
+  return capitalizeSentence(parts.join(", "));
+}
+
+function classifyToolAction(entry: ToolEntry): ToolActionKind | null {
+  const name = normalizedToolName(entry.name);
+  for (const [kind, names] of Object.entries(TOOL_ACTION_NAMES) as [
+    ToolActionKind,
+    ReadonlySet<string>,
+  ][]) {
+    if (names.has(name)) {
+      return kind;
+    }
+  }
+  return null;
+}
+
+function normalizedToolName(name: string) {
+  const raw = name.trim();
+  const dotted = raw.includes(".") ? (raw.split(".").pop() ?? raw) : raw;
+  const namespaced = dotted.includes("__") ? (dotted.split("__").pop() ?? dotted) : dotted;
+  return namespaced.replace(/[\s-]+/g, "_").toLowerCase();
+}
+
+function fileActionLabel(verb: "read" | "edited", count: number) {
+  if (count === 0) {
+    return null;
+  }
+  return count === 1 ? `${verb} a file` : `${verb} files`;
+}
+
+function commandActionLabel(count: number) {
+  if (count === 0) {
+    return null;
+  }
+  return count === 1 ? "ran a command" : `ran ${count} commands`;
+}
+
+function usedToolsLabel(count: number) {
+  return `Used ${count} tool${count === 1 ? "" : "s"}`;
+}
+
+function capitalizeSentence(label: string) {
+  return label.length > 0 ? `${label[0].toUpperCase()}${label.slice(1)}` : label;
 }
 
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
   if (block.type === "text") {
     if (role !== "assistant") {
+      if (role === "user" && block.text.length > LONG_USER_MESSAGE_COLLAPSE_THRESHOLD) {
+        return <CollapsedUserText text={block.text} />;
+      }
       const muted = role === "user" && isTaggedUserInstruction(block.text);
       return <p className={`turn-text${muted ? " is-tagged-instruction" : ""}`}>{block.text}</p>;
     }
@@ -816,6 +962,47 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
   );
 }
 
+function CollapsedUserText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = useMemo(() => collapsedUserTextPreview(text), [text]);
+  const sizeLabel = formatCharacterSize(text.length);
+
+  return (
+    <div className="long-user-message">
+      <button
+        type="button"
+        className="long-user-message-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <DisclosureChevron />
+        <span>{expanded ? "Collapse long message" : "Expand long message"}</span>
+        <span className="long-user-message-size">{sizeLabel}</span>
+      </button>
+      {expanded ? (
+        <p className="turn-text">{text}</p>
+      ) : (
+        <p className="long-user-message-preview">{preview}</p>
+      )}
+    </div>
+  );
+}
+
+function collapsedUserTextPreview(text: string) {
+  const trimmedPreview = text.slice(0, LONG_USER_MESSAGE_PREVIEW_CHARS).trimEnd();
+  return `${trimmedPreview}\n...`;
+}
+
+function formatCharacterSize(characters: number) {
+  if (characters < 1_000) {
+    return `${characters} chars`;
+  }
+  if (characters < 100_000) {
+    return `${(characters / 1_000).toFixed(1)}k chars`;
+  }
+  return `${Math.round(characters / 1_000)}k chars`;
+}
+
 function ToolEntryView({
   entry,
   showChevron,
@@ -837,7 +1024,7 @@ function ToolEntryView({
             <span>{toolNameLabel}</span>
             {summaryArgument ? <span className="tool-summary-arg"> {summaryArgument}</span> : null}
           </span>
-          <ToolEntryStatus entry={entry} />
+          <ToolEntryStatus entry={entry} showCharCount={showChevron} />
         </span>
       </summary>
       {entry.input !== undefined ? <ToolPayload label="Input" value={entry.input} /> : null}
@@ -910,9 +1097,18 @@ function DisclosureChevron() {
   return <ChevronRight className="disclosure-chevron" size={12} aria-hidden="true" />;
 }
 
-function ToolEntryStatus({ entry }: { entry: ToolEntry }) {
+function ToolEntryStatus({
+  entry,
+  showCharCount,
+}: {
+  entry: ToolEntry;
+  showCharCount: boolean;
+}) {
   if (entry.result === undefined) {
     return <span className="tool-summary-meta">running</span>;
+  }
+  if (!showCharCount) {
+    return entry.isError ? <span className="tool-summary-meta">error</span> : null;
   }
   const charCount = `${stringify(entry.result).length} chars`;
   if (entry.isError) {

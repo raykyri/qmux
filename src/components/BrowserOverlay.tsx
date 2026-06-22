@@ -205,7 +205,7 @@ export default function BrowserOverlay({
         {url ? (
           <iframe
             key={`${url}::${reloadNonce}`}
-            className="browser-overlay-frame"
+            className={`browser-overlay-frame${sandbox ? " is-file-content" : ""}`}
             src={url}
             title="Browser overlay"
             // allow-scripts (so scripted reports still render) without
