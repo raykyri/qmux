@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -285,16 +285,29 @@ fn recover_missing_transcript(
 }
 
 #[derive(Clone, Debug)]
-struct TranscriptCandidate {
-    path: PathBuf,
-    modified: SystemTime,
-    session_id: Option<String>,
+pub(crate) struct TranscriptCandidate {
+    pub(crate) path: PathBuf,
+    pub(crate) modified: SystemTime,
+    pub(crate) session_id: Option<String>,
 }
 
 /// All `*.jsonl` transcript files in `dir`, each paired with its mtime and the
 /// session id read from its filename. Shared by auto-recovery and the manual
 /// session picker so both reason over the same candidate set.
 fn gather_transcript_candidates(dir: &Path) -> Result<Vec<TranscriptCandidate>, String> {
+    gather_transcript_candidates_in(dir, false)
+}
+
+pub(crate) fn gather_transcript_candidates_recursive(
+    dir: &Path,
+) -> Result<Vec<TranscriptCandidate>, String> {
+    gather_transcript_candidates_in(dir, true)
+}
+
+fn gather_transcript_candidates_in(
+    dir: &Path,
+    recursive: bool,
+) -> Result<Vec<TranscriptCandidate>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -312,13 +325,18 @@ fn gather_transcript_candidates(dir: &Path) -> Result<Vec<TranscriptCandidate>, 
             continue;
         };
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
-            continue;
-        }
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        if !metadata.is_file() {
+        if metadata.is_dir() {
+            if recursive {
+                candidates.extend(gather_transcript_candidates_in(&path, true)?);
+            }
+            continue;
+        }
+        if !metadata.is_file()
+            || path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
+        {
             continue;
         }
         let Ok(modified) = metadata.modified() else {
@@ -389,6 +407,79 @@ pub struct TranscriptOption {
     pub bound_to_other_agent: bool,
 }
 
+fn transcript_listing_root(agent: &AgentInfo, current_path: &Path) -> Option<PathBuf> {
+    if agent.adapter == "codex" {
+        codex_sessions_root(current_path)
+    } else {
+        current_path.parent().map(Path::to_path_buf)
+    }
+}
+
+fn codex_sessions_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("sessions"))
+        .map(Path::to_path_buf)
+}
+
+fn transcript_session_id(
+    agent: &AgentInfo,
+    path: &Path,
+    fallback: Option<String>,
+) -> Option<String> {
+    if agent.adapter == "codex" {
+        return codex_transcript_session_id(path).or(fallback);
+    }
+    fallback
+}
+
+pub(crate) fn codex_transcript_session_id(path: &Path) -> Option<String> {
+    read_codex_transcript_session_id(path).ok().flatten()
+}
+
+pub(crate) fn read_codex_transcript_session_id(path: &Path) -> Result<Option<String>, String> {
+    let file = fs::File::open(path)
+        .map_err(|err| format!("failed to open Codex transcript {}: {err}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut first = String::new();
+    let bytes = reader
+        .read_line(&mut first)
+        .map_err(|err| format!("failed to read Codex transcript {}: {err}", path.display()))?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+
+    let terminated = first.ends_with('\n');
+    let first = first.trim_end_matches(['\n', '\r']);
+    let value = match serde_json::from_str::<Value>(first) {
+        Ok(value) => value,
+        Err(_) if !terminated => return Ok(None),
+        Err(err) => {
+            return Err(format!(
+                "Codex transcript {} does not start with valid JSON: {err}",
+                path.display()
+            ));
+        }
+    };
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return Err(format!(
+            "Codex transcript {} does not start with session_meta",
+            path.display()
+        ));
+    }
+    Ok(value
+        .get("payload")
+        .and_then(|payload| string_field(payload, "id")))
+}
+
+pub(crate) fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Sessions in the agent's transcript directory, newest first, for the manual
 /// picker. Empty when the agent has no transcript path yet (nothing to scan).
 pub fn list_agent_transcripts(
@@ -401,11 +492,16 @@ pub fn list_agent_transcripts(
     let Some(current_path) = agent.transcript_path.clone() else {
         return Ok(Vec::new());
     };
-    let Some(dir) = Path::new(&current_path).parent().map(Path::to_path_buf) else {
+    let current = Path::new(&current_path);
+    let Some(dir) = transcript_listing_root(&agent, current) else {
         return Ok(Vec::new());
     };
 
-    let mut candidates = gather_transcript_candidates(&dir)?;
+    let mut candidates = if agent.adapter == "codex" {
+        gather_transcript_candidates_recursive(&dir)?
+    } else {
+        gather_transcript_candidates(&dir)?
+    };
     candidates.sort_by(|left, right| {
         right
             .modified
@@ -428,7 +524,7 @@ pub fn list_agent_transcripts(
                     .duration_since(UNIX_EPOCH)
                     .map(|since| since.as_millis())
                     .unwrap_or(0),
-                session_id: candidate.session_id,
+                session_id: transcript_session_id(&agent, &candidate.path, candidate.session_id),
                 preview,
                 line_count,
                 path,
@@ -468,16 +564,35 @@ pub fn set_agent_transcript(
     if !candidate.is_file() {
         return Err(format!("transcript {path} does not exist"));
     }
-    // Keep selection inside the agent's current session directory so a stray path
-    // can't repoint the tail outside the project's transcript folder.
-    if let Some(current) = agent.transcript_path.as_deref()
-        && Path::new(current).parent() != candidate.parent()
-    {
-        return Err("transcript is outside the agent's session directory".to_string());
+    if let Some(current) = agent.transcript_path.as_deref() {
+        let current = Path::new(current);
+        if agent.adapter == "codex" {
+            let Some(root) = codex_sessions_root(current) else {
+                return Err("transcript is outside the agent's session directory".to_string());
+            };
+            let root = root.canonicalize().map_err(|err| {
+                format!(
+                    "failed to resolve transcript session directory {}: {err}",
+                    root.display()
+                )
+            })?;
+            let candidate_root = candidate
+                .canonicalize()
+                .map_err(|err| format!("failed to resolve transcript {path}: {err}"))?;
+            if !candidate_root.starts_with(root) {
+                return Err("transcript is outside the agent's session directory".to_string());
+            }
+        } else if current.parent() != candidate.parent() {
+            return Err("transcript is outside the agent's session directory".to_string());
+        }
     }
 
     let already_bound = agent.transcript_path.as_deref() == Some(path);
-    agent.session_id = session_id_from_transcript_path(candidate);
+    agent.session_id = transcript_session_id(
+        &agent,
+        candidate,
+        session_id_from_transcript_path(candidate),
+    );
     agent.transcript_path = Some(path.to_string());
     state.update_agent(agent.clone())?;
     // Clear any recovery/ambiguity notice tied to the previous binding.
@@ -510,13 +625,16 @@ fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let message = value.get("message").unwrap_or(&value);
+        let message = transcript_message_value(&value);
         let is_user = value.get("type").and_then(Value::as_str) == Some("user")
-            || message.get("role").and_then(Value::as_str) == Some("user");
+            || message
+                .and_then(|message| message.get("role"))
+                .and_then(Value::as_str)
+                == Some("user");
         if !is_user {
             continue;
         }
-        if let Some(text) = first_text_block(message.get("content")) {
+        if let Some(text) = first_text_block(message.and_then(|message| message.get("content"))) {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
                 preview = Some(truncate_preview(trimmed));
@@ -526,21 +644,31 @@ fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
     (preview, line_count)
 }
 
+fn transcript_message_value(value: &Value) -> Option<&Value> {
+    if value.get("type").and_then(Value::as_str) == Some("response_item") {
+        return value
+            .get("payload")
+            .filter(|payload| payload.get("type").and_then(Value::as_str) == Some("message"));
+    }
+    Some(value.get("message").unwrap_or(value))
+}
+
 /// First textual content of a message: the string itself, or the first text block
 /// of a content array. Ignores tool results and other non-text blocks.
 fn first_text_block(content: Option<&Value>) -> Option<String> {
     match content? {
         Value::String(text) => Some(text.clone()),
-        Value::Array(blocks) => blocks.iter().find_map(|block| {
-            if block.get("type").and_then(Value::as_str) == Some("text") {
-                block
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            } else {
-                None
-            }
-        }),
+        Value::Array(blocks) => {
+            blocks
+                .iter()
+                .find_map(|block| match block.get("type").and_then(Value::as_str) {
+                    Some("text" | "input_text" | "output_text") => block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    _ => None,
+                })
+        }
         _ => None,
     }
 }
@@ -868,6 +996,46 @@ mod tests {
         assert_eq!(line_count, 2);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_transcript_meta_extracts_codex_user_message() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-codex-meta-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout-2026-06-21T20-08-03-019eeca7.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019eeca7\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"codex prompt\"}]}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"duplicate\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let (preview, line_count) = read_transcript_meta(&path);
+        assert_eq!(preview.as_deref(), Some("codex prompt"));
+        assert_eq!(line_count, 3);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn codex_sessions_root_finds_date_sharded_parent() {
+        let path = Path::new(
+            "/Users/raymond/.codex/sessions/2026/06/21/rollout-2026-06-21T20-08-03-id.jsonl",
+        );
+
+        assert_eq!(
+            codex_sessions_root(path).as_deref(),
+            Some(Path::new("/Users/raymond/.codex/sessions"))
+        );
     }
 
     #[test]
