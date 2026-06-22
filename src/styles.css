@@ -285,7 +285,7 @@ button:disabled {
   color: #b9c0bc;
   font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
-  cursor: grab;
+  cursor: pointer;
   user-select: none;
   /* Nested tabs indent their content by depth × indent; the row (and its full-width
      selection highlight) still spans the sidebar. --pane-depth is set per row. */
@@ -357,7 +357,7 @@ button:disabled {
   align-items: center;
   column-gap: 6px;
   padding-bottom: 5px;
-  /* Home isn't draggable, so it gets a normal pointer rather than the grab cursor. */
+  /* Home is not draggable; keep the standard clickable tab cursor. */
   cursor: pointer;
 }
 
@@ -3064,8 +3064,9 @@ header + .turn-blocks {
   padding: 7px 8px;
   font-size: var(--fs-base);
   line-height: 1.4;
-  /* The whole row is the drag handle (there is no separate grip). */
-  cursor: grab;
+  /* The whole row remains the drag handle, but reads as a normal clickable row
+     until dragging starts. */
+  cursor: pointer;
   user-select: none;
 }
 
@@ -3118,7 +3119,7 @@ header + .turn-blocks {
   background: transparent;
   color: inherit;
   text-align: left;
-  /* Inherit the row's grab cursor rather than the default button pointer. */
+  /* Inherit the row cursor so the text does not switch affordance inside the row. */
   cursor: inherit;
 }
 
