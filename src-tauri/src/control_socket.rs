@@ -172,6 +172,15 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             serde_json::to_value(prepared)
                 .map_err(|err| format!("failed to encode prepared agent launch: {err}"))
         }
+        "agent.detach_pane" => {
+            // A shell-launched agent's process has exited while its host shell — and so
+            // this pane — lives on. Detach the agent bound to the authenticated pane so
+            // the tab reverts to a plain shell instead of lingering with a stale agent
+            // status. Scoped to the authed pane like pane.set_cwd; any claimed paneId is
+            // advisory, so the wrapper can only ever detach its own pane's agent.
+            let detached = crate::workspace::detach_pane_agent(state, &authed_pane)?;
+            Ok(json!({ "detached": detached.is_some() }))
+        }
         "claude.prepare_shell_launch" => {
             let launch = serde_json::from_value::<PrepareShellClaudeLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid claude.prepare_shell_launch payload: {err}"))?;

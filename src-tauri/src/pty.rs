@@ -376,8 +376,14 @@ fn shell_agent_functions(cli: &str, shell_commands: &[ShellCommandIntegration]) 
     shell_commands
         .iter()
         .map(|command| {
+            // After the agent process exits, detach it from this pane so the tab reverts
+            // to a plain shell. The agent's `exec`d process owns the foreground while it
+            // runs, so the shell only reaches the detach once it has exited (whether via
+            // ctrl-c, /exit, or a crash) — covering the case where a never-used agent's
+            // synthetic "awaiting input" status would otherwise stick to the tab forever.
+            // `$?` is preserved so the wrapper is transparent to the caller's exit code.
             format!(
-                "unalias {name} 2>/dev/null || true\n{name}() {{\n  {cli} agent-exec {adapter} \"$@\"\n}}",
+                "unalias {name} 2>/dev/null || true\n{name}() {{\n  {cli} agent-exec {adapter} \"$@\"\n  local __qmux_status=$?\n  {cli} agent-detach >/dev/null 2>&1\n  return $__qmux_status\n}}",
                 name = command.command_name,
                 adapter = command.adapter_id,
             )
@@ -911,6 +917,11 @@ mod tests {
             assert!(script.contains("claude() {"));
             assert!(script.contains("'/Applications/qmux app/qmux' agent-exec claude \"$@\""));
             assert!(script.contains("unalias claude"));
+            // After the agent exits, the wrapper detaches it from the pane (preserving
+            // the agent's exit code) so the tab stops showing a stale agent status.
+            assert!(script.contains("'/Applications/qmux app/qmux' agent-detach"));
+            assert!(script.contains("local __qmux_status=$?"));
+            assert!(script.contains("return $__qmux_status"));
             // `qmux` itself is a passthrough so `qmux open <file>` works at the prompt
             // without qmux being on PATH.
             assert!(script.contains("unalias qmux"));
