@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { EllipsisVertical, Rows2, SquareCenterlineDashedVertical } from "lucide-react";
+import { EllipsisVertical, Rows2, SquareCenterlineDashedVertical, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   removeQueuedAgentTurn,
@@ -150,13 +150,6 @@ export default function NativeInput({
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  // The open queued-item ⋮ menu: its row index and the fixed-position anchor
-  // (computed from the trigger so the overflow:auto stack can't clip the popover).
-  const [openItemMenu, setOpenItemMenu] = useState<{
-    index: number;
-    right: number;
-    bottom: number;
-  } | null>(null);
   // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -217,45 +210,6 @@ export default function NativeInput({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [menuOpen]);
-
-  // Close an open per-item ⋮ menu on an outside click or Escape. Also close on scroll
-  // or resize: the popover is position:fixed at coordinates captured when it opened,
-  // so once the row moves under it those coordinates are stale — closing is cleaner
-  // than letting it strand over an unrelated row.
-  useEffect(() => {
-    if (openItemMenu === null) {
-      return;
-    }
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest(".queued-turn-menu")) {
-        setOpenItemMenu(null);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpenItemMenu(null);
-      }
-    };
-    const close = () => setOpenItemMenu(null);
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    // Capture phase so a scroll on the inner queue stack (not just window) closes it.
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [openItemMenu]);
-
-  // The menu is keyed by queue index; if the queue changes (a drain, reorder, or new
-  // turn) or the agent switches, that index would point at a different turn, so close.
-  useEffect(() => {
-    setOpenItemMenu(null);
-  }, [queuedTurns, agent.id]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -711,7 +665,6 @@ export default function NativeInput({
   }
 
   async function setItemPauseAfter(index: number, turn: QueuedTurn, pauseAfter: boolean) {
-    setOpenItemMenu(null);
     if (submitting) {
       return;
     }
@@ -783,7 +736,6 @@ export default function NativeInput({
             ]
               .filter(Boolean)
               .join(" ");
-            const menuOpenHere = openItemMenu?.index === index;
             return (
               <div
                 key={`${index}-${turn.text}`}
@@ -806,68 +758,21 @@ export default function NativeInput({
                 <div className="queued-turn-actions">
                   <button
                     type="button"
+                    className="queued-turn-remove"
+                    disabled={submitting}
+                    aria-label="Remove queued turn"
+                    title="Remove"
+                    onClick={() => void removeQueuedTurn(index, turn.text)}
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
                     disabled={submitting}
                     onClick={() => void editQueuedTurn(index, turn.text)}
                   >
                     Edit
                   </button>
-                  <div className="queued-turn-menu">
-                    <button
-                      type="button"
-                      className="queued-turn-menu-trigger"
-                      aria-haspopup="menu"
-                      aria-expanded={menuOpenHere}
-                      aria-label="Queued turn actions"
-                      onClick={(event) => {
-                        if (menuOpenHere) {
-                          setOpenItemMenu(null);
-                          return;
-                        }
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        setOpenItemMenu({
-                          index,
-                          right: window.innerWidth - rect.right,
-                          bottom: window.innerHeight - rect.top + 4,
-                        });
-                      }}
-                    >
-                      <EllipsisVertical size={13} aria-hidden="true" />
-                    </button>
-                    {menuOpenHere && openItemMenu ? (
-                      <div
-                        className="queued-turn-menu-popover"
-                        role="menu"
-                        style={{
-                          right: `${openItemMenu.right}px`,
-                          bottom: `${openItemMenu.bottom}px`,
-                        }}
-                      >
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="composer-menu-item"
-                          disabled={submitting}
-                          onClick={() =>
-                            void setItemPauseAfter(index, turn, !turn.pauseAfter)
-                          }
-                        >
-                          {turn.pauseAfter ? "Remove pause after send" : "Pause after send"}
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="composer-menu-item"
-                          disabled={submitting}
-                          onClick={() => {
-                            setOpenItemMenu(null);
-                            void removeQueuedTurn(index, turn.text);
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
                 </div>
                 {turn.pauseAfter ? (
                   <div className="queued-turn-pause-label" aria-hidden="true">
@@ -976,18 +881,37 @@ export default function NativeInput({
           {menuOpen ? (
             <div className="composer-menu-popover" role="menu">
               {queuedTurns.length > 0 ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="composer-menu-item"
-                  disabled={submitting}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void sendNextQueuedTurn();
-                  }}
-                >
-                  Send next queued
-                </button>
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="composer-menu-item"
+                    disabled={submitting}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void sendNextQueuedTurn();
+                    }}
+                  >
+                    Send next queued
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="composer-menu-item"
+                    disabled={submitting}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      const lastIndex = queuedTurns.length - 1;
+                      const lastTurn = queuedTurns[lastIndex];
+                      void setItemPauseAfter(lastIndex, lastTurn, !lastTurn.pauseAfter);
+                    }}
+                  >
+                    {queuedTurns[queuedTurns.length - 1]?.pauseAfter
+                      ? "Remove pause after send"
+                      : "Pause after send"}
+                  </button>
+                  <div className="composer-menu-divider" role="separator" />
+                </>
               ) : null}
               <button
                 type="button"

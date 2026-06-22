@@ -2315,8 +2315,6 @@ button:disabled {
   gap: 4px;
 }
 
-/* Direct-child only, so the ⋮ menu's popover items (descendants) keep their own
-   composer-menu-item styling instead of these compact action-button rules. */
 .queued-turn-actions > button {
   min-height: var(--control-h-sm);
   padding: 2px 7px;
@@ -2333,45 +2331,6 @@ button:disabled {
 .queued-turn-remove {
   padding-left: 6px;
   padding-right: 6px;
-}
-
-/* The per-item ⋮ menu: a narrow icon trigger plus a small upward popover. */
-.queued-turn-menu {
-  position: relative;
-  display: inline-flex;
-}
-
-.queued-turn-menu-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: var(--control-h-sm);
-  /* Narrower than the text action buttons — it only holds the dots glyph. */
-  padding: 2px 3px;
-  color: #aab1ad;
-}
-
-.queued-turn-menu-trigger:hover:not(:disabled) {
-  border-color: var(--control-border-hover-accent);
-  background: var(--control-bg-hover);
-  color: #f4f3ec;
-}
-
-.queued-turn-menu-popover {
-  /* Fixed (not absolute) so the scrolling, overflow:auto queue stack can't clip it;
-     its right/bottom are set inline from the trigger's position. */
-  position: fixed;
-  z-index: 20;
-  display: flex;
-  width: 200px;
-  max-width: calc(100vw - 24px);
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px;
-  border: 1px solid #2a2d2f;
-  border-radius: 8px;
-  background: #1d2224;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
 }
 
 /* "Pause after send" caption centered under a pause-after queued item, spanning the
