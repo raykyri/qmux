@@ -191,10 +191,11 @@ export default function TurnPaneHeader({
             {sessionOptions.length > 0 ? (
               <>
                 <div className="turn-pane-session-menu-divider" role="separator" />
+                <div className="turn-pane-session-menu-label">Select Session</div>
                 <div
                   className="turn-pane-session-list"
                   role="group"
-                  aria-label="Past sessions"
+                  aria-label="Select Session"
                 >
                   {sessionOptions.map((option) => {
                     const active = option.path === transcriptPath;

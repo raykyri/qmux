@@ -1,8 +1,8 @@
 import type { TranscriptOption } from "../types";
 
-// A one-line title for a past session: prefer its first-message preview, then a
-// short session id, then a generic fallback. Shared by the composer menu's "Past
-// sessions" list and the empty-state transcript picker so they read identically.
+// A one-line title for a past session: prefer its first usable user-message
+// preview, then a short session id, then a generic fallback. Shared by the header
+// session menu and empty-state transcript picker so they read identically.
 export function sessionMenuTitle(option: TranscriptOption): string {
   const preview = option.preview?.trim();
   if (preview) {

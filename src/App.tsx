@@ -87,6 +87,7 @@ import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
+import { isTaggedUserInstruction } from "./lib/taggedInstructions";
 import {
   clampFontSize,
   FONT_OPTIONS,
@@ -175,10 +176,18 @@ const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
+const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
+
+interface PendingFirstMessageTitle {
+  paneId: string;
+  checkedMessages: number;
+  submittedMessageKeys: string[];
+  seenTurnIds: Set<string>;
+}
 
 function sanitizeTerminalTitle(rawTitle: string): string | null {
   const title = rawTitle
@@ -191,7 +200,7 @@ function sanitizeTerminalTitle(rawTitle: string): string | null {
   return Array.from(title).slice(0, MAX_TERMINAL_TITLE_CHARS).join("");
 }
 
-function firstMessagePaneTitle(rawMessage: string): string | null {
+function normalizedMessagePreview(rawMessage: string): string | null {
   const normalized = rawMessage
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
@@ -199,13 +208,45 @@ function firstMessagePaneTitle(rawMessage: string): string | null {
   if (!normalized) {
     return null;
   }
+  return normalized;
+}
 
+function firstMessagePaneTitle(rawMessage: string): string | null {
+  if (isTaggedUserInstruction(rawMessage)) {
+    return null;
+  }
+  const normalized = normalizedMessagePreview(rawMessage);
+  if (!normalized) {
+    return null;
+  }
   const chars = Array.from(normalized);
   if (chars.length <= MAX_FIRST_MESSAGE_TITLE_CHARS) {
     return normalized;
   }
 
   return `${chars.slice(0, MAX_FIRST_MESSAGE_TITLE_CHARS - 3).join("").trimEnd()}...`;
+}
+
+function createPendingFirstMessageTitle(paneId: string): PendingFirstMessageTitle {
+  return {
+    paneId,
+    checkedMessages: 0,
+    submittedMessageKeys: [],
+    seenTurnIds: new Set(),
+  };
+}
+
+function consumeSubmittedTitleMessage(pending: PendingFirstMessageTitle, rawMessage: string) {
+  const key = normalizedMessagePreview(rawMessage);
+  if (!key) {
+    return false;
+  }
+  const index = pending.submittedMessageKeys.indexOf(key);
+  if (index === -1) {
+    return false;
+  }
+  pending.submittedMessageKeys.splice(index, 1);
+  return true;
 }
 
 function firstUserTurnText(turn: Turn): string | null {
@@ -296,7 +337,7 @@ export default function App() {
   const paneDropTargetRef = useRef<PaneDropTarget | null>(null);
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
-  const pendingFirstTitleByAgentRef = useRef<Map<string, string>>(new Map());
+  const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
   const suppressPaneTabClickRef = useRef(false);
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -526,13 +567,42 @@ export default function App() {
     }
   }
 
-  function applyPendingFirstMessageTitle(agentId: string, rawMessage: string) {
-    const paneId = pendingFirstTitleByAgentRef.current.get(agentId);
-    if (!paneId) {
+  function applyPendingFirstMessageTitle(
+    agentId: string,
+    rawMessage: string,
+    source: { turnId?: string; submitted?: boolean } = { submitted: true },
+  ) {
+    const pending = pendingFirstTitleByAgentRef.current.get(agentId);
+    if (!pending) {
       return;
     }
-    pendingFirstTitleByAgentRef.current.delete(agentId);
-    void applyFirstMessageTitle(paneId, rawMessage);
+    if (source.turnId) {
+      if (pending.seenTurnIds.has(source.turnId)) {
+        return;
+      }
+      pending.seenTurnIds.add(source.turnId);
+      if (consumeSubmittedTitleMessage(pending, rawMessage)) {
+        return;
+      }
+    }
+
+    const messageKey = normalizedMessagePreview(rawMessage);
+    if (!messageKey) {
+      return;
+    }
+    const title = firstMessagePaneTitle(rawMessage);
+    pending.checkedMessages += 1;
+    if (title) {
+      pendingFirstTitleByAgentRef.current.delete(agentId);
+      void applyFirstMessageTitle(pending.paneId, rawMessage);
+      return;
+    }
+    if (source.submitted) {
+      pending.submittedMessageKeys.push(messageKey);
+    }
+    if (pending.checkedMessages >= FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT) {
+      pendingFirstTitleByAgentRef.current.delete(agentId);
+    }
   }
 
   // Drop per-pane UI state for panes that have closed so it can't leak or resurface.
@@ -555,8 +625,8 @@ export default function App() {
       );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-    for (const [agentId, paneId] of pendingFirstTitleByAgentRef.current) {
-      if (!ids.has(paneId)) {
+    for (const [agentId, pending] of pendingFirstTitleByAgentRef.current) {
+      if (!ids.has(pending.paneId)) {
         pendingFirstTitleByAgentRef.current.delete(agentId);
       }
     }
@@ -598,15 +668,17 @@ export default function App() {
     }
 
     for (const agentId of pendingAgentIds) {
-      const firstUserTurn = turns.find(
-        (turn) => turn.agentId === agentId && firstUserTurnText(turn),
-      );
-      if (!firstUserTurn) {
-        continue;
-      }
-      const text = firstUserTurnText(firstUserTurn);
-      if (text) {
-        applyPendingFirstMessageTitle(agentId, text);
+      for (const turn of turns) {
+        if (!pendingFirstTitleByAgentRef.current.has(agentId)) {
+          break;
+        }
+        if (turn.agentId !== agentId) {
+          continue;
+        }
+        const text = firstUserTurnText(turn);
+        if (text) {
+          applyPendingFirstMessageTitle(agentId, text, { turnId: turn.id });
+        }
       }
     }
   }, [turns]);
@@ -2014,7 +2086,11 @@ export default function App() {
       if (pane.agentId) {
         setAgentQueuedTurns(pane.agentId, []);
         if (!firstTitle) {
-          pendingFirstTitleByAgentRef.current.set(pane.agentId, pane.id);
+          pendingFirstTitleByAgentRef.current.set(
+            pane.agentId,
+            createPendingFirstMessageTitle(pane.id),
+          );
+          applyPendingFirstMessageTitle(pane.agentId, finalPrompt, { submitted: true });
         }
       }
       if (firstTitle) {
