@@ -1049,12 +1049,11 @@ button:disabled {
   padding: 16px 54px 52px 18px;
 }
 
-/* Dictation mic, pinned to the launcher's top-right corner and vertically
-   centered on the first line of typed text (textarea padding-top 16px +
-   half a 15px/1.5 line). The textarea's right padding above keeps text clear. */
+/* Dictation mic, pinned to the launcher's top-right corner near the first line of
+   typed text. The textarea's right padding above keeps text clear. */
 .command-launcher-mic {
   position: absolute;
-  top: 10px;
+  top: 12px;
   right: 12px;
   z-index: 2;
 }
