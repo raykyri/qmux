@@ -42,6 +42,8 @@ export interface AppSettings {
   fontSize: number;
   /** show Cmd-held shortcut badges in the sidebar */
   showShortcutHints: boolean;
+  /** disable decorative/status pulse animations */
+  reduceMotion: boolean;
   /** OpenRouter API key */
   openRouterKey: string;
   /** OpenRouter model id */
@@ -54,6 +56,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontId: DEFAULT_FONT_ID,
   fontSize: TERMINAL_FONT_SIZE,
   showShortcutHints: true,
+  reduceMotion: false,
   openRouterKey: "",
   openRouterModel: "",
   preventSleep: true,
@@ -109,6 +112,10 @@ export function loadSettings(): AppSettings {
       typeof parsed.showShortcutHints === "boolean"
         ? parsed.showShortcutHints
         : DEFAULT_SETTINGS.showShortcutHints;
+    const reduceMotion =
+      typeof parsed.reduceMotion === "boolean"
+        ? parsed.reduceMotion
+        : DEFAULT_SETTINGS.reduceMotion;
     const openRouterKey =
       typeof parsed.openRouterKey === "string"
         ? parsed.openRouterKey
@@ -121,6 +128,7 @@ export function loadSettings(): AppSettings {
       fontId,
       fontSize,
       showShortcutHints,
+      reduceMotion,
       openRouterKey,
       openRouterModel,
       preventSleep,

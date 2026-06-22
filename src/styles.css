@@ -519,13 +519,27 @@ button:disabled {
   0%,
   100% {
     opacity: 0.45;
-    transform: scale(0.9);
+    transform: translateY(var(--status-dot-y, 0)) scale(0.9);
   }
 
   50% {
     opacity: 1;
-    transform: scale(1.12);
+    transform: translateY(var(--status-dot-y, 0)) scale(1.12);
   }
+}
+
+.app-shell.reduce-motion .pane-tab-dot.status-active,
+.app-shell.reduce-motion .pane-tab-dot.status-pending,
+.app-shell.reduce-motion .pane-tab-dot.status-attention,
+.app-shell.reduce-motion .turn-thinking-dot {
+  animation: none;
+  opacity: 1;
+  transform: translateY(var(--status-dot-y, 0));
+}
+
+.app-shell.reduce-motion .dictation-mic-btn.is-listening,
+.app-shell.reduce-motion .dictation-mic-btn.is-listening:hover {
+  animation: none;
 }
 
 .pane-tab-title,
@@ -2353,8 +2367,8 @@ button:disabled {
 }
 
 /* "Thinking…" indicator pinned to the bottom of the transcript while the agent is
-   actively working. Left-aligned like an assistant row, with a pulsing amber dot
-   matching the working-status dot in the tab list (.pane-tab-dot.status-active). */
+   actively working. Left-aligned like an assistant row, with a muted pulsing dot
+   that follows the label color instead of the warmer tab activity tone. */
 .turn-thinking {
   display: flex;
   align-items: center;
@@ -2364,11 +2378,13 @@ button:disabled {
 }
 
 .turn-thinking-dot {
+  --status-dot-y: -1px;
   flex: 0 0 auto;
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #d7a84f;
+  background: #9aa29e;
+  transform: translateY(var(--status-dot-y));
   animation: status-dot-pulse 1.3s ease-in-out infinite;
 }
 
