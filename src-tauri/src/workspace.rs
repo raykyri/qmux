@@ -385,7 +385,9 @@ pub fn remove_agent_worktree(state: &AppState, agent_id: &str) -> Result<(), Str
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
     let removal = capture_agent_worktree_removal(state, &agent)?;
-    remove_captured_worktree(removal)
+    remove_captured_worktree(removal)?;
+    state.clear_last_closed_pane_for_agent(agent_id);
+    Ok(())
 }
 
 pub fn capture_agent_worktree_removal(

@@ -698,7 +698,13 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     let child = state
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
-    kill_child(&pane_id, child)?;
+    if let Err(err) = state.capture_last_closed_pane(&pane_id) {
+        eprintln!("qmux: failed to capture closed pane {pane_id}: {err}");
+    }
+    if let Err(err) = kill_child(&pane_id, child) {
+        state.clear_last_closed_pane_for_pane(&pane_id);
+        return Err(err);
+    }
     state.remove_pane(&pane_id)
 }
 
@@ -724,6 +730,7 @@ pub fn close_worktree_pane(
 
     if let Some(removal) = worktree_removal {
         remove_captured_worktree(removal)?;
+        state.clear_last_closed_pane_for_agent(agent_id);
     }
 
     Ok(())

@@ -350,6 +350,11 @@ fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), S
 }
 
 #[tauri::command]
+fn pane_restore_last_closed(state: tauri::State<'_, AppState>) -> Result<Option<PaneInfo>, String> {
+    recovery::restore_last_closed_pane(&state)
+}
+
+#[tauri::command]
 fn pane_rename(
     state: tauri::State<'_, AppState>,
     pane_id: String,
@@ -632,6 +637,7 @@ fn main() {
             pane_scrollback,
             pane_resize,
             pane_kill,
+            pane_restore_last_closed,
             pane_rename,
             pane_reorder,
             pane_set_layout,

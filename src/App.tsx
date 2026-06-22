@@ -123,6 +123,7 @@ import {
   openExternalUrl,
   removeQueuedAgentTurn,
   renamePane,
+  restoreLastClosedPane,
   setLauncherAdapterPreference,
   setPaneLayout,
   setAgentDraft as persistAgentDraft,
@@ -1628,6 +1629,51 @@ export default function App() {
     }
   }
 
+  async function restoreClosedPane() {
+    setError(null);
+    try {
+      const pane = await restoreLastClosedPane();
+      if (!pane) {
+        return;
+      }
+
+      const [latestPanes, latestAgents, latestTurns] = await Promise.all([
+        listPanes(),
+        listAgents(),
+        listTurns(),
+      ]);
+      setPanesPreservingRecoveredDismissals(latestPanes);
+      setAgents(latestAgents);
+      setTurns(latestTurns);
+      setActivePaneId(pane.id);
+
+      const restoredAgent = latestAgents.find(
+        (agent) => agent.paneId === pane.id || agent.id === pane.agentId,
+      );
+      if (restoredAgent) {
+        void refreshAgentTurnQueue(restoredAgent.id).catch(() => undefined);
+        void getAgentDraft(restoredAgent.id)
+          .then((draft) => {
+            const nextDrafts = { ...draftsByAgentRef.current };
+            if (draft) {
+              nextDrafts[restoredAgent.id] = draft;
+            } else {
+              delete nextDrafts[restoredAgent.id];
+            }
+            draftsByAgentRef.current = nextDrafts;
+            setDraftsByAgentState(nextDrafts);
+          })
+          .catch(() => undefined);
+      }
+
+      requestAnimationFrame(() => {
+        terminalPaneRefs.current.get(pane.id)?.focus();
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function focusPaneTab(paneId: string) {
     setActivePaneId(paneId);
     setLauncherOpen(false);
@@ -2604,6 +2650,15 @@ export default function App() {
       }
 
       if (key !== "t" && key !== "w") {
+        return;
+      }
+
+      // Cmd-Shift-T restores the most recently closed tab, matching browser tab undo.
+      // Claimed before the Cmd-T branch so it never opens a fresh shell instead.
+      if (event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey && key === "t") {
+        event.preventDefault();
+        event.stopPropagation();
+        void restoreClosedPane();
         return;
       }
 
