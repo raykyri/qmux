@@ -1922,13 +1922,20 @@ export default function App() {
     setSelectionAsk(null);
     focusAskInput();
   }
-  function closeAskLauncher() {
+  function closeAskLauncher(focusPaneId?: string) {
     askDictation.stop();
     setAskLauncher(null);
     setAskPrompt("");
     setAskCreateInWorktree(false);
     setAskSelectedSkillId(null);
-    focusActiveTerminal();
+    // After a fork the active pane changed, but `focusActiveTerminal` reads the
+    // pre-update `activePane` from this render's closure — so focus the requested
+    // pane (the fork) explicitly; otherwise fall back to the active terminal.
+    if (focusPaneId) {
+      requestAnimationFrame(() => terminalPaneRefs.current.get(focusPaneId)?.focus());
+    } else {
+      focusActiveTerminal();
+    }
   }
   async function submitAsk() {
     if (!askLauncher || askSubmittingRef.current) {
@@ -1950,6 +1957,7 @@ export default function App() {
     }
     setError(null);
     askSubmittingRef.current = true;
+    let focusPaneId: string | undefined;
     try {
       if (target.mode === "ask") {
         // "auto": the backend sends now if the agent is ready, or queues onto the
@@ -1965,6 +1973,8 @@ export default function App() {
           current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
         );
         setActivePaneId(pane.id);
+        // Land focus on the fork we just switched to, not the source pane.
+        focusPaneId = pane.id;
         if (pane.agentId) {
           const result = await submitAgentTurn(pane.agentId, message, "auto");
           setAgentQueuedTurns(pane.agentId, result.queuedTurns);
@@ -1976,7 +1986,7 @@ export default function App() {
           setError("The forked conversation isn't ready to receive a message.");
         }
       }
-      closeAskLauncher();
+      closeAskLauncher(focusPaneId);
     } catch (err) {
       // Keep the launcher open on failure so the question isn't lost and the user
       // can retry.
