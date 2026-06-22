@@ -1,6 +1,7 @@
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
+use crate::scrollback::remove_pane_scrollback;
 use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
@@ -678,6 +679,9 @@ impl AppState {
         // a live credential outlive the pane it scopes. Separate lock from `model`.
         if let Ok(mut tokens) = self.inner.file_tokens.lock() {
             tokens.remove(pane_id);
+        }
+        if let Err(err) = remove_pane_scrollback(&self.inner.config.workspace_root, pane_id) {
+            eprintln!("qmux: failed to remove scrollback for pane {pane_id}: {err}");
         }
         self.persist();
         Ok(())

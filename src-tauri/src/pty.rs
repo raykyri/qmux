@@ -1,5 +1,6 @@
 use crate::adapters::{ShellCommandIntegration, adapter_registry};
 use crate::events::QmuxEvent;
+use crate::scrollback::append_pane_scrollback;
 use crate::state::{
     AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
 };
@@ -507,6 +508,7 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         backlog.ready = true;
         if !backlog.buffer.is_empty() {
             let pending = std::mem::take(&mut backlog.buffer);
+            record_scrollback(state, &pane_id, &pending);
             state.emit(QmuxEvent::pty_data(pane_id, &pending));
         }
     }
@@ -652,6 +654,7 @@ fn start_reader_thread(
                         Err(_) => true,
                     };
                     if live {
+                        record_scrollback(&state, &pane_id, chunk);
                         state.emit(QmuxEvent::pty_data(pane_id.clone(), chunk));
                     }
                 }
@@ -698,6 +701,12 @@ fn append_capped(buffer: &mut Vec<u8>, chunk: &[u8]) {
     if buffer.len() > BACKLOG_CAP {
         let overflow = buffer.len() - BACKLOG_CAP;
         buffer.drain(..overflow);
+    }
+}
+
+fn record_scrollback(state: &AppState, pane_id: &str, chunk: &[u8]) {
+    if let Err(err) = append_pane_scrollback(&state.config().workspace_root, pane_id, chunk) {
+        eprintln!("qmux: failed to record scrollback for pane {pane_id}: {err}");
     }
 }
 
@@ -770,8 +779,10 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
 mod tests {
     use super::*;
     use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
+    use crate::scrollback::read_pane_scrollback;
     use std::io;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
     struct RecordingWriter {
@@ -815,6 +826,33 @@ mod tests {
             legacy_claude_binary: None,
             claude_plugin_dir: std::path::PathBuf::new(),
         })
+    }
+
+    fn test_state_with_workspace(workspace_root: PathBuf) -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root,
+            socket_path: PathBuf::from("/tmp/qmux.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: std::path::PathBuf::new(),
+        })
+    }
+
+    fn temp_workspace() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("qmux-pty-scrollback-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     fn env_value(envs: &[(String, String)], key: &str) -> Option<String> {
@@ -1011,6 +1049,66 @@ mod tests {
         assert!(
             state.pane_child(&pane.id).unwrap().is_none(),
             "pane should be gone after kill_pane"
+        );
+    }
+
+    #[test]
+    fn pre_attach_output_is_recorded_only_when_attach_flushes_it() {
+        let workspace = temp_workspace();
+        let state = test_state_with_workspace(workspace.clone());
+        let pane = spawn_test_pty(
+            &state,
+            "pane-scrollback",
+            vec![
+                "-c".to_string(),
+                "printf 'restored\\n'; sleep 5".to_string(),
+            ],
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let backlog = state
+                .pane_backlog(&pane.id)
+                .unwrap()
+                .expect("pane has backlog");
+            let has_output = backlog
+                .lock()
+                .unwrap()
+                .buffer
+                .windows("restored".len())
+                .any(|window| window == b"restored");
+            if has_output {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pane did not buffer pre-attach output"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            read_pane_scrollback(&workspace, &pane.id)
+                .unwrap()
+                .is_empty(),
+            "pre-attach output must not be visible in the durable log before replay"
+        );
+
+        attach_pane(&state, pane.id.clone()).expect("attaching pane flushes backlog");
+        let restored = read_pane_scrollback(&workspace, &pane.id).unwrap();
+        assert!(
+            restored
+                .windows("restored".len())
+                .any(|window| window == b"restored"),
+            "attach should record the flushed backlog"
+        );
+
+        kill_pane(&state, pane.id.clone()).expect("cleanup test pane");
+        assert!(
+            read_pane_scrollback(&workspace, &pane.id)
+                .unwrap()
+                .is_empty(),
+            "closing a pane should remove its scrollback log"
         );
     }
 

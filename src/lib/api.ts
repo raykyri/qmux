@@ -189,6 +189,10 @@ export function attachPane(paneId: string) {
   return invoke<void>("pane_attach", { paneId });
 }
 
+export function getPaneScrollback(paneId: string) {
+  return invoke<string>("pane_scrollback", { paneId });
+}
+
 export function resizePane(paneId: string, cols: number, rows: number) {
   return invoke<void>("pane_resize", { paneId, cols, rows });
 }

@@ -6,13 +6,23 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import type { ILink, ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { pastePaneInput, resizePane, writePane } from "../lib/api";
+import { getPaneScrollback, pastePaneInput, resizePane, writePane } from "../lib/api";
 import { largePastePrompt } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
+import { bytesFromBase64 } from "../lib/appHelpers";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
@@ -181,9 +191,12 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // and so a lost context can dispose the addon and fall back to the DOM renderer.
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const terminalReadyRef = useRef(false);
+  const terminalReadyWaitersRef = useRef<Array<() => void>>([]);
   // PTY output can arrive while the terminal waits for the bundled font to load.
   // Buffer it and flush once xterm is open so startup output is not dropped.
   const pendingDataRef = useRef<Array<string | Uint8Array>>([]);
+  const scrollbackBytesPromiseRef = useRef<Promise<Uint8Array | null> | null>(null);
+  const scrollbackReplayedRef = useRef(false);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
@@ -206,22 +219,45 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     [useRegex, caseSensitive],
   );
 
-  useImperativeHandle(ref, () => ({
-    focus() {
-      terminalRef.current?.focus();
-      stabilizeTerminalRef.current?.();
-    },
-    write(data: string | Uint8Array) {
-      const terminal = terminalRef.current;
-      if (terminal && terminalReadyRef.current) {
-        terminal.write(data);
-      } else {
-        // Output can arrive before the bundled font loads and xterm opens; buffer
-        // it and flush once the terminal is ready (see the setup effect).
-        pendingDataRef.current.push(data);
-      }
-    },
-  }));
+  const waitForTerminalReady = useCallback(() => {
+    if (terminalRef.current && terminalReadyRef.current) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      terminalReadyWaitersRef.current.push(resolve);
+    });
+  }, []);
+
+  const resolveTerminalReady = useCallback(() => {
+    const waiters = terminalReadyWaitersRef.current;
+    terminalReadyWaitersRef.current = [];
+    for (const resolve of waiters) {
+      resolve();
+    }
+  }, []);
+
+  const writeTerminalData = useCallback((data: string | Uint8Array) => {
+    const terminal = terminalRef.current;
+    if (terminal && terminalReadyRef.current) {
+      terminal.write(data);
+    } else {
+      // Output can arrive before the bundled font loads and xterm opens; buffer
+      // it and flush once the terminal is ready (see the setup effect).
+      pendingDataRef.current.push(data);
+    }
+  }, []);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus() {
+        terminalRef.current?.focus();
+        stabilizeTerminalRef.current?.();
+      },
+      write: writeTerminalData,
+    }),
+    [writeTerminalData],
+  );
 
   const findNext = () => {
     if (searchTerm) {
@@ -393,6 +429,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       terminalRef.current = terminal;
       terminalReadyRef.current = true;
       searchRef.current = search;
+      resolveTerminalReady();
 
       const pending = pendingDataRef.current;
       pendingDataRef.current = [];
@@ -612,9 +649,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         terminal.dispose();
         webglAddonRef.current = null;
         terminalReadyRef.current = false;
+        terminalReadyWaitersRef.current = [];
         terminalRef.current = null;
         searchRef.current = null;
         stabilizeTerminalRef.current = null;
+        scrollbackReplayedRef.current = false;
       };
     }
 
@@ -622,18 +661,38 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       cancelled = true;
       teardown?.();
       teardown = null;
+      terminalReadyWaitersRef.current = [];
       pendingDataRef.current = [];
     };
-  }, [pane.id]);
+  }, [pane.id, resolveTerminalReady]);
 
-  // Our handle (with write) is registered during render commit, before this effect
-  // runs, so by the time we ask the app to attach, the central dispatch can already
-  // route this pane's output here. requestAttach defers the actual attachPane until
-  // the single backend subscription is live, so cold-start output is never lost:
-  // anything produced before then stays buffered in the backend's pre-attach backlog.
+  // Replay durable scrollback before releasing the backend's pre-attach backlog.
+  // A recovered pane starts a fresh PTY immediately, but its output stays buffered
+  // backend-side until `pane_attach`; fetching the log first avoids interleaving
+  // old scrollback with the recovered process's startup prompt. The promise ref
+  // also keeps React StrictMode's effect replay from duplicating the restored text.
   useEffect(() => {
-    requestAttach(pane.id);
-  }, [pane.id, requestAttach]);
+    let cancelled = false;
+    if (!scrollbackBytesPromiseRef.current) {
+      scrollbackBytesPromiseRef.current = getPaneScrollback(pane.id)
+        .then((encoded) => bytesFromBase64(encoded))
+        .catch(() => null);
+    }
+    void Promise.all([scrollbackBytesPromiseRef.current, waitForTerminalReady()]).then(
+      ([restored]) => {
+        if (!cancelled && !scrollbackReplayedRef.current && restored && restored.length > 0) {
+          writeTerminalData(restored);
+          scrollbackReplayedRef.current = true;
+        }
+        if (!cancelled) {
+          requestAttach(pane.id);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [pane.id, requestAttach, waitForTerminalReady, writeTerminalData]);
 
   useEffect(() => {
     if (!active) {

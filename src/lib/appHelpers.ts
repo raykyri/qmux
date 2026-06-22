@@ -52,7 +52,10 @@ export function isTurn(value: unknown): value is Turn {
 // Uint8Array xterm writes. The backend sends base64 rather than a JSON integer
 // array to keep this hottest-path payload compact and the decode a single step.
 export function ptyDataFromPayload(payload: Record<string, unknown>): Uint8Array | null {
-  const encoded = payload.dataBase64;
+  return bytesFromBase64(payload.dataBase64);
+}
+
+export function bytesFromBase64(encoded: unknown): Uint8Array | null {
   if (typeof encoded !== "string") {
     return null;
   }

@@ -12,6 +12,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
+  SetStateAction,
 } from "react";
 import {
   ChevronLeft,
@@ -247,8 +248,36 @@ export default function App() {
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const suppressPaneTabClickRef = useRef(false);
+  const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
+  const applyRecoveredDismissals = useCallback((paneList: PaneInfo[]) => {
+    const dismissed = dismissedRecoveredPaneIdsRef.current;
+    if (dismissed.size === 0) {
+      return paneList;
+    }
+    let changed = false;
+    const next = paneList.map((pane) => {
+      if (pane.recovered && dismissed.has(pane.id)) {
+        changed = true;
+        return { ...pane, recovered: false };
+      }
+      return pane;
+    });
+    return changed ? next : paneList;
+  }, []);
+  const setPanesPreservingRecoveredDismissals = useCallback(
+    (update: SetStateAction<PaneInfo[]>) => {
+      setPanes((current) => {
+        const next =
+          typeof update === "function"
+            ? (update as (current: PaneInfo[]) => PaneInfo[])(current)
+            : update;
+        return applyRecoveredDismissals(next);
+      });
+    },
+    [applyRecoveredDismissals],
+  );
   const [terminalTitleByPane, setTerminalTitleByPane] = useState<Record<string, string>>({});
   const [manuallyTitledPaneIds, setManuallyTitledPaneIds] = useState<Set<string>>(
     () => new Set(),
@@ -1002,14 +1031,14 @@ export default function App() {
         setDraftsByAgentState(restoredDrafts);
 
         if (existingPanes.length > 0) {
-          setPanes(existingPanes);
+          setPanesPreservingRecoveredDismissals(existingPanes);
           setActivePaneId(existingPanes[0].id);
           return;
         }
 
         const pane = await spawnShell(estimateInitialPaneSize(false));
         if (!cancelled) {
-          setPanes([pane]);
+          setPanesPreservingRecoveredDismissals([pane]);
           setActivePaneId(pane.id);
         }
       } catch (err) {
@@ -1140,7 +1169,7 @@ export default function App() {
 
   useQmuxEvents({
     setHookEventsByAgent,
-    setPanes,
+    setPanes: setPanesPreservingRecoveredDismissals,
     setActivePaneId,
     setPaneContextMenu,
     setExitDialog,
@@ -1159,7 +1188,7 @@ export default function App() {
     setError(null);
     try {
       const pane = await spawnShell(estimateInitialPaneSize(false));
-      setPanes((current) => [...current, pane]);
+      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1346,7 +1375,7 @@ export default function App() {
     }
     const requestSeq = paneReorderRequestSeqRef.current + 1;
     paneReorderRequestSeqRef.current = requestSeq;
-    setPanes(next);
+    setPanesPreservingRecoveredDismissals(next);
 
     const persist = paneReorderPersistChainRef.current
       .catch(() => undefined)
@@ -1354,7 +1383,7 @@ export default function App() {
     paneReorderPersistChainRef.current = persist
       .then((orderedPanes) => {
         if (paneReorderRequestSeqRef.current === requestSeq) {
-          setPanes(orderedPanes);
+          setPanesPreservingRecoveredDismissals(orderedPanes);
         }
       })
       .catch(() => {
@@ -1367,7 +1396,7 @@ export default function App() {
         void listPanes()
           .then((latest) => {
             if (paneReorderRequestSeqRef.current === requestSeq) {
-              setPanes(latest);
+              setPanesPreservingRecoveredDismissals(latest);
             }
           })
           .catch(() => undefined);
@@ -1408,11 +1437,12 @@ export default function App() {
     });
   }
 
-  // The "Restored" badge is a one-time, post-restart hint. Clicking it just
-  // clears the flag locally (panes are only fetched once at startup), so the
-  // acknowledgement sticks for the session.
+  // The "Restored" badge is a one-time, post-restart hint. Clicking it clears
+  // the flag locally and records the pane id so later backend pane refetches do
+  // not resurrect the badge during this app session.
   function dismissRecoveredBadge(paneId: string) {
-    setPanes((current) =>
+    dismissedRecoveredPaneIdsRef.current.add(paneId);
+    setPanesPreservingRecoveredDismissals((current) =>
       current.map((pane) => (pane.id === paneId ? { ...pane, recovered: false } : pane)),
     );
   }
@@ -1435,18 +1465,18 @@ export default function App() {
       return;
     }
     // Optimistically rename, then persist; revert if the backend rejects it.
-    setPanes((current) =>
+    setPanesPreservingRecoveredDismissals((current) =>
       current.map((pane) => (pane.id === paneId ? { ...pane, title } : pane)),
     );
     try {
       const updated = await renamePane(paneId, title);
       setManuallyTitledPaneIds((current) => new Set(current).add(paneId));
-      setPanes((current) =>
+      setPanesPreservingRecoveredDismissals((current) =>
         current.map((pane) => (pane.id === paneId ? { ...pane, title: updated.title } : pane)),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      setPanes((current) =>
+      setPanesPreservingRecoveredDismissals((current) =>
         current.map((pane) =>
           pane.id === paneId ? { ...pane, title: previous?.title ?? pane.title } : pane,
         ),
@@ -1458,7 +1488,7 @@ export default function App() {
     setError(null);
     try {
       await killPane(paneToClose.id);
-      setPanes((current) => {
+      setPanesPreservingRecoveredDismissals((current) => {
         const nextPanes = current.filter((pane) => pane.id !== paneToClose.id);
         setActivePaneId((currentActivePaneId) => {
           if (currentActivePaneId !== paneToClose.id) {
@@ -1635,7 +1665,7 @@ export default function App() {
         useWorktree: createInWorktree,
         options: launcherOptions,
       });
-      setPanes((current) => [...current, pane]);
+      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
       if (pane.agentId) {
         setAgentQueuedTurns(pane.agentId, []);
@@ -1660,7 +1690,7 @@ export default function App() {
     setError(null);
     try {
       const pane = await forkAgent(activePane.id, { nest });
-      setPanes((current) =>
+      setPanesPreservingRecoveredDismissals((current) =>
         current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
       );
       setActivePaneId(pane.id);
