@@ -546,10 +546,10 @@ export default function NativeInput({
     if (event.button !== 0) {
       return;
     }
-    if (
-      event.target instanceof HTMLElement &&
-      event.target.closest(".queued-turn-actions")
-    ) {
+    // Use Element, not HTMLElement: clicking the X button hits its <svg>/<path>
+    // (SVGElement, not HTMLElement), which would otherwise skip this guard and
+    // start a drag — swallowing the Remove click.
+    if (event.target instanceof Element && event.target.closest(".queued-turn-actions")) {
       return;
     }
     queuePointerDragRef.current = {
