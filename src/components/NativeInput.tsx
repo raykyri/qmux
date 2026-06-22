@@ -275,6 +275,33 @@ export default function NativeInput({
     stack.scrollTop = getQueueScroll(agent.id) ?? 0;
   }, [agent.id, getQueueScroll]);
 
+  // After queueing a long item, older turns collapse and the stack gets shorter —
+  // which can strand the scroll position past the new end, leaving the queue stuck
+  // showing empty space below the last item. Watch the stack and its rows for size
+  // changes and, whenever the scroll has fallen past the bottom, snap it back down
+  // so the latest item stays in view. Only acts on the invalid over-scrolled
+  // region, so it never fights a user who has scrolled up to read earlier items.
+  useEffect(() => {
+    const stack = queueStackRef.current;
+    if (!stack) {
+      return;
+    }
+    const clampToBottom = () => {
+      const max = stack.scrollHeight - stack.clientHeight;
+      if (max >= 0 && stack.scrollTop > max + 1) {
+        stack.scrollTop = stack.scrollHeight;
+      }
+    };
+    const observer = new ResizeObserver(clampToBottom);
+    observer.observe(stack);
+    // The stack's own box doesn't change when a row collapses; observe the rows so
+    // their height animations are caught too.
+    for (const child of Array.from(stack.children)) {
+      observer.observe(child);
+    }
+    return () => observer.disconnect();
+  }, [queuedTurns.length]);
+
   useEffect(() => {
     return () => {
       if (toastTimer.current !== null) {
