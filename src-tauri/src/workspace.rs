@@ -200,11 +200,22 @@ pub fn attach_agent_pane(
         if previous.id != agent_id && previous.pane_id.as_deref() == Some(&pane_id) {
             let has_queue = !state.list_agent_turn_queue(&previous.id)?.is_empty();
             let orphaned_queue_pane_id = has_queue.then(|| pane_id.clone());
-            state.mutate_agent(&previous.id, |agent| {
+            let detached = state.mutate_agent(&previous.id, |agent| {
                 agent.pane_id = None;
                 agent.orphaned_queue_pane_id = orphaned_queue_pane_id;
                 agent.status = AgentStatus::Idle;
             })?;
+            if let Some(detached) = detached {
+                state.emit(crate::events::QmuxEvent::new(
+                    "agent.detached",
+                    Some(pane_id.clone()),
+                    Some(detached.id.clone()),
+                    serde_json::json!({
+                        "agent": detached,
+                        "replacementAgentId": agent_id,
+                    }),
+                ));
+            }
         }
     }
 
@@ -610,6 +621,10 @@ mod tests {
         assert_eq!(old.pane_id, None);
         assert_eq!(old.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
         assert!(matches!(old.status, AgentStatus::Idle));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-old").unwrap(),
+            vec!["old queued turn".to_string()]
+        );
     }
 
     #[test]

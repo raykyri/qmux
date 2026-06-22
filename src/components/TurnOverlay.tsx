@@ -20,8 +20,9 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import type { Turn, TurnBlock } from "../types";
+import type { Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
+import TranscriptPickerLink from "./TranscriptPickerLink";
 
 // Link actions for rendered markdown, supplied by App through TurnOverlay. Markdown is
 // rendered deep in the timeline tree, so a context avoids threading these everywhere.
@@ -49,6 +50,12 @@ interface TurnOverlayProps {
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
+  // Sessions offered by the empty-state "No transcript loaded" picker (same set as
+  // the composer menu's Past sessions), the currently-loaded transcript path, and
+  // the handler that loads a chosen one (or null to detach).
+  transcriptOptions?: TranscriptOption[];
+  transcriptPath?: string | null;
+  onSelectTranscript?: (path: string | null) => void;
   // When true, the queue/composer area is reserved below the transcript instead of
   // floating over it, with a draggable divider between the two regions.
   queueSplit?: boolean;
@@ -74,13 +81,13 @@ const MIN_QUEUE_SPLIT_HEIGHT = 120;
 const MIN_QUEUE_AREA_HEIGHT = 56;
 const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
-// Matches a whole message wrapped by the same XML-ish tag on its own lines.
-const TAGGED_USER_MESSAGE_PATTERN =
-  /^[^\S\r\n]*<([A-Za-z0-9_-]+)>[^\S\r\n]*(?:\r?\n[\s\S]*)?\r?\n[^\S\r\n]*<\/\1>[^\S\r\n]*$/;
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
   Bash: "command",
   WebFetch: "url",
+  // Claude's file tools: show the path being read/edited as the argument.
+  Read: "file_path",
+  Edit: "file_path",
 } as const;
 
 interface QueueSplitDrag {
@@ -200,6 +207,9 @@ export default function TurnOverlay({
   input,
   agentId,
   notice,
+  transcriptOptions = [],
+  transcriptPath = null,
+  onSelectTranscript,
   queueSplit = false,
   queueSplitHeight,
   onQueueSplitHeightChange,
@@ -458,16 +468,38 @@ export default function TurnOverlay({
         {timelineItems.length === 0 ? (
           <div className="empty-state turn-empty-state">
             <span>No turns yet</span>
-            {notice ? <span className="turn-empty-notice">{notice}</span> : null}
+            {notice === "Transcript unavailable" && onSelectTranscript ? (
+              <TranscriptPickerLink
+                options={transcriptOptions}
+                activePath={transcriptPath}
+                onSelect={onSelectTranscript}
+              />
+            ) : notice ? (
+              <span className="turn-empty-notice">{notice}</span>
+            ) : null}
           </div>
         ) : (
-          timelineItems.map((item) => (
-            <MessageTimelineItemView
-              key={item.key}
-              item={item}
-              assistantLabel={assistantLabel}
-            />
-          ))
+          timelineItems.map((item, index) => {
+            // A continued agent turn — agent text, then a tool-call group, then
+            // more agent text — is still the same speaker, so drop the repeated
+            // name on the continuation. (Consecutive agent messages only stay
+            // separate when activities sit between them; see buildTimelineItems.)
+            const previous = timelineItems[index - 1];
+            const showName = !(
+              item.role === "assistant" &&
+              previous?.role === "assistant" &&
+              previous.blocks.length > 0 &&
+              hasToolCall(previous)
+            );
+            return (
+              <MessageTimelineItemView
+                key={item.key}
+                item={item}
+                assistantLabel={assistantLabel}
+                showName={showName}
+              />
+            );
+          })
         )}
       </div>
       {input ? (
@@ -652,14 +684,16 @@ function countUniqueToolCalls(items: ActivityLeafItem[]) {
 const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
   assistantLabel,
+  showName,
 }: {
   item: MessageItem;
   assistantLabel: string;
+  showName: boolean;
 }) {
   return (
     <>
       {item.blocks.length > 0 ? (
-        <MessageItemView item={item} assistantLabel={assistantLabel} />
+        <MessageItemView item={item} assistantLabel={assistantLabel} showName={showName} />
       ) : null}
       {item.activities.map((activity) => (
         <ActivityItemView key={activity.key} item={activity} />
@@ -668,16 +702,35 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   );
 });
 
-function MessageItemView({ item, assistantLabel }: { item: MessageItem; assistantLabel: string }) {
+function MessageItemView({
+  item,
+  assistantLabel,
+  showName,
+}: {
+  item: MessageItem;
+  assistantLabel: string;
+  showName: boolean;
+}) {
   return (
     <article className={`turn-card role-${item.role}`}>
-      <header>{turnRoleLabel(item.role, assistantLabel)}</header>
+      {showName ? <header>{turnRoleLabel(item.role, assistantLabel)}</header> : null}
       <div className="turn-blocks">
         {item.blocks.map((block, index) => (
           <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
         ))}
       </div>
     </article>
+  );
+}
+
+// True when the item carries a tool call (a tool row, or a tool inside a grouped
+// activity) — used to spot a continued agent turn whose name should be dropped.
+function hasToolCall(item: MessageItem): boolean {
+  return item.activities.some(
+    (activity) =>
+      activity.type === "tool" ||
+      (activity.type === "activityGroup" &&
+        activity.children.some((child) => child.type === "tool")),
   );
 }
 
@@ -701,7 +754,9 @@ function ActivityGroupView({ group }: { group: ActivityGroupItem }) {
     <details className="activity-group-block">
       <summary>
         <DisclosureChevron />
-        <span>{activityGroupLabel(group)}</span>
+        <span className={group.toolCallCount > 0 ? "activity-group-label is-tool-group" : undefined}>
+          {activityGroupLabel(group)}
+        </span>
       </summary>
       <div className="activity-group-children">
         {group.children.map((child) => (
@@ -746,7 +801,131 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
 }
 
 function isTaggedUserInstruction(text: string) {
-  return TAGGED_USER_MESSAGE_PATTERN.test(text);
+  const contentStart = taggedInstructionContentStart(text);
+  if (contentStart === null) {
+    return false;
+  }
+
+  if (isInlineTaggedInstructionSequence(text, contentStart)) {
+    return true;
+  }
+
+  const firstLineEnd = text.indexOf("\n", contentStart);
+  if (firstLineEnd === -1) {
+    return false;
+  }
+
+  const lastLineStart = text.lastIndexOf("\n") + 1;
+  const firstLine = trimHorizontalWhitespace(
+    stripTrailingCarriageReturn(text.slice(contentStart, firstLineEnd)),
+  );
+  const lastLine = trimHorizontalWhitespace(text.slice(lastLineStart));
+  const openingTag = parseOpeningTag(firstLine);
+  return openingTag !== null && parseClosingTag(lastLine) === openingTag;
+}
+
+function isInlineTaggedInstructionSequence(text: string, contentStart: number) {
+  let sawTag = false;
+  for (const rawLine of text.slice(contentStart).split("\n")) {
+    const line = trimHorizontalWhitespace(stripTrailingCarriageReturn(rawLine));
+    if (line.length === 0) {
+      continue;
+    }
+    if (parseInlineTag(line) === null) {
+      return false;
+    }
+    sawTag = true;
+  }
+  return sawTag;
+}
+
+function taggedInstructionContentStart(text: string) {
+  let start = 0;
+  while (start < text.length) {
+    const lineEnd = text.indexOf("\n", start);
+    const end = lineEnd === -1 ? text.length : lineEnd;
+    const line = stripTrailingCarriageReturn(text.slice(start, end));
+    if (!isTaggedInstructionPrefixLine(line)) {
+      return start;
+    }
+    if (lineEnd === -1) {
+      return null;
+    }
+    start = lineEnd + 1;
+  }
+  return null;
+}
+
+function isTaggedInstructionPrefixLine(line: string) {
+  return line.startsWith("# ") || trimHorizontalWhitespace(line).length === 0;
+}
+
+function stripTrailingCarriageReturn(value: string) {
+  return value.endsWith("\r") ? value.slice(0, -1) : value;
+}
+
+function trimHorizontalWhitespace(value: string) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && isHorizontalWhitespace(value[start])) {
+    start += 1;
+  }
+  while (end > start && isHorizontalWhitespace(value[end - 1])) {
+    end -= 1;
+  }
+  return value.slice(start, end);
+}
+
+function parseInlineTag(line: string) {
+  if (line.length < 7 || line[0] !== "<") {
+    return null;
+  }
+  const openingEnd = line.indexOf(">");
+  if (openingEnd < 2) {
+    return null;
+  }
+  const tag = line.slice(1, openingEnd);
+  if (!isInstructionTagName(tag)) {
+    return null;
+  }
+  const closing = `</${tag}>`;
+  return line.endsWith(closing) ? tag : null;
+}
+
+function parseOpeningTag(line: string) {
+  if (line.length < 3 || line[0] !== "<" || line[line.length - 1] !== ">") {
+    return null;
+  }
+  const tag = line.slice(1, -1);
+  return isInstructionTagName(tag) ? tag : null;
+}
+
+function parseClosingTag(line: string) {
+  if (line.length < 4 || line.slice(0, 2) !== "</" || line[line.length - 1] !== ">") {
+    return null;
+  }
+  const tag = line.slice(2, -1);
+  return isInstructionTagName(tag) ? tag : null;
+}
+
+function isInstructionTagName(tag: string) {
+  if (tag.length === 0) {
+    return false;
+  }
+  for (const char of tag) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower && char !== "_" && char !== "-") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isHorizontalWhitespace(char: string) {
+  return char !== "\n" && char !== "\r" && char.trim() === "";
 }
 
 function ToolEntryView({ entry }: { entry: ToolEntry }) {

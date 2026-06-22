@@ -17,6 +17,7 @@ import type {
 import {
   ChevronLeft,
   ChevronRight,
+  GitBranch,
   House,
   MessageSquareText,
   Minus,
@@ -1061,9 +1062,15 @@ export default function App() {
     };
   }
 
+  // Grow the right pane's text by 0.5px for every 1px the terminal font is above
+  // its base size, capped at +1.5px, so the transcript/composer track the terminal
+  // zoom without overpowering it. No change at or below the base size.
+  const turnFontDelta = Math.min(1.5, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.5));
+
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
     "--browser-overlay-left": `${BROWSER_OVERLAY_LEFT_MARGIN}px`,
+    "--turn-font-delta": `${turnFontDelta}px`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
   const contextMenuPane = paneContextMenu
@@ -1189,6 +1196,15 @@ export default function App() {
   useEffect(() => {
     acknowledgePaneIfDone(activePaneId);
   }, [activePaneId]);
+
+  // Selecting a pane clears its one-time "Restored" badge automatically — the same
+  // dismiss-on-select behavior as a done agent's review status — so it's never a
+  // manual click. Guarded so it only fires for a pane that still carries the badge.
+  useEffect(() => {
+    if (activePaneId && panes.some((pane) => pane.id === activePaneId && pane.recovered)) {
+      dismissRecoveredBadge(activePaneId);
+    }
+  }, [activePaneId, panes]);
 
   useEffect(() => {
     const handleFocus = () => acknowledgePaneIfDone(activePaneId);
@@ -1343,7 +1359,7 @@ export default function App() {
     }
     if (
       event.target instanceof HTMLElement &&
-      event.target.closest(".pane-tab-close, .pane-tab-recovered, .pane-tab-status-clickable")
+      event.target.closest(".pane-tab-close, .pane-tab-status-clickable")
     ) {
       return;
     }
@@ -1579,9 +1595,10 @@ export default function App() {
     });
   }
 
-  // The "Restored" badge is a one-time, post-restart hint. Clicking it clears
-  // the flag locally and records the pane id so later backend pane refetches do
-  // not resurrect the badge during this app session.
+  // The "Restored" badge is a one-time, post-restart hint, cleared automatically
+  // when its pane is selected (see the activePaneId effect). Clearing the flag
+  // locally and recording the pane id keeps later backend pane refetches from
+  // resurrecting the badge during this app session.
   function dismissRecoveredBadge(paneId: string) {
     dismissedRecoveredPaneIdsRef.current.add(paneId);
     setPanesPreservingRecoveredDismissals((current) =>
@@ -2197,6 +2214,15 @@ export default function App() {
         return;
       }
 
+      // Cmd-Shift-H also jumps to Home. Claimed before the editable-target bail so
+      // it works from terminal and composer focus too.
+      if (event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey && key === "h") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusHomeTab();
+        return;
+      }
+
       // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser,
       // skipping Home. Claimed here in the capture phase (before the
       // terminal/editable bail) so it works regardless of focus; Tab with Ctrl is
@@ -2719,6 +2745,12 @@ export default function App() {
             aria-label={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
             title={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
           >
+            {state.mode === "newThread" ? (
+              <GitBranch size={13} aria-hidden="true" />
+            ) : null}
+            <span className="command-launcher-send-label">
+              {state.mode === "newThread" ? "Ask in fork" : "Queue"}
+            </span>
             <span aria-hidden="true">
               ⌘<span className="enter-glyph">↵</span>
             </span>
@@ -2883,24 +2915,7 @@ export default function App() {
                   {pane.recovered || paneStatus ? (
                     <span className="pane-tab-meta">
                       {pane.recovered ? (
-                        <small
-                          className="pane-tab-recovered"
-                          role="button"
-                          tabIndex={0}
-                          title="Restored after restart — click to dismiss"
-                          aria-label="Dismiss restored label"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            dismissRecoveredBadge(pane.id);
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              dismissRecoveredBadge(pane.id);
-                            }
-                          }}
-                        >
+                        <small className="pane-tab-status" title="Restored after restart">
                           Restored
                         </small>
                       ) : null}
@@ -3413,6 +3428,13 @@ export default function App() {
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
+            transcriptOptions={activeAgent ? activeTranscriptOptions : []}
+            transcriptPath={activeAgent?.transcriptPath ?? null}
+            onSelectTranscript={
+              activeAgent
+                ? (path) => void handleSelectTranscript(activeAgent.id, path)
+                : undefined
+            }
             queueSplit={activeQueueSplit}
             queueSplitHeight={activeQueueSplitHeight}
             onQueueSplitHeightChange={setActiveQueueSplitHeight}
@@ -3527,7 +3549,7 @@ export default function App() {
       {selectionAsk ? (
         <SelectionAskPopup
           anchor={selectionAsk.anchor}
-          showNewThread={selectionAsk.canFork}
+          canAskNewThread={selectionAsk.canFork}
           onAsk={() => openAskLauncher("ask")}
           onAskNewThread={() => openAskLauncher("newThread")}
           onClose={() => setSelectionAsk(null)}

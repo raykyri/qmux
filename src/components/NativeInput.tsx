@@ -22,6 +22,7 @@ import {
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
+import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions";
 import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
@@ -546,10 +547,10 @@ export default function NativeInput({
     if (event.button !== 0) {
       return;
     }
-    if (
-      event.target instanceof HTMLElement &&
-      event.target.closest(".queued-turn-actions")
-    ) {
+    // Use Element, not HTMLElement: clicking the X button hits its <svg>/<path>
+    // (SVGElement, not HTMLElement), which would otherwise skip this guard and
+    // start a drag — swallowing the Remove click.
+    if (event.target instanceof Element && event.target.closest(".queued-turn-actions")) {
       return;
     }
     queuePointerDragRef.current = {
@@ -558,7 +559,9 @@ export default function NativeInput({
       startY: event.clientY,
       active: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // Don't capture the pointer yet — capturing here would hijack the gesture from
+    // the text and break double-click-to-select on the queued turn. Capture only
+    // once an actual drag starts (see handleQueuePointerMove).
   }
 
   function handleQueuePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -572,6 +575,14 @@ export default function NativeInput({
         return;
       }
       drag.active = true;
+      // Now that it's a real drag, capture the pointer so moves keep arriving even
+      // when the cursor leaves the row. Deferred to here (not pointerdown) so a
+      // click/double-click on the text isn't hijacked from the native selection.
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already have been released.
+      }
       draggingIndexRef.current = drag.from;
       dropIndexRef.current = null;
       setDraggingIndex(drag.from);
@@ -1152,46 +1163,4 @@ export default function NativeInput({
       {confirmDialog}
     </form>
   );
-}
-
-// Title shown for a session row: its first user message, falling back to a short
-// session id when the transcript has no readable prompt yet.
-function sessionMenuTitle(option: TranscriptOption): string {
-  const preview = option.preview?.trim();
-  if (preview) {
-    return preview;
-  }
-  const shortId = option.sessionId ? option.sessionId.split("-")[0] : null;
-  return shortId ? `Session ${shortId}` : "Untitled session";
-}
-
-// Coarse "x ago" label for a session's last-modified time, shown as gray
-// subordinate text under each session title.
-function formatRelativeTime(modifiedMs: number): string {
-  const diffMs = Date.now() - modifiedMs;
-  if (diffMs < 45_000) {
-    return "just now";
-  }
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 60) {
-    return `${minutes} min ago`;
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours} hr ago`;
-  }
-  const days = Math.floor(hours / 24);
-  if (days < 7) {
-    return `${days} day${days === 1 ? "" : "s"} ago`;
-  }
-  if (days < 30) {
-    const weeks = Math.floor(days / 7);
-    return `${weeks} wk ago`;
-  }
-  if (days < 365) {
-    const months = Math.floor(days / 30);
-    return `${months} mo ago`;
-  }
-  const years = Math.floor(days / 365);
-  return `${years} yr ago`;
 }

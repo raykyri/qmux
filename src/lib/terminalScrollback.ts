@@ -217,12 +217,65 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
   }
 
   if (!changed) {
-    return bytes;
+    return stripTrailingTerminalQueries(bytes);
   }
   if (copyFrom < bytes.length) {
     chunks.push(bytes.subarray(copyFrom));
   }
-  return concatChunks(chunks);
+  return stripTrailingTerminalQueries(concatChunks(chunks));
+}
+
+function stripTrailingTerminalQueries(bytes: Uint8Array): Uint8Array {
+  let index = 0;
+  let lastNonQueryEnd = 0;
+
+  while (index < bytes.length) {
+    const queryEnd = terminalQueryEndAt(bytes, index);
+    if (queryEnd !== -1) {
+      index = queryEnd;
+      continue;
+    }
+
+    const c1 = c1ControlAt(bytes, index);
+    if (!c1) {
+      const utf8Length = validUtf8SequenceLength(bytes, index);
+      if (utf8Length > 1) {
+        index += utf8Length;
+        lastNonQueryEnd = index;
+        continue;
+      }
+    }
+
+    index += c1?.length ?? 1;
+    lastNonQueryEnd = index;
+  }
+
+  return lastNonQueryEnd < bytes.length ? bytes.subarray(0, lastNonQueryEnd) : bytes;
+}
+
+function terminalQueryEndAt(bytes: Uint8Array, index: number): number {
+  const c1 = c1ControlAt(bytes, index);
+  const byte = c1?.code ?? bytes[index];
+
+  if (byte === CSI_8BIT) {
+    const end = findCsiEnd(bytes, index + (c1?.length ?? 1));
+    if (end === -1) {
+      return -1;
+    }
+    const csi = parseCsi(bytes, index + (c1?.length ?? 1), end);
+    return isTerminalQueryCsi(csi) ? end + 1 : -1;
+  }
+
+  if (byte === ESC && bytes[index + 1] === ESC_CSI) {
+    const end = findCsiEnd(bytes, index + 2);
+    if (end === -1) {
+      return -1;
+    }
+    const csi = parseCsi(bytes, index + 2, end);
+    return isTerminalQueryCsi(csi) ? end + 1 : -1;
+  }
+
+  return -1;
 }
 
 function findCsiEnd(bytes: Uint8Array, start: number): number {
@@ -237,12 +290,14 @@ function findCsiEnd(bytes: Uint8Array, start: number): number {
 
 type ParsedCsi = {
   final: number;
+  intermediates: number[];
   private: boolean;
   params: number[];
 };
 
 function parseCsi(bytes: Uint8Array, start: number, end: number): ParsedCsi {
   const params: number[] = [];
+  const intermediates: number[] = [];
   let privatePrefix = false;
   let current: number | null = null;
 
@@ -261,6 +316,14 @@ function parseCsi(bytes: Uint8Array, start: number, end: number): ParsedCsi {
       current = null;
       continue;
     }
+    if (byte >= 0x20 && byte <= 0x2f) {
+      if (current !== null) {
+        params.push(current);
+        current = null;
+      }
+      intermediates.push(byte);
+      continue;
+    }
     if (current !== null) {
       params.push(current);
       current = null;
@@ -272,6 +335,7 @@ function parseCsi(bytes: Uint8Array, start: number, end: number): ParsedCsi {
 
   return {
     final: bytes[end],
+    intermediates,
     private: privatePrefix,
     params,
   };
@@ -279,6 +343,18 @@ function parseCsi(bytes: Uint8Array, start: number, end: number): ParsedCsi {
 
 function shouldStripCsi(csi: ParsedCsi): boolean {
   return csi.final === 0x68 || csi.final === 0x6c; // h/l: mode set/reset
+}
+
+function isTerminalQueryCsi(csi: ParsedCsi): boolean {
+  if (csi.final === 0x63 || csi.final === 0x6e) {
+    return true; // c: DA, n: DSR/CPR
+  }
+  // $p: DECRQM
+  return (
+    csi.final === 0x70 &&
+    csi.intermediates.length === 1 &&
+    csi.intermediates[0] === 0x24
+  );
 }
 
 function isAlternateScreenSet(csi: ParsedCsi): boolean {
