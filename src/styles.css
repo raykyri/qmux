@@ -2670,14 +2670,13 @@ button:disabled {
 }
 
 .composer-menu-popover {
-  /* Anchored above the trigger so it opens upward, away from the bottom edge.
-     Horizontally centered over the trigger so its width grows evenly to both
-     sides instead of spilling off one edge of the (narrow) right pane. */
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 5;
+  /* Portaled to <body> and positioned in fixed coordinates by JS (see
+     positionMenu in NativeInput): opened upward from the ⋮ trigger and clamped
+     to stay within the right pane, so it never spills off either edge or gets
+     clipped by the pane's overflow:hidden. left/top/max-height come from the
+     inline style. */
+  position: fixed;
+  z-index: 15;
   display: flex;
   width: 220px;
   max-width: calc(100vw - 24px);
@@ -2689,6 +2688,7 @@ button:disabled {
   border-radius: 8px;
   background: #1d2224;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
 }
 
 .composer-menu-item {
