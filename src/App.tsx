@@ -3443,6 +3443,13 @@ export default function App() {
             header={
               <TurnPaneHeader
                 sessionId={activeAgent?.sessionId ?? null}
+                transcriptOptions={activeAgent ? activeTranscriptOptions : []}
+                transcriptPath={activeAgent?.transcriptPath ?? null}
+                onSelectTranscript={(path) => {
+                  if (activeAgent) {
+                    void handleSelectTranscript(activeAgent.id, path);
+                  }
+                }}
                 canFork={Boolean(
                   activePane && activeAgent?.adapter === "claude" && activeAgent?.sessionId,
                 )}
@@ -3490,10 +3497,6 @@ export default function App() {
                     composerPolicy={getAgentUiAdapter(activeAgent.adapter).composerPolicy(
                       activeAgent,
                     )}
-                    transcriptOptions={activeTranscriptOptions}
-                    onSelectTranscript={(path) =>
-                      void handleSelectTranscript(activeAgent.id, path)
-                    }
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}

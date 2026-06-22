@@ -6,7 +6,7 @@ import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions"
 
 // Shown in the empty transcript state when no transcript is loaded: a "No
 // transcript loaded" link with a chevron that opens a dropdown of the available
-// sessions — the same items as the composer menu's "Past sessions" — and loads
+// sessions — the same items as the header session menu — and loads
 // the chosen one. With no sessions to offer it degrades to plain text. The
 // dropdown is portaled to <body> so it escapes the timeline's clipping.
 export default function TranscriptPickerLink({

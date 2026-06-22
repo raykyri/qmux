@@ -22,11 +22,10 @@ import {
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
-import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions";
 import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
-import type { AgentInfo, PaneInfo, QueuedTurn, TranscriptOption } from "../types";
+import type { AgentInfo, PaneInfo, QueuedTurn } from "../types";
 
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
@@ -119,10 +118,6 @@ interface NativeInputProps {
   transcriptText: string;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
-  // Sessions in this agent's folder for the bottom-left session switcher; the
-  // active one is whichever matches agent.transcriptPath.
-  transcriptOptions: TranscriptOption[];
-  onSelectTranscript: (path: string | null) => void;
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
@@ -144,8 +139,6 @@ export default function NativeInput({
   transcriptText,
   transcriptCopyText,
   composerPolicy,
-  transcriptOptions,
-  onSelectTranscript,
   onQueueChange,
   onDraftChange,
   onQueuedTurnCollapseToggle,
@@ -228,8 +221,6 @@ export default function NativeInput({
   const sendDisabled = submitting || !canSend || value.trim().length === 0;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
-  // Sorted newest first so recent sessions appear at the top of the menu.
-  const sessionOptions = [...transcriptOptions].sort((a, b) => b.modifiedMs - a.modifiedMs);
 
   // Close the actions menu on an outside click or Escape while it is open. The
   // popover is portaled out of menuRef, so a click counts as "inside" if it lands
@@ -1036,42 +1027,6 @@ export default function NativeInput({
                 >
                   Copy transcript
                 </button>
-                {transcriptOptions.length > 0 ? (
-                  <>
-                    <div className="composer-menu-divider" role="separator" />
-                    <div className="composer-menu-label">Past sessions</div>
-                    <div
-                      className="composer-menu-sessions"
-                      role="group"
-                      aria-label="Past sessions"
-                    >
-                      {sessionOptions.map((option) => {
-                        const active = option.path === agent.transcriptPath;
-                        return (
-                          <button
-                            key={option.path}
-                            type="button"
-                            role="menuitemcheckbox"
-                            aria-checked={active}
-                            className={`composer-menu-item session-menu-item${
-                              active ? " is-active" : ""
-                            }`}
-                            onClick={() => {
-                              setMenuOpen(false);
-                              onSelectTranscript(active ? null : option.path);
-                            }}
-                          >
-                            <span className="session-menu-title">{sessionMenuTitle(option)}</span>
-                            <span className="session-menu-meta">
-                              {formatRelativeTime(option.modifiedMs)}
-                              {option.boundToOtherAgent ? " · in use by another agent" : ""}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
-                ) : null}
                 {recentMessages.length > 0 ? (
                   <>
                     <div className="composer-menu-divider" role="separator" />

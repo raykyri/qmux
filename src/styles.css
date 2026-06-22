@@ -1773,9 +1773,21 @@ button:disabled {
   background: #14171a;
 }
 
+/* The session label/dropdown anchor fills the space before the header controls.
+   The menu is positioned from this box so its left edge lines up with "Session:". */
+.turn-pane-session-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+}
+
 /* The session id (or "New session"), vertically centred and truncated. */
 .turn-pane-session {
-  flex: 1;
+  display: block;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1785,11 +1797,10 @@ button:disabled {
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
 }
 
-/* The session id doubles as a copy-to-clipboard control: it drops the button
-   chrome so it still reads as the inline label, and only brightens on
-   hover/focus to hint that it's clickable. */
-.turn-pane-session-copy {
-  display: block;
+/* The session label opens a menu; it drops the button chrome so it still reads as
+   inline header text, and only brightens on hover/focus to hint that it is
+   clickable. */
+.turn-pane-session-trigger {
   min-height: 0;
   padding: 0;
   border: none;
@@ -1799,15 +1810,75 @@ button:disabled {
   cursor: pointer;
 }
 
-.turn-pane-session-copy:hover,
-.turn-pane-session-copy:focus-visible {
+.turn-pane-session-trigger:hover,
+.turn-pane-session-trigger:focus-visible {
   color: #f1f0e8;
 }
 
-.turn-pane-session-copy:focus-visible {
+.turn-pane-session-trigger:focus-visible {
   outline: none;
   box-shadow: none;
   text-decoration: underline;
+}
+
+.turn-pane-session-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 6;
+  display: flex;
+  width: min(320px, calc(var(--turn-pane-width, 420px) - 20px));
+  max-height: min(420px, calc(100vh - 64px));
+  min-width: 220px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid #2a2d2f;
+  border-radius: 8px;
+  background: #1d2224;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.turn-pane-session-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.turn-pane-session-menu-item {
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-pane-session-menu-item:hover:not(:disabled) {
+  background: #283032;
+}
+
+.turn-pane-session-menu-item:disabled {
+  color: #6f7773;
+  cursor: default;
+}
+
+.turn-pane-session-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: #2a2d2f;
 }
 
 .turn-pane-header-controls {
@@ -2873,21 +2944,11 @@ header + .turn-blocks {
   color: #f1f0e8;
 }
 
-.composer-menu-sessions {
-  display: flex;
-  max-height: 260px;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
 /* Stack the session title over its gray last-modified subtext as plain block
    flow. A flex button (any direction) renders the rows blank in WebKit (qmux's
    WKWebView) — it collapses the children — so the row stays block and the title/
    meta carry explicit line-heights and margins so they don't run together. */
-.composer-menu-sessions .composer-menu-item.session-menu-item {
+.turn-pane-session-list .turn-pane-session-menu-item.session-menu-item {
   display: block;
   width: 100%;
   min-height: 48px;
