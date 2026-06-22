@@ -1924,7 +1924,7 @@ button:disabled {
      instead of stretching the track and scrolling the whole transcript sideways. */
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
-  gap: 8px;
+  gap: 5px;
   /* The transcript fills the whole pane and is the only scroll surface; the
      bottom padding keeps the latest turn clear of the floating composer. */
   padding: 10px 10px 132px;
@@ -2021,13 +2021,6 @@ button:disabled {
   background: #283032;
 }
 
-/* Pack the quiet disclosure rows (tool/thinking/assistant toggles) closer than the
-   8px timeline gap that surrounds the bordered message cards — it only applies
-   between two consecutive non-card rows, so cards keep their breathing room. */
-.turn-timeline > :not(.turn-card) + :not(.turn-card) {
-  margin-top: -6px;
-}
-
 .turn-sidebar-input {
   position: absolute;
   right: 0;
@@ -2070,7 +2063,11 @@ button:disabled {
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 2px 10px 0;
+  padding: 2px 10px;
+}
+
+.turn-card.role-user {
+  margin: 8px 0 6px;
 }
 
 .turn-card header {
@@ -2087,11 +2084,14 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
+}
+
+header + .turn-blocks {
   margin-top: 5px;
 }
 
 .turn-card.role-user .turn-blocks {
-  margin-top: 3px;
+  margin-top: 2px;
 }
 
 .turn-text,
@@ -2108,7 +2108,7 @@ button:disabled {
 }
 
 .turn-text.is-tagged-instruction {
-  color: #aab1ad;
+  color: #8f9994;
 }
 
 .turn-markdown > :first-child {
@@ -2234,11 +2234,11 @@ button:disabled {
 .tool-block,
 .thinking-block,
 .activity-group-block {
-  margin: -1px 0 -2px;
   background: transparent;
   color: #d9ddd9;
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
   overflow: visible;
+  margin: -2px 0 0;
 }
 
 .activity-group-block {
@@ -2283,9 +2283,13 @@ button:disabled {
 
 /* Borderless rows still need a click affordance, so highlight on hover. */
 .tool-block > summary:hover,
-.thinking-block > summary:hover,
-.activity-group-block > summary:hover {
+.thinking-block > summary:hover {
   background: #15191b;
+}
+
+.tool-block.tool-pair > summary:hover,
+.activity-group-block > summary:hover {
+  background: #1b1f21;
 }
 
 /* Errors lost their red box along with every other border; a red left rule on the
@@ -2312,6 +2316,7 @@ button:disabled {
 
 .tool-summary-main {
   color: #aab1ad;
+  font-size: calc(14px + var(--turn-font-delta, 0px));
   font-weight: 400;
 }
 
@@ -2374,15 +2379,15 @@ button:disabled {
   color: #aab1ad;
 }
 
+.thinking-block > summary > span {
+  font-size: calc(14px + var(--turn-font-delta, 0px));
+}
+
 .activity-group-children {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin-top: 2px;
   padding-left: 18px;
-}
-
-.activity-group-children > :not(:first-child) {
-  margin-top: -6px;
 }
 
 .native-input {
