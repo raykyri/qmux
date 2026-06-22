@@ -35,6 +35,8 @@ interface TerminalPaneProps {
   onOpenLink?: (url: string) => void;
   /** Right-click on a terminal link: open the internal/external chooser. */
   onLinkContextMenu?: (url: string, x: number, y: number) => void;
+  /** Called when xterm parses an OSC 0/2 window-title update from PTY output. */
+  onTerminalTitleChange?: (paneId: string, title: string) => void;
 }
 
 // Matches http(s) URLs in terminal text. Conservative: stops at whitespace and a few
@@ -132,6 +134,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     onUserInput,
     onOpenLink,
     onLinkContextMenu,
+    onTerminalTitleChange,
   },
   ref,
 ) {
@@ -157,6 +160,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onOpenLinkRef.current = onOpenLink;
   const onLinkContextMenuRef = useRef(onLinkContextMenu);
   onLinkContextMenuRef.current = onLinkContextMenu;
+  const onTerminalTitleChangeRef = useRef(onTerminalTitleChange);
+  onTerminalTitleChangeRef.current = onTerminalTitleChange;
   // The URL the mouse is currently over (set by the link provider's hover/leave), so a
   // right-click can target it for the chooser menu.
   const hoveredLinkRef = useRef<string | null>(null);
@@ -482,6 +487,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         }
         void writePane(pane.id, data);
       });
+      const titleDisposable = terminal.onTitleChange((title) => {
+        onTerminalTitleChangeRef.current?.(pane.id, title);
+      });
 
       // Make http(s) URLs in the scrollback clickable (hover underlines them).
       const linkProviderDisposable = terminal.registerLinkProvider({
@@ -584,6 +592,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         hostEl.removeEventListener("paste", handlePaste, true);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
         inputDisposable.dispose();
+        titleDisposable.dispose();
         linkProviderDisposable.dispose();
         resultsDisposable.dispose();
         resizeObserver.disconnect();
