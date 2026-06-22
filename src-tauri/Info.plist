@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Shown by macOS when dictation first requests the microphone. Tauri merges
+       this file into the generated Info.plist for both `tauri dev` and bundles. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>qmux uses the microphone for voice dictation into the composer.</string>
+</dict>
+</plist>
