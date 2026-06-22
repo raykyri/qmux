@@ -8,6 +8,7 @@
     "dev:tauri": "tauri dev",
     "build": "scripts/build.sh",
     "build:web": "tsc && vite build",
+    "check:scrollback": "node scripts/check-terminal-scrollback.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
