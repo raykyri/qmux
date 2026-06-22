@@ -847,11 +847,9 @@ export default function NativeInput({
           }
           rows={1}
         />
-        <div className="native-input-actions">
+        <div className="native-input-submit-actions">
           <DictationMicButton dictation={dictation} className="native-input-mic" />
           {paused ? <span className="composer-paused-label">Paused</span> : null}
-        </div>
-        <div className="native-input-submit-actions">
           <div className="composer-menu" ref={menuRef}>
             <button
               type="button"
