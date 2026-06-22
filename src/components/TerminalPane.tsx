@@ -23,6 +23,10 @@ import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 import { bytesFromBase64 } from "../lib/appHelpers";
+import {
+  RESTORED_SCROLLBACK_TERMINAL_RESET,
+  sanitizeRestoredScrollback,
+} from "../lib/terminalScrollback";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
@@ -681,7 +685,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     void Promise.all([scrollbackBytesPromiseRef.current, waitForTerminalReady()]).then(
       ([restored]) => {
         if (!cancelled && !scrollbackReplayedRef.current && restored && restored.length > 0) {
-          writeTerminalData(restored);
+          const sanitized = sanitizeRestoredScrollback(restored);
+          if (sanitized.length > 0) {
+            writeTerminalData(sanitized);
+          }
+          writeTerminalData(RESTORED_SCROLLBACK_TERMINAL_RESET);
           scrollbackReplayedRef.current = true;
         }
         if (!cancelled) {
