@@ -1,4 +1,4 @@
-import { GitBranch, Globe, SquareCenterlineDashedVertical } from "lucide-react";
+import { Globe, Split, SquareCenterlineDashedVertical } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { writeClipboardText } from "../lib/clipboard";
 
@@ -121,7 +121,7 @@ export default function TurnPaneHeader({
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((open) => !open)}
             >
-              <GitBranch size={14} aria-hidden="true" />
+              <Split size={14} aria-hidden="true" />
             </button>
             {menuOpen ? (
               <div className="turn-pane-fork-menu" role="menu">

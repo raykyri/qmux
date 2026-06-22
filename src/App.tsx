@@ -2905,6 +2905,7 @@ export default function App() {
                     draft={activeDraft}
                     queuedTurns={activeQueuedTurns}
                     collapsedQueuedTurns={activeCollapsedQueuedTurns}
+                    queueSplit={activeQueueSplit}
                     transcriptText={activeTranscript}
                     transcriptCopyText={() =>
                       formatTranscriptCopyJson({

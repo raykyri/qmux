@@ -1818,6 +1818,13 @@ button:disabled {
   gap: 6px;
 }
 
+/* Empty-queue placeholder shown above the composer when the queue and transcript
+   are split into view together; grows to fill the reserved queue area so the text
+   sits centered like the transcript's "No turns yet". */
+.queue-empty-state {
+  flex: 1 1 auto;
+}
+
 .turn-empty-notice {
   max-width: 260px;
   /* Same muted gray as the placeholder above it (.empty-state); a missing
@@ -2444,6 +2451,13 @@ button:disabled {
   justify-content: flex-start;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* The dots menu moved down into the submit row, so this row holds only the mic
+   and the paused label — both optional. When neither is present, collapse it so
+   the composer's column gap doesn't leave a blank strip above the buttons. */
+.native-input-actions:empty {
+  display: none;
 }
 
 /* Voice dictation mic toggle, shared by the composer and the launcher (see
