@@ -128,9 +128,10 @@ impl QmuxConfig {
 
     fn default_config() -> Result<Self, String> {
         let home = env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+        let qmux_root = PathBuf::from(home).join("qmux");
         Ok(Self {
-            workspace_root: PathBuf::from(home).join("qmux/workspaces"),
-            socket_path: env::temp_dir().join("qmux.sock"),
+            workspace_root: qmux_root.join("workspaces"),
+            socket_path: qmux_root.join("run/qmux.sock"),
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
@@ -259,6 +260,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(configured.codex_binary(), "/opt/bin/codex");
+    }
+
+    #[test]
+    fn default_socket_path_lives_under_owned_run_dir() {
+        let home = env::var("HOME").unwrap();
+        let config = QmuxConfig::default_config().unwrap();
+        let temp_dir = env::temp_dir();
+
+        assert_eq!(
+            config.workspace_root,
+            PathBuf::from(&home).join("qmux/workspaces")
+        );
+        assert_eq!(
+            config.socket_path,
+            PathBuf::from(home).join("qmux/run/qmux.sock")
+        );
+        assert_ne!(config.socket_path.parent(), Some(temp_dir.as_path()));
     }
 
     #[test]
