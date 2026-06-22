@@ -25,6 +25,34 @@ pub(crate) fn shell_quote_path(path: &Path) -> String {
     format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
+/// Single-quotes an arbitrary argument for safe interpolation into a POSIX shell
+/// command. Used to embed a session id into an adapter's resume command line.
+pub(crate) fn shell_quote_arg(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Finds the existing unbound agent for `session_id` running in `cwd`, so a shell
+/// resume (`claude --resume <id>` / `codex resume <id>`) rebinds the original agent
+/// instead of minting a duplicate every restart. Scoped to the same adapter, the
+/// same directory, and an agent not currently bound to a pane, so a manual resume
+/// of a live session (bound elsewhere) or a different project still starts fresh.
+pub(crate) fn reusable_session_agent(
+    state: &AppState,
+    adapter_id: &str,
+    session_id: Option<&str>,
+    cwd: &str,
+) -> Result<Option<AgentInfo>, String> {
+    let Some(session_id) = session_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(state.list_agents()?.into_iter().find(|agent| {
+        agent.adapter == adapter_id
+            && agent.pane_id.is_none()
+            && agent.worktree_dir == cwd
+            && agent.session_id.as_deref() == Some(session_id)
+    }))
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnAgentRequest {
@@ -153,6 +181,13 @@ pub trait AgentAdapter: Send + Sync {
     ) -> Result<PreparedShellAgentLaunch, String>;
 
     fn shell_commands(&self) -> Vec<ShellCommandIntegration>;
+
+    /// The shell command that resumes `session_id` through this adapter's injected
+    /// wrapper function (e.g. `claude --resume <id>`), used to re-launch the agent in
+    /// a recovered shell pane. Defaults to `None` for adapters without a resume command.
+    fn shell_resume_command(&self, _session_id: &str) -> Option<String> {
+        None
+    }
 
     fn ingest_notification(
         &self,
@@ -417,6 +452,79 @@ mod tests {
         assert!(
             err.contains("only supported for Claude"),
             "unexpected error: {err}"
+        );
+    }
+
+    fn session_agent(id: &str, pane_id: Option<&str>, dir: &str, session: &str) -> AgentInfo {
+        AgentInfo {
+            id: id.to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: dir.to_string(),
+            branch: None,
+            pane_id: pane_id.map(ToString::to_string),
+            orphaned_queue_pane_id: None,
+            session_id: Some(session.to_string()),
+            transcript_path: None,
+            status: AgentStatus::Idle,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            paused: false,
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn reusable_session_agent_matches_an_unbound_same_dir_session() {
+        let state = AppState::new(test_config());
+        state
+            .insert_agent(session_agent("agent-1", None, "/work", "sess-1"))
+            .unwrap();
+
+        let found = reusable_session_agent(&state, "claude", Some("sess-1"), "/work").unwrap();
+        assert_eq!(
+            found.as_ref().map(|agent| agent.id.as_str()),
+            Some("agent-1")
+        );
+
+        // No session id, a different session, a different dir, or a different adapter
+        // all start fresh instead of reusing.
+        assert!(
+            reusable_session_agent(&state, "claude", None, "/work")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reusable_session_agent(&state, "claude", Some("other"), "/work")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reusable_session_agent(&state, "claude", Some("sess-1"), "/elsewhere")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reusable_session_agent(&state, "codex", Some("sess-1"), "/work")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reusable_session_agent_never_hijacks_a_bound_session() {
+        let state = AppState::new(test_config());
+        state
+            .insert_agent(session_agent("agent-1", Some("pane-9"), "/work", "sess-1"))
+            .unwrap();
+
+        // A session still bound to a live pane must not be stolen by a resume.
+        assert!(
+            reusable_session_agent(&state, "claude", Some("sess-1"), "/work")
+                .unwrap()
+                .is_none()
         );
     }
 }

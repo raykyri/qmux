@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, ensure_on_path, shell_quote_path,
+    SpawnAgentRequest, ensure_on_path, reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -93,6 +93,10 @@ impl AgentAdapter for CodexAdapter {
             command_name: "codex",
             adapter_id: self.id(),
         }]
+    }
+
+    fn shell_resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("codex resume {}", shell_quote_arg(session_id)))
     }
 
     fn ingest_notification(
@@ -293,18 +297,30 @@ impl CodexAdapter {
         }
         let codex_home = ensure_codex_integration()?;
 
-        let agent = prepare_agent_workspace(
+        // A restart-driven resume (`codex resume <id>`) rebinds the original agent for
+        // that session instead of minting a duplicate; any other invocation starts a
+        // fresh agent in the current directory.
+        let cwd_str = cwd.display().to_string();
+        let agent = match reusable_session_agent(
             state,
-            PrepareAgentWorkspaceRequest {
-                group_id: None,
-                base_repo: Some(cwd.display().to_string()),
-                base_ref: Some("HEAD".to_string()),
-                adapter: self.id().to_string(),
-                model: None,
-                // Typing `codex` in a shell runs in the current directory; no worktree.
-                use_worktree: false,
-            },
-        )?;
+            self.id(),
+            codex_resume_session_id(&request.args),
+            &cwd_str,
+        )? {
+            Some(existing) => existing,
+            None => prepare_agent_workspace(
+                state,
+                PrepareAgentWorkspaceRequest {
+                    group_id: None,
+                    base_repo: Some(cwd_str.clone()),
+                    base_ref: Some("HEAD".to_string()),
+                    adapter: self.id().to_string(),
+                    model: None,
+                    // Typing `codex` in a shell runs in the current directory; no worktree.
+                    use_worktree: false,
+                },
+            )?,
+        };
         let agent = attach_codex_agent_pane(
             state,
             &agent.id,
@@ -667,6 +683,22 @@ fn args_contain_prompt(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// Extracts the session id from a `codex resume <id>` shell argument list, so a resume
+/// launch can rebind the original agent. `None` when the invocation isn't a `resume` of
+/// a specific session (e.g. `codex resume --last`).
+fn codex_resume_session_id(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "resume" {
+            return iter.find(|next| !next.starts_with('-')).map(String::as_str);
+        }
+        if arg == "--" {
+            break;
+        }
+    }
+    None
 }
 
 fn codex_value_flag(arg: &str) -> bool {
@@ -1355,6 +1387,19 @@ mod tests {
             "fix the bug"
         ])));
         assert!(args_contain_prompt(&svec(&["--", "after separator"])));
+    }
+
+    #[test]
+    fn codex_resume_session_id_reads_the_resumed_session() {
+        assert_eq!(
+            codex_resume_session_id(&svec(&["resume", "sess-1"])),
+            Some("sess-1")
+        );
+        // Not a resume invocation, or no concrete session id (e.g. `resume --last`).
+        assert_eq!(codex_resume_session_id(&svec(&[])), None);
+        assert_eq!(codex_resume_session_id(&svec(&["fix the bug"])), None);
+        assert_eq!(codex_resume_session_id(&svec(&["resume"])), None);
+        assert_eq!(codex_resume_session_id(&svec(&["resume", "--last"])), None);
     }
 
     #[test]
