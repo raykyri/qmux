@@ -461,13 +461,27 @@ export default function TurnOverlay({
             {notice ? <span className="turn-empty-notice">{notice}</span> : null}
           </div>
         ) : (
-          timelineItems.map((item) => (
-            <MessageTimelineItemView
-              key={item.key}
-              item={item}
-              assistantLabel={assistantLabel}
-            />
-          ))
+          timelineItems.map((item, index) => {
+            // A continued agent turn — agent text, then a tool-call group, then
+            // more agent text — is still the same speaker, so drop the repeated
+            // name on the continuation. (Consecutive agent messages only stay
+            // separate when activities sit between them; see buildTimelineItems.)
+            const previous = timelineItems[index - 1];
+            const showName = !(
+              item.role === "assistant" &&
+              previous?.role === "assistant" &&
+              previous.blocks.length > 0 &&
+              hasToolCall(previous)
+            );
+            return (
+              <MessageTimelineItemView
+                key={item.key}
+                item={item}
+                assistantLabel={assistantLabel}
+                showName={showName}
+              />
+            );
+          })
         )}
       </div>
       {input ? (
@@ -652,14 +666,16 @@ function countUniqueToolCalls(items: ActivityLeafItem[]) {
 const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
   assistantLabel,
+  showName,
 }: {
   item: MessageItem;
   assistantLabel: string;
+  showName: boolean;
 }) {
   return (
     <>
       {item.blocks.length > 0 ? (
-        <MessageItemView item={item} assistantLabel={assistantLabel} />
+        <MessageItemView item={item} assistantLabel={assistantLabel} showName={showName} />
       ) : null}
       {item.activities.map((activity) => (
         <ActivityItemView key={activity.key} item={activity} />
@@ -668,16 +684,35 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   );
 });
 
-function MessageItemView({ item, assistantLabel }: { item: MessageItem; assistantLabel: string }) {
+function MessageItemView({
+  item,
+  assistantLabel,
+  showName,
+}: {
+  item: MessageItem;
+  assistantLabel: string;
+  showName: boolean;
+}) {
   return (
     <article className={`turn-card role-${item.role}`}>
-      <header>{turnRoleLabel(item.role, assistantLabel)}</header>
+      {showName ? <header>{turnRoleLabel(item.role, assistantLabel)}</header> : null}
       <div className="turn-blocks">
         {item.blocks.map((block, index) => (
           <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
         ))}
       </div>
     </article>
+  );
+}
+
+// True when the item carries a tool call (a tool row, or a tool inside a grouped
+// activity) — used to spot a continued agent turn whose name should be dropped.
+function hasToolCall(item: MessageItem): boolean {
+  return item.activities.some(
+    (activity) =>
+      activity.type === "tool" ||
+      (activity.type === "activityGroup" &&
+        activity.children.some((child) => child.type === "tool")),
   );
 }
 
