@@ -68,6 +68,9 @@ const MIN_QUEUE_SPLIT_HEIGHT = 120;
 const MIN_QUEUE_AREA_HEIGHT = 56;
 const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
+// Matches a whole message wrapped by the same XML-ish tag on its own lines.
+const TAGGED_USER_MESSAGE_PATTERN =
+  /^[^\S\r\n]*<([A-Za-z0-9_-]+)>[^\S\r\n]*(?:\r?\n[\s\S]*)?\r?\n[^\S\r\n]*<\/\1>[^\S\r\n]*$/;
 
 interface QueueSplitDrag {
   pointerId: number;
@@ -648,7 +651,8 @@ function activityGroupLabel(group: ActivityGroupItem) {
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
   if (block.type === "text") {
     if (role !== "assistant") {
-      return <p className="turn-text">{block.text}</p>;
+      const muted = role === "user" && isTaggedUserInstruction(block.text);
+      return <p className={`turn-text${muted ? " is-tagged-instruction" : ""}`}>{block.text}</p>;
     }
     return (
       <div className="turn-markdown">
@@ -668,6 +672,10 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
       <pre>{stringify(block.value)}</pre>
     </details>
   );
+}
+
+function isTaggedUserInstruction(text: string) {
+  return TAGGED_USER_MESSAGE_PATTERN.test(text);
 }
 
 function ToolEntryView({ entry }: { entry: ToolEntry }) {
