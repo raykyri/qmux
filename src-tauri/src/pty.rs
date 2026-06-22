@@ -25,10 +25,11 @@ const MIN_INITIAL_COLS: u16 = 20;
 const MIN_INITIAL_ROWS: u16 = 5;
 const MAX_INITIAL_COLS: u16 = 500;
 const MAX_INITIAL_ROWS: u16 = 200;
-/// Cap on PTY output buffered before the frontend attaches. Only a prompt (or a
-/// recovered pane's startup banner) is ever expected here; the cap just bounds a
-/// pathological pre-attach burst, keeping the most recent bytes.
-const BACKLOG_CAP: usize = 256 * 1024;
+/// Cap on PTY output buffered before the frontend attaches. Recovered agent TUIs
+/// can repaint a large transcript before the webview replays durable scrollback
+/// and calls `pane_attach`; keeping the full repaint preserves SGR/background
+/// state that later bytes in the same draw rely on.
+const BACKLOG_CAP: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1235,6 +1236,16 @@ mod tests {
         append_capped(&mut buffer, b"hello");
         append_capped(&mut buffer, b" world");
         assert_eq!(buffer, b"hello world");
+    }
+
+    #[test]
+    fn append_capped_keeps_large_recovered_tui_repaint() {
+        let mut buffer = Vec::new();
+        let repaint = vec![b'x'; 512 * 1024];
+        append_capped(&mut buffer, &repaint);
+
+        assert_eq!(buffer.len(), repaint.len());
+        assert_eq!(buffer[0], b'x');
     }
 
     #[test]
