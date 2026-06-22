@@ -1703,6 +1703,12 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   background: #171b1d;
+  /* Add the terminal-zoom delta (set on the app shell, 0 by default) to the type
+     scale so every right-pane element sized off these vars — composer, queue,
+     etc. — grows with the terminal. Hard-coded px sizes add the delta directly. */
+  --fs-xs: calc(11px + var(--turn-font-delta, 0px));
+  --fs-sm: calc(12px + var(--turn-font-delta, 0px));
+  --fs-base: calc(13px + var(--turn-font-delta, 0px));
 }
 
 /* The pane's left edge is drawn solely by the resizer's ::before line so there's
@@ -1797,7 +1803,7 @@ button:disabled {
   white-space: nowrap;
   color: #8a938e;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
 }
 
 /* The session id doubles as a copy-to-clipboard control: it drops the button
@@ -1965,7 +1971,7 @@ button:disabled {
   /* Same muted gray as the placeholder above it (.empty-state); a missing
      transcript is an ordinary state, not a warning. */
   color: #aab1ad;
-  font-size: 12px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   line-height: 1.4;
 }
 
@@ -2022,7 +2028,7 @@ button:disabled {
 
 .turn-card header {
   color: #96e0cf;
-  font-size: 11px;
+  font-size: calc(11px + var(--turn-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
   /* Don't let the role label ("User"/"Claude") get caught in a transcript
@@ -2041,7 +2047,7 @@ button:disabled {
 .turn-markdown {
   min-width: 0;
   color: #f1f0e8;
-  font-size: 13px;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   overflow-wrap: anywhere;
 }
 
@@ -2083,7 +2089,7 @@ button:disabled {
 .turn-markdown h6 {
   margin: 10px 0 5px;
   color: #f4f3ec;
-  font-size: 13px;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   line-height: 1.35;
 }
 
@@ -2119,7 +2125,7 @@ button:disabled {
   padding: 1px 4px;
   color: #e7e7e2;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
 }
 
 .turn-markdown pre {
@@ -2183,7 +2189,7 @@ button:disabled {
 .activity-group-block {
   background: transparent;
   color: #d9ddd9;
-  font-size: 12px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   overflow: visible;
 }
 
@@ -2263,7 +2269,7 @@ button:disabled {
 
 .tool-summary-meta {
   color: #8f9994;
-  font-size: 11px;
+  font-size: calc(11px + var(--turn-font-delta, 0px));
 }
 
 /* Expanded payloads keep a faint full box so raw output stays delineated, indented
@@ -2279,7 +2285,7 @@ button:disabled {
 .tool-payload-label {
   padding: 6px 8px 0;
   color: #8f9994;
-  font-size: 11px;
+  font-size: calc(11px + var(--turn-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
 }
