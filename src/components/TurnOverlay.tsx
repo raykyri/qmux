@@ -221,11 +221,15 @@ export default function TurnOverlay({
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
-  // On mouse-up, offer an "ask about this" action for a non-whitespace selection
-  // that lies entirely within an assistant or system message (not a user turn, not
-  // spanning the gap between cards).
+  // On mouse-up, offer an "ask about this" action for any non-whitespace selection
+  // within the transcript — any message (user, assistant, or system), tool output, or
+  // thinking. Only the composer/input below the transcript is excluded.
   const handleSelectionMouseUp = () => {
     if (!onAskSelection) {
+      return;
+    }
+    const timeline = timelineRef.current;
+    if (!timeline) {
       return;
     }
     const selection = document.getSelection();
@@ -236,22 +240,32 @@ export default function TurnOverlay({
     if (!text.trim()) {
       return;
     }
-    const askableCard = (node: Node | null) => {
-      const el = node instanceof Element ? node : node?.parentElement ?? null;
-      return el?.closest(".turn-card.role-assistant, .turn-card.role-system") ?? null;
-    };
-    // Require both endpoints in the *same* askable card, so a selection that spans
-    // a user turn or the gap between cards (or two different messages) is ignored.
-    const anchorCard = askableCard(selection.anchorNode);
-    if (!anchorCard || anchorCard !== askableCard(selection.focusNode)) {
+    const range = selection.getRangeAt(0);
+    // Require the selection to *start* inside the transcript, so a drag that begins in a
+    // message but is released over the composer still registers, while a selection made
+    // inside the composer itself is ignored. The start (not the mouse-up target) is what
+    // matters, since the highlighted text stays in the transcript even when the release
+    // lands below it.
+    if (!timeline.contains(range.startContainer)) {
       return;
     }
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    // Anchor over the highlighted text. A triple-click selects a whole block and leaves
+    // a zero-width caret rect at the start of the following block, which would stretch
+    // the box past the selection, so union only the rects that actually cover something.
+    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
+    const box = rects.length
+      ? {
+          left: Math.min(...rects.map((r) => r.left)),
+          right: Math.max(...rects.map((r) => r.right)),
+          top: Math.min(...rects.map((r) => r.top)),
+          bottom: Math.max(...rects.map((r) => r.bottom)),
+        }
+      : range.getBoundingClientRect();
     onAskSelection(text, {
-      left: rect.left,
-      right: rect.right,
-      top: rect.top,
-      bottom: rect.bottom,
+      left: box.left,
+      right: box.right,
+      top: box.top,
+      bottom: box.bottom,
     });
   };
   const queueSplitDragRef = useRef<QueueSplitDrag | null>(null);
