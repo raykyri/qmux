@@ -425,6 +425,10 @@ export default function TurnOverlay({
       ref={sidebarRef}
       className={`turn-sidebar${header ? " has-header" : ""}${queueSplit ? " has-queue-split" : ""}`}
       aria-label="Agent turns"
+      // Listen on the whole pane, not just the timeline, so a selection that starts
+      // in a message but is released over the composer below still registers. The
+      // Ask popup is portaled outside this section, so clicking it can't re-fire.
+      onMouseUp={handleSelectionMouseUp}
     >
       {header}
       {queueSplit ? (
@@ -450,7 +454,6 @@ export default function TurnOverlay({
         className={`turn-timeline${timelineItems.length === 0 ? " is-empty" : ""}`}
         style={timelineStyle}
         onScroll={handleTimelineScroll}
-        onMouseUp={handleSelectionMouseUp}
       >
         {timelineItems.length === 0 ? (
           <div className="empty-state turn-empty-state">
