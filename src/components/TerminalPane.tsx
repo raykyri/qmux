@@ -63,14 +63,7 @@ interface TerminalPaneProps {
 const TERMINAL_URL_REGEX = /\bhttps?:\/\/[^\s<>"'`)\]}]+/g;
 const OSC_TITLE_MAX_BUFFER_CHARS = 8192;
 
-type TerminalData = string | Uint8Array;
-
-interface PendingTerminalData {
-  data: TerminalData;
-  titleAlreadyTeed: boolean;
-}
-
-function decodeTerminalDataText(decoder: TextDecoder, data: TerminalData) {
+function decodeTerminalDataText(decoder: TextDecoder, data: string | Uint8Array) {
   return typeof data === "string" ? data : decoder.decode(data, { stream: true });
 }
 
@@ -148,7 +141,7 @@ export interface TerminalPaneHandle {
   focus: () => void;
   // Writes a decoded PTY chunk into this pane, buffering until xterm has opened so
   // cold-start output is never dropped. Called by the app's central event dispatch.
-  write: (data: TerminalData) => void;
+  write: (data: string | Uint8Array) => void;
 }
 
 // On macOS the find shortcut is Cmd-F; on other platforms it is Ctrl-F. (Ctrl-F
@@ -164,7 +157,6 @@ const RESTORE_SCROLL_IDLE_MS = 750;
 // Re-snap shortly after each restore write to catch xterm reflow and late layout
 // that nudge the viewport after the synchronous scroll.
 const RESTORE_SCROLL_CATCHUP_DELAYS_MS = [80, 250];
-const INACTIVE_FLUSH_CHUNKS_PER_FRAME = 32;
 
 // Colors for search highlights, tuned to read against the terminal background.
 // The overview-ruler colors are required by the addon's types even though qmux
@@ -270,8 +262,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const terminalReadyWaitersRef = useRef<Array<() => void>>([]);
   // PTY output can arrive while the terminal waits for the bundled font to load.
   // Buffer it and flush once xterm is open so startup output is not dropped.
-  const pendingDataRef = useRef<PendingTerminalData[]>([]);
-  const inactiveDataBufferRef = useRef<TerminalData[]>([]);
+  const pendingDataRef = useRef<Array<string | Uint8Array>>([]);
+  const inactiveDataBufferRef = useRef<Array<string | Uint8Array>>([]);
   const flushingInactiveDataRef = useRef(false);
   const inactiveFlushGenerationRef = useRef(0);
   const oscTitleDecoderRef = useRef(new TextDecoder());
@@ -402,134 +394,20 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     scheduleRestoreScrollToBottom();
   }, [scheduleRestoreScrollToBottom]);
 
-  const terminalInputDisabled = useCallback(
-    () =>
-      inputBlockedRef.current ||
-      flushingInactiveDataRef.current ||
-      inactiveDataBufferRef.current.length > 0,
-    [],
-  );
-
-  const teeOscTitleChanges = useCallback((data: TerminalData) => {
-    const text = decodeTerminalDataText(oscTitleDecoderRef.current, data);
-    if (!text) {
-      return;
-    }
-    oscTitleBufferRef.current = consumeOscTitleText(
-      oscTitleBufferRef.current + text,
-      (title) => onTerminalTitleChangeRef.current?.(pane.id, title),
-    );
-  }, [pane.id]);
-
-  const bufferInactiveTerminalData = useCallback(
-    (data: TerminalData, options?: { titleAlreadyTeed?: boolean }) => {
-      if (!options?.titleAlreadyTeed) {
-        teeOscTitleChanges(data);
-      }
-      inactiveDataBufferRef.current.push(data);
-    },
-    [teeOscTitleChanges],
-  );
-
-  const flushInactiveTerminalData = useCallback((onDone?: () => void) => {
+  const writeTerminalData = useCallback((data: string | Uint8Array) => {
     const terminal = terminalRef.current;
-    if (
-      !terminal ||
-      !terminalReadyRef.current ||
-      !activeRef.current ||
-      flushingInactiveDataRef.current ||
-      inactiveDataBufferRef.current.length === 0
-    ) {
-      return false;
-    }
-
-    flushingInactiveDataRef.current = true;
-    const generation = (inactiveFlushGenerationRef.current += 1);
-    const shouldStickToBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
-
-    const finish = () => {
-      if (generation !== inactiveFlushGenerationRef.current) {
-        return;
-      }
-      flushingInactiveDataRef.current = false;
-      if (shouldStickToBottom) {
-        terminalRef.current?.scrollToBottom();
-      }
-      if (terminalRef.current?.rows) {
-        terminalRef.current.refresh(0, terminalRef.current.rows - 1);
-      }
-      onDone?.();
-    };
-
-    const writeNext = (chunksWrittenThisFrame = 0) => {
-      const currentTerminal = terminalRef.current;
-      if (
-        generation !== inactiveFlushGenerationRef.current ||
-        !currentTerminal ||
-        !terminalReadyRef.current ||
-        !activeRef.current
-      ) {
-        flushingInactiveDataRef.current = false;
-        return;
-      }
-
-      const chunk = inactiveDataBufferRef.current.shift();
-      if (chunk === undefined) {
-        finish();
-        return;
-      }
-
-      currentTerminal.write(chunk, () => {
-        if (shouldStickToBottom) {
-          currentTerminal.scrollToBottom();
-        }
-        if (inactiveDataBufferRef.current.length === 0) {
-          finish();
-        } else {
-          const nextChunksWrittenThisFrame = chunksWrittenThisFrame + 1;
-          if (nextChunksWrittenThisFrame >= INACTIVE_FLUSH_CHUNKS_PER_FRAME) {
-            window.requestAnimationFrame(() => writeNext());
-          } else {
-            writeNext(nextChunksWrittenThisFrame);
-          }
-        }
-      });
-    };
-
-    writeNext();
-    return true;
-  }, []);
-
-  const writeTerminalData = useCallback(
-    (data: TerminalData, options?: { titleAlreadyTeed?: boolean }) => {
-      const terminal = terminalRef.current;
-      if (terminal && terminalReadyRef.current) {
-        if (
-          !activeRef.current ||
-          flushingInactiveDataRef.current ||
-          inactiveDataBufferRef.current.length > 0
-        ) {
-          bufferInactiveTerminalData(data, options);
-          return;
-        }
-        if (restoreScrollToBottomPendingRef.current) {
-          terminal.write(data, scheduleRestoreScrollToBottom);
-        } else {
-          terminal.write(data);
-        }
+    if (terminal && terminalReadyRef.current) {
+      if (restoreScrollToBottomPendingRef.current) {
+        terminal.write(data, scheduleRestoreScrollToBottom);
       } else {
-        let titleAlreadyTeed = options?.titleAlreadyTeed ?? false;
-        if (!activeRef.current) {
-          teeOscTitleChanges(data);
-          titleAlreadyTeed = true;
-        }
-        // Output can arrive before the bundled font loads and xterm opens; buffer
-        // it and flush once the terminal is ready (see the setup effect).
-        pendingDataRef.current.push({ data, titleAlreadyTeed });
+        terminal.write(data);
       }
-    },
-    [bufferInactiveTerminalData, scheduleRestoreScrollToBottom, teeOscTitleChanges],
-  );
+    } else {
+      // Output can arrive before the bundled font loads and xterm opens; buffer
+      // it and flush once the terminal is ready (see the setup effect).
+      pendingDataRef.current.push(data);
+    }
+  }, [scheduleRestoreScrollToBottom]);
 
   useImperativeHandle(
     ref,
@@ -657,13 +535,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // Cmd-F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
       // Returning false stops xterm from forwarding the keystroke to the PTY.
       terminal.attachCustomKeyEventHandler((event) => {
-        if (
-          event.type === "keydown" &&
-          (flushingInactiveDataRef.current || inactiveDataBufferRef.current.length > 0)
-        ) {
-          event.preventDefault();
-          return false;
-        }
         const findCombo = IS_MAC
           ? event.metaKey && !event.ctrlKey
           : event.ctrlKey && !event.metaKey;
@@ -728,7 +599,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       const pending = pendingDataRef.current;
       pendingDataRef.current = [];
       for (const chunk of pending) {
-        writeTerminalData(chunk.data, { titleAlreadyTeed: chunk.titleAlreadyTeed });
+        if (restoreScrollToBottomPendingRef.current) {
+          terminal.write(chunk, scheduleRestoreScrollToBottom);
+        } else {
+          terminal.write(chunk);
+        }
       }
 
       let resizeFrame: number | null = null;
@@ -808,7 +683,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       resizeObserver.observe(hostEl);
 
       const inputDisposable = terminal.onData((data) => {
-        if (terminalInputDisabled()) {
+        if (inputBlockedRef.current) {
           return;
         }
         // A keystroke into an agent pane's terminal counts as the user typing, so
@@ -928,7 +803,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // capture phase instead: declining stops the event before it descends to
       // xterm, which never sees the paste.
       const handlePaste = (event: ClipboardEvent) => {
-        if (terminalInputDisabled()) {
+        if (inputBlockedRef.current) {
           event.preventDefault();
           event.stopImmediatePropagation();
           return;
@@ -1001,9 +876,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         terminalRef.current = null;
         searchRef.current = null;
         stabilizeTerminalRef.current = null;
-        inactiveDataBufferRef.current = [];
-        flushingInactiveDataRef.current = false;
-        inactiveFlushGenerationRef.current += 1;
         scrollbackReplayedRef.current = false;
         restoreScrollToBottomPendingRef.current = false;
         clearRestoreScrollToBottomTimers();
@@ -1016,9 +888,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       teardown = null;
       terminalReadyWaitersRef.current = [];
       pendingDataRef.current = [];
-      inactiveDataBufferRef.current = [];
-      flushingInactiveDataRef.current = false;
-      inactiveFlushGenerationRef.current += 1;
       restoreScrollToBottomPendingRef.current = false;
       clearRestoreScrollToBottomTimers();
     };
@@ -1028,8 +897,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     clearRestoreScrollToBottomTimers,
     scheduleRestoreScrollToBottom,
     cancelRestoreScrollToBottom,
-    terminalInputDisabled,
-    writeTerminalData,
   ]);
 
   // Replay durable scrollback before releasing the backend's pre-attach backlog.
@@ -1067,10 +934,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
   useEffect(() => {
     if (!active) {
-      inactiveFlushGenerationRef.current += 1;
-      flushingInactiveDataRef.current = false;
       return;
     }
+    terminalRef.current?.focus();
+    stabilizeTerminalRef.current?.();
     // While this pane was inactive it was display:none, so PTY output kept growing the
     // buffer but xterm's viewport metrics went stale (its cached viewport height drops
     // toward 0 on a 0x0 element). After re-showing, fit()+refresh() repaint the rows
@@ -1093,29 +960,13 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         terminal.scrollToLine(previousTop);
       }
     };
-    const focusAndResync = () => {
-      terminalRef.current?.focus();
-      resync();
-    };
-    const startFlushOrFocus = () => {
-      stabilizeTerminalRef.current?.();
-      if (!flushInactiveTerminalData(focusAndResync)) {
-        focusAndResync();
-      }
-    };
-    stabilizeTerminalRef.current?.();
-    const frame = requestAnimationFrame(startFlushOrFocus);
-    const settle = window.setTimeout(() => {
-      stabilizeTerminalRef.current?.();
-      if (!flushingInactiveDataRef.current && inactiveDataBufferRef.current.length === 0) {
-        resync();
-      }
-    }, 80);
+    const frame = requestAnimationFrame(resync);
+    const settle = window.setTimeout(resync, 80);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
     };
-  }, [active, flushInactiveTerminalData, pane.id]);
+  }, [active, pane.id]);
 
   // Apply live font changes (settings panel / Cmd-=/Cmd--) to an already-open
   // terminal, then re-fit so rows/cols and the PTY size track the new cell
