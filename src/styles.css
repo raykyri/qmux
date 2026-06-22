@@ -2017,7 +2017,7 @@ button:disabled {
    8px timeline gap that surrounds the bordered message cards — it only applies
    between two consecutive non-card rows, so cards keep their breathing room. */
 .turn-timeline > :not(.turn-card) + :not(.turn-card) {
-  margin-top: -5px;
+  margin-top: -6px;
 }
 
 .turn-sidebar-input {
@@ -2061,7 +2061,7 @@ button:disabled {
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0 0 0 10px;
+  padding: 2px 0 0 10px;
 }
 
 .turn-card header {
@@ -2079,6 +2079,10 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin-top: 5px;
+}
+
+.turn-card.role-user .turn-blocks {
+  margin-top: 3px;
 }
 
 .turn-text,
@@ -2221,6 +2225,7 @@ button:disabled {
 .tool-block,
 .thinking-block,
 .activity-group-block {
+  margin: -1px 0 -2px;
   background: transparent;
   color: #d9ddd9;
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
@@ -2360,7 +2365,7 @@ button:disabled {
 }
 
 .activity-group-children > :not(:first-child) {
-  margin-top: -5px;
+  margin-top: -6px;
 }
 
 .native-input {
