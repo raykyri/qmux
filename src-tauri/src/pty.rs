@@ -778,7 +778,9 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
+    use crate::config::{
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+    };
     use crate::scrollback::read_pane_scrollback;
     use std::io;
     use std::path::PathBuf;
@@ -822,9 +824,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: std::path::PathBuf::new(),
+            opencode_plugin_dir: std::path::PathBuf::new(),
         })
     }
 
@@ -839,9 +845,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: std::path::PathBuf::new(),
+            opencode_plugin_dir: std::path::PathBuf::new(),
         })
     }
 

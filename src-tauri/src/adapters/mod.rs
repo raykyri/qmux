@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod opencode;
 
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -9,6 +10,7 @@ use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus};
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
+use opencode::OpencodeAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -216,6 +218,7 @@ pub fn adapter_registry(config: &QmuxConfig) -> AdapterRegistry {
     AdapterRegistry::new(vec![
         Box::new(ClaudeAdapter::new(config)),
         Box::new(CodexAdapter::new(config)),
+        Box::new(OpencodeAdapter::new(config)),
     ])
 }
 
@@ -329,7 +332,9 @@ fn notification_adapter_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+    use crate::config::{
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+    };
     use std::path::PathBuf;
 
     fn test_config() -> QmuxConfig {
@@ -343,9 +348,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: PathBuf::new(),
+            opencode_plugin_dir: PathBuf::new(),
         }
     }
 
@@ -366,11 +375,13 @@ mod tests {
         let registry = adapter_registry(&test_config());
 
         let metadata = registry.metadata();
-        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata.len(), 3);
         assert_eq!(metadata[0].id, "claude");
         assert!(metadata[0].default);
         assert_eq!(metadata[1].id, "codex");
         assert!(!metadata[1].default);
+        assert_eq!(metadata[2].id, "opencode");
+        assert!(!metadata[2].default);
     }
 
     #[test]

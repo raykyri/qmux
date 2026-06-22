@@ -489,6 +489,12 @@ pub fn list_agent_transcripts(
     let Some(agent) = state.agent(agent_id)? else {
         return Ok(Vec::new());
     };
+    // The opencode adapter writes transcript JSONL to a qmux-managed file, not
+    // to a session directory with multiple selectable past sessions. Skip the
+    // picker for opencode agents (MVP).
+    if agent.adapter == "opencode" {
+        return Ok(Vec::new());
+    }
     let Some(current_path) = agent.transcript_path.clone() else {
         return Ok(Vec::new());
     };

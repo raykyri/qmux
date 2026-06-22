@@ -23,6 +23,12 @@ pub struct QmuxConfig {
     /// to the config JSON (it is derived, not configured).
     #[serde(skip)]
     pub claude_plugin_dir: PathBuf,
+    /// Directory of the qmux-managed opencode plugin whose JS files are injected
+    /// into launched opencode agents via `OPENCODE_CONFIG_DIR`. Resolved at load
+    /// time from `QMUX_OPENCODE_PLUGIN_DIR` or `<cwd>/qmux-opencode-plugin`; never
+    /// read from or written to the config JSON (it is derived, not configured).
+    #[serde(skip)]
+    pub opencode_plugin_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -32,6 +38,8 @@ pub struct AdapterConfigs {
     pub claude: ClaudeAdapterConfig,
     #[serde(default)]
     pub codex: CodexAdapterConfig,
+    #[serde(default)]
+    pub opencode: OpencodeAdapterConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -44,6 +52,13 @@ pub struct ClaudeAdapterConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexAdapterConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeAdapterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
 }
@@ -76,6 +91,7 @@ impl QmuxConfig {
         config.workspace_root = absolutize(&cwd, &config.workspace_root);
         config.socket_path = absolutize(&cwd, &config.socket_path);
         config.claude_plugin_dir = resolve_claude_plugin_dir(&cwd);
+        config.opencode_plugin_dir = resolve_opencode_plugin_dir(&cwd);
 
         fs::create_dir_all(&config.workspace_root).map_err(|err| {
             format!(
@@ -126,6 +142,14 @@ impl QmuxConfig {
             .unwrap_or_else(|| "codex".to_string())
     }
 
+    pub fn opencode_binary(&self) -> String {
+        self.adapters
+            .opencode
+            .binary
+            .clone()
+            .unwrap_or_else(|| "opencode".to_string())
+    }
+
     fn default_config() -> Result<Self, String> {
         let home = env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
         let qmux_root = PathBuf::from(home).join("qmux");
@@ -139,11 +163,15 @@ impl QmuxConfig {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             // Overwritten by load() once the cwd is known; this default is only a
             // placeholder for the no-config-file path.
             claude_plugin_dir: PathBuf::new(),
+            opencode_plugin_dir: PathBuf::new(),
         })
     }
 }
@@ -176,19 +204,48 @@ fn pick_claude_plugin_dir(
     override_dir: Option<&Path>,
     exe_dir: Option<&Path>,
 ) -> PathBuf {
+    pick_plugin_dir(cwd, override_dir, exe_dir, "qmux-plugin")
+}
+
+/// Resolves the qmux-managed opencode plugin directory. Honors an explicit
+/// `QMUX_OPENCODE_PLUGIN_DIR` override (absolutized against the cwd when relative);
+/// otherwise picks the first existing candidate so the plugin loads regardless of
+/// how qmux is launched. Mirrors `resolve_claude_plugin_dir`.
+fn resolve_opencode_plugin_dir(cwd: &Path) -> PathBuf {
+    let override_os = env::var_os("QMUX_OPENCODE_PLUGIN_DIR").filter(|value| !value.is_empty());
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    pick_plugin_dir(
+        cwd,
+        override_os.as_deref().map(Path::new),
+        exe_dir.as_deref(),
+        "qmux-opencode-plugin",
+    )
+}
+
+/// Shared plugin-directory resolver used by both the Claude and opencode plugin
+/// lookups. The explicit override always wins; otherwise the first existing
+/// candidate is used, falling back to `<cwd>/<default_name>` when none exist.
+fn pick_plugin_dir(
+    cwd: &Path,
+    override_dir: Option<&Path>,
+    exe_dir: Option<&Path>,
+    default_name: &str,
+) -> PathBuf {
     if let Some(override_dir) = override_dir {
         return absolutize(cwd, override_dir);
     }
-    let mut candidates = vec![cwd.join("qmux-plugin")];
+    let mut candidates = vec![cwd.join(default_name)];
     if let Some(exe_dir) = exe_dir {
-        candidates.push(exe_dir.join("qmux-plugin"));
-        candidates.push(exe_dir.join("../Resources/qmux-plugin"));
-        candidates.push(exe_dir.join("../../../qmux-plugin"));
+        candidates.push(exe_dir.join(default_name));
+        candidates.push(exe_dir.join("../Resources").join(default_name));
+        candidates.push(exe_dir.join("../../../").join(default_name));
     }
     candidates
         .into_iter()
         .find(|dir| dir.is_dir())
-        .unwrap_or_else(|| cwd.join("qmux-plugin"))
+        .unwrap_or_else(|| cwd.join(default_name))
 }
 
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
@@ -260,6 +317,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(configured.codex_binary(), "/opt/bin/codex");
+    }
+
+    #[test]
+    fn opencode_binary_defaults_and_can_be_configured() {
+        let default_config: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(default_config.opencode_binary(), "opencode");
+
+        let configured: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "adapters": {
+                "opencode": {
+                  "binary": "/opt/bin/opencode"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(configured.opencode_binary(), "/opt/bin/opencode");
     }
 
     #[test]
