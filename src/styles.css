@@ -1394,14 +1394,13 @@ button:disabled {
 
 /* The ask / ask-in-fork popups label their send button (Queue / Ask in fork,
    the latter with a branch icon) beside the ⌘↵ glyph, so it lays out as a row.
-   It's 1px tighter top and bottom and a touch larger than the standard send
-   button, and hovers to a plain gray a shade lighter than the popup — no accent. */
+   It's 1px tighter top and bottom, and hovers to a plain gray a shade lighter
+   than the popup — no accent. */
 .command-launcher--ask .command-launcher-send {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-height: calc(var(--control-h-md) - 2px);
-  font-size: calc(var(--fs-base) + 1px);
 }
 
 .command-launcher--ask .command-launcher-send:hover {
@@ -1409,11 +1408,13 @@ button:disabled {
   border-color: var(--control-border-hover);
 }
 
-/* The label (Queue / Ask in fork) is 2px larger than the rest of the button —
-   the button text is already --fs-base + 1px, so the label is + 3px. Scoped to
-   the label span so the ⌘↵ glyph stays at the button size. */
+/* The label (Queue / Ask in fork) uses the regular button text style — neutral
+   foreground, base size, normal weight — rather than borrowing the accent color
+   and emphasis the button otherwise reserves for the ⌘↵ keyboard-hint glyph. */
 .command-launcher--ask .command-launcher-send-label {
-  font-size: calc(var(--fs-base) + 3px);
+  color: var(--control-fg);
+  font-size: var(--fs-base);
+  font-weight: 400;
 }
 
 /* Ask launcher: a launcher seeded with a quoted selection. The quote sits above
