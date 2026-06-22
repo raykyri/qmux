@@ -31,6 +31,7 @@ const { RESTORED_SCROLLBACK_TERMINAL_RESET, sanitizeRestoredScrollback } = await
 );
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 const cases = [
   {
@@ -77,6 +78,7 @@ const cases = [
 for (const testCase of cases) {
   await assertRestoreMatchesLive(testCase.name, testCase.bytes);
 }
+await assertTrailingTerminalQueriesAreStripped();
 
 console.log(`terminal scrollback replay checks passed (${cases.length} cases)`);
 
@@ -94,6 +96,28 @@ async function assertRestoreMatchesLive(name, bytes) {
   await write(live, "NEXT");
   await write(restored, "NEXT");
   assert.deepEqual(snapshot(restored), snapshot(live), `${name}: next output starts in wrong place`);
+}
+
+async function assertTrailingTerminalQueriesAreStripped() {
+  const bytes = encoder.encode("prompt \x1b[c\x1b[6n\x1b[?2004$p");
+  const raw = createTerminal();
+  let rawReplies = "";
+  raw.onData((data) => {
+    rawReplies += data;
+  });
+  await write(raw, bytes);
+  assert.notEqual(rawReplies, "", "raw terminal queries should make xterm emit replies");
+
+  const restored = createTerminal();
+  let restoredReplies = "";
+  restored.onData((data) => {
+    restoredReplies += data;
+  });
+  const sanitized = sanitizeRestoredScrollback(bytes);
+  assert.equal(decoder.decode(sanitized), "prompt ");
+  await write(restored, sanitized);
+  await write(restored, RESTORED_SCROLLBACK_TERMINAL_RESET);
+  assert.equal(restoredReplies, "", "restored trailing queries should not emit terminal replies");
 }
 
 function createTerminal() {
