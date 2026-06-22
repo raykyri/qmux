@@ -240,10 +240,10 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
 
     // Persist the directory entry so the rename itself survives a crash. Best
     // effort: some platforms don't allow fsync on a directory handle.
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
     Ok(())
 }

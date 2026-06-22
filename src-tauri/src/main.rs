@@ -441,11 +441,11 @@ fn main() {
         .on_window_event({
             let state = state.clone();
             move |_window, event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if state.should_confirm_exit() {
-                        api.prevent_close();
-                        state.request_exit_confirmation();
-                    }
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                    && state.should_confirm_exit()
+                {
+                    api.prevent_close();
+                    state.request_exit_confirmation();
                 }
             }
         })
@@ -467,12 +467,11 @@ fn main() {
                 #[cfg(target_os = "macos")]
                 {
                     use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
-                    if let Some(window) = app.get_webview_window("main") {
-                        if let Err(err) =
+                    if let Some(window) = app.get_webview_window("main")
+                        && let Err(err) =
                             apply_vibrancy(&window, NSVisualEffectMaterial::Sidebar, None, None)
-                        {
-                            eprintln!("qmux: failed to apply window vibrancy: {err}");
-                        }
+                    {
+                        eprintln!("qmux: failed to apply window vibrancy: {err}");
                     }
                 }
                 start_control_socket(state.clone()).map_err(std::io::Error::other)?;
@@ -537,11 +536,12 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building qmux")
         .run(move |_app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                if code != Some(tauri::RESTART_EXIT_CODE) && exit_state.should_confirm_exit() {
-                    api.prevent_exit();
-                    exit_state.request_exit_confirmation();
-                }
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event
+                && code != Some(tauri::RESTART_EXIT_CODE)
+                && exit_state.should_confirm_exit()
+            {
+                api.prevent_exit();
+                exit_state.request_exit_confirmation();
             }
         });
 }

@@ -702,14 +702,14 @@ impl ClaudeAdapter {
             "hookEvent": notification.event,
             "payload": notification.payload,
         });
-        if let Some(send_tracking) = send_tracking {
-            if let Value::Object(payload) = &mut event_payload {
-                payload.insert(
-                    "sendTracking".to_string(),
-                    serde_json::to_value(send_tracking)
-                        .map_err(|err| format!("failed to encode send tracking: {err}"))?,
-                );
-            }
+        if let Some(send_tracking) = send_tracking
+            && let Value::Object(payload) = &mut event_payload
+        {
+            payload.insert(
+                "sendTracking".to_string(),
+                serde_json::to_value(send_tracking)
+                    .map_err(|err| format!("failed to encode send tracking: {err}"))?,
+            );
         }
         // The idle handler (advance_after_idle) writes status/paused straight to the
         // store without touching this local snapshot, so re-read the agent before
@@ -982,7 +982,7 @@ pub fn list_skills(config: &QmuxConfig) -> Vec<ClaudeSkill> {
             })
         })
         .collect();
-    skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    skills.sort_by_key(|a| a.name.to_lowercase());
     skills
 }
 
@@ -1441,7 +1441,7 @@ mod tests {
     }
 
     fn ingest(state: &AppState, notification: AdapterNotification) -> QmuxEvent {
-        match ClaudeAdapter::new(&state.config()).ingest_notification(state, notification) {
+        match ClaudeAdapter::new(state.config()).ingest_notification(state, notification) {
             Ok(AdapterNotificationOutcome::Event(event)) => event,
             Ok(AdapterNotificationOutcome::Events(mut events)) => events.remove(0),
             Err(err) => panic!("{err}"),
@@ -1483,9 +1483,17 @@ mod tests {
         install_agent_pane(&state);
 
         // The first SessionStart records the session id.
-        ingest(&state, hook("SessionStart", json!({ "session_id": "sess-abc" })));
+        ingest(
+            &state,
+            hook("SessionStart", json!({ "session_id": "sess-abc" })),
+        );
         assert_eq!(
-            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
             Some("sess-abc")
         );
 
@@ -1493,7 +1501,12 @@ mod tests {
         // (fork + recovery key off the recorded id).
         ingest(&state, hook("SessionStart", json!({})));
         assert_eq!(
-            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
             Some("sess-abc")
         );
     }

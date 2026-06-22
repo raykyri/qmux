@@ -307,10 +307,10 @@ fn notification_adapter_id(
         return Ok(agent.adapter);
     }
 
-    if let Some(pane_id) = notification.pane_id.as_deref() {
-        if let Some(agent) = state.agent_by_pane(pane_id)? {
-            return Ok(agent.adapter);
-        }
+    if let Some(pane_id) = notification.pane_id.as_deref()
+        && let Some(agent) = state.agent_by_pane(pane_id)?
+    {
+        return Ok(agent.adapter);
     }
 
     notification

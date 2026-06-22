@@ -337,12 +337,14 @@ impl AppState {
         let shell_pane_ids = persisted
             .panes
             .iter()
-            .filter_map(|pane| matches!(pane.kind, PaneKind::Shell).then(|| pane.id.clone()))
+            .filter(|&pane| matches!(pane.kind, PaneKind::Shell))
+            .map(|pane| pane.id.clone())
             .collect::<HashSet<_>>();
         let queued_agent_ids = persisted
             .queues
             .iter()
-            .filter_map(|(agent_id, turns)| (!turns.is_empty()).then(|| agent_id.clone()))
+            .filter(|&(_agent_id, turns)| !turns.is_empty())
+            .map(|(agent_id, _turns)| agent_id.clone())
             .collect::<HashSet<_>>();
 
         if let Ok(mut model) = self.inner.model.lock() {
@@ -482,10 +484,10 @@ impl AppState {
     }
 
     pub fn emit(&self, event: QmuxEvent) {
-        if let Ok(handle) = self.inner.app_handle.lock() {
-            if let Some(app_handle) = handle.as_ref() {
-                let _ = app_handle.emit("qmux-event", event);
-            }
+        if let Ok(handle) = self.inner.app_handle.lock()
+            && let Some(app_handle) = handle.as_ref()
+        {
+            let _ = app_handle.emit("qmux-event", event);
         }
     }
 
@@ -1045,10 +1047,10 @@ impl AppState {
             let turn = queue
                 .get_mut(index)
                 .ok_or_else(|| format!("queued turn {index} was not found"))?;
-            if let Some(expected_text) = expected_text {
-                if turn.text != expected_text {
-                    return Err("queued turn changed; refresh before updating".to_string());
-                }
+            if let Some(expected_text) = expected_text
+                && turn.text != expected_text
+            {
+                return Err("queued turn changed; refresh before updating".to_string());
             }
             turn.pause_after = pause_after;
             queue.iter().cloned().collect::<Vec<_>>()
@@ -1077,10 +1079,10 @@ impl AppState {
             let current = queue
                 .get(index)
                 .ok_or_else(|| format!("queued turn {index} was not found"))?;
-            if let Some(expected_data) = expected_data {
-                if current.text != expected_data {
-                    return Err("queued turn changed; refresh before editing".to_string());
-                }
+            if let Some(expected_data) = expected_data
+                && current.text != expected_data
+            {
+                return Err("queued turn changed; refresh before editing".to_string());
             }
 
             let removed = queue

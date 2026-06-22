@@ -418,10 +418,11 @@ pub fn set_agent_typing(
     let mut sent = false;
     if !typing {
         // Typing stopped: drain a held turn if the agent is idle and not paused.
-        if let Some(agent) = state.agent(agent_id)? {
-            if !agent.paused && agent_composer_policy(state, &agent)?.can_send(agent.status) {
-                sent = drain_agent_turn_queue(state, agent_id)?;
-            }
+        if let Some(agent) = state.agent(agent_id)?
+            && !agent.paused
+            && agent_composer_policy(state, &agent)?.can_send(agent.status)
+        {
+            sent = drain_agent_turn_queue(state, agent_id)?;
         }
     }
 
