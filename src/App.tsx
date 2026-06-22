@@ -154,10 +154,41 @@ const MAX_INITIAL_COLS = 500;
 const MAX_INITIAL_ROWS = 200;
 const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
+const DEFAULT_SHELL_TITLE = "Shell";
+const MAX_TERMINAL_TITLE_CHARS = 160;
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
+
+function sanitizeTerminalTitle(rawTitle: string): string | null {
+  const title = rawTitle
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title) {
+    return null;
+  }
+  return Array.from(title).slice(0, MAX_TERMINAL_TITLE_CHARS).join("");
+}
+
+function defaultPaneTitle(
+  pane: PaneInfo,
+  agent: AgentInfo | undefined,
+  config: RuntimeConfig | null,
+): string | null {
+  if (pane.kind === "shell") {
+    return DEFAULT_SHELL_TITLE;
+  }
+  if (!agent) {
+    return null;
+  }
+  return (
+    config?.adapters.find((adapter) => adapter.id === agent.adapter)?.label ??
+    findAgentUiAdapter(agent.adapter)?.label ??
+    null
+  );
+}
 
 // The internal browser overlay can only load what the webview CSP's frame-src allows:
 // http over loopback (127.0.0.1 / localhost), which covers file-server URLs and local
@@ -213,6 +244,10 @@ export default function App() {
   const suppressPaneTabClickRef = useRef(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
+  const [terminalTitleByPane, setTerminalTitleByPane] = useState<Record<string, string>>({});
+  const [manuallyTitledPaneIds, setManuallyTitledPaneIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
@@ -297,10 +332,51 @@ export default function App() {
   const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
   const activeQueueSplit = activeAgent ? (queueSplitByAgent[activeAgent.id] ?? false) : false;
   const activeQueueSplitHeight = activeAgent ? queueSplitHeightByAgent[activeAgent.id] : undefined;
-  // Drop overlay state for panes that have closed so it can't leak or resurface.
+  const handleTerminalTitleChange = useCallback((paneId: string, rawTitle: string) => {
+    const title = sanitizeTerminalTitle(rawTitle);
+    setTerminalTitleByPane((current) => {
+      if (!title) {
+        if (!(paneId in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[paneId];
+        return next;
+      }
+      if (current[paneId] === title) {
+        return current;
+      }
+      return { ...current, [paneId]: title };
+    });
+  }, []);
+
+  function paneUsesDefaultTitle(pane: PaneInfo, agent: AgentInfo | undefined): boolean {
+    if (manuallyTitledPaneIds.has(pane.id)) {
+      return false;
+    }
+    const defaultTitle = defaultPaneTitle(pane, agent, config);
+    return defaultTitle !== null && pane.title === defaultTitle;
+  }
+
+  function displayPaneTitle(pane: PaneInfo, agent: AgentInfo | undefined): string {
+    const terminalTitle = terminalTitleByPane[pane.id];
+    return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
+  }
+
+  // Drop per-pane UI state for panes that have closed so it can't leak or resurface.
   useEffect(() => {
+    const ids = new Set(panes.map((pane) => pane.id));
+    setTerminalTitleByPane((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([paneId]) => ids.has(paneId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    setManuallyTitledPaneIds((current) => {
+      const next = new Set([...current].filter((paneId) => ids.has(paneId)));
+      return next.size === current.size ? current : next;
+    });
     setBrowserOverlayByPane((current) => {
-      const ids = new Set(panes.map((pane) => pane.id));
       const next = Object.fromEntries(
         Object.entries(current).filter(([paneId]) => ids.has(paneId)),
       );
@@ -861,6 +937,12 @@ export default function App() {
   const contextMenuAgent = contextMenuPane
     ? agents.find((agent) => agent.paneId === contextMenuPane.id)
     : undefined;
+  const contextMenuDisplayTitle = contextMenuPane
+    ? displayPaneTitle(contextMenuPane, contextMenuAgent)
+    : "";
+  const contextMenuTerminalTitle = contextMenuPane
+    ? (terminalTitleByPane[contextMenuPane.id] ?? null)
+    : null;
   const draggingPaneIndex = draggingPaneId
     ? panes.findIndex((pane) => pane.id === draggingPaneId)
     : -1;
@@ -1283,7 +1365,9 @@ export default function App() {
   function sameLayout(a: PaneLayoutItem[], b: PaneLayoutItem[]) {
     return (
       a.length === b.length &&
-      a.every((item, index) => item.id === b[index].id && item.depth === b[index].depth)
+      a.every(
+        (item, index) => item.paneId === b[index].paneId && item.depth === b[index].depth,
+      )
     );
   }
 
@@ -1322,7 +1406,8 @@ export default function App() {
   }
 
   function openRenameDialog(pane: PaneInfo) {
-    setRenameValue(pane.title);
+    const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+    setRenameValue(displayPaneTitle(pane, paneAgent));
     setRenamePaneId(pane.id);
   }
 
@@ -1343,6 +1428,7 @@ export default function App() {
     );
     try {
       const updated = await renamePane(paneId, title);
+      setManuallyTitledPaneIds((current) => new Set(current).add(paneId));
       setPanes((current) =>
         current.map((pane) => (pane.id === paneId ? { ...pane, title: updated.title } : pane)),
       );
@@ -2173,6 +2259,7 @@ export default function App() {
           ) : null}
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+            const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
             const paneAgentWorktreeStatus = paneAgent
               ? worktreeStatusByAgent[paneAgent.id]
               : undefined;
@@ -2261,7 +2348,7 @@ export default function App() {
                     aria-hidden="true"
                   />
                   <span className="pane-tab-content">
-                    <span className="pane-tab-title">{pane.title}</span>
+                    <span className="pane-tab-title">{paneDisplayTitle}</span>
                     {paneDir ? (
                       <span className="pane-tab-path" title={paneDir}>
                         {formatPaneDir(paneDir)}
@@ -2330,8 +2417,8 @@ export default function App() {
                   className="pane-tab-close"
                   role="button"
                   tabIndex={0}
-                  aria-label={`Close ${pane.title}`}
-                  title={`Close ${pane.title}`}
+                  aria-label={`Close ${paneDisplayTitle}`}
+                  title={`Close ${paneDisplayTitle}`}
                   onPointerDown={(event) => handlePaneTabClosePointerDown(event, pane)}
                   onClick={(event) => handlePaneTabCloseClick(event, pane)}
                   onKeyDown={(event) => {
@@ -2374,7 +2461,7 @@ export default function App() {
         <div
           className="pane-context-menu"
           role="dialog"
-          aria-label={`${contextMenuPane.title} details`}
+          aria-label={`${contextMenuDisplayTitle} details`}
           style={{ left: paneContextMenu.x, top: paneContextMenu.y }}
           onMouseDown={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
@@ -2395,8 +2482,14 @@ export default function App() {
             ) : null}
             <div>
               <dt>Tab</dt>
-              <dd>{contextMenuPane.title}</dd>
+              <dd>{contextMenuDisplayTitle}</dd>
             </div>
+            {contextMenuTerminalTitle && contextMenuTerminalTitle !== contextMenuDisplayTitle ? (
+              <div>
+                <dt>Terminal title</dt>
+                <dd>{contextMenuTerminalTitle}</dd>
+              </div>
+            ) : null}
             {contextMenuAgent?.branch ? (
               <div>
                 <dt>Branch</dt>
@@ -2755,6 +2848,7 @@ export default function App() {
               onUserInput={noteUserInput}
               onOpenLink={linkActions.openLink}
               onLinkContextMenu={linkActions.openLinkMenu}
+              onTerminalTitleChange={handleTerminalTitleChange}
             />
           ))}
         </div>
