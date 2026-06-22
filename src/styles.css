@@ -2330,6 +2330,7 @@ button:disabled {
 
 .queued-turn-stack {
   display: grid;
+  align-content: start;
   gap: 6px;
   min-width: 0;
   min-height: 0;
