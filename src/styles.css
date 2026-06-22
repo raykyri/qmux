@@ -2236,13 +2236,13 @@ header + .turn-blocks {
 .activity-group-block {
   background: transparent;
   color: #d9ddd9;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   overflow: visible;
   margin: -2px 0 0;
 }
 
 .activity-group-block {
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 .tool-block > summary,
@@ -2316,7 +2316,7 @@ header + .turn-blocks {
 
 .tool-summary-main {
   color: #aab1ad;
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--turn-font-delta, 0px));
   font-weight: 400;
 }
 
@@ -2330,7 +2330,7 @@ header + .turn-blocks {
 
 .tool-summary-meta {
   color: #8f9994;
-  font-size: calc(11.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 /* Expanded payloads keep a faint full box so raw output stays delineated, indented
@@ -2346,7 +2346,7 @@ header + .turn-blocks {
 .tool-payload-label {
   padding: 6px 8px 0;
   color: #8f9994;
-  font-size: calc(11.5px + var(--turn-font-delta, 0px));
+  font-size: calc(11px + var(--turn-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2380,7 +2380,7 @@ header + .turn-blocks {
 }
 
 .thinking-block > summary > span {
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 .activity-group-children {

@@ -771,7 +771,7 @@ function activityGroupLabel(group: ActivityGroupItem) {
   if (group.toolCallCount === 0) {
     return "Thinking...";
   }
-  return `${group.toolCallCount} tool call${group.toolCallCount === 1 ? "" : "s"}`;
+  return `Used ${group.toolCallCount} tool${group.toolCallCount === 1 ? "" : "s"}`;
 }
 
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
@@ -940,7 +940,7 @@ function ToolEntryView({ entry }: { entry: ToolEntry }) {
             <span>{entry.name}</span>
             {summaryArgument ? <span className="tool-summary-arg"> {summaryArgument}</span> : null}
           </span>
-          <span className="tool-summary-meta">{toolEntryStatus(entry)}</span>
+          <ToolEntryStatus entry={entry} />
         </span>
       </summary>
       {entry.input !== undefined ? <ToolPayload label="Input" value={entry.input} /> : null}
@@ -1007,12 +1007,15 @@ function DisclosureChevron() {
   return <ChevronRight className="disclosure-chevron" size={12} aria-hidden="true" />;
 }
 
-function toolEntryStatus(entry: ToolEntry) {
+function ToolEntryStatus({ entry }: { entry: ToolEntry }) {
   if (entry.result === undefined) {
-    return "running";
+    return <span className="tool-summary-meta">running</span>;
   }
-  const status = entry.isError ? "error" : "done";
-  return `${status}, ${stringify(entry.result).length} chars`;
+  const charCount = `${stringify(entry.result).length} chars`;
+  if (entry.isError) {
+    return <span className="tool-summary-meta">error, {charCount}</span>;
+  }
+  return <span className="tool-summary-meta">{charCount}</span>;
 }
 
 function formatTurnTranscript(turn: Turn, assistantLabel: string) {
