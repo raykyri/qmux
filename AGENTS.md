@@ -1,2 +1,4 @@
 For commit messages, include a short description followed by a
 paragraph or bullet-point list of details about what was committed.
+Don't ask to re-run 'cargo test' if there is a test that fails because
+of your sandboxing permissions, unless your work involves that test.
