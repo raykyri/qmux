@@ -4101,6 +4101,7 @@ export default function App() {
                     config={config}
                     adapterIconById={LAUNCHER_ADAPTER_ICON_BY_ID}
                     adapterIconClassById={ADAPTER_ICON_CLASS_BY_ID}
+                    queuedTurnsByAgent={queuedTurnsByAgent}
                     onOpenSession={openRecentSession}
                     formatPath={formatPaneDir}
                   />
