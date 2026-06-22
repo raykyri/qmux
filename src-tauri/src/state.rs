@@ -1691,7 +1691,9 @@ fn random_token() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+    use crate::config::{
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+    };
     use crate::persistence::PersistedState;
     use crate::workspace::AgentStatus;
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
@@ -1723,9 +1725,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: std::path::PathBuf::new(),
+            opencode_plugin_dir: std::path::PathBuf::new(),
         }
     }
 

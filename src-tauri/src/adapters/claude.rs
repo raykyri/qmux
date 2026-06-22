@@ -1251,7 +1251,9 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+    use crate::config::{
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+    };
     use crate::state::{AgentSendSource, PaneInfo, PaneRuntime, PaneStatus};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io::{self, Write};
@@ -1348,9 +1350,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: PathBuf::new(),
+            opencode_plugin_dir: PathBuf::new(),
         })
     }
 
@@ -1365,9 +1371,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: PathBuf::new(),
+            opencode_plugin_dir: PathBuf::new(),
         })
     }
 
@@ -2016,7 +2026,9 @@ mod tests {
 
     #[test]
     fn list_skills_enumerates_named_namespaced_skills() {
-        use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+        use crate::config::{
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        };
 
         let plugin_dir = env::temp_dir().join(format!("qmux-plugin-list-{}", std::process::id()));
         let _ = fs::remove_dir_all(&plugin_dir);
@@ -2052,9 +2064,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: plugin_dir.clone(),
+            opencode_plugin_dir: PathBuf::new(),
         };
 
         let skills = list_skills(&config);
@@ -2068,7 +2084,9 @@ mod tests {
 
     #[test]
     fn list_skills_is_empty_without_a_plugin_dir() {
-        use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+        use crate::config::{
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        };
 
         let config = QmuxConfig {
             workspace_root: env::temp_dir(),
@@ -2080,9 +2098,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: env::temp_dir().join("qmux-nonexistent-plugin-dir"),
+            opencode_plugin_dir: PathBuf::new(),
         };
 
         assert!(list_skills(&config).is_empty());
@@ -2090,7 +2112,9 @@ mod tests {
 
     #[test]
     fn list_skills_keeps_ids_unique_when_frontmatter_names_collide() {
-        use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig};
+        use crate::config::{
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        };
 
         let plugin_dir = env::temp_dir().join(format!("qmux-plugin-dup-{}", std::process::id()));
         let _ = fs::remove_dir_all(&plugin_dir);
@@ -2119,9 +2143,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: plugin_dir.clone(),
+            opencode_plugin_dir: PathBuf::new(),
         };
 
         let skills = list_skills(&config);

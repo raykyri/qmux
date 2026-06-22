@@ -353,7 +353,9 @@ fn write_response(stream: &mut UnixStream, result: Result<Value, String>) -> std
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, QmuxConfig};
+    use crate::config::{
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+    };
     use crate::workspace::{AgentInfo, AgentStatus};
     use std::io::Read;
     use std::path::PathBuf;
@@ -374,9 +376,13 @@ mod tests {
                 codex: CodexAdapterConfig {
                     binary: Some("codex".to_string()),
                 },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: std::path::PathBuf::new(),
+            opencode_plugin_dir: std::path::PathBuf::new(),
         })
     }
 

@@ -17,8 +17,9 @@ the Rust side and a matching UI adapter on the frontend.
 Implemented today:
 
 - Shell panes backed by Rust-owned PTYs.
-- Agent panes for Claude Code and Codex, launched from the app launcher or by
-  running `claude` / `codex` inside a qmux shell pane.
+- Agent panes for Claude Code, Codex, and OpenCode, launched from the app
+  launcher or by running `claude` / `codex` / `opencode` inside a qmux shell
+  pane.
 - Pluggable adapter registry (Rust) + UI adapters (React) so agents can define
   their own launch options, transcript parsing, and composer policy.
 - Launcher with per-agent adapter and model selection, and optional git worktree
@@ -62,7 +63,7 @@ Prerequisites:
 - macOS.
 - Rust toolchain.
 - Node.js and npm.
-- The agent CLIs you want to use on `PATH`: `claude` and/or `codex`.
+- The agent CLIs you want to use on `PATH`: `claude`, `codex`, and/or `opencode`.
 
 Install dependencies:
 
@@ -119,9 +120,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch.
 - Enable `Worktree` to create an isolated git worktree for the agent.
-- In zsh/bash shell panes, the app injects `qmux`, `claude`, and `codex` shell
-  functions to route the agent through qmux, so transcripts and native follow-ups
-  work without those commands being on `PATH`.
+- In zsh/bash shell panes, the app injects `qmux`, `claude`, `codex`, and
+  `opencode` shell functions to route the agent through qmux, so transcripts
+  and native follow-ups work without those commands being on `PATH`.
 - Nest tabs by dragging one onto another tab in the sidebar, or right-click a tab and
   choose `Indent` / `Outdent`.
 - Agent input is queued while an agent is busy. Use `Steer` to inject a turn
@@ -148,7 +149,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `src/`: React frontend.
 - `src/components/`: terminal, native input, launcher, turn overlay, and browser
   overlay UI.
-- `src/adapters/`: per-agent UI adapters (Claude, Codex) and the shared interface.
+- `src/adapters/`: per-agent UI adapters (Claude, Codex, OpenCode) and the shared interface.
 - `src/lib/api.ts`: Tauri command/event client helpers.
 - `src/lib/settings.ts`: persisted app settings (font, sleep behavior).
 - `src-tauri/src/`: Rust backend modules (PTYs, control socket, file server,
@@ -156,6 +157,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `src-tauri/src/adapters/`: per-agent backend adapters and the adapter registry.
 - `qmux-plugin/`: qmux-owned Claude plugin whose `skills/` are injected into launched
   Claude agents (see [Skills](#skills)).
+- `qmux-opencode-plugin/`: qmux-owned OpenCode plugin that forwards lifecycle
+  events to `qmux notify` and writes transcript JSONL for qmux to tail.
 - `docs/`: design specs for larger features (tab nesting, session fork, queue pauses).
 - `qmux.config.json`: repo-local development config.
 
@@ -169,16 +172,18 @@ cargo test --manifest-path src-tauri/Cargo.toml
   "socketPath": ".qmux/run/qmux.sock",
   "adapters": {
     "claude": { "binary": "claude" },
-    "codex": { "binary": "codex" }
+    "codex": { "binary": "codex" },
+    "opencode": { "binary": "opencode" }
   }
 }
 ```
 
 Relative paths are resolved from the process working directory. Each adapter's
-`binary` is optional and defaults to the command name (`claude`, `codex`); a
-top-level `claudeBinary` is still honored for backward compatibility. If the
-config file is absent, qmux falls back to `~/qmux/workspaces` for workspace state
-and a temporary `qmux.sock` control socket.
+`binary` is optional and defaults to the command name (`claude`, `codex`,
+`opencode`); a top-level `claudeBinary` is still honored for backward
+compatibility. If the config file is absent, qmux falls back to
+`~/qmux/workspaces` for workspace state and a temporary `qmux.sock` control
+socket.
 
 ## Skills
 
