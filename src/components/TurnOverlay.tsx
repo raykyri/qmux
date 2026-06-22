@@ -71,6 +71,11 @@ const SPLIT_KEYBOARD_STEP = 16;
 // Matches a whole message wrapped by the same XML-ish tag on its own lines.
 const TAGGED_USER_MESSAGE_PATTERN =
   /^[^\S\r\n]*<([A-Za-z0-9_-]+)>[^\S\r\n]*(?:\r?\n[\s\S]*)?\r?\n[^\S\r\n]*<\/\1>[^\S\r\n]*$/;
+const TOOL_SUMMARY_ARGUMENT_KEYS = {
+  exec_command: "cmd",
+  Bash: "command",
+  WebFetch: "url",
+} as const;
 
 interface QueueSplitDrag {
   pointerId: number;
@@ -679,12 +684,17 @@ function isTaggedUserInstruction(text: string) {
 }
 
 function ToolEntryView({ entry }: { entry: ToolEntry }) {
+  const summaryArgument = toolSummaryArgument(entry);
+  const summaryLabel = summaryArgument ? `${entry.name} ${summaryArgument}` : entry.name;
   return (
     <details className={`tool-block tool-pair ${entry.isError ? "is-error" : ""}`}>
       <summary>
         <DisclosureChevron />
         <span className="tool-summary">
-          <span className="tool-summary-main">{entry.name}</span>
+          <span className="tool-summary-main" title={summaryLabel}>
+            <span>{entry.name}</span>
+            {summaryArgument ? <span className="tool-summary-arg"> {summaryArgument}</span> : null}
+          </span>
           <span className="tool-summary-meta">{toolEntryStatus(entry)}</span>
         </span>
       </summary>
@@ -694,6 +704,35 @@ function ToolEntryView({ entry }: { entry: ToolEntry }) {
       ) : null}
     </details>
   );
+}
+
+function toolSummaryArgument(entry: ToolEntry) {
+  const key =
+    TOOL_SUMMARY_ARGUMENT_KEYS[entry.name as keyof typeof TOOL_SUMMARY_ARGUMENT_KEYS] ?? null;
+  if (!key) {
+    return null;
+  }
+  const input = objectValue(entry.input);
+  if (!input) {
+    return null;
+  }
+  return inlineSummaryValue(input[key]);
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function inlineSummaryValue(value: unknown) {
+  if (typeof value === "string") {
+    return value.length > 0 ? value : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
 }
 
 function ToolPayload({ label, value }: { label: string; value: unknown }) {

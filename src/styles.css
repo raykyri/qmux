@@ -2115,6 +2115,10 @@ button:disabled {
   font-weight: 400;
 }
 
+.tool-summary-arg {
+  color: #d9ddd9;
+}
+
 .tool-summary-meta {
   color: #8f9994;
   font-size: 11px;
