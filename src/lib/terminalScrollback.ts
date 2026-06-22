@@ -30,7 +30,6 @@ export const RESTORED_SCROLLBACK_TERMINAL_RESET =
   "\x1b(B" +
   "\x1b[4l" +
   "\x1b[?1l" +
-  "\x1b[?6l" +
   "\x1b[?7h" +
   "\x1b[?9l" +
   "\x1b[?25h" +
@@ -46,8 +45,6 @@ export const RESTORED_SCROLLBACK_TERMINAL_RESET =
   "\x1b[?1015l" +
   "\x1b[?1016l" +
   "\x1b[?1047l" +
-  "\x1b[?1048l" +
-  "\x1b[?1049l" +
   "\x1b[?2004l" +
   "\x1b[?2026l";
 
@@ -72,10 +69,18 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
   };
 
   while (index < bytes.length) {
-    const byte = bytes[index];
+    const c1 = c1ControlAt(bytes, index);
+    const byte = c1?.code ?? bytes[index];
+    if (!c1) {
+      const utf8Length = validUtf8SequenceLength(bytes, index);
+      if (utf8Length > 1) {
+        index += utf8Length;
+        continue;
+      }
+    }
 
     if (byte === CSI_8BIT) {
-      const end = findCsiEnd(bytes, index + 1);
+      const end = findCsiEnd(bytes, index + (c1?.length ?? 1));
       if (end === -1) {
         if (inAlternateScreen) {
           dropThrough(bytes.length);
@@ -84,7 +89,7 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
         }
         break;
       }
-      const csi = parseCsi(bytes, index + 1, end);
+      const csi = parseCsi(bytes, index + (c1?.length ?? 1), end);
       if (inAlternateScreen) {
         dropThrough(end + 1);
         if (isAlternateScreenReset(csi)) {
@@ -107,7 +112,7 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
       byte === PM_8BIT ||
       byte === APC_8BIT
     ) {
-      const end = findStringControlEnd(bytes, index + 1);
+      const end = findStringControlEnd(bytes, index + (c1?.length ?? 1));
       if (end === -1) {
         if (inAlternateScreen) {
           dropThrough(bytes.length);
@@ -126,7 +131,7 @@ export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
     }
 
     if (byte !== ESC) {
-      index += 1;
+      index += c1?.length ?? 1;
       continue;
     }
     if (index + 1 >= bytes.length) {
@@ -294,10 +299,23 @@ function isAlternateScreenMode(csi: ParsedCsi, final: number): boolean {
 
 function findStringControlEnd(bytes: Uint8Array, start: number): number {
   for (let index = start; index < bytes.length; index += 1) {
-    if (bytes[index] === BEL) {
-      return index + 1;
+    const c1 = c1ControlAt(bytes, index);
+    if (c1) {
+      // ST (8-bit or its UTF-8-encoded form) terminates the string control.
+      // c1ControlAt covers the bare 0x9c byte too, so there's no separate
+      // single-byte ST check below.
+      if (c1.code === ST_8BIT) {
+        return index + c1.length;
+      }
+      index += c1.length - 1;
+      continue;
     }
-    if (bytes[index] === ST_8BIT) {
+    const utf8Length = validUtf8SequenceLength(bytes, index);
+    if (utf8Length > 1) {
+      index += utf8Length - 1;
+      continue;
+    }
+    if (bytes[index] === BEL) {
       return index + 1;
     }
     if (bytes[index] === ESC && index + 1 < bytes.length && bytes[index + 1] === ESC_ST) {
@@ -305,6 +323,82 @@ function findStringControlEnd(bytes: Uint8Array, start: number): number {
     }
   }
   return -1;
+}
+
+function c1ControlAt(bytes: Uint8Array, index: number): { code: number; length: number } | null {
+  const first = bytes[index];
+  if (first >= 0x80 && first <= 0x9f) {
+    return { code: first, length: 1 };
+  }
+  if (first === 0xc2 && bytes[index + 1] >= 0x80 && bytes[index + 1] <= 0x9f) {
+    return { code: bytes[index + 1], length: 2 };
+  }
+  return null;
+}
+
+function validUtf8SequenceLength(bytes: Uint8Array, index: number): number {
+  const first = bytes[index];
+  if (first >= 0xc2 && first <= 0xdf) {
+    return isUtf8Continuation(bytes[index + 1]) ? 2 : 0;
+  }
+  if (first === 0xe0) {
+    return bytes[index + 1] >= 0xa0 &&
+      bytes[index + 1] <= 0xbf &&
+      isUtf8Continuation(bytes[index + 2])
+      ? 3
+      : 0;
+  }
+  if (first >= 0xe1 && first <= 0xec) {
+    return isUtf8Continuation(bytes[index + 1]) && isUtf8Continuation(bytes[index + 2])
+      ? 3
+      : 0;
+  }
+  if (first === 0xed) {
+    return bytes[index + 1] >= 0x80 &&
+      bytes[index + 1] <= 0x9f &&
+      isUtf8Continuation(bytes[index + 2])
+      ? 3
+      : 0;
+  }
+  if (first >= 0xee && first <= 0xef) {
+    return isUtf8Continuation(bytes[index + 1]) && isUtf8Continuation(bytes[index + 2])
+      ? 3
+      : 0;
+  }
+  if (first === 0xf0) {
+    return (
+      bytes[index + 1] >= 0x90 &&
+      bytes[index + 1] <= 0xbf &&
+      isUtf8Continuation(bytes[index + 2]) &&
+      isUtf8Continuation(bytes[index + 3])
+    )
+      ? 4
+      : 0;
+  }
+  if (first >= 0xf1 && first <= 0xf3) {
+    return (
+      isUtf8Continuation(bytes[index + 1]) &&
+      isUtf8Continuation(bytes[index + 2]) &&
+      isUtf8Continuation(bytes[index + 3])
+    )
+      ? 4
+      : 0;
+  }
+  if (first === 0xf4) {
+    return (
+      bytes[index + 1] >= 0x80 &&
+      bytes[index + 1] <= 0x8f &&
+      isUtf8Continuation(bytes[index + 2]) &&
+      isUtf8Continuation(bytes[index + 3])
+    )
+      ? 4
+      : 0;
+  }
+  return 0;
+}
+
+function isUtf8Continuation(byte: number | undefined): boolean {
+  return byte !== undefined && byte >= 0x80 && byte <= 0xbf;
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {
