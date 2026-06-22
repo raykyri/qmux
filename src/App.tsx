@@ -39,6 +39,7 @@ import LinkContextMenu from "./components/LinkContextMenu";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
+import SelectionAskPopup from "./components/SelectionAskPopup";
 import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TurnOverlay";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
@@ -46,6 +47,7 @@ import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
   agentStatusLabel,
   agentStatusTone,
+  buildQuotedMessage,
   clamp,
   formatTranscriptCopyJson,
   isEditableTarget,
@@ -57,12 +59,15 @@ import {
 } from "./lib/appHelpers";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
+  AskLauncherState,
   BrowserOverlayState,
   CloseDialogState,
   ExitDialogState,
   PaneContextMenuState,
   PaneDropTarget,
   PaneTabPointerDrag,
+  SelectionAnchor,
+  SelectionAskState,
 } from "./appTypes";
 import {
   canIndent,
@@ -117,6 +122,7 @@ import {
   setPreventSleep,
   spawnAgent,
   spawnShell,
+  submitAgentTurn,
   worktreeStatus,
 } from "./lib/api";
 import type {
@@ -337,6 +343,20 @@ export default function App() {
   // of the composer so typed text starts after the immutable command.
   const [skillPrefixWidth, setSkillPrefixWidth] = useState(0);
   const skillPrefixRef = useRef<HTMLSpanElement | null>(null);
+  // The floating Ask popup over a text selection, and the ask launcher it opens.
+  // Both are ephemeral: dismissing discards their contents (per the "can be lost"
+  // requirement). The ask launcher reuses the launcher's markup but its own state.
+  const [selectionAsk, setSelectionAsk] = useState<SelectionAskState | null>(null);
+  const [askLauncher, setAskLauncher] = useState<AskLauncherState | null>(null);
+  const [askPrompt, setAskPrompt] = useState("");
+  const [askCreateInWorktree, setAskCreateInWorktree] = useState(false);
+  const [askSelectedSkillId, setAskSelectedSkillId] = useState<string | null>(null);
+  const askInputRef = useRef<HTMLTextAreaElement | null>(null);
+  // Mirrors `askLauncher !== null` for the global keydown handler (which reads refs
+  // rather than re-subscribing) so it can yield the keyboard while the ask modal is
+  // open.
+  const askLauncherOpenRef = useRef(false);
+  askLauncherOpenRef.current = askLauncher !== null;
   const [error, setError] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
@@ -514,6 +534,33 @@ export default function App() {
       });
     },
     focus: () => launcherInputRef.current?.focus(),
+  });
+  function focusAskInput() {
+    requestAnimationFrame(() => askInputRef.current?.focus());
+  }
+  // Voice dictation for the ask launcher's question field, mirroring the launcher
+  // and composer mics so its recording/loading/error states stay identical.
+  const askDictation = useDictation({
+    getText: () => askInputRef.current?.value ?? askPrompt,
+    getCaret: () => {
+      const ta = askInputRef.current;
+      if (!ta) {
+        return askPrompt.length;
+      }
+      return document.activeElement === ta ? ta.selectionStart : ta.value.length;
+    },
+    setText: (text, caret) => {
+      setAskPrompt(text);
+      requestAnimationFrame(() => {
+        const ta = askInputRef.current;
+        if (!ta) {
+          return;
+        }
+        ta.focus();
+        ta.setSelectionRange(caret, caret);
+      });
+    },
+    focus: () => askInputRef.current?.focus(),
   });
   // The Whisper voice model is loaded once and cached; surface its progress as
   // an app-level toast since it's shared across every composer's mic.
@@ -1826,6 +1873,113 @@ export default function App() {
     }
   }
 
+  // Show the floating Ask popup for a selection. Both surfaces (terminal and
+  // transcript) route here; the selection is always within the active agent's pane,
+  // and we require an active agent (shell panes have nothing to ask).
+  function showSelectionAsk(quote: string, anchor: SelectionAnchor) {
+    if (!activeAgent || !activePane) {
+      return;
+    }
+    const trimmed = quote.trim();
+    if (!trimmed) {
+      return;
+    }
+    setSelectionAsk({
+      quote: trimmed,
+      anchor,
+      sourceAgentId: activeAgent.id,
+      sourcePaneId: activePane.id,
+      // "Ask in new thread" forks, which only Claude (with a recorded session)
+      // supports — gate the button so it's never a dead end.
+      canFork: activeAgent.adapter === CLAUDE_ADAPTER_ID && Boolean(activeAgent.sessionId),
+    });
+  }
+  function handleTerminalAskSelection(paneId: string, quote: string, anchor: SelectionAnchor) {
+    // Ignore selections from a non-active pane (only the active terminal is
+    // interactive, but guard regardless).
+    if (activePane?.id !== paneId) {
+      return;
+    }
+    showSelectionAsk(quote, anchor);
+  }
+  function openAskLauncher(mode: "ask" | "newThread") {
+    const selection = selectionAsk;
+    if (!selection) {
+      return;
+    }
+    setAskLauncher({
+      quote: selection.quote,
+      mode,
+      sourceAgentId: selection.sourceAgentId,
+      sourcePaneId: selection.sourcePaneId,
+    });
+    setAskPrompt("");
+    setAskCreateInWorktree(false);
+    setAskSelectedSkillId(null);
+    setSelectionAsk(null);
+    focusAskInput();
+  }
+  function closeAskLauncher() {
+    askDictation.stop();
+    setAskLauncher(null);
+    setAskPrompt("");
+    setAskCreateInWorktree(false);
+    setAskSelectedSkillId(null);
+    focusActiveTerminal();
+  }
+  async function submitAsk() {
+    if (!askLauncher) {
+      return;
+    }
+    const question = askPrompt.trim();
+    if (!question) {
+      return;
+    }
+    askDictation.stop();
+    const target = askLauncher;
+    const skill =
+      target.mode === "newThread" && askSelectedSkillId
+        ? availableSkills.find((entry) => entry.id === askSelectedSkillId) ?? null
+        : null;
+    let message = buildQuotedMessage(target.quote, question);
+    if (skill) {
+      message = `${skill.command} ${message}`;
+    }
+    setError(null);
+    try {
+      if (target.mode === "ask") {
+        // "auto": the backend sends now if the agent is ready, or queues onto the
+        // current conversation if it's busy.
+        const result = await submitAgentTurn(target.sourceAgentId, message, "auto");
+        setAgentQueuedTurns(target.sourceAgentId, result.queuedTurns);
+      } else {
+        const pane = await forkAgent(target.sourcePaneId, {
+          nest: true,
+          useWorktree: askCreateInWorktree,
+        });
+        setPanesPreservingRecoveredDismissals((current) =>
+          current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
+        );
+        setActivePaneId(pane.id);
+        if (pane.agentId) {
+          const result = await submitAgentTurn(pane.agentId, message, "auto");
+          setAgentQueuedTurns(pane.agentId, result.queuedTurns);
+        } else {
+          // A forkable Claude pane always comes back with an agent id; surface it
+          // rather than silently dropping the question if that ever doesn't hold.
+          // (Closing anyway avoids a retry re-forking; the new tab is already open
+          // for the user to ask in directly.)
+          setError("The forked conversation isn't ready to receive a message.");
+        }
+      }
+      closeAskLauncher();
+    } catch (err) {
+      // Keep the launcher open on failure so the question isn't lost and the user
+      // can retry.
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   // Mirror the latest active pane and close handler into refs so the always-on
   // keydown listener (registered once) never reads stale state.
   useEffect(() => {
@@ -1939,6 +2093,15 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || !(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+
+      // The ask modal owns the keyboard while open: don't stack the launcher or
+      // settings over it, switch tabs behind it, or zoom. Its own combos (Escape,
+      // Cmd+Enter, Cmd+Z) are handled on the form and don't pass through here. We
+      // only return, never preventDefault, so the textarea's native editing keys
+      // (Cmd+C/V/A) still work.
+      if (askLauncherOpenRef.current) {
         return;
       }
 
@@ -2105,6 +2268,19 @@ export default function App() {
       launcherInputRef.current?.select();
     });
   }, [launcherVisible]);
+
+  // The ask launcher's "new thread" mode shows the same Claude skill toggles, but
+  // opening it doesn't pass through the launcher-visible effect above — so load the
+  // skills here too, otherwise the toggles are empty until the main launcher has
+  // been opened once this session.
+  useEffect(() => {
+    if (askLauncher?.mode !== "newThread") {
+      return;
+    }
+    void listClaudeSkills()
+      .then(setAvailableSkills)
+      .catch(() => setAvailableSkills([]));
+  }, [askLauncher?.mode]);
 
   // Selecting a non-Claude adapter clears any chosen skill; measure the faint
   // command prefix so the composer's first line is indented past it.
@@ -2399,6 +2575,121 @@ export default function App() {
             title={`Launch ${launchAdapter.label}`}
           >
             <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+
+  // The ask launcher: a launcher-style modal seeded with a quoted selection. In
+  // "ask" mode only the question field, mic, and submit show; in "newThread" mode
+  // (fork-then-send) the worktree checkbox and skill toggles are also shown. The
+  // adapter select is intentionally omitted — a fork inherits the source's adapter.
+  const renderAskLauncher = (state: AskLauncherState) => (
+    <form
+      className="command-launcher command-launcher--ask"
+      role="dialog"
+      aria-modal={true}
+      aria-label={state.mode === "newThread" ? "Ask in a new thread" : "Ask about selection"}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeAskLauncher();
+          return;
+        }
+        // Swallow Undo/Redo so the WebView doesn't blur the controlled textarea
+        // (see the launcher's note).
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          return;
+        }
+        if (event.metaKey && event.key === "Enter") {
+          event.preventDefault();
+          void submitAsk();
+        }
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submitAsk();
+      }}
+    >
+      <blockquote className="command-launcher-quote">{state.quote}</blockquote>
+      <textarea
+        ref={askInputRef}
+        className="command-launcher-input command-launcher-input--ask"
+        value={askPrompt}
+        onChange={(event) => setAskPrompt(event.currentTarget.value)}
+        onKeyDownCapture={(event) => {
+          if (!askDictation.listening) {
+            return;
+          }
+          if (
+            event.key === "Shift" ||
+            event.key === "Control" ||
+            event.key === "Alt" ||
+            event.key === "Meta" ||
+            event.key === "CapsLock"
+          ) {
+            return;
+          }
+          askDictation.stop();
+        }}
+        rows={2}
+        placeholder="Ask about this quote"
+        autoFocus
+      />
+      <div className="command-launcher-overlay">
+        <div className="command-launcher-overlay-group">
+          {state.mode === "newThread" ? (
+            <>
+              <label className="command-launcher-worktree">
+                <input
+                  type="checkbox"
+                  checked={askCreateInWorktree}
+                  onChange={(event) => {
+                    setAskCreateInWorktree(event.currentTarget.checked);
+                    focusAskInput();
+                  }}
+                />
+                <span>New worktree</span>
+              </label>
+              {availableSkills.length > 0 ? (
+                <div className="command-launcher-skills">
+                  {availableSkills.map((skill) => (
+                    <label
+                      key={skill.id}
+                      className="command-launcher-worktree command-launcher-skill"
+                      title={skill.command}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={askSelectedSkillId === skill.id}
+                        onChange={() => {
+                          setAskSelectedSkillId((current) =>
+                            current === skill.id ? null : skill.id,
+                          );
+                          focusAskInput();
+                        }}
+                      />
+                      <span>{skill.name}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+        <div className="command-launcher-controls">
+          <DictationMicButton dictation={askDictation} className="command-launcher-ask-mic" />
+          <button
+            type="submit"
+            className="command-launcher-send"
+            aria-label={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
+            title={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
+          >
+            <span aria-hidden="true">
+              ⌘<span className="enter-glyph">↵</span>
+            </span>
           </button>
         </div>
       </div>
@@ -2739,6 +3030,20 @@ export default function App() {
         </div>
       ) : null}
 
+      {askLauncher ? (
+        <div
+          className="command-launcher-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeAskLauncher();
+            }
+          }}
+        >
+          {renderAskLauncher(askLauncher)}
+        </div>
+      ) : null}
+
       {settingsOpen ? (
         <div
           className="settings-backdrop"
@@ -3045,6 +3350,7 @@ export default function App() {
               onUserInput={noteUserInput}
               onOpenLink={linkActions.openLink}
               onLinkContextMenu={linkActions.openLinkMenu}
+              onAskSelection={handleTerminalAskSelection}
               onTerminalTitleChange={handleTerminalTitleChange}
             />
           ))}
@@ -3074,6 +3380,7 @@ export default function App() {
             queueSplitHeight={activeQueueSplitHeight}
             onQueueSplitHeightChange={setActiveQueueSplitHeight}
             linkActions={linkActions}
+            onAskSelection={showSelectionAsk}
             header={
               <TurnPaneHeader
                 sessionId={activeAgent?.sessionId ?? null}
@@ -3177,6 +3484,16 @@ export default function App() {
             setLinkMenu(null);
           }}
           onClose={() => setLinkMenu(null)}
+        />
+      ) : null}
+
+      {selectionAsk ? (
+        <SelectionAskPopup
+          anchor={selectionAsk.anchor}
+          showNewThread={selectionAsk.canFork}
+          onAsk={() => openAskLauncher("ask")}
+          onAskNewThread={() => openAskLauncher("newThread")}
+          onClose={() => setSelectionAsk(null)}
         />
       ) : null}
 

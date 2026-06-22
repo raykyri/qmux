@@ -1287,6 +1287,76 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(231, 231, 226, 0.45);
 }
 
+/* Ask launcher: a launcher seeded with a quoted selection. The quote sits above
+   the question field as a scroll-capped blockquote with padding so it never
+   crowds the input. */
+.command-launcher-quote {
+  margin: 14px 18px 0;
+  padding: 8px 12px;
+  max-height: 168px;
+  overflow-y: auto;
+  border-left: 2px solid var(--accent-color);
+  border-radius: 0 8px 8px 0;
+  background: rgba(255, 255, 255, 0.04);
+  color: #c4cbc6;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The ask question field drops the launcher's tall min-height (the quote already
+   gives the panel presence) and its right mic gutter (the mic lives in the bottom
+   controls here), but keeps the bottom padding that clears the overlaid controls. */
+.command-launcher-input--ask {
+  min-height: 64px;
+  padding: 12px 18px 52px 18px;
+}
+
+/* The ask mic sits inline in the bottom controls row next to submit, rather than
+   pinned over the field like the launcher's, so it never overlaps the quote. */
+.command-launcher-ask-mic {
+  position: static;
+  pointer-events: auto;
+}
+
+/* Floating Ask / Ask-in-new-thread button group over a text selection (terminal or
+   assistant transcript). Portaled to <body>, positioned in viewport coordinates. */
+.selection-ask-popup {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, #242a2c, #1d2224);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.selection-ask-button {
+  appearance: none;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  padding: 5px 10px;
+  color: #e7e7e2;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.selection-ask-button:hover {
+  background: var(--accent-strong);
+  color: #10211c;
+}
+
+.selection-ask-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
 /* Custom launcher dropdown (LauncherSelect), used by every agent's launcher options.
    The popover is portaled to <body> and styled like the composer menu. */
 .launcher-select {

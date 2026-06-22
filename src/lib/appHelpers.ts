@@ -23,6 +23,21 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+// Formats a quoted selection plus the user's question into one agent message: the
+// quote as a Markdown blockquote (each line prefixed with `>`), a blank line, then
+// the question. Used by the "Ask about this quote" launcher so the agent receives
+// the quote inline regardless of which surface it was selected from.
+export function buildQuotedMessage(quote: string, question: string): string {
+  const quoted = quote
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => `> ${line}`.trimEnd())
+    .join("\n");
+  const trimmedQuestion = question.trim();
+  return trimmedQuestion ? `${quoted}\n\n${trimmedQuestion}` : quoted;
+}
+
 export function selectPaneAfterClose(panes: PaneInfo[], closedPaneId: string): string | null {
   const closedIndex = panes.findIndex((pane) => pane.id === closedPaneId);
   if (closedIndex === -1) {
