@@ -3215,6 +3215,13 @@ header + .turn-blocks {
   background: #ffffff;
 }
 
+.browser-overlay-frame.is-file-content {
+  /* Bare text/plain files have no authored CSS. In a dark Tauri/WebKit appearance,
+     the UA plaintext renderer can choose light text; keep file previews matched to
+     the white iframe canvas without touching localhost dev-server pages. */
+  color-scheme: light;
+}
+
 .browser-overlay-empty {
   flex: 1;
   display: flex;
