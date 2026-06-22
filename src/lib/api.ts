@@ -10,6 +10,7 @@ import type {
   PaneInfo,
   QmuxEvent,
   QueuedTurn,
+  RecentSessionInfo,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   SendNextQueuedAgentTurnResult,
@@ -49,6 +50,17 @@ export function listGroups() {
 
 export function listAgents() {
   return invoke<AgentInfo[]>("list_agents");
+}
+
+export function listRecentSessions(limit?: number) {
+  return invoke<RecentSessionInfo[]>("list_recent_sessions", { limit: limit ?? null });
+}
+
+export function resumeRecentSession(sessionId: string, initialSize?: InitialPaneSize | null) {
+  return invoke<PaneInfo>("recent_session_resume", {
+    sessionId,
+    initialSize: initialSize ?? null,
+  });
 }
 
 export function listTurns(agentId?: string | null) {

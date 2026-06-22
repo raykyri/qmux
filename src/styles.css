@@ -1630,22 +1630,189 @@ button:disabled {
 .terminal-empty-state {
   position: absolute;
   inset: 0;
-  padding: 24px;
+  padding: 28px;
   pointer-events: none;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
+  overflow: auto;
+}
+
+.home-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 680px) minmax(240px, 1fr);
+  gap: 28px;
+  width: min(1180px, 100%);
+  min-height: 100%;
+  align-content: start;
+  pointer-events: auto;
+}
+
+.home-left-column {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  align-self: start;
+}
+
+.home-right-column {
+  min-width: 0;
 }
 
 .home-launcher {
   display: flex;
   align-items: center;
-  width: min(680px, 100%);
+  width: 100%;
 }
 
 /* The inline launcher is interactive even though its placeholder wrapper isn't. */
 .terminal-empty-state .command-launcher {
   pointer-events: auto;
+}
+
+.recent-sessions {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-lg);
+  background: #171b1d;
+  padding: 10px;
+}
+
+.recent-sessions-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  color: #d8ddd8;
+}
+
+.recent-sessions-heading h2 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.recent-sessions-empty {
+  margin: 0;
+  color: #89928d;
+  font-size: var(--fs-sm);
+}
+
+.recent-sessions-list {
+  display: grid;
+  gap: 4px;
+}
+
+.recent-session-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 46px;
+  padding: 7px 8px;
+  border-color: transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: #e6e8e2;
+  text-align: left;
+}
+
+.recent-session-row:hover:not(:disabled),
+.recent-session-row:focus-visible {
+  border-color: var(--control-border);
+  background: var(--control-bg);
+}
+
+.recent-session-row:disabled {
+  cursor: default;
+  color: #9ba29d;
+}
+
+.recent-session-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #33383a;
+  border-radius: 5px;
+  background: #202527;
+  color: #cfd6d1;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  overflow: hidden;
+}
+
+.recent-session-icon img {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+}
+
+.recent-session-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.recent-session-title,
+.recent-session-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-session-title {
+  color: inherit;
+  font-size: var(--fs-base);
+  line-height: 1.25;
+}
+
+.recent-session-meta {
+  color: #8f9993;
+  font-size: var(--fs-xs);
+}
+
+.recent-session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid #36403c;
+  border-radius: 999px;
+  color: #a8cfc4;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.recent-session-badge--warning {
+  border-color: #5f4937;
+  color: #d6aa72;
+}
+
+.recent-session-open-icon {
+  color: #9aa49e;
+}
+
+@media (max-width: 820px) {
+  .terminal-empty-state {
+    padding: 18px;
+  }
+
+  .home-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .home-right-column {
+    display: none;
+  }
 }
 
 .terminal-empty-content {

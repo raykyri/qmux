@@ -1,4 +1,4 @@
-use crate::state::{PaneInfo, QueuedTurn};
+use crate::state::{PaneInfo, QueuedTurn, RecentSessionInfo};
 use crate::workspace::{AgentInfo, GroupInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,6 +37,10 @@ pub struct PersistedState {
     pub agents: Vec<AgentInfo>,
     #[serde(default)]
     pub queues: HashMap<String, Vec<QueuedTurn>>,
+    /// Durable, tab-independent history of resumable agent sessions. Unlike `agents`,
+    /// entries remain after their tab closes so Home can show recent work.
+    #[serde(default)]
+    pub recent_sessions: Vec<RecentSessionInfo>,
     /// Per-agent composer drafts: the unsent text sitting in the right-pane input.
     /// Persisted so an in-progress draft survives a restart, recovered alongside
     /// queues and transcripts.
@@ -53,6 +57,7 @@ impl Default for PersistedState {
             groups: Vec::new(),
             agents: Vec::new(),
             queues: HashMap::new(),
+            recent_sessions: Vec::new(),
             drafts: HashMap::new(),
         }
     }
