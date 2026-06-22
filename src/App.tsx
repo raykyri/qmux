@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -18,6 +26,9 @@ import {
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import NativeInput from "./components/NativeInput";
+import DictationMicButton from "./components/DictationMicButton";
+import { useDictation } from "./useDictation";
+import { getDictationDownload, subscribeDictationDownload } from "./dictationStatus";
 import BrowserOverlay from "./components/BrowserOverlay";
 import BrowserOverlayControls from "./components/BrowserOverlayControls";
 import LinkContextMenu from "./components/LinkContextMenu";
@@ -313,6 +324,36 @@ export default function App() {
   function focusLauncherInput() {
     requestAnimationFrame(() => launcherInputRef.current?.focus());
   }
+  // Live voice dictation for the launcher prompt, mirroring the composer's mic.
+  // Reads/writes go through the live textarea so each re-transcription pass
+  // overwrites the previous one in place.
+  const launcherDictation = useDictation({
+    getText: () => launcherInputRef.current?.value ?? prompt,
+    getCaret: () => {
+      const ta = launcherInputRef.current;
+      if (!ta) {
+        return prompt.length;
+      }
+      // If the prompt isn't focused, append at the end rather than wherever
+      // selectionStart happens to sit (0 for a never-focused field).
+      return document.activeElement === ta ? ta.selectionStart : ta.value.length;
+    },
+    setText: (text, caret) => {
+      setPrompt(text);
+      requestAnimationFrame(() => {
+        const ta = launcherInputRef.current;
+        if (!ta) {
+          return;
+        }
+        ta.focus();
+        ta.setSelectionRange(caret, caret);
+      });
+    },
+    focus: () => launcherInputRef.current?.focus(),
+  });
+  // The Whisper voice model is downloaded once and cached; surface its progress
+  // as an app-level toast since it's shared across every composer's mic.
+  const dictationDownload = useSyncExternalStore(subscribeDictationDownload, getDictationDownload);
   // The launcher renders in two places: the modal (Cmd-N / sidebar button) and,
   // when there are no panes, inline as the content-pane placeholder. Only one is
   // ever mounted at a time (the inline one yields to the modal), so they can share
@@ -1448,6 +1489,9 @@ export default function App() {
   }
 
   async function addAgentPane() {
+    // End any in-flight dictation so it can't keep writing into the prompt after
+    // the agent launches and the field clears.
+    launcherDictation.stop();
     const trimmed = prompt.trim();
     // A selected skill is sent as a leading slash command so the launched agent
     // invokes it before the user's prompt (e.g. `/qmux:deep-research <prompt>`).
@@ -1948,10 +1992,29 @@ export default function App() {
         className="command-launcher-input"
         value={prompt}
         onChange={(event) => setPrompt(event.currentTarget.value)}
+        // While dictation is live, the first real keystroke hands control back to
+        // the keyboard: stop transcribing so it stops overwriting the caret. Bare
+        // modifiers don't count.
+        onKeyDownCapture={(event) => {
+          if (!launcherDictation.listening) {
+            return;
+          }
+          if (
+            event.key === "Shift" ||
+            event.key === "Control" ||
+            event.key === "Alt" ||
+            event.key === "Meta" ||
+            event.key === "CapsLock"
+          ) {
+            return;
+          }
+          launcherDictation.stop();
+        }}
         rows={2}
         placeholder="What do you want to research or build?"
         style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
       />
+      <DictationMicButton dictation={launcherDictation} className="command-launcher-mic" />
       <div className="command-launcher-overlay">
         <div className="command-launcher-overlay-group">
           <label className="command-launcher-worktree">
@@ -2784,6 +2847,15 @@ export default function App() {
           }}
           onClose={() => setLinkMenu(null)}
         />
+      ) : null}
+
+      {dictationDownload ? (
+        <div className="dictation-download-toast" role="status" aria-live="polite">
+          Downloading voice model…
+          {dictationDownload.total
+            ? ` ${Math.round((dictationDownload.loaded / dictationDownload.total) * 100)}%`
+            : ""}
+        </div>
       ) : null}
     </main>
   );
