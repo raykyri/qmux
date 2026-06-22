@@ -2316,6 +2316,10 @@ button:disabled {
   font-weight: 400;
 }
 
+.activity-group-label.is-tool-group {
+  color: #aab1ad;
+}
+
 .tool-summary-arg {
   color: #d9ddd9;
 }

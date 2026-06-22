@@ -754,7 +754,9 @@ function ActivityGroupView({ group }: { group: ActivityGroupItem }) {
     <details className="activity-group-block">
       <summary>
         <DisclosureChevron />
-        <span>{activityGroupLabel(group)}</span>
+        <span className={group.toolCallCount > 0 ? "activity-group-label is-tool-group" : undefined}>
+          {activityGroupLabel(group)}
+        </span>
       </summary>
       <div className="activity-group-children">
         {group.children.map((child) => (
