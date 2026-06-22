@@ -221,8 +221,8 @@ export default function TurnOverlay({
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
   // On mouse-up, offer an "ask about this" action for a non-whitespace selection
-  // that lies entirely within an assistant message (not a user turn, not spanning
-  // the gap between cards).
+  // that lies entirely within an assistant or system message (not a user turn, not
+  // spanning the gap between cards).
   const handleSelectionMouseUp = () => {
     if (!onAskSelection) {
       return;
@@ -235,15 +235,14 @@ export default function TurnOverlay({
     if (!text.trim()) {
       return;
     }
-    const assistantCard = (node: Node | null) => {
+    const askableCard = (node: Node | null) => {
       const el = node instanceof Element ? node : node?.parentElement ?? null;
-      return el?.closest(".turn-card.role-assistant") ?? null;
+      return el?.closest(".turn-card.role-assistant, .turn-card.role-system") ?? null;
     };
-    // Require both endpoints in the *same* assistant card, so a selection that
-    // spans a user turn or the gap between cards (or two different assistant
-    // messages) is ignored.
-    const anchorCard = assistantCard(selection.anchorNode);
-    if (!anchorCard || anchorCard !== assistantCard(selection.focusNode)) {
+    // Require both endpoints in the *same* askable card, so a selection that spans
+    // a user turn or the gap between cards (or two different messages) is ignored.
+    const anchorCard = askableCard(selection.anchorNode);
+    if (!anchorCard || anchorCard !== askableCard(selection.focusNode)) {
       return;
     }
     const rect = selection.getRangeAt(0).getBoundingClientRect();
@@ -696,7 +695,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
         <MessageItemView item={item} assistantLabel={assistantLabel} showName={showName} />
       ) : null}
       {item.activities.map((activity) => (
-        <ActivityItemView key={activity.key} item={activity} />
+        <ActivityItemView key={activity.key} item={activity} isRootActivity />
       ))}
     </>
   );
@@ -738,22 +737,34 @@ function turnRoleLabel(role: string, assistantLabel: string) {
   return role === "assistant" ? assistantLabel : role;
 }
 
-function ActivityItemView({ item }: { item: ActivityItem }) {
+function ActivityItemView({
+  item,
+  isRootActivity = false,
+}: {
+  item: ActivityItem;
+  isRootActivity?: boolean;
+}) {
   switch (item.type) {
     case "tool":
-      return <ToolEntryView entry={item} />;
+      return <ToolEntryView entry={item} showChevron={!isRootActivity} />;
     case "thinking":
-      return <ThinkingView item={item} />;
+      return <ThinkingView item={item} showChevron={!isRootActivity} />;
     case "activityGroup":
-      return <ActivityGroupView group={item} />;
+      return <ActivityGroupView group={item} showChevron={!isRootActivity} />;
   }
 }
 
-function ActivityGroupView({ group }: { group: ActivityGroupItem }) {
+function ActivityGroupView({
+  group,
+  showChevron,
+}: {
+  group: ActivityGroupItem;
+  showChevron: boolean;
+}) {
   return (
-    <details className="activity-group-block">
+    <details className={`activity-group-block${showChevron ? "" : " is-root-activity"}`}>
       <summary>
-        <DisclosureChevron />
+        {showChevron ? <DisclosureChevron /> : null}
         <span className={group.toolCallCount > 0 ? "activity-group-label is-tool-group" : undefined}>
           {activityGroupLabel(group)}
         </span>
@@ -771,7 +782,7 @@ function activityGroupLabel(group: ActivityGroupItem) {
   if (group.toolCallCount === 0) {
     return "Thinking...";
   }
-  return `${group.toolCallCount} tool call${group.toolCallCount === 1 ? "" : "s"}`;
+  return `Used ${group.toolCallCount} tool${group.toolCallCount === 1 ? "" : "s"}`;
 }
 
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
@@ -928,19 +939,28 @@ function isHorizontalWhitespace(char: string) {
   return char !== "\n" && char !== "\r" && char.trim() === "";
 }
 
-function ToolEntryView({ entry }: { entry: ToolEntry }) {
+function ToolEntryView({
+  entry,
+  showChevron,
+}: {
+  entry: ToolEntry;
+  showChevron: boolean;
+}) {
   const summaryArgument = toolSummaryArgument(entry);
-  const summaryLabel = summaryArgument ? `${entry.name} ${summaryArgument}` : entry.name;
+  const toolNameLabel = showChevron ? entry.name : `Used ${entry.name}`;
+  const summaryLabel = summaryArgument ? `${toolNameLabel} ${summaryArgument}` : toolNameLabel;
   return (
-    <details className={`tool-block tool-pair ${entry.isError ? "is-error" : ""}`}>
+    <details
+      className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${showChevron ? "" : " is-root-activity"}`}
+    >
       <summary>
-        <DisclosureChevron />
+        {showChevron ? <DisclosureChevron /> : null}
         <span className="tool-summary">
           <span className="tool-summary-main" title={summaryLabel}>
-            <span>{entry.name}</span>
+            <span>{toolNameLabel}</span>
             {summaryArgument ? <span className="tool-summary-arg"> {summaryArgument}</span> : null}
           </span>
-          <span className="tool-summary-meta">{toolEntryStatus(entry)}</span>
+          <ToolEntryStatus entry={entry} />
         </span>
       </summary>
       {entry.input !== undefined ? <ToolPayload label="Input" value={entry.input} /> : null}
@@ -989,11 +1009,17 @@ function ToolPayload({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-function ThinkingView({ item }: { item: ThinkingItem }) {
+function ThinkingView({
+  item,
+  showChevron,
+}: {
+  item: ThinkingItem;
+  showChevron: boolean;
+}) {
   return (
-    <details className="thinking-block">
+    <details className={`thinking-block${showChevron ? "" : " is-root-activity"}`}>
       <summary>
-        <DisclosureChevron />
+        {showChevron ? <DisclosureChevron /> : null}
         <span>Thinking...</span>
       </summary>
       {item.values.map((value, index) => (
@@ -1007,12 +1033,15 @@ function DisclosureChevron() {
   return <ChevronRight className="disclosure-chevron" size={12} aria-hidden="true" />;
 }
 
-function toolEntryStatus(entry: ToolEntry) {
+function ToolEntryStatus({ entry }: { entry: ToolEntry }) {
   if (entry.result === undefined) {
-    return "running";
+    return <span className="tool-summary-meta">running</span>;
   }
-  const status = entry.isError ? "error" : "done";
-  return `${status}, ${stringify(entry.result).length} chars`;
+  const charCount = `${stringify(entry.result).length} chars`;
+  if (entry.isError) {
+    return <span className="tool-summary-meta">error, {charCount}</span>;
+  }
+  return <span className="tool-summary-meta">{charCount}</span>;
 }
 
 function formatTurnTranscript(turn: Turn, assistantLabel: string) {

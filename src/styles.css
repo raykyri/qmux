@@ -1334,15 +1334,15 @@ button:disabled {
   background: transparent;
   padding: 5px 10px;
   color: #e7e7e2;
-  font-size: var(--fs-sm);
+  font-size: calc(var(--fs-sm) + 2px);
   white-space: nowrap;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
 }
 
 .selection-ask-button:hover:not(:disabled) {
-  background: var(--accent-strong);
-  color: #10211c;
+  background: #2a2f31;
+  color: #f1f0e8;
 }
 
 .selection-ask-button:disabled {
@@ -2236,13 +2236,12 @@ header + .turn-blocks {
 .activity-group-block {
   background: transparent;
   color: #d9ddd9;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   overflow: visible;
-  margin: -2px 0 0;
 }
 
 .activity-group-block {
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 .tool-block > summary,
@@ -2255,7 +2254,14 @@ header + .turn-blocks {
   cursor: pointer;
   list-style: none;
   border-radius: 6px;
-  padding: 4px 7px;
+  padding: 4px 9px;
+}
+
+.tool-block.is-root-activity > summary,
+.thinking-block.is-root-activity > summary,
+.activity-group-block.is-root-activity > summary {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
 .tool-block > summary::-webkit-details-marker,
@@ -2315,22 +2321,26 @@ header + .turn-blocks {
 }
 
 .tool-summary-main {
-  color: #aab1ad;
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  color: #8f9994;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   font-weight: 400;
 }
 
 .activity-group-label.is-tool-group {
-  color: #aab1ad;
+  color: #8f9994;
 }
 
 .tool-summary-arg {
   color: #d9ddd9;
 }
 
+.tool-block.is-root-activity .tool-summary-arg {
+  color: #8f9994;
+}
+
 .tool-summary-meta {
   color: #8f9994;
-  font-size: calc(11.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px));
 }
 
 /* Expanded payloads keep a faint full box so raw output stays delineated, indented
@@ -2346,7 +2356,7 @@ header + .turn-blocks {
 .tool-payload-label {
   padding: 6px 8px 0;
   color: #8f9994;
-  font-size: calc(11.5px + var(--turn-font-delta, 0px));
+  font-size: calc(11px + var(--turn-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2380,14 +2390,14 @@ header + .turn-blocks {
 }
 
 .thinking-block > summary > span {
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 .activity-group-children {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin-top: 2px;
-  padding-left: 18px;
+  padding-left: 10px;
 }
 
 .native-input {
