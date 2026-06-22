@@ -312,6 +312,23 @@ pub fn acknowledge_agent(
     Ok(agent)
 }
 
+pub fn clear_agent_working_status(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
+    let mut agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    if matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+        agent.status = AgentStatus::Idle;
+        state.update_agent(agent.clone())?;
+        state.emit(crate::events::QmuxEvent::new(
+            "agent.working_status_cleared",
+            agent.pane_id.clone(),
+            Some(agent.id.clone()),
+            serde_json::json!({ "agent": agent.clone() }),
+        ));
+    }
+    Ok(agent)
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeStatus {
@@ -733,6 +750,52 @@ mod tests {
             state.list_agent_turn_queue("agent-shell").unwrap(),
             vec!["queued turn".to_string()]
         );
+    }
+
+    #[test]
+    fn clear_agent_working_status_only_clears_running_states() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(
+                "agent-running",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent(
+                "agent-starting",
+                Some("pane-2"),
+                AgentStatus::Starting,
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent(
+                "agent-waiting",
+                Some("pane-3"),
+                AgentStatus::AwaitingInput,
+            ))
+            .unwrap();
+
+        let running = clear_agent_working_status(&state, "agent-running").unwrap();
+        let starting = clear_agent_working_status(&state, "agent-starting").unwrap();
+        let waiting = clear_agent_working_status(&state, "agent-waiting").unwrap();
+
+        assert!(matches!(running.status, AgentStatus::Idle));
+        assert!(matches!(starting.status, AgentStatus::Idle));
+        assert!(matches!(waiting.status, AgentStatus::AwaitingInput));
+        assert!(matches!(
+            state.agent("agent-running").unwrap().unwrap().status,
+            AgentStatus::Idle
+        ));
+        assert!(matches!(
+            state.agent("agent-starting").unwrap().unwrap().status,
+            AgentStatus::Idle
+        ));
+        assert!(matches!(
+            state.agent("agent-waiting").unwrap().unwrap().status,
+            AgentStatus::AwaitingInput
+        ));
     }
 
     #[test]

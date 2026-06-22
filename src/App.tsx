@@ -100,6 +100,7 @@ import {
 import {
   acknowledgeAgent,
   attachPane,
+  clearAgentWorkingStatus,
   confirmAppExit,
   forkAgent,
   getLauncherAdapterPreference,
@@ -1257,6 +1258,23 @@ export default function App() {
     }
   }
 
+  async function clearAgentWorkingIndicator(agentId: string) {
+    setError(null);
+    try {
+      replaceAgent(await clearAgentWorkingStatus(agentId));
+      setThinkingAgentIds((current) => {
+        if (!current.has(agentId)) {
+          return current;
+        }
+        const next = new Set(current);
+        next.delete(agentId);
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function acknowledgePaneIfDone(paneId: string | null) {
     if (!paneId || !document.hasFocus()) {
       return;
@@ -1622,7 +1640,7 @@ export default function App() {
     }
     if (
       event.target instanceof HTMLElement &&
-      event.target.closest(".pane-tab-close, .pane-tab-status-clickable")
+      event.target.closest(".pane-tab-close, .pane-tab-status-clickable, .pane-tab-dot-button")
     ) {
       return;
     }
@@ -3124,6 +3142,8 @@ export default function App() {
               ? worktreeStatusByAgent[paneAgent.id]
               : undefined;
             const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
+            const canClearWorkingStatus =
+              paneAgent?.status === "running" || paneAgent?.status === "starting";
             const paneQueueCount = paneAgent
               ? (queuedTurnsByAgent[paneAgent.id]?.length ?? 0)
               : 0;
@@ -3164,6 +3184,7 @@ export default function App() {
             const className = [
               "pane-tab-row",
               pane.id === activePane?.id ? "is-selected" : "",
+              canClearWorkingStatus ? "has-clearable-status" : "",
               isDraggingRow ? "is-dragging" : "",
               dropGap === index ? "is-drop-before" : "",
               dropGap === panes.length && index === panes.length - 1 ? "is-drop-after" : "",
@@ -3204,7 +3225,9 @@ export default function App() {
                   }}
                 >
                   <span
-                    className={`pane-tab-dot status-${paneAgentStatusTone}`}
+                    className={`pane-tab-dot status-${paneAgentStatusTone}${
+                      canClearWorkingStatus ? " is-clearable-placeholder" : ""
+                    }`}
                     aria-hidden="true"
                   />
                   <span className="pane-tab-content">
@@ -3260,6 +3283,29 @@ export default function App() {
                     </span>
                   ) : null}
                 </button>
+                {canClearWorkingStatus && paneAgent ? (
+                  <button
+                    type="button"
+                    className="pane-tab-clear-status pane-tab-dot-button"
+                    aria-label={`Clear working status for ${paneDisplayTitle}`}
+                    title="Clear working status"
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void clearAgentWorkingIndicator(paneAgent.id);
+                    }}
+                  >
+                    <span
+                      className={`pane-tab-dot status-${paneAgentStatusTone}`}
+                      aria-hidden="true"
+                    />
+                  </button>
+                ) : null}
                 <a
                   className="pane-tab-close"
                   role="button"
@@ -3741,7 +3787,11 @@ export default function App() {
           )}
           <TurnOverlay
             turns={activeAgent ? activeTurns : []}
-            thinking={Boolean(activeAgent && thinkingAgentIds.has(activeAgent.id))}
+            thinking={Boolean(
+              activeAgent &&
+                thinkingAgentIds.has(activeAgent.id) &&
+                (activeAgent.status === "running" || activeAgent.status === "starting"),
+            )}
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
