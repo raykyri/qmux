@@ -92,11 +92,28 @@ const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
+  "functions.exec_command": "cmd",
   Bash: "command",
   WebFetch: "url",
   // Claude's file tools: show the path being read/edited as the argument.
   Read: "file_path",
   Edit: "file_path",
+  MultiEdit: "file_path",
+  Write: "file_path",
+} as const;
+
+const TOOL_ACTION_NAMES = {
+  readFile: new Set(["read", "read_file", "glob", "grep", "ls"]),
+  editFile: new Set([
+    "edit",
+    "multi_edit",
+    "multiedit",
+    "notebook_edit",
+    "notebookedit",
+    "write",
+    "apply_patch",
+  ]),
+  runCommand: new Set(["bash", "exec_command", "shell", "run_command"]),
 } as const;
 
 interface QueueSplitDrag {
@@ -129,6 +146,8 @@ interface ToolEntry {
   result?: unknown;
   isError: boolean;
 }
+
+type ToolActionKind = keyof typeof TOOL_ACTION_NAMES;
 
 interface ThinkingItem {
   type: "thinking";
@@ -708,6 +727,23 @@ function countUniqueToolCalls(items: ActivityLeafItem[]) {
   return counted.size;
 }
 
+function uniqueToolEntries(items: ActivityLeafItem[]) {
+  const seen = new Set<string>();
+  const entries: ToolEntry[] = [];
+  for (const item of items) {
+    if (item.type !== "tool") {
+      continue;
+    }
+    const key = item.id ? `id:${item.id}` : `entry:${item.key}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    entries.push(item);
+  }
+  return entries;
+}
+
 // Memoized on the item: buildTimelineItems is itself memoized on `turns`, so item
 // references are stable while turns are unchanged. That lets a re-render driven by
 // something else (e.g. each composer keystroke, which lives in a parent) skip
@@ -815,10 +851,84 @@ function ActivityGroupView({
 }
 
 function activityGroupLabel(group: ActivityGroupItem) {
-  if (group.toolCallCount === 0) {
+  const entries = uniqueToolEntries(group.children);
+  if (entries.length === 0) {
     return "Thinking...";
   }
-  return `Used ${group.toolCallCount} tool${group.toolCallCount === 1 ? "" : "s"}`;
+  return toolActionGroupLabel(entries) ?? usedToolsLabel(group.toolCallCount);
+}
+
+function toolActionGroupLabel(entries: ToolEntry[]) {
+  const counts: Record<ToolActionKind, number> = {
+    readFile: 0,
+    editFile: 0,
+    runCommand: 0,
+  };
+  let unknownCount = 0;
+
+  for (const entry of entries) {
+    const kind = classifyToolAction(entry);
+    if (kind) {
+      counts[kind] += 1;
+    } else {
+      unknownCount += 1;
+    }
+  }
+
+  const recognizedCount = counts.readFile + counts.editFile + counts.runCommand;
+  if (recognizedCount === 0) {
+    return null;
+  }
+
+  const parts = [
+    fileActionLabel("read", counts.readFile),
+    fileActionLabel("edited", counts.editFile),
+    commandActionLabel(counts.runCommand),
+    unknownCount > 0 ? `used ${unknownCount} other tool${unknownCount === 1 ? "" : "s"}` : null,
+  ].filter((part): part is string => Boolean(part));
+  return capitalizeSentence(parts.join(", "));
+}
+
+function classifyToolAction(entry: ToolEntry): ToolActionKind | null {
+  const name = normalizedToolName(entry.name);
+  for (const [kind, names] of Object.entries(TOOL_ACTION_NAMES) as [
+    ToolActionKind,
+    ReadonlySet<string>,
+  ][]) {
+    if (names.has(name)) {
+      return kind;
+    }
+  }
+  return null;
+}
+
+function normalizedToolName(name: string) {
+  const raw = name.trim();
+  const dotted = raw.includes(".") ? (raw.split(".").pop() ?? raw) : raw;
+  const namespaced = dotted.includes("__") ? (dotted.split("__").pop() ?? dotted) : dotted;
+  return namespaced.replace(/[\s-]+/g, "_").toLowerCase();
+}
+
+function fileActionLabel(verb: "read" | "edited", count: number) {
+  if (count === 0) {
+    return null;
+  }
+  return count === 1 ? `${verb} a file` : `${verb} files`;
+}
+
+function commandActionLabel(count: number) {
+  if (count === 0) {
+    return null;
+  }
+  return count === 1 ? "ran a command" : `ran ${count} commands`;
+}
+
+function usedToolsLabel(count: number) {
+  return `Used ${count} tool${count === 1 ? "" : "s"}`;
+}
+
+function capitalizeSentence(label: string) {
+  return label.length > 0 ? `${label[0].toUpperCase()}${label.slice(1)}` : label;
 }
 
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
