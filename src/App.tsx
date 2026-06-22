@@ -1283,7 +1283,9 @@ export default function App() {
   function sameLayout(a: PaneLayoutItem[], b: PaneLayoutItem[]) {
     return (
       a.length === b.length &&
-      a.every((item, index) => item.id === b[index].id && item.depth === b[index].depth)
+      a.every(
+        (item, index) => item.paneId === b[index].paneId && item.depth === b[index].depth,
+      )
     );
   }
 

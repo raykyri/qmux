@@ -4,14 +4,14 @@ import type { PaneInfo } from "../types";
 export const MAX_PANE_DEPTH = 8;
 
 export interface PaneLayoutItem {
-  id: string;
+  paneId: string;
   depth: number;
 }
 
 const depthOf = (pane: PaneInfo): number => pane.depth ?? 0;
 
 export function toLayout(panes: PaneInfo[]): PaneLayoutItem[] {
-  return panes.map((pane) => ({ id: pane.id, depth: depthOf(pane) }));
+  return panes.map((pane) => ({ paneId: pane.id, depth: depthOf(pane) }));
 }
 
 /** Exclusive end index of the subtree rooted at `index` (the contiguous run of
