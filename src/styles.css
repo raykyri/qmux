@@ -335,7 +335,7 @@ button:disabled {
   justify-self: center;
   flex: none;
   color: #8a938e;
-  transform: translateX(-1px) translateY(-1px);
+  transform: translateX(-1px);
 }
 
 .pane-home-row.is-selected .pane-tab svg {
@@ -2341,7 +2341,7 @@ header + .turn-blocks {
   cursor: pointer;
   list-style: none;
   border-radius: 6px;
-  padding: 4px 9px;
+  padding: 4px 10px;
 }
 
 .tool-block.is-root-activity > summary,

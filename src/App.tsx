@@ -3032,7 +3032,7 @@ export default function App() {
                 setActivePaneId(HOME_TAB_ID);
               }}
             >
-              <House size={13} aria-hidden="true" />
+              <House size={12} aria-hidden="true" />
               <span className="pane-tab-title">Home</span>
             </button>
           </div>
