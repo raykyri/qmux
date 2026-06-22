@@ -102,8 +102,19 @@ fn trim_scrollback_file(path: &Path) -> Result<(), String> {
     let mut tail = Vec::with_capacity(SCROLLBACK_LOG_CAP as usize);
     file.read_to_end(&mut tail)
         .map_err(|err| format!("failed to trim scrollback {}: {err}", path.display()))?;
-    fs::write(path, tail)
-        .map_err(|err| format!("failed to rewrite scrollback {}: {err}", path.display()))
+    // Rewrite atomically: write the retained tail to a sibling temp file, then
+    // rename it over the log. An in-place `fs::write` truncates the file before
+    // writing, so a crash mid-write could leave the scrollback empty or
+    // half-written; the temp + rename swap is all-or-nothing. Callers hold the
+    // global scrollback I/O lock, so the temp name can't collide with a concurrent
+    // trim of the same file.
+    let tmp = path.with_extension(format!("trim.{}.tmp", std::process::id()));
+    fs::write(&tmp, &tail)
+        .map_err(|err| format!("failed to write scrollback temp {}: {err}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed to commit scrollback {}: {err}", path.display())
+    })
 }
 
 fn pane_scrollback_path(workspace_root: &Path, pane_id: &str) -> Result<PathBuf, String> {

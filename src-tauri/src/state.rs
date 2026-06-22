@@ -24,6 +24,20 @@ pub type SharedBacklog = Arc<Mutex<PaneBacklog>>;
 /// in-pane process can push into persisted state via the control socket.
 const MAX_PANE_CWD_LEN: usize = 8192;
 
+/// Upper bound on the parsed transcript turns retained in memory per agent. The
+/// store feeds the UI timeline on (re)connect and crash recovery; without a cap a
+/// long session — or selecting a large transcript, which reparses the whole file —
+/// grows unbounded, since each turn can carry full tool inputs/results. Once over
+/// the cap the oldest turns are dropped (the live timeline still streams every new
+/// turn to the frontend as it arrives).
+const MAX_TURNS_PER_AGENT: usize = 200;
+
+/// Upper bound on pending turns queued for a single agent. This is a safety
+/// ceiling against unbounded growth (memory plus a larger `state.json` rewritten
+/// on every persist), not an expected limit — enqueue past it returns an error the
+/// UI surfaces rather than silently swallowing the turn.
+const MAX_QUEUED_TURNS_PER_AGENT: usize = 500;
+
 /// Holds PTY output produced before the webview's listener is attached.
 ///
 /// A pane's reader thread starts emitting the instant the process spawns, but on
@@ -963,20 +977,25 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        model
-            .turns
-            .entry(turn.agent_id.clone())
-            .or_default()
-            .push(turn);
+        let turns = model.turns.entry(turn.agent_id.clone()).or_default();
+        turns.push(turn);
+        if turns.len() > MAX_TURNS_PER_AGENT {
+            let overflow = turns.len() - MAX_TURNS_PER_AGENT;
+            turns.drain(..overflow);
+        }
         Ok(())
     }
 
-    pub fn replace_turns(&self, agent_id: &str, turns: Vec<Turn>) -> Result<(), String> {
+    pub fn replace_turns(&self, agent_id: &str, mut turns: Vec<Turn>) -> Result<(), String> {
         let mut model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
+        if turns.len() > MAX_TURNS_PER_AGENT {
+            let overflow = turns.len() - MAX_TURNS_PER_AGENT;
+            turns.drain(..overflow);
+        }
         model.turns.insert(agent_id.to_string(), turns);
         Ok(())
     }
@@ -992,6 +1011,11 @@ impl AppState {
                 .agent_turn_queues
                 .entry(agent_id.to_string())
                 .or_default();
+            if queue.len() >= MAX_QUEUED_TURNS_PER_AGENT {
+                return Err(format!(
+                    "turn queue is full ({MAX_QUEUED_TURNS_PER_AGENT} pending turns); wait for the agent to drain before queueing more"
+                ));
+            }
             queue.push_back(QueuedTurn::new(data));
             queue.len()
         };
@@ -1531,6 +1555,19 @@ impl AppState {
         if cwd.chars().any(|ch| ch.is_control()) {
             return Err("pane cwd contains control characters; refusing to persist".to_string());
         }
+        // The cwd becomes a file-server root (see `pane_file_roots`), so only accept
+        // a value that names a real directory. A legitimate shell-integration report
+        // is always an existing absolute directory; rejecting anything else keeps a
+        // malformed or non-existent path (or a plain file) from being installed as a
+        // servable root. (This intentionally does not constrain *which* directory —
+        // panes legitimately run in arbitrary project dirs outside the workspace.)
+        let candidate = std::path::Path::new(&cwd);
+        if !candidate.is_absolute() {
+            return Err("pane cwd must be an absolute path; refusing to persist".to_string());
+        }
+        if !candidate.is_dir() {
+            return Err("pane cwd is not an existing directory; refusing to persist".to_string());
+        }
         let changed = {
             let mut model = self
                 .inner
@@ -1945,14 +1982,10 @@ mod tests {
         let state = AppState::new(test_config(workspace));
         state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
 
-        // A normal path is accepted and stored.
-        state
-            .update_pane_cwd("pane-1", "/Users/me/project".to_string())
-            .unwrap();
-        assert_eq!(
-            state.list_panes().unwrap()[0].cwd,
-            "/Users/me/project".to_string()
-        );
+        // A normal path (an existing absolute directory) is accepted and stored.
+        let real_dir = std::env::temp_dir().display().to_string();
+        state.update_pane_cwd("pane-1", real_dir.clone()).unwrap();
+        assert_eq!(state.list_panes().unwrap()[0].cwd, real_dir);
 
         // Control characters (here a newline) are rejected and leave the stored
         // value untouched.
@@ -1967,10 +2000,19 @@ mod tests {
                 .update_pane_cwd("pane-1", "/".repeat(MAX_PANE_CWD_LEN + 1))
                 .is_err()
         );
-        assert_eq!(
-            state.list_panes().unwrap()[0].cwd,
-            "/Users/me/project".to_string()
+        // A non-existent path and a relative path are rejected (an installed
+        // file-server root must be a real, absolute directory).
+        assert!(
+            state
+                .update_pane_cwd("pane-1", "/no/such/qmux/dir/at/all".to_string())
+                .is_err()
         );
+        assert!(
+            state
+                .update_pane_cwd("pane-1", "relative/dir".to_string())
+                .is_err()
+        );
+        assert_eq!(state.list_panes().unwrap()[0].cwd, real_dir);
     }
 
     #[test]
@@ -2229,25 +2271,23 @@ mod tests {
         let state = AppState::new(test_config(workspace));
         state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
         state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        // update_pane_cwd requires a real directory, so create two to stand in for
+        // each pane's working directory.
+        let proj_a = std::env::temp_dir().join("qmux-test-proj-a");
+        let proj_b = std::env::temp_dir().join("qmux-test-proj-b");
+        std::fs::create_dir_all(&proj_a).unwrap();
+        std::fs::create_dir_all(&proj_b).unwrap();
         state
-            .update_pane_cwd("pane-1", "/tmp/proj-a".to_string())
+            .update_pane_cwd("pane-1", proj_a.display().to_string())
             .unwrap();
         state
-            .update_pane_cwd("pane-2", "/tmp/proj-b".to_string())
+            .update_pane_cwd("pane-2", proj_b.display().to_string())
             .unwrap();
 
         // A pane's browser-open roots include its own cwd but not another pane's.
         let roots = state.pane_file_roots("pane-1");
-        assert!(
-            roots
-                .iter()
-                .any(|r| r == std::path::Path::new("/tmp/proj-a"))
-        );
-        assert!(
-            !roots
-                .iter()
-                .any(|r| r == std::path::Path::new("/tmp/proj-b"))
-        );
+        assert!(roots.iter().any(|r| r == proj_a.as_path()));
+        assert!(!roots.iter().any(|r| r == proj_b.as_path()));
     }
 
     #[test]

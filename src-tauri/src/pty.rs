@@ -724,9 +724,19 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
     }
 
     if let Some(pid) = child.process_id() {
-        terminate_descendants(pid);
+        // Signal the whole process group first. The group id is the session
+        // leader's pid, which we still hold open via `child`, so it can't be
+        // recycled out from under us — unlike the individual descendant pids
+        // below. Delivering the group signal up front also begins tearing the tree
+        // down before we enumerate it, shrinking the window in which an enumerated
+        // descendant could exit and have its pid reused by an unrelated process
+        // before we signal it.
         let group = format!("-{}", pid);
         let _ = Command::new("/bin/kill").arg("-TERM").arg(&group).status();
+        // Best-effort backstop for descendants that escaped the group (e.g. via
+        // setsid). This walks live pids, so it is inherently subject to pid reuse
+        // and is intentionally secondary to the group signal above.
+        terminate_descendants(pid);
     }
 
     match child.kill() {

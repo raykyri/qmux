@@ -243,6 +243,17 @@ function getSharedWorker(): Worker {
     else if (m.type === "error") workerReady = false;
     activeHandler?.(m);
   };
+  // A worker that crashes during module evaluation (transformers import error,
+  // WASM fetch blocked by CSP, offline first run) or that receives an unreadable
+  // message never posts an "error" message of its own. Without these handlers the
+  // active hook would spin in "loading" forever; synthesize an error so it fails
+  // and surfaces the problem instead.
+  const failWorker = (error: string) => {
+    workerReady = false;
+    activeHandler?.({ type: "error", error });
+  };
+  worker.onerror = (event: ErrorEvent) => failWorker(event.message || "dictation worker crashed");
+  worker.onmessageerror = () => failWorker("dictation worker received an unreadable message");
   sharedWorker = worker;
   return worker;
 }
@@ -274,6 +285,11 @@ export function useDictation(target: DictationTarget): Dictation {
   // dictation last — always runs the latest closure. Registered as activeHandler
   // in begin().
   const onMessageRef = useRef<(m: WorkerMessage) => void>(() => {});
+
+  // The exact closure this hook installed as the shared worker's `activeHandler`,
+  // so teardown can relinquish dispatch only if this hook still owns it (a newer
+  // composer may have taken over in the meantime).
+  const myHandlerRef = useRef<((m: WorkerMessage) => void) | null>(null);
 
   // Audio graph + capture buffer.
   const streamRef = useRef<MediaStream | null>(null);
@@ -411,6 +427,13 @@ export function useDictation(target: DictationTarget): Dictation {
     regionLenRef.current = 0;
     prefixRef.current = "";
     pendingAnchorRef.current = null;
+    // Relinquish the shared worker's dispatch if this hook still owns it, so the
+    // worker stops driving a stopped or unmounted composer's handler after
+    // teardown. A newer composer that took over keeps its own handler.
+    if (activeHandler === myHandlerRef.current) {
+      activeHandler = null;
+    }
+    myHandlerRef.current = null;
   };
 
   const stop = () => {
@@ -621,7 +644,9 @@ export function useDictation(target: DictationTarget): Dictation {
     // shared worker's messages for this hook, and only show the loading spinner if
     // the model isn't already resident from an earlier composer's use.
     targetRef.current.focus();
-    activeHandler = (m) => onMessageRef.current(m);
+    const handler = (m: WorkerMessage) => onMessageRef.current(m);
+    myHandlerRef.current = handler;
+    activeHandler = handler;
     const worker = getSharedWorker();
     setLoading(!workerReady);
     worker.postMessage({ type: "load" });
