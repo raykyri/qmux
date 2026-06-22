@@ -1313,9 +1313,9 @@ export default function App() {
   }
 
   // Grow the right pane's text by 0.25px for every 1px the terminal font is above
-  // its base size, capped at +1.5px, so the transcript/composer track the terminal
+  // its base size, capped at +1px, so the transcript/composer track the terminal
   // zoom without overpowering it. No change at or below the base size.
-  const turnFontDelta = Math.min(1.5, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
+  const turnFontDelta = Math.min(1, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
