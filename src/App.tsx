@@ -374,6 +374,14 @@ export default function App() {
     () => new Set(),
   );
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  // Agents we believe are actively working *right now*, used to show the
+  // "Thinking…" indicator at the bottom of the transcript. This is driven by live
+  // status transitions (see useQmuxEvents), not the raw status field: an agent
+  // restored into a working status — or loaded that way from the boot snapshot —
+  // must not light up, since it isn't genuinely doing work. Membership is added
+  // only on a live event that moves the agent into a working status (and on the
+  // user's own send), and cleared on any non-working event.
+  const [thinkingAgentIds, setThinkingAgentIds] = useState<Set<string>>(() => new Set());
   const [turns, setTurns] = useState<Turn[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
@@ -655,6 +663,10 @@ export default function App() {
     setTranscriptNoticeByAgent(pruneRecord);
     setTranscriptOptionsByAgent(pruneRecord);
     setCollapsedQueuedTurnsByAgent(pruneRecord);
+    setThinkingAgentIds((current) => {
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
     for (const id of Object.keys(queuedTurnsByAgentRef.current)) {
       if (!ids.has(id)) delete queuedTurnsByAgentRef.current[id];
     }
@@ -1560,6 +1572,7 @@ export default function App() {
     setPaneContextMenu,
     setExitDialog,
     setAgents,
+    setThinkingAgentIds,
     setTurns,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
@@ -3728,6 +3741,7 @@ export default function App() {
           )}
           <TurnOverlay
             turns={activeAgent ? activeTurns : []}
+            thinking={Boolean(activeAgent && thinkingAgentIds.has(activeAgent.id))}
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
@@ -3806,7 +3820,25 @@ export default function App() {
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
-                    onTurnSubmitted={applyPendingFirstMessageTitle}
+                    onTurnSubmitted={(agentId, text) => {
+                      // Show "Thinking…" the instant a send starts a run, before the
+                      // backend's status event round-trips. Gate on the agent being
+                      // ready to receive (a plain send): queued turns don't start work,
+                      // and an already-running agent is marked by its live status
+                      // events instead. The next status event reconciles either way.
+                      const policy = getAgentUiAdapter(activeAgent.adapter).composerPolicy(
+                        activeAgent,
+                      );
+                      if (
+                        activeAgent.id === agentId &&
+                        policy.readyStatuses.includes(activeAgent.status)
+                      ) {
+                        setThinkingAgentIds((prev) =>
+                          prev.has(agentId) ? prev : new Set(prev).add(agentId),
+                        );
+                      }
+                      applyPendingFirstMessageTitle(agentId, text);
+                    }}
                     onUserInput={noteUserInput}
                     getQueueScroll={getQueueScroll}
                     saveQueueScroll={saveQueueScroll}

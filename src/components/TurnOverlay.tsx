@@ -73,6 +73,10 @@ interface TurnOverlayProps {
   // dismiss an open Ask popup (the popup stays mounted across re-selections, so a
   // click that just clears the selection has to be reported here to close it).
   onDismissSelection?: () => void;
+  // When true, the agent is actively working, so a "Thinking…" indicator is pinned
+  // to the bottom of the transcript. Driven by live status transitions upstream, so
+  // an agent merely restored into a working status does not light it up.
+  thinking?: boolean;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -221,6 +225,7 @@ export default function TurnOverlay({
   linkActions,
   onAskSelection,
   onDismissSelection,
+  thinking = false,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
@@ -383,7 +388,7 @@ export default function TurnOverlay({
     if (stickToBottomRef.current) {
       scrollToBottom();
     }
-  }, [turns, composerHeight, effectiveQueueSplitHeight, queueSplit]);
+  }, [turns, composerHeight, effectiveQueueSplitHeight, queueSplit, thinking]);
 
   // The composer normally floats over the transcript, so reserve scroll room
   // beneath the last message equal to the live input height. In split mode, also
@@ -485,7 +490,7 @@ export default function TurnOverlay({
         style={timelineStyle}
         onScroll={handleTimelineScroll}
       >
-        {timelineItems.length === 0 ? (
+        {timelineItems.length === 0 && !thinking ? (
           <div className="empty-state turn-empty-state">
             <span>No activity yet</span>
             {notice === "Transcript unavailable" && onSelectTranscript ? (
@@ -521,6 +526,12 @@ export default function TurnOverlay({
             );
           })
         )}
+        {thinking ? (
+          <div className="turn-thinking" aria-live="polite">
+            <span className="turn-thinking-dot" aria-hidden="true" />
+            <span className="turn-thinking-label">Thinking…</span>
+          </div>
+        ) : null}
       </div>
       {input ? (
         <div

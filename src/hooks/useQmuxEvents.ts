@@ -26,6 +26,10 @@ export interface UseQmuxEventsHandlers {
   setPaneContextMenu: Dispatch<SetStateAction<PaneContextMenuState | null>>;
   setExitDialog: Dispatch<SetStateAction<ExitDialogState | null>>;
   setAgents: Dispatch<SetStateAction<AgentInfo[]>>;
+  // Tracks which agents are actively working, for the transcript "Thinking…"
+  // indicator. Only live transitions into a working status flip it on, so an
+  // agent restored into a working status never falsely shows it (see below).
+  setThinkingAgentIds: Dispatch<SetStateAction<Set<string>>>;
   setTurns: Dispatch<SetStateAction<Turn[]>>;
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
@@ -50,6 +54,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setPaneContextMenu,
     setExitDialog,
     setAgents,
+    setThinkingAgentIds,
     setTurns,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
@@ -116,6 +121,27 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const updatedAgent = event.payload.agent;
         if (isAgentInfo(updatedAgent)) {
           setAgents((current) => upsertAgent(current, updatedAgent));
+          // Light up "Thinking…" only on a *live* transition into a working
+          // status. The boot snapshot loads agents via setAgents(list) (the
+          // else-branch below), which never touches this set, so a stale
+          // working status restored from disk can't trigger it. "agent.recovered"
+          // is excluded too: a recovered agent is waiting for input, not working,
+          // even if it momentarily carries a working status.
+          const working =
+            updatedAgent.status === "running" || updatedAgent.status === "starting";
+          setThinkingAgentIds((prev) => {
+            const shouldThink = working && event.type !== "agent.recovered";
+            if (shouldThink === prev.has(updatedAgent.id)) {
+              return prev;
+            }
+            const next = new Set(prev);
+            if (shouldThink) {
+              next.add(updatedAgent.id);
+            } else {
+              next.delete(updatedAgent.id);
+            }
+            return next;
+          });
         } else {
           const seq = (agentRefreshSeq += 1);
           void listAgents()

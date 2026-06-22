@@ -2081,6 +2081,32 @@ button:disabled {
   line-height: 1.4;
 }
 
+/* "Thinking…" indicator pinned to the bottom of the transcript while the agent is
+   actively working. Left-aligned like an assistant row, with a pulsing amber dot
+   matching the working-status dot in the tab list (.pane-tab-dot.status-active). */
+.turn-thinking {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 2px;
+  user-select: none;
+}
+
+.turn-thinking-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d7a84f;
+  animation: status-dot-pulse 1.3s ease-in-out infinite;
+}
+
+.turn-thinking-label {
+  color: #aab1ad;
+  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-style: italic;
+}
+
 /* "No transcript loaded" picker: a quiet link (matching .turn-empty-notice's
    color and size) with a chevron, opening a portaled dropdown of past sessions. */
 .turn-empty-picker {
