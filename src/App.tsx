@@ -28,6 +28,11 @@ import {
 } from "lucide-react";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
+import { CODEX_ADAPTER_ID } from "./adapters/codex";
+import { OPENCODE_ADAPTER_ID } from "./adapters/opencode";
+import claudeModelIconUrl from "./assets/model-icons/claude-ai.svg";
+import openAiModelIconUrl from "./assets/model-icons/openai.svg";
+import openCodeModelIconUrl from "./assets/model-icons/opencode-dark.svg";
 import NativeInput from "./components/NativeInput";
 import DictationMicButton from "./components/DictationMicButton";
 import { useDictation } from "./useDictation";
@@ -174,6 +179,11 @@ const MAX_INITIAL_COLS = 500;
 const MAX_INITIAL_ROWS = 200;
 const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
+const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
+  [CLAUDE_ADAPTER_ID]: claudeModelIconUrl,
+  [CODEX_ADAPTER_ID]: openAiModelIconUrl,
+  [OPENCODE_ADAPTER_ID]: openCodeModelIconUrl,
+};
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
@@ -728,7 +738,13 @@ export default function App() {
     return runtimeAdapters && runtimeAdapters.length > 0 ? runtimeAdapters : agentUiAdapters;
   }, [config]);
   const launcherAdapterOptions = useMemo<LauncherSelectOption[]>(
-    () => launcherAdapters.map((adapter) => ({ value: adapter.id, label: adapter.label })),
+    () =>
+      launcherAdapters.map((adapter) => ({
+        value: adapter.id,
+        label: adapter.label,
+        iconSrc: LAUNCHER_ADAPTER_ICON_BY_ID[adapter.id],
+        iconClassName: adapter.id === CODEX_ADAPTER_ID ? "is-mono-light" : undefined,
+      })),
     [launcherAdapters],
   );
   function rememberLauncherAdapter(adapterId: string) {
