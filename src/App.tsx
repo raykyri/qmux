@@ -1228,6 +1228,15 @@ export default function App() {
     }
   }
 
+  function openAgentLauncher() {
+    if (homeActive) {
+      setLauncherOpen(false);
+      focusLauncherInput();
+      return;
+    }
+    setLauncherOpen(true);
+  }
+
   function handlePaneTabPointerDown(event: ReactPointerEvent<HTMLDivElement>, paneId: string) {
     if (event.button !== 0) {
       return;
@@ -2553,7 +2562,7 @@ export default function App() {
             <SquareTerminal size={14} aria-hidden="true" />
             <span>New shell</span>
           </button>
-          <button type="button" onClick={() => setLauncherOpen(true)}>
+          <button type="button" onClick={openAgentLauncher}>
             <MessageSquareText size={14} aria-hidden="true" />
             <span>New agent</span>
           </button>
