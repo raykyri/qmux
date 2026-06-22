@@ -17,6 +17,7 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// newer or unknown version is treated as empty rather than misinterpreted.
 pub const STATE_VERSION: u32 = 1;
 const STATE_FILE: &str = "state.json";
+const PREFERENCES_FILE: &str = "preferences.json";
 const STATE_DIR: &str = ".qmux";
 
 /// Snapshot of everything a qmux restart needs to recreate panes, agents,
@@ -59,6 +60,65 @@ impl Default for PersistedState {
 
 pub fn state_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(STATE_DIR).join(STATE_FILE)
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher_adapter_id: Option<String>,
+}
+
+pub fn preferences_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(STATE_DIR).join(PREFERENCES_FILE)
+}
+
+pub fn load_preferences(workspace_root: &Path) -> Result<AppPreferences, String> {
+    let path = preferences_path(workspace_root);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(AppPreferences::default()),
+        Err(err) => {
+            return Err(format!(
+                "failed to read preferences {}: {err}",
+                path.display()
+            ));
+        }
+    };
+
+    serde_json::from_str::<AppPreferences>(&raw)
+        .map_err(|err| format!("invalid preferences {}: {err}", path.display()))
+}
+
+pub fn save_preferences(workspace_root: &Path, preferences: &AppPreferences) -> Result<(), String> {
+    let path = preferences_path(workspace_root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create preferences dir {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let raw = serde_json::to_string_pretty(preferences)
+        .map_err(|err| format!("failed to encode preferences: {err}"))?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
+
+    write_synced(&tmp, raw.as_bytes())
+        .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
+    fs::rename(&tmp, &path).map_err(|err| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed to commit {}: {err}", path.display())
+    })?;
+
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,6 +336,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qmux-persist-{nanos}-{seq}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn preferences_round_trip_launcher_adapter() {
+        let root = temp_root();
+        assert_eq!(load_preferences(&root).unwrap().launcher_adapter_id, None);
+
+        save_preferences(
+            &root,
+            &AppPreferences {
+                launcher_adapter_id: Some("codex".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_preferences(&root).unwrap().launcher_adapter_id,
+            Some("codex".to_string())
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn sample_pane() -> PaneInfo {

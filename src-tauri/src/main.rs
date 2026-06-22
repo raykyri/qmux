@@ -77,6 +77,34 @@ fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
     state.config().runtime()
 }
 
+#[tauri::command]
+fn launcher_adapter_preference_get(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    Ok(persistence::load_preferences(&state.config().workspace_root)?.launcher_adapter_id)
+}
+
+#[tauri::command]
+fn launcher_adapter_preference_set(
+    state: tauri::State<'_, AppState>,
+    adapter_id: String,
+) -> Result<(), String> {
+    if !state
+        .config()
+        .runtime()
+        .adapters
+        .iter()
+        .any(|adapter| adapter.id == adapter_id)
+    {
+        return Err(format!("unknown agent adapter '{adapter_id}'"));
+    }
+
+    let mut preferences =
+        persistence::load_preferences(&state.config().workspace_root).unwrap_or_default();
+    preferences.launcher_adapter_id = Some(adapter_id);
+    persistence::save_preferences(&state.config().workspace_root, &preferences)
+}
+
 /// Opens a URL in the user's default external browser (or mail client). Only
 /// http(s)/mailto are accepted; the URL is passed as a single argv to the OS opener
 /// (no shell), so it can't trigger arbitrary scheme handlers or shell injection.
@@ -508,6 +536,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_runtime_config,
+            launcher_adapter_preference_get,
+            launcher_adapter_preference_set,
             open_external_url,
             list_claude_skills,
             list_panes,

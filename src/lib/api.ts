@@ -26,6 +26,14 @@ export function getRuntimeConfig() {
   return invoke<RuntimeConfig>("get_runtime_config");
 }
 
+export function getLauncherAdapterPreference() {
+  return invoke<string | null>("launcher_adapter_preference_get");
+}
+
+export function setLauncherAdapterPreference(adapterId: string) {
+  return invoke<void>("launcher_adapter_preference_set", { adapterId });
+}
+
 /** Skills the qmux-managed Claude plugin can inject into launched Claude agents. */
 export function listClaudeSkills() {
   return invoke<ClaudeSkill[]>("list_claude_skills");
