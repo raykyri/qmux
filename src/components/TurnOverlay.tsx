@@ -837,7 +837,7 @@ function ToolEntryView({
             <span>{toolNameLabel}</span>
             {summaryArgument ? <span className="tool-summary-arg"> {summaryArgument}</span> : null}
           </span>
-          <ToolEntryStatus entry={entry} />
+          <ToolEntryStatus entry={entry} showCharCount={showChevron} />
         </span>
       </summary>
       {entry.input !== undefined ? <ToolPayload label="Input" value={entry.input} /> : null}
@@ -910,9 +910,18 @@ function DisclosureChevron() {
   return <ChevronRight className="disclosure-chevron" size={12} aria-hidden="true" />;
 }
 
-function ToolEntryStatus({ entry }: { entry: ToolEntry }) {
+function ToolEntryStatus({
+  entry,
+  showCharCount,
+}: {
+  entry: ToolEntry;
+  showCharCount: boolean;
+}) {
   if (entry.result === undefined) {
     return <span className="tool-summary-meta">running</span>;
+  }
+  if (!showCharCount) {
+    return entry.isError ? <span className="tool-summary-meta">error</span> : null;
   }
   const charCount = `${stringify(entry.result).length} chars`;
   if (entry.isError) {
