@@ -1997,7 +1997,7 @@ button:disabled {
   gap: 5px;
   /* The transcript fills the whole pane and is the only scroll surface; the
      bottom padding keeps the latest turn clear of the floating composer. */
-  padding: 10px 10px 132px;
+  padding: 10px 11px 132px 10px;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -2103,7 +2103,7 @@ button:disabled {
   /* Floats over the transcript, anchored to the bottom, growing upward with the
      queue but never taller than the pane. */
   max-height: 100%;
-  padding: 10px 12px;
+  padding: 10px 13px 10px 12px;
   /* Mostly opaque so the unwrapped queue/composer stay legible over the
      transcript, with only a short fade at the very top. */
   background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
