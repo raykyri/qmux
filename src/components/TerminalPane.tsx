@@ -18,7 +18,7 @@ import {
 } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getPaneScrollback, pastePaneInput, resizePane, writePane } from "../lib/api";
-import { largePastePrompt } from "../lib/paste";
+import { inspectPaste } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
@@ -610,18 +610,26 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           return;
         }
         const text = event.clipboardData?.getData("text") ?? "";
-        const prompt = text ? largePastePrompt(text) : null;
-        if (!prompt) {
-          // Small/empty paste: let xterm handle it normally.
+        if (!text) {
           return;
         }
-        // Large paste: stop xterm from pasting now (the in-app confirm is async),
-        // then re-inject to the PTY only if the user accepts. Match xterm's own
-        // bracketed-paste behavior so the program sees the same framing.
+        const verdict = inspectPaste(text);
+        if (verdict.action === "accept") {
+          // Small paste: let xterm handle it normally.
+          return;
+        }
+        // Large/oversized paste: stop xterm from pasting now (the in-app dialog is
+        // async) and handle it ourselves.
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (verdict.action === "reject") {
+          void confirmRef.current({ message: verdict.message, confirmLabel: "OK" });
+          return;
+        }
+        // Confirmed-large: re-inject to the PTY only if the user accepts, matching
+        // xterm's own bracketed-paste framing so the program sees the same input.
         const bracketed = terminal.modes.bracketedPasteMode;
-        void confirmRef.current({ message: prompt, confirmLabel: "Paste" }).then((ok) => {
+        void confirmRef.current({ message: verdict.message, confirmLabel: "Paste" }).then((ok) => {
           if (ok) {
             void pastePaneInput(pane.id, text, bracketed).catch(() => undefined);
           }

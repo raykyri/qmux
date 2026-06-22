@@ -880,6 +880,15 @@ fn start_codex_transcript_binding(
     }
 
     let Some(session_id) = session_id.filter(|id| looks_like_codex_session_id(id)) else {
+        // No usable session id and no explicit transcript path, so directory
+        // discovery can't run. Surface a notice instead of leaving the timeline
+        // silently empty.
+        emit_codex_transcript_notice(
+            &state,
+            &agent_id,
+            Some("Transcript unavailable: Codex did not report a usable session id"),
+            None,
+        );
         return;
     };
     if !codex_binding_should_continue(&state, &agent_id, true) {
@@ -1020,10 +1029,13 @@ fn codex_transcript_path_ready(
             return Ok(false);
         };
         if actual_session_id != expected_session_id {
-            return Err(format!(
-                "Codex transcript {} belongs to session {actual_session_id}, expected {expected_session_id}",
-                path.display()
-            ));
+            // The file at this path currently belongs to a different session — it
+            // may be a stale/rotated rollout, or still mid-write so its first line
+            // is an older session_meta. Treat it as "not ready yet" so the caller
+            // keeps polling rather than permanently aborting the binding; if it
+            // never matches, the discovery loop emits a notice once attempts run
+            // out.
+            return Ok(false);
         }
     }
 
@@ -1118,9 +1130,14 @@ fn find_codex_transcript_path(
 
 fn looks_like_codex_session_id(value: &str) -> bool {
     let value = value.trim();
-    value.len() == 36
-        && value.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-')
-        && value.chars().filter(|&ch| ch == '-').count() == 4
+    // Only a sanity gate to avoid scanning the sessions tree for an obviously
+    // unusable id. Accept any non-empty id free of path separators and control
+    // characters rather than requiring a canonical 36-char UUID, so a non-UUID id
+    // scheme still drives directory discovery instead of silently binding nothing.
+    !value.is_empty()
+        && !value.contains('/')
+        && !value.contains('\\')
+        && !value.chars().any(|ch| ch.is_control())
 }
 
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
@@ -1646,7 +1663,7 @@ trusted_hash = "sha256:trusted"
     }
 
     #[test]
-    fn explicit_codex_transcript_path_rejects_session_mismatch() {
+    fn explicit_codex_transcript_path_treats_session_mismatch_as_not_ready() {
         let transcript_path = temp_dir().join("codex-session.jsonl");
         fs::write(
             &transcript_path,
@@ -1654,13 +1671,16 @@ trusted_hash = "sha256:trusted"
         )
         .unwrap();
 
-        let err = codex_transcript_path_ready(
+        // A path whose first line currently names a different session is treated as
+        // "not ready yet" (it may be a stale/rotated rollout or still mid-write), so
+        // the binding loop keeps polling rather than aborting permanently.
+        let ready = codex_transcript_path_ready(
             &transcript_path,
             Some("029eeca7-d820-7b91-b1e8-9c954fb1a105"),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err.contains("belongs to session"));
+        assert!(!ready);
     }
 
     #[test]

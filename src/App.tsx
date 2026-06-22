@@ -432,6 +432,30 @@ export default function App() {
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [panes]);
+
+  // Drop per-agent UI state for agents that no longer exist, so these maps and refs
+  // don't grow unbounded across a long session of spawning and closing agents.
+  useEffect(() => {
+    const ids = new Set(agents.map((agent) => agent.id));
+    const pruneRecord = <T,>(current: Record<string, T>): Record<string, T> => {
+      const next = Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    };
+    setWorktreeStatusByAgent(pruneRecord);
+    setHookEventsByAgent(pruneRecord);
+    setTranscriptNoticeByAgent(pruneRecord);
+    setTranscriptOptionsByAgent(pruneRecord);
+    setCollapsedQueuedTurnsByAgent(pruneRecord);
+    for (const id of Object.keys(queuedTurnsByAgentRef.current)) {
+      if (!ids.has(id)) delete queuedTurnsByAgentRef.current[id];
+    }
+    for (const id of Object.keys(draftsByAgentRef.current)) {
+      if (!ids.has(id)) delete draftsByAgentRef.current[id];
+    }
+    for (const id of Object.keys(queueScrollByAgentRef.current)) {
+      if (!ids.has(id)) delete queueScrollByAgentRef.current[id];
+    }
+  }, [agents]);
   const runtimeDefaultAdapterId =
     config?.adapters.find((adapter) => adapter.default)?.id ?? config?.adapters[0]?.id ?? "claude";
   const selectedLauncherAdapterId = launcherAdapterId ?? runtimeDefaultAdapterId;
@@ -1046,15 +1070,24 @@ export default function App() {
         );
         setAgents(existingAgents);
         setTurns(existingTurns);
+        // Per-agent fetches are individually guarded so one failed draft/queue read
+        // can't reject the whole boot and leave the app stuck on a fatal error with
+        // no panes rendered. A failed read just falls back to empty for that agent.
         const [queueEntries, draftEntries] = await Promise.all([
           Promise.all(
-            existingAgents.map(async (agent) => [
-              agent.id,
-              await listAgentTurnQueue(agent.id),
-            ] as const),
+            existingAgents.map(
+              async (agent) =>
+                [
+                  agent.id,
+                  await listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => []),
+                ] as const,
+            ),
           ),
           Promise.all(
-            existingAgents.map(async (agent) => [agent.id, await getAgentDraft(agent.id)] as const),
+            existingAgents.map(
+              async (agent) =>
+                [agent.id, await getAgentDraft(agent.id).catch((): string | null => null)] as const,
+            ),
           ),
         ]);
         if (cancelled) {
