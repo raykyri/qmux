@@ -1,6 +1,6 @@
-// A tiny app-global store for the Whisper voice-model download. The model is
-// shared across every composer (the browser caches it after the first fetch), so
-// the "Downloading voice model…" toast belongs to the app shell, not to any one
+// A tiny app-global store for the Whisper voice-model load. The model is shared
+// across every composer (the native app cache keeps it after the first fetch), so
+// the "Loading voice model…" toast belongs to the app shell, not to any one
 // composer. The dictation hook (useDictation) publishes progress here; App
 // subscribes via useSyncExternalStore and renders the toast.
 

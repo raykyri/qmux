@@ -17,6 +17,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { setDictationDownload } from "./dictationStatus";
+import {
+  dictationCacheDelete,
+  dictationCacheMetadata,
+  dictationCachePutChunk,
+  dictationCachePutFinish,
+  dictationCachePutStart,
+  dictationCacheRead,
+  type DictationCacheHeader,
+} from "./lib/api";
 
 // A human-readable tooltip for the failure reasons we surface on the mic.
 export function dictationErrorMessage(code: string): string {
@@ -51,7 +60,7 @@ export interface Dictation {
   supported: boolean;
   // Currently capturing — drives the mic's active/recording styling.
   listening: boolean;
-  // The model is downloading/initializing (first use, before any audio is
+  // The model is loading/initializing (first use, before any audio is
   // transcribed). `progress` is a coarse 0–100 for the current file, or null.
   loading: boolean;
   progress: number | null;
@@ -103,6 +112,107 @@ type WorkerMessage = {
   data?: { status?: string; file?: string; loaded?: number; total?: number };
 };
 
+type DictationCacheMethod =
+  | "metadata"
+  | "read"
+  | "putStart"
+  | "putChunk"
+  | "putFinish"
+  | "delete";
+
+type DictationCacheRequest = {
+  type: "cache:request";
+  cacheRequestId: number;
+  method: DictationCacheMethod;
+  request: string;
+  offset?: number;
+  length?: number;
+  headers?: DictationCacheHeader[];
+  dataBase64?: string;
+};
+
+function isDictationCacheRequest(message: WorkerMessage): message is DictationCacheRequest {
+  return (
+    message.type === "cache:request" &&
+    typeof (message as DictationCacheRequest).cacheRequestId === "number" &&
+    typeof (message as DictationCacheRequest).method === "string" &&
+    typeof (message as DictationCacheRequest).request === "string"
+  );
+}
+
+function requireNumber(value: number | undefined, name: string): number {
+  if (typeof value !== "number") throw new Error(`missing ${name}`);
+  return value;
+}
+
+function requireString(value: string | undefined, name: string): string {
+  if (typeof value !== "string") throw new Error(`missing ${name}`);
+  return value;
+}
+
+function requireHeaders(value: DictationCacheHeader[] | undefined): DictationCacheHeader[] {
+  if (!Array.isArray(value)) throw new Error("missing headers");
+  return value;
+}
+
+async function handleDictationCacheRequest(worker: Worker, message: DictationCacheRequest) {
+  try {
+    switch (message.method) {
+      case "metadata": {
+        const metadata = await dictationCacheMetadata(message.request);
+        worker.postMessage({
+          type: "cache:response",
+          cacheRequestId: message.cacheRequestId,
+          ok: true,
+          metadata,
+        });
+        return;
+      }
+      case "read": {
+        const offset = requireNumber(message.offset, "offset");
+        const length = requireNumber(message.length, "length");
+        const dataBase64 = await dictationCacheRead(message.request, offset, length);
+        worker.postMessage({
+          type: "cache:response",
+          cacheRequestId: message.cacheRequestId,
+          ok: true,
+          dataBase64,
+        });
+        return;
+      }
+      case "putStart":
+        await dictationCachePutStart(message.request, requireHeaders(message.headers));
+        worker.postMessage({ type: "cache:response", cacheRequestId: message.cacheRequestId, ok: true });
+        return;
+      case "putChunk":
+        await dictationCachePutChunk(message.request, requireString(message.dataBase64, "dataBase64"));
+        worker.postMessage({ type: "cache:response", cacheRequestId: message.cacheRequestId, ok: true });
+        return;
+      case "putFinish":
+        await dictationCachePutFinish(message.request);
+        worker.postMessage({ type: "cache:response", cacheRequestId: message.cacheRequestId, ok: true });
+        return;
+      case "delete": {
+        const deleted = await dictationCacheDelete(message.request);
+        worker.postMessage({
+          type: "cache:response",
+          cacheRequestId: message.cacheRequestId,
+          ok: true,
+          deleted,
+        });
+        return;
+      }
+    }
+  } catch (err) {
+    worker.postMessage({
+      type: "cache:response",
+      cacheRequestId: message.cacheRequestId,
+      ok: false,
+      error: String(err),
+    });
+  }
+}
+
 // One Whisper worker for the whole app, shared by every composer's dictation
 // hook. The model loads once into this worker and stays resident, so switching
 // composers doesn't spin up a fresh per-composer worker that re-runs the whole
@@ -122,8 +232,12 @@ function getSharedWorker(): Worker {
   const worker = new Worker(new URL("./whisperWorker.ts", import.meta.url), { type: "module" });
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as WorkerMessage;
+    if (isDictationCacheRequest(m)) {
+      void handleDictationCacheRequest(worker, m);
+      return;
+    }
     // Track readiness here, above any one hook, so it survives the hook that
-    // kicked off the load unmounting mid-download — the worker keeps fetching and
+    // kicked off the load unmounting mid-load — the worker keeps fetching and
     // still reaches 'ready', and the next composer sees a warm model.
     if (m.type === "ready") workerReady = true;
     else if (m.type === "error") workerReady = false;
@@ -188,7 +302,7 @@ export function useDictation(target: DictationTarget): Dictation {
   const voicedSamplesRef = useRef(0);
   const appliedSamplesRef = useRef(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Per-file byte counts from the worker's download progress, aggregated into the
+  // Per-file byte counts from the worker's load progress, aggregated into the
   // app-global toast and the mic's percentage.
   const dlFilesRef = useRef<Map<string, { loaded: number; total: number }>>(new Map());
 
@@ -529,7 +643,7 @@ export function useDictation(target: DictationTarget): Dictation {
   };
 
   // Tear down this composer's audio graph on unmount, but leave the shared worker
-  // — and any in-flight model download — alone so the next composer reuses the
+  // — and any in-flight model load — alone so the next composer reuses the
   // warm model instead of reloading it.
   useEffect(() => {
     return () => {
