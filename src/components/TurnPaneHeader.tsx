@@ -1,4 +1,4 @@
-import { GitBranch, Globe } from "lucide-react";
+import { GitBranch, Globe, SquareCenterlineDashedVertical } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { writeClipboardText } from "../lib/clipboard";
 
@@ -17,6 +17,9 @@ interface TurnPaneHeaderProps {
   // Fork the session: nested under the current tab (`nest`) or as a sibling
   // immediately after it.
   onFork: (nest: boolean) => void;
+  showQueueSplit: boolean;
+  queueSplit: boolean;
+  onToggleQueueSplit: () => void;
   browserOpen: boolean;
   onToggleBrowser: () => void;
 }
@@ -25,6 +28,9 @@ export default function TurnPaneHeader({
   sessionId,
   canFork,
   onFork,
+  showQueueSplit,
+  queueSplit,
+  onToggleQueueSplit,
   browserOpen,
   onToggleBrowser,
 }: TurnPaneHeaderProps) {
@@ -138,6 +144,18 @@ export default function TurnPaneHeader({
               </div>
             ) : null}
           </div>
+        ) : null}
+        {showQueueSplit ? (
+          <button
+            type="button"
+            className={`turn-pane-header-button${queueSplit ? " is-active" : ""}`}
+            title={queueSplit ? "Use floating queue" : "Split transcript and queue"}
+            aria-label={queueSplit ? "Use floating queue" : "Split transcript and queue"}
+            aria-pressed={queueSplit}
+            onClick={onToggleQueueSplit}
+          >
+            <SquareCenterlineDashedVertical size={14} aria-hidden="true" />
+          </button>
         ) : null}
         <button
           type="button"

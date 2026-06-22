@@ -38,7 +38,11 @@ export default function BrowserOverlay({
   }, [url]);
 
   return (
-    <div className="browser-overlay" role="region" aria-label="Browser overlay">
+    <div
+      className={`browser-overlay${url ? "" : " is-empty"}`}
+      role="region"
+      aria-label="Browser overlay"
+    >
       <div className="browser-overlay-nav">
         <form
           className="browser-overlay-nav-form"

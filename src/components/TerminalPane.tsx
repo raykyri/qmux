@@ -662,7 +662,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
   }, [active, pane.id]);
 
-  // Apply live font changes (settings panel / Cmd-+/Cmd--) to an already-open
+  // Apply live font changes (settings panel / Cmd-=/Cmd--) to an already-open
   // terminal, then re-fit so rows/cols and the PTY size track the new cell
   // metrics. On first mount the terminal may not exist yet (it opens after the
   // font loads); the constructor already used the current values, so the no-op
