@@ -2154,11 +2154,25 @@ export default function App() {
         focusPaneTab(tabId);
       };
 
-      const cycleTab = (direction: -1 | 1) => {
-        const tabIds = [HOME_TAB_ID, ...panes.map((pane) => pane.id)];
-        const fallbackIndex = panes.length > 0 ? 1 : 0;
+      const cycleTab = (direction: -1 | 1, includeHome: boolean) => {
+        const tabIds = includeHome
+          ? [HOME_TAB_ID, ...panes.map((pane) => pane.id)]
+          : panes.map((pane) => pane.id);
+        if (tabIds.length === 0) {
+          return;
+        }
         const listedIndex = tabIds.indexOf(activePaneId ?? "");
-        const currentIndex = listedIndex === -1 ? fallbackIndex : listedIndex;
+        let currentIndex: number;
+        if (listedIndex !== -1) {
+          currentIndex = listedIndex;
+        } else if (includeHome) {
+          // Active tab not in the list (e.g. null): default to the first real pane.
+          currentIndex = panes.length > 0 ? 1 : 0;
+        } else {
+          // Skipping Home while Home is active: position so forward lands on the
+          // first pane and backward on the last.
+          currentIndex = direction === 1 ? -1 : 0;
+        }
         focusTabById(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
       };
 
@@ -2183,22 +2197,24 @@ export default function App() {
         return;
       }
 
-      // Ctrl-Tab / Ctrl-Shift-Tab cycle through Home and the open tabs like a browser.
-      // Claimed here in the capture phase (before the terminal/editable bail) so
-      // it works regardless of focus; Tab with Ctrl is never a text-editing key.
+      // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser,
+      // skipping Home. Claimed here in the capture phase (before the
+      // terminal/editable bail) so it works regardless of focus; Tab with Ctrl is
+      // never a text-editing key.
       if (key === "tab" && event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        cycleTab(event.shiftKey ? -1 : 1);
+        cycleTab(event.shiftKey ? -1 : 1, false);
         return;
       }
 
-      // Cmd-Shift-[ / Cmd-Shift-] cycle backward/forward through Home and the open tabs.
-      // Claimed in the capture phase so it works regardless of focus.
+      // Cmd-Shift-[ / Cmd-Shift-] cycle backward/forward through Home and the open
+      // tabs (Home included). Claimed in the capture phase so it works regardless
+      // of focus.
       if ((key === "[" || key === "]") && event.metaKey && event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
-        cycleTab(key === "[" ? -1 : 1);
+        cycleTab(key === "[" ? -1 : 1, true);
         return;
       }
 
