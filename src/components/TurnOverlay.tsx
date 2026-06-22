@@ -221,8 +221,8 @@ export default function TurnOverlay({
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
   // On mouse-up, offer an "ask about this" action for a non-whitespace selection
-  // that lies entirely within an assistant message (not a user turn, not spanning
-  // the gap between cards).
+  // that lies entirely within an assistant or system message (not a user turn, not
+  // spanning the gap between cards).
   const handleSelectionMouseUp = () => {
     if (!onAskSelection) {
       return;
@@ -235,15 +235,14 @@ export default function TurnOverlay({
     if (!text.trim()) {
       return;
     }
-    const assistantCard = (node: Node | null) => {
+    const askableCard = (node: Node | null) => {
       const el = node instanceof Element ? node : node?.parentElement ?? null;
-      return el?.closest(".turn-card.role-assistant") ?? null;
+      return el?.closest(".turn-card.role-assistant, .turn-card.role-system") ?? null;
     };
-    // Require both endpoints in the *same* assistant card, so a selection that
-    // spans a user turn or the gap between cards (or two different assistant
-    // messages) is ignored.
-    const anchorCard = assistantCard(selection.anchorNode);
-    if (!anchorCard || anchorCard !== assistantCard(selection.focusNode)) {
+    // Require both endpoints in the *same* askable card, so a selection that spans
+    // a user turn or the gap between cards (or two different messages) is ignored.
+    const anchorCard = askableCard(selection.anchorNode);
+    if (!anchorCard || anchorCard !== askableCard(selection.focusNode)) {
       return;
     }
     const rect = selection.getRangeAt(0).getBoundingClientRect();
@@ -948,7 +947,8 @@ function ToolEntryView({
   showChevron: boolean;
 }) {
   const summaryArgument = toolSummaryArgument(entry);
-  const summaryLabel = summaryArgument ? `${entry.name} ${summaryArgument}` : entry.name;
+  const toolNameLabel = showChevron ? entry.name : `Used ${entry.name}`;
+  const summaryLabel = summaryArgument ? `${toolNameLabel} ${summaryArgument}` : toolNameLabel;
   return (
     <details
       className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${showChevron ? "" : " is-root-activity"}`}
@@ -957,7 +957,7 @@ function ToolEntryView({
         {showChevron ? <DisclosureChevron /> : null}
         <span className="tool-summary">
           <span className="tool-summary-main" title={summaryLabel}>
-            <span>{entry.name}</span>
+            <span>{toolNameLabel}</span>
             {summaryArgument ? <span className="tool-summary-arg"> {summaryArgument}</span> : null}
           </span>
           <ToolEntryStatus entry={entry} />
