@@ -17,6 +17,7 @@ import type {
 import {
   ChevronLeft,
   ChevronRight,
+  GitBranch,
   House,
   MessageSquareText,
   Minus,
@@ -2728,6 +2729,12 @@ export default function App() {
             aria-label={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
             title={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
           >
+            {state.mode === "newThread" ? (
+              <GitBranch size={13} aria-hidden="true" />
+            ) : null}
+            <span className="command-launcher-send-label">
+              {state.mode === "newThread" ? "Ask in fork" : "Queue"}
+            </span>
             <span aria-hidden="true">
               ⌘<span className="enter-glyph">↵</span>
             </span>

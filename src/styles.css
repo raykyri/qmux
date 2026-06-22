@@ -1287,6 +1287,23 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(231, 231, 226, 0.45);
 }
 
+/* The ask / ask-in-fork popups label their send button (Queue / Ask in fork,
+   the latter with a branch icon) beside the ⌘↵ glyph, so it lays out as a row.
+   It's 1px tighter top and bottom and a touch larger than the standard send
+   button, and hovers to a plain gray a shade lighter than the popup — no accent. */
+.command-launcher--ask .command-launcher-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: calc(var(--control-h-md) - 2px);
+  font-size: calc(var(--fs-base) + 1px);
+}
+
+.command-launcher--ask .command-launcher-send:hover {
+  background: #2a2f31;
+  border-color: var(--control-border-hover);
+}
+
 /* Ask launcher: a launcher seeded with a quoted selection. The quote sits above
    the question field as a scroll-capped blockquote with padding so it never
    crowds the input. */
@@ -2008,6 +2025,9 @@ button:disabled {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
+  /* Don't let the role label ("User"/"Claude") get caught in a transcript
+     selection — only the message text should be copied/asked about. */
+  user-select: none;
 }
 
 .turn-blocks {
