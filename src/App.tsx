@@ -31,6 +31,8 @@ import NativeInput from "./components/NativeInput";
 import DictationMicButton from "./components/DictationMicButton";
 import { useDictation } from "./useDictation";
 import { getDictationDownload, subscribeDictationDownload } from "./dictationStatus";
+import { LauncherSelect } from "./components/LauncherSelect";
+import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
 import BrowserOverlayControls from "./components/BrowserOverlayControls";
 import LinkContextMenu from "./components/LinkContextMenu";
@@ -92,6 +94,7 @@ import {
   attachPane,
   confirmAppExit,
   forkAgent,
+  getLauncherAdapterPreference,
   getAgentDraft,
   getRuntimeConfig,
   killPane,
@@ -106,6 +109,7 @@ import {
   removeQueuedAgentTurn,
   removeWorktree,
   renamePane,
+  setLauncherAdapterPreference,
   setPaneLayout,
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
@@ -449,6 +453,14 @@ export default function App() {
       .filter((adapter): adapter is NonNullable<typeof adapter> => Boolean(adapter));
     return runtimeAdapters && runtimeAdapters.length > 0 ? runtimeAdapters : agentUiAdapters;
   }, [config]);
+  const launcherAdapterOptions = useMemo<LauncherSelectOption[]>(
+    () => launcherAdapters.map((adapter) => ({ value: adapter.id, label: adapter.label })),
+    [launcherAdapters],
+  );
+  function rememberLauncherAdapter(adapterId: string) {
+    setLauncherAdapterId(adapterId);
+    void setLauncherAdapterPreference(adapterId).catch(() => undefined);
+  }
   function focusLauncherInput() {
     requestAnimationFrame(() => launcherInputRef.current?.focus());
   }
@@ -1004,8 +1016,15 @@ export default function App() {
 
     async function boot() {
       try {
-        const [runtimeConfig, existingPanes, existingAgents, existingTurns] = await Promise.all([
+        const [
+          runtimeConfig,
+          preferredLauncherAdapterId,
+          existingPanes,
+          existingAgents,
+          existingTurns,
+        ] = await Promise.all([
           getRuntimeConfig(),
+          getLauncherAdapterPreference().catch(() => null),
           listPanes(),
           listAgents(),
           listTurns(),
@@ -1015,6 +1034,12 @@ export default function App() {
         }
 
         setConfig(runtimeConfig);
+        setLauncherAdapterId(
+          preferredLauncherAdapterId &&
+            runtimeConfig.adapters.some((adapter) => adapter.id === preferredLauncherAdapterId)
+            ? preferredLauncherAdapterId
+            : null,
+        );
         setAgents(existingAgents);
         setTurns(existingTurns);
         const [queueEntries, draftEntries] = await Promise.all([
@@ -1697,6 +1722,7 @@ export default function App() {
     // invokes it before the user's prompt (e.g. `/qmux:deep-research <prompt>`).
     const finalPrompt = selectedSkill ? `${selectedSkill.command} ${trimmed}`.trim() : trimmed;
     setError(null);
+    rememberLauncherAdapter(launchAdapter.id);
     try {
       const pane = await spawnAgent({
         adapterId: launchAdapter.id,
@@ -2270,21 +2296,16 @@ export default function App() {
           ) : null}
         </div>
         <div className="command-launcher-controls">
-          <div className="command-launcher-adapter-picker" role="group" aria-label="Agent">
-            {launcherAdapters.map((adapter) => (
-              <button
-                key={adapter.id}
-                type="button"
-                className={adapter.id === launchAdapter.id ? "is-active" : ""}
-                aria-pressed={adapter.id === launchAdapter.id}
-                onClick={() => {
-                  setLauncherAdapterId(adapter.id);
-                  focusLauncherInput();
-                }}
-              >
-                {adapter.label}
-              </button>
-            ))}
+          <div className="command-launcher-adapter-select">
+            <LauncherSelect
+              value={launchAdapter.id}
+              options={launcherAdapterOptions}
+              ariaLabel="Agent"
+              onChange={(adapterId) => {
+                rememberLauncherAdapter(adapterId);
+                focusLauncherInput();
+              }}
+            />
           </div>
           <button
             type="submit"
