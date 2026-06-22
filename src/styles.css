@@ -1844,6 +1844,22 @@ button:disabled {
   color: #9aa49e;
 }
 
+/* An open-tab entry stacks its session row over that session's queued turns. */
+.open-tab-entry {
+  display: grid;
+  gap: 4px;
+}
+
+/* The queue reuses the sidebar's card markup, but on the home surface it sits
+   inline under its row rather than filling/scrolling a sidebar column. The inset
+   aligns the cards with the row's title (24px icon + 9px gap). */
+.open-tab-queue {
+  flex: none;
+  overflow: visible;
+  padding-block: 0;
+  margin: 0 0 4px 33px;
+}
+
 @media (max-width: 820px) {
   .terminal-empty-state {
     padding: 18px;
