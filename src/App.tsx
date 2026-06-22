@@ -1860,13 +1860,13 @@ export default function App() {
   // right after the current tab, or nested under it when `nest` is set — and
   // focuses the fork. The backend also emits agent.forked, which refetches the
   // ordered pane list, so the optimistic append below is just to avoid a flicker.
-  async function forkActivePane(nest: boolean) {
+  async function forkActivePane(options: { nest: boolean; useWorktree: boolean }) {
     if (!activePane || !activeAgent) {
       return;
     }
     setError(null);
     try {
-      const pane = await forkAgent(activePane.id, { nest });
+      const pane = await forkAgent(activePane.id, options);
       setPanesPreservingRecoveredDismissals((current) =>
         current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
       );
@@ -3403,7 +3403,7 @@ export default function App() {
                 canFork={Boolean(
                   activePane && activeAgent?.adapter === "claude" && activeAgent?.sessionId,
                 )}
-                onFork={(nest) => void forkActivePane(nest)}
+                onFork={(options) => void forkActivePane(options)}
                 showQueueSplit={Boolean(activeAgent)}
                 queueSplit={activeQueueSplit}
                 onToggleQueueSplit={toggleActiveQueueSplit}

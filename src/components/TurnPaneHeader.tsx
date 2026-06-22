@@ -14,9 +14,9 @@ interface TurnPaneHeaderProps {
   sessionId: string | null;
   // Only Claude sessions with a valid session id can be forked.
   canFork: boolean;
-  // Fork the session: nested under the current tab (`nest`) or as a sibling
-  // immediately after it.
-  onFork: (nest: boolean) => void;
+  // Fork the session into a child tab of the current one, optionally in a fresh
+  // git worktree.
+  onFork: (options: { nest: boolean; useWorktree: boolean }) => void;
   showQueueSplit: boolean;
   queueSplit: boolean;
   onToggleQueueSplit: () => void;
@@ -71,9 +71,9 @@ export default function TurnPaneHeader({
     };
   }, [menuOpen]);
 
-  const fork = (nest: boolean) => {
+  const fork = (options: { nest: boolean; useWorktree: boolean }) => {
     setMenuOpen(false);
-    onFork(nest);
+    onFork(options);
   };
 
   const copySessionId = async () => {
@@ -129,7 +129,7 @@ export default function TurnPaneHeader({
                   type="button"
                   role="menuitem"
                   className="turn-pane-fork-item"
-                  onClick={() => fork(false)}
+                  onClick={() => fork({ nest: true, useWorktree: false })}
                 >
                   Fork session
                 </button>
@@ -137,9 +137,9 @@ export default function TurnPaneHeader({
                   type="button"
                   role="menuitem"
                   className="turn-pane-fork-item"
-                  onClick={() => fork(true)}
+                  onClick={() => fork({ nest: true, useWorktree: true })}
                 >
-                  Fork session as child
+                  Fork session in worktree
                 </button>
               </div>
             ) : null}
