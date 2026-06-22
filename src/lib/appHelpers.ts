@@ -23,6 +23,14 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+export function selectPaneAfterClose(panes: PaneInfo[], closedPaneId: string): string | null {
+  const closedIndex = panes.findIndex((pane) => pane.id === closedPaneId);
+  if (closedIndex === -1) {
+    return panes[0]?.id ?? null;
+  }
+  return panes[closedIndex - 1]?.id ?? panes[closedIndex + 1]?.id ?? null;
+}
+
 // Validates a turn payload arriving over the backend event stream before it is
 // trusted as a Turn. The data is structured by Rust, but guarding at the boundary
 // keeps a malformed/renamed field from silently producing an invalid turn the UI

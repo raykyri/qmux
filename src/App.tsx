@@ -48,6 +48,7 @@ import {
   isTerminalTarget,
   measureTerminalCellSize,
   reconcileQueuedTurnCollapse,
+  selectPaneAfterClose,
   statusLabel,
 } from "./lib/appHelpers";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
@@ -241,7 +242,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
   // Application-level UI settings (terminal font + size), loaded from localStorage
   // once on mount and persisted on every change. Shared by every pane. Font size
-  // is also adjustable in-session with Cmd-+/Cmd--.
+  // is also adjustable in-session with Cmd-=/Cmd--.
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const terminalFontSize = settings.fontSize;
@@ -279,6 +280,10 @@ export default function App() {
   const [browserOverlayByPane, setBrowserOverlayByPane] = useState<
     Record<string, BrowserOverlayState>
   >({});
+  const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
+  const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
+    {},
+  );
   // Right-click chooser for a link (transcript or terminal): internal vs external.
   const [linkMenu, setLinkMenu] = useState<{ url: string; x: number; y: number } | null>(null);
   const activePane = useMemo(
@@ -290,6 +295,8 @@ export default function App() {
     [activePane?.id, agents],
   );
   const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
+  const activeQueueSplit = activeAgent ? (queueSplitByAgent[activeAgent.id] ?? false) : false;
+  const activeQueueSplitHeight = activeAgent ? queueSplitHeightByAgent[activeAgent.id] : undefined;
   // Drop overlay state for panes that have closed so it can't leak or resurface.
   useEffect(() => {
     setBrowserOverlayByPane((current) => {
@@ -412,6 +419,22 @@ export default function App() {
         },
       };
     });
+  }
+
+  function toggleActiveQueueSplit() {
+    const agentId = activeAgent?.id;
+    if (!agentId) {
+      return;
+    }
+    setQueueSplitByAgent((current) => ({ ...current, [agentId]: !(current[agentId] ?? false) }));
+  }
+
+  function setActiveQueueSplitHeight(height: number) {
+    const agentId = activeAgent?.id;
+    if (!agentId) {
+      return;
+    }
+    setQueueSplitHeightByAgent((current) => ({ ...current, [agentId]: height }));
   }
 
   function refreshActiveBrowserOverlay() {
@@ -1343,7 +1366,7 @@ export default function App() {
           if (currentActivePaneId !== paneToClose.id) {
             return currentActivePaneId;
           }
-          return nextPanes[0]?.id ?? null;
+          return selectPaneAfterClose(current, paneToClose.id);
         });
         return nextPanes;
       });
@@ -1666,13 +1689,15 @@ export default function App() {
 
       const key = event.key.toLowerCase();
 
-      // Cmd-+ / Cmd-= zoom the terminal font in, Cmd-- / Cmd-_ zoom out. Handled
-      // before the repeat bail so holding the combo keeps stepping the size; the
-      // change is written into the persisted settings, same as the panel stepper.
-      if (key === "+" || key === "=" || key === "-" || key === "_") {
+      const commandOnly = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+
+      // Cmd-= zooms the terminal font in, Cmd-- zooms it out. Handled before the
+      // repeat bail so holding the combo keeps stepping the size; the change is
+      // written into the persisted settings, same as the panel stepper.
+      if (commandOnly && (key === "+" || key === "=" || key === "-")) {
         event.preventDefault();
         event.stopPropagation();
-        const delta = key === "-" || key === "_" ? -1 : 1;
+        const delta = key === "-" ? -1 : 1;
         setSettings((current) => ({
           ...current,
           fontSize: clampFontSize(current.fontSize + delta),
@@ -2753,6 +2778,9 @@ export default function App() {
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
             notice={activeAgent ? activeTranscriptNotice : null}
+            queueSplit={activeQueueSplit}
+            queueSplitHeight={activeQueueSplitHeight}
+            onQueueSplitHeightChange={setActiveQueueSplitHeight}
             linkActions={linkActions}
             header={
               <TurnPaneHeader
@@ -2761,6 +2789,9 @@ export default function App() {
                   activePane && activeAgent?.adapter === "claude" && activeAgent?.sessionId,
                 )}
                 onFork={(nest) => void forkActivePane(nest)}
+                showQueueSplit={Boolean(activeAgent)}
+                queueSplit={activeQueueSplit}
+                onToggleQueueSplit={toggleActiveQueueSplit}
                 browserOpen={activeBrowserOverlay?.open ?? false}
                 onToggleBrowser={toggleActiveBrowserOverlay}
               />

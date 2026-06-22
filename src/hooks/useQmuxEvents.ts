@@ -6,6 +6,7 @@ import {
   isQueuedTurn,
   isTurn,
   ptyDataFromPayload,
+  selectPaneAfterClose,
   transcriptHookEvent,
   upsertAgent,
 } from "../lib/appHelpers";
@@ -96,7 +97,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
             if (currentActivePaneId !== exitedPaneId) {
               return currentActivePaneId;
             }
-            return nextPanes[0]?.id ?? null;
+            return selectPaneAfterClose(current, exitedPaneId);
           });
           return nextPanes;
         });
