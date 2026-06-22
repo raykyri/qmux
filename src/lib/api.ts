@@ -247,6 +247,10 @@ export function killPane(paneId: string) {
   return invoke<void>("pane_kill", { paneId });
 }
 
+export function restoreLastClosedPane() {
+  return invoke<PaneInfo | null>("pane_restore_last_closed");
+}
+
 export function renamePane(paneId: string, title: string) {
   return invoke<PaneInfo>("pane_rename", { paneId, title });
 }

@@ -1,7 +1,7 @@
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
-use crate::scrollback::remove_pane_scrollback;
+use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
@@ -103,6 +103,9 @@ struct Model {
     /// Agent-session resumes queued at restore, keyed by the recovered shell pane id;
     /// each is drained by that pane's respawn. Transient (not persisted).
     shell_agent_resumes: HashMap<String, ShellAgentResume>,
+    /// One-entry undo stack for an explicitly closed tab. Transient: a closed tab can
+    /// be restored during the current app run, but it is not resurrected after restart.
+    last_closed_pane: Option<ClosedPaneSnapshot>,
 }
 
 /// A pending request to resume an agent session inside a recovered shell pane.
@@ -115,6 +118,22 @@ struct Model {
 pub struct ShellAgentResume {
     pub adapter: String,
     pub session_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClosedPaneAgentSnapshot {
+    pub agent: AgentInfo,
+    pub turns: Vec<Turn>,
+    pub queued_turns: Vec<QueuedTurn>,
+    pub draft: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClosedPaneSnapshot {
+    pub pane: PaneInfo,
+    pub agent: Option<ClosedPaneAgentSnapshot>,
+    pub index: usize,
+    pub scrollback: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -680,6 +699,230 @@ impl AppState {
             .panes
             .get(pane_id)
             .map(|runtime| runtime.skip_scrollback_restore))
+    }
+
+    pub fn capture_last_closed_pane(&self, pane_id: &str) -> Result<(), String> {
+        let mut snapshot = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let runtime = model
+                .panes
+                .get(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            let ordered_ids = ordered_pane_ids(&model);
+            let index = ordered_ids
+                .iter()
+                .position(|id| id == pane_id)
+                .unwrap_or(ordered_ids.len());
+
+            let mut pane = runtime.info.clone();
+            pane.depth = model.pane_depth.get(pane_id).copied().unwrap_or(0);
+
+            let pane_agent_id = pane.agent_id.clone();
+            let agent = pane_agent_id
+                .as_deref()
+                .and_then(|agent_id| model.agents.get(agent_id))
+                .or_else(|| {
+                    model
+                        .agents
+                        .values()
+                        .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
+                })
+                .cloned()
+                .map(|agent| {
+                    let turns = model.turns.get(&agent.id).cloned().unwrap_or_default();
+                    let queued_turns = model
+                        .agent_turn_queues
+                        .get(&agent.id)
+                        .map(|queue| queue.iter().cloned().collect())
+                        .unwrap_or_default();
+                    let draft = model.agent_drafts.get(&agent.id).cloned();
+                    ClosedPaneAgentSnapshot {
+                        agent,
+                        turns,
+                        queued_turns,
+                        draft,
+                    }
+                });
+
+            ClosedPaneSnapshot {
+                pane,
+                agent,
+                index,
+                scrollback: Vec::new(),
+            }
+        };
+
+        snapshot.scrollback =
+            match read_pane_scrollback(&self.inner.config.workspace_root, &snapshot.pane.id) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!(
+                        "qmux: failed to capture scrollback for closed pane {}: {err}",
+                        snapshot.pane.id
+                    );
+                    Vec::new()
+                }
+            };
+
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.last_closed_pane = Some(snapshot);
+        Ok(())
+    }
+
+    pub fn take_last_closed_pane(&self) -> Result<Option<ClosedPaneSnapshot>, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.last_closed_pane.take())
+    }
+
+    pub fn remember_last_closed_pane(&self, snapshot: ClosedPaneSnapshot) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        model.last_closed_pane = Some(snapshot);
+        Ok(())
+    }
+
+    pub fn clear_last_closed_pane_for_pane(&self, pane_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock()
+            && model
+                .last_closed_pane
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.pane.id == pane_id)
+        {
+            model.last_closed_pane = None;
+        }
+    }
+
+    pub fn clear_last_closed_pane_for_agent(&self, agent_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock()
+            && model
+                .last_closed_pane
+                .as_ref()
+                .and_then(|snapshot| snapshot.agent.as_ref())
+                .is_some_and(|agent_snapshot| agent_snapshot.agent.id == agent_id)
+        {
+            model.last_closed_pane = None;
+        }
+    }
+
+    pub fn restore_closed_pane_metadata(
+        &self,
+        snapshot: &ClosedPaneSnapshot,
+    ) -> Result<(), String> {
+        if matches!(snapshot.pane.kind, PaneKind::Agent) && snapshot.agent.is_none() {
+            return Err(format!(
+                "closed agent pane {} is missing its agent",
+                snapshot.pane.id
+            ));
+        }
+
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.shell_agent_resumes.remove(&snapshot.pane.id);
+
+            if let Some(agent_snapshot) = &snapshot.agent {
+                let mut agent = agent_snapshot.agent.clone();
+                if matches!(snapshot.pane.kind, PaneKind::Shell) {
+                    let has_queue = !agent_snapshot.queued_turns.is_empty();
+                    agent.pane_id = None;
+                    agent.orphaned_queue_pane_id = has_queue.then(|| snapshot.pane.id.clone());
+                    agent.status = AgentStatus::Idle;
+                } else {
+                    agent.pane_id = Some(snapshot.pane.id.clone());
+                    agent.orphaned_queue_pane_id = None;
+                }
+
+                if matches!(snapshot.pane.kind, PaneKind::Shell)
+                    && let Some(resume) = shell_agent_resume(&agent)
+                {
+                    model
+                        .shell_agent_resumes
+                        .insert(snapshot.pane.id.clone(), resume);
+                }
+
+                let agent_id = agent.id.clone();
+                model.agents.insert(agent_id.clone(), agent);
+                if agent_snapshot.turns.is_empty() {
+                    model.turns.remove(&agent_id);
+                } else {
+                    model
+                        .turns
+                        .insert(agent_id.clone(), agent_snapshot.turns.clone());
+                }
+                if agent_snapshot.queued_turns.is_empty() {
+                    model.agent_turn_queues.remove(&agent_id);
+                } else {
+                    model.agent_turn_queues.insert(
+                        agent_id.clone(),
+                        agent_snapshot.queued_turns.iter().cloned().collect(),
+                    );
+                }
+                match agent_snapshot
+                    .draft
+                    .clone()
+                    .filter(|draft| !draft.trim().is_empty())
+                {
+                    Some(draft) => {
+                        model.agent_drafts.insert(agent_id, draft);
+                    }
+                    None => {
+                        model.agent_drafts.remove(&agent_id);
+                    }
+                }
+            }
+        }
+        self.persist();
+        Ok(())
+    }
+
+    pub fn place_restored_pane(
+        &self,
+        pane_id: &str,
+        index: usize,
+        depth: u16,
+    ) -> Result<Vec<PaneInfo>, String> {
+        let panes = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.panes.contains_key(pane_id) {
+                return Err(format!("pane {pane_id} was not found"));
+            }
+
+            let mut ids = ordered_pane_ids(&model);
+            ids.retain(|id| id != pane_id);
+            ids.insert(index.min(ids.len()), pane_id.to_string());
+            model.pane_order = ids;
+            if depth == 0 {
+                model.pane_depth.remove(pane_id);
+            } else {
+                model.pane_depth.insert(pane_id.to_string(), depth);
+            }
+            normalize_pane_depths(&mut model);
+            ordered_panes(&model)
+        };
+        self.persist();
+        Ok(panes)
     }
 
     pub fn remove_pane(&self, pane_id: &str) -> Result<(), String> {
@@ -1653,6 +1896,23 @@ impl AppState {
         Ok(info)
     }
 
+    pub fn set_pane_recovered(&self, pane_id: &str, recovered: bool) -> Result<(), String> {
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let pane = model
+                .panes
+                .get_mut(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            pane.info.recovered = recovered;
+        }
+        self.persist();
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn mark_pane_status(&self, pane_id: &str, status: PaneStatus) -> Result<(), String> {
         {
@@ -1796,6 +2056,7 @@ mod tests {
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
     };
     use crate::persistence::PersistedState;
+    use crate::scrollback::append_pane_scrollback;
     use crate::workspace::AgentStatus;
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io;
@@ -2291,6 +2552,93 @@ mod tests {
         assert_eq!(
             id_depths(&state.list_panes().unwrap()),
             vec![("pane-2".to_string(), 0), ("pane-3".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn capture_last_closed_pane_records_layout_agent_state_and_scrollback() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        let mut pane_2 = sample_pane_runtime("pane-2");
+        pane_2.info.kind = PaneKind::Agent;
+        pane_2.info.agent_id = Some("agent-1".to_string());
+        state.insert_pane(pane_2).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+        state
+            .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", 1), ("pane-3", 1)]))
+            .unwrap();
+        let mut agent = sample_agent("agent-1");
+        agent.pane_id = Some("pane-2".to_string());
+        state.insert_agent(agent).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "later".to_string())
+            .unwrap();
+        state
+            .set_agent_draft("agent-1", "draft text".to_string())
+            .unwrap();
+        append_pane_scrollback(&workspace, "pane-2", b"old output").unwrap();
+
+        state.capture_last_closed_pane("pane-2").unwrap();
+
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+        assert_eq!(snapshot.pane.id, "pane-2");
+        assert_eq!(snapshot.pane.depth, 1);
+        assert_eq!(snapshot.index, 1);
+        assert_eq!(snapshot.scrollback, b"old output");
+        let agent = snapshot.agent.unwrap();
+        assert_eq!(agent.agent.id, "agent-1");
+        assert_eq!(agent.queued_turns.len(), 1);
+        assert_eq!(agent.queued_turns[0].text, "later");
+        assert_eq!(agent.draft.as_deref(), Some("draft text"));
+    }
+
+    #[test]
+    fn restore_closed_pane_metadata_reinserts_pruned_agent_and_layout() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        let mut pane_2 = sample_pane_runtime("pane-2");
+        pane_2.info.kind = PaneKind::Agent;
+        pane_2.info.agent_id = Some("agent-1".to_string());
+        state.insert_pane(pane_2).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+        state
+            .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", 1), ("pane-3", 1)]))
+            .unwrap();
+        let mut agent = sample_agent("agent-1");
+        agent.pane_id = Some("pane-2".to_string());
+        state.insert_agent(agent).unwrap();
+        state
+            .set_agent_draft("agent-1", "draft text".to_string())
+            .unwrap();
+        state.capture_last_closed_pane("pane-2").unwrap();
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+
+        state.remove_pane("pane-2").unwrap();
+        assert!(state.agent("agent-1").unwrap().is_none());
+
+        state.restore_closed_pane_metadata(&snapshot).unwrap();
+        let mut restored_pane = sample_pane_runtime("pane-2");
+        restored_pane.info = snapshot.pane.clone();
+        state.insert_pane(restored_pane).unwrap();
+        state
+            .place_restored_pane(&snapshot.pane.id, snapshot.index, snapshot.pane.depth)
+            .unwrap();
+
+        assert_eq!(
+            id_depths(&state.list_panes().unwrap()),
+            vec![
+                ("pane-1".to_string(), 0),
+                ("pane-2".to_string(), 1),
+                ("pane-3".to_string(), 1),
+            ]
+        );
+        let restored_agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(restored_agent.pane_id.as_deref(), Some("pane-2"));
+        assert_eq!(
+            state.agent_draft("agent-1").unwrap().as_deref(),
+            Some("draft text")
         );
     }
 
