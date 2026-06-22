@@ -2588,6 +2588,42 @@ header + .turn-blocks {
   color: #8f9994;
 }
 
+.tagged-user-instruction {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.tagged-user-instruction-toggle {
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  padding: 0 1px;
+  color: #a9cfc0;
+  font-family: var(--font-mono);
+  font-size: calc(13px + var(--turn-font-delta, 0px));
+  overflow: hidden;
+  text-align: left;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tagged-user-instruction-toggle:hover {
+  color: #d2eadf;
+}
+
+.tagged-user-instruction-toggle:focus-visible {
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
 .long-user-message {
   display: grid;
   gap: 7px;

@@ -22,7 +22,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
-import { isTaggedUserInstruction } from "../lib/taggedInstructions";
+import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
 import TranscriptPickerLink from "./TranscriptPickerLink";
 
 // Link actions for rendered markdown, supplied by App through TurnOverlay. Markdown is
@@ -936,11 +936,17 @@ function capitalizeSentence(label: string) {
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
   if (block.type === "text") {
     if (role !== "assistant") {
+      const taggedInstruction =
+        role === "user" ? taggedUserInstructionDetails(block.text) : null;
+      if (taggedInstruction) {
+        return (
+          <CollapsedTaggedUserInstruction label={taggedInstruction.label} text={block.text} />
+        );
+      }
       if (role === "user" && block.text.length > LONG_USER_MESSAGE_COLLAPSE_THRESHOLD) {
         return <CollapsedUserText text={block.text} />;
       }
-      const muted = role === "user" && isTaggedUserInstruction(block.text);
-      return <p className={`turn-text${muted ? " is-tagged-instruction" : ""}`}>{block.text}</p>;
+      return <p className="turn-text">{block.text}</p>;
     }
     return (
       <div className="turn-markdown">
@@ -959,6 +965,26 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
       </summary>
       <pre>{stringify(block.value)}</pre>
     </details>
+  );
+}
+
+function CollapsedTaggedUserInstruction({ label, text }: { label: string; text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const title = expanded ? `Collapse ${label}` : `Show ${label}`;
+
+  return (
+    <div className="tagged-user-instruction">
+      <button
+        type="button"
+        className="tagged-user-instruction-toggle"
+        aria-expanded={expanded}
+        title={title}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        {label}
+      </button>
+      {expanded ? <p className="turn-text is-tagged-instruction">{text}</p> : null}
+    </div>
   );
 }
 
