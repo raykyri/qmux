@@ -232,6 +232,38 @@ pub fn attach_agent_pane(
         .ok_or_else(|| format!("agent {agent_id} was not found"))
 }
 
+/// Detaches whatever agent is currently bound to `pane_id` (if any), reverting the
+/// pane to a plain shell. Used when a shell-launched agent's *process* exits but its
+/// host shell — and so the pane — lives on: there is no `pty.exit` to reap the agent
+/// in that case, so without this the agent would linger bound to the pane and the tab
+/// would keep showing its last status (e.g. a freshly launched, never-used agent's
+/// synthetic "Awaiting input") indefinitely. Mirrors the rebind detach in
+/// `attach_agent_pane`: the binding is cleared and the agent goes Idle, but an agent
+/// with queued turns keeps them parked as an orphaned queue so they stay
+/// restart-recoverable. Emits `agent.detached` with the updated agent and returns it;
+/// a no-op (`Ok(None)`) when no agent owns the pane.
+pub fn detach_pane_agent(state: &AppState, pane_id: &str) -> Result<Option<AgentInfo>, String> {
+    let Some(current) = state.agent_by_pane(pane_id)? else {
+        return Ok(None);
+    };
+    let has_queue = !state.list_agent_turn_queue(&current.id)?.is_empty();
+    let orphaned_queue_pane_id = has_queue.then(|| pane_id.to_string());
+    let detached = state.mutate_agent(&current.id, |agent| {
+        agent.pane_id = None;
+        agent.orphaned_queue_pane_id = orphaned_queue_pane_id;
+        agent.status = AgentStatus::Idle;
+    })?;
+    if let Some(detached) = &detached {
+        state.emit(crate::events::QmuxEvent::new(
+            "agent.detached",
+            Some(pane_id.to_string()),
+            Some(detached.id.clone()),
+            serde_json::json!({ "agent": detached }),
+        ));
+    }
+    Ok(detached)
+}
+
 pub fn mark_agent_spawn_failed(
     state: &AppState,
     agent_id: &str,
@@ -646,6 +678,60 @@ mod tests {
         assert!(matches!(attached.status, AgentStatus::Running));
         assert_eq!(attached.session_id.as_deref(), Some("sess-xyz"));
         assert_eq!(attached.transcript_path.as_deref(), Some("/tmp/new.jsonl"));
+    }
+
+    #[test]
+    fn detach_pane_agent_reverts_pane_to_plain_shell() {
+        // A shell-launched agent sitting at its synthetic "awaiting input" status: once
+        // the agent process exits, detaching clears the pane binding and drops it to Idle
+        // so the tab stops advertising a stale status.
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(
+                "agent-shell",
+                Some("pane-1"),
+                AgentStatus::AwaitingInput,
+            ))
+            .unwrap();
+
+        let detached = detach_pane_agent(&state, "pane-1")
+            .unwrap()
+            .expect("an agent was bound to the pane");
+
+        assert_eq!(detached.id, "agent-shell");
+        assert_eq!(detached.pane_id, None);
+        assert!(matches!(detached.status, AgentStatus::Idle));
+        let stored = state.agent("agent-shell").unwrap().expect("agent still exists");
+        assert_eq!(stored.pane_id, None);
+        assert!(matches!(stored.status, AgentStatus::Idle));
+    }
+
+    #[test]
+    fn detach_pane_agent_parks_queued_turns_as_orphaned() {
+        // An agent with queued turns must stay restart-recoverable, so detaching parks its
+        // queue as an orphaned queue on the pane rather than discarding it.
+        let state = test_state();
+        state
+            .insert_agent(sample_agent("agent-shell", Some("pane-1"), AgentStatus::Running))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-shell", "queued turn".to_string())
+            .unwrap();
+
+        let detached = detach_pane_agent(&state, "pane-1").unwrap().unwrap();
+
+        assert_eq!(detached.pane_id, None);
+        assert_eq!(detached.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-shell").unwrap(),
+            vec!["queued turn".to_string()]
+        );
+    }
+
+    #[test]
+    fn detach_pane_agent_is_a_noop_for_an_unowned_pane() {
+        let state = test_state();
+        assert!(detach_pane_agent(&state, "pane-empty").unwrap().is_none());
     }
 
     #[test]

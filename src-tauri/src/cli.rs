@@ -96,6 +96,18 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             run_agent_exec(adapter_id, args.collect())?;
             Ok(true)
         }
+        "agent-detach" => {
+            // Run by the shell wrapper once an in-shell agent process exits, so the tab
+            // reverts to a plain shell rather than keeping the agent's last status. The
+            // server detaches the agent bound to this pane's token; the claimed paneId is
+            // advisory. Best-effort — failures (e.g. no agent attached) must not surface
+            // at the prompt, so the wrapper discards this command's output.
+            request_silent(
+                "agent.detach_pane",
+                json!({ "paneId": env::var("QMUX_PANE_ID").ok() }),
+            )?;
+            Ok(true)
+        }
         "claude" => {
             run_agent_exec("claude".to_string(), args.collect())?;
             Ok(true)
@@ -139,7 +151,9 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "help" | "--help" | "-h" => {
-            println!("usage: qmux [ping|notify|pane-write|cwd|agent-exec|claude|codex|fork|open]");
+            println!(
+                "usage: qmux [ping|notify|pane-write|cwd|agent-exec|agent-detach|claude|codex|fork|open]"
+            );
             Ok(true)
         }
         _ => Ok(false),
