@@ -116,8 +116,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - `Cmd-T` / `Cmd-N`: open a shell pane.
 - `Cmd-;` / `Ctrl-;`: open the agent launcher.
-- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through open tabs.
-- `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through open tabs.
+- `Cmd-0` / `Ctrl-0`: focus Home.
+- `Cmd-1`..`Cmd-9` / `Ctrl-1`..`Ctrl-9`: focus the corresponding pane tab.
+- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through Home and open tabs.
+- `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
 - `Cmd-W` / `Ctrl-W`: close the active pane.
 - `Cmd-,` / `Ctrl-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch.
