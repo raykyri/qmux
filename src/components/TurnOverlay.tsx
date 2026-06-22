@@ -65,10 +65,14 @@ interface TurnOverlayProps {
   // How rendered-markdown links behave (left-click opens internally; right-click
   // opens a chooser).
   linkActions: LinkActions;
-  // Called on mouse-up when the user selects non-whitespace text within an
-  // assistant message, with the text and its viewport bounding box, so the app can
-  // offer to ask the agent about it.
+  // Called on mouse-up when the user selects non-whitespace text within the
+  // transcript, with the text and its viewport bounding box, so the app can offer to
+  // ask the agent about it.
   onAskSelection?: (quote: string, anchor: SelectionAnchor) => void;
+  // Called on a mouse-up that leaves no usable transcript selection, so the app can
+  // dismiss an open Ask popup (the popup stays mounted across re-selections, so a
+  // click that just clears the selection has to be reported here to close it).
+  onDismissSelection?: () => void;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -216,6 +220,7 @@ export default function TurnOverlay({
   onQueueSplitHeightChange,
   linkActions,
   onAskSelection,
+  onDismissSelection,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
@@ -233,20 +238,21 @@ export default function TurnOverlay({
       return;
     }
     const selection = document.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-      return;
-    }
-    const text = selection.toString();
-    if (!text.trim()) {
-      return;
-    }
-    const range = selection.getRangeAt(0);
+    const text = selection ? selection.toString() : "";
     // Require the selection to *start* inside the transcript, so a drag that begins in a
     // message but is released over the composer still registers, while a selection made
     // inside the composer itself is ignored. The start (not the mouse-up target) is what
     // matters, since the highlighted text stays in the transcript even when the release
     // lands below it.
-    if (!timeline.contains(range.startContainer)) {
+    const range =
+      selection && !selection.isCollapsed && selection.rangeCount > 0 && text.trim()
+        ? selection.getRangeAt(0)
+        : null;
+    if (!range || !timeline.contains(range.startContainer)) {
+      // No usable transcript selection (e.g. a click that collapsed the previous one).
+      // The popup stays mounted across re-selections, so dismiss it explicitly rather
+      // than leaving it stranded over text that is no longer highlighted.
+      onDismissSelection?.();
       return;
     }
     // Anchor over the highlighted text. A triple-click selects a whole block and leaves

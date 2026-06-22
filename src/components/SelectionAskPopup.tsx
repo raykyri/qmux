@@ -6,27 +6,38 @@ import type { SelectionAnchor } from "../appTypes";
 // offering to ask the active agent about the quoted text. Portals to <body> so it
 // escapes the terminal/transcript clipping containers, positions itself in viewport
 // (fixed) coordinates measured from the selection's bounding box, and clamps into
-// the viewport. Dismisses on outside mousedown, Escape, scroll, or resize.
+// the viewport. Dismisses on outside mousedown, Escape, scroll, or resize — except a
+// mousedown inside `reselectWithin` (the surface the selection came from), which is
+// the start of a new selection: the popup stays mounted and glides to the next anchor
+// instead of unmounting and flashing back.
 export default function SelectionAskPopup({
   anchor,
   canAskNewThread,
+  reselectWithin,
   onAsk,
   onAskNewThread,
   onClose,
 }: {
   anchor: SelectionAnchor;
   canAskNewThread: boolean;
+  reselectWithin?: string;
   onAsk: () => void;
   onAskNewThread: () => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  // App passes a fresh `onClose` arrow each render and re-renders often (streaming
-  // agent events). Read it through a ref so the listener effect can subscribe once
-  // instead of tearing down and re-adding all four listeners on every render.
+  // Enable the position transition only after the first placement, so the popup
+  // doesn't glide in from its offscreen pre-measure origin on mount.
+  const [settled, setSettled] = useState(false);
+  // App passes fresh `onClose`/`reselectWithin` each render and re-renders often
+  // (streaming agent events). Read them through refs so the listener effect can
+  // subscribe once instead of tearing down and re-adding all four listeners on every
+  // render.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const reselectWithinRef = useRef(reselectWithin);
+  reselectWithinRef.current = reselectWithin;
 
   // Measure self once mounted and place it centered over the selection, preferring
   // above; flip below when there isn't room. Then clamp into the viewport.
@@ -48,11 +59,28 @@ export default function SelectionAskPopup({
     setPos({ left, top });
   }, [anchor]);
 
+  // Turn on the glide transition once the popup has been placed for the first time
+  // (after paint), so only later anchor changes animate.
+  useEffect(() => {
+    if (pos && !settled) {
+      setSettled(true);
+    }
+  }, [pos, settled]);
+
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) {
-        onCloseRef.current();
+      const node = event.target as Node | null;
+      if (ref.current?.contains(node)) {
+        return;
       }
+      // A mousedown inside the selection source starts a re-selection; keep the popup
+      // mounted and let the following mouse-up re-anchor (or dismiss) it.
+      const within = reselectWithinRef.current;
+      const el = node instanceof Element ? node : node?.parentElement ?? null;
+      if (within && el?.closest(within)) {
+        return;
+      }
+      onCloseRef.current();
     };
     // Dismiss on any key, not just Escape: the popup has no text input, so any
     // keystroke means the user has moved on (typing in the composer, or opening
@@ -77,7 +105,7 @@ export default function SelectionAskPopup({
   return createPortal(
     <div
       ref={ref}
-      className="selection-ask-popup"
+      className={`selection-ask-popup${settled ? " is-settled" : ""}`}
       role="group"
       aria-label="Ask about selection"
       // Keep it offscreen until measured so it doesn't flash at the origin.

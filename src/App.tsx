@@ -3743,6 +3743,7 @@ export default function App() {
             onQueueSplitHeightChange={setActiveQueueSplitHeight}
             linkActions={linkActions}
             onAskSelection={showSelectionAsk}
+            onDismissSelection={() => setSelectionAsk(null)}
             header={
               <TurnPaneHeader
                 sessionId={activeAgent?.sessionId ?? null}
@@ -3861,6 +3862,9 @@ export default function App() {
         <SelectionAskPopup
           anchor={selectionAsk.anchor}
           canAskNewThread={selectionAsk.canFork}
+          // The transcript is a re-selection surface: a mousedown there keeps the popup
+          // mounted so it glides to the next selection instead of flashing.
+          reselectWithin=".turn-timeline"
           onAsk={() => openAskLauncher("ask")}
           onAskNewThread={() => openAskLauncher("newThread")}
           onClose={() => setSelectionAsk(null)}
