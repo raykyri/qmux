@@ -558,7 +558,9 @@ export default function NativeInput({
       startY: event.clientY,
       active: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // Don't capture the pointer yet — capturing here would hijack the gesture from
+    // the text and break double-click-to-select on the queued turn. Capture only
+    // once an actual drag starts (see handleQueuePointerMove).
   }
 
   function handleQueuePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -572,6 +574,14 @@ export default function NativeInput({
         return;
       }
       drag.active = true;
+      // Now that it's a real drag, capture the pointer so moves keep arriving even
+      // when the cursor leaves the row. Deferred to here (not pointerdown) so a
+      // click/double-click on the text isn't hijacked from the native selection.
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already have been released.
+      }
       draggingIndexRef.current = drag.from;
       dropIndexRef.current = null;
       setDraggingIndex(drag.from);
