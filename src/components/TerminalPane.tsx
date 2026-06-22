@@ -61,6 +61,51 @@ interface TerminalPaneProps {
 // Matches http(s) URLs in terminal text. Conservative: stops at whitespace and a few
 // delimiters so it doesn't swallow surrounding punctuation/markup.
 const TERMINAL_URL_REGEX = /\bhttps?:\/\/[^\s<>"'`)\]}]+/g;
+const OSC_TITLE_MAX_BUFFER_CHARS = 8192;
+
+function decodeTerminalDataText(decoder: TextDecoder, data: string | Uint8Array) {
+  return typeof data === "string" ? data : decoder.decode(data, { stream: true });
+}
+
+function capOscTitlePartial(partial: string) {
+  return partial.length > OSC_TITLE_MAX_BUFFER_CHARS ? "" : partial;
+}
+
+function consumeOscTitleText(buffer: string, emitTitle: (title: string) => void) {
+  let cursor = 0;
+  while (cursor < buffer.length) {
+    const start = buffer.indexOf("\x1b]", cursor);
+    if (start === -1) {
+      const lastEscape = buffer.lastIndexOf("\x1b");
+      return lastEscape >= cursor && lastEscape >= buffer.length - 1
+        ? buffer.slice(lastEscape)
+        : "";
+    }
+
+    const commandStart = start + 2;
+    const separator = buffer.indexOf(";", commandStart);
+    if (separator === -1) {
+      return capOscTitlePartial(buffer.slice(start));
+    }
+
+    const contentStart = separator + 1;
+    const bellEnd = buffer.indexOf("\x07", contentStart);
+    const stEnd = buffer.indexOf("\x1b\\", contentStart);
+    const useBell = bellEnd !== -1 && (stEnd === -1 || bellEnd < stEnd);
+    const end = useBell ? bellEnd : stEnd;
+    if (end === -1) {
+      return capOscTitlePartial(buffer.slice(start));
+    }
+
+    const command = buffer.slice(commandStart, separator);
+    if (command === "0" || command === "2") {
+      emitTitle(buffer.slice(contentStart, end));
+    }
+    cursor = end + (useBell ? 1 : 2);
+  }
+
+  return "";
+}
 
 interface LinkHandlers {
   activate: (url: string) => void;
@@ -103,6 +148,15 @@ export interface TerminalPaneHandle {
 // is readline's forward-char, so on the Mac we leave it for the terminal.)
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
+
+// A recovered pane keeps snapping to the bottom while restore output (scrollback
+// replay, then the attach backlog, then live PTY writes) is still flowing. The
+// window closes once restore writes stay idle this long; each write re-arms it so
+// a large backlog that streams in past the timeout still lands at the bottom.
+const RESTORE_SCROLL_IDLE_MS = 750;
+// Re-snap shortly after each restore write to catch xterm reflow and late layout
+// that nudge the viewport after the synchronous scroll.
+const RESTORE_SCROLL_CATCHUP_DELAYS_MS = [80, 250];
 
 // Colors for search highlights, tuned to read against the terminal background.
 // The overview-ruler colors are required by the addon's types even though qmux
@@ -184,6 +238,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onAskSelectionRef.current = onAskSelection;
   const onTerminalTitleChangeRef = useRef(onTerminalTitleChange);
   onTerminalTitleChangeRef.current = onTerminalTitleChange;
+  const activeRef = useRef(active);
+  activeRef.current = active;
   // The URL the mouse is currently over (set by the link provider's hover/leave), so a
   // right-click can target it for the chooser menu.
   const hoveredLinkRef = useRef<string | null>(null);
@@ -207,8 +263,18 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // PTY output can arrive while the terminal waits for the bundled font to load.
   // Buffer it and flush once xterm is open so startup output is not dropped.
   const pendingDataRef = useRef<Array<string | Uint8Array>>([]);
+  const inactiveDataBufferRef = useRef<Array<string | Uint8Array>>([]);
+  const flushingInactiveDataRef = useRef(false);
+  const inactiveFlushGenerationRef = useRef(0);
+  const oscTitleDecoderRef = useRef(new TextDecoder());
+  const oscTitleBufferRef = useRef("");
   const scrollbackBytesPromiseRef = useRef<Promise<Uint8Array | null> | null>(null);
   const scrollbackReplayedRef = useRef(false);
+  // Captured once at mount: whether this pane was restored after a restart. The
+  // `recovered` prop later flips to false when its "Restored" badge is dismissed,
+  // but that must not re-run the terminal setup effect (which would dispose and
+  // rebuild the pane), so the snap-to-bottom window keys off this stable snapshot.
+  const initialRecoveredRef = useRef(pane.recovered);
   const restoreScrollToBottomPendingRef = useRef(false);
   const restoreScrollToBottomFrameRef = useRef<number | null>(null);
   const restoreScrollToBottomTimersRef = useRef<Set<number>>(new Set());
@@ -271,6 +337,31 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     terminalRef.current?.scrollToBottom();
   }, []);
 
+  // End the window without a final snap — used when the user scrolls up to read
+  // back, so we release control instead of yanking them to the bottom once more.
+  const cancelRestoreScrollToBottom = useCallback(() => {
+    restoreScrollToBottomPendingRef.current = false;
+    clearRestoreScrollToBottomTimers();
+  }, [clearRestoreScrollToBottomTimers]);
+
+  const finishRestoreScrollToBottom = useCallback(() => {
+    scrollRestoredTerminalToBottom();
+    cancelRestoreScrollToBottom();
+  }, [cancelRestoreScrollToBottom, scrollRestoredTerminalToBottom]);
+
+  // Close the snap-to-bottom window once restore writes go idle. Re-armed on every
+  // restore write, so a backlog that streams in over more than RESTORE_SCROLL_IDLE_MS
+  // keeps us pinned to the bottom until the writes actually stop.
+  const armRestoreScrollDeadline = useCallback(() => {
+    if (restoreScrollToBottomDoneTimerRef.current !== null) {
+      window.clearTimeout(restoreScrollToBottomDoneTimerRef.current);
+    }
+    restoreScrollToBottomDoneTimerRef.current = window.setTimeout(() => {
+      restoreScrollToBottomDoneTimerRef.current = null;
+      finishRestoreScrollToBottom();
+    }, RESTORE_SCROLL_IDLE_MS);
+  }, [finishRestoreScrollToBottom]);
+
   const scheduleRestoreScrollToBottom = useCallback(() => {
     if (!restoreScrollToBottomPendingRef.current) {
       return;
@@ -286,34 +377,22 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       window.clearTimeout(timer);
     }
     restoreScrollToBottomTimersRef.current.clear();
-    for (const delay of [80, 250]) {
+    for (const delay of RESTORE_SCROLL_CATCHUP_DELAYS_MS) {
       const timer = window.setTimeout(() => {
         restoreScrollToBottomTimersRef.current.delete(timer);
         scrollRestoredTerminalToBottom();
       }, delay);
       restoreScrollToBottomTimersRef.current.add(timer);
     }
-  }, [scrollRestoredTerminalToBottom]);
-
-  const finishRestoreScrollToBottom = useCallback(() => {
-    scrollRestoredTerminalToBottom();
-    restoreScrollToBottomPendingRef.current = false;
-    clearRestoreScrollToBottomTimers();
-  }, [clearRestoreScrollToBottomTimers, scrollRestoredTerminalToBottom]);
+    armRestoreScrollDeadline();
+  }, [armRestoreScrollDeadline, scrollRestoredTerminalToBottom]);
 
   const startRestoreScrollToBottom = useCallback(() => {
     if (!restoreScrollToBottomPendingRef.current) {
       return;
     }
     scheduleRestoreScrollToBottom();
-    if (restoreScrollToBottomDoneTimerRef.current !== null) {
-      window.clearTimeout(restoreScrollToBottomDoneTimerRef.current);
-    }
-    restoreScrollToBottomDoneTimerRef.current = window.setTimeout(() => {
-      restoreScrollToBottomDoneTimerRef.current = null;
-      finishRestoreScrollToBottom();
-    }, 750);
-  }, [finishRestoreScrollToBottom, scheduleRestoreScrollToBottom]);
+  }, [scheduleRestoreScrollToBottom]);
 
   const writeTerminalData = useCallback((data: string | Uint8Array) => {
     const terminal = terminalRef.current;
@@ -402,7 +481,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
   useEffect(() => {
     clearRestoreScrollToBottomTimers();
-    restoreScrollToBottomPendingRef.current = Boolean(pane.recovered);
+    restoreScrollToBottomPendingRef.current = Boolean(initialRecoveredRef.current);
 
     const mount = mountRef.current;
     const host = hostRef.current;
@@ -757,8 +836,19 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       };
       hostEl.addEventListener("paste", handlePaste, true);
 
+      // While a recovered pane is still snapping to the bottom, an upward wheel
+      // gesture means the user wants to read back — hand scroll control to them by
+      // ending the restore window instead of yanking the viewport down again.
+      const handleRestoreScrollWheel = (event: WheelEvent) => {
+        if (restoreScrollToBottomPendingRef.current && event.deltaY < 0) {
+          cancelRestoreScrollToBottom();
+        }
+      };
+      hostEl.addEventListener("wheel", handleRestoreScrollWheel, { passive: true });
+
       return () => {
         hostEl.removeEventListener("paste", handlePaste, true);
+        hostEl.removeEventListener("wheel", handleRestoreScrollWheel);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
         hostEl.removeEventListener("mouseup", handleSelectionMouseUp, true);
         inputDisposable.dispose();
@@ -801,7 +891,13 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       restoreScrollToBottomPendingRef.current = false;
       clearRestoreScrollToBottomTimers();
     };
-  }, [pane.id, pane.recovered, resolveTerminalReady, clearRestoreScrollToBottomTimers, scheduleRestoreScrollToBottom]);
+  }, [
+    pane.id,
+    resolveTerminalReady,
+    clearRestoreScrollToBottomTimers,
+    scheduleRestoreScrollToBottom,
+    cancelRestoreScrollToBottom,
+  ]);
 
   // Replay durable scrollback before releasing the backend's pre-attach backlog.
   // A recovered pane starts a fresh PTY immediately, but its output stays buffered
