@@ -191,6 +191,7 @@ impl CodexAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
+                skip_scrollback_restore: false,
             },
         );
 
@@ -250,6 +251,7 @@ impl CodexAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
+                skip_scrollback_restore: resumed,
             },
         )?;
 
@@ -2166,6 +2168,7 @@ trusted_hash = "sha256:trusted"
                     bytes: bytes.clone(),
                 }))),
                 backlog: Default::default(),
+                skip_scrollback_restore: false,
             })
             .unwrap();
         bytes

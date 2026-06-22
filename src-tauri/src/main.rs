@@ -321,10 +321,15 @@ fn pane_attach(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(),
 /// Returns the durable terminal output captured before this pane's current
 /// frontend attach. The frontend replays it into xterm before `pane_attach`, so
 /// recovered panes show their prior scrollback followed by fresh process output.
+/// Recovered agent resumes opt out because their pre-attach backlog is a fresh TUI
+/// repaint, and replaying old raw TUI bytes first can leave the active prompt with
+/// stale cell attributes.
 #[tauri::command]
 fn pane_scrollback(state: tauri::State<'_, AppState>, pane_id: String) -> Result<String, String> {
-    if state.pane_writer(&pane_id)?.is_none() {
-        return Err(format!("pane {pane_id} was not found"));
+    match state.pane_skips_scrollback_restore(&pane_id)? {
+        Some(true) => return Ok(String::new()),
+        Some(false) => {}
+        None => return Err(format!("pane {pane_id} was not found")),
     }
     scrollback::pane_scrollback_base64(&state.config().workspace_root, &pane_id)
 }

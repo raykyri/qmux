@@ -214,6 +214,7 @@ pub struct PaneRuntime {
     pub master: SharedMaster,
     pub writer: SharedWriter,
     pub backlog: SharedBacklog,
+    pub skip_scrollback_restore: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -667,6 +668,18 @@ impl AppState {
         }
         self.persist();
         Ok(())
+    }
+
+    pub fn pane_skips_scrollback_restore(&self, pane_id: &str) -> Result<Option<bool>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .panes
+            .get(pane_id)
+            .map(|runtime| runtime.skip_scrollback_restore))
     }
 
     pub fn remove_pane(&self, pane_id: &str) -> Result<(), String> {
@@ -1916,6 +1929,7 @@ mod tests {
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(Box::new(io::sink()))),
             backlog: Default::default(),
+            skip_scrollback_restore: false,
         }
     }
 
