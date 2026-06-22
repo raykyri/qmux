@@ -3351,7 +3351,7 @@ export default function App() {
       ref={appRef}
       className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}${
         activeTranscriptExpanded ? " has-expanded-transcript" : ""
-      }`}
+      }${settings.reduceMotion ? " reduce-motion" : ""}`}
       style={appStyle}
     >
       <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
@@ -3885,6 +3885,19 @@ export default function App() {
                 }}
               />
             </div>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Reduce motion</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.reduceMotion}
+                onChange={(event) => {
+                  const reduceMotion = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, reduceMotion }));
+                }}
+              />
+            </label>
           </div>
         </div>
       ) : null}
