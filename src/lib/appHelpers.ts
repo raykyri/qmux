@@ -213,12 +213,16 @@ export function agentStatusLabel(status: AgentInfo["status"], reviewStatus?: Wor
     case "awaitingPermission":
       return "Approval needed";
     case "done":
-      return reviewStatus?.hasChanges ? `Review (${reviewStatus.changedFiles})` : "Done";
+      return reviewStatus?.hasChanges ? changedFilesLabel(reviewStatus.changedFiles) : "Done";
     case "idle":
       return null;
     case "failed":
       return "Failed";
   }
+}
+
+function changedFilesLabel(count: number) {
+  return `${count} file${count === 1 ? "" : "s"} changed`;
 }
 
 // Maps an agent status onto the status-dot tones used by the pane detail popover.
