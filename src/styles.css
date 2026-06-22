@@ -1171,13 +1171,13 @@ button:disabled {
 }
 
 .command-launcher-options {
-  margin-left: 4px;
+  margin-left: 0;
 }
 
 .command-launcher-overlay-group {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
+  gap: 6px;
   min-width: 0;
   /* Let clicks in the gaps between the worktree chip and the option chips fall
      through to focus the composer; each child re-enables pointer events. */
@@ -1407,21 +1407,20 @@ button:disabled {
 }
 
 /* Every launcher select except the model (adapter) selector — sandbox mode,
-   permission/approval level, etc. — reads as a plain link: a label and a light
-   chevron, with no pill, padding, or hover chrome. Its text steps down to match
-   the adjacent checkbox labels so the two line up in the row. */
+   permission/approval level, etc. — reads as an option chip matching the adjacent
+   checkbox chips. Its text steps down to match those labels in the row. */
 .command-launcher-options .launcher-select-trigger {
   min-height: 0;
-  padding: 0;
+  padding: 5px 7px;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--radius-lg);
   background: transparent;
   font-size: 12.5px;
 }
 
 .command-launcher-options .launcher-select-trigger:hover {
   border-color: transparent;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .launcher-select-popover {
