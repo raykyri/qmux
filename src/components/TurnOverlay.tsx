@@ -51,7 +51,7 @@ interface TurnOverlayProps {
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
   // Sessions offered by the empty-state "No transcript loaded" picker (same set as
-  // the composer menu's Past sessions), the currently-loaded transcript path, and
+  // the header session menu), the currently-loaded transcript path, and
   // the handler that loads a chosen one (or null to detach).
   transcriptOptions?: TranscriptOption[];
   transcriptPath?: string | null;
