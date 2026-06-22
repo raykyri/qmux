@@ -20,8 +20,9 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import type { Turn, TurnBlock } from "../types";
+import type { Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
+import TranscriptPickerLink from "./TranscriptPickerLink";
 
 // Link actions for rendered markdown, supplied by App through TurnOverlay. Markdown is
 // rendered deep in the timeline tree, so a context avoids threading these everywhere.
@@ -49,6 +50,12 @@ interface TurnOverlayProps {
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
+  // Sessions offered by the empty-state "No transcript loaded" picker (same set as
+  // the composer menu's Past sessions), the currently-loaded transcript path, and
+  // the handler that loads a chosen one (or null to detach).
+  transcriptOptions?: TranscriptOption[];
+  transcriptPath?: string | null;
+  onSelectTranscript?: (path: string | null) => void;
   // When true, the queue/composer area is reserved below the transcript instead of
   // floating over it, with a draggable divider between the two regions.
   queueSplit?: boolean;
@@ -200,6 +207,9 @@ export default function TurnOverlay({
   input,
   agentId,
   notice,
+  transcriptOptions = [],
+  transcriptPath = null,
+  onSelectTranscript,
   queueSplit = false,
   queueSplitHeight,
   onQueueSplitHeightChange,
@@ -458,7 +468,15 @@ export default function TurnOverlay({
         {timelineItems.length === 0 ? (
           <div className="empty-state turn-empty-state">
             <span>No turns yet</span>
-            {notice ? <span className="turn-empty-notice">{notice}</span> : null}
+            {notice === "Transcript unavailable" && onSelectTranscript ? (
+              <TranscriptPickerLink
+                options={transcriptOptions}
+                activePath={transcriptPath}
+                onSelect={onSelectTranscript}
+              />
+            ) : notice ? (
+              <span className="turn-empty-notice">{notice}</span>
+            ) : null}
           </div>
         ) : (
           timelineItems.map((item, index) => {

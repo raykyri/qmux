@@ -3435,6 +3435,13 @@ export default function App() {
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
+            transcriptOptions={activeAgent ? activeTranscriptOptions : []}
+            transcriptPath={activeAgent?.transcriptPath ?? null}
+            onSelectTranscript={
+              activeAgent
+                ? (path) => void handleSelectTranscript(activeAgent.id, path)
+                : undefined
+            }
             queueSplit={activeQueueSplit}
             queueSplitHeight={activeQueueSplitHeight}
             onQueueSplitHeightChange={setActiveQueueSplitHeight}
