@@ -2432,7 +2432,7 @@ button:disabled {
   color: var(--accent-color);
 }
 
-/* "Paused" status sits at the far left of the composer's actions row (the
+/* "Paused" status sits at the far left of the composer's submit row (the
    composer-menu's margin-left:auto pushes the controls to the right of it). */
 .composer-paused-label {
   align-self: center;
@@ -2470,22 +2470,6 @@ button:disabled {
 
 .native-input textarea::placeholder {
   color: var(--placeholder-color);
-}
-
-.native-input-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: stretch;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-/* The dots menu moved down into the submit row, so this row holds only the mic
-   and the paused label — both optional. When neither is present, collapse it so
-   the composer's column gap doesn't leave a blank strip above the buttons. */
-.native-input-actions:empty {
-  display: none;
 }
 
 /* Voice dictation mic toggle, shared by the composer and the launcher (see
@@ -2551,9 +2535,9 @@ button:disabled {
   }
 }
 
-/* In the composer's action row the mic sits flush left (the ⋮ menu's
-   margin-left:auto pushes everything else right). Center it against the taller
-   submit buttons. */
+/* In the composer's submit row the mic sits flush left (the ⋮ menu's
+   margin-left:auto pushes everything else right). Center it against the submit
+   buttons. */
 .native-input-mic {
   align-self: center;
 }
