@@ -463,6 +463,10 @@ button:disabled {
   white-space: nowrap;
 }
 
+.pane-tab-title.is-user-set {
+  font-weight: 700;
+}
+
 .pane-tab-content {
   display: flex;
   min-width: 0;

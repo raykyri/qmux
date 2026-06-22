@@ -395,6 +395,14 @@ export default function App() {
     return defaultTitle !== null && pane.title === defaultTitle;
   }
 
+  function paneHasUserSetTitle(pane: PaneInfo, agent: AgentInfo | undefined): boolean {
+    if (manuallyTitledPaneIds.has(pane.id)) {
+      return true;
+    }
+    const defaultTitle = defaultPaneTitle(pane, agent, config);
+    return defaultTitle !== null && pane.title !== defaultTitle;
+  }
+
   function displayPaneTitle(pane: PaneInfo, agent: AgentInfo | undefined): string {
     const terminalTitle = terminalTitleByPane[pane.id];
     return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
@@ -1460,22 +1468,56 @@ export default function App() {
     }
     const title = renameValue.trim();
     const previous = panes.find((pane) => pane.id === paneId);
+    const paneAgent = previous ? agents.find((agent) => agent.paneId === previous.id) : undefined;
+    const clearingUserTitle = title.length === 0;
+    const nextTitle = clearingUserTitle
+      ? (previous ? (defaultPaneTitle(previous, paneAgent, config) ?? previous.title) : "")
+      : title;
+    const previousWasManuallyTitled = manuallyTitledPaneIds.has(paneId);
     setRenamePaneId(null);
-    if (!title || previous?.title === title) {
+    if (!previous) {
       return;
     }
+    if (previous.title === nextTitle) {
+      if (clearingUserTitle && previousWasManuallyTitled) {
+        setManuallyTitledPaneIds((current) => {
+          const next = new Set(current);
+          next.delete(paneId);
+          return next;
+        });
+      }
+      return;
+    }
+
+    setManuallyTitledPaneIds((current) => {
+      const next = new Set(current);
+      if (clearingUserTitle) {
+        next.delete(paneId);
+      } else {
+        next.add(paneId);
+      }
+      return next;
+    });
     // Optimistically rename, then persist; revert if the backend rejects it.
     setPanesPreservingRecoveredDismissals((current) =>
-      current.map((pane) => (pane.id === paneId ? { ...pane, title } : pane)),
+      current.map((pane) => (pane.id === paneId ? { ...pane, title: nextTitle } : pane)),
     );
     try {
-      const updated = await renamePane(paneId, title);
-      setManuallyTitledPaneIds((current) => new Set(current).add(paneId));
+      const updated = await renamePane(paneId, nextTitle);
       setPanesPreservingRecoveredDismissals((current) =>
         current.map((pane) => (pane.id === paneId ? { ...pane, title: updated.title } : pane)),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setManuallyTitledPaneIds((current) => {
+        const next = new Set(current);
+        if (previousWasManuallyTitled) {
+          next.add(paneId);
+        } else {
+          next.delete(paneId);
+        }
+        return next;
+      });
       setPanesPreservingRecoveredDismissals((current) =>
         current.map((pane) =>
           pane.id === paneId ? { ...pane, title: previous?.title ?? pane.title } : pane,
@@ -2304,6 +2346,7 @@ export default function App() {
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
             const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
+            const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
             const paneAgentWorktreeStatus = paneAgent
               ? worktreeStatusByAgent[paneAgent.id]
               : undefined;
@@ -2392,7 +2435,11 @@ export default function App() {
                     aria-hidden="true"
                   />
                   <span className="pane-tab-content">
-                    <span className="pane-tab-title">{paneDisplayTitle}</span>
+                    <span
+                      className={`pane-tab-title${paneTitleIsUserSet ? " is-user-set" : ""}`}
+                    >
+                      {paneDisplayTitle}
+                    </span>
                     {paneDir ? (
                       <span className="pane-tab-path" title={paneDir}>
                         {formatPaneDir(paneDir)}
