@@ -42,7 +42,7 @@ use turn_queue::{
 };
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
-    agent_worktree_status, create_group, remove_agent_worktree,
+    agent_worktree_status, clear_agent_working_status, create_group, remove_agent_worktree,
 };
 
 /// Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) out of
@@ -482,6 +482,14 @@ fn agent_acknowledge(
 }
 
 #[tauri::command]
+fn agent_clear_working_status(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<AgentInfo, String> {
+    clear_agent_working_status(&state, &agent_id)
+}
+
+#[tauri::command]
 fn worktree_status(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -629,6 +637,7 @@ fn main() {
             agent_set_draft,
             agent_get_draft,
             agent_acknowledge,
+            agent_clear_working_status,
             worktree_status,
             worktree_remove,
             app_confirm_exit,

@@ -222,6 +222,10 @@ export function acknowledgeAgent(agentId: string, includeFailed = false) {
   return invoke<AgentInfo>("agent_acknowledge", { agentId, includeFailed });
 }
 
+export function clearAgentWorkingStatus(agentId: string) {
+  return invoke<AgentInfo>("agent_clear_working_status", { agentId });
+}
+
 /**
  * Tells the backend the listener for this pane is live, flushing any PTY output
  * buffered before the webview subscribed (e.g. the cold-start prompt). Must be

@@ -473,6 +473,48 @@ button:disabled {
   background: #e08a5f;
 }
 
+.pane-tab-dot.is-clearable-placeholder {
+  visibility: hidden;
+}
+
+.pane-tab-clear-status {
+  position: absolute;
+  top: 50%;
+  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  z-index: 2;
+  display: flex;
+  width: 10px;
+  height: 10px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.pane-tab-clear-status .pane-tab-dot {
+  grid-column: auto;
+}
+
+.pane-tab-clear-status:hover .pane-tab-dot {
+  animation: none;
+  opacity: 1;
+  transform: scale(1);
+}
+
+.pane-tab-clear-status:focus-visible {
+  outline: 1px solid #566165;
+  outline-offset: 2px;
+}
+
+.pane-tab-clear-status:focus-visible .pane-tab-dot {
+  animation: none;
+  opacity: 1;
+  transform: scale(1);
+}
+
 @keyframes status-dot-pulse {
   0%,
   100% {
@@ -678,7 +720,7 @@ button:disabled {
 .pane-tab-close {
   position: absolute;
   top: 50%;
-  left: 9px;
+  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
   z-index: 1;
   display: flex;
   width: 7px;
@@ -718,10 +760,20 @@ button:disabled {
   pointer-events: auto;
 }
 
+.pane-tab-row.has-clearable-status:hover .pane-tab-close {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* Hide the status dot while hovering so the × takes its place. Use visibility
    (not opacity) so it wins over the status-dot-pulse opacity animation. */
 .pane-tab-row:hover .pane-tab-dot {
   visibility: hidden;
+}
+
+.pane-tab-row.has-clearable-status:hover .pane-tab-clear-status .pane-tab-dot {
+  visibility: visible;
 }
 
 .sidebar-actions {
