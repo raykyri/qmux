@@ -27,7 +27,7 @@ use pty::{
     spawn_shell_pane, write_pane,
 };
 use sleep::SleepGuard;
-use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn};
+use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn, RecentSessionInfo};
 use tauri::Manager;
 use transcript::{
     TranscriptOption, Turn, list_agent_transcripts as list_agent_transcript_options,
@@ -212,6 +212,23 @@ fn list_groups(state: tauri::State<'_, AppState>) -> Result<Vec<GroupInfo>, Stri
 #[tauri::command]
 fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
     state.list_agents()
+}
+
+#[tauri::command]
+fn list_recent_sessions(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<RecentSessionInfo>, String> {
+    state.list_recent_sessions(limit.unwrap_or(12))
+}
+
+#[tauri::command]
+fn recent_session_resume(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    initial_size: Option<InitialPaneSize>,
+) -> Result<PaneInfo, String> {
+    recovery::resume_recent_session(&state, &session_id, initial_size)
 }
 
 #[tauri::command]
@@ -623,6 +640,8 @@ fn main() {
             list_panes,
             list_groups,
             list_agents,
+            list_recent_sessions,
+            recent_session_resume,
             list_turns,
             list_agent_turn_queue,
             list_agent_transcripts,

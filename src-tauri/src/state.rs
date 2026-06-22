@@ -2,7 +2,7 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
-use crate::transcript::Turn;
+use crate::transcript::{Turn, read_transcript_meta};
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,12 @@ const MAX_TURNS_PER_AGENT: usize = 200;
 /// on every persist), not an expected limit — enqueue past it returns an error the
 /// UI surfaces rather than silently swallowing the turn.
 const MAX_QUEUED_TURNS_PER_AGENT: usize = 500;
+
+/// Upper bound on durable recent-session entries. This keeps the home list fast and
+/// prevents the persisted state from growing forever across months of work.
+const MAX_RECENT_SESSIONS: usize = 80;
+
+const RECENT_SESSION_PREVIEW_MAX_CHARS: usize = 90;
 
 /// Holds PTY output produced before the webview's listener is attached.
 ///
@@ -92,6 +98,7 @@ struct Model {
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
     agent_send_tracking: HashMap<String, AgentSendTracking>,
     agent_drafts: HashMap<String, String>,
+    recent_sessions: HashMap<String, RecentSessionInfo>,
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
     /// that turn finishes the agent enters paused mode. Transient (not persisted).
     agent_pending_pause: HashSet<String>,
@@ -134,6 +141,35 @@ pub struct ClosedPaneSnapshot {
     pub agent: Option<ClosedPaneAgentSnapshot>,
     pub index: usize,
     pub scrollback: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentSessionInfo {
+    pub id: String,
+    pub adapter: String,
+    pub group_id: Option<String>,
+    pub session_id: Option<String>,
+    pub transcript_path: Option<String>,
+    pub worktree_dir: String,
+    pub branch: Option<String>,
+    pub model: Option<String>,
+    pub parent_id: Option<String>,
+    pub fork_point: Option<String>,
+    pub root_session_id: Option<String>,
+    pub preview: Option<String>,
+    #[serde(default)]
+    pub line_count: usize,
+    pub last_active_at: u128,
+    pub created_at: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<AgentStatus>,
+    #[serde(default)]
+    pub missing: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -435,6 +471,17 @@ impl AppState {
                     model.agent_drafts.insert(agent_id, draft);
                 }
             }
+            for session in persisted.recent_sessions {
+                if !session.id.trim().is_empty() {
+                    model.recent_sessions.insert(session.id.clone(), session);
+                }
+            }
+            let now = now_millis();
+            let agents = model.agents.values().cloned().collect::<Vec<_>>();
+            for agent in &agents {
+                upsert_recent_session_for_agent_locked(&mut model, agent, now, false);
+            }
+            prune_recent_sessions_locked(&mut model);
             // Seed nesting depth from the persisted panes. Panes are re-inserted by
             // the respawn pass that follows; depths for panes that don't come back
             // (e.g. already-exited panes) are pruned by the post-respawn normalize.
@@ -481,6 +528,7 @@ impl AppState {
                     .iter()
                     .map(|(agent_id, queue)| (agent_id.clone(), queue.iter().cloned().collect()))
                     .collect(),
+                recent_sessions: recent_sessions_sorted(&model),
                 drafts: model.agent_drafts.clone(),
             }
         };
@@ -613,6 +661,45 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.agents.values().cloned().collect())
+    }
+
+    pub fn list_recent_sessions(&self, limit: usize) -> Result<Vec<RecentSessionInfo>, String> {
+        let mut sessions = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            recent_sessions_sorted(&model)
+                .into_iter()
+                .map(|session| enrich_recent_session_locked(&model, session))
+                .take(limit.min(MAX_RECENT_SESSIONS))
+                .collect::<Vec<_>>()
+        };
+
+        for session in &mut sessions {
+            session.missing = recent_session_missing(session);
+        }
+        Ok(sessions)
+    }
+
+    pub fn recent_session(&self, session_id: &str) -> Result<Option<RecentSessionInfo>, String> {
+        let session = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model
+                .recent_sessions
+                .get(session_id)
+                .cloned()
+                .map(|session| enrich_recent_session_locked(&model, session))
+        };
+        Ok(session.map(|mut session| {
+            session.missing = recent_session_missing(&session);
+            session
+        }))
     }
 
     /// Removes and returns the agent-session resume queued for `pane_id` at restore, if
@@ -948,6 +1035,10 @@ impl AppState {
                 .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
                 .map(|agent| agent.id.clone())
             {
+                if let Some(agent) = model.agents.get(&agent_id).cloned() {
+                    upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true);
+                }
+                clear_recent_session_binding_locked(&mut model, Some(&agent_id), Some(pane_id));
                 model.agent_typing.remove(&agent_id);
                 model.agent_pending_pause.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
@@ -1183,6 +1274,9 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            let now = now_millis();
+            upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
+            prune_recent_sessions_locked(&mut model);
             model.agents.insert(agent.id.clone(), agent);
         }
         self.persist();
@@ -1209,6 +1303,9 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            let now = now_millis();
+            upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
+            prune_recent_sessions_locked(&mut model);
             model.agents.insert(agent.id.clone(), agent);
         }
         self.persist();
@@ -1235,7 +1332,11 @@ impl AppState {
             match model.agents.get_mut(agent_id) {
                 Some(agent) => {
                     f(agent);
-                    Some(agent.clone())
+                    let updated = agent.clone();
+                    let now = now_millis();
+                    upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
+                    prune_recent_sessions_locked(&mut model);
+                    Some(updated)
                 }
                 None => None,
             }
@@ -1258,31 +1359,53 @@ impl AppState {
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        let turns = model.turns.entry(turn.agent_id.clone()).or_default();
-        turns.push(turn);
-        if turns.len() > MAX_TURNS_PER_AGENT {
-            let overflow = turns.len() - MAX_TURNS_PER_AGENT;
-            turns.drain(..overflow);
+        let should_persist_recent = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let agent_id = turn.agent_id.clone();
+            let is_user_turn = turn.role == "user";
+            let turns = model.turns.entry(agent_id.clone()).or_default();
+            turns.push(turn);
+            if turns.len() > MAX_TURNS_PER_AGENT {
+                let overflow = turns.len() - MAX_TURNS_PER_AGENT;
+                turns.drain(..overflow);
+            }
+            if is_user_turn {
+                model.agents.get(&agent_id).cloned().is_some_and(|agent| {
+                    upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
+                })
+            } else {
+                false
+            }
+        };
+        if should_persist_recent {
+            self.persist();
         }
         Ok(())
     }
 
     pub fn replace_turns(&self, agent_id: &str, mut turns: Vec<Turn>) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        if turns.len() > MAX_TURNS_PER_AGENT {
-            let overflow = turns.len() - MAX_TURNS_PER_AGENT;
-            turns.drain(..overflow);
+        let should_persist_recent = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if turns.len() > MAX_TURNS_PER_AGENT {
+                let overflow = turns.len() - MAX_TURNS_PER_AGENT;
+                turns.drain(..overflow);
+            }
+            model.turns.insert(agent_id.to_string(), turns);
+            model.agents.get(agent_id).cloned().is_some_and(|agent| {
+                upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
+            })
+        };
+        if should_persist_recent {
+            self.persist();
         }
-        model.turns.insert(agent_id.to_string(), turns);
         Ok(())
     }
 
@@ -1951,6 +2074,266 @@ fn shell_agent_resume(agent: &AgentInfo) -> Option<ShellAgentResume> {
     })
 }
 
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+pub(crate) fn recent_session_key(
+    adapter: &str,
+    session_id: Option<&str>,
+    transcript_path: Option<&str>,
+) -> Option<String> {
+    if let Some(session_id) = session_id.map(str::trim).filter(|id| !id.is_empty()) {
+        return Some(format!("{adapter}:session:{session_id}"));
+    }
+    transcript_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| format!("{adapter}:transcript:{path}"))
+}
+
+fn agent_recent_session_key(agent: &AgentInfo) -> Option<String> {
+    recent_session_key(
+        &agent.adapter,
+        agent.session_id.as_deref(),
+        agent.transcript_path.as_deref(),
+    )
+}
+
+fn upsert_recent_session_for_agent_locked(
+    model: &mut Model,
+    agent: &AgentInfo,
+    now: u128,
+    touch: bool,
+) -> bool {
+    let Some(key) = agent_recent_session_key(agent) else {
+        return false;
+    };
+
+    if agent
+        .session_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+        && let Some(transcript_path) = agent.transcript_path.as_deref()
+        && let Some(transcript_key) =
+            recent_session_key(&agent.adapter, None, Some(transcript_path))
+        && transcript_key != key
+    {
+        model.recent_sessions.remove(&transcript_key);
+    }
+
+    let existing = model.recent_sessions.get(&key).cloned();
+    let turns = model.turns.get(&agent.id);
+    let turn_preview = turns.and_then(|turns| first_user_turn_preview(turns));
+    let mut line_count = turns.map(Vec::len).unwrap_or(0);
+    let mut preview = turn_preview.or_else(|| {
+        existing
+            .as_ref()
+            .and_then(|session| session.preview.clone())
+    });
+
+    if (preview.is_none() || line_count == 0)
+        && let Some(transcript_path) = agent.transcript_path.as_deref()
+    {
+        let (disk_preview, disk_line_count) =
+            read_transcript_meta(std::path::Path::new(transcript_path));
+        if preview.is_none() {
+            preview = disk_preview;
+        }
+        if line_count == 0 {
+            line_count = disk_line_count;
+        }
+    }
+
+    if line_count == 0 {
+        line_count = existing
+            .as_ref()
+            .map(|session| session.line_count)
+            .unwrap_or(0);
+    }
+
+    let created_at = existing
+        .as_ref()
+        .map(|session| session.created_at)
+        .unwrap_or(agent.created_at);
+    let last_active_at = if touch {
+        now
+    } else {
+        existing
+            .as_ref()
+            .map(|session| session.last_active_at)
+            .unwrap_or(agent.created_at)
+    };
+
+    let next = RecentSessionInfo {
+        id: key.clone(),
+        adapter: agent.adapter.clone(),
+        group_id: Some(agent.group_id.clone()),
+        session_id: agent.session_id.clone(),
+        transcript_path: agent.transcript_path.clone(),
+        worktree_dir: agent.worktree_dir.clone(),
+        branch: agent.branch.clone(),
+        model: agent.model.clone(),
+        parent_id: agent.parent_id.clone(),
+        fork_point: agent.fork_point.clone(),
+        root_session_id: agent.root_session_id.clone(),
+        preview,
+        line_count,
+        last_active_at,
+        created_at,
+        pane_id: agent.pane_id.clone(),
+        agent_id: Some(agent.id.clone()),
+        status: Some(agent.status),
+        missing: false,
+    };
+
+    if existing.as_ref() == Some(&next) {
+        return false;
+    }
+    model.recent_sessions.insert(key, next);
+    true
+}
+
+fn clear_recent_session_binding_locked(
+    model: &mut Model,
+    agent_id: Option<&str>,
+    pane_id: Option<&str>,
+) {
+    for session in model.recent_sessions.values_mut() {
+        if agent_id.is_some_and(|agent_id| session.agent_id.as_deref() == Some(agent_id))
+            || pane_id.is_some_and(|pane_id| session.pane_id.as_deref() == Some(pane_id))
+        {
+            session.agent_id = None;
+            session.pane_id = None;
+            session.status = None;
+        }
+    }
+}
+
+fn enrich_recent_session_locked(
+    model: &Model,
+    mut session: RecentSessionInfo,
+) -> RecentSessionInfo {
+    session.agent_id = None;
+    session.pane_id = None;
+    session.status = None;
+
+    if let Some(agent) = model
+        .agents
+        .values()
+        .find(|agent| recent_session_matches_agent(&session, agent) && agent.pane_id.is_some())
+        .or_else(|| {
+            model
+                .agents
+                .values()
+                .find(|agent| recent_session_matches_agent(&session, agent))
+        })
+    {
+        session.agent_id = Some(agent.id.clone());
+        session.pane_id = agent.pane_id.clone();
+        session.status = Some(agent.status);
+        session.worktree_dir = agent.worktree_dir.clone();
+        session.branch = agent.branch.clone();
+        session.model = agent.model.clone();
+    }
+
+    session
+}
+
+fn recent_session_matches_agent(session: &RecentSessionInfo, agent: &AgentInfo) -> bool {
+    if session.adapter != agent.adapter {
+        return false;
+    }
+    match (session.session_id.as_deref(), agent.session_id.as_deref()) {
+        (Some(left), Some(right)) if !left.trim().is_empty() && left == right => return true,
+        _ => {}
+    }
+    match (
+        session.transcript_path.as_deref(),
+        agent.transcript_path.as_deref(),
+    ) {
+        (Some(left), Some(right)) if !left.trim().is_empty() && left == right => true,
+        _ => false,
+    }
+}
+
+fn recent_session_missing(session: &RecentSessionInfo) -> bool {
+    if session.pane_id.is_some() {
+        return false;
+    }
+    if !std::path::Path::new(&session.worktree_dir).is_dir() {
+        return true;
+    }
+    session
+        .transcript_path
+        .as_deref()
+        .is_some_and(|path| !std::path::Path::new(path).is_file())
+}
+
+fn recent_sessions_sorted(model: &Model) -> Vec<RecentSessionInfo> {
+    let mut sessions = model.recent_sessions.values().cloned().collect::<Vec<_>>();
+    sessions.sort_by(|left, right| {
+        right
+            .last_active_at
+            .cmp(&left.last_active_at)
+            .then(right.created_at.cmp(&left.created_at))
+            .then(left.id.cmp(&right.id))
+    });
+    sessions
+}
+
+fn prune_recent_sessions_locked(model: &mut Model) {
+    let keep = recent_sessions_sorted(model)
+        .into_iter()
+        .take(MAX_RECENT_SESSIONS)
+        .map(|session| session.id)
+        .collect::<HashSet<_>>();
+    model
+        .recent_sessions
+        .retain(|session_id, _session| keep.contains(session_id));
+}
+
+fn first_user_turn_preview(turns: &[Turn]) -> Option<String> {
+    turns
+        .iter()
+        .filter(|turn| turn.role == "user")
+        .find_map(|turn| {
+            turn.blocks.iter().find_map(|block| match block {
+                crate::transcript::TurnBlock::Text { text } => preview_text(text),
+                _ => None,
+            })
+        })
+}
+
+fn preview_text(raw: &str) -> Option<String> {
+    let normalized = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let chars = normalized.chars().collect::<Vec<_>>();
+    if chars.len() <= RECENT_SESSION_PREVIEW_MAX_CHARS {
+        return Some(normalized);
+    }
+    Some(
+        chars
+            .into_iter()
+            .take(RECENT_SESSION_PREVIEW_MAX_CHARS.saturating_sub(3))
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+            + "...",
+    )
+}
+
 /// The effective sidebar order: every live pane id, `pane_order` first, then any
 /// panes missing from it (sorted by id for determinism). Shared by `ordered_panes`
 /// and depth normalization so they always agree on ordering.
@@ -2192,6 +2575,101 @@ mod tests {
             backlog: Default::default(),
             skip_scrollback_restore: false,
         }
+    }
+
+    fn sample_user_turn(agent_id: &str, text: &str) -> Turn {
+        Turn {
+            id: format!("{agent_id}-0"),
+            agent_id: agent_id.to_string(),
+            session_id: Some("session-abc".to_string()),
+            role: "user".to_string(),
+            blocks: vec![crate::transcript::TurnBlock::Text {
+                text: text.to_string(),
+            }],
+            source_index: 0,
+        }
+    }
+
+    #[test]
+    fn recent_session_round_trips_through_persistence() {
+        let workspace = temp_workspace();
+        let transcript_path = workspace.join("session-abc.jsonl");
+        std::fs::write(
+            &transcript_path,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Plan recent session history"}]}}"#,
+        )
+        .unwrap();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            state.restore_session();
+            let mut agent = sample_agent("agent-1");
+            agent.worktree_dir = workspace.display().to_string();
+            agent.transcript_path = Some(transcript_path.display().to_string());
+            state.insert_agent(agent).unwrap();
+            state
+                .replace_turns(
+                    "agent-1",
+                    vec![sample_user_turn("agent-1", "Plan recent session history")],
+                )
+                .unwrap();
+
+            let sessions = state.list_recent_sessions(10).unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].session_id.as_deref(), Some("session-abc"));
+            assert_eq!(
+                sessions[0].preview.as_deref(),
+                Some("Plan recent session history")
+            );
+        }
+
+        let state = AppState::new(config);
+        state.restore_session();
+        let sessions = state.list_recent_sessions(10).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].preview.as_deref(),
+            Some("Plan recent session history")
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn closing_agent_pane_keeps_recent_session_without_live_binding() {
+        let workspace = temp_workspace();
+        let transcript_path = workspace.join("session-abc.jsonl");
+        std::fs::write(&transcript_path, "{}\n").unwrap();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+
+        let mut agent = sample_agent("agent-1");
+        agent.worktree_dir = workspace.display().to_string();
+        agent.transcript_path = Some(transcript_path.display().to_string());
+        agent.pane_id = Some("pane-1".to_string());
+        state.insert_agent(agent).unwrap();
+        state
+            .replace_turns(
+                "agent-1",
+                vec![sample_user_turn("agent-1", "Keep me in Home")],
+            )
+            .unwrap();
+
+        let mut pane = sample_pane_runtime("pane-1");
+        pane.info.kind = PaneKind::Agent;
+        pane.info.agent_id = Some("agent-1".to_string());
+        pane.info.cwd = workspace.display().to_string();
+        state.insert_pane(pane).unwrap();
+
+        state.remove_pane("pane-1").unwrap();
+        assert!(state.agent("agent-1").unwrap().is_none());
+
+        let sessions = state.list_recent_sessions(10).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].pane_id, None);
+        assert_eq!(sessions[0].agent_id, None);
+        assert_eq!(sessions[0].preview.as_deref(), Some("Keep me in Home"));
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

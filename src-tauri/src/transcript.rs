@@ -619,7 +619,7 @@ pub fn set_agent_transcript(
 /// Reads a transcript's first usable user-message preview and total line count
 /// without holding the file open — best-effort, so an unreadable file yields
 /// `(None, 0)`.
-fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
+pub(crate) fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
     let Ok(raw) = fs::read_to_string(path) else {
         return (None, 0);
     };

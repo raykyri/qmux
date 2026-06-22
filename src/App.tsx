@@ -1208,6 +1208,14 @@ export default function App() {
     }
   }
 
+  async function refreshRecentSessions() {
+    try {
+      setRecentSessions(await listRecentSessions());
+    } catch {
+      // Home history is a convenience surface; failures should not interrupt panes.
+    }
+  }
+
   async function handleSelectTranscript(agentId: string, path: string | null) {
     setError(null);
     try {
@@ -1409,12 +1417,14 @@ export default function App() {
           existingPanes,
           existingAgents,
           existingTurns,
+          existingRecentSessions,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
           listPanes(),
           listAgents(),
           listTurns(),
+          listRecentSessions(),
         ]);
         if (cancelled) {
           return;
@@ -1429,6 +1439,7 @@ export default function App() {
         );
         setAgents(existingAgents);
         setTurns(existingTurns);
+        setRecentSessions(existingRecentSessions);
         // Per-agent fetches are individually guarded so one failed draft/queue read
         // can't reject the whole boot and leave the app stuck on a fatal error with
         // no panes rendered. A failed read just falls back to empty for that agent.
@@ -1483,6 +1494,16 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!config) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshRecentSessions();
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [config, panes, agents, turns.length]);
 
   // Persist any debounced-but-unwritten drafts when the window is hidden or the
   // app unmounts, so a quick close never drops the last second of typing.
@@ -1676,6 +1697,50 @@ export default function App() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function openRecentSession(session: RecentSessionInfo) {
+    setError(null);
+    try {
+      const pane = await resumeRecentSession(session.id, estimateInitialPaneSize(false));
+      const [latestPanes, latestAgents, latestTurns, latestRecentSessions] = await Promise.all([
+        listPanes(),
+        listAgents(),
+        listTurns(),
+        listRecentSessions(),
+      ]);
+      setPanesPreservingRecoveredDismissals(latestPanes);
+      setAgents(latestAgents);
+      setTurns(latestTurns);
+      setRecentSessions(latestRecentSessions);
+      setActivePaneId(pane.id);
+
+      const activeRecentAgent = latestAgents.find(
+        (agent) => agent.paneId === pane.id || agent.id === pane.agentId,
+      );
+      if (activeRecentAgent) {
+        void refreshAgentTurnQueue(activeRecentAgent.id).catch(() => undefined);
+        void getAgentDraft(activeRecentAgent.id)
+          .then((draft) => {
+            const nextDrafts = { ...draftsByAgentRef.current };
+            if (draft) {
+              nextDrafts[activeRecentAgent.id] = draft;
+            } else {
+              delete nextDrafts[activeRecentAgent.id];
+            }
+            draftsByAgentRef.current = nextDrafts;
+            setDraftsByAgentState(nextDrafts);
+          })
+          .catch(() => undefined);
+      }
+
+      requestAnimationFrame(() => {
+        terminalPaneRefs.current.get(pane.id)?.focus();
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      void refreshRecentSessions();
     }
   }
 
@@ -3841,7 +3906,19 @@ export default function App() {
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
             <div className="terminal-empty-state">
-              <div className="home-launcher">{renderLauncher("inline")}</div>
+              <div className="home-layout">
+                <div className="home-left-column">
+                  <div className="home-launcher">{renderLauncher("inline")}</div>
+                  <RecentSessionsPanel
+                    sessions={recentSessions}
+                    config={config}
+                    adapterIconById={LAUNCHER_ADAPTER_ICON_BY_ID}
+                    onOpenSession={openRecentSession}
+                    formatPath={formatPaneDir}
+                  />
+                </div>
+                <div className="home-right-column" aria-hidden="true" />
+              </div>
             </div>
           ) : null}
           {panes.map((pane) => (
