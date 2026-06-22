@@ -121,6 +121,7 @@ interface NativeInputProps {
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
+  onTurnSubmitted: (agentId: string, text: string) => void;
   onUserInput: (agentId: string) => void;
   // Read/write a tab's last queue scroll position (kept in App so it survives the
   // composer unmounting when switching through a shell pane).
@@ -142,6 +143,7 @@ export default function NativeInput({
   onQueueChange,
   onDraftChange,
   onQueuedTurnCollapseToggle,
+  onTurnSubmitted,
   onUserInput,
   getQueueScroll,
   saveQueueScroll,
@@ -377,6 +379,7 @@ export default function NativeInput({
     try {
       const result = await submitAgentTurn(agent.id, trimmed, mode);
       onQueueChange(agent.id, result.queuedTurns);
+      onTurnSubmitted(agent.id, trimmed);
       recordRecentMessage(trimmed);
       setValue("");
       // Return focus to the composer once it clears. Deferred to the next frame
