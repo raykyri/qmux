@@ -336,6 +336,13 @@ pub struct WorktreeStatus {
     pub changed_files: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct CapturedWorktreeRemoval {
+    run_dir: String,
+    worktree_dir: String,
+    branch: String,
+}
+
 /// Reports whether an agent's git worktree has uncommitted changes — staged,
 /// unstaged, or untracked — so closing a tab can warn before that work is gone.
 pub fn agent_worktree_status(state: &AppState, agent_id: &str) -> Result<WorktreeStatus, String> {
@@ -377,16 +384,38 @@ pub fn remove_agent_worktree(state: &AppState, agent_id: &str) -> Result<(), Str
     let agent = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    let removal = capture_agent_worktree_removal(state, &agent)?;
+    remove_captured_worktree(removal)
+}
+
+pub fn capture_agent_worktree_removal(
+    state: &AppState,
+    agent: &AgentInfo,
+) -> Result<CapturedWorktreeRemoval, String> {
     let Some(branch) = agent.branch.clone() else {
-        return Err(format!("agent {agent_id} is not in a git worktree"));
+        return Err(format!("agent {} is not in a git worktree", agent.id));
     };
-    let worktree_dir = agent.worktree_dir;
+    let worktree_dir = agent.worktree_dir.clone();
 
     let run_dir = state
         .group(&agent.group_id)?
         .and_then(|group| group.base_repo)
         .filter(|repo| is_git_repo(repo))
         .unwrap_or_else(|| worktree_dir.clone());
+
+    Ok(CapturedWorktreeRemoval {
+        run_dir,
+        worktree_dir,
+        branch,
+    })
+}
+
+pub fn remove_captured_worktree(removal: CapturedWorktreeRemoval) -> Result<(), String> {
+    let CapturedWorktreeRemoval {
+        run_dir,
+        worktree_dir,
+        branch,
+    } = removal;
 
     let output = Command::new("git")
         .arg("-C")

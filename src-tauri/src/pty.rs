@@ -5,6 +5,7 @@ use crate::state::{
     AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
     ShellAgentResume,
 };
+use crate::workspace::{capture_agent_worktree_removal, remove_captured_worktree};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use std::env;
@@ -701,6 +702,33 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     state.remove_pane(&pane_id)
 }
 
+pub fn close_worktree_pane(
+    state: &AppState,
+    agent_id: &str,
+    delete_worktree: bool,
+) -> Result<(), String> {
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    let pane_id = agent
+        .pane_id
+        .clone()
+        .ok_or_else(|| format!("agent {agent_id} has no pane to close"))?;
+    let worktree_removal = if delete_worktree {
+        Some(capture_agent_worktree_removal(state, &agent)?)
+    } else {
+        None
+    };
+
+    kill_pane(state, pane_id)?;
+
+    if let Some(removal) = worktree_removal {
+        remove_captured_worktree(removal)?;
+    }
+
+    Ok(())
+}
+
 fn start_reader_thread(
     state: AppState,
     pane_id: String,
@@ -868,6 +896,7 @@ mod tests {
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
     };
     use crate::scrollback::read_pane_scrollback;
+    use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
     use std::io;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1145,6 +1174,86 @@ mod tests {
             },
         )
         .expect("spawning a test PTY")
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn close_worktree_pane_deletes_after_agent_is_pruned() {
+        let workspace = temp_workspace();
+        let repo = workspace.join("repo");
+        let worktree = workspace.join("agent-worktree");
+        fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "qmux test"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "init"]);
+
+        let branch = "qmux/test-agent";
+        let worktree_arg = worktree.to_string_lossy().to_string();
+        git(
+            &repo,
+            &["worktree", "add", "-b", branch, &worktree_arg, "HEAD"],
+        );
+
+        let state = test_state_with_workspace(workspace.clone());
+        state
+            .insert_group(GroupInfo {
+                id: "group-1".to_string(),
+                name: "group".to_string(),
+                dir: workspace.to_string_lossy().to_string(),
+                base_repo: Some(repo.to_string_lossy().to_string()),
+                base_ref: None,
+                parent_id: None,
+                created_at: 1,
+                agents: vec!["agent-1".to_string()],
+            })
+            .unwrap();
+        let pane = spawn_test_pty(
+            &state,
+            "pane-worktree",
+            vec!["-c".to_string(), "sleep 30".to_string()],
+        );
+        state
+            .insert_agent(AgentInfo {
+                id: "agent-1".to_string(),
+                group_id: "group-1".to_string(),
+                adapter: "claude".to_string(),
+                worktree_dir: worktree.to_string_lossy().to_string(),
+                branch: Some(branch.to_string()),
+                pane_id: Some(pane.id),
+                orphaned_queue_pane_id: None,
+                session_id: None,
+                transcript_path: None,
+                status: AgentStatus::Running,
+                model: None,
+                parent_id: None,
+                fork_point: None,
+                root_session_id: None,
+                paused: false,
+                created_at: 1,
+            })
+            .unwrap();
+
+        close_worktree_pane(&state, "agent-1", true).unwrap();
+
+        assert!(state.agent("agent-1").unwrap().is_none());
+        assert!(!worktree.exists());
+
+        fs::remove_dir_all(workspace).ok();
     }
 
     #[test]

@@ -23,8 +23,8 @@ use adapters::{
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use pty::{
-    InitialPaneSize, PaneWriteOptions, attach_pane, kill_pane, resize_pane, spawn_shell_pane,
-    write_pane,
+    InitialPaneSize, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane, resize_pane,
+    spawn_shell_pane, write_pane,
 };
 use sleep::SleepGuard;
 use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn};
@@ -503,6 +503,15 @@ fn worktree_remove(state: tauri::State<'_, AppState>, agent_id: String) -> Resul
 }
 
 #[tauri::command]
+fn worktree_close_pane(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    delete_worktree: bool,
+) -> Result<(), String> {
+    close_worktree_pane(&state, &agent_id, delete_worktree)
+}
+
+#[tauri::command]
 fn app_confirm_exit(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -640,6 +649,7 @@ fn main() {
             agent_clear_working_status,
             worktree_status,
             worktree_remove,
+            worktree_close_pane,
             app_confirm_exit,
             app_set_prevent_sleep,
         ])
