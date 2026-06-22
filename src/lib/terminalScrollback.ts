@@ -1,0 +1,181 @@
+const ESC = 0x1b;
+const BEL = 0x07;
+const CSI_8BIT = 0x9b;
+const OSC_8BIT = 0x9d;
+const ST_8BIT = 0x9c;
+const DCS_8BIT = 0x90;
+const SOS_8BIT = 0x98;
+const PM_8BIT = 0x9e;
+const APC_8BIT = 0x9f;
+
+const ESC_CSI = 0x5b; // [
+const ESC_OSC = 0x5d; // ]
+const ESC_DCS = 0x50; // P
+const ESC_SOS = 0x58; // X
+const ESC_PM = 0x5e; // ^
+const ESC_APC = 0x5f; // _
+const ESC_ST = 0x5c; // \
+const ESC_RIS = 0x63; // c
+
+// Restored scrollback is historical output, not the current process's terminal
+// contract. Mode changes from that history must not leak into the fresh xterm.
+export const RESTORED_SCROLLBACK_TERMINAL_RESET =
+  "\x1b[0m" +
+  "\x1b(B" +
+  "\x1b[4l" +
+  "\x1b[?1l" +
+  "\x1b[?6l" +
+  "\x1b[?7h" +
+  "\x1b[?9l" +
+  "\x1b[?25h" +
+  "\x1b[?45l" +
+  "\x1b[?66l" +
+  "\x1b[?47l" +
+  "\x1b[?1000l" +
+  "\x1b[?1002l" +
+  "\x1b[?1003l" +
+  "\x1b[?1004l" +
+  "\x1b[?1005l" +
+  "\x1b[?1006l" +
+  "\x1b[?1015l" +
+  "\x1b[?1016l" +
+  "\x1b[?1047l" +
+  "\x1b[?1048l" +
+  "\x1b[?1049l" +
+  "\x1b[?2004l" +
+  "\x1b[?2026l";
+
+export function sanitizeRestoredScrollback(bytes: Uint8Array): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  let copyFrom = 0;
+  let index = 0;
+
+  const drop = (start: number, end: number) => {
+    if (copyFrom < start) {
+      chunks.push(bytes.subarray(copyFrom, start));
+    }
+    copyFrom = end;
+  };
+
+  while (index < bytes.length) {
+    const byte = bytes[index];
+
+    if (byte === CSI_8BIT) {
+      const end = findCsiEnd(bytes, index + 1);
+      if (end === -1) {
+        break;
+      }
+      if (shouldStripCsi(bytes[end])) {
+        drop(index, end + 1);
+      }
+      index = end + 1;
+      continue;
+    }
+
+    if (
+      byte === OSC_8BIT ||
+      byte === DCS_8BIT ||
+      byte === SOS_8BIT ||
+      byte === PM_8BIT ||
+      byte === APC_8BIT
+    ) {
+      const end = findStringControlEnd(bytes, index + 1);
+      if (end === -1) {
+        break;
+      }
+      drop(index, end);
+      index = end;
+      continue;
+    }
+
+    if (byte !== ESC || index + 1 >= bytes.length) {
+      index += 1;
+      continue;
+    }
+
+    const next = bytes[index + 1];
+    if (next === ESC_CSI) {
+      const end = findCsiEnd(bytes, index + 2);
+      if (end === -1) {
+        break;
+      }
+      if (shouldStripCsi(bytes[end])) {
+        drop(index, end + 1);
+      }
+      index = end + 1;
+      continue;
+    }
+
+    if (
+      next === ESC_OSC ||
+      next === ESC_DCS ||
+      next === ESC_SOS ||
+      next === ESC_PM ||
+      next === ESC_APC
+    ) {
+      const end = findStringControlEnd(bytes, index + 2);
+      if (end === -1) {
+        break;
+      }
+      drop(index, end);
+      index = end;
+      continue;
+    }
+
+    if (next === ESC_RIS) {
+      drop(index, index + 2);
+      index += 2;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  if (chunks.length === 0) {
+    return bytes;
+  }
+  if (copyFrom < bytes.length) {
+    chunks.push(bytes.subarray(copyFrom));
+  }
+  return concatChunks(chunks);
+}
+
+function findCsiEnd(bytes: Uint8Array, start: number): number {
+  for (let index = start; index < bytes.length; index += 1) {
+    const byte = bytes[index];
+    if (byte >= 0x40 && byte <= 0x7e) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function shouldStripCsi(final: number): boolean {
+  return final === 0x68 || final === 0x6c; // h/l: mode set/reset
+}
+
+function findStringControlEnd(bytes: Uint8Array, start: number): number {
+  for (let index = start; index < bytes.length; index += 1) {
+    if (bytes[index] === BEL) {
+      return index + 1;
+    }
+    if (bytes[index] === ST_8BIT) {
+      return index + 1;
+    }
+    if (bytes[index] === ESC && index + 1 < bytes.length && bytes[index + 1] === ESC_ST) {
+      return index + 2;
+    }
+  }
+  return -1;
+}
+
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return output;
+}
