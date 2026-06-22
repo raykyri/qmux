@@ -242,7 +242,11 @@ impl CodexAdapter {
             },
         )?;
 
-        let restored = attach_agent_pane(state, &agent.id, pane.id.clone())?;
+        // A recovered Codex process is launched without an inline prompt, even when
+        // resuming a session, so it is waiting for input once the TUI appears. Mark it
+        // AwaitingInput (not Running) so a recovered idle session isn't shown as
+        // working; the first real prompt/tool hook promotes it to Running.
+        let restored = attach_codex_agent_pane(state, &agent.id, pane.id.clone(), false)?;
         if let Some(transcript_path) = restored.transcript_path.clone() {
             start_transcript_tail(
                 state.clone(),
@@ -367,12 +371,9 @@ impl CodexAdapter {
                         if let Some(session_id) = session_id {
                             agent.session_id = Some(session_id);
                         }
-                        // A startup hook only means Codex is ready. Interactive launches
-                        // without an initial prompt should stay sendable until the first
-                        // real turn starts.
-                        if agent.status != AgentStatus::AwaitingInput {
-                            agent.status = AgentStatus::Running;
-                        }
+                        // A startup hook only means Codex is ready, not that a turn is
+                        // running. Keep status unchanged here; the first real prompt/tool
+                        // hook promotes the agent to Running.
                     })?;
                     start_codex_transcript_binding(
                         state.clone(),
@@ -1504,7 +1505,10 @@ trusted_hash = "sha256:trusted"
         assert_eq!(event.event_type, "agent.session_start");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("codex-session-1"));
-        assert!(matches!(agent.status, AgentStatus::Running));
+        // SessionStart records the resource id but no longer promotes status: a
+        // session merely starting doesn't mean a turn is running, so the agent keeps
+        // whatever status it had (here Starting) until a real prompt/tool hook lands.
+        assert!(matches!(agent.status, AgentStatus::Starting));
     }
 
     #[test]
