@@ -3549,7 +3549,7 @@ export default function App() {
       {selectionAsk ? (
         <SelectionAskPopup
           anchor={selectionAsk.anchor}
-          showNewThread={selectionAsk.canFork}
+          canAskNewThread={selectionAsk.canFork}
           onAsk={() => openAskLauncher("ask")}
           onAskNewThread={() => openAskLauncher("newThread")}
           onClose={() => setSelectionAsk(null)}

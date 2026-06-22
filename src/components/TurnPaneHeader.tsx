@@ -7,9 +7,9 @@ import { writeClipboardText } from "../lib/clipboard";
 const COPIED_TOAST_MS = 1600;
 
 // The top bar across the right pane: the active session's id on the left, and on
-// the right a fork control (Claude sessions with a live id only) plus the browser
-// toggle. Its height matches the browser overlay's address bar so the two read as
-// a single chrome line when the browser is open.
+// the right a fork control plus the browser toggle. Forking is only enabled for
+// Claude sessions with a live id. Its height matches the browser overlay's address
+// bar so the two read as a single chrome line when the browser is open.
 interface TurnPaneHeaderProps {
   // The active agent's Claude session id, or null before SessionStart lands.
   sessionId: string | null;
@@ -72,6 +72,12 @@ export default function TurnPaneHeader({
     };
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!canFork) {
+      setMenuOpen(false);
+    }
+  }, [canFork]);
+
   const fork = (options: { nest: boolean; useWorktree: boolean }) => {
     setMenuOpen(false);
     onFork(options);
@@ -111,41 +117,48 @@ export default function TurnPaneHeader({
         <span className="turn-pane-session">New session</span>
       )}
       <div className="turn-pane-header-controls">
-        {canFork ? (
-          <div className="turn-pane-fork" ref={menuRef}>
-            <button
-              type="button"
-              className="turn-pane-header-button"
-              title="Fork session"
-              aria-label="Fork session"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              <Split size={14} aria-hidden="true" />
-            </button>
-            {menuOpen ? (
-              <div className="turn-pane-fork-menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="turn-pane-fork-item"
-                  onClick={() => fork({ nest: true, useWorktree: false })}
-                >
-                  Fork session
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="turn-pane-fork-item"
-                  onClick={() => fork({ nest: true, useWorktree: true })}
-                >
-                  Fork session in worktree
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        <div className="turn-pane-fork" ref={menuRef}>
+          <button
+            type="button"
+            className="turn-pane-header-button"
+            disabled={!canFork}
+            title={
+              canFork
+                ? "Fork session"
+                : "Forking is available for Claude sessions after a session id is recorded"
+            }
+            aria-label="Fork session"
+            aria-haspopup="menu"
+            aria-expanded={canFork ? menuOpen : false}
+            onClick={() => {
+              if (canFork) {
+                setMenuOpen((open) => !open);
+              }
+            }}
+          >
+            <Split size={14} aria-hidden="true" />
+          </button>
+          {canFork && menuOpen ? (
+            <div className="turn-pane-fork-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="turn-pane-fork-item"
+                onClick={() => fork({ nest: true, useWorktree: false })}
+              >
+                Fork session
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="turn-pane-fork-item"
+                onClick={() => fork({ nest: true, useWorktree: true })}
+              >
+                Fork session in worktree
+              </button>
+            </div>
+          ) : null}
+        </div>
         {showQueueSplit ? (
           <button
             type="button"

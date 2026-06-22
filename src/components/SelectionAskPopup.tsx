@@ -9,13 +9,13 @@ import type { SelectionAnchor } from "../appTypes";
 // the viewport. Dismisses on outside mousedown, Escape, scroll, or resize.
 export default function SelectionAskPopup({
   anchor,
-  showNewThread,
+  canAskNewThread,
   onAsk,
   onAskNewThread,
   onClose,
 }: {
   anchor: SelectionAnchor;
-  showNewThread: boolean;
+  canAskNewThread: boolean;
   onAsk: () => void;
   onAskNewThread: () => void;
   onClose: () => void;
@@ -92,16 +92,20 @@ export default function SelectionAskPopup({
       >
         Ask
       </button>
-      {showNewThread ? (
-        <button
-          type="button"
-          className="selection-ask-button"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={onAskNewThread}
-        >
-          Ask in new thread
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className="selection-ask-button"
+        disabled={!canAskNewThread}
+        title={
+          canAskNewThread
+            ? "Ask in new thread"
+            : "New threads are available for Claude sessions after a session id is recorded"
+        }
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onAskNewThread}
+      >
+        Ask in new thread
+      </button>
     </div>,
     document.body,
   );
