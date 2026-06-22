@@ -778,9 +778,25 @@ button:disabled {
 
 .sidebar-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: stretch;
   gap: 6px;
   --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
+}
+
+.sidebar-action-with-hint {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.sidebar-action-with-hint > button {
+  width: 100%;
+  min-width: 0;
+}
+
+.sidebar-action-shortcut-hint {
+  right: 6px;
 }
 
 /* The Settings cog sits inline to the right of New shell/New agent and shows
