@@ -5,6 +5,8 @@ import { Check, ChevronDown } from "lucide-react";
 export interface LauncherSelectOption {
   value: string;
   label: string;
+  iconSrc?: string;
+  iconClassName?: string;
   tone?: "danger";
 }
 
@@ -16,6 +18,8 @@ interface LauncherSelectProps {
 }
 
 const toneClass = (tone?: string) => (tone ? ` is-${tone}` : "");
+const iconClass = (option?: LauncherSelectOption) =>
+  ["launcher-select-icon", option?.iconClassName].filter(Boolean).join(" ");
 
 /* A native <select> can't tint a single option, so this is a custom listbox styled
    like the launcher's controls. The popover is portaled to <body> (the launcher modal
@@ -88,6 +92,14 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
           setOpen((prev) => !prev);
         }}
       >
+        {selected?.iconSrc ? (
+          <img
+            className={iconClass(selected)}
+            src={selected.iconSrc}
+            alt=""
+            aria-hidden="true"
+          />
+        ) : null}
         <span className="launcher-select-value">{selected?.label}</span>
         <ChevronDown size={13} className="launcher-select-chevron" aria-hidden="true" />
       </button>
@@ -118,6 +130,14 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
                       }
                     }}
                   >
+                    {option.iconSrc ? (
+                      <img
+                        className={iconClass(option)}
+                        src={option.iconSrc}
+                        alt=""
+                        aria-hidden="true"
+                      />
+                    ) : null}
                     <span className="launcher-select-item-label">{option.label}</span>
                     {active ? (
                       <Check size={14} className="launcher-select-check" aria-hidden="true" />

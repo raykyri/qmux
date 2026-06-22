@@ -1490,6 +1490,18 @@ button:disabled {
   white-space: nowrap;
 }
 
+.launcher-select-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.launcher-select-icon.is-mono-light {
+  filter: brightness(0) invert(1);
+  opacity: 0.9;
+}
+
 /* The chevron stays muted even when the value takes a tone, so only the label reads
    as danger. */
 .launcher-select-chevron {
