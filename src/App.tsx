@@ -173,6 +173,7 @@ const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
+const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
@@ -187,6 +188,41 @@ function sanitizeTerminalTitle(rawTitle: string): string | null {
     return null;
   }
   return Array.from(title).slice(0, MAX_TERMINAL_TITLE_CHARS).join("");
+}
+
+function firstMessagePaneTitle(rawMessage: string): string | null {
+  const normalized = rawMessage
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const chars = Array.from(normalized);
+  if (chars.length <= MAX_FIRST_MESSAGE_TITLE_CHARS) {
+    return normalized;
+  }
+
+  return `${chars.slice(0, MAX_FIRST_MESSAGE_TITLE_CHARS - 3).join("").trimEnd()}...`;
+}
+
+function firstUserTurnText(turn: Turn): string | null {
+  if (turn.role !== "user") {
+    return null;
+  }
+
+  for (const block of turn.blocks) {
+    if (block.type !== "text") {
+      continue;
+    }
+    const trimmed = block.text.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+
+  return null;
 }
 
 function defaultPaneTitle(
@@ -235,6 +271,7 @@ export default function App() {
   // released after the listener can actually deliver it.
   const eventsReadyRef = useRef(false);
   const pendingAttachRef = useRef<Set<string>>(new Set());
+  const panesRef = useRef<PaneInfo[]>([]);
   const agentsRef = useRef<AgentInfo[]>([]);
   const queuedTurnsByAgentRef = useRef<Record<string, QueuedTurn[]>>({});
   // Composer drafts live here keyed by agent so they survive tab switches; the
@@ -258,6 +295,7 @@ export default function App() {
   const paneDropTargetRef = useRef<PaneDropTarget | null>(null);
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
+  const pendingFirstTitleByAgentRef = useRef<Map<string, string>>(new Map());
   const suppressPaneTabClickRef = useRef(false);
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -436,8 +474,69 @@ export default function App() {
     return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
   }
 
+  async function applyFirstMessageTitle(
+    paneId: string,
+    rawMessage: string,
+    fallbackPane?: PaneInfo,
+  ) {
+    const title = firstMessagePaneTitle(rawMessage);
+    if (!title) {
+      return;
+    }
+
+    const pane =
+      panesRef.current.find((candidate) => candidate.id === paneId) ?? fallbackPane;
+    const paneAgent = pane
+      ? agentsRef.current.find((agent) => agent.paneId === pane.id)
+      : undefined;
+    if (pane && paneHasUserSetTitle(pane, paneAgent)) {
+      return;
+    }
+
+    const previousTitle = pane?.title;
+    setManuallyTitledPaneIds((current) => {
+      const next = new Set(current);
+      next.add(paneId);
+      return next;
+    });
+    setPanesPreservingRecoveredDismissals((current) =>
+      current.map((pane) => (pane.id === paneId ? { ...pane, title } : pane)),
+    );
+
+    try {
+      const updated = await renamePane(paneId, title);
+      setPanesPreservingRecoveredDismissals((current) =>
+        current.map((pane) => (pane.id === paneId ? { ...pane, title: updated.title } : pane)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setManuallyTitledPaneIds((current) => {
+        const next = new Set(current);
+        next.delete(paneId);
+        return next;
+      });
+      if (previousTitle) {
+        setPanesPreservingRecoveredDismissals((current) =>
+          current.map((pane) =>
+            pane.id === paneId ? { ...pane, title: previousTitle } : pane,
+          ),
+        );
+      }
+    }
+  }
+
+  function applyPendingFirstMessageTitle(agentId: string, rawMessage: string) {
+    const paneId = pendingFirstTitleByAgentRef.current.get(agentId);
+    if (!paneId) {
+      return;
+    }
+    pendingFirstTitleByAgentRef.current.delete(agentId);
+    void applyFirstMessageTitle(paneId, rawMessage);
+  }
+
   // Drop per-pane UI state for panes that have closed so it can't leak or resurface.
   useEffect(() => {
+    panesRef.current = panes;
     const ids = new Set(panes.map((pane) => pane.id));
     setTerminalTitleByPane((current) => {
       const next = Object.fromEntries(
@@ -455,6 +554,11 @@ export default function App() {
       );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
+    for (const [agentId, paneId] of pendingFirstTitleByAgentRef.current) {
+      if (!ids.has(paneId)) {
+        pendingFirstTitleByAgentRef.current.delete(agentId);
+      }
+    }
   }, [panes]);
 
   // Drop per-agent UI state for agents that no longer exist, so these maps and refs
@@ -479,7 +583,33 @@ export default function App() {
     for (const id of Object.keys(queueScrollByAgentRef.current)) {
       if (!ids.has(id)) delete queueScrollByAgentRef.current[id];
     }
+    for (const agentId of pendingFirstTitleByAgentRef.current.keys()) {
+      if (!ids.has(agentId)) {
+        pendingFirstTitleByAgentRef.current.delete(agentId);
+      }
+    }
   }, [agents]);
+
+  useEffect(() => {
+    const pendingAgentIds = Array.from(pendingFirstTitleByAgentRef.current.keys());
+    if (pendingAgentIds.length === 0) {
+      return;
+    }
+
+    for (const agentId of pendingAgentIds) {
+      const firstUserTurn = turns.find(
+        (turn) => turn.agentId === agentId && firstUserTurnText(turn),
+      );
+      if (!firstUserTurn) {
+        continue;
+      }
+      const text = firstUserTurnText(firstUserTurn);
+      if (text) {
+        applyPendingFirstMessageTitle(agentId, text);
+      }
+    }
+  }, [turns]);
+
   const runtimeDefaultAdapterId =
     config?.adapters.find((adapter) => adapter.default)?.id ?? config?.adapters[0]?.id ?? "claude";
   const selectedLauncherAdapterId = launcherAdapterId ?? runtimeDefaultAdapterId;
@@ -1859,10 +1989,18 @@ export default function App() {
         useWorktree: createInWorktree,
         options: launcherOptions,
       });
-      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
+      const firstTitle = firstMessagePaneTitle(finalPrompt);
+      const displayedPane = firstTitle ? { ...pane, title: firstTitle } : pane;
+      setPanesPreservingRecoveredDismissals((current) => [...current, displayedPane]);
       setActivePaneId(pane.id);
       if (pane.agentId) {
         setAgentQueuedTurns(pane.agentId, []);
+        if (!firstTitle) {
+          pendingFirstTitleByAgentRef.current.set(pane.agentId, pane.id);
+        }
+      }
+      if (firstTitle) {
+        void applyFirstMessageTitle(pane.id, finalPrompt, pane);
       }
       setPrompt("");
       setSelectedSkillId(null);
@@ -3500,6 +3638,7 @@ export default function App() {
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
+                    onTurnSubmitted={applyPendingFirstMessageTitle}
                     onUserInput={noteUserInput}
                     getQueueScroll={getQueueScroll}
                     saveQueueScroll={saveQueueScroll}
