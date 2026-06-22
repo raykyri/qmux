@@ -324,6 +324,7 @@ button:disabled {
   grid-template-columns: 8px minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 6px;
+  padding-bottom: 5px;
   /* Home isn't draggable, so it gets a normal pointer rather than the grab cursor. */
   cursor: pointer;
 }
@@ -2073,7 +2074,8 @@ button:disabled {
    else in the timeline — individual tool entries and thinking — renders as a quiet
    borderless disclosure row. */
 .tool-block,
-.thinking-block {
+.thinking-block,
+.activity-group-block {
   background: transparent;
   color: #d9ddd9;
   font-size: 12px;
@@ -2081,7 +2083,8 @@ button:disabled {
 }
 
 .tool-block > summary,
-.thinking-block > summary {
+.thinking-block > summary,
+.activity-group-block > summary {
   display: grid;
   grid-template-columns: 13px minmax(0, 1fr);
   align-items: center;
@@ -2093,12 +2096,14 @@ button:disabled {
 }
 
 .tool-block > summary::-webkit-details-marker,
-.thinking-block > summary::-webkit-details-marker {
+.thinking-block > summary::-webkit-details-marker,
+.activity-group-block > summary::-webkit-details-marker {
   display: none;
 }
 
 .tool-block > summary::marker,
-.thinking-block > summary::marker {
+.thinking-block > summary::marker,
+.activity-group-block > summary::marker {
   content: "";
 }
 
@@ -2108,13 +2113,15 @@ button:disabled {
 }
 
 .tool-block[open] > summary .disclosure-chevron,
-.thinking-block[open] > summary .disclosure-chevron {
+.thinking-block[open] > summary .disclosure-chevron,
+.activity-group-block[open] > summary .disclosure-chevron {
   transform: rotate(90deg);
 }
 
 /* Borderless rows still need a click affordance, so highlight on hover. */
 .tool-block > summary:hover,
-.thinking-block > summary:hover {
+.thinking-block > summary:hover,
+.activity-group-block > summary:hover {
   background: #15191b;
 }
 
@@ -2194,6 +2201,17 @@ button:disabled {
 
 .thinking-block summary {
   color: #aab1ad;
+}
+
+.activity-group-children {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 2px;
+  padding-left: 18px;
+}
+
+.activity-group-children > :not(:first-child) {
+  margin-top: -5px;
 }
 
 .native-input {
@@ -2439,7 +2457,7 @@ button:disabled {
 }
 
 /* Trim 1px of horizontal padding on each side so the × button reads tighter. */
-.queued-turn-remove {
+.queued-turn-actions > button.queued-turn-remove {
   padding-left: 6px;
   padding-right: 6px;
 }

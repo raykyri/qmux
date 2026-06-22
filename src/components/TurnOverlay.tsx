@@ -106,7 +106,15 @@ interface ThinkingItem {
   values: unknown[];
 }
 
-type ActivityItem = ToolEntry | ThinkingItem;
+interface ActivityGroupItem {
+  type: "activityGroup";
+  key: string;
+  children: ActivityLeafItem[];
+  toolCallCount: number;
+}
+
+type ActivityLeafItem = ToolEntry | ThinkingItem;
+type ActivityItem = ActivityLeafItem | ActivityGroupItem;
 
 // Only let links through that the webview can safely open. Transcript markdown is
 // untrusted (an agent emits arbitrary text, and the picker can repoint to arbitrary
@@ -463,7 +471,6 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
   };
 
   const pushToolEntry = (entry: ToolEntry) => {
-    // Each tool call is its own activity row — no "N tool calls" grouping layer.
     assistantActivityOwner().activities.push(entry);
   };
 
@@ -531,7 +538,45 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
     }
   }
 
-  return items;
+  return items.map((item) => ({
+    ...item,
+    activities: groupActivityItems(item.activities),
+  }));
+}
+
+function groupActivityItems(activities: ActivityItem[]): ActivityItem[] {
+  if (activities.length <= 1) {
+    return activities;
+  }
+
+  const children = activities.filter(isActivityLeafItem);
+  if (children.length <= 1) {
+    return activities;
+  }
+
+  return [
+    {
+      type: "activityGroup",
+      key: `activity-group-${children[0].key}`,
+      children,
+      toolCallCount: countUniqueToolCalls(children),
+    },
+  ];
+}
+
+function isActivityLeafItem(item: ActivityItem): item is ActivityLeafItem {
+  return item.type === "tool" || item.type === "thinking";
+}
+
+function countUniqueToolCalls(items: ActivityLeafItem[]) {
+  const counted = new Set<string>();
+  for (const item of items) {
+    if (item.type !== "tool") {
+      continue;
+    }
+    counted.add(item.id ? `id:${item.id}` : `entry:${item.key}`);
+  }
+  return counted.size;
 }
 
 // Memoized on the item: buildTimelineItems is itself memoized on `turns`, so item
@@ -572,7 +617,32 @@ function ActivityItemView({ item }: { item: ActivityItem }) {
       return <ToolEntryView entry={item} />;
     case "thinking":
       return <ThinkingView item={item} />;
+    case "activityGroup":
+      return <ActivityGroupView group={item} />;
   }
+}
+
+function ActivityGroupView({ group }: { group: ActivityGroupItem }) {
+  return (
+    <details className="activity-group-block">
+      <summary>
+        <DisclosureChevron />
+        <span>{activityGroupLabel(group)}</span>
+      </summary>
+      <div className="activity-group-children">
+        {group.children.map((child) => (
+          <ActivityItemView key={child.key} item={child} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function activityGroupLabel(group: ActivityGroupItem) {
+  if (group.toolCallCount === 0) {
+    return "Thinking...";
+  }
+  return `${group.toolCallCount} tool call${group.toolCallCount === 1 ? "" : "s"}`;
 }
 
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
