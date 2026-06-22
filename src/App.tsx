@@ -1228,10 +1228,23 @@ export default function App() {
     }
   }
 
+  function focusPaneTab(paneId: string) {
+    setActivePaneId(paneId);
+    setLauncherOpen(false);
+    requestAnimationFrame(() => {
+      terminalPaneRefs.current.get(paneId)?.focus();
+    });
+  }
+
+  function focusHomeTab() {
+    setActivePaneId(HOME_TAB_ID);
+    setLauncherOpen(false);
+    focusLauncherInput();
+  }
+
   function openAgentLauncher() {
     if (homeActive) {
-      setLauncherOpen(false);
-      focusLauncherInput();
+      focusHomeTab();
       return;
     }
     setLauncherOpen(true);
@@ -1914,36 +1927,55 @@ export default function App() {
         return;
       }
 
-      // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser.
+      const focusTabById = (tabId: string) => {
+        if (tabId === HOME_TAB_ID) {
+          focusHomeTab();
+          return;
+        }
+        focusPaneTab(tabId);
+      };
+
+      const cycleTab = (direction: -1 | 1) => {
+        const tabIds = [HOME_TAB_ID, ...panes.map((pane) => pane.id)];
+        const fallbackIndex = panes.length > 0 ? 1 : 0;
+        const listedIndex = tabIds.indexOf(activePaneId ?? "");
+        const currentIndex = listedIndex === -1 ? fallbackIndex : listedIndex;
+        focusTabById(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
+      };
+
+      // Cmd-0 / Ctrl-0 jumps to Home; Cmd-1..9 / Ctrl-1..9 jump to real pane
+      // tabs in sidebar order. Claimed before the editable-target bail so the
+      // app-level tab shortcuts keep working from terminal and composer focus.
+      if (/^[0-9]$/.test(key) && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (key === "0") {
+          focusHomeTab();
+          return;
+        }
+        const pane = panes[Number(key) - 1];
+        if (pane) {
+          focusPaneTab(pane.id);
+        }
+        return;
+      }
+
+      // Ctrl-Tab / Ctrl-Shift-Tab cycle through Home and the open tabs like a browser.
       // Claimed here in the capture phase (before the terminal/editable bail) so
       // it works regardless of focus; Tab with Ctrl is never a text-editing key.
       if (key === "tab" && event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        if (panes.length > 0) {
-          const direction = event.shiftKey ? -1 : 1;
-          setActivePaneId((current) => {
-            const index = panes.findIndex((pane) => pane.id === current);
-            const base = index === -1 ? 0 : index;
-            return panes[(base + direction + panes.length) % panes.length].id;
-          });
-        }
+        cycleTab(event.shiftKey ? -1 : 1);
         return;
       }
 
-      // Cmd-Shift-[ / Cmd-Shift-] cycle backward/forward through the open tabs.
+      // Cmd-Shift-[ / Cmd-Shift-] cycle backward/forward through Home and the open tabs.
       // Claimed in the capture phase so it works regardless of focus.
       if ((key === "[" || key === "]") && event.metaKey && event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
-        if (panes.length > 0) {
-          const direction = key === "[" ? -1 : 1;
-          setActivePaneId((current) => {
-            const index = panes.findIndex((pane) => pane.id === current);
-            const base = index === -1 ? 0 : index;
-            return panes[(base + direction + panes.length) % panes.length].id;
-          });
-        }
+        cycleTab(key === "[" ? -1 : 1);
         return;
       }
 
@@ -2009,7 +2041,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [panes]);
+  }, [activePaneId, panes]);
 
   useEffect(() => {
     if (!launcherVisible) {
