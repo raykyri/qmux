@@ -50,6 +50,7 @@ import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TurnOverlay";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
+import RecentSessionsPanel from "./components/RecentSessionsPanel";
 import {
   agentStatusLabel,
   agentStatusTone,
@@ -117,6 +118,7 @@ import {
   listClaudeSkills,
   listAgentTranscripts,
   listAgentTurnQueue,
+  listRecentSessions,
   listTurns,
   listPanes,
   moveQueuedAgentTurn,
@@ -124,6 +126,7 @@ import {
   removeQueuedAgentTurn,
   renamePane,
   restoreLastClosedPane,
+  resumeRecentSession,
   setLauncherAdapterPreference,
   setPaneLayout,
   setAgentDraft as persistAgentDraft,
@@ -141,6 +144,7 @@ import type {
   InitialPaneSize,
   PaneInfo,
   QueuedTurn,
+  RecentSessionInfo,
   RuntimeConfig,
   TranscriptHookEvent,
   TranscriptOption,
@@ -395,6 +399,7 @@ export default function App() {
   // user's own send), and cleared on any non-working event.
   const [thinkingAgentIds, setThinkingAgentIds] = useState<Set<string>>(() => new Set());
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [recentSessions, setRecentSessions] = useState<RecentSessionInfo[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
     Record<string, WorktreeStatus>
@@ -3406,14 +3411,34 @@ export default function App() {
         </nav>
 
         <div className="sidebar-actions">
-          <button type="button" onClick={addShellPane}>
-            <SquareTerminal size={14} aria-hidden="true" />
-            <span>New shell</span>
-          </button>
-          <button type="button" onClick={openAgentLauncher}>
-            <MessageSquareText size={14} aria-hidden="true" />
-            <span>New agent</span>
-          </button>
+          <div className="sidebar-action-with-hint">
+            <button type="button" onClick={addShellPane}>
+              <SquareTerminal size={14} aria-hidden="true" />
+              <span>New shell</span>
+            </button>
+            {shortcutHintsVisible ? (
+              <span
+                className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
+                aria-hidden="true"
+              >
+                ⌘T
+              </span>
+            ) : null}
+          </div>
+          <div className="sidebar-action-with-hint">
+            <button type="button" onClick={openAgentLauncher}>
+              <MessageSquareText size={14} aria-hidden="true" />
+              <span>New agent</span>
+            </button>
+            {shortcutHintsVisible ? (
+              <span
+                className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
+                aria-hidden="true"
+              >
+                ⌘;
+              </span>
+            ) : null}
+          </div>
           <button
             type="button"
             className="sidebar-settings-button"
