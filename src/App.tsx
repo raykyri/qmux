@@ -101,6 +101,7 @@ import {
   acknowledgeAgent,
   attachPane,
   clearAgentWorkingStatus,
+  closeWorktreePane,
   confirmAppExit,
   forkAgent,
   getLauncherAdapterPreference,
@@ -116,7 +117,6 @@ import {
   moveQueuedAgentTurn,
   openExternalUrl,
   removeQueuedAgentTurn,
-  removeWorktree,
   renamePane,
   setLauncherAdapterPreference,
   setPaneLayout,
@@ -1958,21 +1958,25 @@ export default function App() {
     }
   }
 
+  function forgetClosedPane(paneToClose: PaneInfo) {
+    setPanesPreservingRecoveredDismissals((current) => {
+      const nextPanes = current.filter((pane) => pane.id !== paneToClose.id);
+      setActivePaneId((currentActivePaneId) => {
+        if (currentActivePaneId !== paneToClose.id) {
+          return currentActivePaneId;
+        }
+        return selectPaneAfterClose(current, paneToClose.id);
+      });
+      return nextPanes;
+    });
+    setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
+  }
+
   async function closePane(paneToClose: PaneInfo) {
     setError(null);
     try {
       await killPane(paneToClose.id);
-      setPanesPreservingRecoveredDismissals((current) => {
-        const nextPanes = current.filter((pane) => pane.id !== paneToClose.id);
-        setActivePaneId((currentActivePaneId) => {
-          if (currentActivePaneId !== paneToClose.id) {
-            return currentActivePaneId;
-          }
-          return selectPaneAfterClose(current, paneToClose.id);
-        });
-        return nextPanes;
-      });
-      setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
+      forgetClosedPane(paneToClose);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -2075,12 +2079,8 @@ export default function App() {
     setError(null);
     setResolvingClose(choice);
     try {
-      await closePane(dialog.pane);
-      if (choice === "delete") {
-        // Keep the dialog up until the worktree is actually gone, so it never
-        // dismisses while the deletion is still running.
-        await removeWorktree(dialog.agentId);
-      }
+      await closeWorktreePane(dialog.agentId, choice === "delete");
+      forgetClosedPane(dialog.pane);
       setCloseDialog(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

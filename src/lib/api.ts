@@ -264,8 +264,8 @@ export function worktreeStatus(agentId: string) {
   return invoke<WorktreeStatus>("worktree_status", { agentId });
 }
 
-export function removeWorktree(agentId: string) {
-  return invoke<void>("worktree_remove", { agentId });
+export function closeWorktreePane(agentId: string, deleteWorktree: boolean) {
+  return invoke<void>("worktree_close_pane", { agentId, deleteWorktree });
 }
 
 export function confirmAppExit() {
