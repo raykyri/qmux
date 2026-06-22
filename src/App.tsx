@@ -491,8 +491,8 @@ export default function App() {
     },
     focus: () => launcherInputRef.current?.focus(),
   });
-  // The Whisper voice model is downloaded once and cached; surface its progress
-  // as an app-level toast since it's shared across every composer's mic.
+  // The Whisper voice model is loaded once and cached; surface its progress as
+  // an app-level toast since it's shared across every composer's mic.
   const dictationDownload = useSyncExternalStore(subscribeDictationDownload, getDictationDownload);
   // The launcher renders in two places: the modal (Cmd-; / sidebar button) and,
   // when there are no panes, inline as the content-pane placeholder. Only one is
@@ -3144,7 +3144,7 @@ export default function App() {
 
       {dictationDownload ? (
         <div className="dictation-download-toast" role="status" aria-live="polite">
-          Downloading voice model…
+          Loading voice model…
           {dictationDownload.total
             ? ` ${Math.round((dictationDownload.loaded / dictationDownload.total) * 100)}%`
             : ""}

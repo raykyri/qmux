@@ -2712,7 +2712,7 @@ button:disabled {
   pointer-events: none;
 }
 
-/* First-use download of the shared Whisper voice model — pinned to the bottom
+/* First-use load of the shared Whisper voice model — pinned to the bottom
    center above everything, like the composer toast it borrows its skin from. */
 .dictation-download-toast {
   position: fixed;
