@@ -86,6 +86,10 @@
   box-sizing: border-box;
 }
 
+::selection {
+  background: #032042;
+}
+
 /* lucide-react renders its icons with width/height attributes, but as a flex item an
    SVG can still collapse to a sliver (rendering as a 1-2px dot) instead of honoring
    that intrinsic size. Pinning flex on every icon keeps each one at its set size
