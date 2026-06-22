@@ -81,6 +81,9 @@ const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
   Bash: "command",
   WebFetch: "url",
+  // Claude's file tools: show the path being read/edited as the argument.
+  Read: "file_path",
+  Edit: "file_path",
 } as const;
 
 interface QueueSplitDrag {
