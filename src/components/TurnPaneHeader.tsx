@@ -1,4 +1,10 @@
-import { GitBranch, Globe, SquareCenterlineDashedVertical } from "lucide-react";
+import {
+  Expand,
+  GitBranch,
+  Globe,
+  Minimize2,
+  SquareCenterlineDashedVertical,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { writeClipboardText } from "../lib/clipboard";
@@ -8,8 +14,8 @@ import type { TranscriptOption } from "../types";
 // How long the "copied" toast stays up after copying the session id.
 const COPIED_TOAST_MS = 1600;
 
-// The top bar across the right pane: the active session's id on the left, and on
-// the right a fork control plus the browser toggle. Forking is only enabled for
+// The top bar across the right pane: the active session's id on the left, and
+// session/browser/transcript controls on the right. Forking is only enabled for
 // Claude sessions with a live id. Its height matches the browser overlay's address
 // bar so the two read as a single chrome line when the browser is open.
 interface TurnPaneHeaderProps {
@@ -30,6 +36,8 @@ interface TurnPaneHeaderProps {
   onToggleQueueSplit: () => void;
   browserOpen: boolean;
   onToggleBrowser: () => void;
+  transcriptExpanded: boolean;
+  onToggleTranscriptExpanded: () => void;
 }
 
 export default function TurnPaneHeader({
@@ -44,6 +52,8 @@ export default function TurnPaneHeader({
   onToggleQueueSplit,
   browserOpen,
   onToggleBrowser,
+  transcriptExpanded,
+  onToggleTranscriptExpanded,
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -289,6 +299,20 @@ export default function TurnPaneHeader({
           onClick={onToggleBrowser}
         >
           <Globe size={14} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={`turn-pane-header-button${transcriptExpanded ? " is-active" : ""}`}
+          title={transcriptExpanded ? "Restore transcript" : "Expand transcript"}
+          aria-label={transcriptExpanded ? "Restore transcript" : "Expand transcript"}
+          aria-pressed={transcriptExpanded}
+          onClick={onToggleTranscriptExpanded}
+        >
+          {transcriptExpanded ? (
+            <Minimize2 size={14} aria-hidden="true" />
+          ) : (
+            <Expand size={14} aria-hidden="true" />
+          )}
         </button>
       </div>
       {/* Portaled to <body> so the fixed-position toast escapes the header's

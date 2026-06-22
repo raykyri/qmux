@@ -1720,6 +1720,17 @@ button:disabled {
   --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
+.turn-pane.is-expanded {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--sidebar-width, 268px);
+  z-index: 7;
+  width: auto;
+  box-shadow: inset 1px 0 0 #2a2d2f;
+}
+
 /* The pane's left edge is drawn solely by the resizer's ::before line so there's
    a single border top-to-bottom. It sits above the header (z-index 3) so the line
    is continuous across the header too, rather than being painted over by it. */
@@ -1925,7 +1936,7 @@ button:disabled {
   gap: 6px;
 }
 
-/* Shared by the fork button and the browser toggle so they match in size/style. */
+/* Shared by the fork, queue split, browser, and transcript buttons. */
 .turn-pane-header-button {
   display: inline-flex;
   align-items: center;
@@ -2148,6 +2159,14 @@ button:disabled {
   background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
 }
 
+.turn-sidebar-input-rail {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .turn-sidebar-input.is-split {
   overflow: hidden;
   background: #171b1d;
@@ -2155,6 +2174,19 @@ button:disabled {
      floating composer's top padding that otherwise leaves a gap below the
      splitter. */
   padding-top: 0;
+}
+
+.turn-pane.is-expanded .turn-timeline {
+  grid-template-columns: minmax(0, min(700px, 100%));
+  justify-content: center;
+  padding-right: 24px;
+  padding-left: 24px;
+}
+
+.turn-pane.is-expanded .turn-sidebar-input-rail {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
 }
 
 .turn-card {
@@ -3113,6 +3145,12 @@ header + .turn-blocks {
 
 .browser-overlay.is-empty {
   background: rgba(14, 16, 17, 0.95);
+}
+
+.app-shell.has-expanded-transcript .browser-overlay {
+  right: 20px;
+  width: calc(100% - var(--browser-overlay-left, 64px) - 20px);
+  max-width: calc(100% - var(--browser-overlay-left, 64px) - 20px);
 }
 
 /* Navigation bar across the top; refresh + close controls sit on the right. */

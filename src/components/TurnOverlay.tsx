@@ -508,7 +508,7 @@ export default function TurnOverlay({
           ref={inputWrapRef}
           style={inputStyle}
         >
-          {input}
+          <div className="turn-sidebar-input-rail">{input}</div>
         </div>
       ) : null}
     </section>

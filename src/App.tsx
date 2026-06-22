@@ -458,6 +458,9 @@ export default function App() {
   const [browserOverlayByPane, setBrowserOverlayByPane] = useState<
     Record<string, BrowserOverlayState>
   >({});
+  const [transcriptExpandedByPane, setTranscriptExpandedByPane] = useState<
+    Record<string, boolean>
+  >({});
   const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
   const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
     {},
@@ -621,6 +624,12 @@ export default function App() {
       return next.size === current.size ? current : next;
     });
     setBrowserOverlayByPane((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([paneId]) => ids.has(paneId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    setTranscriptExpandedByPane((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([paneId]) => ids.has(paneId)),
       );
@@ -858,6 +867,23 @@ export default function App() {
     setQueueSplitByAgent((current) => ({ ...current, [agentId]: !(current[agentId] ?? false) }));
   }
 
+  function toggleActiveTranscriptExpanded() {
+    const paneId = activePane?.id;
+    if (!paneId || !hasTurnSidebar) {
+      return;
+    }
+
+    setTranscriptExpandedByPane((current) => {
+      const next = { ...current };
+      if (next[paneId]) {
+        delete next[paneId];
+      } else {
+        next[paneId] = true;
+      }
+      return next;
+    });
+  }
+
   function setActiveQueueSplitHeight(height: number) {
     const agentId = activeAgent?.id;
     if (!agentId) {
@@ -992,6 +1018,9 @@ export default function App() {
     [activePane?.id, agents, queuedTurnsByAgent],
   );
   const hasTurnSidebar = Boolean(activeAgent) || activeOrphanedQueues.length > 0;
+  const activeTranscriptExpanded = Boolean(
+    activePane && hasTurnSidebar && transcriptExpandedByPane[activePane.id],
+  );
 
   useEffect(() => {
     agentsRef.current = agents;
@@ -3026,7 +3055,9 @@ export default function App() {
   return (
     <main
       ref={appRef}
-      className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}`}
+      className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}${
+        activeTranscriptExpanded ? " has-expanded-transcript" : ""
+      }`}
       style={appStyle}
     >
       <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
@@ -3683,19 +3714,21 @@ export default function App() {
       </section>
 
       {hasTurnSidebar ? (
-        <aside className="turn-pane">
-          <div
-            className="turn-pane-resizer"
-            role="separator"
-            aria-label="Resize command queue"
-            aria-orientation="vertical"
-            aria-valuemin={TURN_PANE_MIN_WIDTH}
-            aria-valuemax={maxTurnPaneWidth()}
-            aria-valuenow={turnPaneWidth}
-            tabIndex={0}
-            onPointerDown={startTurnPaneResize}
-            onKeyDown={resizeTurnPaneWithKeyboard}
-          />
+        <aside className={`turn-pane${activeTranscriptExpanded ? " is-expanded" : ""}`}>
+          {activeTranscriptExpanded ? null : (
+            <div
+              className="turn-pane-resizer"
+              role="separator"
+              aria-label="Resize command queue"
+              aria-orientation="vertical"
+              aria-valuemin={TURN_PANE_MIN_WIDTH}
+              aria-valuemax={maxTurnPaneWidth()}
+              aria-valuenow={turnPaneWidth}
+              tabIndex={0}
+              onPointerDown={startTurnPaneResize}
+              onKeyDown={resizeTurnPaneWithKeyboard}
+            />
+          )}
           <TurnOverlay
             turns={activeAgent ? activeTurns : []}
             agentId={activeAgent?.id ?? activePane?.id}
@@ -3732,6 +3765,8 @@ export default function App() {
                 onToggleQueueSplit={toggleActiveQueueSplit}
                 browserOpen={activeBrowserOverlay?.open ?? false}
                 onToggleBrowser={toggleActiveBrowserOverlay}
+                transcriptExpanded={activeTranscriptExpanded}
+                onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
               />
             }
             input={
