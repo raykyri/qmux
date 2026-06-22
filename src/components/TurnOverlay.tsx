@@ -74,9 +74,6 @@ const MIN_QUEUE_SPLIT_HEIGHT = 120;
 const MIN_QUEUE_AREA_HEIGHT = 56;
 const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
-// Matches a whole message wrapped by the same XML-ish tag on its own lines.
-const TAGGED_USER_MESSAGE_PATTERN =
-  /^[^\S\r\n]*<([A-Za-z0-9_-]+)>[^\S\r\n]*(?:\r?\n[\s\S]*)?\r?\n[^\S\r\n]*<\/\1>[^\S\r\n]*$/;
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
   Bash: "command",
@@ -749,7 +746,68 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
 }
 
 function isTaggedUserInstruction(text: string) {
-  return TAGGED_USER_MESSAGE_PATTERN.test(text);
+  const firstLineEnd = text.indexOf("\n");
+  if (firstLineEnd === -1) {
+    return false;
+  }
+
+  const lastLineStart = text.lastIndexOf("\n") + 1;
+  const firstLine = trimHorizontalWhitespace(stripTrailingCarriageReturn(text.slice(0, firstLineEnd)));
+  const lastLine = trimHorizontalWhitespace(text.slice(lastLineStart));
+  const openingTag = parseOpeningTag(firstLine);
+  return openingTag !== null && parseClosingTag(lastLine) === openingTag;
+}
+
+function stripTrailingCarriageReturn(value: string) {
+  return value.endsWith("\r") ? value.slice(0, -1) : value;
+}
+
+function trimHorizontalWhitespace(value: string) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && isHorizontalWhitespace(value[start])) {
+    start += 1;
+  }
+  while (end > start && isHorizontalWhitespace(value[end - 1])) {
+    end -= 1;
+  }
+  return value.slice(start, end);
+}
+
+function parseOpeningTag(line: string) {
+  if (line.length < 3 || line[0] !== "<" || line[line.length - 1] !== ">") {
+    return null;
+  }
+  const tag = line.slice(1, -1);
+  return isInstructionTagName(tag) ? tag : null;
+}
+
+function parseClosingTag(line: string) {
+  if (line.length < 4 || line.slice(0, 2) !== "</" || line[line.length - 1] !== ">") {
+    return null;
+  }
+  const tag = line.slice(2, -1);
+  return isInstructionTagName(tag) ? tag : null;
+}
+
+function isInstructionTagName(tag: string) {
+  if (tag.length === 0) {
+    return false;
+  }
+  for (const char of tag) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower && char !== "_" && char !== "-") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isHorizontalWhitespace(char: string) {
+  return char !== "\n" && char !== "\r" && char.trim() === "";
 }
 
 function ToolEntryView({ entry }: { entry: ToolEntry }) {
