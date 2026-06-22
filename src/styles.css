@@ -289,7 +289,7 @@ button:disabled {
 }
 
 .pane-tab:hover {
-  background: #15191b;
+  background: #0c0e0f;
 }
 
 .pane-tab-row.is-selected .pane-tab {
@@ -307,6 +307,35 @@ button:disabled {
 
 .pane-tab-row.is-dragging {
   opacity: 0.5;
+}
+
+/* The fixed Home tab sits above the terminal tabs as a permanent destination
+   rather than part of the reorderable list. */
+.pane-home-row {
+  flex: 0 0 auto;
+  margin-bottom: 4px;
+}
+
+.pane-home-row .pane-tab {
+  /* Reuse the terminal tabs' grid so the "Home" label lines up with their titles.
+     The icon takes the status-dot column (overflowing it symmetrically since it's
+     wider) and the label lands in the same content column as the pane titles. */
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 6px;
+  /* Home isn't draggable, so it gets a normal pointer rather than the grab cursor. */
+  cursor: pointer;
+}
+
+.pane-home-row .pane-tab svg {
+  justify-self: center;
+  flex: none;
+  color: #8a938e;
+}
+
+.pane-home-row.is-selected .pane-tab svg {
+  color: #ffffff;
 }
 
 .pane-tab-row.is-drop-before .pane-tab {

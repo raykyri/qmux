@@ -16,6 +16,7 @@ import type {
 import {
   ChevronLeft,
   ChevronRight,
+  House,
   MessageSquareText,
   Minus,
   Plus,
@@ -134,6 +135,10 @@ const LEFT_SIDEBAR_MAX_WIDTH = 420;
 const LEFT_SIDEBAR_COMPACT_WIDTH = 270;
 const PANE_TAB_DRAG_START_THRESHOLD = 4;
 const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
+// Sentinel "active pane" value for the fixed Home tab. It's not a real pane, so it
+// lives outside the `panes` list — it can't be closed, reordered, or nested, and
+// selecting it shows the empty content placeholder (the launcher).
+const HOME_TAB_ID = "__home__";
 // How long after the user's last keystroke we keep holding the queue before letting a
 // finished turn auto-send the next queued message.
 const INPUT_DEQUEUE_HOLD_MS = 1500;
@@ -321,9 +326,12 @@ export default function App() {
   );
   // Right-click chooser for a link (transcript or terminal): internal vs external.
   const [linkMenu, setLinkMenu] = useState<{ url: string; x: number; y: number } | null>(null);
+  // The Home tab is selected explicitly, or implicitly whenever there are no real
+  // panes to fall back to. While Home is active there is no active terminal pane.
+  const homeActive = activePaneId === HOME_TAB_ID || panes.length === 0;
   const activePane = useMemo(
-    () => panes.find((pane) => pane.id === activePaneId) ?? panes[0],
-    [activePaneId, panes],
+    () => (homeActive ? undefined : (panes.find((pane) => pane.id === activePaneId) ?? panes[0])),
+    [homeActive, activePaneId, panes],
   );
   const activeAgent = useMemo(
     () => agents.find((agent) => agent.paneId === activePane?.id),
@@ -441,7 +449,7 @@ export default function App() {
   // when there are no panes, inline as the content-pane placeholder. Only one is
   // ever mounted at a time (the inline one yields to the modal), so they can share
   // the launcher refs/state and the focus/auto-grow effects below.
-  const launcherVisible = launcherOpen || panes.length === 0;
+  const launcherVisible = launcherOpen || homeActive;
 
   // Called on each keystroke in an agent's composer or terminal. Sets a backend
   // "typing" hold (so a finishing turn won't auto-drain into what the user is typing)
@@ -1280,7 +1288,11 @@ export default function App() {
   ): PaneDropTarget | null {
     const rows = Array.from(container.children).filter(
       (child): child is HTMLElement =>
-        child instanceof HTMLElement && child.classList.contains("pane-tab-row"),
+        child instanceof HTMLElement &&
+        child.classList.contains("pane-tab-row") &&
+        // The fixed Home row isn't a reorder/nest target and isn't in `panes`, so
+        // excluding it keeps the row index aligned with the panes array below.
+        !child.classList.contains("pane-home-row"),
     );
     if (rows.length === 0) {
       return null;
@@ -2240,23 +2252,25 @@ export default function App() {
           className={`pane-list${draggingPaneId ? " is-dragging" : ""}`}
           aria-label="Panes"
         >
-          {panes.length === 0 ? (
-            <div className="empty-state pane-list-empty">
-              <div className="pane-list-empty-content">
-                <div>No tabs</div>
-                <div className="terminal-empty-actions">
-                  <button type="button" onClick={addShellPane}>
-                    <SquareTerminal size={14} aria-hidden="true" />
-                    <span>New shell</span>
-                  </button>
-                  <button type="button" onClick={() => setLauncherOpen(true)}>
-                    <MessageSquareText size={14} aria-hidden="true" />
-                    <span>New agent</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : null}
+          {/* Fixed Home tab: not a real pane, so it can't be closed, reordered, or
+              nested. Selecting it shows the empty content placeholder (the launcher). */}
+          <div
+            className={`pane-tab-row pane-home-row${homeActive ? " is-selected" : ""}`}
+            onClick={() => setActivePaneId(HOME_TAB_ID)}
+          >
+            <button
+              type="button"
+              className="pane-tab"
+              aria-current={homeActive ? "page" : undefined}
+              onClick={(event) => {
+                event.stopPropagation();
+                setActivePaneId(HOME_TAB_ID);
+              }}
+            >
+              <House size={14} aria-hidden="true" />
+              <span className="pane-tab-title">Home</span>
+            </button>
+          </div>
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
             const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
@@ -2831,7 +2845,7 @@ export default function App() {
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div ref={terminalStageRef} className="terminal-stage">
-          {panes.length === 0 && !launcherOpen ? (
+          {homeActive && !launcherOpen ? (
             <div className="terminal-empty-state">{renderLauncher("inline")}</div>
           ) : null}
           {panes.map((pane) => (
