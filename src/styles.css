@@ -2280,6 +2280,57 @@ header + .turn-blocks {
   color: #8f9994;
 }
 
+.long-user-message {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.long-user-message-toggle {
+  display: grid;
+  grid-template-columns: 13px minmax(0, auto) auto;
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+  color: #d9ddd9;
+  font: inherit;
+  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  cursor: pointer;
+}
+
+.long-user-message-toggle:hover {
+  background: #252b2d;
+}
+
+.long-user-message-toggle[aria-expanded="true"] .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.long-user-message-size {
+  min-width: 0;
+  overflow: hidden;
+  color: #8f9994;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.long-user-message-preview {
+  min-width: 0;
+  max-height: 96px;
+  margin: 0;
+  color: #bfc7c2;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .turn-markdown > :first-child {
   margin-top: 0;
 }

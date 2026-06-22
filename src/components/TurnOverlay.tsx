@@ -90,6 +90,8 @@ const MIN_QUEUE_SPLIT_HEIGHT = 120;
 const MIN_QUEUE_AREA_HEIGHT = 56;
 const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
+const LONG_USER_MESSAGE_COLLAPSE_THRESHOLD = 12_000;
+const LONG_USER_MESSAGE_PREVIEW_CHARS = 1_200;
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
   "functions.exec_command": "cmd",
@@ -934,6 +936,9 @@ function capitalizeSentence(label: string) {
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
   if (block.type === "text") {
     if (role !== "assistant") {
+      if (role === "user" && block.text.length > LONG_USER_MESSAGE_COLLAPSE_THRESHOLD) {
+        return <CollapsedUserText text={block.text} />;
+      }
       const muted = role === "user" && isTaggedUserInstruction(block.text);
       return <p className={`turn-text${muted ? " is-tagged-instruction" : ""}`}>{block.text}</p>;
     }
@@ -955,6 +960,47 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
       <pre>{stringify(block.value)}</pre>
     </details>
   );
+}
+
+function CollapsedUserText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = useMemo(() => collapsedUserTextPreview(text), [text]);
+  const sizeLabel = formatCharacterSize(text.length);
+
+  return (
+    <div className="long-user-message">
+      <button
+        type="button"
+        className="long-user-message-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <DisclosureChevron />
+        <span>{expanded ? "Collapse long message" : "Expand long message"}</span>
+        <span className="long-user-message-size">{sizeLabel}</span>
+      </button>
+      {expanded ? (
+        <p className="turn-text">{text}</p>
+      ) : (
+        <p className="long-user-message-preview">{preview}</p>
+      )}
+    </div>
+  );
+}
+
+function collapsedUserTextPreview(text: string) {
+  const trimmedPreview = text.slice(0, LONG_USER_MESSAGE_PREVIEW_CHARS).trimEnd();
+  return `${trimmedPreview}\n...`;
+}
+
+function formatCharacterSize(characters: number) {
+  if (characters < 1_000) {
+    return `${characters} chars`;
+  }
+  if (characters < 100_000) {
+    return `${(characters / 1_000).toFixed(1)}k chars`;
+  }
+  return `${Math.round(characters / 1_000)}k chars`;
 }
 
 function ToolEntryView({
