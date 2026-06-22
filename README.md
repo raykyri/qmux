@@ -115,9 +115,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ## Using The App
 
 - `Cmd-T` / `Cmd-N`: open a shell pane.
-- `Cmd-K`: open the agent launcher.
-- `Cmd-W`: close the active pane.
-- `Cmd-,`: open settings.
+- `Cmd-;` / `Ctrl-;`: open the agent launcher.
+- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through open tabs.
+- `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through open tabs.
+- `Cmd-W` / `Ctrl-W`: close the active pane.
+- `Cmd-,` / `Ctrl-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch.
 - Enable `Worktree` to create an isolated git worktree for the agent.
 - In zsh/bash shell panes, the app injects `qmux`, `claude`, `codex`, and
