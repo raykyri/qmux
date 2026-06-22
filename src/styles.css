@@ -1664,16 +1664,18 @@ button:disabled {
   display: flex;
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid #2a2d2f;
   background: #171b1d;
 }
 
+/* The pane's left edge is drawn solely by the resizer's ::before line so there's
+   a single border top-to-bottom. It sits above the header (z-index 3) so the line
+   is continuous across the header too, rather than being painted over by it. */
 .turn-pane-resizer {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
-  z-index: 2;
+  z-index: 4;
   width: 10px;
   cursor: col-resize;
 }
