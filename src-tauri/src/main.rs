@@ -8,6 +8,7 @@ mod launch_path;
 mod persistence;
 mod pty;
 mod recovery;
+mod scrollback;
 mod sleep;
 mod state;
 mod transcript;
@@ -240,6 +241,17 @@ fn pane_write(
 #[tauri::command]
 fn pane_attach(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
     attach_pane(&state, pane_id)
+}
+
+/// Returns the durable terminal output captured before this pane's current
+/// frontend attach. The frontend replays it into xterm before `pane_attach`, so
+/// recovered panes show their prior scrollback followed by fresh process output.
+#[tauri::command]
+fn pane_scrollback(state: tauri::State<'_, AppState>, pane_id: String) -> Result<String, String> {
+    if state.pane_writer(&pane_id)?.is_none() {
+        return Err(format!("pane {pane_id} was not found"));
+    }
+    scrollback::pane_scrollback_base64(&state.config().workspace_root, &pane_id)
 }
 
 #[tauri::command]
@@ -512,6 +524,7 @@ fn main() {
             agent_fork,
             pane_write,
             pane_attach,
+            pane_scrollback,
             pane_resize,
             pane_kill,
             pane_rename,
