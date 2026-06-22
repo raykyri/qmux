@@ -309,6 +309,32 @@ button:disabled {
   opacity: 0.5;
 }
 
+/* The fixed Home tab sits above the terminal tabs, separated by a hairline rule so
+   it reads as a permanent destination rather than part of the reorderable list. */
+.pane-home-row {
+  flex: 0 0 auto;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #23282a;
+}
+
+.pane-home-row .pane-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  /* Home isn't draggable, so it gets a normal pointer rather than the grab cursor. */
+  cursor: pointer;
+}
+
+.pane-home-row .pane-tab svg {
+  flex: none;
+  color: #8a938e;
+}
+
+.pane-home-row.is-selected .pane-tab svg {
+  color: #ffffff;
+}
+
 .pane-tab-row.is-drop-before .pane-tab {
   box-shadow: inset 0 2px 0 0 var(--accent-color);
 }
