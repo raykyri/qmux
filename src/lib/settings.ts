@@ -42,6 +42,10 @@ export interface AppSettings {
   fontSize: number;
   /** show Cmd-held shortcut badges in the sidebar */
   showShortcutHints: boolean;
+  /** OpenRouter API key */
+  openRouterKey: string;
+  /** OpenRouter model id */
+  openRouterModel: string;
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
 }
@@ -50,6 +54,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontId: DEFAULT_FONT_ID,
   fontSize: TERMINAL_FONT_SIZE,
   showShortcutHints: true,
+  openRouterKey: "",
+  openRouterModel: "",
   preventSleep: true,
 };
 
@@ -103,7 +109,22 @@ export function loadSettings(): AppSettings {
       typeof parsed.showShortcutHints === "boolean"
         ? parsed.showShortcutHints
         : DEFAULT_SETTINGS.showShortcutHints;
-    return { fontId, fontSize, showShortcutHints, preventSleep };
+    const openRouterKey =
+      typeof parsed.openRouterKey === "string"
+        ? parsed.openRouterKey
+        : DEFAULT_SETTINGS.openRouterKey;
+    const openRouterModel =
+      typeof parsed.openRouterModel === "string"
+        ? parsed.openRouterModel
+        : DEFAULT_SETTINGS.openRouterModel;
+    return {
+      fontId,
+      fontSize,
+      showShortcutHints,
+      openRouterKey,
+      openRouterModel,
+      preventSleep,
+    };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

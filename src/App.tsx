@@ -192,7 +192,10 @@ const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
+const MAX_OPENROUTER_TITLE_SOURCE_CHARS = 4000;
 const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
+const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
+const APP_TOAST_TIMEOUT_MS = 5000;
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
@@ -201,8 +204,12 @@ const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 interface PendingFirstMessageTitle {
   paneId: string;
   checkedMessages: number;
-  submittedMessageKeys: string[];
   seenTurnIds: Set<string>;
+}
+
+interface OpenRouterTitleConfig {
+  apiKey: string;
+  model: string;
 }
 
 function sanitizeTerminalTitle(rawTitle: string): string | null {
@@ -227,42 +234,132 @@ function normalizedMessagePreview(rawMessage: string): string | null {
   return normalized;
 }
 
-function firstMessagePaneTitle(rawMessage: string): string | null {
+function firstMessageTitleSource(rawMessage: string): string | null {
   if (isTaggedUserInstruction(rawMessage)) {
     return null;
   }
-  const normalized = normalizedMessagePreview(rawMessage);
+  return normalizedMessagePreview(rawMessage);
+}
+
+function sanitizeOpenRouterTitle(rawTitle: string): string | null {
+  const normalized = sanitizeTerminalTitle(rawTitle);
   if (!normalized) {
     return null;
   }
-  const chars = Array.from(normalized);
+  const withoutLabel = normalized.replace(/^title:\s*/i, "").trim();
+  const unquoted = withoutLabel.replace(/^["'`]+|["'`.]+$/g, "").trim();
+  if (!unquoted) {
+    return null;
+  }
+  const chars = Array.from(unquoted);
   if (chars.length <= MAX_FIRST_MESSAGE_TITLE_CHARS) {
-    return normalized;
+    return unquoted;
   }
 
   return `${chars.slice(0, MAX_FIRST_MESSAGE_TITLE_CHARS - 3).join("").trimEnd()}...`;
+}
+
+function openRouterTitleConfig(settings: AppSettings): OpenRouterTitleConfig | null {
+  const apiKey = settings.openRouterKey.trim();
+  const model = settings.openRouterModel.trim();
+  return apiKey && model ? { apiKey, model } : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function openRouterPayloadErrorMessage(payload: unknown): string | null {
+  if (typeof payload === "string") {
+    return payload.trim() || null;
+  }
+  const record = asRecord(payload);
+  if (!record) {
+    return null;
+  }
+  if (typeof record.message === "string") {
+    return record.message;
+  }
+  const error = record.error;
+  if (typeof error === "string") {
+    return error;
+  }
+  const errorRecord = asRecord(error);
+  return typeof errorRecord?.message === "string" ? errorRecord.message : null;
+}
+
+function openRouterTitleFromPayload(payload: unknown): string | null {
+  const record = asRecord(payload);
+  const choices = Array.isArray(record?.choices) ? record.choices : [];
+  const firstChoice = asRecord(choices[0]);
+  const message = asRecord(firstChoice?.message);
+  const content = message?.content ?? firstChoice?.text;
+  return typeof content === "string" ? sanitizeOpenRouterTitle(content) : null;
+}
+
+async function readOpenRouterPayload(response: Response): Promise<unknown> {
+  const raw = await response.text();
+  if (!raw.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    if (response.ok) {
+      throw new Error("OpenRouter returned invalid JSON.");
+    }
+    return raw;
+  }
+}
+
+async function summarizeFirstMessageTitle(
+  sourceMessage: string,
+  titleConfig: OpenRouterTitleConfig,
+): Promise<string | null> {
+  const payload = {
+    model: titleConfig.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Create a concise terminal tab title for the user's first message. Return only the title, without quotes. Use 2-6 words.",
+      },
+      {
+        role: "user",
+        content: Array.from(sourceMessage).slice(0, MAX_OPENROUTER_TITLE_SOURCE_CHARS).join(""),
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: 24,
+    stream: false,
+  };
+  const response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${titleConfig.apiKey}`,
+      "Content-Type": "application/json",
+      "X-Title": "qmux",
+    },
+    body: JSON.stringify(payload),
+  });
+  const responsePayload = await readOpenRouterPayload(response);
+  if (!response.ok) {
+    const message = openRouterPayloadErrorMessage(responsePayload) ?? response.statusText;
+    throw new Error(`OpenRouter request failed (${response.status}): ${message}`);
+  }
+  const title = openRouterTitleFromPayload(responsePayload);
+  if (!title) {
+    throw new Error("OpenRouter returned an empty title.");
+  }
+  return title;
 }
 
 function createPendingFirstMessageTitle(paneId: string): PendingFirstMessageTitle {
   return {
     paneId,
     checkedMessages: 0,
-    submittedMessageKeys: [],
     seenTurnIds: new Set(),
   };
-}
-
-function consumeSubmittedTitleMessage(pending: PendingFirstMessageTitle, rawMessage: string) {
-  const key = normalizedMessagePreview(rawMessage);
-  if (!key) {
-    return false;
-  }
-  const index = pending.submittedMessageKeys.indexOf(key);
-  if (index === -1) {
-    return false;
-  }
-  pending.submittedMessageKeys.splice(index, 1);
-  return true;
 }
 
 function firstUserTurnText(turn: Turn): string | null {
@@ -354,6 +451,7 @@ export default function App() {
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
+  const appToastTimerRef = useRef<number | null>(null);
   const suppressPaneTabClickRef = useRef(false);
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -426,10 +524,12 @@ export default function App() {
   const [shortcutHintsVisible, setShortcutHintsVisible] = useState(false);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
-  // Application-level UI settings (terminal font + size), loaded from localStorage
-  // once on mount and persisted on every change. Shared by every pane. Font size
-  // is also adjustable in-session with Cmd-=/Cmd--.
+  // Application-level settings, loaded from localStorage once on mount and
+  // persisted on every change. Shared by every pane. Font size is also adjustable
+  // in-session with Cmd-=/Cmd--.
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
@@ -469,6 +569,7 @@ export default function App() {
   // ask never sends twice or — worse, in "new thread" mode — forks twice.
   const askSubmittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [appToast, setAppToast] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
   // buttons disabled) until the close/delete actually finishes.
@@ -546,13 +647,25 @@ export default function App() {
     return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
   }
 
+  function showAppToast(message: string) {
+    setAppToast(message);
+    if (appToastTimerRef.current !== null) {
+      window.clearTimeout(appToastTimerRef.current);
+    }
+    appToastTimerRef.current = window.setTimeout(() => {
+      setAppToast(null);
+      appToastTimerRef.current = null;
+    }, APP_TOAST_TIMEOUT_MS);
+  }
+
   async function applyFirstMessageTitle(
     paneId: string,
     rawMessage: string,
+    titleConfig: OpenRouterTitleConfig,
     fallbackPane?: PaneInfo,
   ) {
-    const title = firstMessagePaneTitle(rawMessage);
-    if (!title) {
+    const sourceMessage = firstMessageTitleSource(rawMessage);
+    if (!sourceMessage) {
       return;
     }
 
@@ -565,42 +678,49 @@ export default function App() {
       return;
     }
 
-    const previousTitle = pane?.title;
-    setManuallyTitledPaneIds((current) => {
-      const next = new Set(current);
-      next.add(paneId);
-      return next;
-    });
-    setPanesPreservingRecoveredDismissals((current) =>
-      current.map((pane) => (pane.id === paneId ? { ...pane, title } : pane)),
-    );
+    let title: string | null;
+    try {
+      title = await summarizeFirstMessageTitle(sourceMessage, titleConfig);
+    } catch (err) {
+      showAppToast(
+        `OpenRouter title error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    if (!title) {
+      return;
+    }
+
+    const currentPane =
+      panesRef.current.find((candidate) => candidate.id === paneId) ?? fallbackPane;
+    const currentPaneAgent = currentPane
+      ? agentsRef.current.find((agent) => agent.paneId === currentPane.id)
+      : undefined;
+    if (!currentPane || paneHasUserSetTitle(currentPane, currentPaneAgent)) {
+      return;
+    }
 
     try {
       const updated = await renamePane(paneId, title);
+      setManuallyTitledPaneIds((current) => {
+        const next = new Set(current);
+        next.add(paneId);
+        return next;
+      });
       setPanesPreservingRecoveredDismissals((current) =>
         current.map((pane) => (pane.id === paneId ? { ...pane, title: updated.title } : pane)),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setManuallyTitledPaneIds((current) => {
-        const next = new Set(current);
-        next.delete(paneId);
-        return next;
-      });
-      if (previousTitle) {
-        setPanesPreservingRecoveredDismissals((current) =>
-          current.map((pane) =>
-            pane.id === paneId ? { ...pane, title: previousTitle } : pane,
-          ),
-        );
-      }
+      showAppToast(
+        `Couldn't set terminal title: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
   function applyPendingFirstMessageTitle(
     agentId: string,
     rawMessage: string,
-    source: { turnId?: string; submitted?: boolean } = { submitted: true },
+    source: { turnId?: string } = {},
   ) {
     const pending = pendingFirstTitleByAgentRef.current.get(agentId);
     if (!pending) {
@@ -611,28 +731,27 @@ export default function App() {
         return;
       }
       pending.seenTurnIds.add(source.turnId);
-      if (consumeSubmittedTitleMessage(pending, rawMessage)) {
-        return;
-      }
     }
 
-    const messageKey = normalizedMessagePreview(rawMessage);
-    if (!messageKey) {
+    const messagePreview = normalizedMessagePreview(rawMessage);
+    if (!messagePreview) {
       return;
     }
-    const title = firstMessagePaneTitle(rawMessage);
     pending.checkedMessages += 1;
-    if (title) {
-      pendingFirstTitleByAgentRef.current.delete(agentId);
-      void applyFirstMessageTitle(pending.paneId, rawMessage);
+    const sourceMessage = firstMessageTitleSource(rawMessage);
+    if (!sourceMessage) {
+      if (pending.checkedMessages >= FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT) {
+        pendingFirstTitleByAgentRef.current.delete(agentId);
+      }
       return;
     }
-    if (source.submitted) {
-      pending.submittedMessageKeys.push(messageKey);
-    }
-    if (pending.checkedMessages >= FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT) {
+    const titleConfig = openRouterTitleConfig(settingsRef.current);
+    if (titleConfig) {
       pendingFirstTitleByAgentRef.current.delete(agentId);
+      void applyFirstMessageTitle(pending.paneId, rawMessage, titleConfig);
+      return;
     }
+    pendingFirstTitleByAgentRef.current.delete(agentId);
   }
 
   // Drop per-pane UI state for panes that have closed so it can't leak or resurface.
@@ -2273,22 +2392,15 @@ export default function App() {
         useWorktree: createInWorktree,
         options: launcherOptions,
       });
-      const firstTitle = firstMessagePaneTitle(finalPrompt);
-      const displayedPane = firstTitle ? { ...pane, title: firstTitle } : pane;
-      setPanesPreservingRecoveredDismissals((current) => [...current, displayedPane]);
+      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
       if (pane.agentId) {
         setAgentQueuedTurns(pane.agentId, []);
-        if (!firstTitle) {
-          pendingFirstTitleByAgentRef.current.set(
-            pane.agentId,
-            createPendingFirstMessageTitle(pane.id),
-          );
-          applyPendingFirstMessageTitle(pane.agentId, finalPrompt, { submitted: true });
-        }
-      }
-      if (firstTitle) {
-        void applyFirstMessageTitle(pane.id, finalPrompt, pane);
+        pendingFirstTitleByAgentRef.current.set(
+          pane.agentId,
+          createPendingFirstMessageTitle(pane.id),
+        );
+        applyPendingFirstMessageTitle(pane.agentId, finalPrompt);
       }
       setPrompt("");
       setSelectedSkillId(null);
@@ -2473,11 +2585,20 @@ export default function App() {
     }
   }, [paneContextMenu, panes]);
 
-  // Persist application settings (font + size) whenever they change, so the
-  // choice survives a restart. Writing on the initial value is harmless.
+  // Persist application settings whenever they change, so the choice survives a
+  // restart. Writing on the initial value is harmless.
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  useEffect(
+    () => () => {
+      if (appToastTimerRef.current !== null) {
+        window.clearTimeout(appToastTimerRef.current);
+      }
+    },
+    [],
+  );
 
   // Keep the machine awake while the toggle is on and at least one agent is
   // actively working (running or starting up). Releasing the lock the moment no
@@ -3728,6 +3849,42 @@ export default function App() {
                 }}
               />
             </label>
+
+            <div className="settings-row">
+              <label htmlFor="settings-openrouter-key" className="settings-label">
+                OpenRouter key
+              </label>
+              <input
+                id="settings-openrouter-key"
+                className="settings-input"
+                type="password"
+                value={settings.openRouterKey}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => {
+                  const openRouterKey = event.currentTarget.value;
+                  setSettings((current) => ({ ...current, openRouterKey }));
+                }}
+              />
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="settings-openrouter-model" className="settings-label">
+                OpenRouter model
+              </label>
+              <input
+                id="settings-openrouter-model"
+                className="settings-input"
+                type="text"
+                value={settings.openRouterModel}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => {
+                  const openRouterModel = event.currentTarget.value;
+                  setSettings((current) => ({ ...current, openRouterModel }));
+                }}
+              />
+            </div>
           </div>
         </div>
       ) : null}
@@ -4146,6 +4303,11 @@ export default function App() {
           {dictationDownload.total
             ? ` ${Math.round((dictationDownload.loaded / dictationDownload.total) * 100)}%`
             : ""}
+        </div>
+      ) : null}
+      {appToast ? (
+        <div className="composer-toast app-toast" role="status" aria-live="polite">
+          {appToast}
         </div>
       ) : null}
     </main>
