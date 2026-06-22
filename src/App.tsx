@@ -494,7 +494,7 @@ export default function App() {
   // The Whisper voice model is downloaded once and cached; surface its progress
   // as an app-level toast since it's shared across every composer's mic.
   const dictationDownload = useSyncExternalStore(subscribeDictationDownload, getDictationDownload);
-  // The launcher renders in two places: the modal (Cmd-N / sidebar button) and,
+  // The launcher renders in two places: the modal (Cmd-; / sidebar button) and,
   // when there are no panes, inline as the content-pane placeholder. Only one is
   // ever mounted at a time (the inline one yields to the modal), so they can share
   // the launcher refs/state and the focus/auto-grow effects below.
@@ -1909,16 +1909,19 @@ export default function App() {
 
       const commandOnly = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
 
-      // Cmd-= zooms the terminal font in, Cmd-- zooms it out. Handled before the
-      // repeat bail so holding the combo keeps stepping the size; the change is
-      // written into the persisted settings, same as the panel stepper.
-      if (commandOnly && (key === "+" || key === "=" || key === "-")) {
+      // Cmd-= zooms the terminal font in, Cmd-- zooms it out, and Cmd-0 resets it.
+      // Handled before the repeat bail so holding the zoom combo keeps stepping
+      // the size; the change is written into the persisted settings, same as the
+      // panel stepper.
+      if (commandOnly && (key === "+" || key === "=" || key === "-" || key === "0")) {
         event.preventDefault();
         event.stopPropagation();
-        const delta = key === "-" ? -1 : 1;
         setSettings((current) => ({
           ...current,
-          fontSize: clampFontSize(current.fontSize + delta),
+          fontSize:
+            key === "0"
+              ? TERMINAL_FONT_SIZE
+              : clampFontSize(current.fontSize + (key === "-" ? -1 : 1)),
         }));
         return;
       }
@@ -1943,20 +1946,24 @@ export default function App() {
         focusTabById(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
       };
 
-      // Cmd-0 / Ctrl-0 jumps to Home; Cmd-1..9 / Ctrl-1..9 jump to real pane
-      // tabs in sidebar order. Claimed before the editable-target bail so the
-      // app-level tab shortcuts keep working from terminal and composer focus.
-      if (/^[0-9]$/.test(key) && !event.altKey && !event.shiftKey) {
+      // Cmd-1..9 / Ctrl-1..9 jump to real pane tabs in sidebar order. Claimed
+      // before the editable-target bail so the app-level tab shortcuts keep
+      // working from terminal and composer focus.
+      if (/^[1-9]$/.test(key) && !event.altKey && !event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
-        if (key === "0") {
-          focusHomeTab();
-          return;
-        }
         const pane = panes[Number(key) - 1];
         if (pane) {
           focusPaneTab(pane.id);
         }
+        return;
+      }
+
+      // Cmd-N jumps to Home, replacing the old Cmd-0 Home shortcut.
+      if (commandOnly && key === "n") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusHomeTab();
         return;
       }
 
@@ -1999,7 +2006,7 @@ export default function App() {
         return;
       }
 
-      if (key !== "t" && key !== "n" && key !== "w") {
+      if (key !== "t" && key !== "w") {
         return;
       }
 
@@ -2032,7 +2039,7 @@ export default function App() {
       event.preventDefault();
       event.stopPropagation();
 
-      // Cmd-T / Cmd-N open a new shell pane.
+      // Cmd-T opens a new shell pane.
       if (!event.metaKey || event.ctrlKey) {
         return;
       }

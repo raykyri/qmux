@@ -114,9 +114,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Using The App
 
-- `Cmd-T` / `Cmd-N`: open a shell pane.
+- `Cmd-T`: open a shell pane.
+- `Cmd-N`: focus Home.
 - `Cmd-;` / `Ctrl-;`: open the agent launcher.
-- `Cmd-0` / `Ctrl-0`: focus Home.
+- `Cmd-0`: reset terminal font size.
 - `Cmd-1`..`Cmd-9` / `Ctrl-1`..`Ctrl-9`: focus the corresponding pane tab.
 - `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through Home and open tabs.
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
