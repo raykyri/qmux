@@ -1357,9 +1357,10 @@ button:disabled {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
-/* Added once the popup has been placed, so it glides to the next selection's anchor
-   on a re-selection instead of snapping (it stays mounted across re-selections). */
-.selection-ask-popup.is-settled {
+/* Present only for a position update that should animate: a re-selection whose box
+   overlaps the previous one. The popup slides to a nearby selection but snaps to a
+   far one (and on first placement), so it never flies across the pane. */
+.selection-ask-popup.is-gliding {
   transition: left 120ms ease, top 120ms ease;
 }
 

@@ -2,6 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { SelectionAnchor } from "../appTypes";
 
+// Two selection boxes "overlap" when their viewport rectangles intersect — used to
+// decide whether a re-selection is near enough that the popup should glide to it
+// (e.g. growing a word to its line) rather than snap (a jump to a far-off selection,
+// which would otherwise slide distractingly across the pane).
+function anchorsOverlap(a: SelectionAnchor, b: SelectionAnchor) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
 // A small floating button group shown above (or below) a non-empty text selection,
 // offering to ask the active agent about the quoted text. Portals to <body> so it
 // escapes the terminal/transcript clipping containers, positions itself in viewport
@@ -27,9 +35,11 @@ export default function SelectionAskPopup({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  // Enable the position transition only after the first placement, so the popup
-  // doesn't glide in from its offscreen pre-measure origin on mount.
-  const [settled, setSettled] = useState(false);
+  // Whether the current position update should animate, decided per anchor change:
+  // glide only when the new selection overlaps the previous one, and never on the
+  // first placement (no previous anchor) — which would slide in from offscreen.
+  const [glide, setGlide] = useState(false);
+  const prevAnchorRef = useRef<SelectionAnchor | null>(null);
   // App passes fresh `onClose`/`reselectWithin` each render and re-renders often
   // (streaming agent events). Read them through refs so the listener effect can
   // subscribe once instead of tearing down and re-adding all four listeners on every
@@ -56,16 +66,11 @@ export default function SelectionAskPopup({
     }
     left = Math.max(gap, Math.min(left, window.innerWidth - width - gap));
     top = Math.max(gap, Math.min(top, window.innerHeight - height - gap));
+    const previous = prevAnchorRef.current;
+    setGlide(previous != null && anchorsOverlap(previous, anchor));
+    prevAnchorRef.current = anchor;
     setPos({ left, top });
   }, [anchor]);
-
-  // Turn on the glide transition once the popup has been placed for the first time
-  // (after paint), so only later anchor changes animate.
-  useEffect(() => {
-    if (pos && !settled) {
-      setSettled(true);
-    }
-  }, [pos, settled]);
 
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
@@ -105,7 +110,7 @@ export default function SelectionAskPopup({
   return createPortal(
     <div
       ref={ref}
-      className={`selection-ask-popup${settled ? " is-settled" : ""}`}
+      className={`selection-ask-popup${glide ? " is-gliding" : ""}`}
       role="group"
       aria-label="Ask about selection"
       // Keep it offscreen until measured so it doesn't flash at the origin.
