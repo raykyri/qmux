@@ -1084,6 +1084,30 @@ button:disabled {
   background-color: #16191b;
 }
 
+.settings-input {
+  flex: 0 1 190px;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  outline: none;
+}
+
+.settings-input:hover {
+  border-color: var(--control-border-hover);
+  background: #16191b;
+}
+
+.settings-input:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
 /* Stepper — a bordered group matching the agent picker, with −/value/+. */
 .settings-stepper {
   display: inline-flex;
@@ -3403,6 +3427,16 @@ header + .turn-blocks {
   font-size: var(--fs-sm);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   pointer-events: none;
+}
+
+.app-toast {
+  max-width: min(520px, calc(100vw - 48px));
+  border-color: #5b4630;
+  background: #241f18;
+  color: #ffdca8;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
 }
 
 /* First-use load of the shared Whisper voice model — pinned to the bottom
