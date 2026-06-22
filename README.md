@@ -26,6 +26,8 @@ Implemented today:
   isolation.
 - Sidebar tab nesting: indent a tab under another by dragging it onto the tab, or
   via the tab's right-click Indent/Outdent.
+- Sidebar keyboard shortcut hints: hold `Cmd` to show floating hints for Home and
+  the first nine pane tabs.
 - Hook settings generation and token-gated Unix-socket ingestion via
   `qmux notify <event>`.
 - Transcript JSONL tailing for native turn rendering.
@@ -33,16 +35,19 @@ Implemented today:
   editing/reordering, per-item "pause after send", a typing-aware hold that delays
   auto-send while you type, per-agent drafts, and transcript copy actions (including
   "Copy queued").
+- Local Whisper-backed dictation in the launcher and follow-up composer, with the
+  model cached after first use.
 - Optional git worktree creation for launched agents, with dirty-worktree checks
   (and soft branch deletion) before closing worktree-backed panes.
 - Session forking from inside a running Claude session (with or without a fresh git
   worktree) into a tab nested under the source — see [Skills](#skills).
-- A tab-bound browser overlay that renders a local file or a `http://localhost` dev
-  server in a panel over the terminal (URL bar, refresh, toggle), served from a
-  loopback-only static file server.
+- A tab-bound, resizable browser overlay that renders a local file or a
+  `http://localhost` dev server in a panel over the terminal (URL bar, refresh,
+  toggle), served from a loopback-only static file server.
 - Clickable links in the transcript and terminal: open in the browser overlay, or
   right-click to choose the internal or external browser.
-- Session/transcript recovery, including a picker to correct a wrong guess.
+- Session/transcript recovery, including a session menu to copy the active session
+  id, switch/detach transcript bindings, and correct a wrong guess.
 - Persisted pane, group, agent, transcript, and queued-turn metadata with
   best-effort restart recovery.
 - App settings: terminal font and size, plus a macOS wake lock that keeps the
@@ -117,14 +122,21 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-T`: open a shell pane.
 - `Cmd-N`: focus Home.
 - `Cmd-;` / `Ctrl-;`: open the agent launcher.
+- `Cmd-=` / `Cmd-+`: increase terminal font size.
+- `Cmd--`: decrease terminal font size.
 - `Cmd-0`: reset terminal font size.
 - `Cmd-1`..`Cmd-9` / `Ctrl-1`..`Ctrl-9`: focus the corresponding pane tab.
-- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through Home and open tabs.
+- Hold `Cmd`: show floating shortcut hints for Home and pane tabs in the `Cmd-1`..
+  `Cmd-9` range.
+- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through open pane tabs, skipping Home.
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
+- `Cmd-Shift-H`: focus Home.
 - `Cmd-W` / `Ctrl-W`: close the active pane.
 - `Cmd-,` / `Ctrl-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch.
 - Enable `Worktree` to create an isolated git worktree for the agent.
+- Use the mic button in the launcher or composer for local dictation. The Whisper
+  model downloads on first use, is cached by qmux, and then runs locally/offline.
 - In zsh/bash shell panes, the app injects `qmux`, `claude`, `codex`, and
   `opencode` shell functions to route the agent through qmux, so transcripts
   and native follow-ups work without those commands being on `PATH`.
@@ -137,17 +149,22 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - A queued item's `⋮` menu can mark it `Pause after send`: after that turn is sent the
   queue stops draining and shows `Unpause`. The composer's height toggle (left of the
   `⋮` menu) caps the queue at half the pane or lets it grow.
+- The right-pane session menu can copy the active session id and select another
+  transcript for the current agent. Session previews use the first usable user
+  message within the first five user messages, skipping tag-wrapped instruction
+  messages that render gray in the transcript.
 - Fork a running Claude session from inside its terminal with `/qmux:fork` (same
   directory) or `/qmux:fork-worktree` (a fresh isolated worktree); the fork opens as a
   tab nested under the source and inherits its transcript.
 - Click a link in the transcript or terminal to open it in the internal browser
   overlay; right-click to choose internal vs. external browser.
-- Browser overlay: run `qmux open <file|url>` at a shell pane's prompt, or use the
-  `open-in-browser` skill from an agent, to render a file or a `http://localhost` dev
-  server in a panel that floats over the terminal, bound to that tab. It has a URL bar
-  at the top; the globe button at the terminal's top-right toggles it and the button
-  to its left refreshes it. Files are served from a loopback-only static server and
-  must live under the workspace.
+- Browser overlay: run `qmux open <file|url>` at a shell pane's prompt, use the
+  `open-in-browser` skill from an agent, or type a URL/bare host into the overlay's
+  URL bar to render a file or a `http://localhost` dev server in a panel that floats
+  over the terminal, bound to that tab. The globe button at the terminal's top-right
+  toggles it and the button to its left refreshes it. Drag the bottom-left corner to
+  resize it; the size is remembered for that tab while the app is running. Files are
+  served from a loopback-only static server and must live under the workspace.
 
 ## Repository Layout
 
@@ -203,6 +220,10 @@ Runtime directories:
   off, this may be in the selected project directory.
 - `$CODEX_HOME/qmux/` or `~/.codex/qmux/`: Codex hook shim, created when launching
   Codex agents.
+- `$CODEX_HOME/qmux-codex.config.toml` or `~/.codex/qmux-codex.config.toml`:
+  qmux-managed Codex profile config that points at the hook shim.
+- `QMUX_OPENCODE_PLUGIN_DIR` or `<cwd>/qmux-opencode-plugin`: qmux-managed OpenCode
+  plugin directory injected into launched OpenCode agents.
 
 ## Skills
 
@@ -236,8 +257,10 @@ Drop in a new `<skill-name>/SKILL.md` and reopen the launcher — no restart nee
 
 - A pane is one Rust-owned PTY.
 - Shell panes spawn `$SHELL`.
-- Agent panes spawn the adapter's agent binary, either in the current
-  repo/directory or in a qmux-created agent worktree.
+- Agent panes spawn the adapter's configured agent binary, either in the current
+  repo/directory or in a qmux-created agent worktree. Shell functions can route
+  `claude`, `codex`, and `opencode` through qmux from shell panes, but the adapter
+  binary still needs to be installed or configured.
 - Each pane receives:
   - `QMUX_PANE_ID`
   - `QMUX_SOCK`
