@@ -2650,6 +2650,11 @@ button:disabled {
    buttons. */
 .native-input-mic {
   align-self: center;
+  /* Match the ⋮ menu trigger's footprint here (the launcher mic keeps the fixed
+     square): a tall hit area sized to the icon width, not a 34px square. */
+  width: auto;
+  height: auto;
+  min-height: var(--control-h-lg);
 }
 
 .composer-menu {
