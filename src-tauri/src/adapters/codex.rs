@@ -161,7 +161,13 @@ impl CodexAdapter {
 
         let has_initial_prompt = prompt_has_initial_text(&request.prompt);
         let tail_args = prompt_tail_args(&request.prompt);
-        let args = build_codex_args(&cwd, request.model.as_deref(), &options, tail_args);
+        let args = build_codex_args(
+            &cwd,
+            Some(&state.config().workspace_root),
+            request.model.as_deref(),
+            &options,
+            tail_args,
+        );
         let pane_id = state.next_id("pane");
         let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
@@ -213,6 +219,7 @@ impl CodexAdapter {
         let options = CodexLaunchOptions::default();
         let (args, resumed) = build_codex_resume_args(
             &cwd,
+            Some(&state.config().workspace_root),
             agent.model.as_deref(),
             &options,
             agent.session_id.as_deref(),
@@ -306,7 +313,13 @@ impl CodexAdapter {
         )?;
 
         let options = CodexLaunchOptions::default();
-        let args = build_codex_args(&cwd, None, &options, request.args);
+        let args = build_codex_args(
+            &cwd,
+            Some(&state.config().workspace_root),
+            None,
+            &options,
+            request.args,
+        );
         let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
@@ -537,11 +550,16 @@ fn normalize_option(
 
 fn build_codex_args(
     cwd: &Path,
+    additional_workspace_root: Option<&Path>,
     model: Option<&str>,
     options: &CodexLaunchOptions,
     tail_args: Vec<String>,
 ) -> Vec<String> {
     let mut args = vec!["--cd".to_string(), cwd.display().to_string()];
+    if let Some(additional_workspace_root) = additional_workspace_root {
+        args.push("--add-dir".to_string());
+        args.push(additional_workspace_root.display().to_string());
+    }
 
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
         args.push("--model".to_string());
@@ -564,6 +582,7 @@ fn build_codex_args(
 
 fn build_codex_resume_args(
     cwd: &Path,
+    additional_workspace_root: Option<&Path>,
     model: Option<&str>,
     options: &CodexLaunchOptions,
     session_id: Option<&str>,
@@ -572,12 +591,16 @@ fn build_codex_resume_args(
         .map(str::trim)
         .filter(|session_id| !session_id.is_empty())
     else {
-        return (build_codex_args(cwd, model, options, Vec::new()), false);
+        return (
+            build_codex_args(cwd, additional_workspace_root, model, options, Vec::new()),
+            false,
+        );
     };
 
     (
         build_codex_args(
             cwd,
+            additional_workspace_root,
             model,
             options,
             vec!["resume".to_string(), session_id.to_string()],
@@ -649,13 +672,22 @@ fn args_contain_prompt(args: &[String]) -> bool {
 fn codex_value_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "--cd" | "-C" | "--model" | "-m" | "--sandbox" | "--ask-for-approval" | "--config" | "-c"
+        "--cd"
+            | "-C"
+            | "--add-dir"
+            | "--model"
+            | "-m"
+            | "--sandbox"
+            | "--ask-for-approval"
+            | "--config"
+            | "-c"
     )
 }
 
 fn codex_inline_value_flag(arg: &str) -> bool {
     [
         "--cd=",
+        "--add-dir=",
         "--model=",
         "--sandbox=",
         "--ask-for-approval=",
@@ -842,12 +874,7 @@ fn start_codex_transcript_binding(
 ) {
     if let Some(transcript_path) = transcript_path {
         if codex_binding_should_continue(&state, &agent_id, false) {
-            start_explicit_codex_transcript_binding(
-                state,
-                agent_id,
-                session_id,
-                transcript_path,
-            );
+            start_explicit_codex_transcript_binding(state, agent_id, session_id, transcript_path);
         }
         return;
     }
@@ -958,11 +985,7 @@ fn start_explicit_codex_transcript_binding(
 /// already has a transcript path (a duplicate SessionStart or prior iteration
 /// bound it). A poisoned model lock is treated as transient so a momentary
 /// failure does not tear down discovery.
-fn codex_binding_should_continue(
-    state: &AppState,
-    agent_id: &str,
-    require_unbound: bool,
-) -> bool {
+fn codex_binding_should_continue(state: &AppState, agent_id: &str, require_unbound: bool) -> bool {
     match state.agent(agent_id) {
         Ok(Some(agent)) => !require_unbound || agent.transcript_path.is_none(),
         Ok(None) => false,
@@ -1257,6 +1280,7 @@ mod tests {
 
         let args = build_codex_args(
             Path::new("/tmp/qmux"),
+            Some(Path::new("/tmp/qmux/.qmux/workspaces")),
             Some("gpt-5"),
             &options,
             vec!["--".to_string(), "start here".to_string()],
@@ -1267,6 +1291,8 @@ mod tests {
             vec![
                 "--cd",
                 "/tmp/qmux",
+                "--add-dir",
+                "/tmp/qmux/.qmux/workspaces",
                 "--model",
                 "gpt-5",
                 "--profile",
@@ -1295,7 +1321,12 @@ mod tests {
     fn args_contain_prompt_detects_interactive_codex_launches() {
         assert!(!args_contain_prompt(&[]));
         assert!(!args_contain_prompt(&svec(&["--model", "gpt-5"])));
+        assert!(!args_contain_prompt(&svec(&[
+            "--add-dir",
+            "/tmp/workspaces"
+        ])));
         assert!(!args_contain_prompt(&svec(&["--sandbox=workspace-write"])));
+        assert!(!args_contain_prompt(&svec(&["--add-dir=/tmp/workspaces"])));
         assert!(!args_contain_prompt(&svec(&["--search"])));
 
         assert!(args_contain_prompt(&svec(&["fix the bug"])));
@@ -1317,6 +1348,7 @@ mod tests {
 
         let (args, resumed) = build_codex_resume_args(
             Path::new("/tmp/qmux"),
+            Some(Path::new("/tmp/qmux/.qmux/workspaces")),
             Some("gpt-5"),
             &options,
             Some(" session-123 "),
@@ -1328,6 +1360,8 @@ mod tests {
             vec![
                 "--cd",
                 "/tmp/qmux",
+                "--add-dir",
+                "/tmp/qmux/.qmux/workspaces",
                 "--model",
                 "gpt-5",
                 "--profile",
@@ -1348,7 +1382,7 @@ mod tests {
         let options = CodexLaunchOptions::default();
 
         let (args, resumed) =
-            build_codex_resume_args(Path::new("/tmp/qmux"), None, &options, Some("   "));
+            build_codex_resume_args(Path::new("/tmp/qmux"), None, None, &options, Some("   "));
 
         assert!(!resumed);
         assert_eq!(
@@ -1676,18 +1710,12 @@ trusted_hash = "sha256:trusted"
         )
         .unwrap();
 
-        bind_codex_transcript_path(
-            &state,
-            "agent-1",
-            Some("target-session"),
-            &transcript_path,
-        )
-        .unwrap();
+        bind_codex_transcript_path(&state, "agent-1", Some("target-session"), &transcript_path)
+            .unwrap();
 
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(
-            agent.transcript_path,
-            None,
+            agent.transcript_path, None,
             "transcript should not be bound when session_id mismatches"
         );
         assert_eq!(
@@ -1757,7 +1785,9 @@ trusted_hash = "sha256:trusted"
         state.insert_agent(agent).unwrap();
 
         let prev = env::var_os("CODEX_HOME");
-        unsafe { env::set_var("CODEX_HOME", &codex_home); }
+        unsafe {
+            env::set_var("CODEX_HOME", &codex_home);
+        }
 
         start_codex_transcript_binding(
             state.clone(),
