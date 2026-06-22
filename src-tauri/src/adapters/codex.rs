@@ -682,6 +682,13 @@ fn args_contain_prompt(args: &[String]) -> bool {
         if codex_inline_value_flag(arg) || arg.starts_with('-') {
             continue;
         }
+        // `codex resume [...]` is an interactive subcommand launch (resume a saved
+        // session), not an inline prompt. Treating it as a prompt left the rebound
+        // agent in its prior working status, pinning a stale "Thinking…" indicator
+        // until the next turn finished.
+        if arg == "resume" {
+            return false;
+        }
         return true;
     }
     false
@@ -1389,6 +1396,18 @@ mod tests {
             "fix the bug"
         ])));
         assert!(args_contain_prompt(&svec(&["--", "after separator"])));
+
+        // `codex resume ...` is an interactive subcommand, not an inline prompt, so the
+        // rebound agent is marked AwaitingInput instead of being pinned as working.
+        assert!(!args_contain_prompt(&svec(&["resume"])));
+        assert!(!args_contain_prompt(&svec(&["resume", "sess-1"])));
+        assert!(!args_contain_prompt(&svec(&["resume", "--last"])));
+        assert!(!args_contain_prompt(&svec(&[
+            "--model",
+            "gpt-5",
+            "resume",
+            "sess-1"
+        ])));
     }
 
     #[test]

@@ -2914,7 +2914,10 @@ export default function App() {
       launcherInputRef.current?.focus();
       launcherInputRef.current?.select();
     });
-  }, [launcherVisible]);
+    // Depend on launcherOpen too: on Home the launcher is already visible inline, so
+    // opening the modal (e.g. ⌘;) doesn't flip launcherVisible. Without this the modal's
+    // freshly-mounted textarea — a different node than the inline one — never gets focus.
+  }, [launcherVisible, launcherOpen]);
 
   // The ask launcher's "new thread" mode shows the same Claude skill toggles, but
   // opening it doesn't pass through the launcher-visible effect above — so load the
@@ -3147,23 +3150,25 @@ export default function App() {
           launcherDictation.stop();
         }}
         rows={2}
-        placeholder="What should we look at next?"
+        placeholder="What should we investigate next?"
         style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
       />
       <DictationMicButton dictation={launcherDictation} className="command-launcher-mic" />
       <div className="command-launcher-overlay">
         <div className="command-launcher-overlay-group">
-          <label className="command-launcher-worktree">
-            <input
-              type="checkbox"
-              checked={createInWorktree}
-              onChange={(event) => {
-                setCreateInWorktree(event.currentTarget.checked);
-                focusLauncherInput();
-              }}
-            />
-            <span>New worktree</span>
-          </label>
+          {settings.codeMode ? (
+            <label className="command-launcher-worktree">
+              <input
+                type="checkbox"
+                checked={createInWorktree}
+                onChange={(event) => {
+                  setCreateInWorktree(event.currentTarget.checked);
+                  focusLauncherInput();
+                }}
+              />
+              <span>New worktree</span>
+            </label>
+          ) : null}
           {skillsEnabled && availableSkills.length > 0 ? (
             <div className="command-launcher-skills">
               {availableSkills.map((skill) => (
@@ -3289,17 +3294,19 @@ export default function App() {
         <div className="command-launcher-overlay-group">
           {state.mode === "newThread" ? (
             <>
-              <label className="command-launcher-worktree">
-                <input
-                  type="checkbox"
-                  checked={askCreateInWorktree}
-                  onChange={(event) => {
-                    setAskCreateInWorktree(event.currentTarget.checked);
-                    focusAskInput();
-                  }}
-                />
-                <span>New worktree</span>
-              </label>
+              {settings.codeMode ? (
+                <label className="command-launcher-worktree">
+                  <input
+                    type="checkbox"
+                    checked={askCreateInWorktree}
+                    onChange={(event) => {
+                      setAskCreateInWorktree(event.currentTarget.checked);
+                      focusAskInput();
+                    }}
+                  />
+                  <span>New worktree</span>
+                </label>
+              ) : null}
               {availableSkills.length > 0 ? (
                 <div className="command-launcher-skills">
                   {availableSkills.map((skill) => (
@@ -3502,12 +3509,12 @@ export default function App() {
                     >
                       {paneDisplayTitle}
                     </span>
-                    {paneDir ? (
+                    {settings.codeMode && paneDir ? (
                       <span className="pane-tab-path" title={paneDir}>
                         {formatPaneDir(paneDir)}
                       </span>
                     ) : null}
-                    {paneGitMeta ? (
+                    {settings.codeMode && paneGitMeta ? (
                       <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
                         {paneGitMeta}
                       </span>
@@ -3826,6 +3833,19 @@ export default function App() {
             </div>
 
             <label className="settings-row settings-toggle">
+              <span className="settings-label">Code mode</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.codeMode}
+                onChange={(event) => {
+                  const codeMode = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, codeMode }));
+                }}
+              />
+            </label>
+
+            <label className="settings-row settings-toggle">
               <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
               <input
                 type="checkbox"
@@ -4101,6 +4121,7 @@ export default function App() {
                     config={config}
                     adapterIconById={LAUNCHER_ADAPTER_ICON_BY_ID}
                     adapterIconClassById={ADAPTER_ICON_CLASS_BY_ID}
+                    queuedTurnsByAgent={queuedTurnsByAgent}
                     onOpenSession={openRecentSession}
                     formatPath={formatPaneDir}
                   />

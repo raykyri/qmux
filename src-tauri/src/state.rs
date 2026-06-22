@@ -1985,7 +1985,7 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             match model.panes.get_mut(pane_id) {
                 Some(pane) if pane.info.cwd != cwd => {
-                    pane.info.cwd = cwd;
+                    pane.info.cwd = cwd.clone();
                     true
                 }
                 _ => false,
@@ -1993,6 +1993,18 @@ impl AppState {
         };
         if changed {
             self.persist();
+            // Persisting alone makes the cwd survive a restart, but the live UI only
+            // learns a pane's cwd at spawn and on a full pane-list refetch. Without
+            // this event a tab's shown directory (and the context-menu working dir)
+            // would stay pinned to the spawn-time cwd for the rest of the session,
+            // only catching up on the next full load (e.g. a restart). Emit a
+            // surgical update so each tab tracks the directory it is actually in.
+            self.emit(QmuxEvent::new(
+                "pane.cwd_changed",
+                Some(pane_id.to_string()),
+                None,
+                json!({ "paneId": pane_id, "cwd": cwd }),
+            ));
         }
         Ok(())
     }

@@ -50,6 +50,12 @@ export interface AppSettings {
   openRouterModel: string;
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
+  /**
+   * Show code-oriented context in tabs and the launcher: per-tab paths, git
+   * worktree metadata, and the "New worktree" launcher option. When off, tabs
+   * collapse to a single aligned row (status dot · title · status).
+   */
+  codeMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -60,6 +66,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   openRouterKey: "",
   openRouterModel: "",
   preventSleep: true,
+  codeMode: true,
 };
 
 /** Resolves a stored font id to its CSS stack, falling back to the default. */
@@ -116,6 +123,8 @@ export function loadSettings(): AppSettings {
       typeof parsed.reduceMotion === "boolean"
         ? parsed.reduceMotion
         : DEFAULT_SETTINGS.reduceMotion;
+    const codeMode =
+      typeof parsed.codeMode === "boolean" ? parsed.codeMode : DEFAULT_SETTINGS.codeMode;
     const openRouterKey =
       typeof parsed.openRouterKey === "string"
         ? parsed.openRouterKey
@@ -132,6 +141,7 @@ export function loadSettings(): AppSettings {
       openRouterKey,
       openRouterModel,
       preventSleep,
+      codeMode,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

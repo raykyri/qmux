@@ -472,6 +472,28 @@ pub(crate) fn read_codex_transcript_session_id(path: &Path) -> Result<Option<Str
         .and_then(|payload| string_field(payload, "id")))
 }
 
+/// The working directory recorded in a Codex rollout's leading `session_meta`
+/// line. Codex stores every project's sessions in one global tree (unlike Claude's
+/// per-project session directories), so this is how the picker scopes its listing
+/// to the current session's project. Best-effort: an unreadable file, an empty
+/// file, or a first line that isn't a `session_meta` with a `cwd` yields `None`.
+pub(crate) fn codex_transcript_cwd(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first = String::new();
+    if reader.read_line(&mut first).ok()? == 0 {
+        return None;
+    }
+    let first = first.trim_end_matches(['\n', '\r']);
+    let value = serde_json::from_str::<Value>(first).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+    value
+        .get("payload")
+        .and_then(|payload| string_field(payload, "cwd"))
+}
+
 pub(crate) fn string_field(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -505,7 +527,21 @@ pub fn list_agent_transcripts(
     };
 
     let mut candidates = if agent.adapter == "codex" {
-        gather_transcript_candidates_recursive(&dir)?
+        let mut candidates = gather_transcript_candidates_recursive(&dir)?;
+        // Codex keeps every project's rollouts in one global `sessions` tree, so the
+        // recursive scan above sees sessions from unrelated directories. Scope the
+        // picker to the project the current session ran in — its `session_meta` cwd —
+        // so it lists only same-project sessions, matching Claude's naturally
+        // per-project listing. If the active rollout's cwd can't be read, fall back to
+        // the unfiltered list rather than hiding everything.
+        if let Some(project_cwd) = codex_transcript_cwd(current) {
+            candidates.retain(|candidate| {
+                candidate.path.as_path() == current
+                    || codex_transcript_cwd(&candidate.path).as_deref()
+                        == Some(project_cwd.as_str())
+            });
+        }
+        candidates
     } else {
         gather_transcript_candidates(&dir)?
     };
@@ -588,6 +624,16 @@ pub fn set_agent_transcript(
                 .map_err(|err| format!("failed to resolve transcript {path}: {err}"))?;
             if !candidate_root.starts_with(root) {
                 return Err("transcript is outside the agent's session directory".to_string());
+            }
+            // Mirror the picker's project scoping: a Codex rollout from a different
+            // project (a different `session_meta` cwd) must not be bound here, even
+            // though it shares the global sessions root. Lenient when either cwd can't
+            // be read, so an unparseable rollout still binds rather than hard-failing.
+            if let Some(project_cwd) = codex_transcript_cwd(current)
+                && let Some(candidate_cwd) = codex_transcript_cwd(candidate)
+                && project_cwd != candidate_cwd
+            {
+                return Err("transcript belongs to a different project".to_string());
             }
         } else if current.parent() != candidate.parent() {
             return Err("transcript is outside the agent's session directory".to_string());
@@ -1203,6 +1249,47 @@ mod tests {
         let (preview, line_count) = read_transcript_meta(&path);
         assert_eq!(preview, None);
         assert_eq!(line_count, 6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn codex_transcript_cwd_reads_session_meta_cwd() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-codex-cwd-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        // A well-formed rollout exposes its project directory from session_meta.
+        let with_cwd = dir.join("rollout-with-cwd.jsonl");
+        fs::write(
+            &with_cwd,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"abc\",\"cwd\":\"/work/project\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            codex_transcript_cwd(&with_cwd).as_deref(),
+            Some("/work/project")
+        );
+
+        // A first line that isn't a session_meta, or one without a cwd, yields None
+        // (so the picker falls back to listing rather than hiding everything).
+        let without_meta = dir.join("rollout-no-meta.jsonl");
+        fs::write(&without_meta, "{\"type\":\"response_item\"}\n").unwrap();
+        assert_eq!(codex_transcript_cwd(&without_meta), None);
+
+        let empty = dir.join("rollout-empty.jsonl");
+        fs::write(&empty, "").unwrap();
+        assert_eq!(codex_transcript_cwd(&empty), None);
+
+        assert_eq!(codex_transcript_cwd(&dir.join("missing.jsonl")), None);
 
         fs::remove_dir_all(&dir).ok();
     }
