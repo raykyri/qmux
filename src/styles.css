@@ -307,6 +307,35 @@ button:disabled {
   box-shadow: none;
 }
 
+.pane-tab-shortcut-hint {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 25px;
+  height: 18px;
+  padding: 0 6px;
+  transform: translateY(-50%);
+  border: 1px solid #3a4245;
+  border-radius: 6px;
+  background: #111416;
+  color: #d9ddd9;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pane-tab-row.is-selected .pane-tab-shortcut-hint {
+  border-color: #566165;
+  color: #ffffff;
+}
+
 .pane-tab-row.is-dragging {
   opacity: 0.5;
 }
@@ -3190,6 +3219,7 @@ header + .turn-blocks {
   height: 9px;
   border-left: 1px solid #596165;
   border-bottom: 1px solid #596165;
+  border-bottom-left-radius: 4px;
   opacity: 0.75;
 }
 

@@ -398,6 +398,7 @@ export default function App() {
   >({});
   const [draftsByAgent, setDraftsByAgentState] = useState<Record<string, string>>({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [shortcutHintsVisible, setShortcutHintsVisible] = useState(false);
   const [turnPaneWidth, setTurnPaneWidth] = useState(TURN_PANE_DEFAULT_WIDTH);
   const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
   // Application-level UI settings (terminal font + size), loaded from localStorage
@@ -2357,6 +2358,36 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Meta" || event.metaKey) {
+        setShortcutHintsVisible(true);
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Meta" || !event.metaKey) {
+        setShortcutHintsVisible(false);
+      }
+    };
+    const hideShortcutHints = () => setShortcutHintsVisible(false);
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        hideShortcutHints();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
+    window.addEventListener("blur", hideShortcutHints);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+      window.removeEventListener("blur", hideShortcutHints);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || !(event.metaKey || event.ctrlKey)) {
         return;
       }
@@ -3035,6 +3066,11 @@ export default function App() {
               <House size={12} aria-hidden="true" />
               <span className="pane-tab-title">Home</span>
             </button>
+            {shortcutHintsVisible ? (
+              <span className="pane-tab-shortcut-hint" aria-hidden="true">
+                ⌘N
+              </span>
+            ) : null}
           </div>
           {panes.map((pane, index) => {
             const paneAgent = agents.find((agent) => agent.paneId === pane.id);
@@ -3198,6 +3234,11 @@ export default function App() {
                 >
                   <X size={13.5} aria-hidden="true" />
                 </a>
+                {shortcutHintsVisible && index < 9 ? (
+                  <span className="pane-tab-shortcut-hint" aria-hidden="true">
+                    ⌘{index + 1}
+                  </span>
+                ) : null}
               </div>
             );
           })}
