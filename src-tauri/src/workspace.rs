@@ -313,20 +313,27 @@ pub fn acknowledge_agent(
 }
 
 pub fn clear_agent_working_status(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
-    let mut agent = state
+    let agent = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
     if matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
-        agent.status = AgentStatus::Idle;
-        state.update_agent(agent.clone())?;
+        // Field-scoped status write: a full-struct update_agent here would drop the lock
+        // between the read above and the write, clobbering a field a concurrent writer set
+        // in the meantime — e.g. a SessionStart hook recording session_id/transcript_path.
+        // Only the status changes, so write only the status.
+        let agent = state
+            .set_agent_status(agent_id, AgentStatus::Idle)?
+            .unwrap_or(agent);
         state.emit(crate::events::QmuxEvent::new(
             "agent.working_status_cleared",
             agent.pane_id.clone(),
             Some(agent.id.clone()),
             serde_json::json!({ "agent": agent.clone() }),
         ));
+        Ok(agent)
+    } else {
+        Ok(agent)
     }
-    Ok(agent)
 }
 
 #[derive(Clone, Debug, Serialize)]
