@@ -316,24 +316,27 @@ pub fn clear_agent_working_status(state: &AppState, agent_id: &str) -> Result<Ag
     let agent = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
-    if matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
-        // Field-scoped status write: a full-struct update_agent here would drop the lock
-        // between the read above and the write, clobbering a field a concurrent writer set
-        // in the meantime — e.g. a SessionStart hook recording session_id/transcript_path.
-        // Only the status changes, so write only the status.
-        let agent = state
-            .set_agent_status(agent_id, AgentStatus::Idle)?
-            .unwrap_or(agent);
-        state.emit(crate::events::QmuxEvent::new(
-            "agent.working_status_cleared",
-            agent.pane_id.clone(),
-            Some(agent.id.clone()),
-            serde_json::json!({ "agent": agent.clone() }),
-        ));
-        Ok(agent)
-    } else {
-        Ok(agent)
+    if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+        return Ok(agent);
     }
+    // Treat a manual clear as the agent having gone idle and route it through the same
+    // completion path the adapters use, instead of blindly forcing a fresh Idle. Forcing
+    // Idle leaves a queued turn stranded (the next idle that would have drained it never
+    // fires), drops pending-pause handling, and persists a "ready to send" status that
+    // sends the user's next turn straight into the process rather than queuing it.
+    // advance_after_idle drains a queued turn, honors a pending pause / active typing, and
+    // lands on Done (or Running if a turn drained) with field-scoped writes.
+    crate::turn_queue::advance_after_idle(state, agent_id)?;
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    state.emit(crate::events::QmuxEvent::new(
+        "agent.working_status_cleared",
+        agent.pane_id.clone(),
+        Some(agent.id.clone()),
+        serde_json::json!({ "agent": agent.clone() }),
+    ));
+    Ok(agent)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -819,16 +822,19 @@ mod tests {
         let starting = clear_agent_working_status(&state, "agent-starting").unwrap();
         let waiting = clear_agent_working_status(&state, "agent-waiting").unwrap();
 
-        assert!(matches!(running.status, AgentStatus::Idle));
-        assert!(matches!(starting.status, AgentStatus::Idle));
+        // Working states are routed through the idle completion path, so with no queued
+        // turn they land on Done (a finished status), not a fresh Idle. A non-working
+        // state (AwaitingInput) is left untouched.
+        assert!(matches!(running.status, AgentStatus::Done));
+        assert!(matches!(starting.status, AgentStatus::Done));
         assert!(matches!(waiting.status, AgentStatus::AwaitingInput));
         assert!(matches!(
             state.agent("agent-running").unwrap().unwrap().status,
-            AgentStatus::Idle
+            AgentStatus::Done
         ));
         assert!(matches!(
             state.agent("agent-starting").unwrap().unwrap().status,
-            AgentStatus::Idle
+            AgentStatus::Done
         ));
         assert!(matches!(
             state.agent("agent-waiting").unwrap().unwrap().status,
