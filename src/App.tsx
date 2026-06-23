@@ -263,6 +263,11 @@ function sanitizeOpenRouterTitle(rawTitle: string): string | null {
 }
 
 function openRouterTitleConfig(settings: AppSettings): OpenRouterTitleConfig | null {
+  // Titling POSTs the user's first message to OpenRouter, so it stays off until the user
+  // explicitly opts in — a configured key/model alone is not consent to send transcripts.
+  if (!settings.openRouterTitlesEnabled) {
+    return null;
+  }
   const apiKey = settings.openRouterKey.trim();
   const model = settings.openRouterModel.trim();
   return apiKey && model ? { apiKey, model } : null;
@@ -3910,6 +3915,23 @@ export default function App() {
                 }}
               />
             </div>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Generate tab titles via OpenRouter</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.openRouterTitlesEnabled}
+                onChange={(event) => {
+                  const openRouterTitlesEnabled = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, openRouterTitlesEnabled }));
+                }}
+              />
+            </label>
+            <p className="settings-hint">
+              Sends the first message of each new tab to OpenRouter to summarize a title.
+              Off by default; message text leaves your machine only while this is on.
+            </p>
 
             <label className="settings-row settings-toggle">
               <span className="settings-label">Reduce motion</span>

@@ -1066,6 +1066,15 @@ button:disabled {
   font-size: var(--fs-base);
 }
 
+/* Small explanatory note under a setting (e.g. a privacy disclosure). */
+.settings-hint {
+  margin: -4px 0 0;
+  color: var(--control-fg-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
 /* A whole-row label whose checkbox sits at the trailing edge. */
 .settings-toggle {
   cursor: pointer;

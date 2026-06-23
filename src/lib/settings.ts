@@ -48,6 +48,12 @@ export interface AppSettings {
   openRouterKey: string;
   /** OpenRouter model id */
   openRouterModel: string;
+  /**
+   * Opt in to generating tab titles by summarizing each pane's first user message
+   * through OpenRouter. Off by default because it sends message text to a third-party
+   * cloud service; titling stays local until this is explicitly enabled.
+   */
+  openRouterTitlesEnabled: boolean;
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
   /**
@@ -65,6 +71,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   reduceMotion: false,
   openRouterKey: "",
   openRouterModel: "",
+  openRouterTitlesEnabled: false,
   preventSleep: true,
   codeMode: true,
 };
@@ -133,6 +140,10 @@ export function loadSettings(): AppSettings {
       typeof parsed.openRouterModel === "string"
         ? parsed.openRouterModel
         : DEFAULT_SETTINGS.openRouterModel;
+    const openRouterTitlesEnabled =
+      typeof parsed.openRouterTitlesEnabled === "boolean"
+        ? parsed.openRouterTitlesEnabled
+        : DEFAULT_SETTINGS.openRouterTitlesEnabled;
     return {
       fontId,
       fontSize,
@@ -140,6 +151,7 @@ export function loadSettings(): AppSettings {
       reduceMotion,
       openRouterKey,
       openRouterModel,
+      openRouterTitlesEnabled,
       preventSleep,
       codeMode,
     };
