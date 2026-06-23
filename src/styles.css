@@ -2353,6 +2353,9 @@ button:disabled {
 }
 
 .turn-timeline {
+  --transcript-font-delta: calc(
+    var(--turn-font-delta, 0px) + var(--transcript-expanded-font-delta, 0px)
+  );
   position: absolute;
   inset: 0;
   display: grid;
@@ -2377,6 +2380,7 @@ button:disabled {
 .turn-empty-state {
   flex-direction: column;
   gap: 6px;
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
 }
 
 /* Empty-queue placeholder shown above the composer when the queue and transcript
@@ -2391,7 +2395,7 @@ button:disabled {
   /* Same muted gray as the placeholder above it (.empty-state); a missing
      transcript is an ordinary state, not a warning. */
   color: #aab1ad;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   line-height: 1.4;
 }
 
@@ -2419,7 +2423,7 @@ button:disabled {
 
 .turn-thinking-label {
   color: #aab1ad;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   font-style: italic;
 }
 
@@ -2437,7 +2441,7 @@ button:disabled {
   border: 0;
   background: transparent;
   color: #aab1ad;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   line-height: 1.4;
   cursor: pointer;
   transition: color 120ms ease;
@@ -2557,7 +2561,7 @@ button:disabled {
 
 .turn-card header {
   color: #96e0cf;
-  font-size: calc(11.5px + var(--turn-font-delta, 0px));
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
   /* Don't let the role label ("User"/"Claude") get caught in a transcript
@@ -2583,7 +2587,7 @@ header + .turn-blocks {
 .turn-markdown {
   min-width: 0;
   color: #f1f0e8;
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
   overflow-wrap: anywhere;
 }
 
@@ -2612,7 +2616,7 @@ header + .turn-blocks {
   padding: 0 1px;
   color: #a9cfc0;
   font-family: var(--font-mono);
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   overflow: hidden;
   text-align: left;
   text-decoration-line: underline;
@@ -2652,7 +2656,7 @@ header + .turn-blocks {
   padding: 3px 6px;
   color: #d9ddd9;
   font: inherit;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   cursor: pointer;
 }
 
@@ -2677,7 +2681,7 @@ header + .turn-blocks {
   max-height: 96px;
   margin: 0;
   color: #bfc7c2;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -2708,7 +2712,7 @@ header + .turn-blocks {
 .turn-markdown h6 {
   margin: 10px 0 5px;
   color: #f4f3ec;
-  font-size: calc(13.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--transcript-font-delta, 0px));
   line-height: 1.35;
 }
 
@@ -2752,7 +2756,7 @@ header + .turn-blocks {
   padding: 1px 4px;
   color: #e7e7e2;
   font-family: var(--font-mono);
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
 }
 
 .turn-markdown pre {
@@ -2816,12 +2820,12 @@ header + .turn-blocks {
 .activity-group-block {
   background: transparent;
   color: #d9ddd9;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
   overflow: visible;
 }
 
 .activity-group-block {
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
 .tool-block > summary,
@@ -2902,7 +2906,7 @@ header + .turn-blocks {
 
 .tool-summary-main {
   color: #8f9994;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   font-weight: 400;
 }
 
@@ -2924,7 +2928,7 @@ header + .turn-blocks {
 
 .tool-summary-meta {
   color: #8f9994;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
 /* Expanded payloads keep a faint full box so raw output stays delineated, indented
@@ -2940,7 +2944,7 @@ header + .turn-blocks {
 .tool-payload-label {
   padding: 6px 8px 0;
   color: #8f9994;
-  font-size: calc(11px + var(--turn-font-delta, 0px));
+  font-size: calc(11px + var(--transcript-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2974,7 +2978,7 @@ header + .turn-blocks {
 }
 
 .thinking-block > summary > span {
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
 .activity-group-children {

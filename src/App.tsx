@@ -1499,11 +1499,13 @@ export default function App() {
   // its base size, capped at +1px, so the transcript/composer track the terminal
   // zoom without overpowering it. No change at or below the base size.
   const turnFontDelta = Math.min(1, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
+  const transcriptExpandedFontDelta = activeTranscriptExpanded ? 0.5 : 0;
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
     "--browser-overlay-left": `${BROWSER_OVERLAY_LEFT_MARGIN}px`,
     "--turn-font-delta": `${turnFontDelta}px`,
+    "--transcript-expanded-font-delta": `${transcriptExpandedFontDelta}px`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
   const contextMenuPane = paneContextMenu
