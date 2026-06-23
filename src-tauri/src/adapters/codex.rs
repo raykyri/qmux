@@ -11,7 +11,7 @@ use crate::transcript::{
     Turn, TurnBlock, codex_transcript_session_id, gather_transcript_candidates_recursive,
     read_codex_transcript_session_id, start_transcript_tail, string_field,
 };
-use crate::turn_queue::{IdleResolution, advance_after_idle};
+use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     prepare_agent_workspace,
@@ -256,9 +256,9 @@ impl CodexAdapter {
         )?;
 
         // A recovered Codex process is launched without an inline prompt, even when
-        // resuming a session, so it is waiting for input once the TUI appears. Mark it
-        // AwaitingInput (not Running) so a recovered idle session isn't shown as
-        // working; the first real prompt/tool hook promotes it to Running.
+        // resuming a session, so it is ready once the TUI appears. Mark it Idle (not
+        // Running) so a recovered quiet session isn't shown as working; the first real
+        // prompt/tool hook promotes it to Running.
         let restored = attach_codex_agent_pane(state, &agent.id, pane.id.clone(), false)?;
         if let Some(transcript_path) = restored.transcript_path.clone() {
             start_transcript_tail(
@@ -417,10 +417,12 @@ impl CodexAdapter {
             }
             "UserPromptSubmit" => {
                 if let Some(agent) = agent.as_mut() {
-                    agent.status = AgentStatus::Running;
-                    state.set_agent_status(&agent.id, agent.status)?;
                     let prompt = string_field(&notification.payload, "prompt")
                         .or_else(|| string_field(&notification.payload, "input"));
+                    if !prompt.as_deref().is_some_and(is_shell_escape_turn) {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                    }
                     send_tracking =
                         Some(state.match_agent_prompt_submit(&agent.id, prompt.as_deref())?);
                 }
@@ -650,8 +652,8 @@ fn attach_codex_agent_pane(
     if !has_initial_prompt {
         // Field-scoped write — a full-struct update here would race the SessionStart
         // hook recording session_id on another thread. Return the post-write state so
-        // callers see the final AwaitingInput status.
-        if let Some(updated) = state.set_agent_status(agent_id, AgentStatus::AwaitingInput)? {
+        // callers see the final Idle status.
+        if let Some(updated) = state.set_agent_status(agent_id, AgentStatus::Idle)? {
             return Ok(updated);
         }
     }
@@ -1398,15 +1400,12 @@ mod tests {
         assert!(args_contain_prompt(&svec(&["--", "after separator"])));
 
         // `codex resume ...` is an interactive subcommand, not an inline prompt, so the
-        // rebound agent is marked AwaitingInput instead of being pinned as working.
+        // rebound agent is marked Idle instead of being pinned as working.
         assert!(!args_contain_prompt(&svec(&["resume"])));
         assert!(!args_contain_prompt(&svec(&["resume", "sess-1"])));
         assert!(!args_contain_prompt(&svec(&["resume", "--last"])));
         assert!(!args_contain_prompt(&svec(&[
-            "--model",
-            "gpt-5",
-            "resume",
-            "sess-1"
+            "--model", "gpt-5", "resume", "sess-1"
         ])));
     }
 
@@ -1574,7 +1573,7 @@ trusted_hash = "sha256:trusted"
     }
 
     #[test]
-    fn interactive_codex_attach_marks_agent_awaiting_input() {
+    fn interactive_codex_attach_marks_agent_idle() {
         let state = test_state();
         let mut agent = sample_agent();
         agent.status = AgentStatus::Starting;
@@ -1584,9 +1583,9 @@ trusted_hash = "sha256:trusted"
         let attached =
             attach_codex_agent_pane(&state, "agent-1", "pane-1".to_string(), false).unwrap();
 
-        assert!(matches!(attached.status, AgentStatus::AwaitingInput));
+        assert!(matches!(attached.status, AgentStatus::Idle));
         let stored = state.agent("agent-1").unwrap().expect("agent exists");
-        assert!(matches!(stored.status, AgentStatus::AwaitingInput));
+        assert!(matches!(stored.status, AgentStatus::Idle));
     }
 
     #[test]
@@ -2110,6 +2109,36 @@ trusted_hash = "sha256:trusted"
         let written = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(written.contains("first"));
         assert!(!written.contains("second"));
+    }
+
+    #[test]
+    fn shell_escape_prompt_submit_preserves_ready_codex_status() {
+        let state = test_state();
+        state.insert_agent(sample_agent()).unwrap();
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "!git status".to_string(),
+                crate::state::AgentSendSource::DirectSend,
+            )
+            .unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "UserPromptSubmit",
+                "agent-1",
+                json!({ "prompt": "!git status" }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.prompt_submitted");
+        assert_eq!(event.payload["sendTracking"]["status"], "matched");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
     }
 
     fn test_state() -> AppState {

@@ -34,6 +34,10 @@ import claudeModelIconUrl from "./assets/model-icons/claude-ai.svg";
 import openAiModelIconUrl from "./assets/model-icons/openai.svg";
 import openCodeModelIconUrl from "./assets/model-icons/opencode-dark.svg";
 import NativeInput from "./components/NativeInput";
+import {
+  ComposerSubmitShortcutGlyph,
+  isComposerSubmitShortcut,
+} from "./components/ComposerSubmitShortcut";
 import DictationMicButton from "./components/DictationMicButton";
 import { useDictation } from "./useDictation";
 import { getDictationDownload, subscribeDictationDownload } from "./dictationStatus";
@@ -167,6 +171,9 @@ const HOME_TAB_ID = "__home__";
 // How long after the user's last keystroke we keep holding the queue before letting a
 // finished turn auto-send the next queued message.
 const INPUT_DEQUEUE_HOLD_MS = 1500;
+// Short grace period for selection popup closes: rapid re-selection should move the
+// popup instead of flashing it out and back in.
+const SELECTION_ASK_HIDE_DEBOUNCE_MS = 150;
 // Left strip of the sidebar the browser overlay leaves uncovered, so the first few
 // chars of each tab stay visible and clickable for switching tabs.
 const BROWSER_OVERLAY_LEFT_MARGIN = 64;
@@ -383,6 +390,16 @@ function firstUserTurnText(turn: Turn): string | null {
   return null;
 }
 
+function latestUserTurnId(turns: Turn[]): string | null {
+  let latest: string | null = null;
+  for (const turn of turns) {
+    if (firstUserTurnText(turn)) {
+      latest = turn.id;
+    }
+  }
+  return latest;
+}
+
 function defaultPaneTitle(
   pane: PaneInfo,
   agent: AgentInfo | undefined,
@@ -499,6 +516,9 @@ export default function App() {
   // only on a live event that moves the agent into a working status (and on the
   // user's own send), and cleared on any non-working event.
   const [thinkingAgentIds, setThinkingAgentIds] = useState<Set<string>>(() => new Set());
+  const [processingNewMessageByAgent, setProcessingNewMessageByAgent] = useState<
+    Record<string, string | null>
+  >({});
   const [turns, setTurns] = useState<Turn[]>([]);
   const [recentSessions, setRecentSessions] = useState<RecentSessionInfo[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
@@ -558,6 +578,7 @@ export default function App() {
   // Both are ephemeral: dismissing discards their contents (per the "can be lost"
   // requirement). The ask launcher reuses the launcher's markup but its own state.
   const [selectionAsk, setSelectionAsk] = useState<SelectionAskState | null>(null);
+  const selectionAskHideTimerRef = useRef<number | null>(null);
   const [askLauncher, setAskLauncher] = useState<AskLauncherState | null>(null);
   const [askPrompt, setAskPrompt] = useState("");
   const [askCreateInWorktree, setAskCreateInWorktree] = useState(false);
@@ -803,6 +824,7 @@ export default function App() {
     setTranscriptNoticeByAgent(pruneRecord);
     setTranscriptOptionsByAgent(pruneRecord);
     setCollapsedQueuedTurnsByAgent(pruneRecord);
+    setProcessingNewMessageByAgent(pruneRecord);
     setThinkingAgentIds((current) => {
       const next = new Set([...current].filter((id) => ids.has(id)));
       return next.size === current.size ? current : next;
@@ -822,6 +844,49 @@ export default function App() {
       }
     }
   }, [agents]);
+
+  useEffect(() => {
+    setProcessingNewMessageByAgent((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([agentId]) => thinkingAgentIds.has(agentId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [thinkingAgentIds]);
+
+  useEffect(() => {
+    setProcessingNewMessageByAgent((current) => {
+      const entries = Object.entries(current);
+      if (entries.length === 0) {
+        return current;
+      }
+
+      const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+      let next: Record<string, string | null> | null = null;
+      const mutableNext = () => {
+        next ??= { ...current };
+        return next;
+      };
+
+      for (const [agentId, baselineUserTurnId] of entries) {
+        const agent = agentsById.get(agentId);
+        if (!agent) {
+          delete mutableNext()[agentId];
+          continue;
+        }
+
+        const agentTurns = turns.filter((turn) => turn.agentId === agentId);
+        const adapter = getAgentUiAdapter(agent.adapter);
+        const normalizedTurns = adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
+        const latestTurnId = latestUserTurnId(normalizedTurns);
+        if (latestTurnId && latestTurnId !== baselineUserTurnId) {
+          delete mutableNext()[agentId];
+        }
+      }
+
+      return next ?? current;
+    });
+  }, [agents, processingNewMessageByAgent, turns]);
 
   useEffect(() => {
     const pendingAgentIds = Array.from(pendingFirstTitleByAgentRef.current.keys());
@@ -1040,6 +1105,15 @@ export default function App() {
       }
       return next;
     });
+  }
+
+  function expandNewAgentTranscriptByDefault(pane: PaneInfo) {
+    if (settingsRef.current.codeMode || pane.kind !== "agent") {
+      return;
+    }
+    setTranscriptExpandedByPane((current) =>
+      current[pane.id] ? current : { ...current, [pane.id]: true },
+    );
   }
 
   function setActiveQueueSplitHeight(height: number) {
@@ -1423,6 +1497,14 @@ export default function App() {
         next.delete(agentId);
         return next;
       });
+      setProcessingNewMessageByAgent((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, agentId)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[agentId];
+        return next;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1499,11 +1581,13 @@ export default function App() {
   // its base size, capped at +1px, so the transcript/composer track the terminal
   // zoom without overpowering it. No change at or below the base size.
   const turnFontDelta = Math.min(1, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
+  const transcriptExpandedFontDelta = activeTranscriptExpanded ? 0.5 : 0;
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
     "--browser-overlay-left": `${BROWSER_OVERLAY_LEFT_MARGIN}px`,
     "--turn-font-delta": `${turnFontDelta}px`,
+    "--transcript-expanded-font-delta": `${transcriptExpandedFontDelta}px`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
   const contextMenuPane = paneContextMenu
@@ -2397,6 +2481,7 @@ export default function App() {
       });
       setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
+      expandNewAgentTranscriptByDefault(pane);
       if (pane.agentId) {
         setAgentQueuedTurns(pane.agentId, []);
         pendingFirstTitleByAgentRef.current.set(
@@ -2429,6 +2514,7 @@ export default function App() {
         current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
       );
       setActivePaneId(pane.id);
+      expandNewAgentTranscriptByDefault(pane);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -2437,6 +2523,24 @@ export default function App() {
   // Show the floating Ask popup for a selection. Both surfaces (terminal and
   // transcript) route here; the selection is always within the active agent's pane,
   // and we require an active agent (shell panes have nothing to ask).
+  function clearSelectionAskHideTimer() {
+    if (selectionAskHideTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(selectionAskHideTimerRef.current);
+    selectionAskHideTimerRef.current = null;
+  }
+  function dismissSelectionAskSoon() {
+    clearSelectionAskHideTimer();
+    selectionAskHideTimerRef.current = window.setTimeout(() => {
+      selectionAskHideTimerRef.current = null;
+      setSelectionAsk(null);
+    }, SELECTION_ASK_HIDE_DEBOUNCE_MS);
+  }
+  function dismissSelectionAskNow() {
+    clearSelectionAskHideTimer();
+    setSelectionAsk(null);
+  }
   function showSelectionAsk(quote: string, anchor: SelectionAnchor) {
     if (!activeAgent || !activePane) {
       return;
@@ -2445,6 +2549,7 @@ export default function App() {
     if (!trimmed) {
       return;
     }
+    clearSelectionAskHideTimer();
     setSelectionAsk({
       quote: trimmed,
       anchor,
@@ -2477,7 +2582,7 @@ export default function App() {
     setAskPrompt("");
     setAskCreateInWorktree(false);
     setAskSelectedSkillId(null);
-    setSelectionAsk(null);
+    dismissSelectionAskNow();
     focusAskInput();
   }
   function closeAskLauncher(focusPaneId?: string) {
@@ -2531,6 +2636,7 @@ export default function App() {
           current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
         );
         setActivePaneId(pane.id);
+        expandNewAgentTranscriptByDefault(pane);
         // Land focus on the fork we just switched to, not the source pane.
         focusPaneId = pane.id;
         if (pane.agentId) {
@@ -2602,6 +2708,7 @@ export default function App() {
     },
     [],
   );
+  useEffect(() => () => clearSelectionAskHideTimer(), []);
 
   // Keep the machine awake while the toggle is on and at least one agent is
   // actively working (running or starting up). Releasing the lock the moment no
@@ -2803,14 +2910,13 @@ export default function App() {
         return;
       }
 
-      // Ctrl-Tab / Ctrl-Shift-Tab cycle through the open tabs like a browser,
-      // skipping Home. Claimed here in the capture phase (before the
-      // terminal/editable bail) so it works regardless of focus; Tab with Ctrl is
-      // never a text-editing key.
+      // Ctrl-Tab / Ctrl-Shift-Tab cycle through Home and the open tabs like a
+      // browser. Claimed here in the capture phase (before the terminal/editable
+      // bail) so it works regardless of focus; Tab with Ctrl is never a text-editing key.
       if (key === "tab" && event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        cycleTab(event.shiftKey ? -1 : 1, false);
+        cycleTab(event.shiftKey ? -1 : 1, true);
         return;
       }
 
@@ -2886,8 +2992,14 @@ export default function App() {
       event.preventDefault();
       event.stopPropagation();
 
-      // Cmd-T opens a new shell pane.
+      // Cmd-T opens a new shell pane in code mode. Outside code mode, shell panes
+      // are hidden from the sidebar actions, so Cmd-T aliases the visible New Agent
+      // action.
       if (!event.metaKey || event.ctrlKey) {
+        return;
+      }
+      if (!settingsRef.current.codeMode) {
+        setLauncherOpen(true);
         return;
       }
       void addShellPane();
@@ -3106,7 +3218,7 @@ export default function App() {
           event.preventDefault();
           return;
         }
-        if (event.metaKey && event.key === "Enter") {
+        if (isComposerSubmitShortcut(event, settings.codeMode)) {
           event.preventDefault();
           void addAgentPane();
         }
@@ -3226,7 +3338,7 @@ export default function App() {
             aria-label={`Launch ${launchAdapter.label}`}
             title={`Launch ${launchAdapter.label}`}
           >
-            <span aria-hidden="true">⌘<span className="enter-glyph">↵</span></span>
+            <ComposerSubmitShortcutGlyph codeMode={settings.codeMode} ariaHidden />
           </button>
         </div>
       </div>
@@ -3255,7 +3367,7 @@ export default function App() {
           event.preventDefault();
           return;
         }
-        if (event.metaKey && event.key === "Enter" && !event.repeat) {
+        if (isComposerSubmitShortcut(event, settings.codeMode) && !event.repeat) {
           event.preventDefault();
           void submitAsk();
         }
@@ -3347,9 +3459,7 @@ export default function App() {
             <span className="command-launcher-send-label">
               {state.mode === "newThread" ? "Ask in fork" : "Queue"}
             </span>
-            <span aria-hidden="true">
-              ⌘<span className="enter-glyph">↵</span>
-            </span>
+            <ComposerSubmitShortcutGlyph codeMode={settings.codeMode} ariaHidden />
           </button>
         </div>
       </div>
@@ -3364,7 +3474,11 @@ export default function App() {
       }${settings.reduceMotion ? " reduce-motion" : ""}`}
       style={appStyle}
     >
-      <aside className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}`}>
+      <aside
+        className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}${
+          settings.codeMode ? " is-code-mode" : ""
+        }`}
+      >
         <div className="titlebar-drag" data-tauri-drag-region aria-hidden="true" />
         <div
           className="sidebar-resizer"
@@ -3415,6 +3529,8 @@ export default function App() {
               ? worktreeStatusByAgent[paneAgent.id]
               : undefined;
             const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
+            const paneAgentStatusClass =
+              paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
             const canClearWorkingStatus =
               paneAgent?.status === "running" || paneAgent?.status === "starting";
             const paneQueueCount = paneAgent
@@ -3498,7 +3614,7 @@ export default function App() {
                   }}
                 >
                   <span
-                    className={`pane-tab-dot status-${paneAgentStatusTone}${
+                    className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${
                       canClearWorkingStatus ? " is-clearable-placeholder" : ""
                     }`}
                     aria-hidden="true"
@@ -3574,7 +3690,7 @@ export default function App() {
                     }}
                   >
                     <span
-                      className={`pane-tab-dot status-${paneAgentStatusTone}`}
+                      className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}`}
                       aria-hidden="true"
                     />
                   </button>
@@ -3607,21 +3723,23 @@ export default function App() {
           })}
         </nav>
 
-        <div className="sidebar-actions">
-          <div className="sidebar-action-with-hint">
-            <button type="button" onClick={addShellPane}>
-              <SquareTerminal size={14} aria-hidden="true" />
-              <span>New shell</span>
-            </button>
-            {shortcutHintsShown ? (
-              <span
-                className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
-                aria-hidden="true"
-              >
-                ⌘T
-              </span>
-            ) : null}
-          </div>
+        <div className={`sidebar-actions${settings.codeMode ? "" : " is-agent-only"}`}>
+          {settings.codeMode ? (
+            <div className="sidebar-action-with-hint">
+              <button type="button" onClick={addShellPane}>
+                <SquareTerminal size={14} aria-hidden="true" />
+                <span>New shell</span>
+              </button>
+              {shortcutHintsShown ? (
+                <span
+                  className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
+                  aria-hidden="true"
+                >
+                  ⌘T
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <div className="sidebar-action-with-hint">
             <button type="button" onClick={openAgentLauncher}>
               <MessageSquareText size={14} aria-hidden="true" />
@@ -3632,7 +3750,7 @@ export default function App() {
                 className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
                 aria-hidden="true"
               >
-                ⌘;
+                {settings.codeMode ? "⌘;" : "⌘; / ⌘T"}
               </span>
             ) : null}
           </div>
@@ -3882,6 +4000,7 @@ export default function App() {
                 className="settings-input"
                 type="password"
                 value={settings.openRouterKey}
+                placeholder="sk-or-v1-…"
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => {
@@ -3900,6 +4019,7 @@ export default function App() {
                 className="settings-input"
                 type="text"
                 value={settings.openRouterModel}
+                placeholder="google/gemma-4-31b-it:free"
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => {
@@ -4174,6 +4294,13 @@ export default function App() {
                 thinkingAgentIds.has(activeAgent.id) &&
                 (activeAgent.status === "running" || activeAgent.status === "starting"),
             )}
+            thinkingLabel={
+              activeAgent &&
+              Object.prototype.hasOwnProperty.call(processingNewMessageByAgent, activeAgent.id)
+                ? "Processing new message…"
+                : "Thinking…"
+            }
+            showActivityDetail={settings.codeMode}
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
@@ -4189,7 +4316,7 @@ export default function App() {
             onQueueSplitHeightChange={setActiveQueueSplitHeight}
             linkActions={linkActions}
             onAskSelection={showSelectionAsk}
-            onDismissSelection={() => setSelectionAsk(null)}
+            onDismissSelection={dismissSelectionAskSoon}
             header={
               <TurnPaneHeader
                 sessionId={activeAgent?.sessionId ?? null}
@@ -4236,6 +4363,7 @@ export default function App() {
                     queuedTurns={activeQueuedTurns}
                     collapsedQueuedTurns={activeCollapsedQueuedTurns}
                     queueSplit={activeQueueSplit}
+                    codeMode={settings.codeMode}
                     transcriptText={activeTranscript}
                     transcriptCopyText={() =>
                       formatTranscriptCopyJson({
@@ -4252,21 +4380,33 @@ export default function App() {
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
-                    onTurnSubmitted={(agentId, text) => {
+                    onTurnSubmitted={(agentId, text, mode) => {
                       // Show "Thinking…" the instant a send starts a run, before the
                       // backend's status event round-trips. Gate on the agent being
                       // ready to receive (a plain send): queued turns don't start work,
                       // and an already-running agent is marked by its live status
-                      // events instead. The next status event reconciles either way.
+                      // events instead. Send Now keeps the live indicator lit with a
+                      // more precise label until the transcript catches the new turn.
                       const policy = getAgentUiAdapter(activeAgent.adapter).composerPolicy(
                         activeAgent,
                       );
+                      const shouldShowWorking =
+                        mode === "steer" ||
+                        (mode === "send" && policy.readyStatuses.includes(activeAgent.status));
                       if (
                         activeAgent.id === agentId &&
-                        policy.readyStatuses.includes(activeAgent.status)
+                        shouldShowWorking
                       ) {
                         setThinkingAgentIds((prev) =>
                           prev.has(agentId) ? prev : new Set(prev).add(agentId),
+                        );
+                      }
+                      if (activeAgent.id === agentId && mode === "steer") {
+                        const baselineUserTurnId = latestUserTurnId(activeTurns);
+                        setProcessingNewMessageByAgent((current) =>
+                          current[agentId] === baselineUserTurnId
+                            ? current
+                            : { ...current, [agentId]: baselineUserTurnId },
                         );
                       }
                       applyPendingFirstMessageTitle(agentId, text);
@@ -4331,7 +4471,7 @@ export default function App() {
           reselectWithin=".turn-timeline"
           onAsk={() => openAskLauncher("ask")}
           onAskNewThread={() => openAskLauncher("newThread")}
-          onClose={() => setSelectionAsk(null)}
+          onClose={dismissSelectionAskSoon}
         />
       ) : null}
 

@@ -77,6 +77,10 @@ interface TurnOverlayProps {
   // to the bottom of the transcript. Driven by live status transitions upstream, so
   // an agent merely restored into a working status does not light it up.
   thinking?: boolean;
+  thinkingLabel?: string;
+  // Code-mode transcript detail: when false, hide historical tool/thinking
+  // activity from the visible transcript while keeping normal messages.
+  showActivityDetail?: boolean;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -247,6 +251,8 @@ export default function TurnOverlay({
   onAskSelection,
   onDismissSelection,
   thinking = false,
+  thinkingLabel = "Thinking…",
+  showActivityDetail = true,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
@@ -473,7 +479,10 @@ export default function TurnOverlay({
     ? { height: effectiveQueueSplitHeight }
     : undefined;
   const splitBoundsNow = queueSplit ? splitBounds() : null;
-  const timelineItems = useMemo(() => buildTimelineItems(turns), [turns]);
+  const timelineItems = useMemo(
+    () => buildTimelineItems(turns, showActivityDetail),
+    [turns, showActivityDetail],
+  );
 
   return (
     <LinkActionsContext.Provider value={linkActions}>
@@ -550,7 +559,7 @@ export default function TurnOverlay({
         {thinking ? (
           <div className="turn-thinking" aria-live="polite">
             <span className="turn-thinking-dot" aria-hidden="true" />
-            <span className="turn-thinking-label">Thinking…</span>
+            <span className="turn-thinking-label">{thinkingLabel}</span>
           </div>
         ) : null}
       </div>
@@ -568,7 +577,7 @@ export default function TurnOverlay({
   );
 }
 
-function buildTimelineItems(turns: Turn[]): MessageItem[] {
+function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageItem[] {
   const items: MessageItem[] = [];
   // Tool calls awaiting a result, in arrival order. A result matches by tool-use
   // id when both sides carry one, otherwise it falls back to the oldest pending
@@ -672,14 +681,20 @@ function buildTimelineItems(turns: Turn[]): MessageItem[] {
           pushMessageBlock(turn.role, block);
           break;
         case "toolUse":
-          registerToolUse(block);
+          if (showActivityDetail) {
+            registerToolUse(block);
+          }
           break;
         case "toolResult":
-          attachToolResult(block);
+          if (showActivityDetail) {
+            attachToolResult(block);
+          }
           break;
         case "raw":
           if (turn.role === "assistant") {
-            pushThinkingValue(block.value);
+            if (showActivityDetail) {
+              pushThinkingValue(block.value);
+            }
           } else {
             pushMessageBlock(turn.role, block);
           }
@@ -857,7 +872,7 @@ function activityGroupLabel(group: ActivityGroupItem) {
   if (entries.length === 0) {
     return "Thinking...";
   }
-  return toolActionGroupLabel(entries) ?? usedToolsLabel(group.toolCallCount);
+  return toolActionGroupLabel(entries) ?? calledToolsLabel(group.toolCallCount);
 }
 
 function toolActionGroupLabel(entries: ToolEntry[]) {
@@ -886,7 +901,9 @@ function toolActionGroupLabel(entries: ToolEntry[]) {
     fileActionLabel("read", counts.readFile),
     fileActionLabel("edited", counts.editFile),
     commandActionLabel(counts.runCommand),
-    unknownCount > 0 ? `used ${unknownCount} other tool${unknownCount === 1 ? "" : "s"}` : null,
+    unknownCount > 0
+      ? `called ${unknownCount} other tool${unknownCount === 1 ? "" : "s"}`
+      : null,
   ].filter((part): part is string => Boolean(part));
   return capitalizeSentence(parts.join(", "));
 }
@@ -925,8 +942,8 @@ function commandActionLabel(count: number) {
   return count === 1 ? "ran a command" : `ran ${count} commands`;
 }
 
-function usedToolsLabel(count: number) {
-  return `Used ${count} tool${count === 1 ? "" : "s"}`;
+function calledToolsLabel(count: number) {
+  return `Called ${count} tool${count === 1 ? "" : "s"}`;
 }
 
 function capitalizeSentence(label: string) {
@@ -1037,7 +1054,7 @@ function ToolEntryView({
   showChevron: boolean;
 }) {
   const summaryArgument = toolSummaryArgument(entry);
-  const toolNameLabel = showChevron ? entry.name : `Used ${entry.name}`;
+  const toolNameLabel = showChevron ? entry.name : `Called ${entry.name}`;
   const summaryLabel = summaryArgument ? `${toolNameLabel} ${summaryArgument}` : toolNameLabel;
   return (
     <details

@@ -730,9 +730,9 @@ mod tests {
 
     #[test]
     fn detach_pane_agent_reverts_pane_to_plain_shell() {
-        // A shell-launched agent sitting at its synthetic "awaiting input" status: once
-        // the agent process exits, detaching clears the pane binding and drops it to Idle
-        // so the tab stops advertising a stale status.
+        // A shell-launched agent may still be carrying a prompt/notification status:
+        // once the agent process exits, detaching clears the pane binding and drops it
+        // to Idle so the tab stops advertising a stale status.
         let state = test_state();
         state
             .insert_agent(sample_agent(

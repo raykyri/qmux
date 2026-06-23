@@ -8,7 +8,7 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::{Turn, TurnBlock, start_transcript_tail};
-use crate::turn_queue::{IdleResolution, advance_after_idle};
+use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     prepare_agent_workspace,
@@ -251,11 +251,11 @@ impl OpencodeAdapter {
         )?;
 
         // A recovered opencode process is launched without an inline prompt,
-        // even when resuming a session, so it is waiting for input once the TUI
-        // appears. The first real prompt/tool hook will promote it to Running.
+        // even when resuming a session, so it is ready once the TUI appears. The
+        // first real prompt/tool hook will promote it to Running.
         let mut restored = agent.clone();
         restored.pane_id = Some(pane.id.clone());
-        restored.status = AgentStatus::AwaitingInput;
+        restored.status = AgentStatus::Idle;
         state.update_agent(restored.clone())?;
 
         if let Some(transcript_path) = restored.transcript_path.clone() {
@@ -401,10 +401,12 @@ impl OpencodeAdapter {
             }
             "UserPromptSubmit" => {
                 if let Some(agent) = agent.as_mut() {
-                    agent.status = AgentStatus::Running;
-                    state.set_agent_status(&agent.id, agent.status)?;
                     let prompt = string_field(&notification.payload, "prompt")
                         .or_else(|| string_field(&notification.payload, "input"));
+                    if !prompt.as_deref().is_some_and(is_shell_escape_turn) {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                    }
                     send_tracking =
                         Some(state.match_agent_prompt_submit(&agent.id, prompt.as_deref())?);
                 }
@@ -592,8 +594,8 @@ fn attach_opencode_agent_pane(
     if !has_initial_prompt {
         // Field-scoped write — a full-struct update here would race the SessionStart
         // hook recording session_id on another thread. Return the post-write state so
-        // callers see the final AwaitingInput status.
-        if let Some(updated) = state.set_agent_status(agent_id, AgentStatus::AwaitingInput)? {
+        // callers see the final Idle status.
+        if let Some(updated) = state.set_agent_status(agent_id, AgentStatus::Idle)? {
             return Ok(updated);
         }
     }
@@ -938,7 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn interactive_attach_marks_agent_awaiting_input() {
+    fn interactive_attach_marks_agent_idle() {
         let state = test_state();
         let mut agent = sample_agent();
         agent.status = AgentStatus::Starting;
@@ -948,9 +950,9 @@ mod tests {
         let attached =
             attach_opencode_agent_pane(&state, "agent-1", "pane-1".to_string(), false).unwrap();
 
-        assert!(matches!(attached.status, AgentStatus::AwaitingInput));
+        assert!(matches!(attached.status, AgentStatus::Idle));
         let stored = state.agent("agent-1").unwrap().expect("agent exists");
-        assert!(matches!(stored.status, AgentStatus::AwaitingInput));
+        assert!(matches!(stored.status, AgentStatus::Idle));
     }
 
     #[test]
@@ -1018,6 +1020,35 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("opencode-session-1"));
         assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn shell_escape_prompt_submit_preserves_ready_opencode_status() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Done;
+        state.insert_agent(agent).unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "!git status".to_string(),
+                crate::state::AgentSendSource::DirectSend,
+            )
+            .unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "UserPromptSubmit",
+                "agent-1",
+                json!({ "prompt": "!git status" }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.prompt_submitted");
+        assert_eq!(event.payload["sendTracking"]["status"], "matched");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
     }
 
     #[test]

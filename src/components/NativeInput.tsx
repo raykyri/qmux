@@ -25,7 +25,11 @@ import { inspectPaste } from "../lib/paste";
 import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
-import type { AgentInfo, PaneInfo, QueuedTurn } from "../types";
+import type { AgentInfo, PaneInfo, QueuedTurn, SubmitAgentTurnMode } from "../types";
+import {
+  ComposerSubmitShortcutGlyph,
+  isComposerSubmitShortcut,
+} from "./ComposerSubmitShortcut";
 
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
@@ -115,13 +119,14 @@ interface NativeInputProps {
   // toggle), an empty queue gets a centered placeholder instead of collapsing to
   // nothing above the composer.
   queueSplit: boolean;
+  codeMode: boolean;
   transcriptText: string;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
-  onTurnSubmitted: (agentId: string, text: string) => void;
+  onTurnSubmitted: (agentId: string, text: string, mode: SubmitAgentTurnMode) => void;
   onUserInput: (agentId: string) => void;
   // Read/write a tab's last queue scroll position (kept in App so it survives the
   // composer unmounting when switching through a shell pane).
@@ -137,6 +142,7 @@ export default function NativeInput({
   queuedTurns,
   collapsedQueuedTurns,
   queueSplit,
+  codeMode,
   transcriptText,
   transcriptCopyText,
   composerPolicy,
@@ -220,7 +226,11 @@ export default function NativeInput({
   const canQueue = composerPolicy.queueStatuses.includes(agent.status);
   const canSteer = composerPolicy.steerStatuses.includes(agent.status);
   const hasTranscript = transcriptText.trim().length > 0;
+  const hasSubmitValue = value.trim().length > 0;
   const sendDisabled = submitting || !canSend || value.trim().length === 0;
+  const submitShortcutTargetsSend = !submitting && canSend && hasSubmitValue;
+  const submitShortcutTargetsQueue =
+    !submitShortcutTargetsSend && !submitting && canQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
 
@@ -362,7 +372,7 @@ export default function NativeInput({
     };
   }, []);
 
-  async function submitTurn(text: string, mode: "send" | "queue" | "steer") {
+  async function submitTurn(text: string, mode: SubmitAgentTurnMode) {
     if (submitting) {
       return;
     }
@@ -379,7 +389,7 @@ export default function NativeInput({
     try {
       const result = await submitAgentTurn(agent.id, trimmed, mode);
       onQueueChange(agent.id, result.queuedTurns);
-      onTurnSubmitted(agent.id, trimmed);
+      onTurnSubmitted(agent.id, trimmed, mode);
       recordRecentMessage(trimmed);
       setValue("");
       // Return focus to the composer once it clears. Deferred to the next frame
@@ -912,11 +922,11 @@ export default function NativeInput({
             });
           }}
           onKeyDown={(event) => {
-            if (event.metaKey && event.key === "Enter") {
+            if (isComposerSubmitShortcut(event, codeMode)) {
               event.preventDefault();
-              if (canSend) {
+              if (submitShortcutTargetsSend) {
                 void submitTurn(value, "send");
-              } else if (canQueue) {
+              } else if (submitShortcutTargetsQueue) {
                 void submitTurn(value, "queue");
               }
               return;
@@ -1016,7 +1026,7 @@ export default function NativeInput({
                     void copyQueued();
                   }}
                 >
-                  Copy queued
+                  Copy queued messages
                 </button>
                 <button
                   type="button"
@@ -1071,9 +1081,9 @@ export default function NativeInput({
           {!sendDisabled ? (
             <button type="button" onClick={() => void submitTurn(value, "send")}>
               <span>Send</span>
-              <span className="shortcut-hint" aria-label="Command Enter">
-                ⌘<span className="enter-glyph" aria-hidden="true">↵</span>
-              </span>
+              {submitShortcutTargetsSend ? (
+                <ComposerSubmitShortcutGlyph codeMode={codeMode} className="shortcut-hint" />
+              ) : null}
             </button>
           ) : null}
           {canSteer ? (
@@ -1104,10 +1114,8 @@ export default function NativeInput({
               onClick={() => void submitTurn(value, "queue")}
             >
               <span>Queue</span>
-              {canQueue ? (
-                <span className="shortcut-hint" aria-label="Command Enter">
-                  ⌘<span className="enter-glyph" aria-hidden="true">↵</span>
-                </span>
+              {submitShortcutTargetsQueue ? (
+                <ComposerSubmitShortcutGlyph codeMode={codeMode} className="shortcut-hint" />
               ) : null}
             </button>
           )}

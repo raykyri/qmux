@@ -348,6 +348,10 @@ button:disabled {
   margin-bottom: 4px;
 }
 
+.sidebar:not(.is-code-mode) .pane-home-row {
+  margin-bottom: 0;
+}
+
 .pane-home-row .pane-tab {
   /* Reuse the terminal tabs' grid so the "Home" label lines up with their titles.
      The icon takes the status-dot column (overflowing it symmetrically since it's
@@ -463,6 +467,10 @@ button:disabled {
 .pane-tab-dot.status-attention {
   background: #e0796d;
   animation: status-dot-pulse 1s ease-in-out infinite;
+}
+
+.pane-tab-dot.status-awaiting-input {
+  animation: none;
 }
 
 .pane-tab-dot.status-done {
@@ -798,6 +806,10 @@ button:disabled {
   --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
+.sidebar-actions.is-agent-only {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .sidebar-action-with-hint {
   position: relative;
   display: flex;
@@ -1114,7 +1126,6 @@ button:disabled {
 
 .settings-input:hover {
   border-color: var(--control-border-hover);
-  background: #16191b;
 }
 
 .settings-input:focus {
@@ -1717,6 +1728,14 @@ button:disabled {
   pointer-events: auto;
 }
 
+.recent-sessions-module {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
 .recent-sessions {
   display: flex;
   min-width: 0;
@@ -1751,6 +1770,25 @@ button:disabled {
 .recent-sessions-list {
   display: grid;
   gap: 4px;
+}
+
+.recent-sessions-show-more {
+  align-self: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: #a8cfc4;
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.recent-sessions-show-more:hover,
+.recent-sessions-show-more:focus-visible {
+  color: #d5eee6;
+  background: transparent;
+  outline: none;
 }
 
 .recent-session-row {
@@ -2353,6 +2391,9 @@ button:disabled {
 }
 
 .turn-timeline {
+  --transcript-font-delta: calc(
+    var(--turn-font-delta, 0px) + var(--transcript-expanded-font-delta, 0px)
+  );
   position: absolute;
   inset: 0;
   display: grid;
@@ -2377,6 +2418,7 @@ button:disabled {
 .turn-empty-state {
   flex-direction: column;
   gap: 6px;
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
 }
 
 /* Empty-queue placeholder shown above the composer when the queue and transcript
@@ -2391,35 +2433,37 @@ button:disabled {
   /* Same muted gray as the placeholder above it (.empty-state); a missing
      transcript is an ordinary state, not a warning. */
   color: #aab1ad;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   line-height: 1.4;
 }
 
 /* "Thinking…" indicator pinned to the bottom of the transcript while the agent is
-   actively working. Left-aligned like an assistant row, with a muted pulsing dot
-   that follows the label color instead of the warmer tab activity tone. */
+   actively working. Left-aligned like an assistant row, using the same base label
+   treatment as tool groups and completed thinking blocks. */
 .turn-thinking {
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 4px 10px 2px;
+  color: #8f9994;
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   user-select: none;
 }
 
 .turn-thinking-dot {
-  --status-dot-y: -1px;
+  --status-dot-y: 0;
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #9aa29e;
+  background: currentColor;
   transform: translateY(var(--status-dot-y));
   animation: status-dot-pulse 1.3s ease-in-out infinite;
 }
 
 .turn-thinking-label {
-  color: #aab1ad;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  color: inherit;
+  font-size: inherit;
   font-style: italic;
 }
 
@@ -2437,7 +2481,7 @@ button:disabled {
   border: 0;
   background: transparent;
   color: #aab1ad;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   line-height: 1.4;
   cursor: pointer;
   transition: color 120ms ease;
@@ -2557,7 +2601,7 @@ button:disabled {
 
 .turn-card header {
   color: #96e0cf;
-  font-size: calc(11.5px + var(--turn-font-delta, 0px));
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
   /* Don't let the role label ("User"/"Claude") get caught in a transcript
@@ -2583,7 +2627,7 @@ header + .turn-blocks {
 .turn-markdown {
   min-width: 0;
   color: #f1f0e8;
-  font-size: calc(14px + var(--turn-font-delta, 0px));
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
   overflow-wrap: anywhere;
 }
 
@@ -2612,7 +2656,7 @@ header + .turn-blocks {
   padding: 0 1px;
   color: #a9cfc0;
   font-family: var(--font-mono);
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   overflow: hidden;
   text-align: left;
   text-decoration-line: underline;
@@ -2652,7 +2696,7 @@ header + .turn-blocks {
   padding: 3px 6px;
   color: #d9ddd9;
   font: inherit;
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   cursor: pointer;
 }
 
@@ -2677,7 +2721,7 @@ header + .turn-blocks {
   max-height: 96px;
   margin: 0;
   color: #bfc7c2;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -2708,7 +2752,7 @@ header + .turn-blocks {
 .turn-markdown h6 {
   margin: 10px 0 5px;
   color: #f4f3ec;
-  font-size: calc(13.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13.5px + var(--transcript-font-delta, 0px));
   line-height: 1.35;
 }
 
@@ -2752,7 +2796,7 @@ header + .turn-blocks {
   padding: 1px 4px;
   color: #e7e7e2;
   font-family: var(--font-mono);
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
 }
 
 .turn-markdown pre {
@@ -2816,12 +2860,12 @@ header + .turn-blocks {
 .activity-group-block {
   background: transparent;
   color: #d9ddd9;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
   overflow: visible;
 }
 
 .activity-group-block {
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
 .tool-block > summary,
@@ -2902,7 +2946,7 @@ header + .turn-blocks {
 
 .tool-summary-main {
   color: #8f9994;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   font-weight: 400;
 }
 
@@ -2924,7 +2968,7 @@ header + .turn-blocks {
 
 .tool-summary-meta {
   color: #8f9994;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
 /* Expanded payloads keep a faint full box so raw output stays delineated, indented
@@ -2940,7 +2984,7 @@ header + .turn-blocks {
 .tool-payload-label {
   padding: 6px 8px 0;
   color: #8f9994;
-  font-size: calc(11px + var(--turn-font-delta, 0px));
+  font-size: calc(11px + var(--transcript-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2974,7 +3018,7 @@ header + .turn-blocks {
 }
 
 .thinking-block > summary > span {
-  font-size: calc(13.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
 .activity-group-children {

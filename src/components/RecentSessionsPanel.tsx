@@ -3,6 +3,8 @@ import { AlertTriangle, Clock3, Play, SquareStack } from "lucide-react";
 import type { QueuedTurn, RecentSessionInfo, RuntimeConfig } from "../types";
 import { formatRelativeTime } from "../lib/transcriptSessions";
 
+const RECENT_SESSION_COLLAPSED_LIMIT = 2;
+
 interface RecentSessionsPanelProps {
   sessions: RecentSessionInfo[];
   config: RuntimeConfig | null;
@@ -85,10 +87,15 @@ export default function RecentSessionsPanel({
   onOpenSession,
   formatPath,
 }: RecentSessionsPanelProps) {
+  const [showAllRecentSessions, setShowAllRecentSessions] = useState(false);
   // "Open tabs" are sessions currently bound to a live pane; the rest are history.
   // Each session appears in exactly one of the two sections, never both.
   const openSessions = sessions.filter((session) => Boolean(session.paneId));
   const recentSessions = sessions.filter((session) => !session.paneId);
+  const visibleRecentSessions = showAllRecentSessions
+    ? recentSessions
+    : recentSessions.slice(0, RECENT_SESSION_COLLAPSED_LIMIT);
+  const hiddenRecentSessionCount = recentSessions.length - visibleRecentSessions.length;
 
   function renderRow(session: RecentSessionInfo) {
     const icon = adapterIconById[session.adapter];
@@ -129,7 +136,7 @@ export default function RecentSessionsPanel({
   }
 
   return (
-    <>
+    <div className="recent-sessions-module">
       {openSessions.length > 0 ? (
         <section className="recent-sessions open-tabs" aria-label="Open tabs">
           <div className="recent-sessions-heading">
@@ -161,12 +168,24 @@ export default function RecentSessionsPanel({
           <p className="recent-sessions-empty">No recent sessions</p>
         ) : (
           <div className="recent-sessions-list">
-            {recentSessions.map((session) => (
+            {visibleRecentSessions.map((session) => (
               <div key={session.id}>{renderRow(session)}</div>
             ))}
           </div>
         )}
+        {hiddenRecentSessionCount > 0 ? (
+          <button
+            type="button"
+            className="recent-sessions-show-more"
+            aria-label={`Show ${hiddenRecentSessionCount} more recent ${
+              hiddenRecentSessionCount === 1 ? "session" : "sessions"
+            }`}
+            onClick={() => setShowAllRecentSessions(true)}
+          >
+            Show {hiddenRecentSessionCount} more
+          </button>
+        ) : null}
       </section>
-    </>
+    </div>
   );
 }

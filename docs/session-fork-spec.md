@@ -42,8 +42,8 @@ diverge without conflicting. We drive that from a skill:
     `parent_id = source.id`, `fork_point = source.session_id`,
     `root_session_id = source.root_session_id ?? source.session_id`.
   - Args: `--settings <hooks> --plugin-dir <plugin> [--model M] --permission-mode auto
-    --resume <session id> --fork-session` (no prompt → starts awaiting input). The
-    fork's own SessionStart hook sets its new session id + transcript tail.
+    --resume <session id> --fork-session` (no prompt → starts idle). The fork's own
+    SessionStart hook sets its new session id + transcript tail.
 - `AppState::nest_pane_under(pane_id, parent_pane_id)` — moves a pane to immediately
   after the parent at `parent_depth + 1`, then normalizes (reuses the tab-tree
   invariant from the nesting feature).

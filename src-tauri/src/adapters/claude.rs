@@ -9,7 +9,7 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::{Turn, TurnBlock, start_transcript_tail};
-use crate::turn_queue::{IdleResolution, advance_after_idle};
+use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
     mark_agent_spawn_failed, prepare_agent_workspace,
@@ -253,11 +253,11 @@ impl ClaudeAdapter {
         match spawn_result {
             Ok(pane) => {
                 if !has_prompt {
-                    // Launched without a prompt: Claude opens interactively and waits
-                    // for input, so present the tab as having an agent that is awaiting
-                    // input rather than working. Field-scoped write — a full-struct
-                    // update here would race the SessionStart hook recording session_id.
-                    state.set_agent_status(&agent.id, AgentStatus::AwaitingInput)?;
+                    // Launched without a prompt: Claude opens interactively and is
+                    // ready, so present the tab as idle rather than working.
+                    // Field-scoped write — a full-struct update here would race the
+                    // SessionStart hook recording session_id.
+                    state.set_agent_status(&agent.id, AgentStatus::Idle)?;
                 }
                 Ok(pane)
             }
@@ -307,7 +307,7 @@ impl ClaudeAdapter {
             },
         )?;
 
-        // Record fork lineage and the awaiting-input status before the process starts,
+        // Record fork lineage and the no-prompt idle status before the process starts,
         // so the fork's own SessionStart hook (which overwrites session_id) can't race
         // ahead of the lineage write.
         agent.parent_id = Some(source.id.clone());
@@ -316,7 +316,7 @@ impl ClaudeAdapter {
             .root_session_id
             .clone()
             .or_else(|| Some(session_id.clone()));
-        agent.status = AgentStatus::AwaitingInput;
+        agent.status = AgentStatus::Idle;
         state.update_agent(agent.clone())?;
 
         let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
@@ -380,13 +380,13 @@ impl ClaudeAdapter {
             }
         };
 
-        // Restore AwaitingInput after the early pane bind (attach promotes to Running,
-        // but a resumed fork with no prompt is sitting idle waiting for the user). Use a
-        // field-scoped status write, not a full-struct update: the spawned fork's
-        // SessionStart hook may already be recording its new session_id/transcript on
-        // another thread, and a stale snapshot write here would wipe them.
+        // Restore Idle after the early pane bind (attach promotes to Running, but a
+        // resumed fork with no prompt is simply ready). Use a field-scoped status
+        // write, not a full-struct update: the spawned fork's SessionStart hook may
+        // already be recording its new session_id/transcript on another thread, and a
+        // stale snapshot write here would wipe them.
         let forked = state
-            .set_agent_status(&agent.id, AgentStatus::AwaitingInput)?
+            .set_agent_status(&agent.id, AgentStatus::Idle)?
             .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?;
 
         Ok((pane, forked))
@@ -457,11 +457,11 @@ impl ClaudeAdapter {
 
         // Re-bind the agent to its restored pane. A recovered Claude process is
         // launched without an inline prompt, even when resuming a session, so it is
-        // waiting for input once the TUI appears. The first real prompt/tool hook will
-        // promote it to Running.
+        // ready once the TUI appears. The first real prompt/tool hook will promote it
+        // to Running.
         let mut restored = agent.clone();
         restored.pane_id = Some(pane.id.clone());
-        restored.status = AgentStatus::AwaitingInput;
+        restored.status = AgentStatus::Idle;
         state.update_agent(restored.clone())?;
 
         if let Some(transcript_path) = restored.transcript_path.clone() {
@@ -535,14 +535,14 @@ impl ClaudeAdapter {
         };
         let agent = attach_agent_pane(state, &agent.id, request.pane_id.clone())?;
         let agent = if !args_contain_prompt(&request.args) {
-            // A bare `claude` (no inline prompt) drops into interactive mode and
-            // waits for the user, so present the tab as having an agent that is
-            // awaiting input rather than working. The first real turn promotes it.
+            // A bare `claude` (no inline prompt) drops into interactive mode ready
+            // for the user, so present the tab as idle rather than working. The
+            // first real turn promotes it.
             // Field-scoped write — a full-struct update here would race the
             // SessionStart hook recording session_id; carry the post-write state so
             // the agent.spawned event below ships the right status.
             state
-                .set_agent_status(&agent.id, AgentStatus::AwaitingInput)?
+                .set_agent_status(&agent.id, AgentStatus::Idle)?
                 .unwrap_or(agent)
         } else {
             agent
@@ -636,10 +636,15 @@ impl ClaudeAdapter {
             }
             "UserPromptSubmit" => {
                 if let Some(agent) = agent.as_mut() {
-                    agent.status = AgentStatus::Running;
-                    state.set_agent_status(&agent.id, agent.status)?;
-                    if !is_subagent_payload(&notification.payload) {
-                        let prompt = string_field(&notification.payload, "prompt");
+                    let is_subagent = is_subagent_payload(&notification.payload);
+                    let prompt = (!is_subagent)
+                        .then(|| string_field(&notification.payload, "prompt"))
+                        .flatten();
+                    if !prompt.as_deref().is_some_and(is_shell_escape_turn) {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                    }
+                    if !is_subagent {
                         send_tracking =
                             Some(state.match_agent_prompt_submit(&agent.id, prompt.as_deref())?);
                     }
@@ -1639,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn recovered_claude_resume_waits_for_input() {
+    fn recovered_claude_resume_starts_idle() {
         let dir = unique_test_dir("qmux-claude-recover");
         let fake_claude = fake_claude_binary(&dir);
         let state = test_state_with_claude_binary(&fake_claude);
@@ -1668,7 +1673,7 @@ mod tests {
 
         let restored = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(restored.pane_id.as_deref(), Some("pane-recovered"));
-        assert!(matches!(restored.status, AgentStatus::AwaitingInput));
+        assert!(matches!(restored.status, AgentStatus::Idle));
     }
 
     #[test]
@@ -1853,6 +1858,32 @@ mod tests {
                 "outstandingSends": 0
             })
         );
+    }
+
+    #[test]
+    fn shell_escape_prompt_submit_preserves_ready_status() {
+        let state = test_state();
+        install_agent_pane(&state);
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "!git status".to_string(),
+                AgentSendSource::DirectSend,
+            )
+            .unwrap();
+
+        let event = ingest(
+            &state,
+            hook("UserPromptSubmit", json!({ "prompt": "!git status" })),
+        );
+
+        assert_eq!(event.event_type, "agent.prompt_submitted");
+        assert_eq!(event.payload["sendTracking"]["status"], "matched");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
     }
 
     #[test]

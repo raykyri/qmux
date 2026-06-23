@@ -17,6 +17,13 @@ pub enum SubmitAgentTurnMode {
     Steer,
 }
 
+/// qMux sends leading-`!` text through the agent TUI, but the TUI handles it as a
+/// shell escape rather than an agent turn. Those commands may not emit a normal
+/// Stop/idle hook after they finish, so they must not enter the running lifecycle.
+pub(crate) fn is_shell_escape_turn(text: &str) -> bool {
+    text.trim_start().starts_with('!')
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitAgentTurnRequest {
@@ -501,7 +508,9 @@ fn send_agent_turn(
     // between read and write and could clobber a concurrent SessionStart hook's
     // session_id/transcript_path (leaving the session unresumable/unforkable). Only
     // the status changes, so write only the status.
-    state.set_agent_status(&agent.id, AgentStatus::Running)?;
+    if !is_shell_escape_turn(&text) {
+        state.set_agent_status(&agent.id, AgentStatus::Running)?;
+    }
     // Send tracking is advisory (it feeds de-dup/echo suppression), so a failure
     // here must not fail the send the user already sees in the pane — but log it
     // rather than discarding it without a trace.
@@ -627,6 +636,14 @@ mod tests {
         assert!(policy.can_steer(AgentStatus::Starting));
         assert!(policy.can_steer(AgentStatus::Running));
         assert!(!policy.can_steer(AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn shell_escape_turns_are_detected_after_leading_space() {
+        assert!(is_shell_escape_turn("!git status"));
+        assert!(is_shell_escape_turn("  \n\t!git status"));
+        assert!(!is_shell_escape_turn("please run !git status"));
+        assert!(!is_shell_escape_turn(""));
     }
 
     #[test]
