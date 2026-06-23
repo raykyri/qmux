@@ -48,9 +48,24 @@ pub(crate) fn reusable_session_agent(
     Ok(state.list_agents()?.into_iter().find(|agent| {
         agent.adapter == adapter_id
             && agent.pane_id.is_none()
-            && agent.worktree_dir == cwd
+            && same_dir(&agent.worktree_dir, cwd)
             && agent.session_id.as_deref() == Some(session_id)
     }))
+}
+
+/// True when both paths name the same directory. Canonicalization resolves symlinks,
+/// `.`/`..`, trailing slashes, and (on case-insensitive volumes) the on-disk case, so a
+/// shell's reported `$PWD` rebinds the original agent even when its spelling differs from
+/// the recorded launch dir. Falls back to a raw compare when a side can't be canonicalized
+/// (e.g. the directory no longer exists), preserving the previous exact-match behavior.
+fn same_dir(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -511,6 +526,33 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn reusable_session_agent_rebinds_across_equivalent_dir_spellings() {
+        let state = AppState::new(test_config());
+        // A real directory so both the recorded launch dir and the shell's reported $PWD
+        // can be canonicalized to the same target.
+        let base = std::env::temp_dir().join(format!("qmux-reuse-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let launch_dir = base.display().to_string();
+        state
+            .insert_agent(session_agent("agent-1", None, &launch_dir, "sess-1"))
+            .unwrap();
+
+        // A trailing `/.` (the kind of drift a `cd` round-trip can leave in $PWD) is not a
+        // byte-for-byte match, so the rebind now leans on canonicalization to recognize it
+        // as the same directory rather than minting a duplicate agent.
+        let equivalent_spelling = base.join(".").display().to_string();
+        assert_ne!(launch_dir, equivalent_spelling);
+        let found =
+            reusable_session_agent(&state, "claude", Some("sess-1"), &equivalent_spelling).unwrap();
+        assert_eq!(
+            found.as_ref().map(|agent| agent.id.as_str()),
+            Some("agent-1")
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
