@@ -97,8 +97,18 @@ export function setAgentTranscript(agentId: string, path: string | null) {
   return invoke<AgentInfo>("set_agent_transcript", { agentId, path });
 }
 
-export function spawnShell(initialSize?: InitialPaneSize | null) {
-  return invoke<PaneInfo>("spawn_shell", { initialSize: initialSize ?? null });
+export function spawnShell(
+  initialSize?: InitialPaneSize | null,
+  sourcePaneId?: string | null,
+) {
+  return invoke<PaneInfo>("spawn_shell", {
+    initialSize: initialSize ?? null,
+    sourcePaneId: sourcePaneId ?? null,
+  });
+}
+
+export function setUseLoginShell(enabled: boolean) {
+  return invoke<void>("use_login_shell_set", { enabled });
 }
 
 export function spawnAgent(request: SpawnAgentRequest) {

@@ -57,6 +57,14 @@ export interface AppSettings {
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
   /**
+   * Run shells as login shells, sourcing the user's login profile files
+   * (~/.zprofile + ~/.zlogin, or ~/.bash_profile/~/.profile) in addition to the
+   * interactive rc. On by default so spawned shells match how terminal emulators
+   * launch them. The backend persists its own copy (read on the spawn path,
+   * including startup recovery); this mirror keeps the dialog in sync.
+   */
+  useLoginShell: boolean;
+  /**
    * Show code-oriented context in tabs and the launcher: per-tab paths, git
    * worktree metadata, and the "New worktree" launcher option. When off, tabs
    * collapse to a single aligned row (status dot · title · status).
@@ -79,6 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   openRouterModel: "",
   openRouterTitlesEnabled: false,
   preventSleep: true,
+  useLoginShell: true,
   codeMode: true,
   showTabDirectories: true,
   showToolCalls: true,
@@ -131,6 +140,10 @@ export function loadSettings(): AppSettings {
       typeof parsed.preventSleep === "boolean"
         ? parsed.preventSleep
         : DEFAULT_SETTINGS.preventSleep;
+    const useLoginShell =
+      typeof parsed.useLoginShell === "boolean"
+        ? parsed.useLoginShell
+        : DEFAULT_SETTINGS.useLoginShell;
     const showShortcutHints =
       typeof parsed.showShortcutHints === "boolean"
         ? parsed.showShortcutHints
@@ -170,6 +183,7 @@ export function loadSettings(): AppSettings {
       openRouterModel,
       openRouterTitlesEnabled,
       preventSleep,
+      useLoginShell,
       codeMode,
       showTabDirectories,
       showToolCalls,

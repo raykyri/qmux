@@ -372,14 +372,58 @@ impl AppState {
             .and_then(|slot| slot.clone())
     }
 
+    /// The directory new shells and agents open in when the caller doesn't give an
+    /// explicit cwd: the chosen workspace folder if set (and still a directory),
+    /// else the user's home directory, else the qmux process cwd. The home step
+    /// keeps a Finder/Dock launch — whose process cwd is the filesystem root — from
+    /// opening shells at `/`.
+    pub fn default_open_dir(&self) -> std::path::PathBuf {
+        if let Some(folder) = self.workspace_folder() {
+            let folder = std::path::PathBuf::from(folder);
+            if folder.is_dir() {
+                return folder;
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
+            && home.is_dir()
+        {
+            return home;
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"))
+    }
+
+    /// The working directory a newly opened shell should inherit from `pane_id`: the
+    /// live cwd of that pane when it is a shell whose directory still exists. Agent
+    /// panes (rooted in a worktree) and stale or missing directories yield `None`, so
+    /// the caller falls back to `default_open_dir`.
+    pub fn inheritable_shell_cwd(&self, pane_id: &str) -> Option<std::path::PathBuf> {
+        let model = self.inner.model.lock().ok()?;
+        let pane = model.panes.get(pane_id)?;
+        if !matches!(pane.info.kind, PaneKind::Shell) {
+            return None;
+        }
+        let cwd = std::path::PathBuf::from(&pane.info.cwd);
+        cwd.is_dir().then_some(cwd)
+    }
+
     /// Seeds the in-memory workspace folder from persisted preferences at startup.
     /// A persisted folder that no longer resolves to a directory is dropped so a
-    /// since-deleted path can't make every later spawn fail.
+    /// since-deleted path can't make every later spawn fail. With nothing persisted
+    /// (a fresh install), the folder defaults to the user's home directory so the
+    /// app opens rooted in ~ rather than unset. The default is computed each startup
+    /// rather than persisted, so it stays out of preferences until the user explicitly
+    /// picks a folder.
     pub fn init_workspace_folder(&self) {
         let folder = persistence::load_preferences(&self.inner.config.workspace_root)
             .ok()
             .and_then(|prefs| prefs.workspace_folder)
-            .filter(|path| std::path::Path::new(path).is_dir());
+            .filter(|path| std::path::Path::new(path).is_dir())
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .filter(|home| home.is_dir())
+                    .map(|home| home.display().to_string())
+            });
         if let Ok(mut slot) = self.inner.workspace_folder.lock() {
             *slot = folder;
         }
@@ -408,6 +452,18 @@ impl AppState {
             json!({ "folder": canonical }),
         ));
         Ok(canonical)
+    }
+
+    /// Whether shells should run as login shells (sourcing the user's login
+    /// profile files). Persisted in preferences; defaults to on when unset so a
+    /// fresh install matches how terminal emulators launch shells. Read on the
+    /// spawn path — including startup recovery, which runs before the frontend
+    /// reconnects — so the persisted choice survives a restart.
+    pub fn use_login_shell(&self) -> bool {
+        persistence::load_preferences(&self.inner.config.workspace_root)
+            .ok()
+            .and_then(|prefs| prefs.use_login_shell)
+            .unwrap_or(true)
     }
 
     /// Returns the file-server token scoped to a single pane, minting one on first use.

@@ -76,6 +76,11 @@ pub struct AppPreferences {
     /// file panel. Absolute, canonicalized. Absent until the user picks one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_folder: Option<String>,
+    /// Whether new and recovered shells run as login shells (sourcing the user's
+    /// login profile files in addition to the interactive rc). Absent means the
+    /// default, on — matching how terminal emulators launch shells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_login_shell: Option<bool>,
 }
 
 pub fn preferences_path(workspace_root: &Path) -> PathBuf {
@@ -356,6 +361,7 @@ mod tests {
             &root,
             &AppPreferences {
                 launcher_adapter_id: Some("codex".to_string()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -363,6 +369,29 @@ mod tests {
         assert_eq!(
             load_preferences(&root).unwrap().launcher_adapter_id,
             Some("codex".to_string())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preferences_round_trip_use_login_shell() {
+        let root = temp_root();
+        // Absent in a fresh preferences file; the spawn path treats that as the
+        // default (on).
+        assert_eq!(load_preferences(&root).unwrap().use_login_shell, None);
+
+        save_preferences(
+            &root,
+            &AppPreferences {
+                use_login_shell: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_preferences(&root).unwrap().use_login_shell,
+            Some(false)
         );
         fs::remove_dir_all(root).unwrap();
     }

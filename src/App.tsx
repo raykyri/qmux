@@ -137,6 +137,7 @@ import {
   setAgentTranscript,
   setAgentTyping,
   setPreventSleep,
+  setUseLoginShell,
   spawnAgent,
   spawnShell,
   submitAgentTurn,
@@ -2024,7 +2025,8 @@ export default function App() {
   async function addShellPane() {
     setError(null);
     try {
-      const pane = await spawnShell(estimateInitialPaneSize(false));
+      // Inherit the focused shell's working directory, like a terminal "new tab here".
+      const pane = await spawnShell(estimateInitialPaneSize(false), activePane?.id);
       setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
     } catch (err) {
@@ -2860,6 +2862,15 @@ export default function App() {
     }, 30_000);
     return () => window.clearInterval(interval);
   }, [settings.preventSleep, anyAgentBusy]);
+
+  // Mirror the login-shell preference to the backend, which keeps its own
+  // persisted copy (read on the spawn path, including startup recovery that runs
+  // before this fires). Pushing on mount and on every change keeps the two stores
+  // in agreement so a fresh spawn — and the next restart's recovery — honors what
+  // the dialog shows.
+  useEffect(() => {
+    void setUseLoginShell(settings.useLoginShell).catch(() => undefined);
+  }, [settings.useLoginShell]);
 
   // Escape cancels the worktree close dialog. Capture phase so it wins over the
   // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
@@ -4135,6 +4146,21 @@ export default function App() {
             </div>
 
             <div className="settings-divider" role="separator" />
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Use login shell</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.useLoginShell}
+                onChange={(event) => {
+                  // Capture before the updater: see the font select above, where
+                  // currentTarget is nulled out by the time the updater runs.
+                  const useLoginShell = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, useLoginShell }));
+                }}
+              />
+            </label>
 
             <label className="settings-row settings-toggle">
               <span className="settings-label">Code mode</span>

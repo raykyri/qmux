@@ -13,6 +13,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+dirs = "6.0.0"
 getrandom = "0.2"
 names = { version = "0.14", default-features = false }
 portable-pty = "0.9"

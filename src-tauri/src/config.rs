@@ -88,8 +88,27 @@ impl QmuxConfig {
             Self::default_config()?
         };
 
-        config.workspace_root = absolutize(&cwd, &config.workspace_root);
-        config.socket_path = absolutize(&cwd, &config.socket_path);
+        // Relative workspace/socket paths are resolved against the process cwd only
+        // when that cwd is inside the user's home; otherwise they fall back to the
+        // home-based data dir. This keeps a launch whose cwd is the filesystem root
+        // or a system directory (Finder/Dock gives `/`, or a binary run from
+        // `/usr/local/bin`) from materializing a `.qmux` outside userspace. Absolute
+        // configured paths are explicit intent and always honored.
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let default_workspace_root = qmux_data_root().map(|root| root.join("workspaces"));
+        let default_socket_path = qmux_runtime_root().map(|root| root.join("qmux.sock"));
+        config.workspace_root = resolve_root(
+            &cwd,
+            home.as_deref(),
+            &config.workspace_root,
+            default_workspace_root.as_deref(),
+        );
+        config.socket_path = resolve_root(
+            &cwd,
+            home.as_deref(),
+            &config.socket_path,
+            default_socket_path.as_deref(),
+        );
         config.claude_plugin_dir = resolve_claude_plugin_dir(&cwd);
         config.opencode_plugin_dir = resolve_opencode_plugin_dir(&cwd);
 
@@ -151,11 +170,13 @@ impl QmuxConfig {
     }
 
     fn default_config() -> Result<Self, String> {
-        let home = env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
-        let qmux_root = PathBuf::from(home).join("qmux");
+        let data_root =
+            qmux_data_root().ok_or_else(|| "could not determine data directory".to_string())?;
+        let runtime_root = qmux_runtime_root()
+            .ok_or_else(|| "could not determine runtime directory".to_string())?;
         Ok(Self {
-            workspace_root: qmux_root.join("workspaces"),
-            socket_path: qmux_root.join("run/qmux.sock"),
+            workspace_root: data_root.join("workspaces"),
+            socket_path: runtime_root.join("qmux.sock"),
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
@@ -246,6 +267,54 @@ fn pick_plugin_dir(
         .into_iter()
         .find(|dir| dir.is_dir())
         .unwrap_or_else(|| cwd.join(default_name))
+}
+
+/// Base directory for qmux's persistent data (workspaces and persisted state)
+/// when it isn't being resolved relative to a project cwd. Platform-conventional:
+/// `~/Library/Application Support/qmux` on macOS and `$XDG_DATA_HOME/qmux`
+/// (`~/.local/share/qmux`) on Linux. `None` only when the home directory can't be
+/// determined.
+fn qmux_data_root() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join("qmux"))
+}
+
+/// Directory for qmux's control socket. On Linux this is the per-user runtime dir
+/// (`$XDG_RUNTIME_DIR/qmux`, a tmpfs owned 0700 by the user); where no runtime dir
+/// exists (macOS, or `$XDG_RUNTIME_DIR` unset) it falls back to a `run/` subdir of
+/// the persistent data root.
+fn qmux_runtime_root() -> Option<PathBuf> {
+    dirs::runtime_dir()
+        .map(|dir| dir.join("qmux"))
+        .or_else(|| qmux_data_root().map(|dir| dir.join("run")))
+}
+
+/// Whether `cwd` sits inside the user's home directory, the condition under which
+/// a relative workspace/socket path is allowed to resolve against it.
+fn cwd_is_within_home(cwd: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| !home.as_os_str().is_empty() && cwd.starts_with(home))
+}
+
+/// Resolves a configured workspace/socket root to an absolute path. Absolute
+/// configured paths are honored verbatim. A relative path resolves against `cwd`
+/// only when `cwd` is inside the user's home; otherwise it falls back to
+/// `default_root` (the home-based data dir) so a relative `.qmux` is never written
+/// into a system directory or at the filesystem root. With no home to fall back to,
+/// the relative path is resolved against `cwd` as a last resort.
+fn resolve_root(
+    cwd: &Path,
+    home: Option<&Path>,
+    configured: &Path,
+    default_root: Option<&Path>,
+) -> PathBuf {
+    if configured.is_absolute() {
+        return configured.to_path_buf();
+    }
+    if cwd_is_within_home(cwd, home) {
+        return cwd.join(configured);
+    }
+    default_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| cwd.join(configured))
 }
 
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
@@ -346,20 +415,94 @@ mod tests {
     }
 
     #[test]
-    fn default_socket_path_lives_under_owned_run_dir() {
-        let home = env::var("HOME").unwrap();
+    fn default_paths_live_under_platform_data_dir() {
         let config = QmuxConfig::default_config().unwrap();
-        let temp_dir = env::temp_dir();
+        let data_root = dirs::data_dir().unwrap().join("qmux");
 
+        // Workspaces and persisted state live under the platform data dir
+        // (~/Library/Application Support/qmux on macOS, $XDG_DATA_HOME/qmux on Linux).
+        assert_eq!(config.workspace_root, data_root.join("workspaces"));
+
+        // The socket lives in the per-user runtime dir on Linux, else the data dir's
+        // run/ subdir — never the shared system temp dir.
+        let expected_socket = dirs::runtime_dir()
+            .map(|dir| dir.join("qmux"))
+            .unwrap_or_else(|| data_root.join("run"))
+            .join("qmux.sock");
+        assert_eq!(config.socket_path, expected_socket);
+        assert_ne!(config.socket_path.parent(), Some(env::temp_dir().as_path()));
+    }
+
+    #[test]
+    fn relative_root_resolves_against_cwd_inside_home() {
+        let home = Path::new("/Users/tester");
+        let cwd = Path::new("/Users/tester/Code/project");
+        let default = Path::new("/Users/tester/qmux/workspaces");
         assert_eq!(
-            config.workspace_root,
-            PathBuf::from(&home).join("qmux/workspaces")
+            resolve_root(
+                cwd,
+                Some(home),
+                Path::new(".qmux/workspaces"),
+                Some(default)
+            ),
+            PathBuf::from("/Users/tester/Code/project/.qmux/workspaces")
         );
+    }
+
+    #[test]
+    fn relative_root_falls_back_to_default_outside_home() {
+        let home = Path::new("/Users/tester");
+        let default = Path::new("/Users/tester/qmux/workspaces");
+        // Finder/Dock launch: process cwd is the filesystem root.
         assert_eq!(
-            config.socket_path,
-            PathBuf::from(home).join("qmux/run/qmux.sock")
+            resolve_root(
+                Path::new("/"),
+                Some(home),
+                Path::new(".qmux/workspaces"),
+                Some(default)
+            ),
+            PathBuf::from("/Users/tester/qmux/workspaces")
         );
-        assert_ne!(config.socket_path.parent(), Some(temp_dir.as_path()));
+        // Binary launched from a system directory.
+        assert_eq!(
+            resolve_root(
+                Path::new("/usr/local/bin"),
+                Some(home),
+                Path::new(".qmux/workspaces"),
+                Some(default)
+            ),
+            PathBuf::from("/Users/tester/qmux/workspaces")
+        );
+    }
+
+    #[test]
+    fn absolute_root_is_honored_regardless_of_cwd() {
+        let home = Path::new("/Users/tester");
+        let default = Path::new("/Users/tester/qmux/workspaces");
+        assert_eq!(
+            resolve_root(
+                Path::new("/"),
+                Some(home),
+                Path::new("/opt/qmux/ws"),
+                Some(default)
+            ),
+            PathBuf::from("/opt/qmux/ws")
+        );
+    }
+
+    #[test]
+    fn relative_root_outside_home_without_default_uses_cwd() {
+        // No home to fall back to: the relative path resolves against cwd rather
+        // than being dropped entirely.
+        assert_eq!(
+            resolve_root(
+                Path::new("/srv/app"),
+                None,
+                Path::new(".qmux/workspaces"),
+                None
+            ),
+            PathBuf::from("/srv/app/.qmux/workspaces")
+        );
     }
 
     #[test]

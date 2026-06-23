@@ -1,6 +1,5 @@
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -121,7 +120,10 @@ pub fn prepare_agent_workspace(
             state,
             CreateGroupRequest {
                 name: None,
-                base_repo: request.base_repo.clone().or_else(|| default_base_repo(state)),
+                base_repo: request
+                    .base_repo
+                    .clone()
+                    .or_else(|| default_base_repo(state)),
                 base_ref: request
                     .base_ref
                     .clone()
@@ -475,17 +477,10 @@ fn soft_delete_branch(run_dir: &str, branch: &str) -> Result<bool, String> {
 }
 
 /// The directory a launched agent works in when the caller doesn't specify one:
-/// the chosen workspace folder if set (and still a directory), otherwise the qmux
-/// process cwd, the historical default.
+/// the chosen workspace folder if set (and still a directory), else the user's
+/// home directory, else the qmux process cwd. See `AppState::default_open_dir`.
 fn default_base_repo(state: &AppState) -> Option<String> {
-    state
-        .workspace_folder()
-        .filter(|path| Path::new(path).is_dir())
-        .or_else(|| {
-            env::current_dir()
-                .ok()
-                .map(|path| path.display().to_string())
-        })
+    Some(state.default_open_dir().display().to_string())
 }
 
 /// A friendly, human-readable name for a new group / worktree, e.g.

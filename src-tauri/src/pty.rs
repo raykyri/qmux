@@ -65,13 +65,15 @@ pub struct PaneWriteOptions {
 pub fn spawn_shell_pane(
     state: &AppState,
     initial_size: Option<InitialPaneSize>,
+    source_pane_id: Option<&str>,
 ) -> Result<PaneInfo, String> {
-    // New shells open in the user's chosen workspace folder when one is set (and still
-    // exists); otherwise fall back to the qmux process cwd, the historical behavior.
-    let cwd = match state.workspace_folder().map(PathBuf::from) {
-        Some(folder) if folder.is_dir() => folder,
-        _ => env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?,
-    };
+    // A user-opened shell inherits the focused shell's current directory when one is
+    // given and still valid (matching how terminal emulators open a "new tab here");
+    // otherwise it opens in the workspace folder / home, never the bare `/` a
+    // Finder/Dock launch inherits as its cwd.
+    let cwd = source_pane_id
+        .and_then(|id| state.inheritable_shell_cwd(id))
+        .unwrap_or_else(|| state.default_open_dir());
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,
@@ -93,12 +95,16 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     // linger and fire on a later relaunch of the same pane id; the resume only proceeds
     // when that original dir still exists.
     let resume = state.take_shell_agent_resume(&pane.id);
-    let resume_dir = resume.as_ref().and_then(|resume| recoverable_dir(&resume.cwd));
+    let resume_dir = resume
+        .as_ref()
+        .and_then(|resume| recoverable_dir(&resume.cwd));
     let cwd = resume_dir
         .clone()
         .or_else(|| recoverable_dir(&pane.cwd))
-        .or_else(|| env::current_dir().ok())
-        .ok_or_else(|| "no usable working directory for recovered shell".to_string())?;
+        // A recovered shell whose last dir was deleted between sessions reopens in
+        // the workspace folder / home rather than the bare `/` a Finder/Dock launch
+        // inherits as its process cwd.
+        .unwrap_or_else(|| state.default_open_dir());
     let resume_command = resume
         .filter(|_| resume_dir.is_some())
         .and_then(|resume| shell_resume_command(state, &resume));
@@ -145,11 +151,13 @@ fn shell_spawn_spec(
     let mut skip_scrollback_restore = false;
 
     let shell_commands = adapter_registry(state.config()).shell_commands();
+    let login_shell = state.use_login_shell();
     match agent_shell_function_injection(
         &shell,
         &pane_id,
         &shell_commands,
         resume_command.as_deref(),
+        login_shell,
     ) {
         Ok(Some(injection)) => {
             args = injection.args;
@@ -296,6 +304,7 @@ fn agent_shell_function_injection(
     pane_id: &str,
     shell_commands: &[ShellCommandIntegration],
     resume_command: Option<&str>,
+    login_shell: bool,
 ) -> Result<Option<ShellFunctionInjection>, String> {
     let shell_kind = shell_kind(shell);
     if matches!(shell_kind, ShellKind::Unsupported) {
@@ -318,7 +327,7 @@ fn agent_shell_function_injection(
             let rcfile = zdotdir.join(".zshrc");
             fs::write(
                 &rcfile,
-                zsh_init_script(&qmux_cli, shell_commands, resume_command),
+                zsh_init_script(&qmux_cli, shell_commands, resume_command, login_shell),
             )
             .map_err(|err| {
                 format!(
@@ -339,7 +348,7 @@ fn agent_shell_function_injection(
             let rcfile = root.join("bashrc");
             fs::write(
                 &rcfile,
-                bash_init_script(&qmux_cli, shell_commands, resume_command),
+                bash_init_script(&qmux_cli, shell_commands, resume_command, login_shell),
             )
             .map_err(|err| {
                 format!(
@@ -380,18 +389,38 @@ fn zsh_init_script(
     qmux_cli: &Path,
     shell_commands: &[ShellCommandIntegration],
     resume_command: Option<&str>,
+    login_shell: bool,
 ) -> String {
     let cli = shell_quote(qmux_cli);
     let qmux_function = shell_qmux_function(&cli);
     let agent_functions = shell_agent_functions(&cli, shell_commands);
     let resume = shell_resume_startup(resume_command);
+    // A login shell also sources the user's .zprofile (before .zshrc) and .zlogin
+    // (after), matching zsh's login startup order. We source these ourselves rather
+    // than passing `-l`: ZDOTDIR is redirected to the per-pane integration dir during
+    // early startup, so zsh's own login-file lookup would miss the user's copies.
+    // Sourcing here, after ZDOTDIR is restored, loads the right files and keeps bash
+    // and zsh behaving identically.
+    let user_config = if login_shell {
+        r#"  if [ -r "$ZDOTDIR/.zprofile" ]; then
+    source "$ZDOTDIR/.zprofile"
+  fi
+  if [ -r "$ZDOTDIR/.zshrc" ]; then
+    source "$ZDOTDIR/.zshrc"
+  fi
+  if [ -r "$ZDOTDIR/.zlogin" ]; then
+    source "$ZDOTDIR/.zlogin"
+  fi"#
+    } else {
+        r#"  if [ -r "$ZDOTDIR/.zshrc" ]; then
+    source "$ZDOTDIR/.zshrc"
+  fi"#
+    };
     format!(
         r#"# Generated by qmux. Do not edit.
 if [ -n "${{QMUX_ORIGINAL_ZDOTDIR:-}}" ]; then
   export ZDOTDIR="$QMUX_ORIGINAL_ZDOTDIR"
-  if [ -r "$ZDOTDIR/.zshrc" ]; then
-    source "$ZDOTDIR/.zshrc"
-  fi
+{user_config}
 fi
 {qmux_function}
 {agent_functions}
@@ -413,16 +442,34 @@ fn bash_init_script(
     qmux_cli: &Path,
     shell_commands: &[ShellCommandIntegration],
     resume_command: Option<&str>,
+    login_shell: bool,
 ) -> String {
     let cli = shell_quote(qmux_cli);
     let qmux_function = shell_qmux_function(&cli);
     let agent_functions = shell_agent_functions(&cli, shell_commands);
     let resume = shell_resume_startup(resume_command);
+    // A login shell sources the first existing of the user's login profile files —
+    // the same set, in the same order, a real `bash -l` consults — which by
+    // convention pulls in ~/.bashrc itself. We can't pass `--login` because bash
+    // ignores `--rcfile` (where our integration lives) for login shells, so we
+    // reproduce the login file lookup here instead. A non-login shell sources
+    // ~/.bashrc directly, as bash does for interactive non-login shells.
+    let user_config = if login_shell {
+        r#"for __qmux_login_rc in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+  if [ -r "$__qmux_login_rc" ]; then
+    . "$__qmux_login_rc"
+    break
+  fi
+done
+unset __qmux_login_rc"#
+    } else {
+        r#"if [ -n "${QMUX_ORIGINAL_BASHRC:-}" ] && [ -r "$QMUX_ORIGINAL_BASHRC" ]; then
+  . "$QMUX_ORIGINAL_BASHRC"
+fi"#
+    };
     format!(
         r#"# Generated by qmux. Do not edit.
-if [ -n "${{QMUX_ORIGINAL_BASHRC:-}}" ] && [ -r "$QMUX_ORIGINAL_BASHRC" ]; then
-  . "$QMUX_ORIGINAL_BASHRC"
-fi
+{user_config}
 {qmux_function}
 {agent_functions}
 if [ -n "${{QMUX_PANE_ID:-}}" ]; then
@@ -525,6 +572,20 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     command.cwd(spec.cwd.clone());
     if let Some(path) = crate::launch_path::child_path() {
         command.env("PATH", path);
+    }
+    // Describe the renderer to the child rather than inheriting the outer
+    // terminal's TERM. A Finder/Dock-launched app inherits launchd's bare
+    // environment with no TERM at all (breaking color), and even when launched
+    // from a terminal the inherited TERM names *that* emulator, not xterm.js.
+    // Every real terminal emulator sets these itself for the same reason; the
+    // webview is xterm-256color-compatible and supports 24-bit color.
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    // Backfill a UTF-8 locale only when one wasn't inherited — a GUI launch
+    // gets no LANG, defaulting programs to the C locale and breaking Unicode,
+    // while a deliberately-set locale from a dev shell is left untouched.
+    if env::var_os("LANG").is_none() {
+        command.env("LANG", "en_US.UTF-8");
     }
     for (key, value) in spec.envs {
         command.env(key, value);
@@ -1024,8 +1085,8 @@ mod tests {
             },
         ];
 
-        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, None);
-        let bash_script = bash_init_script(&qmux_cli, &shell_commands, None);
+        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, None, true);
+        let bash_script = bash_init_script(&qmux_cli, &shell_commands, None, true);
 
         for script in [zsh_script, bash_script] {
             assert!(script.contains("codex() {"));
@@ -1061,8 +1122,8 @@ mod tests {
         }];
         let resume = "claude --resume 'sess-1'";
 
-        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, Some(resume));
-        let bash_script = bash_init_script(&qmux_cli, &shell_commands, Some(resume));
+        let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, Some(resume), true);
+        let bash_script = bash_init_script(&qmux_cli, &shell_commands, Some(resume), true);
 
         for script in [zsh_script, bash_script] {
             // The resume runs through the wrapper defined earlier in the script, and as
@@ -1070,6 +1131,39 @@ mod tests {
             assert!(script.contains("claude() {"));
             assert!(script.trim_end().ends_with(resume));
         }
+    }
+
+    #[test]
+    fn init_scripts_source_login_files_only_in_login_mode() {
+        let qmux_cli = PathBuf::from("/Applications/qmux app/qmux");
+        let shell_commands = [ShellCommandIntegration {
+            command_name: "claude",
+            adapter_id: "claude",
+        }];
+
+        // Login zsh sources .zprofile and .zlogin around the always-sourced .zshrc;
+        // a non-login shell sources only .zshrc.
+        let zsh_login = zsh_init_script(&qmux_cli, &shell_commands, None, true);
+        assert!(zsh_login.contains("source \"$ZDOTDIR/.zprofile\""));
+        assert!(zsh_login.contains("source \"$ZDOTDIR/.zshrc\""));
+        assert!(zsh_login.contains("source \"$ZDOTDIR/.zlogin\""));
+
+        let zsh_plain = zsh_init_script(&qmux_cli, &shell_commands, None, false);
+        assert!(zsh_plain.contains("source \"$ZDOTDIR/.zshrc\""));
+        assert!(!zsh_plain.contains(".zprofile"));
+        assert!(!zsh_plain.contains(".zlogin"));
+
+        // Login bash reproduces bash's own login-file lookup (which conventionally
+        // pulls in .bashrc); a non-login shell sources the captured .bashrc directly.
+        let bash_login = bash_init_script(&qmux_cli, &shell_commands, None, true);
+        assert!(bash_login.contains("$HOME/.bash_profile"));
+        assert!(bash_login.contains("$HOME/.bash_login"));
+        assert!(bash_login.contains("$HOME/.profile"));
+        assert!(!bash_login.contains("QMUX_ORIGINAL_BASHRC"));
+
+        let bash_plain = bash_init_script(&qmux_cli, &shell_commands, None, false);
+        assert!(bash_plain.contains("QMUX_ORIGINAL_BASHRC"));
+        assert!(!bash_plain.contains(".bash_profile"));
     }
 
     #[test]

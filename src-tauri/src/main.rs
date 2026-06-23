@@ -320,8 +320,17 @@ fn group_create(
 fn spawn_shell(
     state: tauri::State<'_, AppState>,
     initial_size: Option<InitialPaneSize>,
+    source_pane_id: Option<String>,
 ) -> Result<PaneInfo, String> {
-    spawn_shell_pane(&state, initial_size)
+    spawn_shell_pane(&state, initial_size, source_pane_id.as_deref())
+}
+
+#[tauri::command]
+fn use_login_shell_set(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut preferences =
+        persistence::load_preferences(&state.config().workspace_root).unwrap_or_default();
+    preferences.use_login_shell = Some(enabled);
+    persistence::save_preferences(&state.config().workspace_root, &preferences)
 }
 
 #[tauri::command]
@@ -698,6 +707,7 @@ fn main() {
             set_agent_transcript,
             group_create,
             spawn_shell,
+            use_login_shell_set,
             agent_spawn,
             spawn_claude,
             agent_fork,
