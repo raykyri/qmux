@@ -1796,13 +1796,20 @@ button:disabled {
 .terminal-pane {
   position: absolute;
   inset: 0;
-  display: none;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 0;
   min-width: 0;
   min-height: 0;
 }
 
 .terminal-pane.is-active {
-  display: flex;
+  visibility: visible;
+  pointer-events: auto;
+  opacity: 1;
+  z-index: 1;
 }
 
 .terminal-host {
