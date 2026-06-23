@@ -48,6 +48,12 @@ export interface AppSettings {
   openRouterKey: string;
   /** OpenRouter model id */
   openRouterModel: string;
+  /**
+   * Opt in to generating tab titles by summarizing each pane's first user message
+   * through OpenRouter. Off by default because it sends message text to a third-party
+   * cloud service; titling stays local until this is explicitly enabled.
+   */
+  openRouterTitlesEnabled: boolean;
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
   /**
@@ -56,6 +62,10 @@ export interface AppSettings {
    * collapse to a single aligned row (status dot · title · status).
    */
   codeMode: boolean;
+  /** show tool calls and other activity detail in agent transcripts */
+  showToolCalls: boolean;
+  /** require Command+Enter instead of bare Enter for composer submit shortcuts */
+  requireCmdEnterToSend: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -65,8 +75,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   reduceMotion: false,
   openRouterKey: "",
   openRouterModel: "",
+  openRouterTitlesEnabled: false,
   preventSleep: true,
   codeMode: true,
+  showToolCalls: true,
+  requireCmdEnterToSend: true,
 };
 
 /** Resolves a stored font id to its CSS stack, falling back to the default. */
@@ -125,6 +138,12 @@ export function loadSettings(): AppSettings {
         : DEFAULT_SETTINGS.reduceMotion;
     const codeMode =
       typeof parsed.codeMode === "boolean" ? parsed.codeMode : DEFAULT_SETTINGS.codeMode;
+    const showToolCalls =
+      typeof parsed.showToolCalls === "boolean" ? parsed.showToolCalls : codeMode;
+    const requireCmdEnterToSend =
+      typeof parsed.requireCmdEnterToSend === "boolean"
+        ? parsed.requireCmdEnterToSend
+        : codeMode;
     const openRouterKey =
       typeof parsed.openRouterKey === "string"
         ? parsed.openRouterKey
@@ -133,6 +152,10 @@ export function loadSettings(): AppSettings {
       typeof parsed.openRouterModel === "string"
         ? parsed.openRouterModel
         : DEFAULT_SETTINGS.openRouterModel;
+    const openRouterTitlesEnabled =
+      typeof parsed.openRouterTitlesEnabled === "boolean"
+        ? parsed.openRouterTitlesEnabled
+        : DEFAULT_SETTINGS.openRouterTitlesEnabled;
     return {
       fontId,
       fontSize,
@@ -140,8 +163,11 @@ export function loadSettings(): AppSettings {
       reduceMotion,
       openRouterKey,
       openRouterModel,
+      openRouterTitlesEnabled,
       preventSleep,
       codeMode,
+      showToolCalls,
+      requireCmdEnterToSend,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

@@ -270,6 +270,11 @@ function sanitizeOpenRouterTitle(rawTitle: string): string | null {
 }
 
 function openRouterTitleConfig(settings: AppSettings): OpenRouterTitleConfig | null {
+  // Titling POSTs the user's first message to OpenRouter, so it stays off until the user
+  // explicitly opts in — a configured key/model alone is not consent to send transcripts.
+  if (!settings.openRouterTitlesEnabled) {
+    return null;
+  }
   const apiKey = settings.openRouterKey.trim();
   const model = settings.openRouterModel.trim();
   return apiKey && model ? { apiKey, model } : null;
@@ -937,7 +942,12 @@ export default function App() {
         value: adapter.id,
         label: adapter.label,
         iconSrc: LAUNCHER_ADAPTER_ICON_BY_ID[adapter.id],
-        iconClassName: adapter.id === CODEX_ADAPTER_ID ? "is-mono-light" : undefined,
+        iconClassName:
+          adapter.id === CODEX_ADAPTER_ID
+            ? "is-mono-light is-compact"
+            : adapter.id === OPENCODE_ADAPTER_ID
+              ? "is-compact"
+              : undefined,
       })),
     [launcherAdapters],
   );
@@ -1581,13 +1591,15 @@ export default function App() {
   // its base size, capped at +1px, so the transcript/composer track the terminal
   // zoom without overpowering it. No change at or below the base size.
   const turnFontDelta = Math.min(1, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
-  const transcriptExpandedFontDelta = activeTranscriptExpanded ? 0.5 : 0;
+  const transcriptExpandedFontDelta = activeTranscriptExpanded ? 1 : 0;
+  const transcriptExpandedLineHeightDelta = activeTranscriptExpanded ? 0.1 : 0;
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
     "--browser-overlay-left": `${BROWSER_OVERLAY_LEFT_MARGIN}px`,
     "--turn-font-delta": `${turnFontDelta}px`,
     "--transcript-expanded-font-delta": `${transcriptExpandedFontDelta}px`,
+    "--transcript-expanded-line-height-delta": `${transcriptExpandedLineHeightDelta}`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
   const contextMenuPane = paneContextMenu
@@ -2499,10 +2511,10 @@ export default function App() {
     }
   }
 
-  // Forks the active Claude session into a new tab (resuming it) — as a sibling
-  // right after the current tab, or nested under it when `nest` is set — and
-  // focuses the fork. The backend also emits agent.forked, which refetches the
-  // ordered pane list, so the optimistic append below is just to avoid a flicker.
+  // Forks the active session into a new tab (resuming it) — as a sibling right
+  // after the current tab, or nested under it when `nest` is set — and focuses the
+  // fork. The backend also emits agent.forked, which refetches the ordered pane
+  // list, so the optimistic append below is just to avoid a flicker.
   async function forkActivePane(options: { nest: boolean; useWorktree: boolean }) {
     if (!activePane || !activeAgent) {
       return;
@@ -2555,9 +2567,11 @@ export default function App() {
       anchor,
       sourceAgentId: activeAgent.id,
       sourcePaneId: activePane.id,
-      // "Ask in new thread" forks, which only Claude (with a recorded session)
-      // supports — gate the button so it's never a dead end.
-      canFork: activeAgent.adapter === CLAUDE_ADAPTER_ID && Boolean(activeAgent.sessionId),
+      // "Ask in new thread" forks, which needs an adapter with native fork support
+      // and a recorded session id — gate the button so it's never a dead end.
+      canFork:
+        Boolean(activeAgent.sessionId) &&
+        (activeAgent.adapter === CLAUDE_ADAPTER_ID || activeAgent.adapter === CODEX_ADAPTER_ID),
     });
   }
   function handleTerminalAskSelection(paneId: string, quote: string, anchor: SelectionAnchor) {
@@ -2610,8 +2624,11 @@ export default function App() {
     }
     askDictation.stop();
     const target = askLauncher;
+    const targetAgent = agents.find((agent) => agent.id === target.sourceAgentId) ?? null;
     const skill =
-      target.mode === "newThread" && askSelectedSkillId
+      target.mode === "newThread" &&
+      targetAgent?.adapter === CLAUDE_ADAPTER_ID &&
+      askSelectedSkillId
         ? availableSkills.find((entry) => entry.id === askSelectedSkillId) ?? null
         : null;
     let message = buildQuotedMessage(target.quote, question);
@@ -2631,6 +2648,7 @@ export default function App() {
         const pane = await forkAgent(target.sourcePaneId, {
           nest: true,
           useWorktree: askCreateInWorktree,
+          prompt: message,
         });
         setPanesPreservingRecoveredDismissals((current) =>
           current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
@@ -2639,14 +2657,9 @@ export default function App() {
         expandNewAgentTranscriptByDefault(pane);
         // Land focus on the fork we just switched to, not the source pane.
         focusPaneId = pane.id;
-        if (pane.agentId) {
-          const result = await submitAgentTurn(pane.agentId, message, "auto");
-          setAgentQueuedTurns(pane.agentId, result.queuedTurns);
-        } else {
-          // A forkable Claude pane always comes back with an agent id; surface it
-          // rather than silently dropping the question if that ever doesn't hold.
-          // (Closing anyway avoids a retry re-forking; the new tab is already open
-          // for the user to ask in directly.)
+        if (!pane.agentId) {
+          // A forkable pane should always come back with an agent id; surface it
+          // rather than silently accepting a fork that cannot be tracked.
           setError("The forked conversation isn't ready to receive a message.");
         }
       }
@@ -3031,7 +3044,7 @@ export default function App() {
     // freshly-mounted textarea — a different node than the inline one — never gets focus.
   }, [launcherVisible, launcherOpen]);
 
-  // The ask launcher's "new thread" mode shows the same Claude skill toggles, but
+  // The ask launcher's Claude "new thread" mode shows the same skill toggles, but
   // opening it doesn't pass through the launcher-visible effect above — so load the
   // skills here too, otherwise the toggles are empty until the main launcher has
   // been opened once this session.
@@ -3039,10 +3052,15 @@ export default function App() {
     if (askLauncher?.mode !== "newThread") {
       return;
     }
+    const sourceAgent = agents.find((agent) => agent.id === askLauncher.sourceAgentId);
+    if (sourceAgent?.adapter !== CLAUDE_ADAPTER_ID) {
+      setAskSelectedSkillId(null);
+      return;
+    }
     void listClaudeSkills()
       .then(setAvailableSkills)
       .catch(() => setAvailableSkills([]));
-  }, [askLauncher?.mode]);
+  }, [agents, askLauncher?.mode, askLauncher?.sourceAgentId]);
 
   // Selecting a non-Claude adapter clears any chosen skill; measure the faint
   // command prefix so the composer's first line is indented past it.
@@ -3218,7 +3236,7 @@ export default function App() {
           event.preventDefault();
           return;
         }
-        if (isComposerSubmitShortcut(event, settings.codeMode)) {
+        if (isComposerSubmitShortcut(event, settings.requireCmdEnterToSend)) {
           event.preventDefault();
           void addAgentPane();
         }
@@ -3338,17 +3356,27 @@ export default function App() {
             aria-label={`Launch ${launchAdapter.label}`}
             title={`Launch ${launchAdapter.label}`}
           >
-            <ComposerSubmitShortcutGlyph codeMode={settings.codeMode} ariaHidden />
+            <ComposerSubmitShortcutGlyph
+              requireCmdEnter={settings.requireCmdEnterToSend}
+              ariaHidden
+            />
           </button>
         </div>
       </div>
     </form>
   );
 
+  const askLauncherSourceAgent = askLauncher
+    ? agents.find((agent) => agent.id === askLauncher.sourceAgentId) ?? null
+    : null;
+  const askLauncherSkillsEnabled =
+    askLauncher?.mode === "newThread" && askLauncherSourceAgent?.adapter === CLAUDE_ADAPTER_ID;
+
   // The ask launcher: a launcher-style modal seeded with a quoted selection. In
   // "ask" mode only the question field, mic, and submit show; in "newThread" mode
-  // (fork-then-send) the worktree checkbox and skill toggles are also shown. The
-  // adapter select is intentionally omitted — a fork inherits the source's adapter.
+  // (fork-with-prompt) the worktree checkbox is shown, with Claude skill toggles
+  // when the source adapter supports them. The adapter select is intentionally
+  // omitted — a fork inherits the source's adapter.
   const renderAskLauncher = (state: AskLauncherState) => (
     <form
       className="command-launcher command-launcher--ask"
@@ -3367,7 +3395,10 @@ export default function App() {
           event.preventDefault();
           return;
         }
-        if (isComposerSubmitShortcut(event, settings.codeMode) && !event.repeat) {
+        if (
+          isComposerSubmitShortcut(event, settings.requireCmdEnterToSend) &&
+          !event.repeat
+        ) {
           event.preventDefault();
           void submitAsk();
         }
@@ -3419,7 +3450,7 @@ export default function App() {
                   <span>New worktree</span>
                 </label>
               ) : null}
-              {availableSkills.length > 0 ? (
+              {askLauncherSkillsEnabled && availableSkills.length > 0 ? (
                 <div className="command-launcher-skills">
                   {availableSkills.map((skill) => (
                     <label
@@ -3459,7 +3490,10 @@ export default function App() {
             <span className="command-launcher-send-label">
               {state.mode === "newThread" ? "Ask in fork" : "Queue"}
             </span>
-            <ComposerSubmitShortcutGlyph codeMode={settings.codeMode} ariaHidden />
+            <ComposerSubmitShortcutGlyph
+              requireCmdEnter={settings.requireCmdEnterToSend}
+              ariaHidden
+            />
           </button>
         </div>
       </div>
@@ -3958,7 +3992,40 @@ export default function App() {
                 checked={settings.codeMode}
                 onChange={(event) => {
                   const codeMode = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, codeMode }));
+                  setSettings((current) => ({
+                    ...current,
+                    codeMode,
+                    showToolCalls: codeMode,
+                    requireCmdEnterToSend: codeMode,
+                  }));
+                }}
+              />
+            </label>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label settings-label-indented">Show tool calls</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.showToolCalls}
+                onChange={(event) => {
+                  const showToolCalls = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, showToolCalls }));
+                }}
+              />
+            </label>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label settings-label-indented">
+                Require ⌘↵ to send
+              </span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.requireCmdEnterToSend}
+                onChange={(event) => {
+                  const requireCmdEnterToSend = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, requireCmdEnterToSend }));
                 }}
               />
             </label>
@@ -3990,6 +4057,38 @@ export default function App() {
                 }}
               />
             </label>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Reduce motion</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.reduceMotion}
+                onChange={(event) => {
+                  const reduceMotion = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, reduceMotion }));
+                }}
+              />
+            </label>
+
+            <div className="settings-divider" role="separator" />
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Generate tab titles via OpenRouter</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.openRouterTitlesEnabled}
+                onChange={(event) => {
+                  const openRouterTitlesEnabled = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, openRouterTitlesEnabled }));
+                }}
+              />
+            </label>
+            <p className="settings-hint">
+              Sends the first message of each new tab to OpenRouter to summarize a title.
+              Off by default; message text leaves your machine only while this is on.
+            </p>
 
             <div className="settings-row">
               <label htmlFor="settings-openrouter-key" className="settings-label">
@@ -4028,19 +4127,6 @@ export default function App() {
                 }}
               />
             </div>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Reduce motion</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.reduceMotion}
-                onChange={(event) => {
-                  const reduceMotion = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, reduceMotion }));
-                }}
-              />
-            </label>
           </div>
         </div>
       ) : null}
@@ -4300,7 +4386,7 @@ export default function App() {
                 ? "Processing new message…"
                 : "Thinking…"
             }
-            showActivityDetail={settings.codeMode}
+            showActivityDetail={settings.showToolCalls}
             agentId={activeAgent?.id ?? activePane?.id}
             assistantLabel={activeAssistantLabel}
             notice={activeAgent ? activeTranscriptNotice : null}
@@ -4328,7 +4414,10 @@ export default function App() {
                   }
                 }}
                 canFork={Boolean(
-                  activePane && activeAgent?.adapter === "claude" && activeAgent?.sessionId,
+                  activePane &&
+                    activeAgent?.sessionId &&
+                    (activeAgent.adapter === CLAUDE_ADAPTER_ID ||
+                      activeAgent.adapter === CODEX_ADAPTER_ID),
                 )}
                 onFork={(options) => void forkActivePane(options)}
                 showQueueSplit={Boolean(activeAgent)}
@@ -4363,7 +4452,7 @@ export default function App() {
                     queuedTurns={activeQueuedTurns}
                     collapsedQueuedTurns={activeCollapsedQueuedTurns}
                     queueSplit={activeQueueSplit}
-                    codeMode={settings.codeMode}
+                    requireCmdEnterToSend={settings.requireCmdEnterToSend}
                     transcriptText={activeTranscript}
                     transcriptCopyText={() =>
                       formatTranscriptCopyJson({

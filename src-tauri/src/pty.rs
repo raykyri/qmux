@@ -78,18 +78,24 @@ pub fn spawn_shell_pane(
 /// queues keep lining up), reopened in its last-known cwd when that still exists,
 /// at its persisted geometry. Marked recovered so the UI can label it.
 pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo, String> {
-    let recovered_cwd = recoverable_dir(&pane.cwd);
-    let cwd = recovered_cwd
+    // A queued resume rebinds the agent that was live in this pane at shutdown. Its
+    // session is keyed to the original launch dir (Claude/Codex scope sessions by project
+    // dir), and the resume command runs in whatever cwd this shell reopens in, so reopen
+    // there rather than the pane's last cwd — which `cd` may have moved away from since
+    // launch (`update_pane_cwd` tracks the live directory). Reopening at the drifted cwd
+    // would both fail to resolve the session and miss the agent rebind, minting a
+    // duplicate on every restart. The hint is taken (drained) either way so it can't
+    // linger and fire on a later relaunch of the same pane id; the resume only proceeds
+    // when that original dir still exists.
+    let resume = state.take_shell_agent_resume(&pane.id);
+    let resume_dir = resume.as_ref().and_then(|resume| recoverable_dir(&resume.cwd));
+    let cwd = resume_dir
         .clone()
+        .or_else(|| recoverable_dir(&pane.cwd))
         .or_else(|| env::current_dir().ok())
         .ok_or_else(|| "no usable working directory for recovered shell".to_string())?;
-    // Resume an agent session that was running in this pane only when it reopened in
-    // its original directory: Claude/Codex sessions are keyed by project dir, so a
-    // resume from a fallback cwd wouldn't find the session. The hint is taken (drained)
-    // either way so it can't linger and fire on a later relaunch of the same pane id.
-    let resume_command = state
-        .take_shell_agent_resume(&pane.id)
-        .filter(|_| recovered_cwd.is_some())
+    let resume_command = resume
+        .filter(|_| resume_dir.is_some())
         .and_then(|resume| shell_resume_command(state, &resume));
     let initial_size = Some(InitialPaneSize {
         cols: pane.cols,

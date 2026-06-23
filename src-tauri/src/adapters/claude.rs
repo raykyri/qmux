@@ -269,14 +269,15 @@ impl ClaudeAdapter {
     }
 
     /// Forks `source` into a new agent pane: a fresh Claude started with
-    /// `--resume <source session> --fork-session`, so it inherits the source's
-    /// transcript but writes to a new session id (the source is unaffected). Runs in
-    /// the source's directory, or a fresh worktree when `use_worktree` is set.
+    /// `--resume <source session> --fork-session [prompt]`, so it inherits the
+    /// source's transcript but writes to a new session id (the source is unaffected).
+    /// Runs in the source's directory, or a fresh worktree when `use_worktree` is set.
     pub fn fork_pane(
         &self,
         state: &AppState,
         source: &AgentInfo,
         use_worktree: bool,
+        prompt: Option<&str>,
     ) -> Result<(PaneInfo, AgentInfo), String> {
         let binary = self.ensure_binary()?;
         let session_id = source
@@ -349,6 +350,11 @@ impl ClaudeAdapter {
         args.push("--resume".to_string());
         args.push(session_id);
         args.push("--fork-session".to_string());
+        let prompt = prompt.map(str::trim).unwrap_or_default();
+        let has_prompt = !prompt.is_empty();
+        if has_prompt {
+            args.push(prompt.to_string());
+        }
 
         let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
@@ -380,14 +386,20 @@ impl ClaudeAdapter {
             }
         };
 
-        // Restore Idle after the early pane bind (attach promotes to Running, but a
-        // resumed fork with no prompt is simply ready). Use a field-scoped status
-        // write, not a full-struct update: the spawned fork's SessionStart hook may
-        // already be recording its new session_id/transcript on another thread, and a
-        // stale snapshot write here would wipe them.
-        let forked = state
-            .set_agent_status(&agent.id, AgentStatus::Idle)?
-            .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?;
+        let forked = if has_prompt {
+            state
+                .agent(&agent.id)?
+                .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?
+        } else {
+            // Restore Idle after the early pane bind (attach promotes to Running, but a
+            // resumed fork with no prompt is simply ready). Use a field-scoped status
+            // write, not a full-struct update: the spawned fork's SessionStart hook may
+            // already be recording its new session_id/transcript on another thread, and a
+            // stale snapshot write here would wipe them.
+            state
+                .set_agent_status(&agent.id, AgentStatus::Idle)?
+                .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?
+        };
 
         Ok((pane, forked))
     }

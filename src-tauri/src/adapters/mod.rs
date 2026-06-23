@@ -48,9 +48,24 @@ pub(crate) fn reusable_session_agent(
     Ok(state.list_agents()?.into_iter().find(|agent| {
         agent.adapter == adapter_id
             && agent.pane_id.is_none()
-            && agent.worktree_dir == cwd
+            && same_dir(&agent.worktree_dir, cwd)
             && agent.session_id.as_deref() == Some(session_id)
     }))
+}
+
+/// True when both paths name the same directory. Canonicalization resolves symlinks,
+/// `.`/`..`, trailing slashes, and (on case-insensitive volumes) the on-disk case, so a
+/// shell's reported `$PWD` rebinds the original agent even when its spelling differs from
+/// the recorded launch dir. Falls back to a raw compare when a side can't be canonicalized
+/// (e.g. the directory no longer exists), preserving the previous exact-match behavior.
+fn same_dir(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -276,22 +291,27 @@ pub fn agent_spawn(state: &AppState, request: SpawnAgentRequest) -> Result<PaneI
 /// With `nest`, the new tab is nested under the source (a child); otherwise it lands
 /// immediately after the source as a sibling. The source is resolved from the
 /// authenticated pane (never caller input), so a pane can only fork its own session.
-/// Claude only.
+/// When `prompt` is set, the fork is launched with that initial user message.
 pub fn agent_fork(
     state: &AppState,
     authed_pane: &str,
     use_worktree: bool,
     nest: bool,
+    prompt: Option<String>,
 ) -> Result<PaneInfo, String> {
     let source = state
         .agent_by_pane(authed_pane)?
         .ok_or_else(|| "no agent is running in this pane to fork".to_string())?;
-    if source.adapter != "claude" {
-        return Err("fork is only supported for Claude sessions".to_string());
-    }
-
-    let (pane, agent) =
-        ClaudeAdapter::new(state.config()).fork_pane(state, &source, use_worktree)?;
+    let prompt = prompt.as_deref();
+    let (pane, agent) = match source.adapter.as_str() {
+        "claude" => {
+            ClaudeAdapter::new(state.config()).fork_pane(state, &source, use_worktree, prompt)?
+        }
+        "codex" => {
+            CodexAdapter::new(state.config()).fork_pane(state, &source, use_worktree, prompt)?
+        }
+        _ => return Err("fork is only supported for Claude and Codex sessions".to_string()),
+    };
     if nest {
         state.nest_pane_under(&pane.id, authed_pane)?;
     } else {
@@ -420,19 +440,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_fork_requires_a_claude_agent_in_the_pane() {
+    fn agent_fork_requires_a_supported_agent_in_the_pane() {
         let state = AppState::new(test_config());
 
         // No agent bound to the pane: nothing to fork.
-        let err = agent_fork(&state, "pane-1", false, true).unwrap_err();
+        let err = agent_fork(&state, "pane-1", false, true, None).unwrap_err();
         assert!(err.contains("no agent"), "unexpected error: {err}");
 
-        // A non-Claude agent is rejected before any spawn is attempted.
+        // An adapter without a native fork command is rejected before any spawn is attempted.
         state
             .insert_agent(AgentInfo {
                 id: "agent-1".to_string(),
                 group_id: "group-1".to_string(),
-                adapter: "codex".to_string(),
+                adapter: "opencode".to_string(),
                 worktree_dir: "/tmp/qmux-adapter-tests".to_string(),
                 branch: None,
                 pane_id: Some("pane-1".to_string()),
@@ -448,9 +468,9 @@ mod tests {
                 created_at: 1,
             })
             .unwrap();
-        let err = agent_fork(&state, "pane-1", false, true).unwrap_err();
+        let err = agent_fork(&state, "pane-1", false, true, None).unwrap_err();
         assert!(
-            err.contains("only supported for Claude"),
+            err.contains("only supported for Claude and Codex"),
             "unexpected error: {err}"
         );
     }
@@ -511,6 +531,33 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn reusable_session_agent_rebinds_across_equivalent_dir_spellings() {
+        let state = AppState::new(test_config());
+        // A real directory so both the recorded launch dir and the shell's reported $PWD
+        // can be canonicalized to the same target.
+        let base = std::env::temp_dir().join(format!("qmux-reuse-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let launch_dir = base.display().to_string();
+        state
+            .insert_agent(session_agent("agent-1", None, &launch_dir, "sess-1"))
+            .unwrap();
+
+        // A trailing `/.` (the kind of drift a `cd` round-trip can leave in $PWD) is not a
+        // byte-for-byte match, so the rebind now leans on canonicalization to recognize it
+        // as the same directory rather than minting a duplicate agent.
+        let equivalent_spelling = base.join(".").display().to_string();
+        assert_ne!(launch_dir, equivalent_spelling);
+        let found =
+            reusable_session_agent(&state, "claude", Some("sess-1"), &equivalent_spelling).unwrap();
+        assert_eq!(
+            found.as_ref().map(|agent| agent.id.as_str()),
+            Some("agent-1")
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

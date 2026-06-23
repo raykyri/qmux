@@ -819,7 +819,13 @@ function hasToolCall(item: MessageItem): boolean {
 }
 
 function turnRoleLabel(role: string, assistantLabel: string) {
-  return role === "assistant" ? assistantLabel : role;
+  if (role === "assistant") {
+    return assistantLabel;
+  }
+  if (role === "system") {
+    return "System";
+  }
+  return role;
 }
 
 function ActivityItemView({

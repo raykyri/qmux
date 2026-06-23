@@ -125,6 +125,10 @@ struct Model {
 pub struct ShellAgentResume {
     pub adapter: String,
     pub session_id: String,
+    /// The agent's original launch directory. Claude/Codex scope sessions by project
+    /// dir, so the respawn must reopen here for `--resume` to resolve the session — and
+    /// for the rebind to match — even if the pane's live cwd has since drifted via `cd`.
+    pub cwd: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2083,6 +2087,7 @@ fn shell_agent_resume(agent: &AgentInfo) -> Option<ShellAgentResume> {
     Some(ShellAgentResume {
         adapter: agent.adapter.clone(),
         session_id: session_id.to_string(),
+        cwd: agent.worktree_dir.clone(),
     })
 }
 

@@ -14,7 +14,7 @@ use crate::transcript::{
 use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
-    prepare_agent_workspace,
+    mark_agent_spawn_failed, prepare_agent_workspace,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -276,6 +276,113 @@ impl CodexAdapter {
         ));
 
         Ok(info)
+    }
+
+    /// Forks `source` into a new Codex agent pane using `codex fork <session> [prompt]`.
+    /// Codex records a fresh session id for the fork, so the source session keeps
+    /// running independently.
+    pub fn fork_pane(
+        &self,
+        state: &AppState,
+        source: &AgentInfo,
+        use_worktree: bool,
+        prompt: Option<&str>,
+    ) -> Result<(PaneInfo, AgentInfo), String> {
+        let binary = self.ensure_binary()?;
+        let codex_home = ensure_codex_integration()?;
+        let session_id = source
+            .session_id
+            .clone()
+            .map(|session| session.trim().to_string())
+            .filter(|session| !session.is_empty())
+            .ok_or_else(|| {
+                "this Codex session isn't ready to fork yet (no session id); send a turn first"
+                    .to_string()
+            })?;
+
+        let mut agent = prepare_agent_workspace(
+            state,
+            PrepareAgentWorkspaceRequest {
+                group_id: Some(source.group_id.clone()),
+                // Worktree forks branch off the group's base repo; in-place forks run
+                // in the source's own directory so they see the same files.
+                base_repo: if use_worktree {
+                    None
+                } else {
+                    Some(source.worktree_dir.clone())
+                },
+                base_ref: Some("HEAD".to_string()),
+                adapter: self.id().to_string(),
+                model: source.model.clone(),
+                use_worktree,
+            },
+        )?;
+
+        agent.parent_id = Some(source.id.clone());
+        agent.fork_point = Some(session_id.clone());
+        agent.root_session_id = source
+            .root_session_id
+            .clone()
+            .or_else(|| Some(session_id.clone()));
+        agent.status = AgentStatus::Idle;
+        state.update_agent(agent.clone())?;
+
+        let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
+            format!(
+                "fork working directory {} does not exist",
+                agent.worktree_dir
+            )
+        })?;
+        let options = CodexLaunchOptions::default();
+        let prompt = prompt.map(str::trim).unwrap_or_default();
+        let has_initial_prompt = !prompt.is_empty();
+        let args = build_codex_fork_args(
+            &cwd,
+            Some(&state.config().workspace_root),
+            agent.model.as_deref(),
+            &options,
+            &session_id,
+            if has_initial_prompt {
+                Some(prompt)
+            } else {
+                None
+            },
+        );
+
+        let pane_id = state.next_id("pane");
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
+        envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
+        envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
+
+        let spawn_result = spawn_pty(
+            state,
+            PtySpawnSpec {
+                pane_id: Some(pane_id.clone()),
+                agent_id: Some(agent.id.clone()),
+                kind: PaneKind::Agent,
+                title: self.display_name().to_string(),
+                program: binary,
+                args,
+                cwd,
+                envs,
+                initial_size: None,
+                recovered: false,
+                skip_scrollback_restore: false,
+            },
+        );
+
+        match spawn_result {
+            Ok(pane) => {
+                let forked =
+                    attach_codex_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
+                Ok((pane, forked))
+            }
+            Err(err) => {
+                let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
+                Err(err)
+            }
+        }
     }
 
     fn prepare_shell_launch(
@@ -627,6 +734,21 @@ fn build_codex_resume_args(
         ),
         true,
     )
+}
+
+fn build_codex_fork_args(
+    cwd: &Path,
+    additional_workspace_root: Option<&Path>,
+    model: Option<&str>,
+    options: &CodexLaunchOptions,
+    session_id: &str,
+    prompt: Option<&str>,
+) -> Vec<String> {
+    let mut tail_args = vec!["fork".to_string(), session_id.trim().to_string()];
+    if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        tail_args.push(prompt.to_string());
+    }
+    build_codex_args(cwd, additional_workspace_root, model, options, tail_args)
 }
 
 fn prompt_tail_args(prompt: &str) -> Vec<String> {
@@ -1456,6 +1578,75 @@ mod tests {
                 "on-request",
                 "--search",
                 "resume",
+                "session-123"
+            ]
+        );
+    }
+
+    #[test]
+    fn fork_args_include_session_id_and_prompt_when_present() {
+        let options = CodexLaunchOptions::from_value(json!({
+            "sandbox": "workspace-write",
+            "approvalPolicy": "on-request"
+        }))
+        .unwrap();
+
+        let args = build_codex_fork_args(
+            Path::new("/tmp/qmux"),
+            Some(Path::new("/tmp/qmux/.qmux/workspaces")),
+            Some("gpt-5"),
+            &options,
+            " session-123 ",
+            Some("  continue here  "),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--cd",
+                "/tmp/qmux",
+                "--add-dir",
+                "/tmp/qmux/.qmux/workspaces",
+                "--model",
+                "gpt-5",
+                "--profile",
+                "qmux-codex",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "on-request",
+                "--search",
+                "fork",
+                "session-123",
+                "continue here"
+            ]
+        );
+    }
+
+    #[test]
+    fn fork_args_omit_empty_prompt() {
+        let options = CodexLaunchOptions::default();
+
+        let args = build_codex_fork_args(
+            Path::new("/tmp/qmux"),
+            None,
+            None,
+            &options,
+            "session-123",
+            Some("   "),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--cd",
+                "/tmp/qmux",
+                "--profile",
+                "qmux-codex",
+                "--sandbox",
+                "workspace-write",
+                "--search",
+                "fork",
                 "session-123"
             ]
         );

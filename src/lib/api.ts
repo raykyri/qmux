@@ -107,17 +107,18 @@ export function spawnAgent(request: SpawnAgentRequest) {
   return invoke<PaneInfo>("agent_spawn", { request });
 }
 
-// Forks the Claude session in `paneId` into a new tab and resumes it. With
-// `nest`, the fork lands as a child of the source pane; otherwise it lands as a
-// sibling immediately after it.
+// Forks the session in `paneId` into a new tab and resumes it. With `nest`, the
+// fork lands as a child of the source pane; otherwise it lands as a sibling
+// immediately after it. `prompt` is submitted as the fork's launch message.
 export function forkAgent(
   paneId: string,
-  options?: { useWorktree?: boolean; nest?: boolean },
+  options?: { useWorktree?: boolean; nest?: boolean; prompt?: string },
 ) {
   return invoke<PaneInfo>("agent_fork", {
     paneId,
     useWorktree: options?.useWorktree ?? false,
     nest: options?.nest ?? false,
+    prompt: options?.prompt,
   });
 }
 

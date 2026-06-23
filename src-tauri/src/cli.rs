@@ -117,8 +117,25 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "fork" => {
-            let use_worktree = args.any(|arg| arg == "--worktree" || arg == "-w");
-            let pane = request_value("agent.fork", json!({ "useWorktree": use_worktree }))?;
+            let mut use_worktree = false;
+            let mut prompt_parts = Vec::new();
+            let mut parse_options = true;
+            for arg in args {
+                if parse_options && arg == "--" {
+                    parse_options = false;
+                    continue;
+                }
+                if parse_options && (arg == "--worktree" || arg == "-w") {
+                    use_worktree = true;
+                    continue;
+                }
+                prompt_parts.push(arg);
+            }
+            let prompt = (!prompt_parts.is_empty()).then(|| prompt_parts.join(" "));
+            let pane = request_value(
+                "agent.fork",
+                json!({ "useWorktree": use_worktree, "prompt": prompt }),
+            )?;
             let title = pane
                 .get("title")
                 .and_then(Value::as_str)
@@ -128,7 +145,12 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             } else {
                 ""
             };
-            println!("Forked {title} into a new tab nested under this one{suffix}.");
+            let prompt_suffix = if prompt.is_some() {
+                " and submitted the launch message"
+            } else {
+                ""
+            };
+            println!("Forked {title} into a new tab nested under this one{suffix}{prompt_suffix}.");
             Ok(true)
         }
         "open" => {

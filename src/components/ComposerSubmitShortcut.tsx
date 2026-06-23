@@ -2,27 +2,27 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 export function isComposerSubmitShortcut(
   event: ReactKeyboardEvent,
-  codeMode: boolean,
+  requireCmdEnter: boolean,
 ) {
   if (event.key !== "Enter" || event.nativeEvent.isComposing) {
     return false;
   }
-  if (codeMode) {
+  if (requireCmdEnter) {
     return event.metaKey;
   }
   return !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
 }
 
-export function composerSubmitShortcutAriaLabel(codeMode: boolean) {
-  return codeMode ? "Command Enter" : "Enter";
+export function composerSubmitShortcutAriaLabel(requireCmdEnter: boolean) {
+  return requireCmdEnter ? "Command Enter" : "Enter";
 }
 
 export function ComposerSubmitShortcutGlyph({
-  codeMode,
+  requireCmdEnter,
   className,
   ariaHidden = false,
 }: {
-  codeMode: boolean;
+  requireCmdEnter: boolean;
   className?: string;
   ariaHidden?: boolean;
 }) {
@@ -30,9 +30,9 @@ export function ComposerSubmitShortcutGlyph({
     <span
       className={className}
       aria-hidden={ariaHidden ? "true" : undefined}
-      aria-label={ariaHidden ? undefined : composerSubmitShortcutAriaLabel(codeMode)}
+      aria-label={ariaHidden ? undefined : composerSubmitShortcutAriaLabel(requireCmdEnter)}
     >
-      {codeMode ? "⌘" : null}
+      {requireCmdEnter ? "⌘" : null}
       <span className="enter-glyph" aria-hidden="true">
         ↵
       </span>

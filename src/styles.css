@@ -36,7 +36,7 @@
   /* Stronger, less-pastel accent used for solid filled CTAs (Queue, Launch). */
   --accent-strong: #6cae9d;
   --accent-strong-hover: #7cc0ae;
-  --placeholder-color: #9ca6a1;
+  --placeholder-color: #6b726d;
 
   /* Type scale. Controls and body share --fs-base; the two main typing surfaces
      (composer + launcher) use --fs-input; xs/sm are for hints, badges, meta. */
@@ -113,6 +113,12 @@ input,
 select {
   font: inherit;
   font-size: var(--fs-base);
+}
+
+textarea::placeholder,
+input::placeholder {
+  color: var(--placeholder-color);
+  opacity: 1;
 }
 
 button:focus-visible,
@@ -1078,6 +1084,25 @@ button:disabled {
   font-size: var(--fs-base);
 }
 
+.settings-label-indented {
+  padding-left: 18px;
+}
+
+/* Small explanatory note under a setting (e.g. a privacy disclosure). */
+.settings-hint {
+  margin: -4px 0 0;
+  color: var(--control-fg-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
+.settings-divider {
+  height: 1px;
+  margin: 2px 0;
+  background: #30383b;
+}
+
 /* A whole-row label whose checkbox sits at the trailing edge. */
 .settings-toggle {
   cursor: pointer;
@@ -1378,11 +1403,6 @@ button:disabled {
   min-width: 0;
 }
 
-/* Nudge the model logo 1px off the trigger's left edge. */
-.command-launcher-adapter-select .launcher-select-trigger {
-  padding-left: 12px;
-}
-
 /* Send reads as quiet chrome that matches the picker pill, with the accent reserved
    for the keyboard hint instead of a competing CTA fill. */
 .command-launcher-send {
@@ -1573,6 +1593,11 @@ button:disabled {
   opacity: 0.9;
 }
 
+.launcher-select-icon.is-compact {
+  width: 13px;
+  height: 13px;
+}
+
 /* The chevron stays muted even when the value takes a tone, so only the label reads
    as danger. */
 .launcher-select-chevron {
@@ -1587,9 +1612,10 @@ button:disabled {
   color: #e0796d;
 }
 
-/* Every launcher select except the model (adapter) selector — sandbox mode,
-   permission/approval level, etc. — reads as an option chip matching the adjacent
-   checkbox chips. Its text steps down to match those labels in the row. */
+/* Inline launcher selects — adapter/model, sandbox mode, permission/approval level,
+   etc. — read as option chips matching the adjacent checkbox chips. Their text
+   steps down to match those labels in the row. */
+.command-launcher-adapter-select .launcher-select-trigger,
 .command-launcher-options .launcher-select-trigger {
   min-height: 0;
   padding: 5px 7px;
@@ -1599,6 +1625,7 @@ button:disabled {
   font-size: 12.5px;
 }
 
+.command-launcher-adapter-select .launcher-select-trigger:hover,
 .command-launcher-options .launcher-select-trigger:hover {
   border-color: transparent;
   background: rgba(255, 255, 255, 0.05);
@@ -2394,6 +2421,7 @@ button:disabled {
   --transcript-font-delta: calc(
     var(--turn-font-delta, 0px) + var(--transcript-expanded-font-delta, 0px)
   );
+  --transcript-line-height-delta: var(--transcript-expanded-line-height-delta, 0);
   position: absolute;
   inset: 0;
   display: grid;
@@ -2407,6 +2435,7 @@ button:disabled {
   padding: 10px 11px 132px 10px;
   overflow: auto;
   overscroll-behavior: contain;
+  line-height: calc(1.5 + var(--transcript-line-height-delta, 0));
 }
 
 .turn-timeline.is-empty {
@@ -2434,7 +2463,7 @@ button:disabled {
      transcript is an ordinary state, not a warning. */
   color: #aab1ad;
   font-size: calc(12.5px + var(--transcript-font-delta, 0px));
-  line-height: 1.4;
+  line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
 }
 
 /* "Thinking…" indicator pinned to the bottom of the transcript while the agent is
@@ -2482,7 +2511,7 @@ button:disabled {
   background: transparent;
   color: #aab1ad;
   font-size: calc(12.5px + var(--transcript-font-delta, 0px));
-  line-height: 1.4;
+  line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
   cursor: pointer;
   transition: color 120ms ease;
 }
@@ -2607,6 +2636,12 @@ button:disabled {
   /* Don't let the role label ("User"/"Claude") get caught in a transcript
      selection — only the message text should be copied/asked about. */
   user-select: none;
+}
+
+.turn-card.role-system header,
+.turn-card.role-system .turn-text,
+.turn-card.role-system .turn-markdown {
+  color: #8f9994;
 }
 
 .turn-blocks {
@@ -2753,7 +2788,7 @@ header + .turn-blocks {
   margin: 10px 0 5px;
   color: #f4f3ec;
   font-size: calc(13.5px + var(--transcript-font-delta, 0px));
-  line-height: 1.35;
+  line-height: calc(1.35 + var(--transcript-line-height-delta, 0));
 }
 
 .turn-markdown ul,
@@ -3684,7 +3719,7 @@ header + .turn-blocks {
 }
 
 .browser-overlay-url::placeholder {
-  color: #6b726d;
+  color: var(--placeholder-color);
 }
 
 .browser-overlay-body {

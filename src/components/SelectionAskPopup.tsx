@@ -133,7 +133,7 @@ export default function SelectionAskPopup({
         title={
           canAskNewThread
             ? "Ask in new thread"
-            : "New threads are available for Claude sessions after a session id is recorded"
+            : "New threads are available after a supported session id is recorded"
         }
         onMouseDown={(event) => event.preventDefault()}
         onClick={onAskNewThread}

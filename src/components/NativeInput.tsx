@@ -119,7 +119,7 @@ interface NativeInputProps {
   // toggle), an empty queue gets a centered placeholder instead of collapsing to
   // nothing above the composer.
   queueSplit: boolean;
-  codeMode: boolean;
+  requireCmdEnterToSend: boolean;
   transcriptText: string;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
@@ -142,7 +142,7 @@ export default function NativeInput({
   queuedTurns,
   collapsedQueuedTurns,
   queueSplit,
-  codeMode,
+  requireCmdEnterToSend,
   transcriptText,
   transcriptCopyText,
   composerPolicy,
@@ -922,7 +922,7 @@ export default function NativeInput({
             });
           }}
           onKeyDown={(event) => {
-            if (isComposerSubmitShortcut(event, codeMode)) {
+            if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
               event.preventDefault();
               if (submitShortcutTargetsSend) {
                 void submitTurn(value, "send");
@@ -1082,7 +1082,10 @@ export default function NativeInput({
             <button type="button" onClick={() => void submitTurn(value, "send")}>
               <span>Send</span>
               {submitShortcutTargetsSend ? (
-                <ComposerSubmitShortcutGlyph codeMode={codeMode} className="shortcut-hint" />
+                <ComposerSubmitShortcutGlyph
+                  requireCmdEnter={requireCmdEnterToSend}
+                  className="shortcut-hint"
+                />
               ) : null}
             </button>
           ) : null}
@@ -1115,7 +1118,10 @@ export default function NativeInput({
             >
               <span>Queue</span>
               {submitShortcutTargetsQueue ? (
-                <ComposerSubmitShortcutGlyph codeMode={codeMode} className="shortcut-hint" />
+                <ComposerSubmitShortcutGlyph
+                  requireCmdEnter={requireCmdEnterToSend}
+                  className="shortcut-hint"
+                />
               ) : null}
             </button>
           )}

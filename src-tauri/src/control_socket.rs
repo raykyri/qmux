@@ -227,6 +227,8 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             struct ForkPayload {
                 #[serde(default)]
                 use_worktree: bool,
+                #[serde(default)]
+                prompt: Option<String>,
             }
             let payload = serde_json::from_value::<ForkPayload>(request.payload)
                 .map_err(|err| format!("invalid agent.fork payload: {err}"))?;
@@ -234,7 +236,13 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // pane's own session (the source is resolved from the token, not the
             // payload), so a token can never spawn off another pane's session. This is
             // the same authority the user already has acting in their own terminal.
-            let pane = agent_fork(state, &authed_pane, payload.use_worktree, true)?;
+            let pane = agent_fork(
+                state,
+                &authed_pane,
+                payload.use_worktree,
+                true,
+                payload.prompt,
+            )?;
             serde_json::to_value(pane).map_err(|err| format!("failed to encode forked pane: {err}"))
         }
         "browser.open" => {

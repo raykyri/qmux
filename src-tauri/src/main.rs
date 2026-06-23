@@ -296,17 +296,18 @@ fn spawn_claude(
     spawn_agent_pane(&state, request.into_agent_request())
 }
 
-/// Forks the Claude session in `pane_id` into a new tab and resumes it. `nest`
-/// places the fork as a child of the source; otherwise it lands as a sibling
-/// immediately after it.
+/// Forks the session in `pane_id` into a new tab and resumes it. `nest` places the
+/// fork as a child of the source; otherwise it lands as a sibling immediately after
+/// it. When `prompt` is set, it is submitted as the fork's launch message.
 #[tauri::command]
 fn agent_fork(
     state: tauri::State<'_, AppState>,
     pane_id: String,
     use_worktree: bool,
     nest: bool,
+    prompt: Option<String>,
 ) -> Result<PaneInfo, String> {
-    fork_agent_pane(&state, &pane_id, use_worktree, nest)
+    fork_agent_pane(&state, &pane_id, use_worktree, nest, prompt)
 }
 
 #[tauri::command]

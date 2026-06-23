@@ -16,17 +16,17 @@ const COPIED_TOAST_MS = 1600;
 
 // The top bar across the right pane: the active session's id on the left, and
 // session/browser/transcript controls on the right. Forking is only enabled for
-// Claude sessions with a live id. Its height matches the browser overlay's address
-// bar so the two read as a single chrome line when the browser is open.
+// supported sessions with a live id. Its height matches the browser overlay's
+// address bar so the two read as a single chrome line when the browser is open.
 interface TurnPaneHeaderProps {
-  // The active agent's Claude session id, or null before SessionStart lands.
+  // The active agent's session id, or null before SessionStart lands.
   sessionId: string | null;
   // Sessions in this agent's folder for the top-left session switcher; the
   // active one is whichever matches transcriptPath.
   transcriptOptions: TranscriptOption[];
   transcriptPath: string | null;
   onSelectTranscript: (path: string | null) => void;
-  // Only Claude sessions with a valid session id can be forked.
+  // Only supported sessions with a valid session id can be forked.
   canFork: boolean;
   // Fork the session into a child tab of the current one, optionally in a fresh
   // git worktree.
@@ -243,7 +243,7 @@ export default function TurnPaneHeader({
             title={
               canFork
                 ? "Fork session"
-                : "Forking is available for Claude sessions after a session id is recorded"
+                : "Forking is available after a supported session id is recorded"
             }
             aria-label="Fork session"
             aria-haspopup="menu"

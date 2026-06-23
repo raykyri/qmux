@@ -67,13 +67,14 @@ export type SelectionAskState = {
   anchor: SelectionAnchor;
   sourceAgentId: string;
   sourcePaneId: string;
-  // Whether the source agent can be forked (Claude with a recorded session), which
-  // gates the "Ask in new thread" button.
+  // Whether the source agent can be forked (supported adapter with a recorded
+  // session), which gates the "Ask in new thread" button.
   canFork: boolean;
 };
 
 // The ask launcher modal: a launcher-style popup seeded with a quote. "ask" sends
-// to the source agent; "newThread" forks the source conversation, then sends.
+// to the source agent; "newThread" forks the source conversation with the question
+// as its launch prompt.
 // Ephemeral — closing discards the typed question and any options.
 export type AskLauncherState = {
   quote: string;
