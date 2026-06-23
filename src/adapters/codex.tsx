@@ -5,7 +5,7 @@ import type { AgentUiAdapter, ComposerPolicy, LauncherOptionsProps } from ".";
 export const CODEX_ADAPTER_ID = "codex";
 
 const CODEX_SANDBOX_OPTIONS: LauncherSelectOption[] = [
-  { value: "workspace-write", label: "Full workspace access" },
+  { value: "workspace-write", label: "Workspace access" },
   { value: "danger-full-access", label: "System access" },
 ];
 

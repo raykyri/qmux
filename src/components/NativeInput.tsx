@@ -227,10 +227,12 @@ export default function NativeInput({
   const canSteer = composerPolicy.steerStatuses.includes(agent.status);
   const hasTranscript = transcriptText.trim().length > 0;
   const hasSubmitValue = value.trim().length > 0;
-  const sendDisabled = submitting || !canSend || value.trim().length === 0;
-  const submitShortcutTargetsSend = !submitting && canSend && hasSubmitValue;
-  const submitShortcutTargetsQueue =
-    !submitShortcutTargetsSend && !submitting && canQueue && hasSubmitValue;
+  const sendDisabled = submitting || !canSend || !hasSubmitValue;
+  const submitShortcutWouldTargetSend = !submitting && canSend;
+  const submitShortcutWouldTargetQueue =
+    !submitShortcutWouldTargetSend && !submitting && canQueue;
+  const submitShortcutTargetsSend = submitShortcutWouldTargetSend && hasSubmitValue;
+  const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
 
@@ -1081,7 +1083,7 @@ export default function NativeInput({
           {!sendDisabled ? (
             <button type="button" onClick={() => void submitTurn(value, "send")}>
               <span>Send</span>
-              {submitShortcutTargetsSend ? (
+              {submitShortcutWouldTargetSend ? (
                 <ComposerSubmitShortcutGlyph
                   requireCmdEnter={requireCmdEnterToSend}
                   className="shortcut-hint"
@@ -1117,7 +1119,7 @@ export default function NativeInput({
               onClick={() => void submitTurn(value, "queue")}
             >
               <span>Queue</span>
-              {submitShortcutTargetsQueue ? (
+              {submitShortcutWouldTargetQueue ? (
                 <ComposerSubmitShortcutGlyph
                   requireCmdEnter={requireCmdEnterToSend}
                   className="shortcut-hint"

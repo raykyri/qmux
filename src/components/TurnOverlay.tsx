@@ -73,7 +73,7 @@ interface TurnOverlayProps {
   // dismiss an open Ask popup (the popup stays mounted across re-selections, so a
   // click that just clears the selection has to be reported here to close it).
   onDismissSelection?: () => void;
-  // When true, the agent is actively working, so a "Thinking…" indicator is pinned
+  // When true, the agent is actively working, so a "Working…" indicator is pinned
   // to the bottom of the transcript. Driven by live status transitions upstream, so
   // an agent merely restored into a working status does not light it up.
   thinking?: boolean;
@@ -251,7 +251,7 @@ export default function TurnOverlay({
   onAskSelection,
   onDismissSelection,
   thinking = false,
-  thinkingLabel = "Thinking…",
+  thinkingLabel = "Working…",
   showActivityDetail = true,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -529,9 +529,9 @@ export default function TurnOverlay({
                 activePath={transcriptPath}
                 onSelect={onSelectTranscript}
               />
-            ) : notice ? (
-              <span className="turn-empty-notice">{notice}</span>
-            ) : null}
+            ) : (
+              <span className="turn-empty-notice">Send a message to continue</span>
+            )}
           </div>
         ) : (
           timelineItems.map((item, index) => {
@@ -876,7 +876,7 @@ function ActivityGroupView({
 function activityGroupLabel(group: ActivityGroupItem) {
   const entries = uniqueToolEntries(group.children);
   if (entries.length === 0) {
-    return "Thinking...";
+    return "Thought for a while";
   }
   return toolActionGroupLabel(entries) ?? calledToolsLabel(group.toolCallCount);
 }
@@ -1133,7 +1133,7 @@ function ThinkingView({
     <details className={`thinking-block${showChevron ? "" : " is-root-activity"}`}>
       <summary>
         {showChevron ? <DisclosureChevron /> : null}
-        <span>Thinking...</span>
+        <span>Thought for a while</span>
       </summary>
       {item.values.map((value, index) => (
         <pre key={`${item.key}-${index}`}>{stringify(value)}</pre>

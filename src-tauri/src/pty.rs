@@ -66,7 +66,12 @@ pub fn spawn_shell_pane(
     state: &AppState,
     initial_size: Option<InitialPaneSize>,
 ) -> Result<PaneInfo, String> {
-    let cwd = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
+    // New shells open in the user's chosen workspace folder when one is set (and still
+    // exists); otherwise fall back to the qmux process cwd, the historical behavior.
+    let cwd = match state.workspace_folder().map(PathBuf::from) {
+        Some(folder) if folder.is_dir() => folder,
+        _ => env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?,
+    };
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,

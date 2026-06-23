@@ -125,12 +125,14 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-=` / `Cmd-+`: increase terminal font size.
 - `Cmd--`: decrease terminal font size.
 - `Cmd-0`: reset terminal font size.
+- `Cmd-O`: open the workspace folder selector.
 - `Cmd-1`..`Cmd-9` / `Ctrl-1`..`Ctrl-9`: focus the corresponding pane tab.
 - Hold `Cmd`: show floating shortcut hints for Home and pane tabs in the `Cmd-1`..
   `Cmd-9` range.
 - `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through open pane tabs, skipping Home.
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
 - `Cmd-Shift-H`: focus Home.
+- `Cmd-E`: expand or restore the active transcript pane.
 - `Cmd-W` / `Ctrl-W`: close the active pane.
 - `Cmd-,` / `Ctrl-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch.

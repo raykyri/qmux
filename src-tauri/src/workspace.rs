@@ -121,7 +121,7 @@ pub fn prepare_agent_workspace(
             state,
             CreateGroupRequest {
                 name: None,
-                base_repo: request.base_repo.clone().or_else(default_base_repo),
+                base_repo: request.base_repo.clone().or_else(|| default_base_repo(state)),
                 base_ref: request
                     .base_ref
                     .clone()
@@ -135,7 +135,7 @@ pub fn prepare_agent_workspace(
     let base_repo = request
         .base_repo
         .or_else(|| group.base_repo.clone())
-        .or_else(default_base_repo);
+        .or_else(|| default_base_repo(state));
     let base_ref = request
         .base_ref
         .or_else(|| group.base_ref.clone())
@@ -474,10 +474,18 @@ fn soft_delete_branch(run_dir: &str, branch: &str) -> Result<bool, String> {
     Ok(output.status.success())
 }
 
-fn default_base_repo() -> Option<String> {
-    env::current_dir()
-        .ok()
-        .map(|path| path.display().to_string())
+/// The directory a launched agent works in when the caller doesn't specify one:
+/// the chosen workspace folder if set (and still a directory), otherwise the qmux
+/// process cwd, the historical default.
+fn default_base_repo(state: &AppState) -> Option<String> {
+    state
+        .workspace_folder()
+        .filter(|path| Path::new(path).is_dir())
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string())
+        })
 }
 
 /// A friendly, human-readable name for a new group / worktree, e.g.

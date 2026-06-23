@@ -293,9 +293,8 @@ button:disabled {
   text-align: left;
   cursor: pointer;
   user-select: none;
-  /* Nested tabs indent their content by depth × indent; the row (and its full-width
-     selection highlight) still spans the sidebar. --pane-depth is set per row. */
-  padding-left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  /* Nested tabs indent their text content by depth × indent; the row, selection
+     highlight, status dot, and close affordance keep fixed left columns. */
 }
 
 .pane-tab:hover {
@@ -470,6 +469,10 @@ button:disabled {
   animation: status-dot-pulse 1.5s ease-in-out infinite;
 }
 
+.pane-tab-dot.status-idle {
+  background: #7f8884;
+}
+
 .pane-tab-dot.status-attention {
   background: #e0796d;
   animation: status-dot-pulse 1s ease-in-out infinite;
@@ -494,7 +497,7 @@ button:disabled {
 .pane-tab-clear-status {
   position: absolute;
   top: 50%;
-  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  left: 9px;
   z-index: 2;
   display: flex;
   width: 10px;
@@ -556,7 +559,6 @@ button:disabled {
   animation: none;
 }
 
-.pane-tab-title,
 .pane-tab small,
 .pane-tab-path,
 .pane-tab-gitmeta {
@@ -565,8 +567,14 @@ button:disabled {
   white-space: nowrap;
 }
 
-.pane-tab-title.is-user-set {
-  font-weight: 700;
+.pane-tab-title {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .pane-tab-content {
@@ -574,6 +582,7 @@ button:disabled {
   min-width: 0;
   flex-direction: column;
   gap: 1px;
+  margin-left: calc(var(--pane-depth, 0) * var(--pane-indent, 14px));
 }
 
 .pane-tab small {
@@ -748,7 +757,7 @@ button:disabled {
 .pane-tab-close {
   position: absolute;
   top: 50%;
-  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  left: 9px;
   z-index: 1;
   display: flex;
   width: 7px;
@@ -814,6 +823,23 @@ button:disabled {
 
 .sidebar-actions.is-agent-only {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+/* The workspace-folder button is its own full-width row above the New shell/New
+   agent/Settings row, regardless of how many columns that row has. */
+.sidebar-actions .sidebar-folder-button {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* JS middle-truncates the label to keep the folder name visible; this is the
+   safety net for a sidebar narrower than the truncation budget. */
+.sidebar-folder-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .sidebar-action-with-hint {
@@ -1717,37 +1743,16 @@ button:disabled {
   padding: 28px;
   pointer-events: none;
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: center;
   overflow: auto;
-}
-
-.home-layout {
-  display: grid;
-  grid-template-columns: minmax(360px, 680px) minmax(240px, 1fr);
-  gap: 28px;
-  width: min(1180px, 100%);
-  min-height: 100%;
-  align-content: start;
-  pointer-events: auto;
-}
-
-.home-left-column {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 14px;
-  align-self: start;
-}
-
-.home-right-column {
-  min-width: 0;
 }
 
 .home-launcher {
   display: flex;
   align-items: center;
-  width: 100%;
+  width: min(680px, 100%);
+  pointer-events: auto;
 }
 
 /* The inline launcher is interactive even though its placeholder wrapper isn't. */
@@ -1755,195 +1760,9 @@ button:disabled {
   pointer-events: auto;
 }
 
-.recent-sessions-module {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.recent-sessions {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 8px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-lg);
-  background: #171b1d;
-  padding: 10px;
-}
-
-.recent-sessions-heading {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 22px;
-  color: #d8ddd8;
-}
-
-.recent-sessions-heading h2 {
-  margin: 0;
-  font-size: var(--fs-sm);
-  font-weight: 700;
-}
-
-.recent-sessions-empty {
-  margin: 0;
-  color: #89928d;
-  font-size: var(--fs-sm);
-}
-
-.recent-sessions-list {
-  display: grid;
-  gap: 4px;
-}
-
-.recent-sessions-show-more {
-  align-self: center;
-  min-height: 24px;
-  padding: 0 8px;
-  border: 0;
-  background: transparent;
-  color: #a8cfc4;
-  font-size: var(--fs-sm);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.recent-sessions-show-more:hover,
-.recent-sessions-show-more:focus-visible {
-  color: #d5eee6;
-  background: transparent;
-  outline: none;
-}
-
-.recent-session-row {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 46px;
-  padding: 7px 8px;
-  border-color: transparent;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: #e6e8e2;
-  text-align: left;
-}
-
-.recent-session-row:hover:not(:disabled),
-.recent-session-row:focus-visible {
-  border-color: var(--control-border);
-  background: var(--control-bg);
-}
-
-.recent-session-row:disabled {
-  cursor: default;
-  color: #9ba29d;
-}
-
-.recent-session-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid #33383a;
-  border-radius: 5px;
-  background: #202527;
-  color: #cfd6d1;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  overflow: hidden;
-}
-
-.recent-session-icon img {
-  width: 15px;
-  height: 15px;
-  object-fit: contain;
-}
-
-.recent-session-icon img.is-mono-light {
-  filter: brightness(0) invert(1);
-  opacity: 0.9;
-}
-
-.recent-session-copy {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-
-.recent-session-title,
-.recent-session-meta {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.recent-session-title {
-  color: inherit;
-  font-size: var(--fs-base);
-  line-height: 1.25;
-}
-
-.recent-session-meta {
-  color: #8f9993;
-  font-size: var(--fs-xs);
-}
-
-.recent-session-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 20px;
-  padding: 0 7px;
-  border: 1px solid #36403c;
-  border-radius: 999px;
-  color: #a8cfc4;
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
-.recent-session-badge--warning {
-  border-color: #5f4937;
-  color: #d6aa72;
-}
-
-.recent-session-open-icon {
-  color: #9aa49e;
-}
-
-/* An open-tab entry stacks its session row over that session's queued turns. */
-.open-tab-entry {
-  display: grid;
-  gap: 4px;
-}
-
-/* The queue reuses the sidebar's card markup, but on the home surface it sits
-   inline under its row rather than filling/scrolling a sidebar column. The inset
-   aligns the cards with the row's title (24px icon + 9px gap). */
-.open-tab-queue {
-  flex: none;
-  overflow: visible;
-  padding-block: 0;
-  margin: 0 0 4px 33px;
-}
-
 @media (max-width: 820px) {
   .terminal-empty-state {
     padding: 18px;
-  }
-
-  .home-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .home-right-column {
-    display: none;
   }
 }
 
@@ -2466,7 +2285,7 @@ button:disabled {
   line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
 }
 
-/* "Thinking…" indicator pinned to the bottom of the transcript while the agent is
+/* "Working…" indicator pinned to the bottom of the transcript while the agent is
    actively working. Left-aligned like an assistant row, using the same base label
    treatment as tool groups and completed thinking blocks. */
 .turn-thinking {

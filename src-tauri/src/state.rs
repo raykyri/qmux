@@ -75,6 +75,11 @@ struct AppStateInner {
     transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
     app_handle: Mutex<Option<AppHandle>>,
+    // The single "open folder" new shells and agents launch in (see
+    // `workspace_folder`). Cached in memory so the spawn hot paths and file-server
+    // root checks don't re-read preferences from disk; seeded at startup by
+    // `init_workspace_folder` and kept in sync by `set_workspace_folder`.
+    workspace_folder: Mutex<Option<String>>,
     // Persistence stays off until restore_session() runs so constructing a state
     // (notably in tests) never touches disk. Once enabled, every model mutation
     // snapshots to workspace_root/.qmux/state.json.
@@ -338,6 +343,7 @@ impl AppState {
                 transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
+                workspace_folder: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
@@ -354,6 +360,54 @@ impl AppState {
 
     pub fn file_server_port(&self) -> Option<u16> {
         self.inner.file_server.lock().ok().and_then(|slot| *slot)
+    }
+
+    /// The current "open folder", or `None` if the user hasn't chosen one (in which
+    /// case shells/agents fall back to the qmux process cwd, as before).
+    pub fn workspace_folder(&self) -> Option<String> {
+        self.inner
+            .workspace_folder
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Seeds the in-memory workspace folder from persisted preferences at startup.
+    /// A persisted folder that no longer resolves to a directory is dropped so a
+    /// since-deleted path can't make every later spawn fail.
+    pub fn init_workspace_folder(&self) {
+        let folder = persistence::load_preferences(&self.inner.config.workspace_root)
+            .ok()
+            .and_then(|prefs| prefs.workspace_folder)
+            .filter(|path| std::path::Path::new(path).is_dir());
+        if let Ok(mut slot) = self.inner.workspace_folder.lock() {
+            *slot = folder;
+        }
+    }
+
+    /// Validates and canonicalizes `path`, caches it, persists it to preferences, and
+    /// broadcasts `workspace.folder_changed`. Returns the canonical path stored.
+    pub fn set_workspace_folder(&self, path: String) -> Result<String, String> {
+        let canonical = std::fs::canonicalize(&path)
+            .map_err(|err| format!("failed to resolve {path}: {err}"))?;
+        if !canonical.is_dir() {
+            return Err(format!("{} is not a directory", canonical.display()));
+        }
+        let canonical = canonical.display().to_string();
+        if let Ok(mut slot) = self.inner.workspace_folder.lock() {
+            *slot = Some(canonical.clone());
+        }
+        let mut preferences =
+            persistence::load_preferences(&self.inner.config.workspace_root).unwrap_or_default();
+        preferences.workspace_folder = Some(canonical.clone());
+        persistence::save_preferences(&self.inner.config.workspace_root, &preferences)?;
+        self.emit(QmuxEvent::new(
+            "workspace.folder_changed",
+            None,
+            None,
+            json!({ "folder": canonical }),
+        ));
+        Ok(canonical)
     }
 
     /// Returns the file-server token scoped to a single pane, minting one on first use.
@@ -395,6 +449,9 @@ impl AppState {
     /// working area.
     pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
         let mut roots = vec![self.inner.config.workspace_root.clone()];
+        if let Some(folder) = self.workspace_folder() {
+            roots.push(std::path::PathBuf::from(folder));
+        }
         if let Ok(model) = self.inner.model.lock() {
             if let Some(pane) = model.panes.get(pane_id) {
                 roots.push(std::path::PathBuf::from(&pane.info.cwd));

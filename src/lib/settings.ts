@@ -62,6 +62,8 @@ export interface AppSettings {
    * collapse to a single aligned row (status dot · title · status).
    */
   codeMode: boolean;
+  /** show per-tab working directories when code mode is enabled */
+  showTabDirectories: boolean;
   /** show tool calls and other activity detail in agent transcripts */
   showToolCalls: boolean;
   /** require Command+Enter instead of bare Enter for composer submit shortcuts */
@@ -78,6 +80,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   openRouterTitlesEnabled: false,
   preventSleep: true,
   codeMode: true,
+  showTabDirectories: true,
   showToolCalls: true,
   requireCmdEnterToSend: true,
 };
@@ -138,6 +141,8 @@ export function loadSettings(): AppSettings {
         : DEFAULT_SETTINGS.reduceMotion;
     const codeMode =
       typeof parsed.codeMode === "boolean" ? parsed.codeMode : DEFAULT_SETTINGS.codeMode;
+    const showTabDirectories =
+      typeof parsed.showTabDirectories === "boolean" ? parsed.showTabDirectories : codeMode;
     const showToolCalls =
       typeof parsed.showToolCalls === "boolean" ? parsed.showToolCalls : codeMode;
     const requireCmdEnterToSend =
@@ -166,6 +171,7 @@ export function loadSettings(): AppSettings {
       openRouterTitlesEnabled,
       preventSleep,
       codeMode,
+      showTabDirectories,
       showToolCalls,
       requireCmdEnterToSend,
     };

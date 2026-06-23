@@ -10,7 +10,6 @@ import type {
   PaneInfo,
   QmuxEvent,
   QueuedTurn,
-  RecentSessionInfo,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   SendNextQueuedAgentTurnResult,
@@ -35,6 +34,16 @@ export function setLauncherAdapterPreference(adapterId: string) {
   return invoke<void>("launcher_adapter_preference_set", { adapterId });
 }
 
+export function getWorkspaceFolder() {
+  return invoke<string | null>("workspace_folder_get");
+}
+
+// Opens the native folder chooser; resolves to the newly selected folder, or null
+// if the user cancels.
+export function pickWorkspaceFolder() {
+  return invoke<string | null>("workspace_folder_pick");
+}
+
 /** Skills the qmux-managed Claude plugin can inject into launched Claude agents. */
 export function listClaudeSkills() {
   return invoke<ClaudeSkill[]>("list_claude_skills");
@@ -50,17 +59,6 @@ export function listGroups() {
 
 export function listAgents() {
   return invoke<AgentInfo[]>("list_agents");
-}
-
-export function listRecentSessions(limit?: number) {
-  return invoke<RecentSessionInfo[]>("list_recent_sessions", { limit: limit ?? null });
-}
-
-export function resumeRecentSession(sessionId: string, initialSize?: InitialPaneSize | null) {
-  return invoke<PaneInfo>("recent_session_resume", {
-    sessionId,
-    initialSize: initialSize ?? null,
-  });
 }
 
 export function listTurns(agentId?: string | null) {

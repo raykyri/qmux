@@ -26,7 +26,7 @@ export interface UseQmuxEventsHandlers {
   setPaneContextMenu: Dispatch<SetStateAction<PaneContextMenuState | null>>;
   setExitDialog: Dispatch<SetStateAction<ExitDialogState | null>>;
   setAgents: Dispatch<SetStateAction<AgentInfo[]>>;
-  // Tracks which agents are actively working, for the transcript "Thinking…"
+  // Tracks which agents are actively working, for the transcript "Working…"
   // indicator. Only live transitions into a working status flip it on, so an
   // agent restored into a working status never falsely shows it (see below).
   setThinkingAgentIds: Dispatch<SetStateAction<Set<string>>>;
@@ -136,7 +136,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const updatedAgent = event.payload.agent;
         if (isAgentInfo(updatedAgent)) {
           setAgents((current) => upsertAgent(current, updatedAgent));
-          // Light up "Thinking…" only on a *live* transition into a working
+          // Light up "Working…" only on a *live* transition into a working
           // status. The boot snapshot loads agents via setAgents(list) (the
           // else-branch below), which never touches this set, so a stale
           // working status restored from disk can't trigger it. "agent.recovered"

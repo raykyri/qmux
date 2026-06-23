@@ -76,28 +76,6 @@ export interface AgentInfo {
   createdAt: number;
 }
 
-export interface RecentSessionInfo {
-  id: string;
-  adapter: string;
-  groupId?: string | null;
-  sessionId?: string | null;
-  transcriptPath?: string | null;
-  worktreeDir: string;
-  branch?: string | null;
-  model?: string | null;
-  parentId?: string | null;
-  forkPoint?: string | null;
-  rootSessionId?: string | null;
-  preview?: string | null;
-  lineCount: number;
-  lastActiveAt: number;
-  createdAt: number;
-  paneId?: string | null;
-  agentId?: string | null;
-  status?: AgentInfo["status"] | null;
-  missing: boolean;
-}
-
 export interface QueuedTurn {
   text: string;
   pauseAfter: boolean;

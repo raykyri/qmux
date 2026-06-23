@@ -72,6 +72,10 @@ pub fn state_path(workspace_root: &Path) -> PathBuf {
 pub struct AppPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher_adapter_id: Option<String>,
+    /// The single "open folder" the app roots new shells/agents in and (later) the
+    /// file panel. Absolute, canonicalized. Absent until the user picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_folder: Option<String>,
 }
 
 pub fn preferences_path(workspace_root: &Path) -> PathBuf {

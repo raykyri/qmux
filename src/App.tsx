@@ -17,6 +17,7 @@ import type {
 import {
   ChevronLeft,
   ChevronRight,
+  Folder,
   GitBranch,
   House,
   MessageSquareText,
@@ -54,7 +55,6 @@ import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TurnOverlay";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
-import RecentSessionsPanel from "./components/RecentSessionsPanel";
 import {
   agentStatusLabel,
   agentStatusTone,
@@ -117,20 +117,20 @@ import {
   getLauncherAdapterPreference,
   getAgentDraft,
   getRuntimeConfig,
+  getWorkspaceFolder,
   killPane,
   listAgents,
   listClaudeSkills,
   listAgentTranscripts,
   listAgentTurnQueue,
-  listRecentSessions,
   listTurns,
   listPanes,
   moveQueuedAgentTurn,
   openExternalUrl,
+  pickWorkspaceFolder,
   removeQueuedAgentTurn,
   renamePane,
   restoreLastClosedPane,
-  resumeRecentSession,
   setLauncherAdapterPreference,
   setPaneLayout,
   setAgentDraft as persistAgentDraft,
@@ -148,7 +148,6 @@ import type {
   InitialPaneSize,
   PaneInfo,
   QueuedTurn,
-  RecentSessionInfo,
   RuntimeConfig,
   TranscriptHookEvent,
   TranscriptOption,
@@ -196,13 +195,11 @@ const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
   [CODEX_ADAPTER_ID]: openAiModelIconUrl,
   [OPENCODE_ADAPTER_ID]: openCodeModelIconUrl,
 };
-const ADAPTER_ICON_CLASS_BY_ID: Record<string, string | undefined> = {
-  [CODEX_ADAPTER_ID]: "is-mono-light",
-};
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
 const MAX_OPENROUTER_TITLE_SOURCE_CHARS = 4000;
+const OPENROUTER_TITLE_MAX_COMPLETION_TOKENS = 1000;
 const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const APP_TOAST_TIMEOUT_MS = 5000;
@@ -221,6 +218,8 @@ interface OpenRouterTitleConfig {
   apiKey: string;
   model: string;
 }
+
+type OpenRouterTitleReasoningEffort = "none" | "minimal";
 
 function sanitizeTerminalTitle(rawTitle: string): string | null {
   const title = rawTitle
@@ -303,13 +302,144 @@ function openRouterPayloadErrorMessage(payload: unknown): string | null {
   return typeof errorRecord?.message === "string" ? errorRecord.message : null;
 }
 
-function openRouterTitleFromPayload(payload: unknown): string | null {
+function openRouterContentText(content: unknown): string | null {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const text = content
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      const partRecord = asRecord(part);
+      const text = partRecord?.text;
+      if (typeof text === "string") {
+        return text;
+      }
+      const nestedContent = partRecord?.content;
+      return typeof nestedContent === "string" ? nestedContent : "";
+    })
+    .join("");
+  return text.trim() ? text : null;
+}
+
+function openRouterFirstChoice(payload: unknown): Record<string, unknown> | null {
   const record = asRecord(payload);
   const choices = Array.isArray(record?.choices) ? record.choices : [];
-  const firstChoice = asRecord(choices[0]);
+  return asRecord(choices[0]);
+}
+
+function openRouterTitleFromPayload(payload: unknown): string | null {
+  const firstChoice = openRouterFirstChoice(payload);
   const message = asRecord(firstChoice?.message);
   const content = message?.content ?? firstChoice?.text;
-  return typeof content === "string" ? sanitizeOpenRouterTitle(content) : null;
+  const text = openRouterContentText(content);
+  return text ? sanitizeOpenRouterTitle(text) : null;
+}
+
+function openRouterChoiceErrorMessage(choice: Record<string, unknown> | null): string | null {
+  const error = asRecord(choice?.error);
+  if (!error) {
+    return null;
+  }
+  const message = typeof error.message === "string" ? error.message : "Unknown provider error";
+  const code =
+    typeof error.code === "string" || typeof error.code === "number" ? ` ${error.code}` : "";
+  return `choice error${code}: ${message}`;
+}
+
+function openRouterPayloadUsageSummary(payload: unknown): string | null {
+  const record = asRecord(payload);
+  const usage = asRecord(record?.usage);
+  if (!usage) {
+    return null;
+  }
+  const completionTokens =
+    typeof usage.completion_tokens === "number" ? usage.completion_tokens : null;
+  const completionDetails = asRecord(usage.completion_tokens_details);
+  const reasoningTokens =
+    typeof completionDetails?.reasoning_tokens === "number"
+      ? completionDetails.reasoning_tokens
+      : null;
+  const parts: string[] = [];
+  if (completionTokens !== null) {
+    parts.push(`completion_tokens=${completionTokens}`);
+  }
+  if (reasoningTokens !== null) {
+    parts.push(`reasoning_tokens=${reasoningTokens}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function openRouterEmptyTitleMessage(payload: unknown): string {
+  const firstChoice = openRouterFirstChoice(payload);
+  const choiceError = openRouterChoiceErrorMessage(firstChoice);
+  if (choiceError) {
+    return `OpenRouter generation failed: ${choiceError}`;
+  }
+
+  const finishReason =
+    typeof firstChoice?.finish_reason === "string" ? firstChoice.finish_reason : null;
+  const nativeFinishReason =
+    typeof firstChoice?.native_finish_reason === "string"
+      ? firstChoice.native_finish_reason
+      : null;
+  const usage = openRouterPayloadUsageSummary(payload);
+  const details: string[] = [];
+  if (finishReason) {
+    details.push(`finish_reason=${finishReason}`);
+  }
+  if (nativeFinishReason && nativeFinishReason !== finishReason) {
+    details.push(`native_finish_reason=${nativeFinishReason}`);
+  }
+  if (usage) {
+    details.push(usage);
+  }
+
+  return details.length > 0
+    ? `OpenRouter returned no title (${details.join(", ")}).`
+    : "OpenRouter returned no title.";
+}
+
+function isOpenRouterReasoningConfigError(status: number, message: string | null): boolean {
+  if (status !== 400 && status !== 422) {
+    return false;
+  }
+  return /\b(reasoning|effort|thinking)\b/i.test(message ?? "");
+}
+
+function openRouterTitlePayload(
+  sourceMessage: string,
+  titleConfig: OpenRouterTitleConfig,
+  reasoningEffort: OpenRouterTitleReasoningEffort | null,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: titleConfig.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Create a concise terminal tab title for the user's first message. Return only the title, without quotes. Use 2-6 words.",
+      },
+      {
+        role: "user",
+        content: Array.from(sourceMessage).slice(0, MAX_OPENROUTER_TITLE_SOURCE_CHARS).join(""),
+      },
+    ],
+    temperature: 0.2,
+    max_completion_tokens: OPENROUTER_TITLE_MAX_COMPLETION_TOKENS,
+    stream: false,
+  };
+  if (reasoningEffort) {
+    payload.reasoning = {
+      effort: reasoningEffort,
+      exclude: true,
+    };
+  }
+  return payload;
 }
 
 async function readOpenRouterPayload(response: Response): Promise<unknown> {
@@ -331,42 +461,42 @@ async function summarizeFirstMessageTitle(
   sourceMessage: string,
   titleConfig: OpenRouterTitleConfig,
 ): Promise<string | null> {
-  const payload = {
-    model: titleConfig.model,
-    messages: [
-      {
-        role: "system",
-        content:
-          "Create a concise terminal tab title for the user's first message. Return only the title, without quotes. Use 2-6 words.",
+  const attempts: (OpenRouterTitleReasoningEffort | null)[] = ["none", "minimal", null];
+  for (let index = 0; index < attempts.length; index += 1) {
+    const reasoningEffort = attempts[index];
+    const payload = openRouterTitlePayload(sourceMessage, titleConfig, reasoningEffort);
+    const response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${titleConfig.apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "qmux",
       },
-      {
-        role: "user",
-        content: Array.from(sourceMessage).slice(0, MAX_OPENROUTER_TITLE_SOURCE_CHARS).join(""),
-      },
-    ],
-    temperature: 0.2,
-    max_tokens: 24,
-    stream: false,
-  };
-  const response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${titleConfig.apiKey}`,
-      "Content-Type": "application/json",
-      "X-Title": "qmux",
-    },
-    body: JSON.stringify(payload),
-  });
-  const responsePayload = await readOpenRouterPayload(response);
-  if (!response.ok) {
-    const message = openRouterPayloadErrorMessage(responsePayload) ?? response.statusText;
-    throw new Error(`OpenRouter request failed (${response.status}): ${message}`);
+      body: JSON.stringify(payload),
+    });
+    const responsePayload = await readOpenRouterPayload(response);
+    if (!response.ok) {
+      const message = openRouterPayloadErrorMessage(responsePayload) ?? response.statusText;
+      if (
+        index < attempts.length - 1 &&
+        isOpenRouterReasoningConfigError(response.status, message)
+      ) {
+        continue;
+      }
+      throw new Error(`OpenRouter request failed (${response.status}): ${message}`);
+    }
+
+    const payloadError = openRouterPayloadErrorMessage(responsePayload);
+    if (payloadError) {
+      throw new Error(`OpenRouter returned an error: ${payloadError}`);
+    }
+    const title = openRouterTitleFromPayload(responsePayload);
+    if (!title) {
+      throw new Error(openRouterEmptyTitleMessage(responsePayload));
+    }
+    return title;
   }
-  const title = openRouterTitleFromPayload(responsePayload);
-  if (!title) {
-    throw new Error("OpenRouter returned an empty title.");
-  }
-  return title;
+  return null;
 }
 
 function createPendingFirstMessageTitle(paneId: string): PendingFirstMessageTitle {
@@ -464,10 +594,12 @@ export default function App() {
   const queueScrollByAgentRef = useRef<Record<string, number>>({});
   const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // Keep the latest active pane / close handler reachable from the global keydown
-  // listener without re-registering it on every state change.
+  // Keep active-tab actions reachable from the global keydown listener without
+  // re-registering it on every state change.
   const activePaneRef = useRef<PaneInfo | undefined>(undefined);
   const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
+  const canToggleActiveTranscriptExpandedRef = useRef(false);
+  const toggleActiveTranscriptExpandedRef = useRef<() => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
   // Debounced "user is typing" hold per agent: while active the backend won't
   // auto-drain that agent's queue. Holds the agent id + the pending release timer.
@@ -479,7 +611,12 @@ export default function App() {
   const appToastTimerRef = useRef<number | null>(null);
   const suppressPaneTabClickRef = useRef(false);
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
+  const selectingWorkspaceFolderRef = useRef(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  // The single "open folder" new shells/agents launch in; null until the user picks
+  // one (then they fall back to the qmux process cwd). Drives the sidebar folder button.
+  const [workspaceFolder, setWorkspaceFolder] = useState<string | null>(null);
+  const [selectingWorkspaceFolder, setSelectingWorkspaceFolder] = useState(false);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const applyRecoveredDismissals = useCallback((paneList: PaneInfo[]) => {
     const dismissed = dismissedRecoveredPaneIdsRef.current;
@@ -514,7 +651,7 @@ export default function App() {
   );
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   // Agents we believe are actively working *right now*, used to show the
-  // "Thinking…" indicator at the bottom of the transcript. This is driven by live
+  // "Working…" indicator at the bottom of the transcript. This is driven by live
   // status transitions (see useQmuxEvents), not the raw status field: an agent
   // restored into a working status — or loaded that way from the boot snapshot —
   // must not light up, since it isn't genuinely doing work. Membership is added
@@ -525,7 +662,6 @@ export default function App() {
     Record<string, string | null>
   >({});
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [recentSessions, setRecentSessions] = useState<RecentSessionInfo[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
     Record<string, WorktreeStatus>
@@ -1401,6 +1537,46 @@ export default function App() {
     return `…/${segments.slice(-2).join("/")}`;
   }
 
+  // Shorten a display path to fit the narrow sidebar button, preserving the final
+  // folder name (the most useful part) and the leading anchor while collapsing the
+  // middle to "…". CSS ellipsis is a last-resort safety net; this keeps the tail
+  // visible, which left-side CSS truncation would hide.
+  function middleTruncatePath(label: string, maxChars = 32): string {
+    if (label.length <= maxChars) {
+      return label;
+    }
+    const segments = label.split("/");
+    const tail = segments.pop() || segments.pop() || label;
+    const head = segments.shift() ?? "";
+    const candidate = head ? `${head}/…/${tail}` : `…/${tail}`;
+    if (candidate.length <= maxChars) {
+      return candidate;
+    }
+    // Even the final segment alone overflows: clip it from the left so its end shows.
+    return `…${tail.slice(-Math.max(4, maxChars - 1))}`;
+  }
+
+  // Prompt for a workspace folder with the native chooser; a cancel resolves to null
+  // and leaves the current folder untouched.
+  async function selectWorkspaceFolder() {
+    if (selectingWorkspaceFolderRef.current) {
+      return;
+    }
+    selectingWorkspaceFolderRef.current = true;
+    setSelectingWorkspaceFolder(true);
+    try {
+      const folder = await pickWorkspaceFolder();
+      if (folder) {
+        setWorkspaceFolder(folder);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      selectingWorkspaceFolderRef.current = false;
+      setSelectingWorkspaceFolder(false);
+    }
+  }
+
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
@@ -1412,14 +1588,6 @@ export default function App() {
       setTranscriptOptionsByAgent((current) => ({ ...current, [agentId]: options }));
     } catch {
       // The picker is a best-effort aid; a failed scan just leaves it hidden.
-    }
-  }
-
-  async function refreshRecentSessions() {
-    try {
-      setRecentSessions(await listRecentSessions());
-    } catch {
-      // Home history is a convenience surface; failures should not interrupt panes.
     }
   }
 
@@ -1633,23 +1801,24 @@ export default function App() {
         const [
           runtimeConfig,
           preferredLauncherAdapterId,
+          existingWorkspaceFolder,
           existingPanes,
           existingAgents,
           existingTurns,
-          existingRecentSessions,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
+          getWorkspaceFolder().catch(() => null),
           listPanes(),
           listAgents(),
           listTurns(),
-          listRecentSessions(),
         ]);
         if (cancelled) {
           return;
         }
 
         setConfig(runtimeConfig);
+        setWorkspaceFolder(existingWorkspaceFolder);
         setLauncherAdapterId(
           preferredLauncherAdapterId &&
             runtimeConfig.adapters.some((adapter) => adapter.id === preferredLauncherAdapterId)
@@ -1658,7 +1827,6 @@ export default function App() {
         );
         setAgents(existingAgents);
         setTurns(existingTurns);
-        setRecentSessions(existingRecentSessions);
         // Per-agent fetches are individually guarded so one failed draft/queue read
         // can't reject the whole boot and leave the app stuck on a fatal error with
         // no panes rendered. A failed read just falls back to empty for that agent.
@@ -1713,16 +1881,6 @@ export default function App() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!config) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void refreshRecentSessions();
-    }, 150);
-    return () => window.clearTimeout(timer);
-  }, [config, panes, agents, turns.length]);
 
   // Persist any debounced-but-unwritten drafts when the window is hidden or the
   // app unmounts, so a quick close never drops the last second of typing.
@@ -1916,50 +2074,6 @@ export default function App() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function openRecentSession(session: RecentSessionInfo) {
-    setError(null);
-    try {
-      const pane = await resumeRecentSession(session.id, estimateInitialPaneSize(false));
-      const [latestPanes, latestAgents, latestTurns, latestRecentSessions] = await Promise.all([
-        listPanes(),
-        listAgents(),
-        listTurns(),
-        listRecentSessions(),
-      ]);
-      setPanesPreservingRecoveredDismissals(latestPanes);
-      setAgents(latestAgents);
-      setTurns(latestTurns);
-      setRecentSessions(latestRecentSessions);
-      setActivePaneId(pane.id);
-
-      const activeRecentAgent = latestAgents.find(
-        (agent) => agent.paneId === pane.id || agent.id === pane.agentId,
-      );
-      if (activeRecentAgent) {
-        void refreshAgentTurnQueue(activeRecentAgent.id).catch(() => undefined);
-        void getAgentDraft(activeRecentAgent.id)
-          .then((draft) => {
-            const nextDrafts = { ...draftsByAgentRef.current };
-            if (draft) {
-              nextDrafts[activeRecentAgent.id] = draft;
-            } else {
-              delete nextDrafts[activeRecentAgent.id];
-            }
-            draftsByAgentRef.current = nextDrafts;
-            setDraftsByAgentState(nextDrafts);
-          })
-          .catch(() => undefined);
-      }
-
-      requestAnimationFrame(() => {
-        terminalPaneRefs.current.get(pane.id)?.focus();
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      void refreshRecentSessions();
     }
   }
 
@@ -2673,11 +2787,13 @@ export default function App() {
     }
   }
 
-  // Mirror the latest active pane and close handler into refs so the always-on
-  // keydown listener (registered once) never reads stale state.
+  // Mirror active-tab state into refs so the always-on keydown listener never reads
+  // stale state.
   useEffect(() => {
     activePaneRef.current = activePane;
     requestClosePaneRef.current = requestClosePane;
+    canToggleActiveTranscriptExpandedRef.current = Boolean(activePane && hasTurnSidebar);
+    toggleActiveTranscriptExpandedRef.current = toggleActiveTranscriptExpanded;
   });
 
   useEffect(() => {
@@ -2960,6 +3076,25 @@ export default function App() {
         event.preventDefault();
         event.stopPropagation();
         setSettingsOpen(true);
+        return;
+      }
+
+      // Cmd-O opens the workspace folder selector from anywhere, matching the
+      // folder button in the sidebar.
+      if (commandOnly && key === "o") {
+        event.preventDefault();
+        event.stopPropagation();
+        void selectWorkspaceFolder();
+        return;
+      }
+
+      // Cmd-E toggles the right-pane transcript expansion when the active tab has a
+      // transcript pane. Leave it alone elsewhere so native/app text behavior can
+      // keep working in shell-only tabs.
+      if (commandOnly && key === "e" && canToggleActiveTranscriptExpandedRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleActiveTranscriptExpandedRef.current();
         return;
       }
 
@@ -3659,7 +3794,7 @@ export default function App() {
                     >
                       {paneDisplayTitle}
                     </span>
-                    {settings.codeMode && paneDir ? (
+                    {settings.codeMode && settings.showTabDirectories && paneDir ? (
                       <span className="pane-tab-path" title={paneDir}>
                         {formatPaneDir(paneDir)}
                       </span>
@@ -3758,6 +3893,21 @@ export default function App() {
         </nav>
 
         <div className={`sidebar-actions${settings.codeMode ? "" : " is-agent-only"}`}>
+          <button
+            type="button"
+            className="sidebar-folder-button"
+            onClick={selectWorkspaceFolder}
+            disabled={selectingWorkspaceFolder}
+            aria-busy={selectingWorkspaceFolder}
+            title={`${workspaceFolder ?? "Select a workspace folder"} (⌘O)`}
+          >
+            <Folder size={14} aria-hidden="true" />
+            <span className="sidebar-folder-label">
+              {workspaceFolder
+                ? middleTruncatePath(formatPaneDir(workspaceFolder))
+                : "Open folder…"}
+            </span>
+          </button>
           {settings.codeMode ? (
             <div className="sidebar-action-with-hint">
               <button type="button" onClick={addShellPane}>
@@ -3984,6 +4134,8 @@ export default function App() {
               </div>
             </div>
 
+            <div className="settings-divider" role="separator" />
+
             <label className="settings-row settings-toggle">
               <span className="settings-label">Code mode</span>
               <input
@@ -3995,9 +4147,23 @@ export default function App() {
                   setSettings((current) => ({
                     ...current,
                     codeMode,
+                    showTabDirectories: codeMode,
                     showToolCalls: codeMode,
                     requireCmdEnterToSend: codeMode,
                   }));
+                }}
+              />
+            </label>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label settings-label-indented">Show tab directories</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.showTabDirectories}
+                onChange={(event) => {
+                  const showTabDirectories = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, showTabDirectories }));
                 }}
               />
             </label>
@@ -4319,21 +4485,7 @@ export default function App() {
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
             <div className="terminal-empty-state">
-              <div className="home-layout">
-                <div className="home-left-column">
-                  <div className="home-launcher">{renderLauncher("inline")}</div>
-                  <RecentSessionsPanel
-                    sessions={recentSessions}
-                    config={config}
-                    adapterIconById={LAUNCHER_ADAPTER_ICON_BY_ID}
-                    adapterIconClassById={ADAPTER_ICON_CLASS_BY_ID}
-                    queuedTurnsByAgent={queuedTurnsByAgent}
-                    onOpenSession={openRecentSession}
-                    formatPath={formatPaneDir}
-                  />
-                </div>
-                <div className="home-right-column" aria-hidden="true" />
-              </div>
+              <div className="home-launcher">{renderLauncher("inline")}</div>
             </div>
           ) : null}
           {panes.map((pane) => (
@@ -4384,7 +4536,7 @@ export default function App() {
               activeAgent &&
               Object.prototype.hasOwnProperty.call(processingNewMessageByAgent, activeAgent.id)
                 ? "Processing new message…"
-                : "Thinking…"
+                : "Working…"
             }
             showActivityDetail={settings.showToolCalls}
             agentId={activeAgent?.id ?? activePane?.id}
@@ -4470,7 +4622,7 @@ export default function App() {
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                     onTurnSubmitted={(agentId, text, mode) => {
-                      // Show "Thinking…" the instant a send starts a run, before the
+                      // Show "Working…" the instant a send starts a run, before the
                       // backend's status event round-trips. Gate on the agent being
                       // ready to receive (a plain send): queued turns don't start work,
                       // and an already-running agent is marked by its live status

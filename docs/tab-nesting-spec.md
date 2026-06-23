@@ -83,9 +83,9 @@ subtree are never drop targets (you can't nest a tab into itself or a descendant
 
 ## Rendering
 
-Each row indents its content by `depth × --pane-indent` (a CSS var; applied as
-`padding-left` on `.pane-tab` so the full-width selection highlight is preserved while
-the content shifts right).
+Each row indents its text content by `depth × --pane-indent` (a CSS var) while the
+full-width selection highlight, status indicator, and close affordance keep fixed
+left columns.
 
 ## Context menu
 

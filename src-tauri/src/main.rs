@@ -106,6 +106,50 @@ fn launcher_adapter_preference_set(
     persistence::save_preferences(&state.config().workspace_root, &preferences)
 }
 
+/// The current workspace folder, or `None` if the user hasn't chosen one yet.
+#[tauri::command]
+fn workspace_folder_get(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.workspace_folder()
+}
+
+/// Prompts for a folder with the native macOS chooser and, when one is selected,
+/// makes it the workspace folder (validated, persisted, broadcast). Returns the new
+/// folder, or `None` if the user cancels.
+///
+/// `(async)` runs this on a worker thread rather than the main thread, so the blocking
+/// `osascript` modal doesn't freeze the qmux window while the chooser is open.
+#[tauri::command(async)]
+fn workspace_folder_pick(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+    match pick_folder_dialog()? {
+        Some(path) => state.set_workspace_folder(path).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Shows the native macOS folder chooser via `osascript` and returns the selected
+/// POSIX path, or `None` when the user cancels. Hand-rolled (cf. the login-shell PATH
+/// probe in launch_path.rs) to avoid pulling in a dialog plugin; macOS-only, matching
+/// the app's target.
+fn pick_folder_dialog() -> Result<Option<String>, String> {
+    // `tell me to activate` pulls the chooser to the foreground; `choose folder`
+    // returns an alias whose POSIX path we print. Cancelling raises error -128, which
+    // surfaces as a non-zero exit with empty stdout — reported as `None` (no error) so
+    // a cancel is silent.
+    let script = "tell me to activate\n\
+        set chosenFolder to choose folder with prompt \"Select the workspace folder\"\n\
+        POSIX path of chosenFolder";
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|err| format!("failed to launch folder chooser: {err}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!path.is_empty()).then_some(path))
+}
+
 /// Opens a URL in the user's default external browser (or mail client). Only
 /// http(s)/mailto are accepted; the URL is passed as a single argv to the OS opener
 /// (no shell), so it can't trigger arbitrary scheme handlers or shell injection.
@@ -587,6 +631,9 @@ fn main() {
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
+                // Seed the cached workspace folder from preferences before command
+                // handlers (and any recovery spawns) can read it.
+                state.init_workspace_folder();
                 // Best-effort: if the menu tweak fails, ⌘W keeps its default
                 // (window-closing) behavior rather than aborting startup.
                 if let Err(err) = route_window_close_to_frontend(app) {
@@ -630,6 +677,8 @@ fn main() {
             get_runtime_config,
             launcher_adapter_preference_get,
             launcher_adapter_preference_set,
+            workspace_folder_get,
+            workspace_folder_pick,
             open_external_url,
             dictation_cache_metadata,
             dictation_cache_read,

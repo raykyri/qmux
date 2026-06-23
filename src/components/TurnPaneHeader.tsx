@@ -303,7 +303,9 @@ export default function TurnPaneHeader({
         <button
           type="button"
           className={`turn-pane-header-button${transcriptExpanded ? " is-active" : ""}`}
-          title={transcriptExpanded ? "Restore transcript" : "Expand transcript"}
+          title={
+            transcriptExpanded ? "Restore transcript (⌘E)" : "Expand transcript (⌘E)"
+          }
           aria-label={transcriptExpanded ? "Restore transcript" : "Expand transcript"}
           aria-pressed={transcriptExpanded}
           onClick={onToggleTranscriptExpanded}
