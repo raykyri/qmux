@@ -2974,7 +2974,7 @@ header + .turn-blocks {
 }
 
 .thinking-block > summary > span {
-  font-size: calc(13.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px));
 }
 
 .activity-group-children {
