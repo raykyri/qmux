@@ -79,6 +79,20 @@ export interface AgentInfo {
 export interface QueuedTurn {
   text: string;
   pauseAfter: boolean;
+  waitFor?: QueuedTurnWait | null;
+}
+
+export interface QueuedTurnWait {
+  agentId: string;
+  paneId?: string | null;
+  label?: string | null;
+}
+
+export interface WaitTarget {
+  agentId: string;
+  paneId: string;
+  label: string;
+  status: AgentInfo["status"];
 }
 
 export type TurnBlock =

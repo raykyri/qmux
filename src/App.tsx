@@ -174,6 +174,7 @@ import type {
   TranscriptHookEvent,
   TranscriptOption,
   Turn,
+  WaitTarget,
   WorktreeStatus,
 } from "./types";
 
@@ -1400,6 +1401,35 @@ export default function App() {
     () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, queuedTurnsByAgent],
   );
+  const activeWaitTargets = useMemo<WaitTarget[]>(() => {
+    if (!activeAgent) {
+      return [];
+    }
+    const paneById = new Map(panes.map((pane) => [pane.id, pane]));
+    return agents
+      .filter(
+        (agent) =>
+          agent.id !== activeAgent.id &&
+          (agent.status === "starting" ||
+            agent.status === "running" ||
+            agent.status === "awaitingInput" ||
+            agent.status === "awaitingPermission"),
+      )
+      .flatMap((agent) => {
+        const pane = agent.paneId ? paneById.get(agent.paneId) : undefined;
+        if (!pane) {
+          return [];
+        }
+        return [
+          {
+            agentId: agent.id,
+            paneId: pane.id,
+            label: displayPaneTitle(pane, agent),
+            status: agent.status,
+          },
+        ];
+      });
+  }, [activeAgent?.id, agents, panes, terminalTitleByPane, manuallyTitledPaneIds, config]);
   const activeCollapsedQueuedTurns = useMemo(
     () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, collapsedQueuedTurnsByAgent],
@@ -4979,6 +5009,7 @@ export default function App() {
                     agent={activeAgent}
                     draft={activeDraft}
                     queuedTurns={activeQueuedTurns}
+                    waitTargets={activeWaitTargets}
                     collapsedQueuedTurns={activeCollapsedQueuedTurns}
                     queueSplit={activeQueueSplit}
                     requireCmdEnterToSend={settings.requireCmdEnterToSend}

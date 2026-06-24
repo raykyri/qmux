@@ -203,14 +203,26 @@ pub struct AgentOutstandingSend {
     pub source: AgentSendSource,
 }
 
-/// A queued turn: the text to send plus whether the queue should pause once this
-/// turn's agent work finishes. Deserializes from either a bare string (the legacy
-/// persisted format) or a `{ text, pauseAfter }` object, so old state still loads.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedTurnWait {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A queued turn: the text to send plus optional directives controlling when it
+/// should send. Deserializes from either a bare string (the legacy persisted format)
+/// or a `{ text, pauseAfter, waitFor }` object, so old state still loads.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
     pub text: String,
     pub pause_after: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for: Option<QueuedTurnWait>,
 }
 
 impl QueuedTurn {
@@ -218,6 +230,15 @@ impl QueuedTurn {
         Self {
             text,
             pause_after: false,
+            wait_for: None,
+        }
+    }
+
+    pub fn waiting(text: String, wait_for: QueuedTurnWait) -> Self {
+        Self {
+            text,
+            pause_after: false,
+            wait_for: Some(wait_for),
         }
     }
 }
@@ -235,16 +256,92 @@ impl<'de> Deserialize<'de> for QueuedTurn {
                 text: String,
                 #[serde(default, rename = "pauseAfter")]
                 pause_after: bool,
+                #[serde(default, rename = "waitFor")]
+                wait_for: Option<QueuedTurnWait>,
             },
         }
         Ok(match Repr::deserialize(deserializer)? {
             Repr::Text(text) => QueuedTurn {
                 text,
                 pause_after: false,
+                wait_for: None,
             },
-            Repr::Full { text, pause_after } => QueuedTurn { text, pause_after },
+            Repr::Full {
+                text,
+                pause_after,
+                wait_for,
+            } => QueuedTurn {
+                text,
+                pause_after,
+                wait_for,
+            },
         })
     }
+}
+
+fn enqueue_queued_turn_locked(
+    model: &mut Model,
+    agent_id: &str,
+    turn: QueuedTurn,
+) -> Result<usize, String> {
+    let queue = model
+        .agent_turn_queues
+        .entry(agent_id.to_string())
+        .or_default();
+    if queue.len() >= MAX_QUEUED_TURNS_PER_AGENT {
+        return Err(format!(
+            "turn queue is full ({MAX_QUEUED_TURNS_PER_AGENT} pending turns); wait for the agent to drain before queueing more"
+        ));
+    }
+    queue.push_back(turn);
+    Ok(queue.len())
+}
+
+fn wait_target_label_locked(model: &Model, target: &AgentInfo) -> Option<String> {
+    target
+        .pane_id
+        .as_deref()
+        .and_then(|pane_id| model.panes.get(pane_id))
+        .map(|pane| pane.info.title.clone())
+        .or_else(|| target.branch.clone())
+        .or_else(|| target.model.clone())
+}
+
+fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait) -> bool {
+    let Some(target) = model.agents.get(&wait_for.agent_id) else {
+        return true;
+    };
+    if matches!(target.status, AgentStatus::Done | AgentStatus::Idle) {
+        return true;
+    }
+    let Some(pane_id) = target.pane_id.as_deref() else {
+        return true;
+    };
+    !model.panes.contains_key(pane_id)
+}
+
+fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![target.to_string()];
+    while let Some(agent_id) = stack.pop() {
+        if agent_id == source {
+            return true;
+        }
+        if !seen.insert(agent_id.clone()) {
+            continue;
+        }
+        if let Some(queue) = model.agent_turn_queues.get(&agent_id) {
+            for turn in queue {
+                let Some(wait_for) = turn.wait_for.as_ref() else {
+                    continue;
+                };
+                if !queued_turn_wait_is_resolved_locked(model, wait_for) {
+                    stack.push(wait_for.agent_id.clone());
+                }
+            }
+        }
+    }
+    false
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1527,23 +1624,57 @@ impl AppState {
     }
 
     pub fn enqueue_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
+        self.enqueue_agent_queued_turn(agent_id, QueuedTurn::new(data))
+    }
+
+    pub fn enqueue_agent_wait_turn(
+        &self,
+        agent_id: &str,
+        data: String,
+        wait_for_agent_id: &str,
+    ) -> Result<usize, String> {
+        if agent_id == wait_for_agent_id {
+            return Err("a queued turn cannot wait on its own agent".to_string());
+        }
+
         let len = {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
-            let queue = model
-                .agent_turn_queues
-                .entry(agent_id.to_string())
-                .or_default();
-            if queue.len() >= MAX_QUEUED_TURNS_PER_AGENT {
-                return Err(format!(
-                    "turn queue is full ({MAX_QUEUED_TURNS_PER_AGENT} pending turns); wait for the agent to drain before queueing more"
-                ));
+
+            if !model.agents.contains_key(agent_id) {
+                return Err(format!("agent {agent_id} was not found"));
             }
-            queue.push_back(QueuedTurn::new(data));
-            queue.len()
+            let target = model
+                .agents
+                .get(wait_for_agent_id)
+                .ok_or_else(|| format!("agent {wait_for_agent_id} was not found"))?;
+            if wait_dependency_would_cycle_locked(&model, agent_id, wait_for_agent_id) {
+                return Err("that wait would create a queue dependency cycle".to_string());
+            }
+
+            let label = wait_target_label_locked(&model, target);
+            let wait_for = QueuedTurnWait {
+                agent_id: wait_for_agent_id.to_string(),
+                pane_id: target.pane_id.clone(),
+                label,
+            };
+            enqueue_queued_turn_locked(&mut model, agent_id, QueuedTurn::waiting(data, wait_for))?
+        };
+        self.persist();
+        Ok(len)
+    }
+
+    fn enqueue_agent_queued_turn(&self, agent_id: &str, turn: QueuedTurn) -> Result<usize, String> {
+        let len = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            enqueue_queued_turn_locked(&mut model, agent_id, turn)?
         };
         self.persist();
         Ok(len)
@@ -1723,6 +1854,67 @@ impl AppState {
         Ok(Some(popped))
     }
 
+    pub fn pop_ready_agent_turn(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<(QueuedTurn, usize)>, String> {
+        let popped = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let Some(queue) = model.agent_turn_queues.get(agent_id) else {
+                return Ok(None);
+            };
+            let Some(front) = queue.front() else {
+                return Ok(None);
+            };
+            if let Some(wait_for) = &front.wait_for
+                && !queued_turn_wait_is_resolved_locked(&model, wait_for)
+            {
+                return Ok(None);
+            }
+
+            let queue = model
+                .agent_turn_queues
+                .get_mut(agent_id)
+                .expect("queue checked before pop");
+            let Some(data) = queue.pop_front() else {
+                return Ok(None);
+            };
+            let pending_count = queue.len();
+            if queue.is_empty() {
+                model.agent_turn_queues.remove(agent_id);
+                if let Some(agent) = model.agents.get_mut(agent_id) {
+                    agent.orphaned_queue_pane_id = None;
+                }
+            }
+            (data, pending_count)
+        };
+        self.persist();
+        Ok(Some(popped))
+    }
+
+    pub fn agents_with_front_wait_for(&self, target_agent_id: &str) -> Result<Vec<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_turn_queues
+            .iter()
+            .filter_map(|(agent_id, queue)| {
+                let waits_for_target = queue
+                    .front()
+                    .and_then(|turn| turn.wait_for.as_ref())
+                    .is_some_and(|wait| wait.agent_id == target_agent_id);
+                waits_for_target.then(|| agent_id.clone())
+            })
+            .collect())
+    }
+
     pub fn prepend_agent_turn(&self, agent_id: &str, turn: QueuedTurn) -> Result<usize, String> {
         let len = {
             let mut model = self
@@ -1743,7 +1935,7 @@ impl AppState {
 
     /// Inserts a turn into an agent's queue at `index` (clamped to the queue length),
     /// returning the new length. Used to roll a moved turn back to its original spot
-    /// when handing it to another agent fails (preserving its pause-after flag).
+    /// when handing it to another agent fails (preserving its queue directives).
     pub fn insert_agent_turn_at(
         &self,
         agent_id: &str,
@@ -2884,6 +3076,126 @@ mod tests {
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["third".to_string()]
         );
+    }
+
+    #[test]
+    fn queued_wait_turn_waits_until_target_is_done() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        source.pane_id = Some("source-pane".to_string());
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Running;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        state
+            .enqueue_agent_wait_turn("source", "after target".to_string(), "target")
+            .unwrap();
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+
+        state
+            .set_agent_status("target", AgentStatus::AwaitingInput)
+            .unwrap();
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+
+        state
+            .set_agent_status("target", AgentStatus::AwaitingPermission)
+            .unwrap();
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+
+        state.set_agent_status("target", AgentStatus::Done).unwrap();
+        let (turn, pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
+        assert_eq!(turn.text, "after target");
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn queued_wait_turn_resolves_when_target_pane_is_gone() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Running;
+        target.pane_id = Some("missing-pane".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+
+        state
+            .enqueue_agent_wait_turn("source", "after close".to_string(), "target")
+            .unwrap();
+        let (turn, pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
+        assert_eq!(turn.text, "after close");
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn queued_wait_turn_rejects_dependency_cycles() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut agent_a = sample_agent("agent-a");
+        agent_a.pane_id = Some("pane-a".to_string());
+        let mut agent_b = sample_agent("agent-b");
+        agent_b.pane_id = Some("pane-b".to_string());
+        let mut pane_a = sample_pane_runtime("pane-a");
+        pane_a.info.agent_id = Some("agent-a".to_string());
+        let mut pane_b = sample_pane_runtime("pane-b");
+        pane_b.info.agent_id = Some("agent-b".to_string());
+        state.insert_agent(agent_a).unwrap();
+        state.insert_agent(agent_b).unwrap();
+        state.insert_pane(pane_a).unwrap();
+        state.insert_pane(pane_b).unwrap();
+
+        state
+            .enqueue_agent_wait_turn("agent-a", "wait a".to_string(), "agent-b")
+            .unwrap();
+        let err = state
+            .enqueue_agent_wait_turn("agent-b", "wait b".to_string(), "agent-a")
+            .unwrap_err();
+        assert!(err.contains("cycle"));
+    }
+
+    #[test]
+    fn queued_wait_turn_round_trips_through_persistence() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            let mut source = sample_agent("source");
+            source.status = AgentStatus::Done;
+            let mut target = sample_agent("target");
+            target.status = AgentStatus::Running;
+            target.pane_id = Some("target-pane".to_string());
+            let mut target_pane = sample_pane_runtime("target-pane");
+            target_pane.info.title = "Target pane".to_string();
+            target_pane.info.agent_id = Some("target".to_string());
+            state.insert_agent(source).unwrap();
+            state.insert_agent(target).unwrap();
+            state.insert_pane(target_pane).unwrap();
+            state
+                .enqueue_agent_wait_turn("source", "persisted wait".to_string(), "target")
+                .unwrap();
+        }
+
+        let state = AppState::new(config);
+        state.restore_session();
+        let queued = state.agent_queued_turns("source").unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "persisted wait");
+        let wait_for = queued[0].wait_for.as_ref().unwrap();
+        assert_eq!(wait_for.agent_id, "target");
+        assert_eq!(wait_for.label.as_deref(), Some("Target pane"));
     }
 
     #[test]

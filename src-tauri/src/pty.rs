@@ -5,6 +5,7 @@ use crate::state::{
     AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
     ShellAgentResume,
 };
+use crate::turn_queue::release_waiters_for_agent;
 use crate::workspace::{capture_agent_worktree_removal, remove_captured_worktree};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
@@ -770,6 +771,7 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     let child = state
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+    let pane_agent_id = state.agent_by_pane(&pane_id)?.map(|agent| agent.id);
     if let Err(err) = state.capture_last_closed_pane(&pane_id) {
         eprintln!("qmux: failed to capture closed pane {pane_id}: {err}");
     }
@@ -777,7 +779,13 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         state.clear_last_closed_pane_for_pane(&pane_id);
         return Err(err);
     }
-    state.remove_pane(&pane_id)
+    state.remove_pane(&pane_id)?;
+    if let Some(agent_id) = pane_agent_id
+        && let Err(err) = release_waiters_for_agent(state, &agent_id)
+    {
+        eprintln!("qmux: failed to release waiters for closed agent {agent_id}: {err}");
+    }
+    Ok(())
 }
 
 pub fn close_worktree_pane(
@@ -858,10 +866,20 @@ fn start_reader_thread(
         // than a blanket `None`. A pane killed via `kill_pane` is already reaped and
         // removed there, so this returns None and emits the exit with no code.
         let exit_code = reap_pane_child(&state, &pane_id);
+        let pane_agent_id = state
+            .agent_by_pane(&pane_id)
+            .ok()
+            .flatten()
+            .map(|agent| agent.id);
         if let Err(err) = state.remove_pane(&pane_id) {
             // A failure here (e.g. a poisoned model lock) leaves a dead pane in
             // state; log it so the stale entry has a trace rather than vanishing.
             eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
+        }
+        if let Some(agent_id) = pane_agent_id
+            && let Err(err) = release_waiters_for_agent(&state, &agent_id)
+        {
+            eprintln!("qmux: failed to release waiters for exited agent {agent_id}: {err}");
         }
         remove_shell_integration_dir(&pane_id);
         state.emit(QmuxEvent::pty_exit(pane_id, exit_code));

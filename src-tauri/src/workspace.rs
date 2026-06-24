@@ -310,6 +310,7 @@ pub fn acknowledge_agent(
             Some(agent.id.clone()),
             serde_json::json!({ "agent": agent.clone() }),
         ));
+        crate::turn_queue::release_waiters_for_agent(state, &agent.id)?;
     }
     Ok(agent)
 }

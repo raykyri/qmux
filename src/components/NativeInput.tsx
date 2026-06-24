@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { EllipsisVertical, LoaderCircle, Mic, X } from "lucide-react";
 import {
   listAgentTurnQueue,
+  queueWaitAgentTurn,
   removeQueuedAgentTurn,
   reorderQueuedAgentTurn,
   sendNextQueuedAgentTurn,
@@ -26,7 +27,7 @@ import type { PasteProtectionSettings } from "../lib/paste";
 import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
-import type { AgentInfo, PaneInfo, QueuedTurn, SubmitAgentTurnMode } from "../types";
+import type { AgentInfo, PaneInfo, QueuedTurn, SubmitAgentTurnMode, WaitTarget } from "../types";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -49,6 +50,21 @@ type QueuePointerDrag = {
   startY: number;
   active: boolean;
 };
+
+function waitTargetStatusLabel(status: WaitTarget["status"]) {
+  switch (status) {
+    case "starting":
+      return "Starting";
+    case "running":
+      return "Working";
+    case "awaitingInput":
+      return "Awaiting input";
+    case "awaitingPermission":
+      return "Awaiting decision";
+    default:
+      return status;
+  }
+}
 
 function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean }) {
   const ref = useRef<HTMLSpanElement | null>(null);
@@ -115,6 +131,7 @@ interface NativeInputProps {
   // tab switches; onDraftChange both updates that store and schedules the disk flush.
   draft: string;
   queuedTurns: QueuedTurn[];
+  waitTargets: WaitTarget[];
   collapsedQueuedTurns: boolean[];
   // When the queue and transcript are shown together (the top-right "show both"
   // toggle), an empty queue gets a centered placeholder instead of collapsing to
@@ -142,6 +159,7 @@ export default function NativeInput({
   agent,
   draft,
   queuedTurns,
+  waitTargets,
   collapsedQueuedTurns,
   queueSplit,
   requireCmdEnterToSend,
@@ -163,6 +181,7 @@ export default function NativeInput({
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [waitOpen, setWaitOpen] = useState(false);
   // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
   // dropIndex is the gap (0..length) it would land in.
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -183,10 +202,18 @@ export default function NativeInput({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const menuPopoverRef = useRef<HTMLDivElement | null>(null);
+  const waitRef = useRef<HTMLDivElement | null>(null);
+  const waitTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const waitPopoverRef = useRef<HTMLDivElement | null>(null);
   // The actions popover is portaled to <body> (to escape the right pane's
   // overflow:hidden clipping) and positioned in fixed coordinates, clamped to
   // stay within the right pane. Null until measured, so it stays offscreen.
   const [menuPos, setMenuPos] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number;
+  } | null>(null);
+  const [waitPos, setWaitPos] = useState<{
     left: number;
     top: number;
     maxHeight: number;
@@ -231,6 +258,8 @@ export default function NativeInput({
   const hasTranscript = transcriptText.trim().length > 0;
   const hasSubmitValue = value.trim().length > 0;
   const sendDisabled = submitting || !canSend || !hasSubmitValue;
+  const waitDisabled =
+    submitting || agent.status === "failed" || !hasSubmitValue || waitTargets.length === 0;
   const submitShortcutWouldTargetSend = !submitting && canSend;
   const submitShortcutWouldTargetQueue =
     !submitShortcutWouldTargetSend && !submitting && canQueue;
@@ -267,6 +296,31 @@ export default function NativeInput({
     };
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!waitOpen) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const insideTrigger = waitRef.current?.contains(target);
+      const insidePopover = waitPopoverRef.current?.contains(target);
+      if (!insideTrigger && !insidePopover) {
+        setWaitOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setWaitOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [waitOpen]);
+
   // Place the portaled popover above the ⋮ trigger, opening upward (away from the
   // bottom edge). It right-aligns to the trigger, then clamps horizontally within
   // the right pane (falling back to the viewport) so it never spills off either
@@ -292,6 +346,27 @@ export default function NativeInput({
     setMenuPos({ left, top, maxHeight: availableAbove });
   }, []);
 
+  const positionWait = useCallback(() => {
+    const trigger = waitTriggerRef.current;
+    const popover = waitPopoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const margin = 8;
+    const gap = 6;
+    const triggerRect = trigger.getBoundingClientRect();
+    const pane = trigger.closest(".turn-pane");
+    const paneRect = pane?.getBoundingClientRect();
+    const boundLeft = (paneRect ? paneRect.left : 0) + margin;
+    const boundRight = (paneRect ? paneRect.right : window.innerWidth) - margin;
+    const { width, height } = popover.getBoundingClientRect();
+    let left = triggerRect.right - width;
+    left = Math.max(boundLeft, Math.min(left, boundRight - width));
+    const availableAbove = triggerRect.top - gap - margin;
+    const top = Math.max(margin, triggerRect.top - gap - height);
+    setWaitPos({ left, top, maxHeight: availableAbove });
+  }, []);
+
   useLayoutEffect(() => {
     if (!menuOpen) {
       setMenuPos(null);
@@ -306,6 +381,21 @@ export default function NativeInput({
       window.removeEventListener("scroll", onReflow, true);
     };
   }, [menuOpen, positionMenu]);
+
+  useLayoutEffect(() => {
+    if (!waitOpen) {
+      setWaitPos(null);
+      return;
+    }
+    positionWait();
+    const onReflow = () => positionWait();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [waitOpen, positionWait]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -400,6 +490,33 @@ export default function NativeInput({
       // Return focus to the composer once it clears. Deferred to the next frame
       // so it lands after the submit buttons re-render — clicking one disables or
       // unmounts it, which briefly bounces focus to <body>.
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitWaitTurn(target: WaitTarget) {
+    if (submitting) {
+      return;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    dictation.stop();
+    setWaitOpen(false);
+    setSubmitting(true);
+    try {
+      const result = await queueWaitAgentTurn(agent.id, trimmed, target.agentId);
+      onQueueChange(agent.id, result.queuedTurns);
+      onTurnSubmitted(agent.id, trimmed, "queue");
+      recordRecentMessage(trimmed);
+      setValue("");
       requestAnimationFrame(() => textareaRef.current?.focus());
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -857,6 +974,12 @@ export default function NativeInput({
                     Pause after send
                   </div>
                 ) : null}
+                {turn.waitFor ? (
+                  <div className="queued-turn-wait-label" aria-hidden="true">
+                    {index === 0 ? "Waiting on" : "Wait on"}{" "}
+                    {turn.waitFor.label ?? "selected terminal"}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -1115,20 +1238,79 @@ export default function NativeInput({
               <span>Unpause</span>
             </button>
           ) : (
-            <button
-              type="button"
-              className="queue-button"
-              disabled={submitting || !canQueue || value.trim().length === 0}
-              onClick={() => void submitTurn(value, "queue")}
-            >
-              <span>Queue</span>
-              {submitShortcutWouldTargetQueue ? (
-                <ComposerSubmitShortcutGlyph
-                  requireCmdEnter={requireCmdEnterToSend}
-                  className="shortcut-hint"
-                />
-              ) : null}
-            </button>
+            <>
+              <button
+                type="button"
+                className="queue-button"
+                disabled={submitting || !canQueue || value.trim().length === 0}
+                onClick={() => void submitTurn(value, "queue")}
+              >
+                <span>Queue</span>
+                {submitShortcutWouldTargetQueue ? (
+                  <ComposerSubmitShortcutGlyph
+                    requireCmdEnter={requireCmdEnterToSend}
+                    className="shortcut-hint"
+                  />
+                ) : null}
+              </button>
+              <div className="wait-target-picker" ref={waitRef}>
+                <button
+                  ref={waitTriggerRef}
+                  type="button"
+                  className="wait-target-button"
+                  disabled={waitDisabled}
+                  aria-haspopup="menu"
+                  aria-expanded={waitOpen}
+                  title={
+                    waitTargets.length > 0
+                      ? "Queue this turn after another terminal is done"
+                      : "No other terminals are working"
+                  }
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setWaitOpen((open) => !open);
+                  }}
+                >
+                  Wait on...
+                </button>
+                {waitOpen
+                  ? createPortal(
+                      <div
+                        ref={waitPopoverRef}
+                        className="wait-target-popover"
+                        role="menu"
+                        style={
+                          waitPos
+                            ? {
+                                left: waitPos.left,
+                                top: waitPos.top,
+                                maxHeight: waitPos.maxHeight,
+                              }
+                            : { left: -9999, top: -9999 }
+                        }
+                      >
+                        <div className="composer-menu-label">Wait on terminal</div>
+                        {waitTargets.map((target) => (
+                          <button
+                            key={target.agentId}
+                            type="button"
+                            role="menuitem"
+                            className="wait-target-item"
+                            title={target.label}
+                            onClick={() => void submitWaitTurn(target)}
+                          >
+                            <span className="wait-target-title">{target.label}</span>
+                            <span className="wait-target-status">
+                              {waitTargetStatusLabel(target.status)}
+                            </span>
+                          </button>
+                        ))}
+                      </div>,
+                      document.body,
+                    )
+                  : null}
+              </div>
+            </>
           )}
         </div>
       </div>

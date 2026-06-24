@@ -151,6 +151,12 @@ export function submitAgentTurn(agentId: string, data: string, mode: SubmitAgent
   });
 }
 
+export function queueWaitAgentTurn(agentId: string, data: string, waitForAgentId: string) {
+  return invoke<SubmitAgentTurnResult>("agent_queue_wait_turn", {
+    request: { agentId, data, waitForAgentId },
+  });
+}
+
 export function removeQueuedAgentTurn(agentId: string, index: number, expectedData: string) {
   return invoke<RemoveQueuedAgentTurnResult>("agent_remove_queued_turn", {
     request: { agentId, index, expectedData },

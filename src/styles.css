@@ -3297,12 +3297,20 @@ header + .turn-blocks {
 
 /* "Pause after send" caption centered under a pause-after queued item, spanning the
    item's full width (below the text + actions grid row). */
-.queued-turn-pause-label {
+.queued-turn-pause-label,
+.queued-turn-wait-label {
   grid-column: 1 / -1;
   margin-top: 4px;
   text-align: center;
   font-size: var(--fs-sm);
+}
+
+.queued-turn-pause-label {
   color: var(--accent-color);
+}
+
+.queued-turn-wait-label {
+  color: #d8b878;
 }
 
 /* "Paused" status sits at the far left of the composer's submit row (the
@@ -3616,6 +3624,71 @@ header + .turn-blocks {
   flex: 0 0 auto;
   /* 1px tighter than the shared button column-gap (8px) between text and glyphs. */
   column-gap: 7px;
+}
+
+.wait-target-picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.wait-target-button {
+  flex: 0 0 auto;
+}
+
+.wait-target-popover {
+  position: fixed;
+  z-index: 15;
+  display: flex;
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  flex-direction: column;
+  gap: 2px;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid #2a2d2f;
+  border-radius: 8px;
+  background: #1d2224;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
+}
+
+.wait-target-item {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  border-color: transparent;
+  background: transparent;
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.wait-target-item:hover:not(:disabled) {
+  background: #283032;
+}
+
+.wait-target-title,
+.wait-target-status {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wait-target-title {
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+}
+
+.wait-target-status {
+  margin-top: 2px;
+  color: #8a938e;
+  font-size: var(--fs-sm);
 }
 
 /* Nudge the enter (↵) glyph down 1px so it sits optically centered next to ⌘. */

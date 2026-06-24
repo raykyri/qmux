@@ -32,6 +32,14 @@ pub struct SubmitAgentTurnRequest {
     pub mode: Option<SubmitAgentTurnMode>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueWaitAgentTurnRequest {
+    pub agent_id: String,
+    pub data: String,
+    pub wait_for_agent_id: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitAgentTurnResult {
@@ -135,8 +143,9 @@ pub fn move_queued_agent_turn(
         state,
         SubmitAgentTurnRequest {
             agent_id: request.to_agent_id.clone(),
-            // Moving to another agent intentionally resets pause-after (it's contextual
-            // to the source queue), so hand over just the text.
+            // Moving to another agent intentionally resets queue directives
+            // (pause-after and wait targets are contextual to the source queue), so
+            // hand over just the text.
             data: removed_turn.text.clone(),
             mode: Some(SubmitAgentTurnMode::Auto),
         },
@@ -144,8 +153,9 @@ pub fn move_queued_agent_turn(
     let target_result = match submit {
         Ok(result) => result,
         Err(err) => {
-            // Roll the turn back so the move can't lose it (preserving its pause-after
-            // flag). Re-emit the source queue so the UI reflects the restored item.
+            // Roll the turn back so the move can't lose it (preserving queue
+            // directives). Re-emit the source queue so the UI reflects the restored
+            // item.
             let pending =
                 state.insert_agent_turn_at(&request.from_agent_id, request.index, removed_turn)?;
             let restored = state.agent_queued_turns(&request.from_agent_id)?;
@@ -236,6 +246,46 @@ pub fn submit_agent_turn(
     }
 }
 
+pub fn queue_wait_agent_turn(
+    state: &AppState,
+    request: QueueWaitAgentTurnRequest,
+) -> Result<SubmitAgentTurnResult, String> {
+    let data = request.data.trim().to_string();
+    if data.is_empty() {
+        return Err("turn text cannot be empty".to_string());
+    }
+
+    let agent = state
+        .agent(&request.agent_id)?
+        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+    if matches!(agent.status, AgentStatus::Failed) {
+        return Err(format!("agent {} has failed", agent.id));
+    }
+
+    let pending_turns =
+        state.enqueue_agent_wait_turn(&agent.id, data, &request.wait_for_agent_id)?;
+    let queued_turns = state.agent_queued_turns(&agent.id)?;
+    state.emit(QmuxEvent::new(
+        "agent.turn_queued",
+        agent.pane_id.clone(),
+        Some(agent.id.clone()),
+        json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
+    ));
+
+    let agent = state.agent(&agent.id)?.unwrap_or(agent);
+    let policy = agent_composer_policy(state, &agent)?;
+    let sent = !agent.paused
+        && !state.agent_is_typing(&agent.id)?
+        && policy.can_send(agent.status)
+        && drain_agent_turn_queue(state, &agent.id)?;
+    let queued_turns = state.agent_queued_turns(&agent.id)?;
+    Ok(SubmitAgentTurnResult {
+        queued: !sent,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
+}
+
 pub fn remove_queued_agent_turn(
     state: &AppState,
     request: RemoveQueuedAgentTurnRequest,
@@ -289,7 +339,7 @@ pub fn reorder_queued_agent_turn(
 }
 
 pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, String> {
-    let Some((turn, pending_turns)) = state.pop_agent_turn(agent_id)? else {
+    let Some((turn, pending_turns)) = state.pop_ready_agent_turn(agent_id)? else {
         return Ok(false);
     };
     let agent = match state.agent(agent_id)? {
@@ -344,11 +394,13 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
     if state.take_agent_pending_pause(agent_id)? {
         state.set_agent_paused(agent_id, true)?;
         state.set_agent_status(agent_id, AgentStatus::Done)?;
+        release_waiters_for_agent(state, agent_id)?;
         return Ok(IdleResolution::Paused);
     }
     if state.agent_is_paused(agent_id)? {
         // Paused: leave the queue intact and don't auto-send.
         state.set_agent_status(agent_id, AgentStatus::Done)?;
+        release_waiters_for_agent(state, agent_id)?;
         return Ok(IdleResolution::Idle);
     }
     if state.agent_is_typing(agent_id)? {
@@ -356,6 +408,7 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
         // a queued message into what they're typing. Draining resumes when the
         // frontend clears the typing flag (1500ms after the last keystroke).
         state.set_agent_status(agent_id, AgentStatus::Done)?;
+        release_waiters_for_agent(state, agent_id)?;
         return Ok(IdleResolution::Idle);
     }
 
@@ -366,11 +419,59 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
         AgentStatus::Done
     };
     state.set_agent_status(agent_id, status)?;
+    if !drained {
+        release_waiters_for_agent(state, agent_id)?;
+    }
     Ok(if drained {
         IdleResolution::Drained
     } else {
         IdleResolution::Idle
     })
+}
+
+pub fn release_waiters_for_agent(state: &AppState, target_agent_id: &str) -> Result<usize, String> {
+    let waiting_agent_ids = state.agents_with_front_wait_for(target_agent_id)?;
+    let mut drained_count = 0;
+
+    for source_agent_id in waiting_agent_ids {
+        if source_agent_id == target_agent_id {
+            continue;
+        }
+        let Some(source) = state.agent(&source_agent_id)? else {
+            continue;
+        };
+        if source.paused || state.agent_is_typing(&source.id)? {
+            continue;
+        }
+        let policy = agent_composer_policy(state, &source)?;
+        if !policy.can_send(source.status) {
+            continue;
+        }
+        match drain_agent_turn_queue(state, &source.id) {
+            Ok(true) => {
+                drained_count += 1;
+                if let Some(updated) = state.agent(&source.id)? {
+                    state.emit(QmuxEvent::new(
+                        "agent.running",
+                        updated.pane_id.clone(),
+                        Some(updated.id.clone()),
+                        json!({ "agent": updated }),
+                    ));
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                state.emit(QmuxEvent::new(
+                    "agent.queue_error",
+                    source.pane_id.clone(),
+                    Some(source.id.clone()),
+                    json!({ "error": err }),
+                ));
+            }
+        }
+    }
+
+    Ok(drained_count)
 }
 
 /// Clears an agent's paused state. If the agent is in a ready (idle) state, the next
