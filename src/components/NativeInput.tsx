@@ -22,6 +22,7 @@ import {
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
+import type { PasteProtectionSettings } from "../lib/paste";
 import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
@@ -120,6 +121,7 @@ interface NativeInputProps {
   // nothing above the composer.
   queueSplit: boolean;
   requireCmdEnterToSend: boolean;
+  pasteProtection: PasteProtectionSettings;
   transcriptText: string;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
@@ -143,6 +145,7 @@ export default function NativeInput({
   collapsedQueuedTurns,
   queueSplit,
   requireCmdEnterToSend,
+  pasteProtection,
   transcriptText,
   transcriptCopyText,
   composerPolicy,
@@ -892,7 +895,7 @@ export default function NativeInput({
           }}
           onPaste={(event) => {
             const text = event.clipboardData.getData("text");
-            const verdict = inspectPaste(text);
+            const verdict = inspectPaste(text, pasteProtection);
             if (verdict.action === "accept") {
               // Small paste: let the browser insert it normally.
               return;

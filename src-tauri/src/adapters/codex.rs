@@ -628,6 +628,8 @@ struct CodexLaunchOptions {
     sandbox: Option<String>,
     #[serde(default)]
     approval_policy: Option<String>,
+    #[serde(default)]
+    approvals_reviewer: Option<String>,
     // Kept only so saved launcher options that still carry `search: true` parse
     // cleanly under `deny_unknown_fields`; --search is now always emitted.
     #[serde(default)]
@@ -652,6 +654,11 @@ impl CodexLaunchOptions {
             "approvalPolicy",
             options.approval_policy.as_deref(),
             &["untrusted", "on-request", "never"],
+        )?;
+        options.approvals_reviewer = normalize_option(
+            "approvalsReviewer",
+            options.approvals_reviewer.as_deref(),
+            &["auto_review"],
         )?;
         Ok(options)
     }
@@ -697,9 +704,18 @@ fn build_codex_args(
     let sandbox = options.sandbox.as_deref().unwrap_or("workspace-write");
     args.push("--sandbox".to_string());
     args.push(sandbox.to_string());
-    if let Some(approval_policy) = options.approval_policy.as_deref() {
+    if let Some(approval_policy) = options.approval_policy.as_deref()
+        && options.approvals_reviewer.as_deref() != Some("auto_review")
+    {
         args.push("--ask-for-approval".to_string());
         args.push(approval_policy.to_string());
+    }
+    if let Some(approvals_reviewer) = options.approvals_reviewer.as_deref() {
+        args.push("--config".to_string());
+        args.push(format!(
+            "approvals_reviewer={}",
+            toml_string(approvals_reviewer)
+        ));
     }
     args.push("--search".to_string());
 
@@ -1454,6 +1470,14 @@ mod tests {
     }
 
     #[test]
+    fn launch_options_validate_approvals_reviewer() {
+        let err =
+            CodexLaunchOptions::from_value(json!({ "approvalsReviewer": "robot" })).unwrap_err();
+
+        assert!(err.contains("invalid Codex adapter option approvalsReviewer"));
+    }
+
+    #[test]
     fn build_args_adds_cwd_model_options_and_tail_args() {
         let options = CodexLaunchOptions::from_value(json!({
             "sandbox": "workspace-write",
@@ -1488,6 +1512,33 @@ mod tests {
                 "--search",
                 "--",
                 "start here"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_args_adds_auto_review_without_approval_policy_override() {
+        let options = CodexLaunchOptions::from_value(json!({
+            "sandbox": "workspace-write",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "auto_review"
+        }))
+        .unwrap();
+
+        let args = build_codex_args(Path::new("/tmp/qmux"), None, None, &options, Vec::new());
+
+        assert_eq!(
+            args,
+            vec![
+                "--cd",
+                "/tmp/qmux",
+                "--profile",
+                "qmux-codex",
+                "--sandbox",
+                "workspace-write",
+                "--config",
+                "approvals_reviewer=\"auto_review\"",
+                "--search"
             ]
         );
     }

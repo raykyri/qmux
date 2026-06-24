@@ -1059,7 +1059,8 @@ button:disabled {
 .settings-panel {
   display: flex;
   flex-direction: column;
-  width: min(380px, 100%);
+  width: min(420px, 100%);
+  max-height: min(760px, calc(100vh - 36px));
   gap: 14px;
   border: 1px solid #3b4447;
   border-radius: 10px;
@@ -1096,6 +1097,49 @@ button:disabled {
 .settings-close:hover {
   background: var(--control-bg-hover);
   color: #e7e7e2;
+}
+
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+}
+
+.settings-tabs button {
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--control-fg-muted);
+  font-size: var(--fs-base);
+}
+
+.settings-tabs button + button {
+  border-left: 1px solid var(--control-border);
+}
+
+.settings-tabs button:hover {
+  background: var(--control-bg-hover);
+  color: #e7e7e2;
+}
+
+.settings-tabs button.is-active {
+  background: #273034;
+  color: #f4f3ec;
+}
+
+.settings-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .settings-row {
@@ -1181,6 +1225,62 @@ button:disabled {
 
 .settings-input:focus {
   border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.settings-number-input {
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-secret-input {
+  display: flex;
+  flex: 0 1 190px;
+  min-width: 0;
+}
+
+.settings-secret-input .settings-input {
+  flex: 1 1 auto;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.settings-secret-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--control-h-md);
+  min-height: var(--control-h-md);
+  width: var(--control-h-md);
+  padding: 0;
+  border: 1px solid var(--control-border);
+  border-left: 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: #111315;
+  color: var(--control-fg-muted);
+  outline: none;
+}
+
+.settings-secret-input:hover .settings-input,
+.settings-secret-input:hover .settings-secret-toggle {
+  border-color: var(--control-border-hover);
+}
+
+.settings-secret-toggle:hover {
+  background: #16191b;
+  color: #e7e7e2;
+}
+
+.settings-secret-input:focus-within .settings-input,
+.settings-secret-input:focus-within .settings-secret-toggle {
+  border-color: var(--focus-ring);
+}
+
+.settings-secret-input:focus-within .settings-input {
+  box-shadow: inset 1px 0 0 var(--focus-ring), inset 0 1px 0 var(--focus-ring),
+    inset 0 -1px 0 var(--focus-ring);
+}
+
+.settings-secret-input:focus-within .settings-secret-toggle {
   box-shadow: inset 0 0 0 1px var(--focus-ring);
 }
 
@@ -1696,6 +1796,12 @@ button:disabled {
 
 .launcher-select-item:hover:not(:disabled) {
   background: #283032;
+}
+
+.launcher-select-separator {
+  height: 1px;
+  margin: 3px 4px;
+  background: #32383a;
 }
 
 .launcher-select-item-label {

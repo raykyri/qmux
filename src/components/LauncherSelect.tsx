@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 
@@ -7,6 +7,7 @@ export interface LauncherSelectOption {
   label: string;
   iconSrc?: string;
   iconClassName?: string;
+  dividerBefore?: boolean;
   tone?: "danger";
 }
 
@@ -115,34 +116,42 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
               {options.map((option) => {
                 const active = option.value === value;
                 return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    className={`launcher-select-item${toneClass(option.tone)}${
-                      active ? " is-active" : ""
-                    }`}
-                    onClick={() => {
-                      setOpen(false);
-                      if (option.value !== value) {
-                        onChange(option.value);
-                      }
-                    }}
-                  >
-                    {option.iconSrc ? (
-                      <img
-                        className={iconClass(option)}
-                        src={option.iconSrc}
-                        alt=""
+                  <Fragment key={option.value}>
+                    {option.dividerBefore ? (
+                      <div
+                        className="launcher-select-separator"
+                        role="separator"
                         aria-hidden="true"
                       />
                     ) : null}
-                    <span className="launcher-select-item-label">{option.label}</span>
-                    {active ? (
-                      <Check size={14} className="launcher-select-check" aria-hidden="true" />
-                    ) : null}
-                  </button>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      className={`launcher-select-item${toneClass(option.tone)}${
+                        active ? " is-active" : ""
+                      }`}
+                      onClick={() => {
+                        setOpen(false);
+                        if (option.value !== value) {
+                          onChange(option.value);
+                        }
+                      }}
+                    >
+                      {option.iconSrc ? (
+                        <img
+                          className={iconClass(option)}
+                          src={option.iconSrc}
+                          alt=""
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      <span className="launcher-select-item-label">{option.label}</span>
+                      {active ? (
+                        <Check size={14} className="launcher-select-check" aria-hidden="true" />
+                      ) : null}
+                    </button>
+                  </Fragment>
                 );
               })}
             </div>,

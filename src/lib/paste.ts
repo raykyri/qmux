@@ -1,10 +1,20 @@
 // Guards against accidental giant pastes — a whole file, a screenful of logs —
 // that would otherwise slam into the terminal's PTY or the composer in one shot.
-// Anything at or below the threshold pastes silently; above it asks first; above
-// the hard ceiling it's refused outright, since even a confirmed multi-hundred-MB
-// paste sent in one shot can freeze the UI/PTY.
-const LARGE_PASTE_THRESHOLD_BYTES = 250 * 1024;
+// The configurable threshold asks first; above the hard ceiling it's refused
+// outright, since even a confirmed multi-hundred-MB paste sent in one shot can
+// freeze the UI/PTY.
+export const DEFAULT_CONFIRM_PASTE_OVER_CHARS = 250 * 1024;
 const MAX_PASTE_BYTES = 50 * 1024 * 1024;
+
+export interface PasteProtectionSettings {
+  confirmMultiLinePaste: boolean;
+  confirmPasteOverChars: number;
+  bracketedPasteSafe: boolean;
+}
+
+export interface PasteInspectionOptions extends PasteProtectionSettings {
+  bracketedPasteActive?: boolean;
+}
 
 function formatPasteSize(bytes: number): string {
   if (bytes >= 1024 * 1024) {
@@ -13,8 +23,9 @@ function formatPasteSize(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-// The decision for a paste, based on its UTF-8 byte size (so multibyte text is
-// counted at its real on-the-wire weight):
+// The decision for a paste. The hard cap uses UTF-8 byte size (so multibyte text
+// is counted at its real on-the-wire weight); the configurable confirmation
+// threshold is expressed in user-facing characters:
 //   - "accept":  small enough to insert silently.
 //   - "confirm": large; show `message` and only proceed if the user confirms.
 //   - "reject":  over the hard ceiling; show `message` and do not paste at all.
@@ -26,7 +37,20 @@ export type PasteVerdict =
   | { action: "confirm"; message: string }
   | { action: "reject"; message: string };
 
-export function inspectPaste(text: string): PasteVerdict {
+function formatPasteCharacters(chars: number): string {
+  return chars === 1 ? "1 character" : `${chars.toLocaleString()} characters`;
+}
+
+export function inspectPaste(
+  text: string,
+  options: Partial<PasteInspectionOptions> = {},
+): PasteVerdict {
+  const {
+    confirmMultiLinePaste = false,
+    confirmPasteOverChars = DEFAULT_CONFIRM_PASTE_OVER_CHARS,
+    bracketedPasteSafe = false,
+    bracketedPasteActive = false,
+  } = options;
   const bytes = new TextEncoder().encode(text).length;
   if (bytes > MAX_PASTE_BYTES) {
     return {
@@ -36,8 +60,21 @@ export function inspectPaste(text: string): PasteVerdict {
       )} limit, so it was not pasted.`,
     };
   }
-  if (bytes > LARGE_PASTE_THRESHOLD_BYTES) {
-    return { action: "confirm", message: `This paste is ${formatPasteSize(bytes)}. Paste it anyway?` };
+  if (bracketedPasteSafe && bracketedPasteActive) {
+    return { action: "accept" };
+  }
+  const chars = Array.from(text).length;
+  if (chars > confirmPasteOverChars) {
+    return {
+      action: "confirm",
+      message: `This paste is ${formatPasteCharacters(chars)}. Paste it anyway?`,
+    };
+  }
+  if (confirmMultiLinePaste && /[\r\n]/.test(text)) {
+    return {
+      action: "confirm",
+      message: "This paste contains multiple lines. Paste it anyway?",
+    };
   }
   return { action: "accept" };
 }

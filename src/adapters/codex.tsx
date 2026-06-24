@@ -9,8 +9,12 @@ const CODEX_SANDBOX_OPTIONS: LauncherSelectOption[] = [
   { value: "danger-full-access", label: "System access" },
 ];
 
+const CODEX_AUTO_REVIEW_APPROVAL = "auto-review";
+const CODEX_AUTO_REVIEWER = "auto_review";
+
 const CODEX_APPROVAL_OPTIONS: LauncherSelectOption[] = [
-  { value: "", label: "Default approvals" },
+  { value: CODEX_AUTO_REVIEW_APPROVAL, label: "Auto approvals" },
+  { value: "", label: "Default approvals", dividerBefore: true },
   { value: "on-request", label: "Allow approval requests" },
   { value: "never", label: "Block approval requests" },
 ];
@@ -31,7 +35,7 @@ export const codexUiAdapter: AgentUiAdapter = {
 
 function CodexLauncherOptions({ value, onChange }: LauncherOptionsProps) {
   const sandbox = stringOption(value.sandbox) || "workspace-write";
-  const approvalPolicy = stringOption(value.approvalPolicy);
+  const approvalSelection = codexApprovalSelection(value);
 
   return (
     <>
@@ -43,9 +47,9 @@ function CodexLauncherOptions({ value, onChange }: LauncherOptionsProps) {
       />
       <LauncherSelect
         ariaLabel="Approval policy"
-        value={approvalPolicy}
+        value={approvalSelection}
         options={CODEX_APPROVAL_OPTIONS}
-        onChange={(next) => setOption(value, onChange, "approvalPolicy", next)}
+        onChange={(next) => setApprovalOption(value, onChange, next)}
       />
     </>
   );
@@ -53,6 +57,14 @@ function CodexLauncherOptions({ value, onChange }: LauncherOptionsProps) {
 
 function stringOption(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function codexApprovalSelection(value: Record<string, unknown>): string {
+  if (stringOption(value.approvalsReviewer) === CODEX_AUTO_REVIEWER) {
+    return CODEX_AUTO_REVIEW_APPROVAL;
+  }
+  const approvalPolicy = stringOption(value.approvalPolicy);
+  return approvalPolicy === "on-request" || approvalPolicy === "never" ? approvalPolicy : "";
 }
 
 function setOption(
@@ -67,5 +79,23 @@ function setOption(
   } else {
     next[key] = nextValue;
   }
+  onChange(next);
+}
+
+function setApprovalOption(
+  value: Record<string, unknown>,
+  onChange: (next: Record<string, unknown>) => void,
+  nextValue: string,
+) {
+  const next = { ...value };
+  delete next.approvalPolicy;
+  delete next.approvalsReviewer;
+
+  if (nextValue === CODEX_AUTO_REVIEW_APPROVAL) {
+    next.approvalsReviewer = CODEX_AUTO_REVIEWER;
+  } else if (nextValue) {
+    next.approvalPolicy = nextValue;
+  }
+
   onChange(next);
 }

@@ -18,7 +18,9 @@ import {
 } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getPaneScrollback, pastePaneInput, resizePane, writePane } from "../lib/api";
+import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
+import type { PasteProtectionSettings } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
@@ -36,6 +38,17 @@ interface TerminalPaneProps {
   fontFamily: string;
   /** Extra inter-character spacing in px, passed to xterm's `letterSpacing`. */
   letterSpacing: number;
+  cursorBlink: boolean;
+  cursorStyle: "block" | "underline" | "bar";
+  cursorInactiveStyle: "outline" | "block" | "bar" | "underline" | "none";
+  scrollbackRows: number;
+  scrollOnUserInput: boolean;
+  scrollSensitivity: number;
+  scrollDurationMs: number;
+  lineHeight: number;
+  copyOnSelect: boolean;
+  selectionClearOnCopy: boolean;
+  pasteProtection: PasteProtectionSettings;
   /** When true (e.g. the settings panel is open), keystrokes and pastes are
    *  dropped instead of being forwarded to the PTY. */
   inputBlocked: boolean;
@@ -202,6 +215,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     fontSize,
     fontFamily,
     letterSpacing,
+    cursorBlink,
+    cursorStyle,
+    cursorInactiveStyle,
+    scrollbackRows,
+    scrollOnUserInput,
+    scrollSensitivity,
+    scrollDurationMs,
+    lineHeight,
+    copyOnSelect,
+    selectionClearOnCopy,
+    pasteProtection,
     inputBlocked,
     requestAttach,
     onUserInput,
@@ -221,6 +245,28 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   fontFamilyRef.current = fontFamily;
   const letterSpacingRef = useRef(letterSpacing);
   letterSpacingRef.current = letterSpacing;
+  const cursorBlinkRef = useRef(cursorBlink);
+  cursorBlinkRef.current = cursorBlink;
+  const cursorStyleRef = useRef(cursorStyle);
+  cursorStyleRef.current = cursorStyle;
+  const cursorInactiveStyleRef = useRef(cursorInactiveStyle);
+  cursorInactiveStyleRef.current = cursorInactiveStyle;
+  const scrollbackRowsRef = useRef(scrollbackRows);
+  scrollbackRowsRef.current = scrollbackRows;
+  const scrollOnUserInputRef = useRef(scrollOnUserInput);
+  scrollOnUserInputRef.current = scrollOnUserInput;
+  const scrollSensitivityRef = useRef(scrollSensitivity);
+  scrollSensitivityRef.current = scrollSensitivity;
+  const scrollDurationMsRef = useRef(scrollDurationMs);
+  scrollDurationMsRef.current = scrollDurationMs;
+  const lineHeightRef = useRef(lineHeight);
+  lineHeightRef.current = lineHeight;
+  const copyOnSelectRef = useRef(copyOnSelect);
+  copyOnSelectRef.current = copyOnSelect;
+  const selectionClearOnCopyRef = useRef(selectionClearOnCopy);
+  selectionClearOnCopyRef.current = selectionClearOnCopy;
+  const pasteProtectionRef = useRef(pasteProtection);
+  pasteProtectionRef.current = pasteProtection;
   // Read through a ref so the once-per-pane setup effect's input handlers always
   // see the current blocked state without being torn down and rebuilt.
   const inputBlockedRef = useRef(inputBlocked);
@@ -510,12 +556,18 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         allowProposedApi: true,
         convertEol: false,
         cols: pane.cols,
-        cursorBlink: false,
+        cursorBlink: cursorBlinkRef.current,
+        cursorStyle: cursorStyleRef.current,
+        cursorInactiveStyle: cursorInactiveStyleRef.current,
         fontFamily: fontFamilyRef.current,
         fontSize: fontSizeRef.current,
         letterSpacing: letterSpacingRef.current,
+        lineHeight: lineHeightRef.current,
         rows: pane.rows,
-        scrollback: 10000,
+        scrollback: scrollbackRowsRef.current,
+        scrollOnUserInput: scrollOnUserInputRef.current,
+        scrollSensitivity: scrollSensitivityRef.current,
+        smoothScrollDuration: scrollDurationMsRef.current,
         theme: TERMINAL_THEME,
       });
 
@@ -530,6 +582,42 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
       const resultsDisposable = search.onDidChangeResults(({ resultIndex, resultCount }) => {
         setSearchResults({ index: resultIndex, count: resultCount });
+      });
+      let copyOnSelectTimer: number | null = null;
+      let lastCopiedSelection = "";
+      let clearingSelection = false;
+      const selectionDisposable = terminal.onSelectionChange(() => {
+        if (!copyOnSelectRef.current || clearingSelection) {
+          return;
+        }
+        if (copyOnSelectTimer !== null) {
+          window.clearTimeout(copyOnSelectTimer);
+        }
+        copyOnSelectTimer = window.setTimeout(() => {
+          copyOnSelectTimer = null;
+          const text = terminal.getSelection();
+          if (!text) {
+            lastCopiedSelection = "";
+            return;
+          }
+          if (text === lastCopiedSelection) {
+            return;
+          }
+          lastCopiedSelection = text;
+          void writeClipboardText(text)
+            .then(() => {
+              if (!selectionClearOnCopyRef.current) {
+                return;
+              }
+              lastCopiedSelection = "";
+              clearingSelection = true;
+              terminal.clearSelection();
+              window.setTimeout(() => {
+                clearingSelection = false;
+              }, 0);
+            })
+            .catch(() => undefined);
+        }, 120);
       });
 
       // Cmd-F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
@@ -812,7 +900,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (!text) {
           return;
         }
-        const verdict = inspectPaste(text);
+        const bracketed = terminal.modes.bracketedPasteMode;
+        const verdict = inspectPaste(text, {
+          ...pasteProtectionRef.current,
+          bracketedPasteActive: bracketed,
+        });
         if (verdict.action === "accept") {
           // Small paste: let xterm handle it normally.
           return;
@@ -827,7 +919,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         }
         // Confirmed-large: re-inject to the PTY only if the user accepts, matching
         // xterm's own bracketed-paste framing so the program sees the same input.
-        const bracketed = terminal.modes.bracketedPasteMode;
         void confirmRef.current({ message: verdict.message, confirmLabel: "Paste" }).then((ok) => {
           if (ok) {
             void pastePaneInput(pane.id, text, bracketed).catch(() => undefined);
@@ -835,6 +926,13 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         });
       };
       hostEl.addEventListener("paste", handlePaste, true);
+      const handleCopy = () => {
+        if (selectionClearOnCopyRef.current && terminal.hasSelection()) {
+          lastCopiedSelection = "";
+          window.setTimeout(() => terminal.clearSelection(), 0);
+        }
+      };
+      hostEl.addEventListener("copy", handleCopy, true);
 
       // While a recovered pane is still snapping to the bottom, an upward wheel
       // gesture means the user wants to read back — hand scroll control to them by
@@ -848,12 +946,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
       return () => {
         hostEl.removeEventListener("paste", handlePaste, true);
+        hostEl.removeEventListener("copy", handleCopy, true);
         hostEl.removeEventListener("wheel", handleRestoreScrollWheel);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
         hostEl.removeEventListener("mouseup", handleSelectionMouseUp, true);
+        if (copyOnSelectTimer !== null) {
+          window.clearTimeout(copyOnSelectTimer);
+        }
         inputDisposable.dispose();
         titleDisposable.dispose();
         linkProviderDisposable.dispose();
+        selectionDisposable.dispose();
         resultsDisposable.dispose();
         resizeObserver.disconnect();
         if (resizeFrame !== null) {
@@ -968,30 +1071,54 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
   }, [active, pane.id]);
 
-  // Apply live font changes (settings panel / Cmd-=/Cmd--) to an already-open
-  // terminal, then re-fit so rows/cols and the PTY size track the new cell
-  // metrics. On first mount the terminal may not exist yet (it opens after the
-  // font loads); the constructor already used the current values, so the no-op
-  // here is fine.
+  // Apply live terminal settings to an already-open terminal, then re-fit when
+  // cell metrics change so rows/cols and the PTY size track the new grid.
+  // On first mount the terminal may not exist yet (it opens after the font
+  // loads); the constructor already used the current values.
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
     }
-    let changed = false;
+    let metricsChanged = false;
     if (terminal.options.fontSize !== fontSize) {
       terminal.options.fontSize = fontSize;
-      changed = true;
+      metricsChanged = true;
     }
     if (terminal.options.fontFamily !== fontFamily) {
       terminal.options.fontFamily = fontFamily;
-      changed = true;
+      metricsChanged = true;
     }
     if (terminal.options.letterSpacing !== letterSpacing) {
       terminal.options.letterSpacing = letterSpacing;
-      changed = true;
+      metricsChanged = true;
     }
-    if (changed) {
+    if (terminal.options.lineHeight !== lineHeight) {
+      terminal.options.lineHeight = lineHeight;
+      metricsChanged = true;
+    }
+    if (terminal.options.cursorBlink !== cursorBlink) {
+      terminal.options.cursorBlink = cursorBlink;
+    }
+    if (terminal.options.cursorStyle !== cursorStyle) {
+      terminal.options.cursorStyle = cursorStyle;
+    }
+    if (terminal.options.cursorInactiveStyle !== cursorInactiveStyle) {
+      terminal.options.cursorInactiveStyle = cursorInactiveStyle;
+    }
+    if (terminal.options.scrollback !== scrollbackRows) {
+      terminal.options.scrollback = scrollbackRows;
+    }
+    if (terminal.options.scrollOnUserInput !== scrollOnUserInput) {
+      terminal.options.scrollOnUserInput = scrollOnUserInput;
+    }
+    if (terminal.options.scrollSensitivity !== scrollSensitivity) {
+      terminal.options.scrollSensitivity = scrollSensitivity;
+    }
+    if (terminal.options.smoothScrollDuration !== scrollDurationMs) {
+      terminal.options.smoothScrollDuration = scrollDurationMs;
+    }
+    if (metricsChanged) {
       // The WebGL renderer caches rasterized glyphs in a texture atlas keyed to
       // the old font/size. Without clearing it the new font draws from stale (or
       // empty) cells, which on WKWebView can blank the canvas entirely. Clearing
@@ -999,7 +1126,19 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       webglAddonRef.current?.clearTextureAtlas();
       stabilizeTerminalRef.current?.();
     }
-  }, [fontSize, fontFamily, letterSpacing]);
+  }, [
+    fontSize,
+    fontFamily,
+    letterSpacing,
+    lineHeight,
+    cursorBlink,
+    cursorStyle,
+    cursorInactiveStyle,
+    scrollbackRows,
+    scrollOnUserInput,
+    scrollSensitivity,
+    scrollDurationMs,
+  ]);
 
   const matchLabel =
     searchTerm === ""

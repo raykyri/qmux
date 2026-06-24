@@ -17,6 +17,8 @@ import type {
 import {
   ChevronLeft,
   ChevronRight,
+  Eye,
+  EyeOff,
   Folder,
   GitBranch,
   House,
@@ -99,12 +101,31 @@ import {
 } from "./lib/terminalFont";
 import { isTaggedUserInstruction } from "./lib/taggedInstructions";
 import {
+  clampConfirmPasteOverChars,
   clampFontSize,
+  clampLineHeight,
+  clampScrollbackRows,
+  clampScrollDurationMs,
+  CONFIRM_PASTE_OVER_CHARS_MAX,
+  CONFIRM_PASTE_OVER_CHARS_MIN,
+  CURSOR_INACTIVE_STYLE_OPTIONS,
+  CURSOR_STYLE_OPTIONS,
   FONT_OPTIONS,
   fontStackFor,
+  LINE_HEIGHT_MAX,
+  LINE_HEIGHT_MIN,
+  LINE_HEIGHT_STEP,
   letterSpacingFor,
   loadSettings,
+  MOUSE_WHEEL_SENSITIVITY_OPTIONS,
+  pasteProtectionFor,
   saveSettings,
+  SCROLL_DURATION_MS_MAX,
+  SCROLL_DURATION_MS_MIN,
+  SCROLL_DURATION_MS_STEP,
+  SCROLLBACK_ROWS_MAX,
+  SCROLLBACK_ROWS_MIN,
+  scrollSensitivityFor,
   type AppSettings,
 } from "./lib/settings";
 import {
@@ -696,9 +717,13 @@ export default function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"basic" | "advanced">("basic");
+  const [openRouterKeyVisible, setOpenRouterKeyVisible] = useState(false);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
+  const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
+  const pasteProtection = useMemo(() => pasteProtectionFor(settings), [settings]);
   const shortcutHintsShown = settings.showShortcutHints && shortcutHintsVisible;
   const [prompt, setPrompt] = useState("");
   const [launcherOpen, setLauncherOpen] = useState(false);
@@ -2897,6 +2922,8 @@ export default function App() {
   // it can run regardless of which other modals are open.
   useEffect(() => {
     if (!settingsOpen) {
+      setOpenRouterKeyVisible(false);
+      setSettingsTab("basic");
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4088,6 +4115,29 @@ export default function App() {
               </button>
             </div>
 
+            <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={settingsTab === "basic"}
+                className={settingsTab === "basic" ? "is-active" : ""}
+                onClick={() => setSettingsTab("basic")}
+              >
+                Basic
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={settingsTab === "advanced"}
+                className={settingsTab === "advanced" ? "is-active" : ""}
+                onClick={() => setSettingsTab("advanced")}
+              >
+                Advanced
+              </button>
+            </div>
+
+            {settingsTab === "basic" ? (
+              <div className="settings-content" role="tabpanel">
             <div className="settings-row">
               <label htmlFor="settings-font" className="settings-label">
                 Font
@@ -4286,19 +4336,34 @@ export default function App() {
               <label htmlFor="settings-openrouter-key" className="settings-label">
                 OpenRouter key
               </label>
-              <input
-                id="settings-openrouter-key"
-                className="settings-input"
-                type="password"
-                value={settings.openRouterKey}
-                placeholder="sk-or-v1-…"
-                autoComplete="off"
-                spellCheck={false}
-                onChange={(event) => {
-                  const openRouterKey = event.currentTarget.value;
-                  setSettings((current) => ({ ...current, openRouterKey }));
-                }}
-              />
+              <div className="settings-secret-input">
+                <input
+                  id="settings-openrouter-key"
+                  className="settings-input"
+                  type={openRouterKeyVisible ? "text" : "password"}
+                  value={settings.openRouterKey}
+                  placeholder="sk-or-v1-…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) => {
+                    const openRouterKey = event.currentTarget.value;
+                    setSettings((current) => ({ ...current, openRouterKey }));
+                  }}
+                />
+                <button
+                  type="button"
+                  className="settings-secret-toggle"
+                  aria-label={openRouterKeyVisible ? "Hide OpenRouter key" : "Show OpenRouter key"}
+                  aria-pressed={openRouterKeyVisible}
+                  onClick={() => setOpenRouterKeyVisible((visible) => !visible)}
+                >
+                  {openRouterKeyVisible ? (
+                    <EyeOff size={14} aria-hidden="true" />
+                  ) : (
+                    <Eye size={14} aria-hidden="true" />
+                  )}
+                </button>
+              </div>
             </div>
 
             <div className="settings-row">
@@ -4319,6 +4384,269 @@ export default function App() {
                 }}
               />
             </div>
+              </div>
+            ) : (
+              <div className="settings-content" role="tabpanel">
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Cursor blink</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.cursorBlink}
+                    onChange={(event) => {
+                      const cursorBlink = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, cursorBlink }));
+                    }}
+                  />
+                </label>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-cursor-style" className="settings-label">
+                    Cursor style
+                  </label>
+                  <select
+                    id="settings-cursor-style"
+                    className="settings-select"
+                    value={settings.cursorStyle}
+                    onChange={(event) => {
+                      const cursorStyle = event.currentTarget.value as AppSettings["cursorStyle"];
+                      setSettings((current) => ({ ...current, cursorStyle }));
+                    }}
+                  >
+                    {CURSOR_STYLE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-cursor-inactive-style" className="settings-label">
+                    Cursor inactive style
+                  </label>
+                  <select
+                    id="settings-cursor-inactive-style"
+                    className="settings-select"
+                    value={settings.cursorInactiveStyle}
+                    onChange={(event) => {
+                      const cursorInactiveStyle = event.currentTarget
+                        .value as AppSettings["cursorInactiveStyle"];
+                      setSettings((current) => ({ ...current, cursorInactiveStyle }));
+                    }}
+                  >
+                    {CURSOR_INACTIVE_STYLE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-scrollback-rows" className="settings-label">
+                    Scrollback rows
+                  </label>
+                  <input
+                    id="settings-scrollback-rows"
+                    className="settings-input settings-number-input"
+                    type="number"
+                    min={SCROLLBACK_ROWS_MIN}
+                    max={SCROLLBACK_ROWS_MAX}
+                    step={1000}
+                    value={settings.scrollbackRows}
+                    onChange={(event) => {
+                      const scrollbackRows = clampScrollbackRows(
+                        Number(event.currentTarget.value),
+                      );
+                      setSettings((current) => ({ ...current, scrollbackRows }));
+                    }}
+                  />
+                </div>
+
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Scroll on user input</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.scrollOnUserInput}
+                    onChange={(event) => {
+                      const scrollOnUserInput = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, scrollOnUserInput }));
+                    }}
+                  />
+                </label>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-mouse-wheel-sensitivity" className="settings-label">
+                    Mouse wheel sensitivity
+                  </label>
+                  <select
+                    id="settings-mouse-wheel-sensitivity"
+                    className="settings-select"
+                    value={settings.mouseWheelSensitivity}
+                    onChange={(event) => {
+                      const mouseWheelSensitivity = event.currentTarget
+                        .value as AppSettings["mouseWheelSensitivity"];
+                      setSettings((current) => ({ ...current, mouseWheelSensitivity }));
+                    }}
+                  >
+                    {MOUSE_WHEEL_SENSITIVITY_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="settings-row">
+                  <span className="settings-label">Scroll duration</span>
+                  <div className="settings-stepper" role="group" aria-label="Scroll duration">
+                    <button
+                      type="button"
+                      aria-label="Decrease scroll duration"
+                      disabled={settings.scrollDurationMs <= SCROLL_DURATION_MS_MIN}
+                      onClick={() =>
+                        setSettings((current) => ({
+                          ...current,
+                          scrollDurationMs: clampScrollDurationMs(
+                            current.scrollDurationMs - SCROLL_DURATION_MS_STEP,
+                          ),
+                        }))
+                      }
+                    >
+                      <Minus size={14} aria-hidden="true" />
+                    </button>
+                    <span className="settings-stepper-value">{settings.scrollDurationMs}ms</span>
+                    <button
+                      type="button"
+                      aria-label="Increase scroll duration"
+                      disabled={settings.scrollDurationMs >= SCROLL_DURATION_MS_MAX}
+                      onClick={() =>
+                        setSettings((current) => ({
+                          ...current,
+                          scrollDurationMs: clampScrollDurationMs(
+                            current.scrollDurationMs + SCROLL_DURATION_MS_STEP,
+                          ),
+                        }))
+                      }
+                    >
+                      <Plus size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <span className="settings-label">Line height</span>
+                  <div className="settings-stepper" role="group" aria-label="Line height">
+                    <button
+                      type="button"
+                      aria-label="Decrease line height"
+                      disabled={settings.lineHeight <= LINE_HEIGHT_MIN}
+                      onClick={() =>
+                        setSettings((current) => ({
+                          ...current,
+                          lineHeight: clampLineHeight(current.lineHeight - LINE_HEIGHT_STEP),
+                        }))
+                      }
+                    >
+                      <Minus size={14} aria-hidden="true" />
+                    </button>
+                    <span className="settings-stepper-value">
+                      {settings.lineHeight.toFixed(1)}x
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Increase line height"
+                      disabled={settings.lineHeight >= LINE_HEIGHT_MAX}
+                      onClick={() =>
+                        setSettings((current) => ({
+                          ...current,
+                          lineHeight: clampLineHeight(current.lineHeight + LINE_HEIGHT_STEP),
+                        }))
+                      }
+                    >
+                      <Plus size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Copy on select</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.copyOnSelect}
+                    onChange={(event) => {
+                      const copyOnSelect = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, copyOnSelect }));
+                    }}
+                  />
+                </label>
+
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Selection clear on copy</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.selectionClearOnCopy}
+                    onChange={(event) => {
+                      const selectionClearOnCopy = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, selectionClearOnCopy }));
+                    }}
+                  />
+                </label>
+
+                <div className="settings-divider" role="separator" />
+
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Confirm multi-line paste</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.confirmMultiLinePaste}
+                    onChange={(event) => {
+                      const confirmMultiLinePaste = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, confirmMultiLinePaste }));
+                    }}
+                  />
+                </label>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-confirm-paste-over" className="settings-label">
+                    Confirm paste over chars
+                  </label>
+                  <input
+                    id="settings-confirm-paste-over"
+                    className="settings-input settings-number-input"
+                    type="number"
+                    min={CONFIRM_PASTE_OVER_CHARS_MIN}
+                    max={CONFIRM_PASTE_OVER_CHARS_MAX}
+                    step={1000}
+                    value={settings.confirmPasteOverChars}
+                    onChange={(event) => {
+                      const confirmPasteOverChars = clampConfirmPasteOverChars(
+                        Number(event.currentTarget.value),
+                      );
+                      setSettings((current) => ({ ...current, confirmPasteOverChars }));
+                    }}
+                  />
+                </div>
+
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Treat bracketed paste as safe</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.bracketedPasteSafe}
+                    onChange={(event) => {
+                      const bracketedPasteSafe = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, bracketedPasteSafe }));
+                    }}
+                  />
+                </label>
+              </div>
+            )}
           </div>
         </div>
       ) : null}
@@ -4523,6 +4851,17 @@ export default function App() {
               fontSize={terminalFontSize}
               fontFamily={terminalFontFamily}
               letterSpacing={terminalLetterSpacing}
+              cursorBlink={settings.cursorBlink}
+              cursorStyle={settings.cursorStyle}
+              cursorInactiveStyle={settings.cursorInactiveStyle}
+              scrollbackRows={settings.scrollbackRows}
+              scrollOnUserInput={settings.scrollOnUserInput}
+              scrollSensitivity={terminalScrollSensitivity}
+              scrollDurationMs={settings.scrollDurationMs}
+              lineHeight={settings.lineHeight}
+              copyOnSelect={settings.copyOnSelect}
+              selectionClearOnCopy={settings.selectionClearOnCopy}
+              pasteProtection={pasteProtection}
               inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
               onUserInput={noteUserInput}
@@ -4631,6 +4970,7 @@ export default function App() {
                     collapsedQueuedTurns={activeCollapsedQueuedTurns}
                     queueSplit={activeQueueSplit}
                     requireCmdEnterToSend={settings.requireCmdEnterToSend}
+                    pasteProtection={pasteProtection}
                     transcriptText={activeTranscript}
                     transcriptCopyText={() =>
                       formatTranscriptCopyJson({
