@@ -4055,6 +4055,18 @@ export default function App() {
               <ChevronRight size={13} aria-hidden="true" />
               <span>Indent</span>
             </button>
+            <button
+              type="button"
+              className="pane-context-close"
+              aria-label={`Close ${contextMenuDisplayTitle}`}
+              title={`Close ${contextMenuDisplayTitle}`}
+              onClick={() => {
+                setPaneContextMenu(null);
+                void requestClosePane(contextMenuPane, { confirmAlways: true });
+              }}
+            >
+              <X size={13} aria-hidden="true" />
+            </button>
           </div>
         </div>
       ) : null}

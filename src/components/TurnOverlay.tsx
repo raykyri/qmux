@@ -795,9 +795,16 @@ function MessageItemView({
   assistantLabel: string;
   showName: boolean;
 }) {
+  const taggedInstructionMessage = messageItemIsTaggedInstruction(item);
   return (
-    <article className={`turn-card role-${item.role}`}>
-      {showName ? <header>{turnRoleLabel(item.role, assistantLabel)}</header> : null}
+    <article
+      className={`turn-card role-${item.role}${
+        taggedInstructionMessage ? " is-tagged-instruction-message" : ""
+      }`}
+    >
+      {showName && !taggedInstructionMessage ? (
+        <header>{turnRoleLabel(item.role, assistantLabel)}</header>
+      ) : null}
       <div className="turn-blocks">
         {item.blocks.map((block, index) => (
           <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
@@ -805,6 +812,14 @@ function MessageItemView({
       </div>
     </article>
   );
+}
+
+function messageItemIsTaggedInstruction(item: MessageItem) {
+  if (item.role !== "user" || item.blocks.length !== 1) {
+    return false;
+  }
+  const [block] = item.blocks;
+  return block.type === "text" && taggedUserInstructionDetails(block.text) !== null;
 }
 
 // True when the item carries a tool call (a tool row, or a tool inside a grouped
@@ -996,7 +1011,7 @@ function CollapsedTaggedUserInstruction({ label, text }: { label: string; text: 
   const title = expanded ? `Collapse ${label}` : `Show ${label}`;
 
   return (
-    <div className="tagged-user-instruction">
+    <div className={`tagged-user-instruction${expanded ? " is-expanded" : " is-collapsed"}`}>
       <button
         type="button"
         className="tagged-user-instruction-toggle"

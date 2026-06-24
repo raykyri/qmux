@@ -12,6 +12,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -120,6 +121,82 @@ function consumeOscTitleText(buffer: string, emitTitle: (title: string) => void)
   return "";
 }
 
+function domSelectionAnchorWithin(root: HTMLElement): SelectionAnchor | null {
+  const selection = window.getSelection();
+  const range =
+    selection && selection.rangeCount > 0 && !selection.isCollapsed
+      ? selection.getRangeAt(0)
+      : null;
+  if (!range || !root.contains(range.commonAncestorContainer)) {
+    return null;
+  }
+  const rects = Array.from(range.getClientRects()).filter(
+    (r) => r.width > 0 && r.height > 0,
+  );
+  const box = rects.length
+    ? {
+        left: Math.min(...rects.map((r) => r.left)),
+        right: Math.max(...rects.map((r) => r.right)),
+        top: Math.min(...rects.map((r) => r.top)),
+        bottom: Math.max(...rects.map((r) => r.bottom)),
+      }
+    : range.getBoundingClientRect();
+  return box.right > box.left || box.bottom > box.top
+    ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom }
+    : null;
+}
+
+function terminalSelectionAnchor(term: Terminal): SelectionAnchor | null {
+  const selection = term.getSelectionPosition();
+  const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+  if (!selection || !screen || term.cols <= 0 || term.rows <= 0) {
+    return null;
+  }
+
+  const screenRect = screen.getBoundingClientRect();
+  if (screenRect.width <= 0 || screenRect.height <= 0) {
+    return null;
+  }
+
+  const visibleTop = term.buffer.active.viewportY;
+  const visibleBottom = visibleTop + term.rows;
+  const startY = Math.max(selection.start.y, visibleTop);
+  const endY = Math.min(selection.end.y, visibleBottom - 1);
+  if (startY > endY) {
+    return null;
+  }
+
+  const cellWidth = screenRect.width / term.cols;
+  const cellHeight = screenRect.height / term.rows;
+  let left = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+
+  for (let y = startY; y <= endY; y += 1) {
+    const colStart = y === selection.start.y ? selection.start.x : 0;
+    const colEnd = y === selection.end.y ? selection.end.x : term.cols;
+    const clampedStart = Math.max(0, Math.min(colStart, term.cols));
+    const clampedEnd = Math.max(0, Math.min(colEnd, term.cols));
+    if (clampedEnd <= clampedStart) {
+      continue;
+    }
+
+    const viewportRow = y - visibleTop;
+    left = Math.min(left, screenRect.left + clampedStart * cellWidth);
+    right = Math.max(right, screenRect.left + clampedEnd * cellWidth);
+    top = Math.min(top, screenRect.top + viewportRow * cellHeight);
+    bottom = Math.max(bottom, screenRect.top + (viewportRow + 1) * cellHeight);
+  }
+
+  const hasAnchor =
+    Number.isFinite(left) &&
+    Number.isFinite(right) &&
+    Number.isFinite(top) &&
+    Number.isFinite(bottom);
+  return hasAnchor ? { left, right, top, bottom } : null;
+}
+
 interface LinkHandlers {
   activate: (url: string) => void;
   // Track which link the mouse is over so a right-click can target it.
@@ -170,6 +247,12 @@ const RESTORE_SCROLL_IDLE_MS = 750;
 // Re-snap shortly after each restore write to catch xterm reflow and late layout
 // that nudge the viewport after the synchronous scroll.
 const RESTORE_SCROLL_CATCHUP_DELAYS_MS = [80, 250];
+
+interface TerminalScrollSnapshot {
+  viewportY: number;
+  baseY: number;
+  followingBottom: boolean;
+}
 
 // Colors for search highlights, tuned to read against the terminal background.
 // The overview-ruler colors are required by the addon's types even though qmux
@@ -328,6 +411,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
+  const scrollSnapshotRef = useRef<TerminalScrollSnapshot>({
+    viewportY: 0,
+    baseY: 0,
+    followingBottom: true,
+  });
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -379,9 +467,26 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     }
   }, []);
 
-  const scrollRestoredTerminalToBottom = useCallback(() => {
-    terminalRef.current?.scrollToBottom();
+  const captureTerminalScroll = useCallback((terminal: Terminal | null = terminalRef.current) => {
+    if (!terminal) {
+      return;
+    }
+    const buffer = terminal.buffer.active;
+    scrollSnapshotRef.current = {
+      viewportY: buffer.viewportY,
+      baseY: buffer.baseY,
+      followingBottom: buffer.viewportY >= buffer.baseY,
+    };
   }, []);
+
+  const scrollRestoredTerminalToBottom = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    terminal.scrollToBottom();
+    captureTerminalScroll(terminal);
+  }, [captureTerminalScroll]);
 
   // End the window without a final snap — used when the user scrolls up to read
   // back, so we release control instead of yanking them to the bottom once more.
@@ -682,6 +787,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       terminalRef.current = terminal;
       terminalReadyRef.current = true;
       searchRef.current = search;
+      captureTerminalScroll(terminal);
       resolveTerminalReady();
 
       const pending = pendingDataRef.current;
@@ -707,14 +813,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       };
       const fitAndSyncSize = () => {
         if (
+          !activeRef.current ||
           hostEl.offsetParent === null ||
           hostEl.clientWidth === 0 ||
           hostEl.clientHeight === 0
         ) {
-          // The pane is hidden (display: none). FitAddon measures the host via
-          // getComputedStyle, which returns the computed "100%" width for an
-          // unrendered element; parseInt("100%") = 100, so it proposes a bogus
-          // tiny grid and reflows the scrollback (and the PTY) down to it.
+          // Only the active pane should drive terminal layout. Hidden panes can
+          // still receive ResizeObserver callbacks as the app grid changes; fitting
+          // them while invisible can reflow scrollback before the user returns.
           return;
         }
         fit.fit();
@@ -784,6 +890,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       const titleDisposable = terminal.onTitleChange((title) => {
         onTerminalTitleChangeRef.current?.(pane.id, title);
       });
+      const scrollDisposable = terminal.onScroll(() => {
+        captureTerminalScroll(terminal);
+      });
 
       // Make http(s) URLs in the scrollback clickable (hover underlines them).
       const linkProviderDisposable = terminal.registerLinkProvider({
@@ -831,23 +940,19 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (!text.trim()) {
           return;
         }
-        // Prefer the DOM range's rect (DOM renderer); the WebGL renderer paints the
-        // selection on a canvas with no DOM range, so fall back to the mouse-up
-        // point, which is at the end of the drag.
-        const selection = window.getSelection();
-        const rect =
-          selection && selection.rangeCount > 0 && !selection.isCollapsed
-            ? selection.getRangeAt(0).getBoundingClientRect()
-            : null;
+        // Prefer the DOM selection when present; WebGL paints selection on a canvas,
+        // so derive a viewport box from xterm's selected buffer cells there.
+        const selectionAnchor =
+          domSelectionAnchorWithin(hostEl) ?? terminalSelectionAnchor(term);
         const anchor: SelectionAnchor =
-          rect && (rect.width > 0 || rect.height > 0)
-            ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
-            : {
-                left: event.clientX,
-                right: event.clientX,
-                top: event.clientY,
-                bottom: event.clientY,
-              };
+          selectionAnchor ?? {
+            // Last resort only: older/broken render states may not expose geometry.
+            // This can drift within the selected text, but keeps the action available.
+            left: event.clientX,
+            right: event.clientX,
+            top: event.clientY,
+            bottom: event.clientY,
+          };
         handler(pane.id, text, anchor);
       };
       hostEl.addEventListener("mouseup", handleSelectionMouseUp, true);
@@ -955,6 +1060,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         }
         inputDisposable.dispose();
         titleDisposable.dispose();
+        scrollDisposable.dispose();
         linkProviderDisposable.dispose();
         selectionDisposable.dispose();
         resultsDisposable.dispose();
@@ -1000,6 +1106,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     clearRestoreScrollToBottomTimers,
     scheduleRestoreScrollToBottom,
     cancelRestoreScrollToBottom,
+    captureTerminalScroll,
   ]);
 
   // Replay durable scrollback before releasing the backend's pre-attach backlog.
@@ -1035,41 +1142,41 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
   }, [pane.id, requestAttach, startRestoreScrollToBottom, waitForTerminalReady, writeTerminalData]);
 
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-    terminalRef.current?.focus();
-    stabilizeTerminalRef.current?.();
-    // While this pane was inactive it was display:none, so PTY output kept growing the
-    // buffer but xterm's viewport metrics went stale (its cached viewport height drops
-    // toward 0 on a 0x0 element). After re-showing, fit()+refresh() repaint the rows
-    // but don't re-sync the scroll area, so the scrollbar can't reach the true bottom
-    // and the first scroll jumps — until a keypress nudges it. Replicate that nudge:
-    // scrollToBottom() fires onScroll, which re-measures the now-visible viewport. If
-    // the user had scrolled up, restore that position afterward (both happen in one
-    // frame, so there's no visible jump). Run after the fit's frame, and again once
-    // layout/fonts settle.
-    const resync = () => {
+  useLayoutEffect(() => {
+    const restoreSavedViewport = () => {
       const terminal = terminalRef.current;
       if (!terminal) {
         return;
       }
-      const buffer = terminal.buffer.active;
-      const previousTop = buffer.viewportY;
-      const wasFollowing = previousTop >= buffer.baseY;
-      terminal.scrollToBottom();
-      if (!wasFollowing) {
-        terminal.scrollToLine(previousTop);
+      const snapshot = scrollSnapshotRef.current;
+      if (restoreScrollToBottomPendingRef.current || snapshot.followingBottom) {
+        terminal.scrollToBottom();
+      } else {
+        const targetLine = Math.max(
+          0,
+          Math.min(snapshot.viewportY, terminal.buffer.active.baseY),
+        );
+        terminal.scrollToLine(targetLine);
       }
+      captureTerminalScroll(terminal);
     };
-    const frame = requestAnimationFrame(resync);
-    const settle = window.setTimeout(resync, 80);
+
+    if (!active) {
+      captureTerminalScroll();
+      return;
+    }
+
+    terminalRef.current?.focus();
+    stabilizeTerminalRef.current?.();
+    restoreSavedViewport();
+    const frame = requestAnimationFrame(restoreSavedViewport);
+    const settle = window.setTimeout(restoreSavedViewport, 80);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
+      captureTerminalScroll();
     };
-  }, [active, pane.id]);
+  }, [active, pane.id, captureTerminalScroll]);
 
   // Apply live terminal settings to an already-open terminal, then re-fit when
   // cell metrics change so rows/cols and the PTY size track the new grid.
