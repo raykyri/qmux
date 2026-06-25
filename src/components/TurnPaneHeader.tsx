@@ -37,6 +37,7 @@ interface TurnPaneHeaderProps {
   browserOpen: boolean;
   onToggleBrowser: () => void;
   transcriptExpanded: boolean;
+  transcriptShortcutLabel: string;
   onToggleTranscriptExpanded: () => void;
 }
 
@@ -53,6 +54,7 @@ export default function TurnPaneHeader({
   browserOpen,
   onToggleBrowser,
   transcriptExpanded,
+  transcriptShortcutLabel,
   onToggleTranscriptExpanded,
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -304,7 +306,7 @@ export default function TurnPaneHeader({
           type="button"
           className={`turn-pane-header-button${transcriptExpanded ? " is-active" : ""}`}
           title={
-            transcriptExpanded ? "Restore transcript (⌘E)" : "Expand transcript (⌘E)"
+            `${transcriptExpanded ? "Restore transcript" : "Expand transcript"} (${transcriptShortcutLabel})`
           }
           aria-label={transcriptExpanded ? "Restore transcript" : "Expand transcript"}
           aria-pressed={transcriptExpanded}

@@ -31,6 +31,7 @@ interface BrowserOverlayProps {
   // real same-origin context to function.
   sandbox: boolean;
   size?: BrowserOverlaySize | null;
+  toggleShortcutLabel?: string | null;
   // Navigate to a typed address (a URL, or a bare host that gets http:// prefixed).
   onNavigate: (rawInput: string) => void;
   // Reload the current page.
@@ -46,6 +47,7 @@ export default function BrowserOverlay({
   reloadNonce,
   sandbox,
   size,
+  toggleShortcutLabel,
   onNavigate,
   onRefresh,
   onClose,
@@ -144,6 +146,9 @@ export default function BrowserOverlay({
   const overlayStyle: CSSProperties | undefined = size
     ? { width: `${size.width}px`, height: `${size.height}px` }
     : undefined;
+  const closeTitle = toggleShortcutLabel
+    ? `Hide browser (${toggleShortcutLabel})`
+    : "Hide browser";
 
   return (
     <div
@@ -193,7 +198,7 @@ export default function BrowserOverlay({
           <button
             type="button"
             className="browser-overlay-button"
-            title="Hide browser"
+            title={closeTitle}
             aria-label="Hide browser"
             onClick={onClose}
           >

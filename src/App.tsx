@@ -199,6 +199,7 @@ const SELECTION_ASK_HIDE_DEBOUNCE_MS = 150;
 // Left strip of the sidebar the browser overlay leaves uncovered, so the first few
 // chars of each tab stay visible and clickable for switching tabs.
 const BROWSER_OVERLAY_LEFT_MARGIN = 64;
+const EXPAND_TOGGLE_SHORTCUT_LABEL = "⌘⇧B / Ctrl+Shift+B";
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -624,6 +625,9 @@ export default function App() {
   const canToggleActiveTranscriptExpandedRef = useRef(false);
   const toggleActiveTranscriptExpandedRef = useRef<() => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
+  const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
+  const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
+  const closeActiveBrowserOverlayRef = useRef<() => void>(() => {});
   // Debounced "user is typing" hold per agent: while active the backend won't
   // auto-drain that agent's queue. Holds the agent id + the pending release timer.
   const agentTypingRef = useRef<{ agentId: string; timer: number } | null>(null);
@@ -1242,6 +1246,20 @@ export default function App() {
           size: prev?.size ?? null,
         },
       };
+    });
+  }
+
+  function closeActiveBrowserOverlay() {
+    const paneId = activePane?.id;
+    if (!paneId) {
+      return;
+    }
+    setBrowserOverlayByPane((current) => {
+      const prev = current[paneId];
+      if (!prev?.open) {
+        return current;
+      }
+      return { ...current, [paneId]: { ...prev, open: false } };
     });
   }
 
@@ -2848,10 +2866,38 @@ export default function App() {
   // stale state.
   useEffect(() => {
     activePaneRef.current = activePane;
+    browserOverlayByPaneRef.current = browserOverlayByPane;
+    toggleActiveBrowserOverlayRef.current = toggleActiveBrowserOverlay;
+    closeActiveBrowserOverlayRef.current = closeActiveBrowserOverlay;
     requestClosePaneRef.current = requestClosePane;
     canToggleActiveTranscriptExpandedRef.current = Boolean(activePane && hasTurnSidebar);
     toggleActiveTranscriptExpandedRef.current = toggleActiveTranscriptExpanded;
   });
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (isTerminalTarget(event.target) || isTerminalTarget(document.activeElement)) {
+        return;
+      }
+
+      const pane = activePaneRef.current;
+      const browserOpen = pane ? browserOverlayByPaneRef.current[pane.id]?.open === true : false;
+      if (!browserOpen) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      closeActiveBrowserOverlayRef.current();
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, []);
 
   useEffect(() => {
     if (!paneContextMenu) {
@@ -3156,13 +3202,22 @@ export default function App() {
         return;
       }
 
-      // Cmd-E toggles the right-pane transcript expansion when the active tab has a
-      // transcript pane. Leave it alone elsewhere so native/app text behavior can
-      // keep working in shell-only tabs.
-      if (commandOnly && key === "e" && canToggleActiveTranscriptExpandedRef.current) {
+      // Cmd-Shift-B / Ctrl-Shift-B toggles transcript expansion when available.
+      // In shell-only tabs, where there is no transcript to expand, the same combo
+      // toggles the browser overlay.
+      if (
+        key === "b" &&
+        event.shiftKey &&
+        !event.altKey &&
+        ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey))
+      ) {
         event.preventDefault();
         event.stopPropagation();
-        toggleActiveTranscriptExpandedRef.current();
+        if (canToggleActiveTranscriptExpandedRef.current) {
+          toggleActiveTranscriptExpandedRef.current();
+        } else if (activePaneRef.current) {
+          toggleActiveBrowserOverlayRef.current();
+        }
         return;
       }
 
@@ -4985,6 +5040,7 @@ export default function App() {
                 browserOpen={activeBrowserOverlay?.open ?? false}
                 onToggleBrowser={toggleActiveBrowserOverlay}
                 transcriptExpanded={activeTranscriptExpanded}
+                transcriptShortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
                 onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
               />
             }
@@ -5079,6 +5135,7 @@ export default function App() {
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
           size={activeBrowserOverlay.size}
+          toggleShortcutLabel={hasTurnSidebar ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}
           onNavigate={navigateActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
           onClose={toggleActiveBrowserOverlay}
@@ -5090,6 +5147,7 @@ export default function App() {
       {activePane && !activeBrowserOverlay?.open && !hasTurnSidebar ? (
         <BrowserOverlayControls
           open={false}
+          shortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
           onToggle={toggleActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
         />

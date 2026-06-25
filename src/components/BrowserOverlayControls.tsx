@@ -4,15 +4,19 @@ import { Globe, RotateCw, X } from "lucide-react";
 // it's open): a toggle, with a refresh button to its left while the overlay is open.
 interface BrowserOverlayControlsProps {
   open: boolean;
+  shortcutLabel: string;
   onToggle: () => void;
   onRefresh: () => void;
 }
 
 export default function BrowserOverlayControls({
   open,
+  shortcutLabel,
   onToggle,
   onRefresh,
 }: BrowserOverlayControlsProps) {
+  const toggleTitle = `${open ? "Hide browser" : "Show browser"} (${shortcutLabel})`;
+
   return (
     <div className="browser-overlay-controls">
       {open ? (
@@ -29,7 +33,7 @@ export default function BrowserOverlayControls({
       <button
         type="button"
         className={`browser-overlay-button${open ? " is-active" : ""}`}
-        title={open ? "Hide browser" : "Show browser"}
+        title={toggleTitle}
         aria-label={open ? "Hide browser" : "Show browser"}
         aria-pressed={open}
         onClick={onToggle}
