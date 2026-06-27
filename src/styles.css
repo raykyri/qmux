@@ -1262,6 +1262,58 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.settings-shortcut-row {
+  align-items: flex-start;
+}
+
+.settings-shortcut-control {
+  display: flex;
+  flex: 0 1 260px;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  gap: 10px;
+}
+
+.settings-shortcut-input {
+  flex: 1 1 180px;
+  cursor: default;
+}
+
+.settings-link-button {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--control-fg-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.settings-link-button:hover:not(:disabled),
+.settings-link-button:focus-visible:not(:disabled) {
+  color: #e7e7e2;
+}
+
+.settings-link-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.settings-shortcut-message {
+  margin-left: auto;
+  max-width: 260px;
+  text-align: right;
+}
+
+.settings-shortcut-message.is-error {
+  color: #ffb4a8;
+  opacity: 1;
+}
+
 .settings-secret-input {
   display: flex;
   flex: 0 1 190px;

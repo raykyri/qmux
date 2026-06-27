@@ -35,6 +35,24 @@ export function setLauncherAdapterPreference(adapterId: string) {
   return invoke<void>("launcher_adapter_preference_set", { adapterId });
 }
 
+export interface ShowHideShortcutSetting {
+  accelerator: string | null;
+  registered: boolean;
+  error?: string | null;
+}
+
+export function getShowHideShortcut() {
+  return invoke<ShowHideShortcutSetting>("show_hide_shortcut_get");
+}
+
+export function setShowHideShortcut(accelerator: string | null) {
+  return invoke<ShowHideShortcutSetting>("show_hide_shortcut_set", { accelerator });
+}
+
+export function setShowHideShortcutCaptureActive(active: boolean) {
+  return invoke<void>("show_hide_shortcut_capture_set", { active });
+}
+
 export function getWorkspaceFolder() {
   return invoke<string | null>("workspace_folder_get");
 }

@@ -138,6 +138,7 @@ import {
   forkAgent,
   getLauncherAdapterPreference,
   getAgentDraft,
+  getShowHideShortcut,
   getRuntimeConfig,
   getWorkspaceFolder,
   killPane,
@@ -159,6 +160,8 @@ import {
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
   setAgentTyping,
+  setShowHideShortcut,
+  setShowHideShortcutCaptureActive,
   setPreventSleep,
   setUseLoginShell,
   spawnAgent,
@@ -179,6 +182,7 @@ import type {
   WaitTarget,
   WorktreeStatus,
 } from "./types";
+import type { ShowHideShortcutSetting } from "./lib/api";
 
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 const LEFT_SIDEBAR_MIN_WIDTH = 208;
@@ -303,6 +307,141 @@ function openRouterTitleConfig(settings: AppSettings): OpenRouterTitleConfig | n
   const apiKey = settings.openRouterKey.trim();
   const model = settings.openRouterModel.trim();
   return apiKey && model ? { apiKey, model } : null;
+}
+
+function unknownErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isShowHideShortcutCaptureTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    target.closest("[data-shortcut-capture='show-hide']") !== null
+  );
+}
+
+function shortcutKeyLabel(event: KeyboardEvent | ReactKeyboardEvent): string | null {
+  if (
+    event.key === "Shift" ||
+    event.key === "Control" ||
+    event.key === "Alt" ||
+    event.key === "Meta"
+  ) {
+    return null;
+  }
+
+  const code = event.code;
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3);
+  }
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5);
+  }
+  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) {
+    return code;
+  }
+  if (/^Numpad[0-9]$/.test(code)) {
+    return code;
+  }
+
+  switch (code) {
+    case "Space":
+    case "Enter":
+    case "Tab":
+    case "Backspace":
+    case "Delete":
+    case "Home":
+    case "End":
+    case "PageUp":
+    case "PageDown":
+    case "Insert":
+    case "CapsLock":
+      return code;
+    case "Escape":
+      return "Escape";
+    case "ArrowUp":
+      return "Up";
+    case "ArrowDown":
+      return "Down";
+    case "ArrowLeft":
+      return "Left";
+    case "ArrowRight":
+      return "Right";
+    case "Minus":
+      return "-";
+    case "Equal":
+      return "=";
+    case "BracketLeft":
+      return "[";
+    case "BracketRight":
+      return "]";
+    case "Backslash":
+      return "\\";
+    case "Semicolon":
+      return ";";
+    case "Quote":
+      return "'";
+    case "Comma":
+      return ",";
+    case "Period":
+      return ".";
+    case "Slash":
+      return "/";
+    case "Backquote":
+      return "`";
+    case "NumpadAdd":
+    case "NumpadDecimal":
+    case "NumpadDivide":
+    case "NumpadEnter":
+    case "NumpadEqual":
+    case "NumpadMultiply":
+    case "NumpadSubtract":
+      return code;
+    case "AudioVolumeDown":
+      return "VolumeDown";
+    case "AudioVolumeUp":
+      return "VolumeUp";
+    case "AudioVolumeMute":
+      return "VolumeMute";
+    case "MediaPlayPause":
+    case "MediaStop":
+    case "MediaTrackNext":
+    case "MediaTrackPrevious":
+      return code;
+    default:
+      return null;
+  }
+}
+
+function shortcutFromKeyboardEvent(
+  event: KeyboardEvent | ReactKeyboardEvent,
+): { accelerator: string | null; error: string | null } {
+  const key = shortcutKeyLabel(event);
+  if (!key) {
+    return { accelerator: null, error: null };
+  }
+
+  const modifiers: string[] = [];
+  if (event.ctrlKey) {
+    modifiers.push("Control");
+  }
+  if (event.altKey) {
+    modifiers.push("Option");
+  }
+  if (event.shiftKey) {
+    modifiers.push("Shift");
+  }
+  if (event.metaKey) {
+    modifiers.push("Command");
+  }
+  if (modifiers.length === 0) {
+    return {
+      accelerator: null,
+      error: "Use at least one modifier, such as Option or Command.",
+    };
+  }
+
+  return { accelerator: [...modifiers, key].join("+"), error: null };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -708,6 +847,19 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"basic" | "advanced">("basic");
   const [openRouterKeyVisible, setOpenRouterKeyVisible] = useState(false);
+  const [showHideShortcutSetting, setShowHideShortcutSetting] =
+    useState<ShowHideShortcutSetting>({
+      accelerator: null,
+      registered: false,
+      error: null,
+    });
+  const [showHideShortcutSaving, setShowHideShortcutSaving] = useState(false);
+  const showHideShortcutValue = showHideShortcutSetting.accelerator ?? "";
+  const showHideShortcutMessage =
+    showHideShortcutSetting.error ??
+    (showHideShortcutValue && !showHideShortcutSetting.registered
+      ? "Shortcut is saved but not active."
+      : null);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
@@ -2954,6 +3106,28 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
 
+  useEffect(() => {
+    let disposed = false;
+    void getShowHideShortcut()
+      .then((setting) => {
+        if (!disposed) {
+          setShowHideShortcutSetting(setting);
+        }
+      })
+      .catch((err) => {
+        if (!disposed) {
+          setShowHideShortcutSetting({
+            accelerator: null,
+            registered: false,
+            error: unknownErrorMessage(err),
+          });
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   useEffect(
     () => () => {
       if (appToastTimerRef.current !== null) {
@@ -3022,6 +3196,7 @@ export default function App() {
     if (!settingsOpen) {
       setOpenRouterKeyVisible(false);
       setSettingsTab("basic");
+      setShowHideShortcutCapturing(false);
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3077,6 +3252,9 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isShowHideShortcutCaptureTarget(event.target)) {
+        return;
+      }
       if (event.defaultPrevented || !(event.metaKey || event.ctrlKey)) {
         return;
       }
@@ -3412,6 +3590,49 @@ export default function App() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [hasTurnSidebar, turnPaneWidth]);
+
+  async function updateShowHideShortcut(accelerator: string | null) {
+    setShowHideShortcutSaving(true);
+    setShowHideShortcutSetting((current) => ({
+      ...current,
+      accelerator,
+      error: null,
+    }));
+    try {
+      const setting = await setShowHideShortcut(accelerator);
+      setShowHideShortcutSetting(setting);
+    } catch (err) {
+      setShowHideShortcutSetting((current) => ({
+        ...current,
+        error: unknownErrorMessage(err),
+      }));
+    } finally {
+      setShowHideShortcutSaving(false);
+    }
+  }
+
+  function captureShowHideShortcut(event: ReactKeyboardEvent<HTMLInputElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const { accelerator, error } = shortcutFromKeyboardEvent(event);
+    if (error) {
+      setShowHideShortcutSetting((current) => ({ ...current, error }));
+      return;
+    }
+    if (!accelerator) {
+      return;
+    }
+    void updateShowHideShortcut(accelerator);
+  }
+
+  function clearShowHideShortcut() {
+    void updateShowHideShortcut(null);
+  }
+
+  function setShowHideShortcutCapturing(active: boolean) {
+    void setShowHideShortcutCaptureActive(active).catch(() => undefined);
+  }
 
   function startTurnPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -4405,6 +4626,49 @@ export default function App() {
                 }}
               />
             </label>
+
+            <div className="settings-row settings-shortcut-row">
+              <label htmlFor="settings-show-hide-shortcut" className="settings-label">
+                Show/hide app shortcut
+              </label>
+              <div className="settings-shortcut-control">
+                <input
+                  id="settings-show-hide-shortcut"
+                  className="settings-input settings-shortcut-input"
+                  data-shortcut-capture="show-hide"
+                  value={showHideShortcutValue}
+                  placeholder="e.g. Option+Space"
+                  readOnly
+                  aria-invalid={showHideShortcutMessage ? true : undefined}
+                  aria-describedby={
+                    showHideShortcutMessage ? "settings-show-hide-shortcut-message" : undefined
+                  }
+                  onFocus={() => setShowHideShortcutCapturing(true)}
+                  onBlur={() => setShowHideShortcutCapturing(false)}
+                  onKeyDown={captureShowHideShortcut}
+                />
+                {showHideShortcutValue ? (
+                  <button
+                    type="button"
+                    className="settings-link-button"
+                    disabled={showHideShortcutSaving}
+                    onClick={clearShowHideShortcut}
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {showHideShortcutMessage || showHideShortcutSaving ? (
+              <p
+                id="settings-show-hide-shortcut-message"
+                className={`settings-hint settings-shortcut-message${
+                  showHideShortcutMessage ? " is-error" : ""
+                }`}
+              >
+                {showHideShortcutSaving ? "Saving shortcut..." : showHideShortcutMessage}
+              </p>
+            ) : null}
 
             <label className="settings-row settings-toggle">
               <span className="settings-label">Show keyboard shortcut hints</span>

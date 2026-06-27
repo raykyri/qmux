@@ -10,6 +10,7 @@ mod persistence;
 mod pty;
 mod recovery;
 mod scrollback;
+mod show_hide_shortcut;
 mod sleep;
 mod state;
 mod transcript;
@@ -25,6 +26,9 @@ use control_socket::start_control_socket;
 use pty::{
     InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
+};
+use show_hide_shortcut::{
+    show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
 };
 use sleep::SleepGuard;
 use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn, RecentSessionInfo};
@@ -640,6 +644,11 @@ fn main() {
     let exit_state = state.clone();
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(show_hide_shortcut::handle_global_shortcut)
+                .build(),
+        )
         .on_window_event({
             let state = state.clone();
             move |_window, event| {
@@ -665,6 +674,8 @@ fn main() {
                 if let Err(err) = route_window_close_to_frontend(app) {
                     eprintln!("qmux: failed to reroute window close shortcut: {err}");
                 }
+                app.manage(show_hide_shortcut::ShowHideShortcutState::default());
+                show_hide_shortcut::init(app.handle(), &state.config().workspace_root);
                 // On macOS, give the window an NSVisualEffectView so the sidebar can
                 // read as a native, translucent source list (Finder/Mail/Xcode). The
                 // frontend paints the content panes opaque and leaves the sidebar
@@ -756,6 +767,9 @@ fn main() {
             worktree_close_pane,
             app_confirm_exit,
             app_set_prevent_sleep,
+            show_hide_shortcut_get,
+            show_hide_shortcut_set,
+            show_hide_shortcut_capture_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building qmux")

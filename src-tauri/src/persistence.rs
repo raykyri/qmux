@@ -81,6 +81,10 @@ pub struct AppPreferences {
     /// default, on — matching how terminal emulators launch shells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_login_shell: Option<bool>,
+    /// Global shortcut used to show or hide the qmux app. Absent means no
+    /// shortcut is registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_hide_shortcut: Option<String>,
 }
 
 pub fn preferences_path(workspace_root: &Path) -> PathBuf {
