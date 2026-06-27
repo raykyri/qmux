@@ -2639,7 +2639,7 @@ button:disabled {
 }
 
 .turn-card.role-user {
-  margin: 9px 0 7px;
+  margin: 7px 0;
 }
 
 .turn-card.role-user.is-tagged-instruction-message {
@@ -2647,6 +2647,11 @@ button:disabled {
   padding: 0 10px;
   border: 0;
   background: transparent;
+}
+
+.turn-card.role-user.is-tagged-instruction-message
+  + .turn-card.role-user.is-tagged-instruction-message {
+  margin-top: -3px;
 }
 
 .turn-card.is-tagged-instruction-message .turn-blocks {

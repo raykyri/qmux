@@ -1,10 +1,10 @@
 # qmux
 
-A queueing terminal multiplexer.
-
 qmux is a desktop app for running terminals and coding agents
 side-by-side, with vertical tabs and a Cursor-like sidebar for
 transcript rendering.
+
+<img src="qmux.png" alt="qmux screenshot" width="700" style="max-width: 100%; height: auto;">
 
 It includes native UI for launching agents, queueing follow-ups,
 tracking agent status, and driving TUI-based agents.
