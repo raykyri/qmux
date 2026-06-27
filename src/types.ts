@@ -36,6 +36,18 @@ export interface PaneInfo {
   depth?: number;
 }
 
+export type PaneActivity =
+  | {
+      kind: "idle";
+      processCount: 0;
+      processSummary?: null;
+    }
+  | {
+      kind: "runningProcess";
+      processCount: number;
+      processSummary?: string | null;
+    };
+
 export interface InitialPaneSize {
   cols: number;
   rows: number;

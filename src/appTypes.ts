@@ -1,9 +1,10 @@
 import type { PaneInfo } from "./types";
 
-// The close-confirmation dialog covers three cases: a worktree agent (offer to
+// The close-confirmation dialog covers four cases: a worktree agent (offer to
 // keep or delete the worktree), a live agent without a worktree (just confirm the
-// stop), and the explicit tab close button (always confirm). These render in-app
-// because window.confirm is a no-op in the Tauri webview.
+// stop), a tab with child processes, and the explicit tab close button (always
+// confirm). These render in-app because window.confirm is a no-op in the Tauri
+// webview.
 export type CloseDialogState =
   | {
       kind: "worktree";
@@ -14,6 +15,12 @@ export type CloseDialogState =
       busy: boolean;
     }
   | { kind: "stop"; pane: PaneInfo; reason: string }
+  | {
+      kind: "runningProcess";
+      pane: PaneInfo;
+      processCount: number;
+      processSummary?: string | null;
+    }
   | { kind: "pane"; pane: PaneInfo };
 
 export type ExitDialogState = {

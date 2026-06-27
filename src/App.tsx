@@ -148,6 +148,7 @@ import {
   listPanes,
   moveQueuedAgentTurn,
   openExternalUrl,
+  paneActivity,
   pickWorkspaceFolder,
   removeQueuedAgentTurn,
   renamePane,
@@ -2583,6 +2584,21 @@ export default function App() {
       setCloseDialog({ kind: "stop", pane: paneToClose, reason });
       return;
     }
+    try {
+      const activity = await paneActivity(paneToClose.id);
+      if (activity.kind === "runningProcess" && activity.processCount > 0) {
+        setCloseDialog({
+          kind: "runningProcess",
+          pane: paneToClose,
+          processCount: activity.processCount,
+          processSummary: activity.processSummary,
+        });
+        return;
+      }
+    } catch {
+      // Process inspection is best-effort. If the probe fails, let the normal close
+      // path continue instead of turning an inspection error into a blocking prompt.
+    }
     if (options?.confirmAlways) {
       setCloseDialog({ kind: "pane", pane: paneToClose });
       return;
@@ -2642,7 +2658,7 @@ export default function App() {
 
   async function confirmPaneClose() {
     const dialog = closeDialog;
-    if (!dialog || dialog.kind !== "pane") {
+    if (!dialog || (dialog.kind !== "pane" && dialog.kind !== "runningProcess")) {
       return;
     }
     setCloseDialog(null);
@@ -4826,6 +4842,32 @@ export default function App() {
                     onClick={() => void confirmStopAndClose()}
                   >
                     Close pane
+                  </button>
+                </div>
+              </>
+            ) : closeDialog.kind === "runningProcess" ? (
+              <>
+                <p>
+                  {closeDialog.processCount === 1
+                    ? closeDialog.processSummary
+                      ? `This tab has a running process: ${closeDialog.processSummary}.`
+                      : "This tab has a running process."
+                    : closeDialog.processSummary
+                      ? `This tab has ${closeDialog.processCount} running processes, including ${closeDialog.processSummary}.`
+                      : `This tab has ${closeDialog.processCount} running processes.`}
+                </p>
+                <p>Closing this tab will terminate running processes in it.</p>
+                <div className="confirm-dialog-actions">
+                  <button type="button" onClick={() => setCloseDialog(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    autoFocus
+                    onClick={() => void confirmPaneClose()}
+                  >
+                    Close tab
                   </button>
                 </div>
               </>

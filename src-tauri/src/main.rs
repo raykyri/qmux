@@ -23,8 +23,8 @@ use adapters::{
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use pty::{
-    InitialPaneSize, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane, resize_pane,
-    spawn_shell_pane, write_pane,
+    InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
+    pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
 };
 use sleep::SleepGuard;
 use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn, RecentSessionInfo};
@@ -417,6 +417,14 @@ fn pane_resize(
 }
 
 #[tauri::command]
+fn pane_activity(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+) -> Result<PaneActivity, String> {
+    inspect_pane_activity(&state, pane_id)
+}
+
+#[tauri::command]
 fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
     kill_pane(&state, pane_id)
 }
@@ -724,6 +732,7 @@ fn main() {
             pane_attach,
             pane_scrollback,
             pane_resize,
+            pane_activity,
             pane_kill,
             pane_restore_last_closed,
             pane_rename,

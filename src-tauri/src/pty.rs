@@ -8,7 +8,8 @@ use crate::state::{
 use crate::turn_queue::release_waiters_for_agent;
 use crate::workspace::{capture_agent_worktree_removal, remove_captured_worktree};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -38,6 +39,39 @@ const BACKLOG_CAP: usize = 8 * 1024 * 1024;
 pub struct InitialPaneSize {
     pub cols: u16,
     pub rows: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneActivity {
+    pub kind: PaneActivityKind,
+    pub process_count: usize,
+    pub process_summary: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PaneActivityKind {
+    Idle,
+    RunningProcess,
+}
+
+impl PaneActivity {
+    fn idle() -> Self {
+        Self {
+            kind: PaneActivityKind::Idle,
+            process_count: 0,
+            process_summary: None,
+        }
+    }
+
+    fn running_process(process_count: usize, process_summary: Option<String>) -> Self {
+        Self {
+            kind: PaneActivityKind::RunningProcess,
+            process_count,
+            process_summary,
+        }
+    }
 }
 
 pub struct PtySpawnSpec {
@@ -767,6 +801,46 @@ pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> R
     state.update_pane_size(&pane_id, cols, rows)
 }
 
+pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, String> {
+    // Validate the pane id against the model before inspecting the child handle. Process
+    // inspection below is best-effort, but a genuinely missing pane is still a caller error.
+    if !state.list_panes()?.iter().any(|pane| pane.id == pane_id) {
+        return Err(format!("pane {pane_id} was not found"));
+    }
+
+    let child = state
+        .pane_child(&pane_id)?
+        .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+    let root_pid = {
+        let mut child = child
+            .lock()
+            .map_err(|_| format!("pane {pane_id} child lock poisoned"))?;
+
+        if child
+            .try_wait()
+            .map_err(|err| format!("failed to inspect pane {pane_id}: {err}"))?
+            .is_some()
+        {
+            return Ok(PaneActivity::idle());
+        }
+
+        child.process_id()
+    };
+
+    let Some(root_pid) = root_pid else {
+        return Ok(PaneActivity::idle());
+    };
+    let processes = running_descendant_processes(root_pid);
+    if processes.is_empty() {
+        Ok(PaneActivity::idle())
+    } else {
+        Ok(PaneActivity::running_process(
+            processes.len(),
+            processes.first().map(|process| process.name.clone()),
+        ))
+    }
+}
+
 pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     let child = state
         .pane_child(&pane_id)?
@@ -971,6 +1045,35 @@ fn terminate_descendants(pid: u32) {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunningProcess {
+    name: String,
+}
+
+fn running_descendant_processes(pid: u32) -> Vec<RunningProcess> {
+    descendant_process_ids(pid)
+        .into_iter()
+        .filter_map(running_process)
+        .collect()
+}
+
+fn descendant_process_ids(pid: u32) -> Vec<u32> {
+    let mut descendants = Vec::new();
+    let mut seen = HashSet::new();
+    collect_descendant_process_ids(pid, &mut seen, &mut descendants);
+    descendants
+}
+
+fn collect_descendant_process_ids(pid: u32, seen: &mut HashSet<u32>, descendants: &mut Vec<u32>) {
+    for child_pid in child_process_ids(pid) {
+        if !seen.insert(child_pid) {
+            continue;
+        }
+        descendants.push(child_pid);
+        collect_descendant_process_ids(child_pid, seen, descendants);
+    }
+}
+
 fn child_process_ids(pid: u32) -> Vec<u32> {
     let output = Command::new("/usr/bin/pgrep")
         .arg("-P")
@@ -984,6 +1087,45 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn running_process(pid: u32) -> Option<RunningProcess> {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("stat=")
+        .arg("-o")
+        .arg("comm=")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .to_string();
+    let mut parts = line.split_whitespace();
+    let status = parts.next()?;
+    if status.starts_with('Z') {
+        return None;
+    }
+    let command = parts.collect::<Vec<_>>().join(" ");
+    let name = Path::new(&command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(command.trim())
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(RunningProcess { name })
 }
 
 #[cfg(test)]
@@ -1444,6 +1586,46 @@ mod tests {
             state.pane_child(&pane.id).unwrap().is_none(),
             "pane should be gone after kill_pane"
         );
+    }
+
+    #[test]
+    fn pane_activity_is_idle_for_shell_without_children() {
+        let state = test_state();
+        let pane = spawn_test_pty(&state, "pane-idle", Vec::new());
+
+        assert_eq!(
+            pane_activity(&state, pane.id.clone()).unwrap(),
+            PaneActivity::idle()
+        );
+
+        kill_pane(&state, pane.id).expect("cleanup test pane");
+    }
+
+    #[test]
+    fn pane_activity_detects_running_descendant_processes() {
+        let state = test_state();
+        let pane = spawn_test_pty(
+            &state,
+            "pane-busy",
+            vec!["-c".to_string(), "sleep 30 & wait".to_string()],
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let activity = pane_activity(&state, pane.id.clone()).unwrap();
+            if matches!(activity.kind, PaneActivityKind::RunningProcess) {
+                assert!(activity.process_count >= 1);
+                assert!(activity.process_summary.is_some());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pane activity never detected the child process"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        kill_pane(&state, pane.id).expect("cleanup test pane");
     }
 
     #[test]

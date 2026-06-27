@@ -7,6 +7,7 @@ import type {
   GroupInfo,
   InitialPaneSize,
   MoveQueuedAgentTurnResult,
+  PaneActivity,
   PaneInfo,
   QmuxEvent,
   QueuedTurn,
@@ -268,6 +269,10 @@ export function getPaneScrollback(paneId: string) {
 
 export function resizePane(paneId: string, cols: number, rows: number) {
   return invoke<void>("pane_resize", { paneId, cols, rows });
+}
+
+export function paneActivity(paneId: string) {
+  return invoke<PaneActivity>("pane_activity", { paneId });
 }
 
 export function killPane(paneId: string) {
