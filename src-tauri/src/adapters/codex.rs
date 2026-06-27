@@ -355,6 +355,11 @@ impl CodexAdapter {
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
 
+        // Bind before spawn so a fast Codex SessionStart hook passes the control
+        // socket's agent/pane scope check. mark_agent_spawn_failed clears this
+        // reserved binding if the process fails to launch.
+        attach_codex_agent_pane(state, &agent.id, pane_id.clone(), has_initial_prompt)?;
+
         let spawn_result = spawn_pty(
             state,
             PtySpawnSpec {
@@ -374,8 +379,9 @@ impl CodexAdapter {
 
         match spawn_result {
             Ok(pane) => {
-                let forked =
-                    attach_codex_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
+                let forked = state
+                    .agent(&agent.id)?
+                    .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?;
                 Ok((pane, forked))
             }
             Err(err) => {
@@ -1844,6 +1850,40 @@ trusted_hash = "sha256:trusted"
         assert!(matches!(attached.status, AgentStatus::Running));
         let stored = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(stored.status, AgentStatus::Running));
+    }
+
+    #[test]
+    fn pre_spawn_fork_attach_allows_session_start_to_record_fork_session() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Idle;
+        agent.pane_id = None;
+        agent.parent_id = Some("agent-source".to_string());
+        agent.fork_point = Some("source-session".to_string());
+        agent.root_session_id = Some("root-session".to_string());
+        state.insert_agent(agent).unwrap();
+
+        let attached =
+            attach_codex_agent_pane(&state, "agent-1", "pane-1".to_string(), false).unwrap();
+        assert_eq!(attached.pane_id.as_deref(), Some("pane-1"));
+        assert!(matches!(attached.status, AgentStatus::Idle));
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "session_id": "fork-session" }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.session_start");
+        let stored = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(stored.pane_id.as_deref(), Some("pane-1"));
+        assert_eq!(stored.session_id.as_deref(), Some("fork-session"));
+        assert_eq!(stored.parent_id.as_deref(), Some("agent-source"));
+        assert_eq!(stored.fork_point.as_deref(), Some("source-session"));
+        assert_eq!(stored.root_session_id.as_deref(), Some("root-session"));
     }
 
     #[test]
