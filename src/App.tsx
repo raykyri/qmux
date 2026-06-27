@@ -100,7 +100,7 @@ import {
   TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
 import { canRenderInInternalBrowser } from "./lib/links";
-import { isTaggedUserInstruction } from "./lib/taggedInstructions";
+import { stripTaggedUserInstructionBlocks } from "./lib/taggedInstructions";
 import {
   clampConfirmPasteOverChars,
   clampFontSize,
@@ -127,6 +127,7 @@ import {
   SCROLLBACK_ROWS_MAX,
   SCROLLBACK_ROWS_MIN,
   scrollSensitivityFor,
+  TAB_TITLE_PROVIDER_OPTIONS,
   type AppSettings,
 } from "./lib/settings";
 import {
@@ -141,6 +142,7 @@ import {
   getShowHideShortcut,
   getRuntimeConfig,
   getWorkspaceFolder,
+  generateFoundationTabTitle,
   killPane,
   listAgents,
   listClaudeSkills,
@@ -242,12 +244,17 @@ interface PendingFirstMessageTitle {
   paneId: string;
   checkedMessages: number;
   seenTurnIds: Set<string>;
+  skillCommand: string | null;
 }
 
 interface OpenRouterTitleConfig {
   apiKey: string;
   model: string;
 }
+
+type FirstMessageTitleConfig =
+  | { provider: "appleFoundationModels" }
+  | ({ provider: "openRouter" } & OpenRouterTitleConfig);
 
 type OpenRouterTitleReasoningEffort = "none" | "minimal";
 
@@ -273,14 +280,50 @@ function normalizedMessagePreview(rawMessage: string): string | null {
   return normalized;
 }
 
-function firstMessageTitleSource(rawMessage: string): string | null {
-  if (isTaggedUserInstruction(rawMessage)) {
-    return null;
+function stripSkillCommandPrefix(rawMessage: string, skillCommand: string | null): string {
+  const command = skillCommand?.trim();
+  if (!command) {
+    return rawMessage;
   }
-  return normalizedMessagePreview(rawMessage);
+
+  const leadingMatch = rawMessage.match(/^\s*/);
+  const leading = leadingMatch?.[0] ?? "";
+  const message = rawMessage.slice(leading.length);
+  if (!message.startsWith(command)) {
+    return rawMessage;
+  }
+
+  const next = message[command.length];
+  if (next !== undefined && next.trim() !== "") {
+    return rawMessage;
+  }
+
+  return `${leading}${message.slice(command.length)}`;
 }
 
-function sanitizeOpenRouterTitle(rawTitle: string): string | null {
+function firstMessageTitleSource(rawMessage: string, skillCommand: string | null = null): string | null {
+  const withoutSkillCommand = stripSkillCommandPrefix(rawMessage, skillCommand);
+  return normalizedMessagePreview(stripTaggedUserInstructionBlocks(withoutSkillCommand));
+}
+
+function appleFoundationModelsTitleAvailable(config: RuntimeConfig | null): boolean {
+  return config?.tabTitleGeneration.appleFoundationModelsAvailable === true;
+}
+
+function tabTitleSettingsForRuntime(
+  settings: AppSettings,
+  config: RuntimeConfig,
+): AppSettings {
+  if (
+    settings.tabTitleProvider === "appleFoundationModels" &&
+    !appleFoundationModelsTitleAvailable(config)
+  ) {
+    return { ...settings, tabTitleProvider: "disabled" };
+  }
+  return settings;
+}
+
+function sanitizeGeneratedTitle(rawTitle: string): string | null {
   const normalized = sanitizeTerminalTitle(rawTitle);
   if (!normalized) {
     return null;
@@ -298,15 +341,28 @@ function sanitizeOpenRouterTitle(rawTitle: string): string | null {
   return `${chars.slice(0, MAX_FIRST_MESSAGE_TITLE_CHARS - 3).join("").trimEnd()}...`;
 }
 
-function openRouterTitleConfig(settings: AppSettings): OpenRouterTitleConfig | null {
-  // Titling POSTs the user's first message to OpenRouter, so it stays off until the user
-  // explicitly opts in — a configured key/model alone is not consent to send transcripts.
-  if (!settings.openRouterTitlesEnabled) {
+function firstMessageTitleConfig(
+  settings: AppSettings,
+  config: RuntimeConfig | null,
+): FirstMessageTitleConfig | null {
+  if (settings.tabTitleProvider === "disabled") {
     return null;
   }
+  if (settings.tabTitleProvider === "appleFoundationModels") {
+    return appleFoundationModelsTitleAvailable(config)
+      ? { provider: "appleFoundationModels" }
+      : null;
+  }
+
+  // OpenRouter sends first-message text to a third-party service, so selecting the
+  // provider is the consent boundary; key/model are still required to make a call.
   const apiKey = settings.openRouterKey.trim();
   const model = settings.openRouterModel.trim();
-  return apiKey && model ? { apiKey, model } : null;
+  return apiKey && model ? { provider: "openRouter", apiKey, model } : null;
+}
+
+function firstMessageTitleProviderLabel(config: FirstMessageTitleConfig): string {
+  return config.provider === "appleFoundationModels" ? "Apple Foundation Models" : "OpenRouter";
 }
 
 function unknownErrorMessage(err: unknown): string {
@@ -502,7 +558,7 @@ function openRouterTitleFromPayload(payload: unknown): string | null {
   const message = asRecord(firstChoice?.message);
   const content = message?.content ?? firstChoice?.text;
   const text = openRouterContentText(content);
-  return text ? sanitizeOpenRouterTitle(text) : null;
+  return text ? sanitizeGeneratedTitle(text) : null;
 }
 
 function openRouterChoiceErrorMessage(choice: Record<string, unknown> | null): string | null {
@@ -664,11 +720,26 @@ async function summarizeFirstMessageTitle(
   return null;
 }
 
-function createPendingFirstMessageTitle(paneId: string): PendingFirstMessageTitle {
+async function generateFirstMessageTitle(
+  sourceMessage: string,
+  config: FirstMessageTitleConfig,
+): Promise<string | null> {
+  if (config.provider === "openRouter") {
+    return summarizeFirstMessageTitle(sourceMessage, config);
+  }
+  const title = await generateFoundationTabTitle(sourceMessage);
+  return sanitizeGeneratedTitle(title);
+}
+
+function createPendingFirstMessageTitle(
+  paneId: string,
+  skillCommand: string | null = null,
+): PendingFirstMessageTitle {
   return {
     paneId,
     checkedMessages: 0,
     seenTurnIds: new Set(),
+    skillCommand,
   };
 }
 
@@ -763,6 +834,8 @@ export default function App() {
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
   const selectingWorkspaceFolderRef = useRef(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const configRef = useRef<RuntimeConfig | null>(null);
+  configRef.current = config;
   // The single "open folder" new shells/agents launch in; null until the user picks
   // one (then they fall back to the qmux process cwd). Drives the sidebar folder button.
   const [workspaceFolder, setWorkspaceFolder] = useState<string | null>(null);
@@ -997,11 +1070,10 @@ export default function App() {
 
   async function applyFirstMessageTitle(
     paneId: string,
-    rawMessage: string,
-    titleConfig: OpenRouterTitleConfig,
+    sourceMessage: string,
+    titleConfig: FirstMessageTitleConfig,
     fallbackPane?: PaneInfo,
   ) {
-    const sourceMessage = firstMessageTitleSource(rawMessage);
     if (!sourceMessage) {
       return;
     }
@@ -1017,10 +1089,12 @@ export default function App() {
 
     let title: string | null;
     try {
-      title = await summarizeFirstMessageTitle(sourceMessage, titleConfig);
+      title = await generateFirstMessageTitle(sourceMessage, titleConfig);
     } catch (err) {
       showAppToast(
-        `OpenRouter title error: ${err instanceof Error ? err.message : String(err)}`,
+        `${firstMessageTitleProviderLabel(titleConfig)} title error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
       return;
     }
@@ -1075,17 +1149,17 @@ export default function App() {
       return;
     }
     pending.checkedMessages += 1;
-    const sourceMessage = firstMessageTitleSource(rawMessage);
+    const sourceMessage = firstMessageTitleSource(rawMessage, pending.skillCommand);
     if (!sourceMessage) {
       if (pending.checkedMessages >= FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT) {
         pendingFirstTitleByAgentRef.current.delete(agentId);
       }
       return;
     }
-    const titleConfig = openRouterTitleConfig(settingsRef.current);
+    const titleConfig = firstMessageTitleConfig(settingsRef.current, configRef.current);
     if (titleConfig) {
       pendingFirstTitleByAgentRef.current.delete(agentId);
-      void applyFirstMessageTitle(pending.paneId, rawMessage, titleConfig);
+      void applyFirstMessageTitle(pending.paneId, sourceMessage, titleConfig);
       return;
     }
     pendingFirstTitleByAgentRef.current.delete(agentId);
@@ -2015,6 +2089,7 @@ export default function App() {
   const contextMenuTerminalTitle = contextMenuPane
     ? (terminalTitleByPane[contextMenuPane.id] ?? null)
     : null;
+  const appleFoundationTitleAvailable = appleFoundationModelsTitleAvailable(config);
   const draggingPaneIndex = draggingPaneId
     ? panes.findIndex((pane) => pane.id === draggingPaneId)
     : -1;
@@ -2051,6 +2126,7 @@ export default function App() {
         }
 
         setConfig(runtimeConfig);
+        setSettings((current) => tabTitleSettingsForRuntime(current, runtimeConfig));
         setWorkspaceFolder(existingWorkspaceFolder);
         setLauncherAdapterId(
           preferredLauncherAdapterId &&
@@ -2861,9 +2937,9 @@ export default function App() {
         setAgentQueuedTurns(pane.agentId, []);
         pendingFirstTitleByAgentRef.current.set(
           pane.agentId,
-          createPendingFirstMessageTitle(pane.id),
+          createPendingFirstMessageTitle(pane.id, selectedSkill?.command ?? null),
         );
-        applyPendingFirstMessageTitle(pane.agentId, finalPrompt);
+        applyPendingFirstMessageTitle(pane.agentId, trimmed);
       }
       setPrompt("");
       setSelectedSkillId(null);
@@ -4698,75 +4774,102 @@ export default function App() {
 
             <div className="settings-divider" role="separator" />
 
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Generate tab titles via OpenRouter</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.openRouterTitlesEnabled}
-                onChange={(event) => {
-                  const openRouterTitlesEnabled = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, openRouterTitlesEnabled }));
-                }}
-              />
-            </label>
-            <p className="settings-hint">
-              Sends the first message of each new tab to OpenRouter to summarize a title.
-              Off by default; message text leaves your machine only while this is on.
-            </p>
-
             <div className="settings-row">
-              <label htmlFor="settings-openrouter-key" className="settings-label">
-                OpenRouter key
+              <label htmlFor="settings-tab-title-provider" className="settings-label">
+                Generate tab titles
               </label>
-              <div className="settings-secret-input">
-                <input
-                  id="settings-openrouter-key"
-                  className="settings-input"
-                  type={openRouterKeyVisible ? "text" : "password"}
-                  value={settings.openRouterKey}
-                  placeholder="sk-or-v1-…"
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => {
-                    const openRouterKey = event.currentTarget.value;
-                    setSettings((current) => ({ ...current, openRouterKey }));
-                  }}
-                />
-                <button
-                  type="button"
-                  className="settings-secret-toggle"
-                  aria-label={openRouterKeyVisible ? "Hide OpenRouter key" : "Show OpenRouter key"}
-                  aria-pressed={openRouterKeyVisible}
-                  onClick={() => setOpenRouterKeyVisible((visible) => !visible)}
-                >
-                  {openRouterKeyVisible ? (
-                    <EyeOff size={14} aria-hidden="true" />
-                  ) : (
-                    <Eye size={14} aria-hidden="true" />
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="settings-row">
-              <label htmlFor="settings-openrouter-model" className="settings-label">
-                OpenRouter model
-              </label>
-              <input
-                id="settings-openrouter-model"
-                className="settings-input"
-                type="text"
-                value={settings.openRouterModel}
-                placeholder="google/gemma-4-31b-it:free"
-                autoComplete="off"
-                spellCheck={false}
+              <select
+                id="settings-tab-title-provider"
+                className="settings-select"
+                value={settings.tabTitleProvider}
                 onChange={(event) => {
-                  const openRouterModel = event.currentTarget.value;
-                  setSettings((current) => ({ ...current, openRouterModel }));
+                  const tabTitleProvider =
+                    event.currentTarget.value as AppSettings["tabTitleProvider"];
+                  setSettings((current) => ({ ...current, tabTitleProvider }));
                 }}
-              />
+              >
+                {TAB_TITLE_PROVIDER_OPTIONS.map((option) => (
+                  <option
+                    key={option.id}
+                    value={option.id}
+                    disabled={
+                      option.id === "appleFoundationModels" && !appleFoundationTitleAvailable
+                    }
+                  >
+                    {option.id === "appleFoundationModels" && !appleFoundationTitleAvailable
+                      ? `${option.label} (unavailable)`
+                      : option.label}
+                  </option>
+                ))}
+              </select>
             </div>
+            {!appleFoundationTitleAvailable ? (
+              <p className="settings-hint">
+                Apple Foundation Models are not available in this build.
+              </p>
+            ) : null}
+            {settings.tabTitleProvider === "openRouter" ? (
+              <>
+                <p className="settings-hint">
+                  Sends the first message of each new tab to OpenRouter to summarize a title.
+                </p>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-openrouter-key" className="settings-label">
+                    OpenRouter key
+                  </label>
+                  <div className="settings-secret-input">
+                    <input
+                      id="settings-openrouter-key"
+                      className="settings-input"
+                      type={openRouterKeyVisible ? "text" : "password"}
+                      value={settings.openRouterKey}
+                      placeholder="sk-or-v1-..."
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(event) => {
+                        const openRouterKey = event.currentTarget.value;
+                        setSettings((current) => ({ ...current, openRouterKey }));
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="settings-secret-toggle"
+                      aria-label={
+                        openRouterKeyVisible ? "Hide OpenRouter key" : "Show OpenRouter key"
+                      }
+                      aria-pressed={openRouterKeyVisible}
+                      onClick={() => setOpenRouterKeyVisible((visible) => !visible)}
+                    >
+                      {openRouterKeyVisible ? (
+                        <EyeOff size={14} aria-hidden="true" />
+                      ) : (
+                        <Eye size={14} aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <label htmlFor="settings-openrouter-model" className="settings-label">
+                    OpenRouter model
+                  </label>
+                  <input
+                    id="settings-openrouter-model"
+                    className="settings-input"
+                    type="text"
+                    value={settings.openRouterModel}
+                    placeholder="google/gemma-4-31b-it:free"
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => {
+                      const openRouterModel = event.currentTarget.value;
+                      setSettings((current) => ({ ...current, openRouterModel }));
+                    }}
+                  />
+                </div>
+              </>
+            ) : null}
               </div>
             ) : (
               <div className="settings-content" role="tabpanel">

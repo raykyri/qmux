@@ -7,6 +7,11 @@ export interface RuntimeConfig {
   // The user's home directory (empty if HOME is unset), used to render
   // home-relative paths as ~/… rather than bare relative segments.
   homeDir: string;
+  tabTitleGeneration: TabTitleGenerationRuntimeConfig;
+}
+
+export interface TabTitleGenerationRuntimeConfig {
+  appleFoundationModelsAvailable: boolean;
 }
 
 export interface AgentAdapterMetadata {

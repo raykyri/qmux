@@ -42,6 +42,7 @@ export const DEFAULT_FONT_ID = FONT_OPTIONS[0].id;
 export type CursorStyle = "block" | "underline" | "bar";
 export type CursorInactiveStyle = "outline" | "block" | "bar" | "underline" | "none";
 export type MouseWheelSensitivity = "low" | "normal" | "high";
+export type TabTitleProvider = "appleFoundationModels" | "openRouter" | "disabled";
 
 export const CURSOR_STYLE_OPTIONS: { id: CursorStyle; label: string }[] = [
   { id: "block", label: "Block" },
@@ -65,6 +66,12 @@ export const MOUSE_WHEEL_SENSITIVITY_OPTIONS: {
   { id: "low", label: "Low", value: 0.65 },
   { id: "normal", label: "Standard", value: 1 },
   { id: "high", label: "High", value: 1.75 },
+];
+
+export const TAB_TITLE_PROVIDER_OPTIONS: { id: TabTitleProvider; label: string }[] = [
+  { id: "appleFoundationModels", label: "Apple Foundation Models" },
+  { id: "openRouter", label: "OpenRouter" },
+  { id: "disabled", label: "Disable" },
 ];
 
 export const DEFAULT_SCROLLBACK_ROWS = 10000;
@@ -116,16 +123,12 @@ export interface AppSettings {
   showShortcutHints: boolean;
   /** disable decorative/status pulse animations */
   reduceMotion: boolean;
+  /** provider used to summarize first user messages into tab titles */
+  tabTitleProvider: TabTitleProvider;
   /** OpenRouter API key */
   openRouterKey: string;
   /** OpenRouter model id */
   openRouterModel: string;
-  /**
-   * Opt in to generating tab titles by summarizing each pane's first user message
-   * through OpenRouter. Off by default because it sends message text to a third-party
-   * cloud service; titling stays local until this is explicitly enabled.
-   */
-  openRouterTitlesEnabled: boolean;
   /** keep the machine awake while any agent is running */
   preventSleep: boolean;
   /**
@@ -168,9 +171,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bracketedPasteSafe: false,
   showShortcutHints: true,
   reduceMotion: false,
+  tabTitleProvider: "appleFoundationModels",
   openRouterKey: "",
   openRouterModel: "",
-  openRouterTitlesEnabled: false,
   preventSleep: true,
   useLoginShell: true,
   codeMode: true,
@@ -264,7 +267,9 @@ export function loadSettings(): AppSettings {
     if (!raw) {
       return { ...DEFAULT_SETTINGS };
     }
-    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    const parsed = JSON.parse(raw) as Partial<AppSettings> & {
+      openRouterTitlesEnabled?: boolean;
+    };
     const fontId =
       typeof parsed.fontId === "string" && FONT_OPTIONS.some((option) => option.id === parsed.fontId)
         ? parsed.fontId
@@ -342,6 +347,13 @@ export function loadSettings(): AppSettings {
       typeof parsed.reduceMotion === "boolean"
         ? parsed.reduceMotion
         : DEFAULT_SETTINGS.reduceMotion;
+    const tabTitleProvider =
+      typeof parsed.tabTitleProvider === "string" &&
+      TAB_TITLE_PROVIDER_OPTIONS.some((option) => option.id === parsed.tabTitleProvider)
+        ? parsed.tabTitleProvider
+        : parsed.openRouterTitlesEnabled === true
+          ? "openRouter"
+          : DEFAULT_SETTINGS.tabTitleProvider;
     const codeMode =
       typeof parsed.codeMode === "boolean" ? parsed.codeMode : DEFAULT_SETTINGS.codeMode;
     const showTabDirectories =
@@ -360,10 +372,6 @@ export function loadSettings(): AppSettings {
       typeof parsed.openRouterModel === "string"
         ? parsed.openRouterModel
         : DEFAULT_SETTINGS.openRouterModel;
-    const openRouterTitlesEnabled =
-      typeof parsed.openRouterTitlesEnabled === "boolean"
-        ? parsed.openRouterTitlesEnabled
-        : DEFAULT_SETTINGS.openRouterTitlesEnabled;
     return {
       fontId,
       fontSize,
@@ -382,9 +390,9 @@ export function loadSettings(): AppSettings {
       bracketedPasteSafe,
       showShortcutHints,
       reduceMotion,
+      tabTitleProvider,
       openRouterKey,
       openRouterModel,
-      openRouterTitlesEnabled,
       preventSleep,
       useLoginShell,
       codeMode,

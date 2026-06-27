@@ -7,6 +7,12 @@ export function isTaggedUserInstruction(text: string) {
   return taggedUserInstructionDetails(text) !== null;
 }
 
+export function stripTaggedUserInstructionBlocks(text: string): string {
+  const leading = stripLeadingTaggedInstructionBlocks(text);
+  const stripped = stripInlineTaggedInstructionBlocks(leading.text);
+  return leading.removed || stripped.removed ? stripped.text : text;
+}
+
 export function taggedUserInstructionDetails(text: string): TaggedUserInstructionDetails | null {
   const contentStart = taggedInstructionContentStart(text);
   if (contentStart === null) {
@@ -27,6 +33,55 @@ export function taggedUserInstructionDetails(text: string): TaggedUserInstructio
 function parseTaggedInstructionSequence(content: string): string[] | null {
   const result = parseTaggedInstructionSequenceFrom(content, 0);
   return result !== null && result.tags.length > 0 ? result.tags : null;
+}
+
+function stripLeadingTaggedInstructionBlocks(text: string): { text: string; removed: boolean } {
+  let current = text;
+  let removed = false;
+
+  while (true) {
+    const contentStart = taggedInstructionContentStart(current);
+    if (contentStart === null) {
+      return { text: removed ? "" : current, removed };
+    }
+
+    const block = parseTaggedInstructionBlockAt(current, contentStart);
+    if (block === null) {
+      return { text: current, removed };
+    }
+
+    current = current.slice(block.end);
+    removed = true;
+  }
+}
+
+function stripInlineTaggedInstructionBlocks(text: string): { text: string; removed: boolean } {
+  let result = "";
+  let index = 0;
+  let removed = false;
+
+  while (index < text.length) {
+    const nextTag = text.indexOf("<", index);
+    if (nextTag === -1) {
+      result += text.slice(index);
+      break;
+    }
+
+    result += text.slice(index, nextTag);
+    const block = isLineContentStart(text, nextTag)
+      ? parseTaggedInstructionBlockAt(text, nextTag)
+      : null;
+    if (block === null) {
+      result += text[nextTag];
+      index = nextTag + 1;
+      continue;
+    }
+
+    removed = true;
+    index = block.end;
+  }
+
+  return { text: result, removed };
 }
 
 function parseTaggedInstructionSequenceFrom(
@@ -59,6 +114,54 @@ function parseTaggedInstructionSequenceFrom(
   }
 
   return null;
+}
+
+function parseTaggedInstructionBlockAt(
+  content: string,
+  start: number,
+): { tag: string; end: number } | null {
+  const openingTag = parseOpeningTagAt(content, start);
+  if (openingTag === null) {
+    return null;
+  }
+
+  const opening = `<${openingTag.tag}>`;
+  const closing = `</${openingTag.tag}>`;
+  let depth = 1;
+  let index = openingTag.end;
+
+  while (index < content.length) {
+    const nextOpening = content.indexOf(opening, index);
+    const nextClosing = content.indexOf(closing, index);
+    if (nextClosing === -1) {
+      return null;
+    }
+
+    if (nextOpening !== -1 && nextOpening < nextClosing) {
+      depth += 1;
+      index = nextOpening + opening.length;
+      continue;
+    }
+
+    depth -= 1;
+    index = nextClosing + closing.length;
+    if (depth === 0) {
+      return { tag: openingTag.tag, end: index };
+    }
+  }
+
+  return null;
+}
+
+function isLineContentStart(value: string, index: number) {
+  const previousLineEnd = value.lastIndexOf("\n", index - 1);
+  const lineStart = previousLineEnd === -1 ? 0 : previousLineEnd + 1;
+  for (let cursor = lineStart; cursor < index; cursor += 1) {
+    if (!isHorizontalWhitespace(value[cursor])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function taggedInstructionLabel(tags: string[]) {

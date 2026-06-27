@@ -305,6 +305,10 @@ export function renamePane(paneId: string, title: string) {
   return invoke<PaneInfo>("pane_rename", { paneId, title });
 }
 
+export function generateFoundationTabTitle(message: string) {
+  return invoke<string>("generate_foundation_tab_title", { message });
+}
+
 export function reorderPanes(paneIds: string[]) {
   return invoke<PaneInfo[]>("pane_reorder", { paneIds });
 }

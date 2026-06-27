@@ -13,6 +13,7 @@ mod scrollback;
 mod show_hide_shortcut;
 mod sleep;
 mod state;
+mod title_generation;
 mod transcript;
 mod turn_queue;
 mod workspace;
@@ -625,6 +626,15 @@ fn app_set_prevent_sleep(guard: tauri::State<'_, SleepGuard>, active: bool) -> R
     guard.set_active(active)
 }
 
+#[tauri::command(async)]
+async fn generate_foundation_tab_title(message: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        title_generation::generate_foundation_title(&message)
+    })
+    .await
+    .map_err(|err| format!("Apple Foundation Models task failed: {err}"))?
+}
+
 fn main() {
     match cli::run_cli_if_requested() {
         Ok(true) => return,
@@ -767,6 +777,7 @@ fn main() {
             worktree_close_pane,
             app_confirm_exit,
             app_set_prevent_sleep,
+            generate_foundation_tab_title,
             show_hide_shortcut_get,
             show_hide_shortcut_set,
             show_hide_shortcut_capture_set,

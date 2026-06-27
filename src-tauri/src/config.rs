@@ -1,4 +1,5 @@
 use crate::adapters::{AdapterMetadata, adapter_registry};
+use crate::title_generation;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -72,6 +73,13 @@ pub struct RuntimeConfig {
     // The user's home directory, so the UI can render home-relative paths as ~/…
     // instead of bare relative segments. Empty if HOME is unset.
     pub home_dir: String,
+    pub tab_title_generation: TabTitleGenerationRuntimeConfig,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabTitleGenerationRuntimeConfig {
+    pub apple_foundation_models_available: bool,
 }
 
 impl QmuxConfig {
@@ -141,6 +149,9 @@ impl QmuxConfig {
             socket_path: self.socket_path.display().to_string(),
             adapters: adapter_registry(self).metadata(),
             home_dir: env::var("HOME").unwrap_or_default(),
+            tab_title_generation: TabTitleGenerationRuntimeConfig {
+                apple_foundation_models_available: title_generation::foundation_models_available(),
+            },
         }
     }
 
