@@ -110,7 +110,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
 - `Cmd-Shift-T`: restore the most recently closed pane.
 - `Cmd-Shift-H`: focus Home.
-- `Cmd-Shift-B` / `Ctrl-Shift-B`: expand or restore the active transcript pane,
+- `Cmd-Shift-E` / `Ctrl-Shift-E`: expand or restore the active transcript pane,
   or toggle the browser overlay on shell-only panes.
 - `Cmd-W`: close the active pane.
 - `Ctrl-W`: close the active pane unless focus is in a terminal or text field.

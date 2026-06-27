@@ -207,7 +207,7 @@ const SELECTION_ASK_HIDE_DEBOUNCE_MS = 150;
 // Left strip of the sidebar the browser overlay leaves uncovered, so the first few
 // chars of each tab stay visible and clickable for switching tabs.
 const BROWSER_OVERLAY_LEFT_MARGIN = 64;
-const EXPAND_TOGGLE_SHORTCUT_LABEL = "⌘⇧B / Ctrl+Shift+B";
+const EXPAND_TOGGLE_SHORTCUT_LABEL = "⌘⇧E / Ctrl+Shift+E";
 const TERMINAL_MIN_WIDTH = 380;
 const TURN_PANE_MIN_WIDTH = 300;
 const TURN_PANE_DEFAULT_WIDTH = 420;
@@ -3478,11 +3478,11 @@ export default function App() {
         return;
       }
 
-      // Cmd-Shift-B / Ctrl-Shift-B toggles transcript expansion when available.
+      // Cmd-Shift-E / Ctrl-Shift-E toggles transcript expansion when available.
       // In shell-only tabs, where there is no transcript to expand, the same combo
       // toggles the browser overlay.
       if (
-        key === "b" &&
+        key === "e" &&
         event.shiftKey &&
         !event.altKey &&
         ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey))
