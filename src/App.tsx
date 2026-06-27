@@ -3021,6 +3021,9 @@ export default function App() {
     }
     showSelectionAsk(quote, anchor);
   }
+  function handleTerminalSelectionCopied() {
+    showAppToast("Selection copied");
+  }
   function openAskLauncher(mode: "ask" | "newThread") {
     const selection = selectionAsk;
     if (!selection) {
@@ -5380,6 +5383,7 @@ export default function App() {
               onOpenLink={openPaneLink}
               onLinkContextMenu={openPaneLinkMenu}
               onAskSelection={handleTerminalAskSelection}
+              onSelectionCopied={handleTerminalSelectionCopied}
               onTerminalTitleChange={handleTerminalTitleChange}
             />
           ))}

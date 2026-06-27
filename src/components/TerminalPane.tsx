@@ -69,6 +69,8 @@ interface TerminalPaneProps {
    *  terminal, with the selected text and its viewport bounding box, so the app
    *  can offer to ask the agent about it. */
   onAskSelection?: (paneId: string, quote: string, anchor: SelectionAnchor) => void;
+  /** Called after copy-on-select successfully writes a terminal selection. */
+  onSelectionCopied?: (paneId: string) => void;
   /** Called when xterm parses an OSC 0/2 window-title update from PTY output. */
   onTerminalTitleChange?: (paneId: string, title: string) => void;
 }
@@ -390,6 +392,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     onOpenLink,
     onLinkContextMenu,
     onAskSelection,
+    onSelectionCopied,
     onTerminalTitleChange,
   },
   ref,
@@ -440,6 +443,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onLinkContextMenuRef.current = onLinkContextMenu;
   const onAskSelectionRef = useRef(onAskSelection);
   onAskSelectionRef.current = onAskSelection;
+  const onSelectionCopiedRef = useRef(onSelectionCopied);
+  onSelectionCopiedRef.current = onSelectionCopied;
   const onTerminalTitleChangeRef = useRef(onTerminalTitleChange);
   onTerminalTitleChangeRef.current = onTerminalTitleChange;
   const activeRef = useRef(active);
@@ -801,6 +806,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           lastCopiedSelection = text;
           void writeClipboardText(text)
             .then(() => {
+              onSelectionCopiedRef.current?.(pane.id);
               if (!selectionClearOnCopyRef.current) {
                 return;
               }
