@@ -27,6 +27,7 @@ import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 import type { SelectionAnchor } from "../appTypes";
 import { bytesFromBase64 } from "../lib/appHelpers";
+import { safeHref } from "../lib/links";
 import {
   RESTORED_SCROLLBACK_TERMINAL_RESET,
   sanitizeRestoredScrollback,
@@ -61,9 +62,9 @@ interface TerminalPaneProps {
    *  terminal, so the app can hold the agent's queue while the user is typing. */
   onUserInput?: (agentId: string) => void;
   /** Primary action for a clicked terminal link (left-click opens it). */
-  onOpenLink?: (url: string) => void;
+  onOpenLink?: (paneId: string, url: string) => void;
   /** Right-click on a terminal link: open the internal/external chooser. */
-  onLinkContextMenu?: (url: string, x: number, y: number) => void;
+  onLinkContextMenu?: (paneId: string, url: string, x: number, y: number) => void;
   /** Called on mouse-up when the user has a non-whitespace selection in this
    *  terminal, with the selected text and its viewport bounding box, so the app
    *  can offer to ask the agent about it. */
@@ -72,9 +73,9 @@ interface TerminalPaneProps {
   onTerminalTitleChange?: (paneId: string, title: string) => void;
 }
 
-// Matches http(s) URLs in terminal text. Conservative: stops at whitespace and a few
+// Matches http(s)/mailto URLs in terminal text. Conservative: stops at whitespace and a few
 // delimiters so it doesn't swallow surrounding punctuation/markup.
-const TERMINAL_URL_REGEX = /\bhttps?:\/\/[^\s<>"'`)\]}]+/g;
+const TERMINAL_URL_REGEX = /\b(?:https?:\/\/|mailto:)[^\s<>"'`)\]}]+/gi;
 const OSC_TITLE_MAX_BUFFER_CHARS = 8192;
 
 function decodeTerminalDataText(decoder: TextDecoder, data: string | Uint8Array) {
@@ -197,34 +198,108 @@ function terminalSelectionAnchor(term: Terminal): SelectionAnchor | null {
   return hasAnchor ? { left, right, top, bottom } : null;
 }
 
-interface LinkHandlers {
-  activate: (url: string) => void;
-  // Track which link the mouse is over so a right-click can target it.
-  hover: (url: string) => void;
-  leave: () => void;
+interface TerminalLineLink {
+  url: string;
+  y: number;
+  startX: number;
+  endX: number;
 }
 
-// Finds clickable links in one terminal line (1-based buffer row `y`). Single-line
-// only: a URL wrapped across rows is detected per-row (the common case — a URL on one
-// line — works exactly). x/y are 1-based; end.x is inclusive of the last cell.
-function findLineLinks(lineText: string, y: number, handlers: LinkHandlers): ILink[] {
-  const links: ILink[] = [];
+function terminalLineLinkKey(link: TerminalLineLink): string {
+  return `${link.y}:${link.startX}:${link.endX}:${link.url}`;
+}
+
+// Finds links in one terminal line (1-based buffer row `y`). Single-line only: a URL
+// wrapped across rows is detected per-row (the common case - a URL on one line - works
+// exactly). x/y are 1-based; endX is inclusive of the last cell.
+function findTerminalLineLinks(lineText: string, y: number): TerminalLineLink[] {
+  const links: TerminalLineLink[] = [];
   for (const match of lineText.matchAll(TERMINAL_URL_REGEX)) {
     const start = match.index ?? 0;
     // Drop trailing punctuation that's usually sentence/markup, not part of the URL.
-    const url = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
-    if (url.length === 0) {
+    const displayUrl = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
+    const url = safeHref(displayUrl);
+    if (!url) {
       continue;
     }
     links.push({
-      text: url,
-      range: { start: { x: start + 1, y }, end: { x: start + url.length, y } },
-      activate: (_event, text) => handlers.activate(text),
-      hover: (_event, text) => handlers.hover(text),
-      leave: () => handlers.leave(),
+      url,
+      y,
+      startX: start + 1,
+      endX: start + displayUrl.length,
     });
   }
   return links;
+}
+
+function findLineLinks(lineText: string, y: number, activate: (url: string) => void): ILink[] {
+  return findTerminalLineLinks(lineText, y).map((link) => ({
+    text: link.url,
+    range: { start: { x: link.startX, y }, end: { x: link.endX, y } },
+    activate: (event, text) => {
+      if (!event.defaultPrevented) {
+        activate(text);
+      }
+    },
+  }));
+}
+
+function terminalBufferCellFromMouseEvent(
+  term: Terminal,
+  event: MouseEvent,
+): { x: number; y: number } | null {
+  const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+  if (!screen || term.cols <= 0 || term.rows <= 0) {
+    return null;
+  }
+
+  const screenRect = screen.getBoundingClientRect();
+  if (
+    screenRect.width <= 0 ||
+    screenRect.height <= 0 ||
+    event.clientX < screenRect.left ||
+    event.clientX >= screenRect.right ||
+    event.clientY < screenRect.top ||
+    event.clientY >= screenRect.bottom
+  ) {
+    return null;
+  }
+
+  const cellWidth = screenRect.width / term.cols;
+  const cellHeight = screenRect.height / term.rows;
+  const viewportColumn = Math.floor((event.clientX - screenRect.left) / cellWidth);
+  const viewportRow = Math.floor((event.clientY - screenRect.top) / cellHeight);
+  if (
+    viewportColumn < 0 ||
+    viewportColumn >= term.cols ||
+    viewportRow < 0 ||
+    viewportRow >= term.rows
+  ) {
+    return null;
+  }
+
+  return {
+    x: viewportColumn + 1,
+    y: term.buffer.active.viewportY + viewportRow + 1,
+  };
+}
+
+function terminalLinkAtMouseEvent(term: Terminal, event: MouseEvent): TerminalLineLink | null {
+  const cell = terminalBufferCellFromMouseEvent(term, event);
+  if (!cell) {
+    return null;
+  }
+
+  const line = term.buffer.active.getLine(cell.y - 1);
+  if (!line) {
+    return null;
+  }
+
+  return (
+    findTerminalLineLinks(line.translateToString(true), cell.y).find(
+      (link) => cell.x >= link.startX && cell.x <= link.endX,
+    ) ?? null
+  );
 }
 
 export interface TerminalPaneHandle {
@@ -369,9 +444,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onTerminalTitleChangeRef.current = onTerminalTitleChange;
   const activeRef = useRef(active);
   activeRef.current = active;
-  // The URL the mouse is currently over (set by the link provider's hover/leave), so a
-  // right-click can target it for the chooser menu.
-  const hoveredLinkRef = useRef<string | null>(null);
   // In-app confirm (window.confirm is a no-op in the webview), reached from the
   // paste handler inside the once-per-pane setup effect via a ref so it stays current.
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -657,6 +729,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       });
 
     function setUpTerminal(mountEl: HTMLDivElement, hostEl: HTMLDivElement): () => void {
+      let hoveredOscLink: string | null = null;
       const terminal = new Terminal({
         allowProposedApi: true,
         convertEol: false,
@@ -667,6 +740,23 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         fontFamily: fontFamilyRef.current,
         fontSize: fontSizeRef.current,
         letterSpacing: letterSpacingRef.current,
+        linkHandler: {
+          allowNonHttpProtocols: true,
+          activate: (event, text) => {
+            const url = safeHref(text);
+            if (!url) {
+              return;
+            }
+            event.preventDefault();
+            onOpenLinkRef.current?.(pane.id, url);
+          },
+          hover: (_event, text) => {
+            hoveredOscLink = safeHref(text) ?? null;
+          },
+          leave: () => {
+            hoveredOscLink = null;
+          },
+        },
         lineHeight: lineHeightRef.current,
         rows: pane.rows,
         scrollback: scrollbackRowsRef.current,
@@ -894,7 +984,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         captureTerminalScroll(terminal);
       });
 
-      // Make http(s) URLs in the scrollback clickable (hover underlines them).
+      // Make http(s)/mailto URLs in the scrollback look clickable. Mouse handlers below
+      // resolve the link under the actual event and route it through qmux's link actions.
       const linkProviderDisposable = terminal.registerLinkProvider({
         provideLinks(bufferLineNumber, callback) {
           const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
@@ -902,29 +993,52 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
             callback(undefined);
             return;
           }
-          const links = findLineLinks(line.translateToString(true), bufferLineNumber, {
-            activate: (url) => onOpenLinkRef.current?.(url),
-            hover: (url) => {
-              hoveredLinkRef.current = url;
-            },
-            leave: () => {
-              hoveredLinkRef.current = null;
-            },
-          });
+          const links = findLineLinks(line.translateToString(true), bufferLineNumber, (url) =>
+            onOpenLinkRef.current?.(pane.id, url),
+          );
           callback(links.length > 0 ? links : undefined);
         },
       });
 
-      // Right-click over a link opens the internal/external chooser instead of the
-      // default menu; right-clicks elsewhere are left untouched.
+      // Handle terminal links through qmux so they match transcript links. xterm's link
+      // provider still supplies hover decorations, but activation is resolved from the
+      // actual mouse event to avoid depending on hover state being current.
+      let pressedLinkKey: string | null = null;
+      const handleLinkMouseDown = (event: MouseEvent) => {
+        if (event.button !== 0) {
+          pressedLinkKey = null;
+          return;
+        }
+        const link = terminalLinkAtMouseEvent(terminal, event);
+        pressedLinkKey = link ? terminalLineLinkKey(link) : null;
+      };
+      const handleLinkMouseUp = (event: MouseEvent) => {
+        if (event.button !== 0) {
+          return;
+        }
+        const link = terminalLinkAtMouseEvent(terminal, event);
+        const linkKey = link ? terminalLineLinkKey(link) : null;
+        if (!link || !pressedLinkKey || pressedLinkKey !== linkKey) {
+          pressedLinkKey = null;
+          return;
+        }
+        pressedLinkKey = null;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onOpenLinkRef.current?.(pane.id, link.url);
+      };
       const handleContextMenu = (event: MouseEvent) => {
-        const url = hoveredLinkRef.current;
+        const link = terminalLinkAtMouseEvent(terminal, event);
+        const url = link?.url ?? hoveredOscLink;
         if (!url) {
           return;
         }
         event.preventDefault();
-        onLinkContextMenuRef.current?.(url, event.clientX, event.clientY);
+        event.stopImmediatePropagation();
+        onLinkContextMenuRef.current?.(pane.id, url, event.clientX, event.clientY);
       };
+      hostEl.addEventListener("mousedown", handleLinkMouseDown, true);
+      hostEl.addEventListener("mouseup", handleLinkMouseUp, true);
       hostEl.addEventListener("contextmenu", handleContextMenu, true);
 
       // Offer an "ask the agent about this" action when the user selects terminal
@@ -1053,6 +1167,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         hostEl.removeEventListener("paste", handlePaste, true);
         hostEl.removeEventListener("copy", handleCopy, true);
         hostEl.removeEventListener("wheel", handleRestoreScrollWheel);
+        hostEl.removeEventListener("mousedown", handleLinkMouseDown, true);
+        hostEl.removeEventListener("mouseup", handleLinkMouseUp, true);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
         hostEl.removeEventListener("mouseup", handleSelectionMouseUp, true);
         if (copyOnSelectTimer !== null) {

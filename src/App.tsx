@@ -99,6 +99,7 @@ import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
+import { canRenderInInternalBrowser } from "./lib/links";
 import { isTaggedUserInstruction } from "./lib/taggedInstructions";
 import {
   clampConfirmPasteOverChars,
@@ -578,24 +579,6 @@ function defaultPaneTitle(
   );
 }
 
-// The internal browser overlay can only load what the webview CSP's frame-src allows:
-// http over loopback (127.0.0.1 / localhost), which covers file-server URLs and local
-// dev servers. Anything else — external hosts, https, mailto, custom schemes — would be
-// blocked by CSP and render as a blank iframe, so it must hand off to the OS browser.
-// Keep this in lockstep with `frame-src` in tauri.conf.json.
-function canRenderInInternalBrowser(url: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  return (
-    parsed.protocol === "http:" &&
-    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
-  );
-}
-
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
@@ -790,7 +773,12 @@ export default function App() {
     {},
   );
   // Right-click chooser for a link (transcript or terminal): internal vs external.
-  const [linkMenu, setLinkMenu] = useState<{ url: string; x: number; y: number } | null>(null);
+  const [linkMenu, setLinkMenu] = useState<{
+    url: string;
+    x: number;
+    y: number;
+    paneId: string | null;
+  } | null>(null);
   // The Home tab is selected explicitly, or implicitly whenever there are no real
   // panes to fall back to. While Home is active there is no active terminal pane.
   const homeActive = activePaneId === HOME_TAB_ID || panes.length === 0;
@@ -1217,7 +1205,7 @@ export default function App() {
   // so even re-opening the same URL reloads. Driven by the browser.open event.
   // `sandbox` is set for token-bearing file-server URLs so the iframe loads them in an
   // opaque origin (see BrowserOverlay); plain http(s) URLs are not sandboxed.
-  function openBrowserOverlay(paneId: string, url: string, sandbox = false) {
+  const openBrowserOverlay = useCallback((paneId: string, url: string, sandbox = false) => {
     setBrowserOverlayByPane((current) => ({
       ...current,
       [paneId]: {
@@ -1228,7 +1216,32 @@ export default function App() {
         size: current[paneId]?.size ?? null,
       },
     }));
-  }
+  }, []);
+
+  const openLinkForPane = useCallback(
+    (paneId: string | null | undefined, url: string) => {
+      if (paneId && canRenderInInternalBrowser(url)) {
+        openBrowserOverlay(paneId, url);
+      } else {
+        void openExternalUrl(url);
+      }
+    },
+    [openBrowserOverlay],
+  );
+
+  const openPaneLink = useCallback(
+    (paneId: string, url: string) => {
+      openLinkForPane(paneId, url);
+    },
+    [openLinkForPane],
+  );
+
+  const openPaneLinkMenu = useCallback(
+    (paneId: string, url: string, x: number, y: number) => {
+      setLinkMenu({ url, x, y, paneId });
+    },
+    [],
+  );
 
   function toggleActiveBrowserOverlay() {
     const paneId = activePane?.id;
@@ -1364,18 +1377,11 @@ export default function App() {
   const linkActions = useMemo<LinkActions>(
     () => ({
       openLink: (url) => {
-        const paneId = activePane?.id;
-        if (paneId && canRenderInInternalBrowser(url)) {
-          openBrowserOverlay(paneId, url);
-        } else {
-          void openExternalUrl(url);
-        }
+        openLinkForPane(activePane?.id, url);
       },
-      openLinkMenu: (url, x, y) => setLinkMenu({ url, x, y }),
+      openLinkMenu: (url, x, y) => setLinkMenu({ url, x, y, paneId: activePane?.id ?? null }),
     }),
-    // openBrowserOverlay just wraps a stable state setter; only the active pane matters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activePane?.id],
+    [activePane?.id, openLinkForPane],
   );
 
   const activeTurns = useMemo(
@@ -5004,8 +5010,8 @@ export default function App() {
               inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
               onUserInput={noteUserInput}
-              onOpenLink={linkActions.openLink}
-              onLinkContextMenu={linkActions.openLinkMenu}
+              onOpenLink={openPaneLink}
+              onLinkContextMenu={openPaneLinkMenu}
               onAskSelection={handleTerminalAskSelection}
               onTerminalTitleChange={handleTerminalTitleChange}
             />
@@ -5199,9 +5205,9 @@ export default function App() {
         <LinkContextMenu
           x={linkMenu.x}
           y={linkMenu.y}
-          canOpenInternal={canRenderInInternalBrowser(linkMenu.url)}
+          canOpenInternal={linkMenu.paneId !== null && canRenderInInternalBrowser(linkMenu.url)}
           onOpenInternal={() => {
-            linkActions.openLink(linkMenu.url);
+            openLinkForPane(linkMenu.paneId, linkMenu.url);
             setLinkMenu(null);
           }}
           onOpenExternal={() => {
