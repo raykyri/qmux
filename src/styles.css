@@ -3743,8 +3743,36 @@ header + .turn-blocks {
   flex: 0 0 auto;
 }
 
-.wait-target-button {
+.queue-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.queue-button-group > button {
+  position: relative;
+}
+
+.queue-button-group > button:focus-visible {
+  z-index: 1;
+}
+
+.queue-button-group .queue-button-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.queue-menu-button {
   flex: 0 0 auto;
+  min-width: var(--control-h-md);
+  margin-left: -1px;
+  padding: 0 7px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.queue-menu-button svg {
+  opacity: 0.82;
 }
 
 .wait-target-popover {
@@ -3762,6 +3790,13 @@ header + .turn-blocks {
   background: #1d2224;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
+}
+
+.wait-target-placeholder {
+  color: #b9c0bc;
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .wait-target-item {

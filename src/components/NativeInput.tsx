@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { EllipsisVertical, LoaderCircle, Mic, X } from "lucide-react";
+import { ChevronDown, EllipsisVertical, LoaderCircle, Mic, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   queueWaitAgentTurn,
@@ -1269,72 +1269,15 @@ export default function NativeInput({
               <span>Unpause</span>
             </button>
           ) : (
-            <>
-              <div className="wait-target-picker" ref={waitRef}>
-                <button
-                  ref={waitTriggerRef}
-                  type="button"
-                  className="wait-target-button"
-                  disabled={waitDisabled}
-                  aria-haspopup="menu"
-                  aria-expanded={waitOpen}
-                  title={
-                    waitTargets.length > 0
-                      ? "Queue this turn after another terminal is done"
-                      : "No other terminals are working"
-                  }
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setWaitOpen((open) => !open);
-                  }}
-                >
-                  Queue after…
-                </button>
-                {waitOpen
-                  ? createPortal(
-                      <div
-                        ref={waitPopoverRef}
-                        className="wait-target-popover"
-                        role="menu"
-                        style={
-                          waitPos
-                            ? {
-                                left: waitPos.left,
-                                top: waitPos.top,
-                                maxHeight: waitPos.maxHeight,
-                              }
-                            : { left: -9999, top: -9999 }
-                        }
-                      >
-                        <div className="composer-menu-label">Wait on terminal</div>
-                        {waitTargets.map((target) => (
-                          <button
-                            key={target.agentId}
-                            type="button"
-                            role="menuitem"
-                            className="wait-target-item"
-                            title={waitLabelWithShortcut(target.label, target.shortcutLabel)}
-                            onClick={() => void submitWaitTurn(target)}
-                          >
-                            <span className={waitTargetStatusDotClass(target)} aria-hidden="true" />
-                            <span className="wait-target-title">
-                              {waitLabelWithShortcut(target.label, target.shortcutLabel)}
-                            </span>
-                            <span className="wait-target-status">
-                              {waitTargetStatusLabel(target)}
-                            </span>
-                          </button>
-                        ))}
-                      </div>,
-                      document.body,
-                    )
-                  : null}
-              </div>
+            <div className="wait-target-picker queue-button-group" ref={waitRef}>
               <button
                 type="button"
-                className="queue-button"
+                className="queue-button queue-button-main"
                 disabled={submitting || !canAppendQueue || value.trim().length === 0}
-                onClick={() => void submitTurn(value, "queue")}
+                onClick={() => {
+                  setWaitOpen(false);
+                  void submitTurn(value, "queue");
+                }}
               >
                 <span>Queue</span>
                 {submitShortcutWouldTargetQueue ? (
@@ -1344,7 +1287,68 @@ export default function NativeInput({
                   />
                 ) : null}
               </button>
-            </>
+              <button
+                ref={waitTriggerRef}
+                type="button"
+                className="queue-menu-button"
+                disabled={waitDisabled}
+                aria-haspopup="menu"
+                aria-expanded={waitOpen}
+                aria-label="Queue after"
+                title={
+                  waitTargets.length > 0
+                    ? "Queue this turn after another terminal is done"
+                    : "No other terminals are working"
+                }
+                onClick={() => {
+                  setMenuOpen(false);
+                  setWaitOpen((open) => !open);
+                }}
+              >
+                <ChevronDown size={14} aria-hidden="true" />
+              </button>
+              {waitOpen
+                ? createPortal(
+                    <div
+                      ref={waitPopoverRef}
+                      className="wait-target-popover"
+                      role="menu"
+                      style={
+                        waitPos
+                          ? {
+                              left: waitPos.left,
+                              top: waitPos.top,
+                              maxHeight: waitPos.maxHeight,
+                            }
+                          : { left: -9999, top: -9999 }
+                      }
+                    >
+                      <div className="composer-menu-label wait-target-placeholder">
+                        Queue after
+                      </div>
+                      {waitTargets.map((target) => (
+                        <button
+                          key={target.agentId}
+                          type="button"
+                          role="menuitem"
+                          className="wait-target-item"
+                          title={waitLabelWithShortcut(target.label, target.shortcutLabel)}
+                          onClick={() => void submitWaitTurn(target)}
+                        >
+                          <span className={waitTargetStatusDotClass(target)} aria-hidden="true" />
+                          <span className="wait-target-title">
+                            {waitLabelWithShortcut(target.label, target.shortcutLabel)}
+                          </span>
+                          <span className="wait-target-status">
+                            {waitTargetStatusLabel(target)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>,
+                    document.body,
+                  )
+                : null}
+            </div>
           )}
         </div>
       </div>
