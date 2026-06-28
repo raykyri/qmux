@@ -27,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 const CODEX_QMUX_PROFILE: &str = "qmux-codex";
-const CODEX_QMUX_TERMINAL_TITLE_CONFIG: &str = r#"terminal_title=["thread","task-progress"]"#;
+const CODEX_QMUX_TERMINAL_TITLE_CONFIG: &str = r#"tui.terminal_title=["thread","task-progress"]"#;
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -968,6 +968,7 @@ fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path, existing_profile: Optio
         "# This profile enables qMux Codex lifecycle hooks only for qMux-launched panes.\n",
     );
     raw.push_str(&format!("# qMux executable: {}\n\n", qmux_cli.display()));
+    raw.push_str("[tui]\n");
     raw.push_str("terminal_title = [\"thread\", \"task-progress\"]\n\n");
     raw.push_str("[features]\n");
     raw.push_str("hooks = true\n\n");
@@ -1585,7 +1586,7 @@ mod tests {
             Some(Path::new("/tmp/qmux/.qmux/workspaces")),
             vec![
                 "--config".to_string(),
-                "terminal_title=[\"project\"]".to_string(),
+                "tui.terminal_title=[\"project\"]".to_string(),
                 "--".to_string(),
                 "start here".to_string(),
             ],
@@ -1604,9 +1605,9 @@ mod tests {
                 "workspace-write",
                 "--search",
                 "--config",
-                "terminal_title=[\"thread\",\"task-progress\"]",
+                "tui.terminal_title=[\"thread\",\"task-progress\"]",
                 "--config",
-                "terminal_title=[\"project\"]",
+                "tui.terminal_title=[\"project\"]",
                 "--",
                 "start here"
             ]
@@ -1826,7 +1827,7 @@ mod tests {
         let profile = fs::read_to_string(profile_path).unwrap();
         let shim = fs::read_to_string(shim_path).unwrap();
 
-        assert!(profile.contains("terminal_title = [\"thread\", \"task-progress\"]"));
+        assert!(profile.contains("[tui]\nterminal_title = [\"thread\", \"task-progress\"]"));
         assert!(profile.contains("[features]"));
         assert!(profile.contains("hooks = true"));
         assert!(profile.contains("[[hooks.SessionStart]]"));
