@@ -1239,20 +1239,6 @@ export default function NativeInput({
             </button>
           ) : (
             <>
-              <button
-                type="button"
-                className="queue-button"
-                disabled={submitting || !canQueue || value.trim().length === 0}
-                onClick={() => void submitTurn(value, "queue")}
-              >
-                <span>Queue</span>
-                {submitShortcutWouldTargetQueue ? (
-                  <ComposerSubmitShortcutGlyph
-                    requireCmdEnter={requireCmdEnterToSend}
-                    className="shortcut-hint"
-                  />
-                ) : null}
-              </button>
               <div className="wait-target-picker" ref={waitRef}>
                 <button
                   ref={waitTriggerRef}
@@ -1271,7 +1257,7 @@ export default function NativeInput({
                     setWaitOpen((open) => !open);
                   }}
                 >
-                  Wait on...
+                  Queue after…
                 </button>
                 {waitOpen
                   ? createPortal(
@@ -1310,6 +1296,20 @@ export default function NativeInput({
                     )
                   : null}
               </div>
+              <button
+                type="button"
+                className="queue-button"
+                disabled={submitting || !canQueue || value.trim().length === 0}
+                onClick={() => void submitTurn(value, "queue")}
+              >
+                <span>Queue</span>
+                {submitShortcutWouldTargetQueue ? (
+                  <ComposerSubmitShortcutGlyph
+                    requireCmdEnter={requireCmdEnterToSend}
+                    className="shortcut-hint"
+                  />
+                ) : null}
+              </button>
             </>
           )}
         </div>
