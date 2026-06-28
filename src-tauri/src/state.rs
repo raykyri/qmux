@@ -1852,6 +1852,15 @@ impl AppState {
             let removed = queue
                 .remove(index)
                 .ok_or_else(|| format!("queued turn {index} was not found"))?;
+            if index == 0
+                && removed
+                    .wait_for
+                    .as_ref()
+                    .is_some_and(|wait_for| wait_for.agent_id != agent_id)
+                && let Some(next) = queue.front_mut()
+            {
+                next.wait_for = removed.wait_for.clone();
+            }
             let queued_turns = queue.iter().cloned().collect::<Vec<_>>();
             (removed, queued_turns, queue.is_empty())
         };
@@ -3305,6 +3314,45 @@ mod tests {
         let (second, second_pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
         assert_eq!(second.text, "then this");
         assert_eq!(second_pending, 0);
+    }
+
+    #[test]
+    fn removing_front_wait_turn_moves_wait_to_next_turn() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        source.pane_id = Some("source-pane".to_string());
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Running;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        enqueue_wait_turn(&state, "source", "remove me", "target").unwrap();
+        state
+            .enqueue_agent_turn("source", "keep waiting".to_string())
+            .unwrap();
+
+        let (removed, queued) = state
+            .remove_agent_turn_queue_item("source", 0, Some("remove me"))
+            .unwrap();
+        assert_eq!(removed.text, "remove me");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "keep waiting");
+        let propagated_wait = queued[0].wait_for.as_ref().unwrap();
+        assert_eq!(propagated_wait.agent_id, "target");
+
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+
+        state.set_agent_status("target", AgentStatus::Done).unwrap();
+        let (turn, pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
+        assert_eq!(turn.text, "keep waiting");
+        assert_eq!(pending, 0);
     }
 
     #[test]
