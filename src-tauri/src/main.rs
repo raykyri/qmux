@@ -34,7 +34,7 @@ use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
 };
 use sleep::SleepGuard;
-use state::{AppState, PaneInfo, PaneLayoutEntry, QueuedTurn, RecentSessionInfo};
+use state::{AppState, PaneInfo, PaneLayoutEntry, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use tauri::Manager;
 use transcript::{
     TranscriptOption, Turn, list_agent_transcripts as list_agent_transcript_options,
@@ -544,6 +544,28 @@ fn pane_set_layout(
 }
 
 #[tauri::command]
+fn pane_place_after(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    sibling_pane_id: String,
+) -> Result<Vec<PaneInfo>, String> {
+    state.place_pane_after(&pane_id, &sibling_pane_id)
+}
+
+#[tauri::command]
+fn pane_splits_get(state: tauri::State<'_, AppState>) -> Result<Vec<PaneSplitInfo>, String> {
+    state.pane_splits()
+}
+
+#[tauri::command]
+fn pane_splits_set(
+    state: tauri::State<'_, AppState>,
+    splits: Vec<PaneSplitInfo>,
+) -> Result<Vec<PaneSplitInfo>, String> {
+    state.set_pane_splits(splits)
+}
+
+#[tauri::command]
 fn agent_submit_turn(
     state: tauri::State<'_, AppState>,
     request: SubmitAgentTurnRequest,
@@ -842,6 +864,9 @@ fn main() {
             pane_rename,
             pane_reorder,
             pane_set_layout,
+            pane_place_after,
+            pane_splits_get,
+            pane_splits_set,
             agent_submit_turn,
             agent_queue_wait_turn,
             agent_remove_queued_turn,

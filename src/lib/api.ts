@@ -9,6 +9,7 @@ import type {
   MoveQueuedAgentTurnResult,
   PaneActivity,
   PaneInfo,
+  PaneSplitInfo,
   QmuxEvent,
   QueuedTurn,
   RemoveQueuedAgentTurnResult,
@@ -399,6 +400,19 @@ export function reorderPanes(paneIds: string[]) {
 /** Atomically sets the sidebar tab tree (order + nesting depth) in one call. */
 export function setPaneLayout(items: PaneLayoutItem[]) {
   return invoke<PaneInfo[]>("pane_set_layout", { items });
+}
+
+/** Moves `paneId` immediately after `siblingPaneId` at the same sidebar depth. */
+export function placePaneAfter(paneId: string, siblingPaneId: string) {
+  return invoke<PaneInfo[]>("pane_place_after", { paneId, siblingPaneId });
+}
+
+export function getPaneSplits() {
+  return invoke<PaneSplitInfo[]>("pane_splits_get");
+}
+
+export function setPaneSplits(splits: PaneSplitInfo[]) {
+  return invoke<PaneSplitInfo[]>("pane_splits_set", { splits });
 }
 
 export function worktreeStatus(agentId: string) {

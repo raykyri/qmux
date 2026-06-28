@@ -26,8 +26,11 @@ import {
   MessageSquareText,
   Minus,
   MoreHorizontal,
+  PanelBottomClose,
+  PanelBottomOpen,
   Pencil,
   Plus,
+  Rows3,
   Settings,
   SquareTerminal,
   X,
@@ -100,6 +103,16 @@ import {
   toLayout,
 } from "./lib/paneTree";
 import {
+  adjacentPaneBelow,
+  joinPaneSplit,
+  normalizePaneSplitsForPanes,
+  paneSplitForPane,
+  paneSplitsEqual,
+  removePaneFromSplit,
+  resizeSplitFractions,
+  splitFractions,
+} from "./lib/paneSplits";
+import {
   TERMINAL_FONT_SIZE,
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
@@ -143,6 +156,7 @@ import {
   confirmAppExit,
   createGroup,
   forkAgent,
+  getPaneSplits,
   getLauncherAdapterPreference,
   getAgentDraft,
   getShowHideShortcut,
@@ -161,6 +175,7 @@ import {
   openExternalUrl,
   paneActivity,
   pickGroupDirectory,
+  placePaneAfter,
   removeQueuedAgentTurn,
   removeGroup,
   renameGroup,
@@ -168,6 +183,7 @@ import {
   restoreLastClosedPane,
   setLauncherAdapterPreference,
   setPaneLayout,
+  setPaneSplits as persistPaneSplits,
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
   setAgentTyping,
@@ -187,6 +203,7 @@ import type {
   GroupInfo,
   InitialPaneSize,
   PaneInfo,
+  PaneSplitInfo,
   QueuedTurn,
   RuntimeConfig,
   TranscriptHookEvent,
@@ -225,6 +242,7 @@ const TURN_PANE_DEFAULT_WIDTH = 420;
 const TURN_PANE_MAX_WIDTH = 720;
 const TERMINAL_HORIZONTAL_PADDING = 10;
 const TERMINAL_VERTICAL_PADDING = 20;
+const TERMINAL_SPLIT_MIN_HEIGHT = 140;
 const DEFAULT_INITIAL_COLS = 100;
 const DEFAULT_INITIAL_ROWS = 24;
 const MIN_INITIAL_COLS = 20;
@@ -262,6 +280,34 @@ interface PendingFirstMessageTitle {
   checkedMessages: number;
   seenTurnIds: Set<string>;
   skillCommand: string | null;
+}
+
+interface AgentTurnInfo {
+  turns: Turn[];
+  assistantLabel: string;
+  transcript: string;
+}
+
+interface TurnPaneSurface {
+  pane: PaneInfo;
+  agent: AgentInfo | undefined;
+  turns: Turn[];
+  assistantLabel: string;
+  transcript: string;
+  hookEvents: TranscriptHookEvent[];
+  transcriptNotice: string | null;
+  transcriptOptions: TranscriptOption[];
+  queuedTurns: QueuedTurn[];
+  waitTargets: WaitTarget[];
+  collapsedQueuedTurns: boolean[];
+  draft: string;
+  orphanedQueues: OrphanedQueueGroup[];
+  queueSplit: boolean;
+  queueSplitHeight: number | undefined;
+  browserOverlay: BrowserOverlayState | undefined;
+  topFraction: number;
+  heightFraction: number;
+  hasTurnSidebar: boolean;
 }
 
 interface OpenRouterTitleConfig {
@@ -826,6 +872,13 @@ export default function App() {
   const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
   const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
   const closeActiveBrowserOverlayRef = useRef<() => void>(() => {});
+  const terminalSplitResizeRef = useRef<{
+    splitId: string;
+    dividerIndex: number;
+    startY: number;
+    stageHeight: number;
+    startSplit: PaneSplitInfo;
+  } | null>(null);
   // Debounced "user is typing" hold per agent: while active the backend won't
   // auto-drain that agent's queue. Holds the agent id + the pending release timer.
   const agentTypingRef = useRef<{ agentId: string; timer: number } | null>(null);
@@ -989,6 +1042,7 @@ export default function App() {
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
+  const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
   // Per-pane browser overlay state, so each tab keeps its own page and open/closed.
@@ -1016,9 +1070,67 @@ export default function App() {
     () => (homeActive ? undefined : (panes.find((pane) => pane.id === activePaneId) ?? panes[0])),
     [homeActive, activePaneId, panes],
   );
-  const activeAgent = useMemo(
-    () => agents.find((agent) => agent.paneId === activePane?.id),
-    [activePane?.id, agents],
+  const paneById = useMemo(
+    () => new Map(panes.map((pane) => [pane.id, pane])),
+    [panes],
+  );
+  const agentByPaneId = useMemo(() => {
+    const result = new Map<string, AgentInfo>();
+    for (const agent of agents) {
+      if (agent.paneId) {
+        result.set(agent.paneId, agent);
+      }
+    }
+    return result;
+  }, [agents]);
+  const agentTurnInfoById = useMemo(() => {
+    const turnsByAgent = new Map<string, Turn[]>();
+    for (const turn of turns) {
+      const agentTurns = turnsByAgent.get(turn.agentId);
+      if (agentTurns) {
+        agentTurns.push(turn);
+      } else {
+        turnsByAgent.set(turn.agentId, [turn]);
+      }
+    }
+    const result = new Map<string, AgentTurnInfo>();
+    for (const agent of agents) {
+      const agentTurns = turnsByAgent.get(agent.id) ?? [];
+      const adapter = getAgentUiAdapter(agent.adapter);
+      const normalizedTurns = adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
+      const assistantLabel = adapter.label;
+      result.set(agent.id, {
+        turns: normalizedTurns,
+        assistantLabel,
+        transcript: formatTurnsTranscript(normalizedTurns, assistantLabel),
+      });
+    }
+    return result;
+  }, [agents, turns]);
+  const activeAgent = activePane ? agentByPaneId.get(activePane.id) : undefined;
+  const activePaneSplit = useMemo(
+    () => paneSplitForPane(paneSplits, activePane?.id),
+    [activePane?.id, paneSplits],
+  );
+  const splitRightPaneMode = Boolean(activePaneSplit && activePaneSplit.paneIds.length > 1);
+  const activeSplitFractions = useMemo(
+    () => (activePaneSplit ? splitFractions(activePaneSplit) : []),
+    [activePaneSplit],
+  );
+  const visibleTerminalPaneIds = useMemo(
+    () => (activePaneSplit ? activePaneSplit.paneIds : activePane ? [activePane.id] : []),
+    [activePane?.id, activePaneSplit],
+  );
+  const visibleTerminalPanes = useMemo(
+    () =>
+      visibleTerminalPaneIds
+        .map((paneId) => paneById.get(paneId))
+        .filter((pane): pane is PaneInfo => Boolean(pane)),
+    [paneById, visibleTerminalPaneIds],
+  );
+  const visibleTerminalPaneIdSet = useMemo(
+    () => new Set(visibleTerminalPaneIds),
+    [visibleTerminalPaneIds],
   );
   const groupById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
   const sidebarPanes = useMemo(() => {
@@ -1037,8 +1149,6 @@ export default function App() {
     [sidebarPanes],
   );
   const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
-  const activeQueueSplit = activeAgent ? (queueSplitByAgent[activeAgent.id] ?? false) : false;
-  const activeQueueSplitHeight = activeAgent ? queueSplitHeightByAgent[activeAgent.id] : undefined;
   useEffect(() => {
     if (activePane?.groupId) {
       setLastActiveGroupId(activePane.groupId);
@@ -1582,7 +1692,7 @@ export default function App() {
 
   function toggleActiveTranscriptExpanded() {
     const paneId = activePane?.id;
-    if (!paneId || !hasTurnSidebar) {
+    if (!paneId || !hasTurnSidebar || splitRightPaneMode) {
       return;
     }
 
@@ -1606,11 +1716,7 @@ export default function App() {
     );
   }
 
-  function setActiveQueueSplitHeight(height: number) {
-    const agentId = activeAgent?.id;
-    if (!agentId) {
-      return;
-    }
+  function setQueueSplitHeightForAgent(agentId: string, height: number) {
     setQueueSplitHeightByAgent((current) => ({ ...current, [agentId]: height }));
   }
 
@@ -1655,70 +1761,36 @@ export default function App() {
     }
   }
 
-  // Link actions shared by transcript markdown and the terminal. Left-click opens
-  // http(s) in the internal overlay (bound to the active tab); anything the overlay
-  // can't render (mailto, etc.) falls back to the OS browser. Right-click opens the
-  // chooser. Memoized on the active pane so the markdown context value is stable.
-  const linkActions = useMemo<LinkActions>(
-    () => ({
+  function linkActionsForPane(paneId: string): LinkActions {
+    return {
       openLink: (url) => {
-        openLinkForPane(activePane?.id, url);
+        openLinkForPane(paneId, url);
       },
-      openLinkMenu: (url, x, y) => setLinkMenu({ url, x, y, paneId: activePane?.id ?? null }),
-    }),
-    [activePane?.id, openLinkForPane],
-  );
+      openLinkMenu: (url, x, y) => setLinkMenu({ url, x, y, paneId }),
+    };
+  }
 
-  const activeTurns = useMemo(
-    () => {
-      const agentTurns = turns.filter((turn) => turn.agentId === activeAgent?.id);
-      if (!activeAgent) {
-        return agentTurns;
-      }
-      const adapter = getAgentUiAdapter(activeAgent.adapter);
-      return adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
-    },
-    [activeAgent?.id, activeAgent?.adapter, turns],
-  );
-  const activeAssistantLabel = activeAgent ? getAgentUiAdapter(activeAgent.adapter).label : "Claude";
-  const activeTranscript = useMemo(
-    () => formatTurnsTranscript(activeTurns, activeAssistantLabel),
-    [activeTurns, activeAssistantLabel],
-  );
-  const activeHookEvents = useMemo(
-    () => (activeAgent ? hookEventsByAgent[activeAgent.id] ?? [] : []),
-    [activeAgent?.id, hookEventsByAgent],
-  );
-  const activeTranscriptNotice = useMemo(
-    () => (activeAgent ? transcriptNoticeByAgent[activeAgent.id] ?? null : null),
-    [activeAgent?.id, transcriptNoticeByAgent],
-  );
-  const activeTranscriptOptions = useMemo(
-    () => (activeAgent ? transcriptOptionsByAgent[activeAgent.id] ?? [] : []),
-    [activeAgent?.id, transcriptOptionsByAgent],
-  );
-  // Load the session list when an agent's pane is opened so the picker is ready
-  // without waiting for a recovery event.
-  const activeAgentId = activeAgent?.id;
-  useEffect(() => {
-    if (activeAgentId) {
-      void refreshTranscriptOptions(activeAgentId);
+  function turnInfoForAgent(agent: AgentInfo | undefined): AgentTurnInfo {
+    if (!agent) {
+      return { turns: [], assistantLabel: "Claude", transcript: "" };
     }
-    // refreshTranscriptOptions only touches stable setters/imports.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgentId]);
-  const activeQueuedTurns = useMemo(
-    () => (activeAgent ? queuedTurnsByAgent[activeAgent.id] ?? [] : []),
-    [activeAgent?.id, queuedTurnsByAgent],
-  );
-  const activeWaitTargets = useMemo<WaitTarget[]>(() => {
-    if (!activeAgent) {
+    return (
+      agentTurnInfoById.get(agent.id) ?? {
+        turns: [],
+        assistantLabel: getAgentUiAdapter(agent.adapter).label,
+        transcript: "",
+      }
+    );
+  }
+
+  function waitTargetsForAgent(activeWaitAgent: AgentInfo | undefined): WaitTarget[] {
+    if (!activeWaitAgent) {
       return [];
     }
     const paneById = new Map(panes.map((pane) => [pane.id, pane]));
     return agents
       .flatMap((agent) => {
-        if (agent.id === activeAgent.id || agent.status === "failed") {
+        if (agent.id === activeWaitAgent.id || agent.status === "failed") {
           return [];
         }
         const queuedTurns = queuedTurnsByAgent[agent.id] ?? [];
@@ -1746,16 +1818,92 @@ export default function App() {
           },
         ];
       });
-  }, [
-    activeAgent?.id,
-    agents,
-    panes,
-    terminalTitleByPane,
-    manuallyTitledPaneIds,
-    config,
-    shortcutLabelForPaneId,
-    queuedTurnsByAgent,
-  ]);
+  }
+
+  function orphanedQueuesForPane(pane: PaneInfo | undefined): OrphanedQueueGroup[] {
+    if (!pane) {
+      return [];
+    }
+    return agents
+      .filter((agent) => agent.orphanedQueuePaneId === pane.id)
+      .map((agent) => ({
+        agent,
+        queuedTurns: queuedTurnsByAgent[agent.id] ?? [],
+      }))
+      .filter((queue) => queue.queuedTurns.length > 0);
+  }
+
+  function turnPaneSurfaceForPane(pane: PaneInfo, splitIndex = -1): TurnPaneSurface {
+    const agent = agentByPaneId.get(pane.id);
+    const turnInfo = turnInfoForAgent(agent);
+    const orphanedQueues = orphanedQueuesForPane(pane);
+    const topFraction =
+      splitRightPaneMode && splitIndex > 0
+        ? activeSplitFractions.slice(0, splitIndex).reduce((sum, value) => sum + value, 0)
+        : 0;
+    const heightFraction =
+      splitRightPaneMode && splitIndex >= 0 ? (activeSplitFractions[splitIndex] ?? 0) : 1;
+
+    return {
+      pane,
+      agent,
+      turns: turnInfo.turns,
+      assistantLabel: turnInfo.assistantLabel,
+      transcript: turnInfo.transcript,
+      hookEvents: agent ? (hookEventsByAgent[agent.id] ?? []) : [],
+      transcriptNotice: agent ? (transcriptNoticeByAgent[agent.id] ?? null) : null,
+      transcriptOptions: agent ? (transcriptOptionsByAgent[agent.id] ?? []) : [],
+      queuedTurns: agent ? (queuedTurnsByAgent[agent.id] ?? []) : [],
+      waitTargets: waitTargetsForAgent(agent),
+      collapsedQueuedTurns: agent ? (collapsedQueuedTurnsByAgent[agent.id] ?? []) : [],
+      draft: agent ? (draftsByAgent[agent.id] ?? "") : "",
+      orphanedQueues,
+      queueSplit: agent ? (queueSplitByAgent[agent.id] ?? false) : false,
+      queueSplitHeight: agent ? queueSplitHeightByAgent[agent.id] : undefined,
+      browserOverlay: browserOverlayByPane[pane.id],
+      topFraction,
+      heightFraction,
+      hasTurnSidebar: Boolean(agent) || orphanedQueues.length > 0,
+    };
+  }
+
+  const activeTurnPaneSurface = activePane
+    ? turnPaneSurfaceForPane(
+        activePane,
+        activePaneSplit ? activePaneSplit.paneIds.indexOf(activePane.id) : -1,
+      )
+    : null;
+  const splitTurnPaneSurfaces = splitRightPaneMode
+    ? visibleTerminalPanes
+        .map((pane, index) => turnPaneSurfaceForPane(pane, index))
+        .filter((surface) => surface.hasTurnSidebar)
+    : [];
+  const visibleTurnPaneSurfaces = splitRightPaneMode
+    ? splitTurnPaneSurfaces
+    : activeTurnPaneSurface?.hasTurnSidebar
+      ? [activeTurnPaneSurface]
+      : [];
+  const hasTurnSidebar = visibleTurnPaneSurfaces.length > 0;
+  const activeTranscriptExpanded = Boolean(
+    !splitRightPaneMode &&
+      activePane &&
+      activeTurnPaneSurface?.hasTurnSidebar &&
+      transcriptExpandedByPane[activePane.id],
+  );
+  const visibleTurnPaneAgentIds = visibleTurnPaneSurfaces
+    .map((surface) => surface.agent?.id)
+    .filter((agentId): agentId is string => Boolean(agentId));
+  const visibleTurnPaneAgentIdsKey = visibleTurnPaneAgentIds.join("\0");
+
+  // Load session lists when a pane's right side is visible so transcript pickers are ready.
+  useEffect(() => {
+    for (const agentId of visibleTurnPaneAgentIds) {
+      void refreshTranscriptOptions(agentId);
+    }
+    // refreshTranscriptOptions only touches stable setters/imports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleTurnPaneAgentIdsKey]);
+
   const menuBarSnapshot = useMemo<MenuBarSnapshot>(() => {
     const agentByPaneId = new Map<string, AgentInfo>();
     for (const agent of agents) {
@@ -1812,32 +1960,6 @@ export default function App() {
   useEffect(() => {
     void updateMenuBar(menuBarSnapshot).catch(() => undefined);
   }, [menuBarSnapshot]);
-
-  const activeCollapsedQueuedTurns = useMemo(
-    () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
-    [activeAgent?.id, collapsedQueuedTurnsByAgent],
-  );
-  const activeDraft = useMemo(
-    () => (activeAgent ? draftsByAgent[activeAgent.id] ?? "" : ""),
-    [activeAgent?.id, draftsByAgent],
-  );
-  const activeOrphanedQueues = useMemo<OrphanedQueueGroup[]>(
-    () =>
-      activePane
-        ? agents
-            .filter((agent) => agent.orphanedQueuePaneId === activePane.id)
-            .map((agent) => ({
-              agent,
-              queuedTurns: queuedTurnsByAgent[agent.id] ?? [],
-            }))
-            .filter((queue) => queue.queuedTurns.length > 0)
-        : [],
-    [activePane?.id, agents, queuedTurnsByAgent],
-  );
-  const hasTurnSidebar = Boolean(activeAgent) || activeOrphanedQueues.length > 0;
-  const activeTranscriptExpanded = Boolean(
-    activePane && hasTurnSidebar && transcriptExpandedByPane[activePane.id],
-  );
 
   useEffect(() => {
     agentsRef.current = agents;
@@ -2060,6 +2182,55 @@ export default function App() {
     }
   }
 
+  function estimateSplitPaneSize(nextSplitPaneCount: number): InitialPaneSize {
+    const size = estimateInitialPaneSize(false);
+    return {
+      ...size,
+      rows: clamp(
+        Math.floor(size.rows / Math.max(1, nextSplitPaneCount)),
+        MIN_INITIAL_ROWS,
+        size.rows,
+      ),
+    };
+  }
+
+  async function splitPaneBelow(sourcePane: PaneInfo) {
+    setError(null);
+    setPaneContextMenu(null);
+    try {
+      const existingSplit = paneSplitForPane(paneSplits, sourcePane.id);
+      const nextSplitPaneCount = (existingSplit?.paneIds.length ?? 1) + 1;
+      const pane = await spawnShell(
+        estimateSplitPaneSize(nextSplitPaneCount),
+        sourcePane.kind === "shell" ? sourcePane.id : null,
+        sourcePane.groupId,
+      );
+      const orderedPanes = await placePaneAfter(pane.id, sourcePane.id);
+      setPanesPreservingRecoveredDismissals(orderedPanes);
+      savePaneSplits(joinPaneSplit(paneSplits, orderedPanes, sourcePane.id, pane.id), orderedPanes);
+      setActivePaneId(pane.id);
+      setLastActiveGroupId(pane.groupId);
+      await refreshGroups();
+      requestAnimationFrame(() => {
+        terminalPaneRefs.current.get(pane.id)?.focus();
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function joinPaneBelow(sourcePane: PaneInfo, belowPane: PaneInfo) {
+    setPaneContextMenu(null);
+    savePaneSplits(joinPaneSplit(paneSplits, panes, sourcePane.id, belowPane.id));
+    setActivePaneId(sourcePane.id);
+  }
+
+  function unsplitPane(pane: PaneInfo) {
+    setPaneContextMenu(null);
+    savePaneSplits(removePaneFromSplit(paneSplits, panes, pane.id));
+    setActivePaneId(pane.id);
+  }
+
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
@@ -2113,9 +2284,13 @@ export default function App() {
     }
   }
 
-  async function moveRecoveredQueuedTurn(agentId: string, index: number, turn: string) {
-    const targetAgent = activeAgent;
-    if (!targetAgent || targetAgent.id === agentId) {
+  async function moveRecoveredQueuedTurn(
+    agentId: string,
+    targetAgentId: string | null | undefined,
+    index: number,
+    turn: string,
+  ) {
+    if (!targetAgentId || targetAgentId === agentId) {
       return;
     }
 
@@ -2123,9 +2298,9 @@ export default function App() {
     try {
       // One atomic backend call removes from the source and hands the turn to the
       // target (rolling back on failure), so the turn can't end up in both queues.
-      const result = await moveQueuedAgentTurn(agentId, targetAgent.id, index, turn);
+      const result = await moveQueuedAgentTurn(agentId, targetAgentId, index, turn);
       setAgentQueuedTurns(agentId, result.sourceQueuedTurns);
-      setAgentQueuedTurns(targetAgent.id, result.targetQueuedTurns);
+      setAgentQueuedTurns(targetAgentId, result.targetQueuedTurns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -2253,6 +2428,99 @@ export default function App() {
     "--transcript-expanded-line-height-delta": `${transcriptExpandedLineHeightDelta}`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
+
+  function terminalPaneStyle(paneId: string): CSSProperties | undefined {
+    if (!activePaneSplit) {
+      return undefined;
+    }
+    const index = activePaneSplit.paneIds.indexOf(paneId);
+    if (index < 0) {
+      return undefined;
+    }
+    const top = activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0);
+    const height = activeSplitFractions[index] ?? 0;
+    return {
+      top: `${top * 100}%`,
+      bottom: "auto",
+      height: `${height * 100}%`,
+    };
+  }
+
+  const terminalSplitDividerOffsets = activePaneSplit
+    ? activePaneSplit.paneIds.slice(0, -1).map((_, index) =>
+        activeSplitFractions.slice(0, index + 1).reduce((sum, value) => sum + value, 0),
+      )
+    : [];
+
+  function startTerminalSplitResize(
+    event: ReactPointerEvent<HTMLDivElement>,
+    split: PaneSplitInfo,
+    dividerIndex: number,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const stageHeight = terminalStageRef.current?.getBoundingClientRect().height ?? 0;
+    if (stageHeight < TERMINAL_SPLIT_MIN_HEIGHT * split.paneIds.length) {
+      return;
+    }
+
+    let latestSplit = split;
+    terminalSplitResizeRef.current = {
+      splitId: split.id,
+      dividerIndex,
+      startY: event.clientY,
+      stageHeight,
+      startSplit: split,
+    };
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      const drag = terminalSplitResizeRef.current;
+      if (!drag || drag.splitId !== split.id) {
+        return;
+      }
+      latestSplit = resizeSplitFractions(
+        drag.startSplit,
+        drag.dividerIndex,
+        (pointerEvent.clientY - drag.startY) / drag.stageHeight,
+      );
+      setPaneSplitsState((current) =>
+        current.map((candidate) => (candidate.id === latestSplit.id ? latestSplit : candidate)),
+      );
+    };
+
+    const finishResize = () => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerup", finishResize, true);
+      window.removeEventListener("pointercancel", finishResize, true);
+      terminalSplitResizeRef.current = null;
+      savePaneSplits(
+        paneSplits.map((candidate) => (candidate.id === latestSplit.id ? latestSplit : candidate)),
+      );
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerup", finishResize, true);
+    window.addEventListener("pointercancel", finishResize, true);
+  }
+
+  function resizeTerminalSplitWithKeyboard(
+    event: ReactKeyboardEvent<HTMLDivElement>,
+    split: PaneSplitInfo,
+    dividerIndex: number,
+  ) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const step = event.shiftKey ? 0.08 : 0.03;
+    const delta = event.key === "ArrowDown" ? step : -step;
+    const resized = resizeSplitFractions(split, dividerIndex, delta);
+    savePaneSplits(
+      paneSplits.map((candidate) => (candidate.id === resized.id ? resized : candidate)),
+    );
+  }
+
   const contextMenuPane = paneContextMenu
     ? panes.find((pane) => pane.id === paneContextMenu.paneId)
     : undefined;
@@ -2286,6 +2554,17 @@ export default function App() {
   const contextMenuPaneIndex = paneContextMenu
     ? contextMenuGroupPanes.findIndex((pane) => pane.id === paneContextMenu.paneId)
     : -1;
+  const contextMenuPaneSplit = paneSplitForPane(paneSplits, contextMenuPane?.id);
+  const contextMenuAdjacentBelow = adjacentPaneBelow(panes, contextMenuPane);
+  const contextMenuAdjacentBelowSplit = paneSplitForPane(
+    paneSplits,
+    contextMenuAdjacentBelow?.id,
+  );
+  const canJoinContextMenuBelow = Boolean(
+    contextMenuPane &&
+      contextMenuAdjacentBelow &&
+      contextMenuPaneSplit?.id !== contextMenuAdjacentBelowSplit?.id,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -2297,6 +2576,7 @@ export default function App() {
           preferredLauncherAdapterId,
           existingGroups,
           existingPanes,
+          existingPaneSplits,
           existingAgents,
           existingTurns,
         ] = await Promise.all([
@@ -2304,6 +2584,7 @@ export default function App() {
           getLauncherAdapterPreference().catch(() => null),
           listGroups().catch((): GroupInfo[] => []),
           listPanes(),
+          getPaneSplits().catch((): PaneSplitInfo[] => []),
           listAgents(),
           listTurns(),
         ]);
@@ -2313,6 +2594,7 @@ export default function App() {
 
         setConfig(runtimeConfig);
         setGroups(existingGroups);
+        setPaneSplitsState(normalizePaneSplitsForPanes(existingPaneSplits, existingPanes));
         setLauncherAdapterId(
           preferredLauncherAdapterId &&
             runtimeConfig.adapters.some((adapter) => adapter.id === preferredLauncherAdapterId)
@@ -2436,6 +2718,29 @@ export default function App() {
     }
   }, []);
 
+  function savePaneSplits(nextSplits: PaneSplitInfo[], paneSnapshot = panes) {
+    const normalized = normalizePaneSplitsForPanes(nextSplits, paneSnapshot);
+    setPaneSplitsState(normalized);
+    void persistPaneSplits(normalized)
+      .then((persisted) => {
+        setPaneSplitsState(normalizePaneSplitsForPanes(persisted, panesRef.current));
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  useEffect(() => {
+    setPaneSplitsState((current) => {
+      const normalized = normalizePaneSplitsForPanes(current, panes);
+      if (paneSplitsEqual(current, normalized)) {
+        return current;
+      }
+      void persistPaneSplits(normalized).catch(() => undefined);
+      return normalized;
+    });
+  }, [panes]);
+
   // Stable per-pane ref callbacks. An inline `ref={(h) => ...}` is a new function
   // each render, which would defeat TerminalPane's React.memo; returning the same
   // callback per pane id keeps the ref prop stable.
@@ -2534,6 +2839,11 @@ export default function App() {
       terminalPaneRefs.current.get(paneId)?.focus();
     });
   }
+
+  const activateTerminalPane = useCallback((paneId: string) => {
+    setActivePaneId(paneId);
+    setLauncherOpen(false);
+  }, []);
 
   function focusHomeTab() {
     setActivePaneId(HOME_TAB_ID);
@@ -3353,8 +3663,13 @@ export default function App() {
     clearSelectionAskHideTimer();
     setSelectionAsk(null);
   }
-  function showSelectionAsk(quote: string, anchor: SelectionAnchor) {
-    if (!activeAgent || !activePane) {
+  function showSelectionAskForPane(
+    pane: PaneInfo | undefined,
+    agent: AgentInfo | undefined,
+    quote: string,
+    anchor: SelectionAnchor,
+  ) {
+    if (!agent || !pane) {
       return;
     }
     const trimmed = quote.trim();
@@ -3365,22 +3680,21 @@ export default function App() {
     setSelectionAsk({
       quote: trimmed,
       anchor,
-      sourceAgentId: activeAgent.id,
-      sourcePaneId: activePane.id,
+      sourceAgentId: agent.id,
+      sourcePaneId: pane.id,
       // "Ask in new thread" forks, which needs an adapter with native fork support
       // and a recorded session id — gate the button so it's never a dead end.
       canFork:
-        Boolean(activeAgent.sessionId) &&
-        (activeAgent.adapter === CLAUDE_ADAPTER_ID || activeAgent.adapter === CODEX_ADAPTER_ID),
+        Boolean(agent.sessionId) &&
+        (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
     });
   }
   function handleTerminalAskSelection(paneId: string, quote: string, anchor: SelectionAnchor) {
-    // Ignore selections from a non-active pane (only the active terminal is
-    // interactive, but guard regardless).
-    if (activePane?.id !== paneId) {
+    if (!visibleTerminalPaneIdSet.has(paneId)) {
       return;
     }
-    showSelectionAsk(quote, anchor);
+    const pane = paneById.get(paneId);
+    showSelectionAskForPane(pane, pane ? agentByPaneId.get(pane.id) : undefined, quote, anchor);
   }
   function handleTerminalSelectionCopied() {
     showAppToast("Selection copied");
@@ -3484,7 +3798,9 @@ export default function App() {
     toggleActiveBrowserOverlayRef.current = toggleActiveBrowserOverlay;
     closeActiveBrowserOverlayRef.current = closeActiveBrowserOverlay;
     requestClosePaneRef.current = requestClosePane;
-    canToggleActiveTranscriptExpandedRef.current = Boolean(activePane && hasTurnSidebar);
+    canToggleActiveTranscriptExpandedRef.current = Boolean(
+      activePane && activeTurnPaneSurface?.hasTurnSidebar,
+    );
     toggleActiveTranscriptExpandedRef.current = toggleActiveTranscriptExpanded;
   });
 
@@ -4462,6 +4778,8 @@ export default function App() {
     const paneTopQueueWaitsOnOtherPane = paneWaitsOnOtherPane(paneAgent);
     const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
     const paneStatus = paneTabStatusLabel(pane, paneAgent);
+    const paneSplit = paneSplitForPane(paneSplits, pane.id);
+    const paneVisibleInSplit = visibleTerminalPaneIdSet.has(pane.id) && pane.id !== activePane?.id;
     const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
     const paneBranch = paneAgent?.branch ?? null;
     const paneWorktreeName =
@@ -4489,6 +4807,8 @@ export default function App() {
     const className = [
       "pane-tab-row",
       pane.id === activePane?.id ? "is-selected" : "",
+      paneSplit ? "is-split-member" : "",
+      paneVisibleInSplit ? "is-split-visible" : "",
       canClearWorkingStatus ? "has-clearable-status" : "",
       isDraggingRow ? "is-dragging" : "",
       dropGap === index ? "is-drop-before" : "",
@@ -4635,6 +4955,174 @@ export default function App() {
           </span>
         ) : null}
       </div>
+    );
+  }
+
+  function renderTurnPaneResizer() {
+    return (
+      <div
+        className="turn-pane-resizer"
+        role="separator"
+        aria-label="Resize command queue"
+        aria-orientation="vertical"
+        aria-valuemin={TURN_PANE_MIN_WIDTH}
+        aria-valuemax={maxTurnPaneWidth()}
+        aria-valuenow={turnPaneWidth}
+        tabIndex={0}
+        onPointerDown={startTurnPaneResize}
+        onKeyDown={resizeTurnPaneWithKeyboard}
+      />
+    );
+  }
+
+  function turnPaneSplitCellStyle(surface: TurnPaneSurface): CSSProperties {
+    return {
+      top: `${surface.topFraction * 100}%`,
+      height: `${surface.heightFraction * 100}%`,
+    };
+  }
+
+  function renderTurnPaneSurface(surface: TurnPaneSurface, showHeader: boolean) {
+    const agent = surface.agent;
+    // Split cells are short and deliberately headerless, so keep the composer
+    // floating there even if this agent normally uses a transcript/queue split.
+    const queueSplit = showHeader && surface.queueSplit;
+
+    return (
+      <TurnOverlay
+        turns={agent ? surface.turns : []}
+        thinking={Boolean(
+          agent &&
+            thinkingAgentIds.has(agent.id) &&
+            (agent.status === "running" || agent.status === "starting"),
+        )}
+        thinkingLabel={
+          agent && Object.prototype.hasOwnProperty.call(processingNewMessageByAgent, agent.id)
+            ? "Processing new message…"
+            : "Working…"
+        }
+        showActivityDetail={settings.showToolCalls}
+        agentId={agent?.id ?? surface.pane.id}
+        assistantLabel={surface.assistantLabel}
+        notice={agent ? surface.transcriptNotice : null}
+        transcriptOptions={agent ? surface.transcriptOptions : []}
+        transcriptPath={agent?.transcriptPath ?? null}
+        onSelectTranscript={
+          agent ? (path) => void handleSelectTranscript(agent.id, path) : undefined
+        }
+        queueSplit={queueSplit}
+        queueSplitHeight={queueSplit ? surface.queueSplitHeight : undefined}
+        onQueueSplitHeightChange={
+          agent ? (height) => setQueueSplitHeightForAgent(agent.id, height) : undefined
+        }
+        linkActions={linkActionsForPane(surface.pane.id)}
+        onAskSelection={(quote, anchor) =>
+          showSelectionAskForPane(surface.pane, agent, quote, anchor)
+        }
+        onDismissSelection={dismissSelectionAskSoon}
+        header={
+          showHeader ? (
+            <TurnPaneHeader
+              sessionId={agent?.sessionId ?? null}
+              transcriptOptions={agent ? surface.transcriptOptions : []}
+              transcriptPath={agent?.transcriptPath ?? null}
+              onSelectTranscript={(path) => {
+                if (agent) {
+                  void handleSelectTranscript(agent.id, path);
+                }
+              }}
+              canFork={Boolean(
+                agent?.sessionId &&
+                  (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
+              )}
+              onFork={(options) => void forkActivePane(options)}
+              showQueueSplit={Boolean(agent)}
+              queueSplit={surface.queueSplit}
+              onToggleQueueSplit={toggleActiveQueueSplit}
+              browserOpen={surface.browserOverlay?.open ?? false}
+              onToggleBrowser={toggleActiveBrowserOverlay}
+              transcriptExpanded={activeTranscriptExpanded}
+              transcriptShortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
+              onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
+            />
+          ) : undefined
+        }
+        input={
+          <div className="turn-pane-input-stack">
+            {surface.orphanedQueues.length > 0 ? (
+              <RecoveredQueuePanel
+                queues={surface.orphanedQueues}
+                hasTargetAgent={Boolean(agent)}
+                agentLabel={launchAdapter.label}
+                onMoveTurn={(agentId, index, turn) =>
+                  void moveRecoveredQueuedTurn(agentId, agent?.id, index, turn)
+                }
+                onDiscardTurn={(agentId, index, turn) =>
+                  void discardRecoveredQueuedTurn(agentId, index, turn)
+                }
+              />
+            ) : null}
+            {agent ? (
+              <NativeInput
+                pane={surface.pane}
+                agent={agent}
+                draft={surface.draft}
+                queuedTurns={surface.queuedTurns}
+                waitTargets={surface.waitTargets}
+                collapsedQueuedTurns={surface.collapsedQueuedTurns}
+                queueSplit={queueSplit}
+                requireCmdEnterToSend={settings.requireCmdEnterToSend}
+                pasteProtection={pasteProtection}
+                transcriptText={surface.transcript}
+                transcriptCopyText={() =>
+                  formatTranscriptCopyJson({
+                    agent,
+                    pane: surface.pane,
+                    transcriptText: surface.transcript,
+                    turns: surface.turns,
+                    hooks: surface.hookEvents,
+                  })
+                }
+                composerPolicy={getAgentUiAdapter(agent.adapter).composerPolicy(agent)}
+                shortcutLabelForPane={shortcutLabelForPaneId}
+                onQueueChange={setAgentQueuedTurns}
+                onDraftChange={setAgentDraft}
+                onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
+                onTurnSubmitted={(agentId, text, mode) => {
+                  // Show "Working…" the instant a send starts a run, before the
+                  // backend's status event round-trips. Gate on the agent being
+                  // ready to receive (a plain send): queued turns don't start work,
+                  // and an already-running agent is marked by its live status
+                  // events instead. Send Now keeps the live indicator lit with a
+                  // more precise label until the transcript catches the new turn.
+                  const policy = getAgentUiAdapter(agent.adapter).composerPolicy(agent);
+                  const shouldShowWorking =
+                    mode === "steer" ||
+                    (mode === "send" && policy.readyStatuses.includes(agent.status));
+                  if (agent.id === agentId && shouldShowWorking) {
+                    setThinkingAgentIds((prev) =>
+                      prev.has(agentId) ? prev : new Set(prev).add(agentId),
+                    );
+                  }
+                  if (agent.id === agentId && mode === "steer") {
+                    const baselineUserTurnId = latestUserTurnId(surface.turns);
+                    setProcessingNewMessageByAgent((current) =>
+                      current[agentId] === baselineUserTurnId
+                        ? current
+                        : { ...current, [agentId]: baselineUserTurnId },
+                    );
+                  }
+                  applyPendingFirstMessageTitle(agentId, text);
+                }}
+                onUserInput={noteUserInput}
+                getQueueScroll={getQueueScroll}
+                saveQueueScroll={saveQueueScroll}
+                onError={setError}
+              />
+            ) : null}
+          </div>
+        }
+      />
     );
   }
 
@@ -4922,6 +5410,40 @@ export default function App() {
             </div>
           </dl>
           <div className="pane-context-actions">
+            <button
+              type="button"
+              title="Create a new shell split below this tab"
+              onClick={() => void splitPaneBelow(contextMenuPane)}
+            >
+              <PanelBottomOpen size={13} aria-hidden="true" />
+              <span>Split below</span>
+            </button>
+            <button
+              type="button"
+              disabled={!canJoinContextMenuBelow || !contextMenuAdjacentBelow}
+              title={
+                contextMenuAdjacentBelow
+                  ? "Show this tab and the next tab in one vertical split"
+                  : "No tab below"
+              }
+              onClick={() => {
+                if (contextMenuAdjacentBelow) {
+                  joinPaneBelow(contextMenuPane, contextMenuAdjacentBelow);
+                }
+              }}
+            >
+              <Rows3 size={13} aria-hidden="true" />
+              <span>Join below</span>
+            </button>
+            <button
+              type="button"
+              disabled={!contextMenuPaneSplit}
+              title="Remove this tab from its terminal split"
+              onClick={() => unsplitPane(contextMenuPane)}
+            >
+              <PanelBottomClose size={13} aria-hidden="true" />
+              <span>Unsplit</span>
+            </button>
             <button
               type="button"
               disabled={!canOutdent(contextMenuGroupPanes, contextMenuPaneIndex)}
@@ -5852,7 +6374,9 @@ export default function App() {
               key={pane.id}
               ref={terminalPaneRefCallback(pane.id)}
               pane={pane}
+              visible={visibleTerminalPaneIdSet.has(pane.id)}
               active={pane.id === activePane?.id}
+              style={terminalPaneStyle(pane.id)}
               fontSize={terminalFontSize}
               fontFamily={terminalFontFamily}
               letterSpacing={terminalLetterSpacing}
@@ -5875,167 +6399,52 @@ export default function App() {
               onAskSelection={handleTerminalAskSelection}
               onSelectionCopied={handleTerminalSelectionCopied}
               onTerminalTitleChange={handleTerminalTitleChange}
+              onActivate={activateTerminalPane}
             />
           ))}
+          {activePaneSplit
+            ? terminalSplitDividerOffsets.map((offset, index) => (
+                <div
+                  key={`${activePaneSplit.id}-${index}`}
+                  className="terminal-split-resizer"
+                  role="separator"
+                  aria-label="Resize terminal split"
+                  aria-orientation="horizontal"
+                  tabIndex={0}
+                  style={{ top: `${offset * 100}%` }}
+                  onPointerDown={(event) =>
+                    startTerminalSplitResize(event, activePaneSplit, index)
+                  }
+                  onKeyDown={(event) =>
+                    resizeTerminalSplitWithKeyboard(event, activePaneSplit, index)
+                  }
+                />
+              ))
+            : null}
         </div>
       </section>
 
-      {hasTurnSidebar ? (
+      {hasTurnSidebar && splitRightPaneMode ? (
+        <aside className="turn-pane turn-pane-stack">
+          {renderTurnPaneResizer()}
+          {visibleTurnPaneSurfaces.map((surface) => (
+            <section
+              key={surface.pane.id}
+              className={`turn-pane turn-pane-split-cell${
+                surface.pane.id === activePane?.id ? " is-active" : ""
+              }`}
+              style={turnPaneSplitCellStyle(surface)}
+              onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
+              onFocusCapture={() => activateTerminalPane(surface.pane.id)}
+            >
+              {renderTurnPaneSurface(surface, false)}
+            </section>
+          ))}
+        </aside>
+      ) : hasTurnSidebar && activeTurnPaneSurface ? (
         <aside className={`turn-pane${activeTranscriptExpanded ? " is-expanded" : ""}`}>
-          {activeTranscriptExpanded ? null : (
-            <div
-              className="turn-pane-resizer"
-              role="separator"
-              aria-label="Resize command queue"
-              aria-orientation="vertical"
-              aria-valuemin={TURN_PANE_MIN_WIDTH}
-              aria-valuemax={maxTurnPaneWidth()}
-              aria-valuenow={turnPaneWidth}
-              tabIndex={0}
-              onPointerDown={startTurnPaneResize}
-              onKeyDown={resizeTurnPaneWithKeyboard}
-            />
-          )}
-          <TurnOverlay
-            turns={activeAgent ? activeTurns : []}
-            thinking={Boolean(
-              activeAgent &&
-                thinkingAgentIds.has(activeAgent.id) &&
-                (activeAgent.status === "running" || activeAgent.status === "starting"),
-            )}
-            thinkingLabel={
-              activeAgent &&
-              Object.prototype.hasOwnProperty.call(processingNewMessageByAgent, activeAgent.id)
-                ? "Processing new message…"
-                : "Working…"
-            }
-            showActivityDetail={settings.showToolCalls}
-            agentId={activeAgent?.id ?? activePane?.id}
-            assistantLabel={activeAssistantLabel}
-            notice={activeAgent ? activeTranscriptNotice : null}
-            transcriptOptions={activeAgent ? activeTranscriptOptions : []}
-            transcriptPath={activeAgent?.transcriptPath ?? null}
-            onSelectTranscript={
-              activeAgent
-                ? (path) => void handleSelectTranscript(activeAgent.id, path)
-                : undefined
-            }
-            queueSplit={activeQueueSplit}
-            queueSplitHeight={activeQueueSplitHeight}
-            onQueueSplitHeightChange={setActiveQueueSplitHeight}
-            linkActions={linkActions}
-            onAskSelection={showSelectionAsk}
-            onDismissSelection={dismissSelectionAskSoon}
-            header={
-              <TurnPaneHeader
-                sessionId={activeAgent?.sessionId ?? null}
-                transcriptOptions={activeAgent ? activeTranscriptOptions : []}
-                transcriptPath={activeAgent?.transcriptPath ?? null}
-                onSelectTranscript={(path) => {
-                  if (activeAgent) {
-                    void handleSelectTranscript(activeAgent.id, path);
-                  }
-                }}
-                canFork={Boolean(
-                  activePane &&
-                    activeAgent?.sessionId &&
-                    (activeAgent.adapter === CLAUDE_ADAPTER_ID ||
-                      activeAgent.adapter === CODEX_ADAPTER_ID),
-                )}
-                onFork={(options) => void forkActivePane(options)}
-                showQueueSplit={Boolean(activeAgent)}
-                queueSplit={activeQueueSplit}
-                onToggleQueueSplit={toggleActiveQueueSplit}
-                browserOpen={activeBrowserOverlay?.open ?? false}
-                onToggleBrowser={toggleActiveBrowserOverlay}
-                transcriptExpanded={activeTranscriptExpanded}
-                transcriptShortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
-                onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
-              />
-            }
-            input={
-              <div className="turn-pane-input-stack">
-                {activeOrphanedQueues.length > 0 ? (
-                  <RecoveredQueuePanel
-                    queues={activeOrphanedQueues}
-                    hasTargetAgent={Boolean(activeAgent)}
-                    agentLabel={launchAdapter.label}
-                    onMoveTurn={(agentId, index, turn) =>
-                      void moveRecoveredQueuedTurn(agentId, index, turn)
-                    }
-                    onDiscardTurn={(agentId, index, turn) =>
-                      void discardRecoveredQueuedTurn(agentId, index, turn)
-                    }
-                  />
-                ) : null}
-                {activeAgent && activePane ? (
-                  <NativeInput
-                    pane={activePane}
-                    agent={activeAgent}
-                    draft={activeDraft}
-                    queuedTurns={activeQueuedTurns}
-                    waitTargets={activeWaitTargets}
-                    collapsedQueuedTurns={activeCollapsedQueuedTurns}
-                    queueSplit={activeQueueSplit}
-                    requireCmdEnterToSend={settings.requireCmdEnterToSend}
-                    pasteProtection={pasteProtection}
-                    transcriptText={activeTranscript}
-                    transcriptCopyText={() =>
-                      formatTranscriptCopyJson({
-                        agent: activeAgent,
-                        pane: activePane,
-                        transcriptText: activeTranscript,
-                        turns: activeTurns,
-                        hooks: activeHookEvents,
-                      })
-                    }
-                    composerPolicy={getAgentUiAdapter(activeAgent.adapter).composerPolicy(
-                      activeAgent,
-                    )}
-                    shortcutLabelForPane={shortcutLabelForPaneId}
-                    onQueueChange={setAgentQueuedTurns}
-                    onDraftChange={setAgentDraft}
-                    onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
-                    onTurnSubmitted={(agentId, text, mode) => {
-                      // Show "Working…" the instant a send starts a run, before the
-                      // backend's status event round-trips. Gate on the agent being
-                      // ready to receive (a plain send): queued turns don't start work,
-                      // and an already-running agent is marked by its live status
-                      // events instead. Send Now keeps the live indicator lit with a
-                      // more precise label until the transcript catches the new turn.
-                      const policy = getAgentUiAdapter(activeAgent.adapter).composerPolicy(
-                        activeAgent,
-                      );
-                      const shouldShowWorking =
-                        mode === "steer" ||
-                        (mode === "send" && policy.readyStatuses.includes(activeAgent.status));
-                      if (
-                        activeAgent.id === agentId &&
-                        shouldShowWorking
-                      ) {
-                        setThinkingAgentIds((prev) =>
-                          prev.has(agentId) ? prev : new Set(prev).add(agentId),
-                        );
-                      }
-                      if (activeAgent.id === agentId && mode === "steer") {
-                        const baselineUserTurnId = latestUserTurnId(activeTurns);
-                        setProcessingNewMessageByAgent((current) =>
-                          current[agentId] === baselineUserTurnId
-                            ? current
-                            : { ...current, [agentId]: baselineUserTurnId },
-                        );
-                      }
-                      applyPendingFirstMessageTitle(agentId, text);
-                    }}
-                    onUserInput={noteUserInput}
-                    getQueueScroll={getQueueScroll}
-                    saveQueueScroll={saveQueueScroll}
-                    onError={setError}
-                  />
-                ) : null}
-              </div>
-            }
-          />
+          {activeTranscriptExpanded ? null : renderTurnPaneResizer()}
+          {renderTurnPaneSurface(activeTurnPaneSurface, true)}
         </aside>
       ) : null}
 

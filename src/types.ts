@@ -42,6 +42,12 @@ export interface PaneInfo {
   depth?: number;
 }
 
+export interface PaneSplitInfo {
+  id: string;
+  paneIds: string[];
+  sizes: Record<string, number>;
+}
+
 export type PaneActivity =
   | {
       kind: "idle";

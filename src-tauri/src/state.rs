@@ -92,6 +92,7 @@ struct Model {
     /// Sidebar nesting depth per pane (0 = root). Source of truth for the tab tree;
     /// `ordered_panes` stamps it onto each returned `PaneInfo`. Absent id == depth 0.
     pane_depth: HashMap<String, u16>,
+    pane_splits: Vec<PaneSplitInfo>,
     groups: HashMap<String, GroupInfo>,
     group_order: Vec<String>,
     agents: HashMap<String, AgentInfo>,
@@ -483,6 +484,15 @@ pub struct PaneInfo {
 /// Mirrored by `MAX_PANE_DEPTH` in the frontend's pane-tree helpers.
 pub const MAX_PANE_DEPTH: u16 = 8;
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneSplitInfo {
+    pub id: String,
+    pub pane_ids: Vec<String>,
+    #[serde(default)]
+    pub sizes: HashMap<String, f64>,
+}
+
 /// One entry in a `set_pane_layout` request: a pane and its target nesting depth,
 /// in sidebar order.
 #[derive(Clone, Debug, Deserialize)]
@@ -723,6 +733,7 @@ impl AppState {
                     model.recent_sessions.insert(session.id.clone(), session);
                 }
             }
+            model.pane_splits = persisted.pane_splits;
             let now = now_millis();
             let agents = model.agents.values().cloned().collect::<Vec<_>>();
             for agent in &agents {
@@ -778,6 +789,8 @@ impl AppState {
                     .collect(),
                 recent_sessions: recent_sessions_sorted(&model),
                 drafts: model.agent_drafts.clone(),
+                pane_splits: normalized_pane_splits(&model, model.pane_splits.clone(), false)
+                    .unwrap_or_default(),
             }
         };
 
@@ -891,6 +904,33 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(ordered_panes(&model))
+    }
+
+    pub fn pane_splits(&self) -> Result<Vec<PaneSplitInfo>, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        normalize_pane_splits_locked(&mut model);
+        Ok(model.pane_splits.clone())
+    }
+
+    pub fn set_pane_splits(
+        &self,
+        splits: Vec<PaneSplitInfo>,
+    ) -> Result<Vec<PaneSplitInfo>, String> {
+        let normalized = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.pane_splits = normalized_pane_splits(&model, splits, true)?;
+            model.pane_splits.clone()
+        };
+        self.persist();
+        Ok(normalized)
     }
 
     pub fn list_groups(&self) -> Result<Vec<GroupInfo>, String> {
@@ -1279,6 +1319,7 @@ impl AppState {
                 model.pane_depth.insert(pane_id.to_string(), depth);
             }
             normalize_pane_depths(&mut model);
+            normalize_pane_splits_locked(&mut model);
             ordered_panes(&model)
         };
         self.persist();
@@ -1370,6 +1411,7 @@ impl AppState {
             // Re-level any children orphaned by the removal so the tree stays valid
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
+            normalize_pane_splits_locked(&mut model);
             removed_group_id
                 .filter(|group_id| remove_group_without_open_panes_locked(&mut model, group_id))
         };
@@ -1426,6 +1468,7 @@ impl AppState {
             // A bare reorder can move a nested pane to a position its depth no longer
             // fits (e.g. a child to the top), so re-level depths to stay a valid tree.
             normalize_pane_depths(&mut model);
+            normalize_pane_splits_locked(&mut model);
             ordered_panes(&model)
         };
         self.persist();
@@ -1482,6 +1525,7 @@ impl AppState {
                 .filter(|entry| entry.depth != 0)
                 .map(|entry| (entry.pane_id.clone(), entry.depth))
                 .collect();
+            normalize_pane_splits_locked(&mut model);
             ordered_panes(&model)
         };
         self.persist();
@@ -1522,6 +1566,7 @@ impl AppState {
             model.pane_order = ids;
             model.pane_depth.insert(pane_id.to_string(), new_depth);
             normalize_pane_depths(&mut model);
+            normalize_pane_splits_locked(&mut model);
             ordered_panes(&model)
         };
         self.persist();
@@ -1561,6 +1606,7 @@ impl AppState {
             model.pane_order = ids;
             model.pane_depth.insert(pane_id.to_string(), sibling_depth);
             normalize_pane_depths(&mut model);
+            normalize_pane_splits_locked(&mut model);
             ordered_panes(&model)
         };
         self.persist();
@@ -1576,6 +1622,7 @@ impl AppState {
                 return;
             };
             normalize_pane_depths(&mut model);
+            normalize_pane_splits_locked(&mut model);
         }
         self.persist();
     }
@@ -3078,6 +3125,130 @@ fn normalize_pane_depths(model: &mut Model) {
     }
 }
 
+fn normalize_pane_splits_locked(model: &mut Model) {
+    model.pane_splits =
+        normalized_pane_splits(model, model.pane_splits.clone(), false).unwrap_or_default();
+}
+
+fn normalized_pane_splits(
+    model: &Model,
+    splits: Vec<PaneSplitInfo>,
+    strict: bool,
+) -> Result<Vec<PaneSplitInfo>, String> {
+    let ordered = ordered_panes(model);
+    let mut pane_positions: HashMap<String, (String, usize)> = HashMap::new();
+    let mut group_indexes: HashMap<String, usize> = HashMap::new();
+    for pane in ordered {
+        let index = group_indexes.entry(pane.group_id.clone()).or_default();
+        pane_positions.insert(pane.id, (pane.group_id, *index));
+        *index += 1;
+    }
+
+    let mut result = Vec::new();
+    let mut used_panes = HashSet::new();
+    let mut used_split_ids = HashSet::new();
+
+    for split in splits {
+        let id = split.id.trim().to_string();
+        if id.is_empty() {
+            if strict {
+                return Err("pane split id cannot be empty".to_string());
+            }
+            continue;
+        }
+        if used_split_ids.contains(&id) {
+            if strict {
+                return Err(format!("pane split {id} is duplicated"));
+            }
+            continue;
+        }
+
+        let mut pane_ids = Vec::new();
+        let mut local_seen = HashSet::new();
+        for pane_id in split.pane_ids {
+            if !local_seen.insert(pane_id.clone()) {
+                if strict {
+                    return Err(format!("pane split {id} contains duplicate pane {pane_id}"));
+                }
+                continue;
+            }
+            if !pane_positions.contains_key(&pane_id) {
+                if strict {
+                    return Err(format!("pane split {id} references missing pane {pane_id}"));
+                }
+                continue;
+            }
+            if used_panes.contains(&pane_id) {
+                if strict {
+                    return Err(format!("pane {pane_id} appears in multiple splits"));
+                }
+                continue;
+            }
+            pane_ids.push(pane_id);
+        }
+
+        if pane_ids.len() < 2 {
+            continue;
+        }
+
+        let Some((group_id, _)) = pane_positions.get(&pane_ids[0]).cloned() else {
+            continue;
+        };
+        if pane_ids
+            .iter()
+            .any(|pane_id| pane_positions.get(pane_id).map(|(group, _)| group) != Some(&group_id))
+        {
+            if strict {
+                return Err(format!("pane split {id} spans multiple groups"));
+            }
+            continue;
+        }
+
+        pane_ids.sort_by_key(|pane_id| {
+            pane_positions
+                .get(pane_id)
+                .map(|(_, index)| *index)
+                .unwrap_or(usize::MAX)
+        });
+        let contiguous = pane_ids.windows(2).all(|pair| {
+            let Some((_, left)) = pane_positions.get(&pair[0]) else {
+                return false;
+            };
+            let Some((_, right)) = pane_positions.get(&pair[1]) else {
+                return false;
+            };
+            *right == *left + 1
+        });
+        if !contiguous {
+            if strict {
+                return Err(format!("pane split {id} must contain adjacent tabs"));
+            }
+            continue;
+        }
+
+        for pane_id in &pane_ids {
+            used_panes.insert(pane_id.clone());
+        }
+        used_split_ids.insert(id.clone());
+        let pane_id_set = pane_ids.iter().collect::<HashSet<_>>();
+        let sizes = split
+            .sizes
+            .into_iter()
+            .filter(|(pane_id, size)| {
+                pane_id_set.contains(pane_id) && size.is_finite() && *size > 0.0
+            })
+            .collect();
+
+        result.push(PaneSplitInfo {
+            id,
+            pane_ids,
+            sizes,
+        });
+    }
+
+    Ok(result)
+}
+
 fn prompts_match(actual: &str, expected: &str) -> bool {
     let actual = normalize_prompt(actual);
     let expected = normalize_prompt(expected);
@@ -3867,6 +4038,42 @@ mod tests {
                 "pane-c".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn pane_splits_require_adjacent_tabs_and_prune_on_layout_change() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+
+        let invalid = state
+            .set_pane_splits(vec![PaneSplitInfo {
+                id: "split-a".to_string(),
+                pane_ids: vec!["pane-1".to_string(), "pane-3".to_string()],
+                sizes: HashMap::new(),
+            }])
+            .unwrap_err();
+        assert!(invalid.contains("adjacent"));
+
+        let splits = state
+            .set_pane_splits(vec![PaneSplitInfo {
+                id: "split-a".to_string(),
+                pane_ids: vec!["pane-1".to_string(), "pane-2".to_string()],
+                sizes: HashMap::from([("pane-1".to_string(), 0.4), ("pane-2".to_string(), 0.6)]),
+            }])
+            .unwrap();
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].pane_ids, vec!["pane-1", "pane-2"]);
+        assert_eq!(splits[0].sizes.get("pane-1"), Some(&0.4));
+
+        state
+            .set_pane_layout(layout(&[("pane-1", 0), ("pane-3", 0), ("pane-2", 0)]))
+            .unwrap();
+
+        assert!(state.pane_splits().unwrap().is_empty());
     }
 
     #[test]
