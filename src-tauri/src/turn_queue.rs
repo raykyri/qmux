@@ -334,19 +334,51 @@ pub fn reorder_queued_agent_turn(
     let agent = state
         .agent(&request.agent_id)?
         .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
-    let queued_turns = state.reorder_agent_turn_queue_item(
+    let agent_id = agent.id.clone();
+    let pane_id = agent.pane_id.clone();
+    let mut queued_turns = state.reorder_agent_turn_queue_item(
         &agent.id,
         request.from_index,
         request.to_index,
         request.expected_data.as_deref(),
     )?;
-    let pending_turns = queued_turns.len();
     state.emit(QmuxEvent::new(
         "agent.queued_turn_reordered",
-        agent.pane_id.clone(),
-        Some(agent.id),
-        json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns.clone() }),
+        pane_id.clone(),
+        Some(agent_id.clone()),
+        json!({ "pendingTurns": queued_turns.len(), "queuedTurns": queued_turns.clone() }),
     ));
+
+    if !agent.paused
+        && !state.agent_is_typing(&agent_id)?
+        && agent_composer_policy(state, &agent)?.can_send(agent.status)
+    {
+        match drain_agent_turn_queue(state, &agent_id) {
+            Ok(true) => {
+                queued_turns = state.agent_queued_turns(&agent_id)?;
+                if let Some(updated) = state.agent(&agent_id)? {
+                    state.emit(QmuxEvent::new(
+                        "agent.running",
+                        updated.pane_id.clone(),
+                        Some(updated.id.clone()),
+                        json!({ "agent": updated }),
+                    ));
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                queued_turns = state.agent_queued_turns(&agent_id)?;
+                state.emit(QmuxEvent::new(
+                    "agent.queue_error",
+                    pane_id,
+                    Some(agent_id.clone()),
+                    json!({ "error": err, "queuedTurns": queued_turns.clone() }),
+                ));
+            }
+        }
+    }
+
+    let pending_turns = queued_turns.len();
     Ok(ReorderQueuedAgentTurnResult {
         pending_turns,
         queued_turns,
@@ -643,8 +675,13 @@ mod tests {
     use crate::config::{
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
     };
+    use crate::state::{PaneBacklog, PaneInfo, PaneKind, PaneRuntime, PaneStatus};
+    use crate::workspace::{detach_pane_agent, mark_agent_failed};
+    use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
+    use std::io;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -699,6 +736,91 @@ mod tests {
             root_session_id: None,
             paused: false,
             created_at: 1,
+        }
+    }
+
+    fn sample_agent_with_id(id: &str, status: AgentStatus, pane_id: Option<&str>) -> AgentInfo {
+        AgentInfo {
+            id: id.to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: format!("/tmp/work/{id}"),
+            branch: None,
+            pane_id: pane_id.map(ToString::to_string),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: None,
+            status,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            paused: false,
+            created_at: 1,
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeChild;
+
+    impl ChildKiller for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(FakeChild)
+        }
+    }
+
+    impl Child for FakeChild {
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            Ok(ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    fn sample_pane_runtime(id: &str, agent_id: Option<&str>) -> PaneRuntime {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+
+        PaneRuntime {
+            info: PaneInfo {
+                id: id.to_string(),
+                title: id.to_string(),
+                kind: if agent_id.is_some() {
+                    PaneKind::Agent
+                } else {
+                    PaneKind::Shell
+                },
+                agent_id: agent_id.map(ToString::to_string),
+                group_id: "group-1".to_string(),
+                cwd: "/tmp/work".to_string(),
+                cols: 80,
+                rows: 24,
+                status: PaneStatus::Running,
+                recovered: false,
+                depth: 0,
+            },
+            child: Arc::new(Mutex::new(Box::new(FakeChild))),
+            master: Arc::new(Mutex::new(pair.master)),
+            writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+            backlog: Arc::new(Mutex::new(PaneBacklog::default())),
+            skip_scrollback_restore: false,
         }
     }
 
@@ -898,6 +1020,140 @@ mod tests {
             vec!["keep me".to_string()]
         );
         assert!(state.list_agent_turn_queue("target").unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_wait_target_releases_waiting_front_turn() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Running,
+                Some("target-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after failure".to_string(),
+                "target",
+                None,
+                None,
+            )
+            .unwrap();
+
+        mark_agent_failed(&state, "target").unwrap();
+
+        assert!(state.list_agent_turn_queue("source").unwrap().is_empty());
+        assert!(matches!(
+            state.agent("source").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+    }
+
+    #[test]
+    fn detached_wait_target_releases_waiting_front_turn() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Running,
+                Some("target-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after detach".to_string(),
+                "target",
+                None,
+                None,
+            )
+            .unwrap();
+
+        detach_pane_agent(&state, "target-pane").unwrap().unwrap();
+
+        assert!(state.list_agent_turn_queue("source").unwrap().is_empty());
+        assert!(matches!(
+            state.agent("source").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+    }
+
+    #[test]
+    fn reorder_to_ready_front_turn_drains_idle_queue() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Running,
+                Some("target-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after target".to_string(),
+                "target",
+                None,
+                None,
+            )
+            .unwrap();
+        state
+            .enqueue_agent_turn("source", "send now".to_string())
+            .unwrap();
+
+        let result = reorder_queued_agent_turn(
+            &state,
+            ReorderQueuedAgentTurnRequest {
+                agent_id: "source".to_string(),
+                from_index: 1,
+                to_index: 0,
+                expected_data: Some("send now".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.pending_turns, 1);
+        assert_eq!(result.queued_turns[0].text, "after target");
+        assert_eq!(
+            state.list_agent_turn_queue("source").unwrap(),
+            vec!["after target".to_string()]
+        );
+        assert!(matches!(
+            state.agent("source").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
     }
 
     #[test]

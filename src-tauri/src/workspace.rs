@@ -247,15 +247,17 @@ pub fn attach_agent_pane(
                 agent.status = AgentStatus::Idle;
             })?;
             if let Some(detached) = detached {
+                let detached_id = detached.id.clone();
                 state.emit(crate::events::QmuxEvent::new(
                     "agent.detached",
                     Some(pane_id.clone()),
-                    Some(detached.id.clone()),
+                    Some(detached_id.clone()),
                     serde_json::json!({
                         "agent": detached,
                         "replacementAgentId": agent_id,
                     }),
                 ));
+                crate::turn_queue::release_waiters_for_agent(state, &detached_id)?;
             }
         }
     }
@@ -301,6 +303,7 @@ pub fn detach_pane_agent(state: &AppState, pane_id: &str) -> Result<Option<Agent
             Some(detached.id.clone()),
             serde_json::json!({ "agent": detached }),
         ));
+        crate::turn_queue::release_waiters_for_agent(state, &detached.id)?;
     }
     Ok(detached)
 }
@@ -310,7 +313,7 @@ pub fn mark_agent_spawn_failed(
     agent_id: &str,
     reserved_pane_id: &str,
 ) -> Result<AgentInfo, String> {
-    state
+    let agent = state
         .mutate_agent(agent_id, |agent| {
             if agent.pane_id.as_deref() == Some(reserved_pane_id) {
                 agent.pane_id = None;
@@ -318,7 +321,9 @@ pub fn mark_agent_spawn_failed(
             }
             agent.status = AgentStatus::Failed;
         })?
-        .ok_or_else(|| format!("agent {agent_id} was not found"))
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    crate::turn_queue::release_waiters_for_agent(state, &agent.id)?;
+    Ok(agent)
 }
 
 pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
@@ -327,6 +332,7 @@ pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, 
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
     agent.status = AgentStatus::Failed;
     state.update_agent(agent.clone())?;
+    crate::turn_queue::release_waiters_for_agent(state, &agent.id)?;
     Ok(agent)
 }
 

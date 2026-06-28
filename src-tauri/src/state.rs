@@ -320,7 +320,10 @@ fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait)
     {
         return false;
     }
-    matches!(target.status, AgentStatus::Done | AgentStatus::Idle)
+    matches!(
+        target.status,
+        AgentStatus::Done | AgentStatus::Idle | AgentStatus::Failed
+    )
 }
 
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
