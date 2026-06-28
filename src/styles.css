@@ -321,6 +321,11 @@ button:disabled {
   box-shadow: none;
 }
 
+.pane-tab-row.is-split-visible:not(.is-selected) .pane-tab {
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(244, 244, 239, 0.86);
+}
+
 .pane-tab-shortcut-hint {
   position: absolute;
   top: 50%;
@@ -2165,11 +2170,45 @@ button:disabled {
   min-height: 0;
 }
 
-.terminal-pane.is-active {
+.terminal-pane.is-visible {
   visibility: visible;
   pointer-events: auto;
   opacity: 1;
   z-index: 1;
+}
+
+.terminal-pane.is-visible.is-focused {
+  z-index: 2;
+}
+
+.terminal-split-resizer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 9px;
+  transform: translateY(-4px);
+  z-index: 4;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.terminal-split-resizer::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 0;
+  top: 4px;
+  height: 1px;
+  background: rgba(244, 244, 239, 0.12);
+}
+
+.terminal-split-resizer:hover::before,
+.terminal-split-resizer:focus-visible::before {
+  background: rgba(215, 168, 79, 0.65);
+}
+
+.terminal-split-resizer:focus-visible {
+  outline: none;
 }
 
 .terminal-host {

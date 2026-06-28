@@ -26,8 +26,11 @@ import {
   MessageSquareText,
   Minus,
   MoreHorizontal,
+  PanelBottomClose,
+  PanelBottomOpen,
   Pencil,
   Plus,
+  Rows3,
   Settings,
   SquareTerminal,
   X,
@@ -100,6 +103,16 @@ import {
   toLayout,
 } from "./lib/paneTree";
 import {
+  adjacentPaneBelow,
+  joinPaneSplit,
+  normalizePaneSplitsForPanes,
+  paneSplitForPane,
+  paneSplitsEqual,
+  removePaneFromSplit,
+  resizeSplitFractions,
+  splitFractions,
+} from "./lib/paneSplits";
+import {
   TERMINAL_FONT_SIZE,
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
@@ -143,6 +156,7 @@ import {
   confirmAppExit,
   createGroup,
   forkAgent,
+  getPaneSplits,
   getLauncherAdapterPreference,
   getAgentDraft,
   getShowHideShortcut,
@@ -161,6 +175,7 @@ import {
   openExternalUrl,
   paneActivity,
   pickGroupDirectory,
+  placePaneAfter,
   removeQueuedAgentTurn,
   removeGroup,
   renameGroup,
@@ -168,6 +183,7 @@ import {
   restoreLastClosedPane,
   setLauncherAdapterPreference,
   setPaneLayout,
+  setPaneSplits as persistPaneSplits,
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
   setAgentTyping,
@@ -187,6 +203,7 @@ import type {
   GroupInfo,
   InitialPaneSize,
   PaneInfo,
+  PaneSplitInfo,
   QueuedTurn,
   RuntimeConfig,
   TranscriptHookEvent,
@@ -225,6 +242,7 @@ const TURN_PANE_DEFAULT_WIDTH = 420;
 const TURN_PANE_MAX_WIDTH = 720;
 const TERMINAL_HORIZONTAL_PADDING = 10;
 const TERMINAL_VERTICAL_PADDING = 20;
+const TERMINAL_SPLIT_MIN_HEIGHT = 140;
 const DEFAULT_INITIAL_COLS = 100;
 const DEFAULT_INITIAL_ROWS = 24;
 const MIN_INITIAL_COLS = 20;
@@ -826,6 +844,13 @@ export default function App() {
   const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
   const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
   const closeActiveBrowserOverlayRef = useRef<() => void>(() => {});
+  const terminalSplitResizeRef = useRef<{
+    splitId: string;
+    dividerIndex: number;
+    startY: number;
+    stageHeight: number;
+    startSplit: PaneSplitInfo;
+  } | null>(null);
   // Debounced "user is typing" hold per agent: while active the backend won't
   // auto-drain that agent's queue. Holds the agent id + the pending release timer.
   const agentTypingRef = useRef<{ agentId: string; timer: number } | null>(null);
@@ -989,6 +1014,7 @@ export default function App() {
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
+  const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
   // Per-pane browser overlay state, so each tab keeps its own page and open/closed.
@@ -1019,6 +1045,22 @@ export default function App() {
   const activeAgent = useMemo(
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
+  );
+  const activePaneSplit = useMemo(
+    () => paneSplitForPane(paneSplits, activePane?.id),
+    [activePane?.id, paneSplits],
+  );
+  const activeSplitFractions = useMemo(
+    () => (activePaneSplit ? splitFractions(activePaneSplit) : []),
+    [activePaneSplit],
+  );
+  const visibleTerminalPaneIds = useMemo(
+    () => (activePaneSplit ? activePaneSplit.paneIds : activePane ? [activePane.id] : []),
+    [activePane?.id, activePaneSplit],
+  );
+  const visibleTerminalPaneIdSet = useMemo(
+    () => new Set(visibleTerminalPaneIds),
+    [visibleTerminalPaneIds],
   );
   const groupById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
   const sidebarPanes = useMemo(() => {
@@ -2060,6 +2102,55 @@ export default function App() {
     }
   }
 
+  function estimateSplitPaneSize(nextSplitPaneCount: number): InitialPaneSize {
+    const size = estimateInitialPaneSize(false);
+    return {
+      ...size,
+      rows: clamp(
+        Math.floor(size.rows / Math.max(1, nextSplitPaneCount)),
+        MIN_INITIAL_ROWS,
+        size.rows,
+      ),
+    };
+  }
+
+  async function splitPaneBelow(sourcePane: PaneInfo) {
+    setError(null);
+    setPaneContextMenu(null);
+    try {
+      const existingSplit = paneSplitForPane(paneSplits, sourcePane.id);
+      const nextSplitPaneCount = (existingSplit?.paneIds.length ?? 1) + 1;
+      const pane = await spawnShell(
+        estimateSplitPaneSize(nextSplitPaneCount),
+        sourcePane.kind === "shell" ? sourcePane.id : null,
+        sourcePane.groupId,
+      );
+      const orderedPanes = await placePaneAfter(pane.id, sourcePane.id);
+      setPanesPreservingRecoveredDismissals(orderedPanes);
+      savePaneSplits(joinPaneSplit(paneSplits, orderedPanes, sourcePane.id, pane.id), orderedPanes);
+      setActivePaneId(pane.id);
+      setLastActiveGroupId(pane.groupId);
+      await refreshGroups();
+      requestAnimationFrame(() => {
+        terminalPaneRefs.current.get(pane.id)?.focus();
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function joinPaneBelow(sourcePane: PaneInfo, belowPane: PaneInfo) {
+    setPaneContextMenu(null);
+    savePaneSplits(joinPaneSplit(paneSplits, panes, sourcePane.id, belowPane.id));
+    setActivePaneId(sourcePane.id);
+  }
+
+  function unsplitPane(pane: PaneInfo) {
+    setPaneContextMenu(null);
+    savePaneSplits(removePaneFromSplit(paneSplits, panes, pane.id));
+    setActivePaneId(pane.id);
+  }
+
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
@@ -2253,6 +2344,99 @@ export default function App() {
     "--transcript-expanded-line-height-delta": `${transcriptExpandedLineHeightDelta}`,
     ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
   } as CSSProperties;
+
+  function terminalPaneStyle(paneId: string): CSSProperties | undefined {
+    if (!activePaneSplit) {
+      return undefined;
+    }
+    const index = activePaneSplit.paneIds.indexOf(paneId);
+    if (index < 0) {
+      return undefined;
+    }
+    const top = activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0);
+    const height = activeSplitFractions[index] ?? 0;
+    return {
+      top: `${top * 100}%`,
+      bottom: "auto",
+      height: `${height * 100}%`,
+    };
+  }
+
+  const terminalSplitDividerOffsets = activePaneSplit
+    ? activePaneSplit.paneIds.slice(0, -1).map((_, index) =>
+        activeSplitFractions.slice(0, index + 1).reduce((sum, value) => sum + value, 0),
+      )
+    : [];
+
+  function startTerminalSplitResize(
+    event: ReactPointerEvent<HTMLDivElement>,
+    split: PaneSplitInfo,
+    dividerIndex: number,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const stageHeight = terminalStageRef.current?.getBoundingClientRect().height ?? 0;
+    if (stageHeight < TERMINAL_SPLIT_MIN_HEIGHT * split.paneIds.length) {
+      return;
+    }
+
+    let latestSplit = split;
+    terminalSplitResizeRef.current = {
+      splitId: split.id,
+      dividerIndex,
+      startY: event.clientY,
+      stageHeight,
+      startSplit: split,
+    };
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      const drag = terminalSplitResizeRef.current;
+      if (!drag || drag.splitId !== split.id) {
+        return;
+      }
+      latestSplit = resizeSplitFractions(
+        drag.startSplit,
+        drag.dividerIndex,
+        (pointerEvent.clientY - drag.startY) / drag.stageHeight,
+      );
+      setPaneSplitsState((current) =>
+        current.map((candidate) => (candidate.id === latestSplit.id ? latestSplit : candidate)),
+      );
+    };
+
+    const finishResize = () => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerup", finishResize, true);
+      window.removeEventListener("pointercancel", finishResize, true);
+      terminalSplitResizeRef.current = null;
+      savePaneSplits(
+        paneSplits.map((candidate) => (candidate.id === latestSplit.id ? latestSplit : candidate)),
+      );
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerup", finishResize, true);
+    window.addEventListener("pointercancel", finishResize, true);
+  }
+
+  function resizeTerminalSplitWithKeyboard(
+    event: ReactKeyboardEvent<HTMLDivElement>,
+    split: PaneSplitInfo,
+    dividerIndex: number,
+  ) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const step = event.shiftKey ? 0.08 : 0.03;
+    const delta = event.key === "ArrowDown" ? step : -step;
+    const resized = resizeSplitFractions(split, dividerIndex, delta);
+    savePaneSplits(
+      paneSplits.map((candidate) => (candidate.id === resized.id ? resized : candidate)),
+    );
+  }
+
   const contextMenuPane = paneContextMenu
     ? panes.find((pane) => pane.id === paneContextMenu.paneId)
     : undefined;
@@ -2286,6 +2470,17 @@ export default function App() {
   const contextMenuPaneIndex = paneContextMenu
     ? contextMenuGroupPanes.findIndex((pane) => pane.id === paneContextMenu.paneId)
     : -1;
+  const contextMenuPaneSplit = paneSplitForPane(paneSplits, contextMenuPane?.id);
+  const contextMenuAdjacentBelow = adjacentPaneBelow(panes, contextMenuPane);
+  const contextMenuAdjacentBelowSplit = paneSplitForPane(
+    paneSplits,
+    contextMenuAdjacentBelow?.id,
+  );
+  const canJoinContextMenuBelow = Boolean(
+    contextMenuPane &&
+      contextMenuAdjacentBelow &&
+      contextMenuPaneSplit?.id !== contextMenuAdjacentBelowSplit?.id,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -2297,6 +2492,7 @@ export default function App() {
           preferredLauncherAdapterId,
           existingGroups,
           existingPanes,
+          existingPaneSplits,
           existingAgents,
           existingTurns,
         ] = await Promise.all([
@@ -2304,6 +2500,7 @@ export default function App() {
           getLauncherAdapterPreference().catch(() => null),
           listGroups().catch((): GroupInfo[] => []),
           listPanes(),
+          getPaneSplits().catch((): PaneSplitInfo[] => []),
           listAgents(),
           listTurns(),
         ]);
@@ -2313,6 +2510,7 @@ export default function App() {
 
         setConfig(runtimeConfig);
         setGroups(existingGroups);
+        setPaneSplitsState(normalizePaneSplitsForPanes(existingPaneSplits, existingPanes));
         setLauncherAdapterId(
           preferredLauncherAdapterId &&
             runtimeConfig.adapters.some((adapter) => adapter.id === preferredLauncherAdapterId)
@@ -2436,6 +2634,29 @@ export default function App() {
     }
   }, []);
 
+  function savePaneSplits(nextSplits: PaneSplitInfo[], paneSnapshot = panes) {
+    const normalized = normalizePaneSplitsForPanes(nextSplits, paneSnapshot);
+    setPaneSplitsState(normalized);
+    void persistPaneSplits(normalized)
+      .then((persisted) => {
+        setPaneSplitsState(normalizePaneSplitsForPanes(persisted, panesRef.current));
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  useEffect(() => {
+    setPaneSplitsState((current) => {
+      const normalized = normalizePaneSplitsForPanes(current, panes);
+      if (paneSplitsEqual(current, normalized)) {
+        return current;
+      }
+      void persistPaneSplits(normalized).catch(() => undefined);
+      return normalized;
+    });
+  }, [panes]);
+
   // Stable per-pane ref callbacks. An inline `ref={(h) => ...}` is a new function
   // each render, which would defeat TerminalPane's React.memo; returning the same
   // callback per pane id keeps the ref prop stable.
@@ -2534,6 +2755,11 @@ export default function App() {
       terminalPaneRefs.current.get(paneId)?.focus();
     });
   }
+
+  const activateTerminalPane = useCallback((paneId: string) => {
+    setActivePaneId(paneId);
+    setLauncherOpen(false);
+  }, []);
 
   function focusHomeTab() {
     setActivePaneId(HOME_TAB_ID);
@@ -4469,6 +4695,8 @@ export default function App() {
     const paneTopQueueWaitsOnOtherPane = paneWaitsOnOtherPane(paneAgent);
     const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
     const paneStatus = paneTabStatusLabel(pane, paneAgent);
+    const paneSplit = paneSplitForPane(paneSplits, pane.id);
+    const paneVisibleInSplit = visibleTerminalPaneIdSet.has(pane.id) && pane.id !== activePane?.id;
     const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
     const paneBranch = paneAgent?.branch ?? null;
     const paneWorktreeName =
@@ -4496,6 +4724,8 @@ export default function App() {
     const className = [
       "pane-tab-row",
       pane.id === activePane?.id ? "is-selected" : "",
+      paneSplit ? "is-split-member" : "",
+      paneVisibleInSplit ? "is-split-visible" : "",
       canClearWorkingStatus ? "has-clearable-status" : "",
       isDraggingRow ? "is-dragging" : "",
       dropGap === index ? "is-drop-before" : "",
@@ -4929,6 +5159,40 @@ export default function App() {
             </div>
           </dl>
           <div className="pane-context-actions">
+            <button
+              type="button"
+              title="Create a new shell split below this tab"
+              onClick={() => void splitPaneBelow(contextMenuPane)}
+            >
+              <PanelBottomOpen size={13} aria-hidden="true" />
+              <span>Split below</span>
+            </button>
+            <button
+              type="button"
+              disabled={!canJoinContextMenuBelow || !contextMenuAdjacentBelow}
+              title={
+                contextMenuAdjacentBelow
+                  ? "Show this tab and the next tab in one vertical split"
+                  : "No tab below"
+              }
+              onClick={() => {
+                if (contextMenuAdjacentBelow) {
+                  joinPaneBelow(contextMenuPane, contextMenuAdjacentBelow);
+                }
+              }}
+            >
+              <Rows3 size={13} aria-hidden="true" />
+              <span>Join below</span>
+            </button>
+            <button
+              type="button"
+              disabled={!contextMenuPaneSplit}
+              title="Remove this tab from its terminal split"
+              onClick={() => unsplitPane(contextMenuPane)}
+            >
+              <PanelBottomClose size={13} aria-hidden="true" />
+              <span>Unsplit</span>
+            </button>
             <button
               type="button"
               disabled={!canOutdent(contextMenuGroupPanes, contextMenuPaneIndex)}
@@ -5862,7 +6126,9 @@ export default function App() {
               key={pane.id}
               ref={terminalPaneRefCallback(pane.id)}
               pane={pane}
+              visible={visibleTerminalPaneIdSet.has(pane.id)}
               active={pane.id === activePane?.id}
+              style={terminalPaneStyle(pane.id)}
               fontSize={terminalFontSize}
               fontFamily={terminalFontFamily}
               letterSpacing={terminalLetterSpacing}
@@ -5885,8 +6151,28 @@ export default function App() {
               onAskSelection={handleTerminalAskSelection}
               onSelectionCopied={handleTerminalSelectionCopied}
               onTerminalTitleChange={handleTerminalTitleChange}
+              onActivate={activateTerminalPane}
             />
           ))}
+          {activePaneSplit
+            ? terminalSplitDividerOffsets.map((offset, index) => (
+                <div
+                  key={`${activePaneSplit.id}-${index}`}
+                  className="terminal-split-resizer"
+                  role="separator"
+                  aria-label="Resize terminal split"
+                  aria-orientation="horizontal"
+                  tabIndex={0}
+                  style={{ top: `${offset * 100}%` }}
+                  onPointerDown={(event) =>
+                    startTerminalSplitResize(event, activePaneSplit, index)
+                  }
+                  onKeyDown={(event) =>
+                    resizeTerminalSplitWithKeyboard(event, activePaneSplit, index)
+                  }
+                />
+              ))
+            : null}
         </div>
       </section>
 

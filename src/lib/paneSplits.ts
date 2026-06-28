@@ -1,0 +1,200 @@
+import type { PaneInfo, PaneSplitInfo } from "../types";
+
+const MIN_SPLIT_FRACTION = 0.12;
+
+function panePositions(panes: PaneInfo[]) {
+  const groupIndexes = new Map<string, number>();
+  const positions = new Map<string, { groupId: string; index: number }>();
+  for (const pane of panes) {
+    const index = groupIndexes.get(pane.groupId) ?? 0;
+    positions.set(pane.id, { groupId: pane.groupId, index });
+    groupIndexes.set(pane.groupId, index + 1);
+  }
+  return positions;
+}
+
+function orderedContiguousPaneIds(panes: PaneInfo[], paneIds: Iterable<string>): string[] | null {
+  const positions = panePositions(panes);
+  const ids = [...new Set(paneIds)];
+  if (ids.length < 2) {
+    return null;
+  }
+  const first = positions.get(ids[0]);
+  if (!first) {
+    return null;
+  }
+  if (ids.some((id) => positions.get(id)?.groupId !== first.groupId)) {
+    return null;
+  }
+  ids.sort((a, b) => (positions.get(a)?.index ?? 0) - (positions.get(b)?.index ?? 0));
+  for (let index = 1; index < ids.length; index += 1) {
+    const previous = positions.get(ids[index - 1]);
+    const current = positions.get(ids[index]);
+    if (!previous || !current || current.index !== previous.index + 1) {
+      return null;
+    }
+  }
+  return ids;
+}
+
+function splitIdFor(paneIds: string[]) {
+  return `split-${paneIds.join("-")}`;
+}
+
+function equalSizes(paneIds: string[]) {
+  const size = paneIds.length > 0 ? 1 / paneIds.length : 1;
+  return Object.fromEntries(paneIds.map((paneId) => [paneId, size]));
+}
+
+export function normalizePaneSplitsForPanes(
+  splits: PaneSplitInfo[],
+  panes: PaneInfo[],
+): PaneSplitInfo[] {
+  const used = new Set<string>();
+  const usedSplitIds = new Set<string>();
+  const normalized: PaneSplitInfo[] = [];
+
+  for (const split of splits) {
+    if (!split.id || usedSplitIds.has(split.id)) {
+      continue;
+    }
+    const paneIds = orderedContiguousPaneIds(
+      panes,
+      split.paneIds.filter((paneId) => !used.has(paneId)),
+    );
+    if (!paneIds) {
+      continue;
+    }
+    for (const paneId of paneIds) {
+      used.add(paneId);
+    }
+    usedSplitIds.add(split.id);
+    normalized.push({
+      id: split.id,
+      paneIds,
+      sizes: Object.fromEntries(
+        Object.entries(split.sizes ?? {}).filter(
+          ([paneId, size]) => paneIds.includes(paneId) && Number.isFinite(size) && size > 0,
+        ),
+      ),
+    });
+  }
+
+  return normalized;
+}
+
+export function paneSplitForPane(splits: PaneSplitInfo[], paneId: string | null | undefined) {
+  if (!paneId) {
+    return null;
+  }
+  return splits.find((split) => split.paneIds.includes(paneId)) ?? null;
+}
+
+export function adjacentPaneBelow(panes: PaneInfo[], pane: PaneInfo | null | undefined) {
+  if (!pane) {
+    return null;
+  }
+  const groupPanes = panes.filter((candidate) => candidate.groupId === pane.groupId);
+  const index = groupPanes.findIndex((candidate) => candidate.id === pane.id);
+  return index >= 0 ? (groupPanes[index + 1] ?? null) : null;
+}
+
+export function joinPaneSplit(
+  splits: PaneSplitInfo[],
+  panes: PaneInfo[],
+  paneId: string,
+  belowPaneId: string,
+): PaneSplitInfo[] {
+  const normalized = normalizePaneSplitsForPanes(splits, panes);
+  // Use the raw split membership here, not only the already-normalized groups.
+  // `Split below` inserts a new tab between existing split members, so the old
+  // group can be temporarily non-contiguous in the new tab order until this merge
+  // builds the replacement group.
+  const existing = splits.filter(
+    (split) => split.paneIds.includes(paneId) || split.paneIds.includes(belowPaneId),
+  );
+  const paneIds = orderedContiguousPaneIds(
+    panes,
+    existing.flatMap((split) => split.paneIds).concat([paneId, belowPaneId]),
+  );
+  if (!paneIds) {
+    return normalized;
+  }
+  const id = existing[0]?.id ?? splitIdFor(paneIds);
+  const existingPaneIds = new Set(existing.flatMap((split) => split.paneIds));
+  const existingSplitIds = new Set(existing.map((split) => split.id));
+  return [
+    ...normalized.filter(
+      (split) =>
+        !existingSplitIds.has(split.id) &&
+        !split.paneIds.some((paneId) => existingPaneIds.has(paneId)),
+    ),
+    { id, paneIds, sizes: equalSizes(paneIds) },
+  ];
+}
+
+export function removePaneFromSplit(
+  splits: PaneSplitInfo[],
+  panes: PaneInfo[],
+  paneId: string,
+): PaneSplitInfo[] {
+  return normalizePaneSplitsForPanes(
+    splits.map((split) =>
+      split.paneIds.includes(paneId)
+        ? {
+            ...split,
+            paneIds: split.paneIds.filter((id) => id !== paneId),
+            sizes: Object.fromEntries(
+              Object.entries(split.sizes ?? {}).filter(([id]) => id !== paneId),
+            ),
+          }
+        : split,
+    ),
+    panes,
+  );
+}
+
+export function splitFractions(split: PaneSplitInfo): number[] {
+  const raw = split.paneIds.map((paneId) => split.sizes?.[paneId] ?? 0);
+  const total = raw.reduce(
+    (sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0),
+    0,
+  );
+  if (total <= 0) {
+    return split.paneIds.map(() => 1 / split.paneIds.length);
+  }
+  const clamped = raw.map((value) => Math.max(MIN_SPLIT_FRACTION, value / total));
+  const clampedTotal = clamped.reduce((sum, value) => sum + value, 0);
+  return clamped.map((value) => value / clampedTotal);
+}
+
+export function resizeSplitFractions(
+  split: PaneSplitInfo,
+  dividerIndex: number,
+  deltaFraction: number,
+): PaneSplitInfo {
+  const fractions = splitFractions(split);
+  if (dividerIndex < 0 || dividerIndex >= fractions.length - 1) {
+    return split;
+  }
+  const before = fractions[dividerIndex];
+  const after = fractions[dividerIndex + 1];
+  const pairTotal = before + after;
+  const nextBefore = Math.min(
+    pairTotal - MIN_SPLIT_FRACTION,
+    Math.max(MIN_SPLIT_FRACTION, before + deltaFraction),
+  );
+  fractions[dividerIndex] = nextBefore;
+  fractions[dividerIndex + 1] = pairTotal - nextBefore;
+  const total = fractions.reduce((sum, value) => sum + value, 0);
+  return {
+    ...split,
+    sizes: Object.fromEntries(
+      split.paneIds.map((paneId, index) => [paneId, fractions[index] / total]),
+    ),
+  };
+}
+
+export function paneSplitsEqual(a: PaneSplitInfo[], b: PaneSplitInfo[]) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}

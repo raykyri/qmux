@@ -1,4 +1,4 @@
-use crate::state::{PaneInfo, QueuedTurn, RecentSessionInfo};
+use crate::state::{PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use crate::workspace::{AgentInfo, GroupInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,6 +48,10 @@ pub struct PersistedState {
     /// queues and transcripts.
     #[serde(default)]
     pub drafts: HashMap<String, String>,
+    /// Vertical terminal split groups. Each group glues adjacent pane tabs into a
+    /// shared top-to-bottom terminal viewport; older state files simply have none.
+    #[serde(default)]
+    pub pane_splits: Vec<PaneSplitInfo>,
 }
 
 impl Default for PersistedState {
@@ -62,6 +66,7 @@ impl Default for PersistedState {
             queues: HashMap::new(),
             recent_sessions: Vec::new(),
             drafts: HashMap::new(),
+            pane_splits: Vec::new(),
         }
     }
 }

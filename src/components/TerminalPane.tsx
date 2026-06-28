@@ -17,7 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getPaneScrollback, pastePaneInput, resizePane, writePane } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
@@ -35,7 +35,9 @@ import {
 
 interface TerminalPaneProps {
   pane: PaneInfo;
+  visible?: boolean;
   active: boolean;
+  style?: CSSProperties;
   fontSize: number;
   fontFamily: string;
   /** Extra inter-character spacing in px, passed to xterm's `letterSpacing`. */
@@ -73,6 +75,7 @@ interface TerminalPaneProps {
   onSelectionCopied?: (paneId: string) => void;
   /** Called when xterm parses an OSC 0/2 window-title update from PTY output. */
   onTerminalTitleChange?: (paneId: string, title: string) => void;
+  onActivate?: (paneId: string) => void;
 }
 
 // Matches http(s)/mailto URLs in terminal text. Conservative: stops at whitespace and a few
@@ -371,7 +374,9 @@ const TERMINAL_THEME: ITheme = {
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
   {
     pane,
+    visible: visibleProp,
     active,
+    style,
     fontSize,
     fontFamily,
     letterSpacing,
@@ -394,9 +399,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     onAskSelection,
     onSelectionCopied,
     onTerminalTitleChange,
+    onActivate,
   },
   ref,
 ) {
+  const visible = visibleProp ?? active;
   // The setup effect runs once (keyed on pane.id) and closes over its render's
   // font settings; read the latest values through refs so a terminal created
   // while the user has changed the font/size opens with the current choice.
@@ -447,8 +454,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onSelectionCopiedRef.current = onSelectionCopied;
   const onTerminalTitleChangeRef = useRef(onTerminalTitleChange);
   onTerminalTitleChangeRef.current = onTerminalTitleChange;
-  const activeRef = useRef(active);
-  activeRef.current = active;
+  const onActivateRef = useRef(onActivate);
+  onActivateRef.current = onActivate;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   // In-app confirm (window.confirm is a no-op in the webview), reached from the
   // paste handler inside the once-per-pane setup effect via a ref so it stays current.
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -909,14 +918,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       };
       const fitAndSyncSize = () => {
         if (
-          !activeRef.current ||
+          !visibleRef.current ||
           hostEl.offsetParent === null ||
           hostEl.clientWidth === 0 ||
           hostEl.clientHeight === 0
         ) {
-          // Only the active pane should drive terminal layout. Hidden panes can
-          // still receive ResizeObserver callbacks as the app grid changes; fitting
-          // them while invisible can reflow scrollback before the user returns.
+          // Only visible panes should drive terminal layout. Hidden panes can still
+          // receive ResizeObserver callbacks as the app grid changes; fitting them
+          // while invisible can reflow scrollback before the user returns.
           return;
         }
         fit.fit();
@@ -1283,13 +1292,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       captureTerminalScroll(terminal);
     };
 
-    if (!active) {
+    if (!visible) {
       captureTerminalScroll();
       return;
     }
 
-    terminalRef.current?.focus();
     stabilizeTerminalRef.current?.();
+    if (!active) {
+      return;
+    }
+
+    terminalRef.current?.focus();
     restoreSavedViewport();
     const frame = requestAnimationFrame(restoreSavedViewport);
     const settle = window.setTimeout(restoreSavedViewport, 80);
@@ -1298,7 +1311,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       window.clearTimeout(settle);
       captureTerminalScroll();
     };
-  }, [active, pane.id, captureTerminalScroll]);
+  }, [active, visible, pane.id, captureTerminalScroll]);
 
   // Apply live terminal settings to an already-open terminal, then re-fit when
   // cell metrics change so rows/cols and the PTY size track the new grid.
@@ -1378,7 +1391,12 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const hasMatches = searchResults.count > 0;
 
   return (
-    <div className={`terminal-pane ${active ? "is-active" : ""}`} aria-hidden={!active}>
+    <div
+      className={`terminal-pane ${visible ? "is-visible" : ""} ${active ? "is-focused" : ""}`}
+      aria-hidden={!visible}
+      style={style}
+      onPointerDown={() => onActivateRef.current?.(pane.id)}
+    >
       <div ref={hostRef} className="terminal-host">
         <div ref={mountRef} className="terminal-mount" />
       </div>
