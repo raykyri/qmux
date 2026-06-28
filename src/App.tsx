@@ -25,6 +25,7 @@ import {
   MessageSquareText,
   Minus,
   MoreHorizontal,
+  Pencil,
   Plus,
   Settings,
   SquareTerminal,
@@ -161,6 +162,7 @@ import {
   pickGroupDirectory,
   removeQueuedAgentTurn,
   removeGroup,
+  renameGroup,
   renamePane,
   restoreLastClosedPane,
   setLauncherAdapterPreference,
@@ -975,6 +977,7 @@ export default function App() {
   const [exitPreflightRequest, setExitPreflightRequest] =
     useState<ExitPreflightRequest | null>(null);
   const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
+  const [renameGroupId, setRenameGroupId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
@@ -1773,7 +1776,7 @@ export default function App() {
 
     const snapshotGroups = groups.map((group) => ({
       id: group.id,
-      label: middleTruncatePath(formatPaneDir(group.dir)),
+      label: group.nameOverride?.trim() || middleTruncatePath(formatPaneDir(group.dir)),
       tabs: panes.filter((pane) => pane.groupId === group.id).map(tabForPane),
     }));
     const orphanTabs = panes.filter((pane) => !groupedPaneIds.has(pane.id)).map(tabForPane);
@@ -1984,11 +1987,13 @@ export default function App() {
     return `…${tail.slice(-Math.max(4, maxChars - 1))}`;
   }
 
-  // The group header shows just the folder we're in (its basename) — group.name is a
-  // generated id like "group-1", so the directory's final segment is the human label.
-  function groupFolderName(group: GroupInfo): string {
+  function defaultGroupName(group: GroupInfo): string {
     const base = group.dir.split("/").filter(Boolean).pop();
     return base && base.length > 0 ? base : formatPaneDir(group.dir);
+  }
+
+  function displayGroupName(group: GroupInfo): string {
+    return group.nameOverride?.trim() || defaultGroupName(group);
   }
 
   function launchGroupId() {
@@ -2837,10 +2842,59 @@ export default function App() {
   function openRenameDialog(pane: PaneInfo) {
     const paneAgent = agents.find((agent) => agent.paneId === pane.id);
     setRenameValue(displayPaneTitle(pane, paneAgent));
+    setRenameGroupId(null);
     setRenamePaneId(pane.id);
   }
 
+  function openGroupRenameDialog(group: GroupInfo) {
+    setRenameValue(displayGroupName(group));
+    setRenamePaneId(null);
+    setRenameGroupId(group.id);
+  }
+
+  function closeRenameDialog() {
+    setRenamePaneId(null);
+    setRenameGroupId(null);
+  }
+
   async function submitRename() {
+    const groupId = renameGroupId;
+    if (groupId) {
+      const title = renameValue.trim();
+      const previous = groups.find((group) => group.id === groupId);
+      const clearingUserTitle = title.length === 0;
+      const nextNameOverride = clearingUserTitle ? null : title;
+      closeRenameDialog();
+      if (!previous) {
+        return;
+      }
+      const previousNameOverride = previous.nameOverride?.trim() || null;
+      if (
+        previousNameOverride === nextNameOverride ||
+        (previousNameOverride === null && nextNameOverride === defaultGroupName(previous))
+      ) {
+        return;
+      }
+
+      setGroups((current) =>
+        current.map((group) =>
+          group.id === groupId ? { ...group, nameOverride: nextNameOverride } : group,
+        ),
+      );
+      try {
+        const updated = await renameGroup(groupId, nextNameOverride);
+        setGroups((current) =>
+          current.map((group) => (group.id === groupId ? updated : group)),
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setGroups((current) =>
+          current.map((group) => (group.id === groupId ? previous : group)),
+        );
+      }
+      return;
+    }
+
     const paneId = renamePaneId;
     if (!paneId) {
       return;
@@ -2853,7 +2907,7 @@ export default function App() {
       ? (previous ? (defaultPaneTitle(previous, paneAgent, config) ?? previous.title) : "")
       : title;
     const previousWasManuallyTitled = manuallyTitledPaneIds.has(paneId);
-    setRenamePaneId(null);
+    closeRenameDialog();
     if (!previous) {
       return;
     }
@@ -2976,7 +3030,7 @@ export default function App() {
     const groupPanes = panesRef.current.filter((pane) => pane.groupId === group.id);
     await continueGroupClose({
       groupId: group.id,
-      groupName: groupFolderName(group),
+      groupName: displayGroupName(group),
       remainingPaneIds: groupPanes.map((pane) => pane.id),
       totalCount: groupPanes.length,
     });
@@ -3601,12 +3655,12 @@ export default function App() {
   // Focus and select the name when the rename dialog opens, so the user can type
   // a new name straight away.
   useEffect(() => {
-    if (renamePaneId) {
+    if (renamePaneId || renameGroupId) {
       const input = renameInputRef.current;
       input?.focus();
       input?.select();
     }
-  }, [renamePaneId]);
+  }, [renamePaneId, renameGroupId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4638,7 +4692,7 @@ export default function App() {
             const groupPanes = panes.filter((pane) => pane.groupId === group.id);
             const hasGroupPanes = groupPanes.length > 0;
             const isActiveGroup = activePane?.groupId === group.id;
-            const folderName = groupFolderName(group);
+            const groupDisplayName = displayGroupName(group);
             return (
               <section
                 key={group.id}
@@ -4650,13 +4704,23 @@ export default function App() {
                 <div className="pane-group-header" title={group.dir}>
                   <span className="pane-group-title">
                     <Folder className="pane-group-folder" size={13} aria-hidden="true" />
-                    <span className="pane-group-name">{folderName}</span>
+                    <span
+                      className="pane-group-name"
+                      title={groupDisplayName}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openGroupRenameDialog(group);
+                      }}
+                    >
+                      {groupDisplayName}
+                    </span>
                   </span>
                   <span className="pane-group-aux">
                     <button
                       type="button"
                       className="pane-group-menu-button"
-                      aria-label={`Group options for ${folderName}`}
+                      aria-label={`Group options for ${groupDisplayName}`}
                       title="Group options"
                       onClick={(event) => openGroupMenu(event, group)}
                     >
@@ -4739,6 +4803,17 @@ export default function App() {
             >
               <Folder size={13} aria-hidden="true" />
               <span>Change directory</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setGroupMenu(null);
+                openGroupRenameDialog(groupMenuGroup);
+              }}
+            >
+              <Pencil size={13} aria-hidden="true" />
+              <span>Rename group</span>
             </button>
             {settings.codeMode ? (
               <button
@@ -5711,13 +5786,13 @@ export default function App() {
         </div>
       ) : null}
 
-      {renamePaneId ? (
+      {renamePaneId || renameGroupId ? (
         <div
           className="confirm-dialog-backdrop"
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setRenamePaneId(null);
+              closeRenameDialog();
             }
           }}
         >
@@ -5731,7 +5806,7 @@ export default function App() {
               void submitRename();
             }}
           >
-            <h2 id="rename-dialog-title">Rename tab</h2>
+            <h2 id="rename-dialog-title">{renameGroupId ? "Rename group" : "Rename tab"}</h2>
             <input
               ref={renameInputRef}
               className="rename-dialog-input"
@@ -5740,13 +5815,13 @@ export default function App() {
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  setRenamePaneId(null);
+                  closeRenameDialog();
                 }
               }}
-              aria-label="Tab name"
+              aria-label={renameGroupId ? "Group name" : "Tab name"}
             />
             <div className="confirm-dialog-actions">
-              <button type="button" onClick={() => setRenamePaneId(null)}>
+              <button type="button" onClick={closeRenameDialog}>
                 Cancel
               </button>
               <button type="submit">Rename</button>

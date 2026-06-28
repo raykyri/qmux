@@ -3079,6 +3079,7 @@ mod tests {
         GroupInfo {
             id: "group-1".to_string(),
             name: "group-1".to_string(),
+            name_override: None,
             dir: "/tmp/work".to_string(),
             managed_dir: "/tmp/qmux-workspaces/group-1".to_string(),
             base_repo: Some("/tmp/repo".to_string()),

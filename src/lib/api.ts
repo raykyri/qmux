@@ -137,6 +137,10 @@ export function removeGroup(groupId: string) {
   return invoke<void>("group_remove", { groupId });
 }
 
+export function renameGroup(groupId: string, name: string | null) {
+  return invoke<GroupInfo>("group_rename", { groupId, name });
+}
+
 export function pickGroupDirectory(groupId: string) {
   return invoke<GroupInfo | null>("group_pick_dir", { groupId });
 }

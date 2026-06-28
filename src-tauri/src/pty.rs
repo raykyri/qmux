@@ -1517,6 +1517,7 @@ mod tests {
                 GroupInfo {
                     id: "group-1".to_string(),
                     name: "group".to_string(),
+                    name_override: None,
                     dir: workspace.to_string_lossy().to_string(),
                     managed_dir: workspace.join("managed").to_string_lossy().to_string(),
                     base_repo: Some(repo.to_string_lossy().to_string()),
