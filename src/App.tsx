@@ -184,7 +184,6 @@ import type {
   TranscriptOption,
   Turn,
   WaitTarget,
-  WorktreeStatus,
 } from "./types";
 import type { ShowHideShortcutSetting } from "./lib/api";
 
@@ -875,9 +874,6 @@ export default function App() {
   >({});
   const [turns, setTurns] = useState<Turn[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
-  const [worktreeStatusByAgent, setWorktreeStatusByAgent] = useState<
-    Record<string, WorktreeStatus>
-  >({});
   const [hookEventsByAgent, setHookEventsByAgent] = useState<
     Record<string, TranscriptHookEvent[]>
   >({});
@@ -1216,7 +1212,6 @@ export default function App() {
       const next = Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     };
-    setWorktreeStatusByAgent(pruneRecord);
     setHookEventsByAgent(pruneRecord);
     setTranscriptNoticeByAgent(pruneRecord);
     setTranscriptOptionsByAgent(pruneRecord);
@@ -2293,50 +2288,6 @@ export default function App() {
     window.addEventListener("focus", handleFocus);
     return () => window.removeEventListener("focus", handleFocus);
   }, [activePaneId]);
-
-  useEffect(() => {
-    const doneWorktreeAgents = agents.filter((agent) => agent.status === "done");
-    const doneWorktreeAgentIds = new Set(doneWorktreeAgents.map((agent) => agent.id));
-
-    setWorktreeStatusByAgent((current) => {
-      let changed = false;
-      const next: Record<string, WorktreeStatus> = {};
-      for (const [agentId, status] of Object.entries(current)) {
-        if (doneWorktreeAgentIds.has(agentId)) {
-          next[agentId] = status;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
-
-    let cancelled = false;
-    for (const agent of doneWorktreeAgents) {
-      if (worktreeStatusByAgent[agent.id]) {
-        continue;
-      }
-      void worktreeStatus(agent.id)
-        .then((status) => {
-          if (cancelled) {
-            return;
-          }
-          setWorktreeStatusByAgent((current) => ({ ...current, [agent.id]: status }));
-        })
-        .catch(() => {
-          if (cancelled) {
-            return;
-          }
-          setWorktreeStatusByAgent((current) => ({
-            ...current,
-            [agent.id]: { hasChanges: false, changedFiles: 0 },
-          }));
-        });
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [agents, worktreeStatusByAgent]);
 
   // Routes a decoded PTY chunk from the app's single event subscription to the
   // pane that owns it. Stable so TerminalPane's attach effect doesn't re-run.
@@ -4186,7 +4137,6 @@ export default function App() {
     const paneAgent = agents.find((agent) => agent.paneId === pane.id);
     const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
     const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
-    const paneAgentWorktreeStatus = paneAgent ? worktreeStatusByAgent[paneAgent.id] : undefined;
     const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
     const paneAgentStatusClass =
       paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
@@ -4201,7 +4151,7 @@ export default function App() {
     );
     const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
     const rawStatus = paneAgent
-      ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
+      ? agentStatusLabel(paneAgent.status)
       : statusLabel(pane.status);
     const paneStatus =
       (paneAgent?.status === "running" || paneAgent?.status === "idle") && paneQueueCount > 0
@@ -4590,10 +4540,7 @@ export default function App() {
               >
                 <dt>Agent status</dt>
                 <dd>
-                  {agentStatusLabel(
-                    contextMenuAgent.status,
-                    worktreeStatusByAgent[contextMenuAgent.id],
-                  ) ?? "Idle"}
+                  {agentStatusLabel(contextMenuAgent.status) ?? "Idle"}
                 </dd>
               </div>
             ) : null}

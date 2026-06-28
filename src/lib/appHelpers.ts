@@ -11,7 +11,6 @@ import type {
   TranscriptCopyPayload,
   TranscriptHookEvent,
   Turn,
-  WorktreeStatus,
 } from "../types";
 
 const TRANSCRIPT_COPY_VERSION = 1;
@@ -202,7 +201,7 @@ export function statusLabel(status: PaneInfo["status"]) {
   }
 }
 
-export function agentStatusLabel(status: AgentInfo["status"], reviewStatus?: WorktreeStatus | null) {
+export function agentStatusLabel(status: AgentInfo["status"]) {
   switch (status) {
     case "starting":
       return "Starting";
@@ -213,16 +212,12 @@ export function agentStatusLabel(status: AgentInfo["status"], reviewStatus?: Wor
     case "awaitingPermission":
       return "Approval needed";
     case "done":
-      return reviewStatus?.hasChanges ? changedFilesLabel(reviewStatus.changedFiles) : "Done";
+      return "Done";
     case "idle":
       return null;
     case "failed":
       return "Failed";
   }
-}
-
-function changedFilesLabel(count: number) {
-  return `${count} file${count === 1 ? "" : "s"} changed`;
 }
 
 // Maps an agent status onto the status-dot tones used by the pane detail popover.
