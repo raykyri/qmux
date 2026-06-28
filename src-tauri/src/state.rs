@@ -1622,21 +1622,6 @@ impl AppState {
         self.enqueue_agent_queued_turn(agent_id, QueuedTurn::new(data))
     }
 
-    pub fn enqueue_agent_wait_turn(
-        &self,
-        agent_id: &str,
-        data: String,
-        wait_for_agent_id: &str,
-    ) -> Result<usize, String> {
-        self.enqueue_agent_wait_turn_with_target_label(
-            agent_id,
-            data,
-            wait_for_agent_id,
-            None,
-            None,
-        )
-    }
-
     pub fn enqueue_agent_wait_turn_with_target_label(
         &self,
         agent_id: &str,
@@ -1847,32 +1832,6 @@ impl AppState {
         };
         self.persist();
         Ok(queued_turns)
-    }
-
-    pub fn pop_agent_turn(&self, agent_id: &str) -> Result<Option<(QueuedTurn, usize)>, String> {
-        let popped = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let Some(queue) = model.agent_turn_queues.get_mut(agent_id) else {
-                return Ok(None);
-            };
-            let Some(data) = queue.pop_front() else {
-                return Ok(None);
-            };
-            let pending_count = queue.len();
-            if queue.is_empty() {
-                model.agent_turn_queues.remove(agent_id);
-                if let Some(agent) = model.agents.get_mut(agent_id) {
-                    agent.orphaned_queue_pane_id = None;
-                }
-            }
-            (data, pending_count)
-        };
-        self.persist();
-        Ok(Some(popped))
     }
 
     pub fn pop_ready_agent_turn(
@@ -2966,6 +2925,21 @@ mod tests {
         }
     }
 
+    fn enqueue_wait_turn(
+        state: &AppState,
+        agent_id: &str,
+        data: &str,
+        wait_for_agent_id: &str,
+    ) -> Result<usize, String> {
+        state.enqueue_agent_wait_turn_with_target_label(
+            agent_id,
+            data.to_string(),
+            wait_for_agent_id,
+            None,
+            None,
+        )
+    }
+
     #[test]
     fn recent_session_round_trips_through_persistence() {
         let workspace = temp_workspace();
@@ -3116,7 +3090,7 @@ mod tests {
                 state.list_agent_turn_queue("agent-1").unwrap(),
                 vec!["first".to_string(), "third".to_string()]
             );
-            let (data, pending) = state.pop_agent_turn("agent-1").unwrap().unwrap();
+            let (data, pending) = state.pop_ready_agent_turn("agent-1").unwrap().unwrap();
             assert_eq!(data.text, "first");
             assert_eq!(pending, 1);
             data.text
@@ -3149,9 +3123,7 @@ mod tests {
         state.insert_agent(target).unwrap();
         state.insert_pane(target_pane).unwrap();
 
-        state
-            .enqueue_agent_wait_turn("source", "after target".to_string(), "target")
-            .unwrap();
+        enqueue_wait_turn(&state, "source", "after target", "target").unwrap();
         assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
 
         state
@@ -3187,9 +3159,7 @@ mod tests {
         state.insert_agent(target).unwrap();
         state.insert_pane(target_pane).unwrap();
 
-        state
-            .enqueue_agent_wait_turn("source", "after target".to_string(), "target")
-            .unwrap();
+        enqueue_wait_turn(&state, "source", "after target", "target").unwrap();
         state
             .enqueue_agent_turn("source", "then this".to_string())
             .unwrap();
@@ -3226,9 +3196,7 @@ mod tests {
         state
             .enqueue_agent_turn("target", "target queued".to_string())
             .unwrap();
-        state
-            .enqueue_agent_wait_turn("source", "after target".to_string(), "target")
-            .unwrap();
+        enqueue_wait_turn(&state, "source", "after target", "target").unwrap();
 
         assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
 
@@ -3318,9 +3286,7 @@ mod tests {
         state.insert_agent(source).unwrap();
         state.insert_agent(target).unwrap();
 
-        state
-            .enqueue_agent_wait_turn("source", "after close".to_string(), "target")
-            .unwrap();
+        enqueue_wait_turn(&state, "source", "after close", "target").unwrap();
         let (turn, pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
         assert_eq!(turn.text, "after close");
         assert_eq!(pending, 0);
@@ -3344,12 +3310,8 @@ mod tests {
         state.insert_pane(pane_a).unwrap();
         state.insert_pane(pane_b).unwrap();
 
-        state
-            .enqueue_agent_wait_turn("agent-a", "wait a".to_string(), "agent-b")
-            .unwrap();
-        let err = state
-            .enqueue_agent_wait_turn("agent-b", "wait b".to_string(), "agent-a")
-            .unwrap_err();
+        enqueue_wait_turn(&state, "agent-a", "wait a", "agent-b").unwrap();
+        let err = enqueue_wait_turn(&state, "agent-b", "wait b", "agent-a").unwrap_err();
         assert!(err.contains("cycle"));
     }
 
@@ -3373,12 +3335,8 @@ mod tests {
         state.insert_pane(pane_a).unwrap();
         state.insert_pane(pane_b).unwrap();
 
-        state
-            .enqueue_agent_wait_turn("agent-b", "wait for a".to_string(), "agent-a")
-            .unwrap();
-        let err = state
-            .enqueue_agent_wait_turn("agent-a", "wait for b".to_string(), "agent-b")
-            .unwrap_err();
+        enqueue_wait_turn(&state, "agent-b", "wait for a", "agent-a").unwrap();
+        let err = enqueue_wait_turn(&state, "agent-a", "wait for b", "agent-b").unwrap_err();
         assert!(err.contains("cycle"));
     }
 
@@ -3401,9 +3359,7 @@ mod tests {
             state.insert_agent(source).unwrap();
             state.insert_agent(target).unwrap();
             state.insert_pane(target_pane).unwrap();
-            state
-                .enqueue_agent_wait_turn("source", "persisted wait".to_string(), "target")
-                .unwrap();
+            enqueue_wait_turn(&state, "source", "persisted wait", "target").unwrap();
         }
 
         let state = AppState::new(config);
