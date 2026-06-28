@@ -971,7 +971,13 @@ export default function App() {
   // Guards `submitAsk` against re-entry (held Cmd+Enter, a double-click) so a single
   // ask never sends twice or — worse, in "new thread" mode — forks twice.
   const askSubmittingRef = useRef(false);
-  const [error, setError] = useState<string | null>(null);
+  // Wrapped in an object (rather than a bare string) so that re-reporting the same
+  // message produces a fresh reference: the toast re-renders and its auto-dismiss
+  // timer restarts even when the error text is byte-identical to the last one.
+  const [error, setErrorState] = useState<{ message: string } | null>(null);
+  const setError = useCallback((message: string | null) => {
+    setErrorState(message === null ? null : { message });
+  }, []);
   const [appToast, setAppToast] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
@@ -6112,7 +6118,7 @@ export default function App() {
       ) : null}
       {error ? (
         <div className="error-toast" role="alert" aria-live="assertive">
-          <span className="error-toast-message">{error}</span>
+          <span className="error-toast-message">{error.message}</span>
           <button
             type="button"
             className="error-toast-dismiss"

@@ -2084,6 +2084,10 @@ button:disabled {
   font-size: 13px;
   line-height: 1.35;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  /* The toast is an overlay, not a click target: let clicks fall through to the
+     app beneath its band so it never blocks the titlebar or controls underneath.
+     Only the dismiss button opts back into receiving pointer events. */
+  pointer-events: none;
 }
 
 .error-toast-message {
@@ -2103,6 +2107,7 @@ button:disabled {
   padding: 2px 4px;
   cursor: pointer;
   opacity: 0.75;
+  pointer-events: auto;
 }
 
 .error-toast-dismiss:hover {
