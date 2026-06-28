@@ -1,8 +1,11 @@
 use std::{
+    cmp::Ordering,
     env,
     path::{Path, PathBuf},
     process::Command,
 };
+
+const MIN_SWIFT_DEPLOYMENT_TARGET: &str = "11.3";
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(qmux_foundation_models)");
@@ -25,7 +28,8 @@ fn build_foundation_title_bridge() {
     let module_cache = out_dir.join("swift-module-cache");
     let _ = std::fs::create_dir_all(&module_cache);
     let lib_path = out_dir.join("libqmux_foundation_title.a");
-    let target = swift_target_triple();
+    let deployment_target = swift_deployment_target();
+    let target = swift_target_triple(&deployment_target);
 
     let mut failures = Vec::new();
     for (swiftc, sdk_path) in swift_toolchain_candidates() {
@@ -41,6 +45,7 @@ fn build_foundation_title_bridge() {
         }
 
         let output = Command::new(&swiftc)
+            .env("MACOSX_DEPLOYMENT_TARGET", &deployment_target)
             .arg("-parse-as-library")
             .arg("-O")
             .arg("-emit-library")
@@ -99,7 +104,7 @@ fn is_release_build() -> bool {
     env::var("PROFILE").ok().as_deref() == Some("release")
 }
 
-fn swift_target_triple() -> String {
+fn swift_target_triple(deployment_target: &str) -> String {
     let arch = match env::var("CARGO_CFG_TARGET_ARCH")
         .unwrap_or_default()
         .as_str()
@@ -107,8 +112,48 @@ fn swift_target_triple() -> String {
         "aarch64" => "arm64".to_string(),
         other => other.to_string(),
     };
-    let min_version = env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "13.0".to_string());
-    format!("{arch}-apple-macosx{min_version}")
+    format!("{arch}-apple-macosx{deployment_target}")
+}
+
+fn swift_deployment_target() -> String {
+    let requested = env::var("MACOSX_DEPLOYMENT_TARGET")
+        .ok()
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| "13.0".to_string());
+
+    if compare_macos_versions(&requested, MIN_SWIFT_DEPLOYMENT_TARGET) == Some(Ordering::Less) {
+        MIN_SWIFT_DEPLOYMENT_TARGET.to_string()
+    } else {
+        requested
+    }
+}
+
+fn compare_macos_versions(left: &str, right: &str) -> Option<Ordering> {
+    let left = parse_macos_version(left)?;
+    let right = parse_macos_version(right)?;
+    let length = left.len().max(right.len());
+
+    for index in 0..length {
+        let left_part = left.get(index).copied().unwrap_or_default();
+        let right_part = right.get(index).copied().unwrap_or_default();
+        match left_part.cmp(&right_part) {
+            Ordering::Equal => {}
+            ordering => return Some(ordering),
+        }
+    }
+
+    Some(Ordering::Equal)
+}
+
+fn parse_macos_version(version: &str) -> Option<Vec<u32>> {
+    let parts = version
+        .trim()
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+
+    (!parts.is_empty()).then_some(parts)
 }
 
 fn swift_toolchain_candidates() -> Vec<(PathBuf, PathBuf)> {
