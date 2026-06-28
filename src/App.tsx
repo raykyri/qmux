@@ -3396,24 +3396,18 @@ export default function App() {
       }
 
       setExitPreflightRequest(null);
-      if (promptDialogs.length === 0) {
+      const paneCount = Math.max(
+        exitPreflightRequest.paneCount,
+        paneSnapshot.length,
+        promptDialogs.length,
+      );
+      if (paneCount === 0) {
         setExitDialog(null);
-        setError(null);
-        flushPendingDrafts();
-        try {
-          await confirmAppExit();
-        } catch (err) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
         return;
       }
 
       setExitDialog({
-        paneCount: Math.max(
-          exitPreflightRequest.paneCount,
-          paneSnapshot.length,
-          promptDialogs.length,
-        ),
+        paneCount,
         promptPaneCount: promptDialogs.length,
       });
     };
@@ -6067,9 +6061,13 @@ export default function App() {
           >
             <h2 id="exit-dialog-title">Quit qmux?</h2>
             <p>
-              {exitDialog.promptPaneCount === 1
-                ? "1 tab would ask for confirmation before closing."
-                : `${exitDialog.promptPaneCount} tabs would ask for confirmation before closing.`}{" "}
+              {exitDialog.promptPaneCount > 0 ? (
+                <>
+                  {exitDialog.promptPaneCount === 1
+                    ? "1 tab would ask for confirmation before closing."
+                    : `${exitDialog.promptPaneCount} tabs would ask for confirmation before closing.`}{" "}
+                </>
+              ) : null}
               Quitting will close{" "}
               {exitDialog.paneCount === 1 ? "the open tab" : `all ${exitDialog.paneCount} tabs`}{" "}
               and stop any running agents or processes.
