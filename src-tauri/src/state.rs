@@ -152,6 +152,10 @@ pub struct ClosedPaneSnapshot {
     pub pane: PaneInfo,
     pub group: Option<GroupInfo>,
     pub agent: Option<ClosedPaneAgentSnapshot>,
+    /// Orphaned-queue agents the group still owned when this — its last — pane closed.
+    /// Empty when sibling panes remained (the group lived on, so its agents stayed put).
+    /// Restoring the pane reinserts these alongside it so the whole group comes back.
+    pub extra_agents: Vec<ClosedPaneAgentSnapshot>,
     pub index: usize,
     pub scrollback: Vec<u8>,
 }
@@ -1068,6 +1072,22 @@ impl AppState {
             pane.depth = model.pane_depth.get(pane_id).copied().unwrap_or(0);
             let group = model.groups.get(&pane.group_id).cloned();
 
+            let snapshot_agent = |agent: AgentInfo| {
+                let turns = model.turns.get(&agent.id).cloned().unwrap_or_default();
+                let queued_turns = model
+                    .agent_turn_queues
+                    .get(&agent.id)
+                    .map(|queue| queue.iter().cloned().collect())
+                    .unwrap_or_default();
+                let draft = model.agent_drafts.get(&agent.id).cloned();
+                ClosedPaneAgentSnapshot {
+                    agent,
+                    turns,
+                    queued_turns,
+                    draft,
+                }
+            };
+
             let pane_agent_id = pane.agent_id.clone();
             let agent = pane_agent_id
                 .as_deref()
@@ -1079,26 +1099,36 @@ impl AppState {
                         .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
                 })
                 .cloned()
-                .map(|agent| {
-                    let turns = model.turns.get(&agent.id).cloned().unwrap_or_default();
-                    let queued_turns = model
-                        .agent_turn_queues
-                        .get(&agent.id)
-                        .map(|queue| queue.iter().cloned().collect())
-                        .unwrap_or_default();
-                    let draft = model.agent_drafts.get(&agent.id).cloned();
-                    ClosedPaneAgentSnapshot {
-                        agent,
-                        turns,
-                        queued_turns,
-                        draft,
-                    }
-                });
+                .map(&snapshot_agent);
+
+            // When this is the group's last pane, the group (and every agent it still
+            // owns) goes away with it — so capture the orphaned-queue siblings too, lest
+            // restoring the pane bring back the group but silently drop their queues.
+            let own_agent_id = agent.as_ref().map(|snapshot| snapshot.agent.id.clone());
+            let is_last_pane = !model
+                .panes
+                .values()
+                .any(|other| other.info.id != pane_id && other.info.group_id == pane.group_id);
+            let extra_agents = if is_last_pane {
+                model
+                    .agents
+                    .values()
+                    .filter(|agent| {
+                        agent.group_id == pane.group_id
+                            && own_agent_id.as_deref() != Some(agent.id.as_str())
+                    })
+                    .cloned()
+                    .map(&snapshot_agent)
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             ClosedPaneSnapshot {
                 pane,
                 group,
                 agent,
+                extra_agents,
                 index,
                 scrollback: Vec::new(),
             }
@@ -1245,6 +1275,41 @@ impl AppState {
                     }
                 }
             }
+
+            // Reinstate the group's other orphaned-queue agents, now hosted by the
+            // restored pane so their queues resurface in its orphaned-queue panel — the
+            // mirror of capturing them when the group's last pane closed.
+            for extra in &snapshot.extra_agents {
+                let mut agent = extra.agent.clone();
+                let has_queue = !extra.queued_turns.is_empty();
+                agent.pane_id = None;
+                agent.orphaned_queue_pane_id = has_queue.then(|| snapshot.pane.id.clone());
+                agent.status = AgentStatus::Idle;
+
+                let agent_id = agent.id.clone();
+                model.agents.insert(agent_id.clone(), agent);
+                if extra.turns.is_empty() {
+                    model.turns.remove(&agent_id);
+                } else {
+                    model.turns.insert(agent_id.clone(), extra.turns.clone());
+                }
+                if extra.queued_turns.is_empty() {
+                    model.agent_turn_queues.remove(&agent_id);
+                } else {
+                    model.agent_turn_queues.insert(
+                        agent_id.clone(),
+                        extra.queued_turns.iter().cloned().collect(),
+                    );
+                }
+                match extra.draft.clone().filter(|draft| !draft.trim().is_empty()) {
+                    Some(draft) => {
+                        model.agent_drafts.insert(agent_id, draft);
+                    }
+                    None => {
+                        model.agent_drafts.remove(&agent_id);
+                    }
+                }
+            }
         }
         self.persist();
         Ok(())
@@ -1296,43 +1361,69 @@ impl AppState {
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
 
-            // The pane is gone for good (kill or PTY EOF — never a respawn), so reclaim
-            // the agent it owned and its per-agent state, which would otherwise live for
-            // the rest of the process. Always drop the purely-runtime tracking; if the
-            // agent has no queued turns, drop it entirely (its transcript tail then
-            // self-stops, since `tail_should_continue` is false once the agent is gone).
-            // An agent with queued turns is kept so its queue stays restart-recoverable
-            // via the orphaned-queue panel.
-            if let Some(agent_id) = model
-                .agents
-                .values()
-                .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
-                .map(|agent| agent.id.clone())
-            {
-                if let Some(agent) = model.agents.get(&agent_id).cloned() {
-                    upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true);
+            // The pane is gone for good (kill or PTY EOF — never a respawn). What happens
+            // to the agents it leaves behind depends on whether this was the group's last
+            // pane.
+            let group_now_empty = removed_group_id
+                .as_deref()
+                .is_some_and(|group_id| !group_has_panes_locked(&model, group_id));
+            let removed_group_id = if group_now_empty {
+                // Closing the last pane closes the group with it, so no emptied group ever
+                // lingers blocking a later "Close group". Retire every agent the group
+                // still owns — the pane's own plus any orphaned-queue siblings — recording
+                // each in recent sessions (so it stays resumable) before dropping it. Their
+                // queues live on in the close snapshot, restored if the pane is reopened.
+                let group_id = removed_group_id.expect("group_now_empty implies a group id");
+                let removed = remove_group_with_agents_locked(&mut model, &group_id);
+                normalize_pane_depths(&mut model);
+                // Only signal a removal if a group object actually existed (it may not in
+                // a bare test fixture); the agents are retired either way.
+                removed.then_some(group_id)
+            } else {
+                // Sibling panes keep the group alive, so reclaim only this pane's own agent
+                // and its per-agent state, which would otherwise live for the rest of the
+                // process. Always drop the purely-runtime tracking; if the agent has no
+                // queued turns, drop it entirely (its transcript tail then self-stops, since
+                // `tail_should_continue` is false once the agent is gone). An agent with
+                // queued turns is kept so its queue stays restart-recoverable via the
+                // orphaned-queue panel.
+                if let Some(agent_id) = model
+                    .agents
+                    .values()
+                    .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
+                    .map(|agent| agent.id.clone())
+                {
+                    if let Some(agent) = model.agents.get(&agent_id).cloned() {
+                        upsert_recent_session_for_agent_locked(
+                            &mut model,
+                            &agent,
+                            now_millis(),
+                            true,
+                        );
+                    }
+                    clear_recent_session_binding_locked(&mut model, Some(&agent_id), Some(pane_id));
+                    model.agent_typing.remove(&agent_id);
+                    model.agent_pending_pause.remove(&agent_id);
+                    model.agent_draining.remove(&agent_id);
+                    model.agent_send_tracking.remove(&agent_id);
+                    let has_queue = model
+                        .agent_turn_queues
+                        .get(&agent_id)
+                        .is_some_and(|queue| !queue.is_empty());
+                    if !has_queue {
+                        model.agents.remove(&agent_id);
+                        model.turns.remove(&agent_id);
+                        model.agent_drafts.remove(&agent_id);
+                        model.agent_turn_queues.remove(&agent_id);
+                    }
                 }
-                clear_recent_session_binding_locked(&mut model, Some(&agent_id), Some(pane_id));
-                model.agent_typing.remove(&agent_id);
-                model.agent_pending_pause.remove(&agent_id);
-                model.agent_draining.remove(&agent_id);
-                model.agent_send_tracking.remove(&agent_id);
-                let has_queue = model
-                    .agent_turn_queues
-                    .get(&agent_id)
-                    .is_some_and(|queue| !queue.is_empty());
-                if !has_queue {
-                    model.agents.remove(&agent_id);
-                    model.turns.remove(&agent_id);
-                    model.agent_drafts.remove(&agent_id);
-                    model.agent_turn_queues.remove(&agent_id);
-                }
-            }
 
-            // Re-level any children orphaned by the removal so the tree stays valid
-            // (a closed parent must not leave its children at an unreachable depth).
-            normalize_pane_depths(&mut model);
-            removed_group_id.filter(|group_id| remove_group_if_empty_locked(&mut model, group_id))
+                // Re-level any children orphaned by the removal so the tree stays valid
+                // (a closed parent must not leave its children at an unreachable depth).
+                normalize_pane_depths(&mut model);
+                None
+            };
+            removed_group_id
         };
         // The pane's control-socket token is captured by its in-pane process as
         // QMUX_TOKEN; once the pane is gone for good it can never legitimately be used
@@ -1610,21 +1701,13 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
-            if model
-                .panes
-                .values()
-                .any(|pane| pane.info.group_id == group_id)
-            {
+            if group_has_panes_locked(&model, group_id) {
                 return Err("group still has open panes".to_string());
             }
-            if model
-                .agents
-                .values()
-                .any(|agent| agent.group_id == group_id)
-            {
-                return Err("group still has queued or recoverable agents".to_string());
-            }
-            remove_group_if_empty_locked(&mut model, group_id)
+            // A group with no panes owns no live work — any agents still tagged to it are
+            // orphaned leftovers that go away with it (their recent-session entries keep
+            // them resumable). Retire them rather than refusing the close.
+            remove_group_with_agents_locked(&mut model, group_id)
         };
         if removed {
             self.persist();
@@ -2910,20 +2993,47 @@ fn ordered_groups(model: &Model) -> Vec<GroupInfo> {
         .collect()
 }
 
-fn remove_group_if_empty_locked(model: &mut Model, group_id: &str) -> bool {
-    if model
+fn group_has_panes_locked(model: &Model, group_id: &str) -> bool {
+    model
         .panes
         .values()
         .any(|pane| pane.info.group_id == group_id)
-    {
+}
+
+/// Retire an agent that is going away for good: record it in recent sessions so it stays
+/// resumable, drop its purely-runtime tracking and recent-session bindings, and remove it
+/// and its turns, queue, and draft from the live model. The caller is responsible for any
+/// snapshotting needed to restore it (its transcript tail self-stops once it is gone).
+fn retire_agent_locked(model: &mut Model, agent_id: &str) {
+    if let Some(agent) = model.agents.get(agent_id).cloned() {
+        upsert_recent_session_for_agent_locked(model, &agent, now_millis(), true);
+    }
+    clear_recent_session_binding_locked(model, Some(agent_id), None);
+    model.agent_typing.remove(agent_id);
+    model.agent_pending_pause.remove(agent_id);
+    model.agent_draining.remove(agent_id);
+    model.agent_send_tracking.remove(agent_id);
+    model.agents.remove(agent_id);
+    model.turns.remove(agent_id);
+    model.agent_drafts.remove(agent_id);
+    model.agent_turn_queues.remove(agent_id);
+}
+
+/// Remove a group that has no panes, retiring any agents still tagged to it first.
+/// No-op (returns false) if the group still holds a pane. Returns whether a group object
+/// was actually removed, which gates the `group.removed` event.
+fn remove_group_with_agents_locked(model: &mut Model, group_id: &str) -> bool {
+    if group_has_panes_locked(model, group_id) {
         return false;
     }
-    if model
+    let agent_ids: Vec<String> = model
         .agents
         .values()
-        .any(|agent| agent.group_id == group_id)
-    {
-        return false;
+        .filter(|agent| agent.group_id == group_id)
+        .map(|agent| agent.id.clone())
+        .collect();
+    for agent_id in agent_ids {
+        retire_agent_locked(model, &agent_id);
     }
     let removed = model.groups.remove(group_id).is_some();
     model.group_order.retain(|id| id != group_id);
@@ -4122,10 +4232,13 @@ mod tests {
     }
 
     #[test]
-    fn remove_pane_keeps_its_agent_when_turns_are_queued() {
+    fn remove_pane_keeps_queued_agent_orphaned_while_sibling_panes_remain() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        // pane-7 hosts the queued agent; pane-1 is a sibling that keeps the group alive.
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
         state
             .enqueue_agent_turn("agent-1", "later".to_string())
@@ -4139,6 +4252,25 @@ mod tests {
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["later".to_string()]
         );
+    }
+
+    #[test]
+    fn remove_pane_retires_queued_agent_when_last_pane_closes() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "later".to_string())
+            .unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        // Closing the last pane closes the group, so its queued agent is retired with it
+        // rather than left orphaning an emptied group.
+        assert!(state.agent("agent-1").unwrap().is_none());
+        assert!(state.list_groups().unwrap().is_empty());
     }
 
     #[test]
@@ -4165,19 +4297,24 @@ mod tests {
     }
 
     #[test]
-    fn remove_pane_keeps_group_when_sibling_panes_or_agents_remain() {
+    fn remove_pane_keeps_group_only_while_sibling_panes_remain() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
         state.insert_group_after(sample_group(), None).unwrap();
         state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
         state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
 
+        // A sibling pane keeps the group alive...
         state.remove_pane("pane-1").unwrap();
         assert_eq!(state.list_groups().unwrap().len(), 1);
+
+        // ...but an orphaned agent does not: closing the last pane closes the group and
+        // retires the agent with it.
         state.insert_agent(sample_agent("agent-1")).unwrap();
         state.remove_pane("pane-2").unwrap();
 
-        assert_eq!(state.list_groups().unwrap().len(), 1);
+        assert!(state.list_groups().unwrap().is_empty());
+        assert!(state.agent("agent-1").unwrap().is_none());
     }
 
     #[test]
@@ -4197,24 +4334,71 @@ mod tests {
     }
 
     #[test]
-    fn remove_group_refuses_open_panes_and_recoverable_agents() {
+    fn closing_last_pane_captures_and_restores_orphaned_sibling_agents() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        // The pane being closed, bound to its own agent.
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        // An orphaned-queue sibling in the same group: no pane, a pending queue.
+        let mut sibling = sample_agent("agent-2");
+        sibling.pane_id = None;
+        state.insert_agent(sibling).unwrap();
+        state
+            .enqueue_agent_turn("agent-2", "later".to_string())
+            .unwrap();
+
+        // Capturing the group's last pane folds the orphaned sibling into the snapshot.
+        state.capture_last_closed_pane("pane-7").unwrap();
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+        assert_eq!(snapshot.extra_agents.len(), 1);
+        assert_eq!(snapshot.extra_agents[0].agent.id, "agent-2");
+
+        // Closing it removes the group and retires both agents.
+        state.remove_pane("pane-7").unwrap();
+        assert!(state.list_groups().unwrap().is_empty());
+        assert!(state.agent("agent-1").unwrap().is_none());
+        assert!(state.agent("agent-2").unwrap().is_none());
+
+        // Restoring brings back the group, the pane's own agent, and the orphaned sibling
+        // with its queue intact, now hosted by the restored pane.
+        state.restore_closed_pane_metadata(&snapshot).unwrap();
+        assert_eq!(state.list_groups().unwrap()[0].id, "group-1");
+        assert!(state.agent("agent-1").unwrap().is_some());
+        let restored_sibling = state.agent("agent-2").unwrap().unwrap();
+        assert_eq!(restored_sibling.pane_id, None);
+        assert_eq!(
+            restored_sibling.orphaned_queue_pane_id.as_deref(),
+            Some(snapshot.pane.id.as_str())
+        );
+        assert_eq!(
+            state.list_agent_turn_queue("agent-2").unwrap(),
+            vec!["later".to_string()]
+        );
+    }
+
+    #[test]
+    fn remove_group_refuses_open_panes_but_retires_orphaned_agents() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
         state.insert_group_after(sample_group(), None).unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
 
+        // A group with open panes still refuses removal.
         assert_eq!(
             state.remove_group("group-1").unwrap_err(),
             "group still has open panes"
         );
+
+        // A group with no panes but a leftover orphaned agent is removable: the agent is
+        // retired with the group rather than blocking the close.
         let state = AppState::new(test_config(temp_workspace()));
         state.insert_group_after(sample_group(), None).unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
-        assert_eq!(
-            state.remove_group("group-1").unwrap_err(),
-            "group still has queued or recoverable agents"
-        );
-        assert_eq!(state.list_groups().unwrap().len(), 1);
+        state.remove_group("group-1").unwrap();
+        assert!(state.list_groups().unwrap().is_empty());
+        assert!(state.agent("agent-1").unwrap().is_none());
     }
 
     #[test]
