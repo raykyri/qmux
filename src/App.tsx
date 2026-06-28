@@ -4192,7 +4192,14 @@ export default function App() {
       paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
     const canClearWorkingStatus =
       paneAgent?.status === "running" || paneAgent?.status === "starting";
-    const paneQueueCount = paneAgent ? (queuedTurnsByAgent[paneAgent.id]?.length ?? 0) : 0;
+    const paneQueuedTurns = paneAgent ? (queuedTurnsByAgent[paneAgent.id] ?? []) : [];
+    const paneQueueCount = paneQueuedTurns.length;
+    const paneTopQueueWaitsOnOtherPane = Boolean(
+      paneAgent &&
+        paneQueuedTurns[0]?.waitFor &&
+        paneQueuedTurns[0].waitFor?.agentId !== paneAgent.id,
+    );
+    const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
     const rawStatus = paneAgent
       ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
       : statusLabel(pane.status);
@@ -4272,7 +4279,7 @@ export default function App() {
           }}
         >
           <span
-            className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${
+            className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${paneWaitingClass}${
               canClearWorkingStatus ? " is-clearable-placeholder" : ""
             }`}
             aria-hidden="true"
@@ -4346,7 +4353,7 @@ export default function App() {
             }}
           >
             <span
-              className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}`}
+              className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${paneWaitingClass}`}
               aria-hidden="true"
             />
           </button>

@@ -513,6 +513,7 @@ button:disabled {
 }
 
 .pane-tab-dot {
+  --pane-tab-active-dot-color: #d7a84f;
   grid-column: 1;
   justify-self: start;
   align-self: center;
@@ -525,7 +526,7 @@ button:disabled {
 }
 
 .pane-tab-dot.status-active {
-  background: #d7a84f;
+  background: var(--pane-tab-active-dot-color);
   animation: status-dot-pulse 1.3s ease-in-out infinite;
 }
 
@@ -554,6 +555,12 @@ button:disabled {
 
 .pane-tab-dot.status-error {
   background: #e08a5f;
+}
+
+.pane-tab-dot.is-waiting-on-pane {
+  border: 1px solid var(--pane-tab-active-dot-color);
+  background: transparent;
+  animation: none;
 }
 
 .pane-tab-dot.is-clearable-placeholder {
