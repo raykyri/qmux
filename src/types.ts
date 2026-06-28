@@ -113,6 +113,8 @@ export interface WaitTarget {
   label: string;
   shortcutLabel?: string | null;
   status: AgentInfo["status"];
+  queueCount?: number;
+  queueBlocked?: boolean;
 }
 
 export type TurnBlock =

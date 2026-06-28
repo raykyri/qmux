@@ -51,8 +51,12 @@ type QueuePointerDrag = {
   active: boolean;
 };
 
-function waitTargetStatusLabel(status: WaitTarget["status"]) {
-  switch (status) {
+function waitTargetStatusLabel(target: WaitTarget) {
+  const queueCount = target.queueCount ?? 0;
+  if ((target.status === "done" || target.status === "idle") && queueCount > 0) {
+    return target.queueBlocked ? "Waiting" : `${queueCount} queued`;
+  }
+  switch (target.status) {
     case "starting":
       return "Starting";
     case "running":
@@ -62,7 +66,7 @@ function waitTargetStatusLabel(status: WaitTarget["status"]) {
     case "awaitingPermission":
       return "Awaiting decision";
     default:
-      return status;
+      return target.status;
   }
 }
 
@@ -1304,7 +1308,7 @@ export default function NativeInput({
                               {waitLabelWithShortcut(target.label, target.shortcutLabel)}
                             </span>
                             <span className="wait-target-status">
-                              {waitTargetStatusLabel(target.status)}
+                              {waitTargetStatusLabel(target)}
                             </span>
                           </button>
                         ))}

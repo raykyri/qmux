@@ -127,6 +127,8 @@ pub fn move_queued_agent_turn(
     let source = state
         .agent(&request.from_agent_id)?
         .ok_or_else(|| format!("agent {} was not found", request.from_agent_id))?;
+    let source_id = source.id.clone();
+    let source_pane_id = source.pane_id.clone();
 
     let (removed_turn, source_queued_turns) = state.remove_agent_turn_queue_item(
         &request.from_agent_id,
@@ -135,8 +137,8 @@ pub fn move_queued_agent_turn(
     )?;
     state.emit(QmuxEvent::new(
         "agent.queued_turn_removed",
-        source.pane_id.clone(),
-        Some(source.id.clone()),
+        source_pane_id.clone(),
+        Some(source_id.clone()),
         json!({
             "pendingTurns": source_queued_turns.len(),
             "queuedTurns": source_queued_turns.clone(),
@@ -165,13 +167,14 @@ pub fn move_queued_agent_turn(
             let restored = state.agent_queued_turns(&request.from_agent_id)?;
             state.emit(QmuxEvent::new(
                 "agent.turn_queued",
-                source.pane_id.clone(),
-                Some(source.id.clone()),
+                source_pane_id,
+                Some(source_id),
                 json!({ "pendingTurns": pending, "queuedTurns": restored }),
             ));
             return Err(err);
         }
     };
+    release_waiters_for_agent(state, &request.from_agent_id)?;
 
     Ok(MoveQueuedAgentTurnResult {
         sent: !target_result.queued,
@@ -302,8 +305,9 @@ pub fn remove_queued_agent_turn(
     let agent = state
         .agent(&request.agent_id)?
         .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+    let agent_id = agent.id.clone();
     let (removed_turn, queued_turns) = state.remove_agent_turn_queue_item(
-        &agent.id,
+        &agent_id,
         request.index,
         request.expected_data.as_deref(),
     )?;
@@ -311,9 +315,10 @@ pub fn remove_queued_agent_turn(
     state.emit(QmuxEvent::new(
         "agent.queued_turn_removed",
         agent.pane_id.clone(),
-        Some(agent.id),
+        Some(agent_id.clone()),
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns.clone() }),
     ));
+    release_waiters_for_agent(state, &agent_id)?;
     Ok(RemoveQueuedAgentTurnResult {
         removed_turn: removed_turn.text,
         pending_turns,

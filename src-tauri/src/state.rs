@@ -307,13 +307,20 @@ fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait)
     let Some(target) = model.agents.get(&wait_for.agent_id) else {
         return true;
     };
-    if matches!(target.status, AgentStatus::Done | AgentStatus::Idle) {
-        return true;
-    }
     let Some(pane_id) = target.pane_id.as_deref() else {
         return true;
     };
-    !model.panes.contains_key(pane_id)
+    if !model.panes.contains_key(pane_id) {
+        return true;
+    }
+    if model
+        .agent_turn_queues
+        .get(&target.id)
+        .is_some_and(|queue| !queue.is_empty())
+    {
+        return false;
+    }
+    matches!(target.status, AgentStatus::Done | AgentStatus::Idle)
 }
 
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
@@ -331,7 +338,9 @@ fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str)
                 let Some(wait_for) = turn.wait_for.as_ref() else {
                     continue;
                 };
-                if !queued_turn_wait_is_resolved_locked(model, wait_for) {
+                if wait_for.agent_id == source
+                    || !queued_turn_wait_is_resolved_locked(model, wait_for)
+                {
                     stack.push(wait_for.agent_id.clone());
                 }
             }
@@ -3162,6 +3171,41 @@ mod tests {
     }
 
     #[test]
+    fn queued_wait_turn_waits_for_target_queue_after_target_is_done() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        source.pane_id = Some("source-pane".to_string());
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Done;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        state
+            .enqueue_agent_turn("target", "target queued".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn("source", "after target".to_string(), "target")
+            .unwrap();
+
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+
+        let (target_turn, target_pending) = state.pop_ready_agent_turn("target").unwrap().unwrap();
+        assert_eq!(target_turn.text, "target queued");
+        assert_eq!(target_pending, 0);
+
+        let (source_turn, source_pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
+        assert_eq!(source_turn.text, "after target");
+        assert_eq!(source_pending, 0);
+    }
+
+    #[test]
     fn queued_wait_turn_uses_supplied_label_when_target_pane_matches() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
@@ -3269,6 +3313,35 @@ mod tests {
             .unwrap();
         let err = state
             .enqueue_agent_wait_turn("agent-b", "wait b".to_string(), "agent-a")
+            .unwrap_err();
+        assert!(err.contains("cycle"));
+    }
+
+    #[test]
+    fn queued_wait_turn_rejects_cycle_through_idle_target_queue() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut agent_a = sample_agent("agent-a");
+        agent_a.status = AgentStatus::Done;
+        agent_a.pane_id = Some("pane-a".to_string());
+        let mut agent_b = sample_agent("agent-b");
+        agent_b.status = AgentStatus::Done;
+        agent_b.pane_id = Some("pane-b".to_string());
+        let mut pane_a = sample_pane_runtime("pane-a");
+        pane_a.info.agent_id = Some("agent-a".to_string());
+        let mut pane_b = sample_pane_runtime("pane-b");
+        pane_b.info.agent_id = Some("agent-b".to_string());
+        state.insert_agent(agent_a).unwrap();
+        state.insert_agent(agent_b).unwrap();
+        state.insert_pane(pane_a).unwrap();
+        state.insert_pane(pane_b).unwrap();
+
+        state
+            .enqueue_agent_wait_turn("agent-b", "wait for a".to_string(), "agent-a")
+            .unwrap();
+        let err = state
+            .enqueue_agent_wait_turn("agent-a", "wait for b".to_string(), "agent-b")
             .unwrap_err();
         assert!(err.contains("cycle"));
     }

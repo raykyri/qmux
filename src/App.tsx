@@ -1668,15 +1668,19 @@ export default function App() {
     }
     const paneById = new Map(panes.map((pane) => [pane.id, pane]));
     return agents
-      .filter(
-        (agent) =>
-          agent.id !== activeAgent.id &&
-          (agent.status === "starting" ||
-            agent.status === "running" ||
-            agent.status === "awaitingInput" ||
-            agent.status === "awaitingPermission"),
-      )
       .flatMap((agent) => {
+        if (agent.id === activeAgent.id || agent.status === "failed") {
+          return [];
+        }
+        const queuedTurns = queuedTurnsByAgent[agent.id] ?? [];
+        const hasActiveWork =
+          agent.status === "starting" ||
+          agent.status === "running" ||
+          agent.status === "awaitingInput" ||
+          agent.status === "awaitingPermission";
+        if (!hasActiveWork && queuedTurns.length === 0) {
+          return [];
+        }
         const pane = agent.paneId ? paneById.get(agent.paneId) : undefined;
         if (!pane) {
           return [];
@@ -1688,6 +1692,8 @@ export default function App() {
             label: displayPaneTitle(pane, agent),
             shortcutLabel: shortcutLabelForPaneId(pane.id),
             status: agent.status,
+            queueCount: queuedTurns.length,
+            queueBlocked: Boolean(queuedTurns[0]?.waitFor),
           },
         ];
       });
@@ -1699,6 +1705,7 @@ export default function App() {
     manuallyTitledPaneIds,
     config,
     shortcutLabelForPaneId,
+    queuedTurnsByAgent,
   ]);
   const activeCollapsedQueuedTurns = useMemo(
     () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
