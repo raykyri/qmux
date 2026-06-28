@@ -44,6 +44,10 @@ const QUEUED_TURN_ANIM_MS = 120;
 const QUEUE_DRAG_START_THRESHOLD = 4;
 const QUEUE_DRAG_CLICK_SUPPRESS_MS = 100;
 const QUEUED_TURN_CLICK_DELAY_MS = 220;
+// Terminal title progress markers tend to be a leading glyph plus spacing; strip
+// those only for the queued-turn wait footer so the stored wait target stays raw.
+const WAIT_TITLE_PROGRESS_PREFIX_RE =
+  /^[ \t]*(?:[·•●○◦∙⋅⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✢✣✤✥✦✧✶✷✸✹✺✻✼✽✾✿][ \t]+)+/u;
 
 type QueuePointerDrag = {
   pointerId: number;
@@ -76,6 +80,15 @@ function waitTargetStatusDotClass(target: WaitTarget) {
   const statusClass = target.status === "awaitingInput" ? " status-awaiting-input" : "";
   const waitingClass = target.queueBlocked ? " is-waiting-on-pane" : "";
   return `pane-tab-dot wait-target-status-dot status-${statusTone}${statusClass}${waitingClass}`;
+}
+
+function waitFooterTitle(label: string) {
+  return label.replace(WAIT_TITLE_PROGRESS_PREFIX_RE, "").trim() || label.trim();
+}
+
+function waitFooterLabelWithShortcut(label: string, shortcutLabel?: string | null) {
+  const quotedTitle = `"${waitFooterTitle(label)}"`;
+  return shortcutLabel ? `${quotedTitle} (${shortcutLabel})` : quotedTitle;
 }
 
 function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean }) {
@@ -1005,7 +1018,7 @@ export default function NativeInput({
                 {turn.waitFor ? (
                   <div className="queued-turn-wait-label" aria-hidden="true">
                     {index === 0 ? "Waiting on" : "Wait on"}{" "}
-                    {waitLabelWithShortcut(
+                    {waitFooterLabelWithShortcut(
                       turn.waitFor.label ?? "selected terminal",
                       shortcutLabelForPane(turn.waitFor.paneId),
                     )}
