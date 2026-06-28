@@ -28,6 +28,7 @@ import { useDictation } from "../useDictation";
 import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
 import type { AgentInfo, PaneInfo, QueuedTurn, SubmitAgentTurnMode, WaitTarget } from "../types";
+import { agentStatusTone } from "../lib/appHelpers";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -68,6 +69,13 @@ function waitTargetStatusLabel(target: WaitTarget) {
     default:
       return target.status;
   }
+}
+
+function waitTargetStatusDotClass(target: WaitTarget) {
+  const statusTone = agentStatusTone(target.status);
+  const statusClass = target.status === "awaitingInput" ? " status-awaiting-input" : "";
+  const waitingClass = target.queueBlocked ? " is-waiting-on-pane" : "";
+  return `pane-tab-dot wait-target-status-dot status-${statusTone}${statusClass}${waitingClass}`;
 }
 
 function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean }) {
@@ -1304,6 +1312,7 @@ export default function NativeInput({
                             title={waitLabelWithShortcut(target.label, target.shortcutLabel)}
                             onClick={() => void submitWaitTurn(target)}
                           >
+                            <span className={waitTargetStatusDotClass(target)} aria-hidden="true" />
                             <span className="wait-target-title">
                               {waitLabelWithShortcut(target.label, target.shortcutLabel)}
                             </span>
