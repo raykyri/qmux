@@ -200,10 +200,11 @@ pub fn submit_agent_turn(
         return Err(format!("agent {} has failed", agent.id));
     }
     let policy = agent_composer_policy(state, &agent)?;
+    let has_pending_queue = !state.agent_queued_turns(&agent.id)?.is_empty();
 
     match request.mode.unwrap_or(SubmitAgentTurnMode::Auto) {
         SubmitAgentTurnMode::Auto => {
-            if policy.should_queue(agent.status) {
+            if policy.should_queue(agent.status) || has_pending_queue {
                 return queue_agent_turn(state, &agent, data);
             }
             if !policy.can_send(agent.status) {
@@ -233,7 +234,7 @@ pub fn submit_agent_turn(
             })
         }
         SubmitAgentTurnMode::Queue => {
-            if !policy.should_queue(agent.status) {
+            if !policy.should_queue(agent.status) && !has_pending_queue {
                 return Err("agent is ready for input; send the turn instead".to_string());
             }
             queue_agent_turn(state, &agent, data)
@@ -897,5 +898,59 @@ mod tests {
             vec!["keep me".to_string()]
         );
         assert!(state.list_agent_turn_queue("target").unwrap().is_empty());
+    }
+
+    #[test]
+    fn auto_submit_appends_behind_existing_queue_for_ready_agent() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingInput))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "first queued".to_string())
+            .unwrap();
+
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "second queued".to_string(),
+                mode: Some(SubmitAgentTurnMode::Auto),
+            },
+        )
+        .unwrap();
+
+        assert!(result.queued);
+        assert_eq!(result.pending_turns, 2);
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["first queued".to_string(), "second queued".to_string()]
+        );
+    }
+
+    #[test]
+    fn explicit_queue_appends_behind_existing_queue_for_ready_agent() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "first queued".to_string())
+            .unwrap();
+
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "second queued".to_string(),
+                mode: Some(SubmitAgentTurnMode::Queue),
+            },
+        )
+        .unwrap();
+
+        assert!(result.queued);
+        assert_eq!(result.pending_turns, 2);
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["first queued".to_string(), "second queued".to_string()]
+        );
     }
 }

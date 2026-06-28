@@ -269,14 +269,16 @@ export default function NativeInput({
   const canSend = composerPolicy.readyStatuses.includes(agent.status);
   const canQueue = composerPolicy.queueStatuses.includes(agent.status);
   const canSteer = composerPolicy.steerStatuses.includes(agent.status);
+  const hasQueuedTurns = queuedTurns.length > 0;
+  const canAppendQueue = agent.status !== "failed" && (canQueue || hasQueuedTurns);
   const hasTranscript = transcriptText.trim().length > 0;
   const hasSubmitValue = value.trim().length > 0;
   const sendDisabled = submitting || !canSend || !hasSubmitValue;
   const waitDisabled =
     submitting || agent.status === "failed" || !hasSubmitValue || waitTargets.length === 0;
-  const submitShortcutWouldTargetSend = !submitting && canSend;
+  const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueuedTurns;
   const submitShortcutWouldTargetQueue =
-    !submitShortcutWouldTargetSend && !submitting && canQueue;
+    !submitShortcutWouldTargetSend && !submitting && canAppendQueue;
   const submitShortcutTargetsSend = submitShortcutWouldTargetSend && hasSubmitValue;
   const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
@@ -923,9 +925,11 @@ export default function NativeInput({
       className="native-input"
       onSubmit={(event) => {
         event.preventDefault();
-        if (canSend) {
+        if (hasQueuedTurns && canAppendQueue) {
+          void submitTurn(value, "queue");
+        } else if (canSend) {
           void submitTurn(value, "send");
-        } else if (canQueue) {
+        } else if (canAppendQueue) {
           void submitTurn(value, "queue");
         }
       }}
@@ -1329,7 +1333,7 @@ export default function NativeInput({
               <button
                 type="button"
                 className="queue-button"
-                disabled={submitting || !canQueue || value.trim().length === 0}
+                disabled={submitting || !canAppendQueue || value.trim().length === 0}
                 onClick={() => void submitTurn(value, "queue")}
               >
                 <span>Queue</span>

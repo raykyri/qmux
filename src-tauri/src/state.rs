@@ -3171,6 +3171,42 @@ mod tests {
     }
 
     #[test]
+    fn queued_wait_turn_blocks_later_turns_until_target_is_done() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        source.pane_id = Some("source-pane".to_string());
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Running;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        state
+            .enqueue_agent_wait_turn("source", "after target".to_string(), "target")
+            .unwrap();
+        state
+            .enqueue_agent_turn("source", "then this".to_string())
+            .unwrap();
+
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+
+        state.set_agent_status("target", AgentStatus::Done).unwrap();
+        let (first, first_pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
+        assert_eq!(first.text, "after target");
+        assert_eq!(first_pending, 1);
+
+        let (second, second_pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
+        assert_eq!(second.text, "then this");
+        assert_eq!(second_pending, 0);
+    }
+
+    #[test]
     fn queued_wait_turn_waits_for_target_queue_after_target_is_done() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
