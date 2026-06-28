@@ -54,32 +54,76 @@ use workspace::{
     set_group_dir,
 };
 
-/// Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) out of
-/// the default menu so the webview receives ⌘W itself instead of the OS closing
-/// the window; the frontend then routes ⌘W to close the active pane. Every other
-/// default item is preserved — notably the Edit menu that wires up ⌘C/⌘V/⌘A.
+/// Menu id for the Quit item we substitute for the native predefined one (see
+/// `customize_app_menu`).
 #[cfg(desktop)]
-fn route_window_close_to_frontend(app: &tauri::App) -> tauri::Result<()> {
+const QUIT_MENU_ID: &str = "qmux-quit";
+
+/// Reworks the default menu so close/quit requests reach our confirmation flow:
+///
+/// - Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) so the
+///   webview receives ⌘W itself; the frontend then routes ⌘W to close the active pane.
+/// - On macOS, replaces the predefined "Quit" item with our own ⌘Q item. The native
+///   item is hard-wired to Cocoa's `terminate:` selector, which tao does not intercept
+///   (it implements `applicationWillTerminate:` but not `applicationShouldTerminate:`),
+///   so ⌘Q would terminate the process instantly — bypassing both the `CloseRequested`
+///   and `ExitRequested` handlers and quitting without confirmation even while agents
+///   are running. Our replacement emits a `MenuEvent` we handle in `on_menu_event`.
+///
+/// Every other default item is preserved — notably the Edit menu that wires up ⌘C/⌘V/⌘A.
+#[cfg(desktop)]
+fn customize_app_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItemKind};
+    #[cfg(target_os = "macos")]
+    use tauri::menu::MenuItemBuilder;
 
     let menu = Menu::default(app.handle())?;
     for item in menu.items()? {
         let MenuItemKind::Submenu(submenu) = item else {
             continue;
         };
-        for sub_item in submenu.items()? {
-            if let MenuItemKind::Predefined(predefined) = &sub_item {
-                // Match the close item by its (mnemonic-stripped) label so both the
-                // File and Window submenu copies are removed across platforms.
-                let label = predefined.text().unwrap_or_default().replace('&', "");
-                if label == "Close Window" || label == "Close" {
-                    submenu.remove(predefined)?;
-                }
+        for (index, sub_item) in submenu.items()?.into_iter().enumerate() {
+            let MenuItemKind::Predefined(predefined) = &sub_item else {
+                continue;
+            };
+            // Match against the (mnemonic-stripped) label so platform copies line up.
+            let label = predefined.text().unwrap_or_default().replace('&', "");
+            if label == "Close Window" || label == "Close" {
+                submenu.remove(predefined)?;
+                continue;
+            }
+            // The macOS predefined Quit reads "Quit <app>"; preserve its label and
+            // slot, but back it with our own handler instead of `terminate:`.
+            #[cfg(target_os = "macos")]
+            if label.starts_with("Quit") {
+                let replacement = MenuItemBuilder::with_id(QUIT_MENU_ID, &label)
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                submenu.remove(predefined)?;
+                submenu.insert(&replacement, index)?;
             }
         }
     }
     app.set_menu(menu)?;
     Ok(())
+}
+
+/// Handles the custom Quit menu item, routing it through the same exit-confirmation
+/// flow as the window close button instead of terminating immediately.
+#[cfg(desktop)]
+fn handle_app_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    if event.id().as_ref() != QUIT_MENU_ID {
+        return;
+    }
+    let Some(state) = app.try_state::<AppState>() else {
+        app.exit(0);
+        return;
+    };
+    if state.should_confirm_exit() {
+        state.request_exit_confirmation();
+    } else {
+        app.exit(0);
+    }
 }
 
 #[tauri::command]
@@ -691,6 +735,7 @@ fn main() {
                 }
             }
         })
+        .on_menu_event(handle_app_menu_event)
         .setup({
             let state = state.clone();
             move |app| {
@@ -698,9 +743,10 @@ fn main() {
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
                 // Best-effort: if the menu tweak fails, ⌘W keeps its default
-                // (window-closing) behavior rather than aborting startup.
-                if let Err(err) = route_window_close_to_frontend(app) {
-                    eprintln!("qmux: failed to reroute window close shortcut: {err}");
+                // (window-closing) behavior and ⌘Q its instant-quit behavior rather
+                // than aborting startup.
+                if let Err(err) = customize_app_menu(app) {
+                    eprintln!("qmux: failed to customize app menu: {err}");
                 }
                 if let Err(err) = menu_bar::init(app.handle()) {
                     eprintln!("qmux: failed to initialize menu bar icon: {err}");

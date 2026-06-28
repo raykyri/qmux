@@ -10,7 +10,7 @@ import {
   transcriptHookEvent,
   upsertAgent,
 } from "../lib/appHelpers";
-import type { ExitDialogState, PaneContextMenuState } from "../appTypes";
+import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
 import type { AgentInfo, GroupInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, Turn } from "../types";
 
 // The backend event stream drives most of the app's live state. This hook owns
@@ -24,7 +24,7 @@ export interface UseQmuxEventsHandlers {
   setPanes: Dispatch<SetStateAction<PaneInfo[]>>;
   setActivePaneId: Dispatch<SetStateAction<string | null>>;
   setPaneContextMenu: Dispatch<SetStateAction<PaneContextMenuState | null>>;
-  setExitDialog: Dispatch<SetStateAction<ExitDialogState | null>>;
+  setExitPreflightRequest: Dispatch<SetStateAction<ExitPreflightRequest | null>>;
   setAgents: Dispatch<SetStateAction<AgentInfo[]>>;
   setGroups: Dispatch<SetStateAction<GroupInfo[]>>;
   // Tracks which agents are actively working, for the transcript "Working…"
@@ -53,7 +53,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setPanes,
     setActivePaneId,
     setPaneContextMenu,
-    setExitDialog,
+    setExitPreflightRequest,
     setAgents,
     setGroups,
     setThinkingAgentIds,
@@ -129,7 +129,10 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (event.type === "app.exit_confirmation_requested") {
         const paneCount =
           typeof event.payload.paneCount === "number" ? event.payload.paneCount : 1;
-        setExitDialog({ paneCount });
+        setExitPreflightRequest((current) => ({
+          paneCount,
+          nonce: (current?.nonce ?? 0) + 1,
+        }));
       }
       if (event.type.startsWith("agent.")) {
         // Status events now carry the updated agent: apply it surgically so a busy

@@ -27,6 +27,11 @@ export type ExitDialogState = {
   paneCount: number;
 };
 
+export type ExitPreflightRequest = {
+  paneCount: number;
+  nonce: number;
+};
+
 export type PaneContextMenuState = {
   paneId: string;
   x: number;

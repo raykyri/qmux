@@ -77,6 +77,7 @@ import type {
   BrowserOverlaySize,
   CloseDialogState,
   ExitDialogState,
+  ExitPreflightRequest,
   PaneContextMenuState,
   PaneDropTarget,
   PaneTabPointerDrag,
@@ -968,6 +969,8 @@ export default function App() {
   // buttons disabled) until the close/delete actually finishes.
   const [resolvingClose, setResolvingClose] = useState<"keep" | "delete" | null>(null);
   const [exitDialog, setExitDialog] = useState<ExitDialogState | null>(null);
+  const [exitPreflightRequest, setExitPreflightRequest] =
+    useState<ExitPreflightRequest | null>(null);
   const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -2435,7 +2438,7 @@ export default function App() {
     setPanes: setPanesPreservingRecoveredDismissals,
     setActivePaneId,
     setPaneContextMenu,
-    setExitDialog,
+    setExitPreflightRequest,
     setAgents,
     setGroups,
     setThinkingAgentIds,
@@ -2917,23 +2920,23 @@ export default function App() {
     }
   }
 
-  // Closing a tab that owns a git worktree opens a dialog: check the worktree for
-  // uncommitted changes first, then let the user delete or keep it (or cancel).
-  // Other agent panes confirm only when a live agent would be interrupted; shell
-  // panes and finished/failed agents close without a prompt.
-  async function requestClosePane(paneToClose: PaneInfo, options?: { confirmAlways?: boolean }) {
-    const agent = agents.find((candidate) => candidate.paneId === paneToClose.id);
-
+  async function closeDialogForPane(
+    paneToClose: PaneInfo,
+    options?: { confirmAlways?: boolean; checkWorktreeStatus?: boolean },
+  ): Promise<CloseDialogState | null> {
+    const agent = agentsRef.current.find((candidate) => candidate.paneId === paneToClose.id);
     if (agent && agent.branch) {
       let hasChanges = false;
-      try {
-        hasChanges = (await worktreeStatus(agent.id)).hasChanges;
-      } catch {
-        // If the status check fails, still offer the choice rather than blocking
-        // the close; treat the change state as unknown (assume none).
-        hasChanges = false;
+      if (options?.checkWorktreeStatus !== false) {
+        try {
+          hasChanges = (await worktreeStatus(agent.id)).hasChanges;
+        } catch {
+          // If the status check fails, still offer the choice rather than blocking
+          // the close; treat the change state as unknown (assume none).
+          hasChanges = false;
+        }
       }
-      setCloseDialog({
+      return {
         kind: "worktree",
         pane: paneToClose,
         agentId: agent.id,
@@ -2944,8 +2947,7 @@ export default function App() {
           agent.status === "running" ||
           agent.status === "awaitingInput" ||
           agent.status === "awaitingPermission",
-      });
-      return;
+      };
     }
 
     const liveReason =
@@ -2975,30 +2977,85 @@ export default function App() {
           }`
         : null);
     if (reason) {
-      setCloseDialog({ kind: "stop", pane: paneToClose, reason });
-      return;
+      return { kind: "stop", pane: paneToClose, reason };
     }
     try {
       const activity = await paneActivity(paneToClose.id);
       if (activity.kind === "runningProcess" && activity.processCount > 0) {
-        setCloseDialog({
+        return {
           kind: "runningProcess",
           pane: paneToClose,
           processCount: activity.processCount,
           processSummary: activity.processSummary,
-        });
-        return;
+        };
       }
     } catch {
       // Process inspection is best-effort. If the probe fails, let the normal close
       // path continue instead of turning an inspection error into a blocking prompt.
     }
     if (options?.confirmAlways) {
-      setCloseDialog({ kind: "pane", pane: paneToClose });
+      return { kind: "pane", pane: paneToClose };
+    }
+    return null;
+  }
+
+  // Closing a tab that owns a git worktree opens a dialog: check the worktree for
+  // uncommitted changes first, then let the user delete or keep it (or cancel).
+  // Other agent panes confirm only when a live agent would be interrupted; shell
+  // panes and finished/failed agents close without a prompt.
+  async function requestClosePane(paneToClose: PaneInfo, options?: { confirmAlways?: boolean }) {
+    const dialog = await closeDialogForPane(paneToClose, {
+      confirmAlways: options?.confirmAlways,
+      checkWorktreeStatus: true,
+    });
+    if (dialog) {
+      setCloseDialog(dialog);
       return;
     }
     await closePane(paneToClose);
   }
+
+  useEffect(() => {
+    if (!exitPreflightRequest) {
+      return;
+    }
+    let cancelled = false;
+
+    const preflightExit = async () => {
+      const paneSnapshot = panesRef.current;
+      const promptDialogs = (
+        await Promise.all(
+          paneSnapshot.map((pane) =>
+            closeDialogForPane(pane, { checkWorktreeStatus: false }),
+          ),
+        )
+      ).filter((dialog): dialog is CloseDialogState => dialog !== null);
+
+      if (cancelled) {
+        return;
+      }
+
+      setExitPreflightRequest(null);
+      const paneCount = Math.max(
+        exitPreflightRequest.paneCount,
+        paneSnapshot.length,
+        promptDialogs.length,
+      );
+      if (paneCount === 0) {
+        setExitDialog(null);
+        return;
+      }
+
+      setExitDialog({
+        paneCount,
+      });
+    };
+
+    void preflightExit();
+    return () => {
+      cancelled = true;
+    };
+  }, [exitPreflightRequest]);
 
   function handlePaneTabClosePointerDown(
     event: ReactPointerEvent<HTMLElement>,
@@ -5519,10 +5576,9 @@ export default function App() {
           >
             <h2 id="exit-dialog-title">Quit qmux?</h2>
             <p>
-              {exitDialog.paneCount === 1
-                ? "There is 1 open tab."
-                : `There are ${exitDialog.paneCount} open tabs.`}{" "}
-              Quitting will stop them.
+              Quitting will close{" "}
+              {exitDialog.paneCount === 1 ? "the open tab" : `all ${exitDialog.paneCount} tabs`}{" "}
+              and stop any running agents or processes.
             </p>
             <div className="confirm-dialog-actions">
               <button type="button" autoFocus onClick={() => setExitDialog(null)}>
