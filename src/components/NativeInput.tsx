@@ -1118,7 +1118,7 @@ export default function NativeInput({
           }}
           placeholder={
             awaitingPermission
-              ? "Approve or deny the pending tool use..."
+              ? "Requesting approval for pending tool use..."
               : "What should we investigate next?"
           }
           rows={1}

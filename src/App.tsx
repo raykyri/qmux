@@ -3312,7 +3312,7 @@ export default function App() {
 
     const liveReason =
       agent?.status === "awaitingPermission"
-        ? "is waiting for you to approve a tool use"
+        ? "is waiting to approve a tool use"
         : agent?.status === "awaitingInput"
           ? "is waiting for your input"
           : agent?.status === "running" || agent?.status === "starting"
