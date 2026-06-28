@@ -25,8 +25,7 @@ export default function RecoveredQueuePanel({
   return (
     <section className="recovered-queue-panel" aria-label="Recovered queued turns">
       <header>
-        <h2>Recovered queued turns</h2>
-        <span>{totalTurns}</span>
+        <h2>Recovered queued turns ({totalTurns})</h2>
       </header>
       <div className="recovered-queue-list">
         {queues.map(({ agent, queuedTurns }) => (

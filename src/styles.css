@@ -3202,7 +3202,6 @@ header + .turn-blocks {
 .recovered-queue-panel header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   color: #d9ddd9;
 }
@@ -3211,12 +3210,6 @@ header + .turn-blocks {
   margin: 0;
   font-size: var(--fs-base);
   font-weight: 700;
-}
-
-.recovered-queue-panel header span {
-  color: #aab1ad;
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
 }
 
 .recovered-queue-list {
@@ -3238,7 +3231,7 @@ header + .turn-blocks {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  align-items: start;
+  align-items: center;
   min-width: 0;
   border: 1px solid #3a3430;
   border-radius: 6px;
