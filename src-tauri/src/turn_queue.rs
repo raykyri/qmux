@@ -1,7 +1,7 @@
 use crate::adapters::agent_composer_policy;
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
-use crate::state::{AgentSendSource, AppState, QueuedTurn};
+use crate::state::{AgentSendSource, AgentTurnClaim, AppState, IdleAdvance, QueuedTurn};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -204,7 +204,10 @@ pub fn submit_agent_turn(
 
     match request.mode.unwrap_or(SubmitAgentTurnMode::Auto) {
         SubmitAgentTurnMode::Auto => {
-            if policy.should_queue(agent.status) || has_pending_queue {
+            // A paused agent holds its queue, so a fresh submit must queue rather than
+            // send straight through — otherwise the pause is silently bypassed (and any
+            // already-queued turns are jumped). It drains when the user unpauses.
+            if agent.paused || policy.should_queue(agent.status) || has_pending_queue {
                 return queue_agent_turn(state, &agent, data);
             }
             if !policy.can_send(agent.status) {
@@ -222,6 +225,12 @@ pub fn submit_agent_turn(
             })
         }
         SubmitAgentTurnMode::Send => {
+            // Honor the pause even on an explicit send: queue the turn instead of writing
+            // it straight through, so a paused agent never receives an out-of-band turn
+            // ahead of its held queue. Unpausing drains it in order.
+            if agent.paused {
+                return queue_agent_turn(state, &agent, data);
+            }
             if !policy.can_send(agent.status) {
                 return Err("agent is not ready for input; queue the turn instead".to_string());
             }
@@ -234,7 +243,9 @@ pub fn submit_agent_turn(
             })
         }
         SubmitAgentTurnMode::Queue => {
-            if !policy.should_queue(agent.status) && !has_pending_queue {
+            // A paused agent may be idle with an empty queue; still allow queueing (the
+            // turn is held behind the pause) instead of rejecting it as "ready to send".
+            if !agent.paused && !policy.should_queue(agent.status) && !has_pending_queue {
                 return Err("agent is ready for input; send the turn instead".to_string());
             }
             queue_agent_turn(state, &agent, data)
@@ -386,13 +397,33 @@ pub fn reorder_queued_agent_turn(
 }
 
 pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, String> {
-    let Some((turn, pending_turns)) = state.pop_ready_agent_turn(agent_id)? else {
-        return Ok(false);
-    };
+    // Claim under the model lock so two concurrent triggers can't each pop a ready turn
+    // and double-send (the agent isn't marked Running until the send below).
+    match state.claim_ready_agent_turn(agent_id)? {
+        AgentTurnClaim::Ready { turn, pending } => {
+            send_claimed_turn(state, agent_id, turn, pending)?;
+            Ok(true)
+        }
+        AgentTurnClaim::Draining | AgentTurnClaim::Idle => Ok(false),
+    }
+}
+
+/// Sends a turn already claimed via [`AppState::claim_ready_agent_turn`] /
+/// [`AppState::claim_next_turn_or_mark_idle`], then clears the draining guard. On any
+/// failure the turn is requeued and the guard cleared before returning the error, so a
+/// failed send neither loses the turn nor wedges the queue (a still-set guard would
+/// block every future drain).
+fn send_claimed_turn(
+    state: &AppState,
+    agent_id: &str,
+    turn: QueuedTurn,
+    pending_turns: usize,
+) -> Result<(), String> {
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
             requeue_after_failed_drain(state, agent_id, turn);
+            state.finish_agent_drain(agent_id);
             return Err(format!("agent {agent_id} was not found"));
         }
     };
@@ -403,6 +434,7 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
         AgentSendSource::QueuedTurn,
     ) {
         requeue_after_failed_drain(state, agent_id, turn);
+        state.finish_agent_drain(agent_id);
         return Err(err);
     }
     // A pause-after turn arms the pause; it takes effect when this turn finishes
@@ -410,6 +442,7 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
     if turn.pause_after {
         state.mark_agent_pending_pause(agent_id)?;
     }
+    state.finish_agent_drain(agent_id);
     let queued_turns = state.agent_queued_turns(agent_id)?;
     state.emit(QmuxEvent::new(
         "agent.queued_turn_sent",
@@ -417,7 +450,7 @@ pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, 
         Some(agent.id),
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
     ));
-    Ok(true)
+    Ok(())
 }
 
 /// What an agent going idle should do next.
@@ -450,30 +483,26 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
         release_waiters_for_agent(state, agent_id)?;
         return Ok(IdleResolution::Idle);
     }
-    if state.agent_is_typing(agent_id)? {
-        // The user is mid-keystroke: hold the queue so a finishing turn doesn't spam
-        // a queued message into what they're typing. Draining resumes when the
-        // frontend clears the typing flag (1500ms after the last keystroke).
-        state.set_agent_status(agent_id, AgentStatus::Done)?;
-        release_waiters_for_agent(state, agent_id)?;
-        return Ok(IdleResolution::Idle);
+    // Atomically claim a ready turn, observe that another drain owns the agent, or
+    // settle to Done — all under one model lock. This both serializes draining (so a
+    // racing trigger can't double-send) and folds the typing check into the same lock as
+    // the Done write, closing the typing/idle lost-wakeup. The user-is-typing case is
+    // handled inside as an idle settle (the queue is held; it resumes when the frontend
+    // clears the typing flag).
+    match state.claim_next_turn_or_mark_idle(agent_id)? {
+        IdleAdvance::Sent { turn, pending } => {
+            send_claimed_turn(state, agent_id, turn, pending)?;
+            Ok(IdleResolution::Drained)
+        }
+        IdleAdvance::Busy => {
+            // Another drain is mid-send and owns the status transition; leave it be.
+            Ok(IdleResolution::Idle)
+        }
+        IdleAdvance::Idle => {
+            release_waiters_for_agent(state, agent_id)?;
+            Ok(IdleResolution::Idle)
+        }
     }
-
-    let drained = drain_agent_turn_queue(state, agent_id)?;
-    let status = if drained {
-        AgentStatus::Running
-    } else {
-        AgentStatus::Done
-    };
-    state.set_agent_status(agent_id, status)?;
-    if !drained {
-        release_waiters_for_agent(state, agent_id)?;
-    }
-    Ok(if drained {
-        IdleResolution::Drained
-    } else {
-        IdleResolution::Idle
-    })
 }
 
 pub fn release_waiters_for_agent(state: &AppState, target_agent_id: &str) -> Result<usize, String> {
@@ -1023,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_wait_target_releases_waiting_front_turn() {
+    fn failed_wait_target_keeps_waiting_front_turn_blocked() {
         let state = test_state();
         state
             .insert_agent(sample_agent_with_id(
@@ -1054,10 +1083,16 @@ mod tests {
 
         mark_agent_failed(&state, "target").unwrap();
 
-        assert!(state.list_agent_turn_queue("source").unwrap().is_empty());
+        // A failed target intentionally keeps its waiters blocked: marking it failed must
+        // not release the waiter, and an explicit drain attempt must not send the turn.
+        assert!(!drain_agent_turn_queue(&state, "source").unwrap());
+        assert_eq!(
+            state.list_agent_turn_queue("source").unwrap(),
+            vec!["after failure".to_string()]
+        );
         assert!(matches!(
             state.agent("source").unwrap().unwrap().status,
-            AgentStatus::Running
+            AgentStatus::Done
         ));
     }
 
@@ -1207,6 +1242,61 @@ mod tests {
         assert_eq!(
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["first queued".to_string(), "second queued".to_string()]
+        );
+    }
+
+    #[test]
+    fn paused_agent_queues_auto_submit_instead_of_sending() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state.set_agent_paused("agent-1", true).unwrap();
+
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "while paused".to_string(),
+                mode: Some(SubmitAgentTurnMode::Auto),
+            },
+        )
+        .unwrap();
+
+        // A paused + idle agent would otherwise send straight through; honor the pause
+        // by holding the turn in the queue instead.
+        assert!(result.queued);
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["while paused".to_string()]
+        );
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
+    }
+
+    #[test]
+    fn paused_agent_queues_explicit_send() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingInput))
+            .unwrap();
+        state.set_agent_paused("agent-1", true).unwrap();
+
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "explicit while paused".to_string(),
+                mode: Some(SubmitAgentTurnMode::Send),
+            },
+        )
+        .unwrap();
+
+        // Even an explicit Send must not bypass the pause and jump the held queue.
+        assert!(result.queued);
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["explicit while paused".to_string()]
         );
     }
 }

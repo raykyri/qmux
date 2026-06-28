@@ -108,6 +108,13 @@ struct Model {
     /// message into what the user is typing. Set/cleared by the frontend (debounced);
     /// transient (not persisted).
     agent_typing: HashSet<String>,
+    /// Agents with a queued turn currently being drained (claimed and mid-send).
+    /// Serializes draining per agent: a turn is claimed under the model lock and the
+    /// agent id inserted here, so a concurrent drain trigger (idle hook, wait release,
+    /// typing-clear, unpause, …) can't pop and send a second turn in the window before
+    /// the first send marks the agent Running. Cleared once the send settles. Transient
+    /// (not persisted).
+    agent_draining: HashSet<String>,
     /// Agent-session resumes queued at restore, keyed by the recovered shell pane id;
     /// each is drained by that pane's respawn. Transient (not persisted).
     shell_agent_resumes: HashMap<String, ShellAgentResume>,
@@ -275,6 +282,27 @@ impl<'de> Deserialize<'de> for QueuedTurn {
     }
 }
 
+/// Result of [`AppState::claim_ready_agent_turn`].
+pub enum AgentTurnClaim {
+    /// A ready turn was claimed and popped; the agent is now marked draining. The caller
+    /// must send it and then call [`AppState::finish_agent_drain`].
+    Ready { turn: QueuedTurn, pending: usize },
+    /// Another drain already holds this agent; the caller must not send or change status.
+    Draining,
+    /// Nothing is ready to send (empty queue or the front turn is still waiting).
+    Idle,
+}
+
+/// Result of [`AppState::claim_next_turn_or_mark_idle`].
+pub enum IdleAdvance {
+    /// A ready turn was claimed; the agent is marked draining and the caller must send it.
+    Sent { turn: QueuedTurn, pending: usize },
+    /// Another drain owns the agent; the caller must leave its status untouched.
+    Busy,
+    /// Nothing was sent; the agent has been settled to `Done` under the lock.
+    Idle,
+}
+
 fn enqueue_queued_turn_locked(
     model: &mut Model,
     agent_id: &str,
@@ -305,8 +333,24 @@ fn wait_target_label_locked(model: &Model, target: &AgentInfo) -> Option<String>
 
 fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait) -> bool {
     let Some(target) = model.agents.get(&wait_for.agent_id) else {
+        // The target agent is gone entirely (e.g. its pane closed and the agent was
+        // pruned). There is nothing left to wait on, so release the waiter rather than
+        // block it on a ghost forever.
         return true;
     };
+    // A Failed target keeps its waiters blocked, on purpose: "run this after X
+    // finishes" must not silently fire when X errored out instead of completing.
+    // Likewise an agent parked awaiting input or a permission prompt has not finished
+    // its work, so its waiters stay blocked until it actually goes idle/done. These are
+    // checked before the pane fallbacks below so a Failed target blocks even if its pane
+    // binding was cleared — only the agent genuinely going away (above) releases a wait
+    // on a failed target.
+    if matches!(
+        target.status,
+        AgentStatus::Failed | AgentStatus::AwaitingInput | AgentStatus::AwaitingPermission
+    ) {
+        return false;
+    }
     let Some(pane_id) = target.pane_id.as_deref() else {
         return true;
     };
@@ -320,10 +364,35 @@ fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait)
     {
         return false;
     }
-    matches!(
-        target.status,
-        AgentStatus::Done | AgentStatus::Idle | AgentStatus::Failed
-    )
+    matches!(target.status, AgentStatus::Done | AgentStatus::Idle)
+}
+
+/// Pops the front queued turn for `agent_id` if it is ready to send — the queue is
+/// non-empty and the front turn either has no wait dependency or its dependency has
+/// resolved. Returns the popped turn and the remaining pending count, or `None` when
+/// nothing is ready. Does not touch the draining guard; callers that serialize draining
+/// manage that separately. Operates on an already-locked model.
+fn pop_ready_locked(model: &mut Model, agent_id: &str) -> Option<(QueuedTurn, usize)> {
+    let front_wait = {
+        let queue = model.agent_turn_queues.get(agent_id)?;
+        let front = queue.front()?;
+        front.wait_for.clone()
+    };
+    if let Some(wait_for) = &front_wait
+        && !queued_turn_wait_is_resolved_locked(model, wait_for)
+    {
+        return None;
+    }
+    let queue = model.agent_turn_queues.get_mut(agent_id)?;
+    let turn = queue.pop_front()?;
+    let pending_count = queue.len();
+    if queue.is_empty() {
+        model.agent_turn_queues.remove(agent_id);
+        if let Some(agent) = model.agents.get_mut(agent_id) {
+            agent.orphaned_queue_pane_id = None;
+        }
+    }
+    Some((turn, pending_count))
 }
 
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
@@ -1230,6 +1299,7 @@ impl AppState {
                 clear_recent_session_binding_locked(&mut model, Some(&agent_id), Some(pane_id));
                 model.agent_typing.remove(&agent_id);
                 model.agent_pending_pause.remove(&agent_id);
+                model.agent_draining.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
                 let has_queue = model
                     .agent_turn_queues
@@ -1837,6 +1907,87 @@ impl AppState {
         Ok(queued_turns)
     }
 
+    /// Claims the next ready queued turn for draining, marking the agent as draining so
+    /// no concurrent trigger can claim a second turn until [`finish_agent_drain`] runs.
+    /// Returns [`AgentTurnClaim::Draining`] when another drain already holds the agent,
+    /// [`AgentTurnClaim::Idle`] when nothing is ready, else [`AgentTurnClaim::Ready`]
+    /// with the popped turn. The check-and-claim is atomic under the model lock, which
+    /// is what prevents the double-send race.
+    pub fn claim_ready_agent_turn(&self, agent_id: &str) -> Result<AgentTurnClaim, String> {
+        let claim = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.agent_draining.contains(agent_id) {
+                return Ok(AgentTurnClaim::Draining);
+            }
+            match pop_ready_locked(&mut model, agent_id) {
+                Some((turn, pending)) => {
+                    model.agent_draining.insert(agent_id.to_string());
+                    AgentTurnClaim::Ready { turn, pending }
+                }
+                None => return Ok(AgentTurnClaim::Idle),
+            }
+        };
+        self.persist();
+        Ok(claim)
+    }
+
+    /// The idle-handler variant of [`claim_ready_agent_turn`]: atomically decides, under
+    /// the model lock, what an agent going idle should do. Returns `Busy` when another
+    /// drain already owns the agent (the caller must not touch its status); `Sent` after
+    /// claiming a ready turn for the caller to send; or `Idle` after settling the agent
+    /// to `Done`. Crucially the typing check and the `Done` write happen under the same
+    /// lock, so a racing `set_agent_typing(false)` that clears the flag and re-reads the
+    /// status observes `Done` and drains the held turn — closing the lost-wakeup where
+    /// it would otherwise see a stale `Running`, skip its drain, and strand the queue.
+    pub fn claim_next_turn_or_mark_idle(&self, agent_id: &str) -> Result<IdleAdvance, String> {
+        let outcome = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.agent_draining.contains(agent_id) {
+                // Another drain is mid-send; it owns the status transition. Leave the
+                // agent untouched (do not persist) so we can't clobber its Running.
+                return Ok(IdleAdvance::Busy);
+            }
+            if model.agent_typing.contains(agent_id) {
+                // User is mid-keystroke: hold the queue and settle to idle, atomically
+                // with reading the typing flag (see the doc comment).
+                if let Some(agent) = model.agents.get_mut(agent_id) {
+                    agent.status = AgentStatus::Done;
+                }
+                IdleAdvance::Idle
+            } else if let Some((turn, pending)) = pop_ready_locked(&mut model, agent_id) {
+                model.agent_draining.insert(agent_id.to_string());
+                IdleAdvance::Sent { turn, pending }
+            } else {
+                if let Some(agent) = model.agents.get_mut(agent_id) {
+                    agent.status = AgentStatus::Done;
+                }
+                IdleAdvance::Idle
+            }
+        };
+        self.persist();
+        Ok(outcome)
+    }
+
+    /// Clears the draining guard set by a successful claim, allowing the next drain to
+    /// proceed. Best-effort: a poisoned lock just leaves the guard set, which fails safe
+    /// (no further auto-drain) rather than risking a double-send.
+    pub fn finish_agent_drain(&self, agent_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock() {
+            model.agent_draining.remove(agent_id);
+        }
+    }
+
+    /// Test-only direct pop of the next ready turn (no draining guard), used to assert
+    /// wait-resolution semantics without the serialized-drain bookkeeping.
+    #[cfg(test)]
     pub fn pop_ready_agent_turn(
         &self,
         agent_id: &str,
@@ -1847,33 +1998,10 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
-            let Some(queue) = model.agent_turn_queues.get(agent_id) else {
-                return Ok(None);
-            };
-            let Some(front) = queue.front() else {
-                return Ok(None);
-            };
-            if let Some(wait_for) = &front.wait_for
-                && !queued_turn_wait_is_resolved_locked(&model, wait_for)
-            {
-                return Ok(None);
+            match pop_ready_locked(&mut model, agent_id) {
+                Some(result) => result,
+                None => return Ok(None),
             }
-
-            let queue = model
-                .agent_turn_queues
-                .get_mut(agent_id)
-                .expect("queue checked before pop");
-            let Some(data) = queue.pop_front() else {
-                return Ok(None);
-            };
-            let pending_count = queue.len();
-            if queue.is_empty() {
-                model.agent_turn_queues.remove(agent_id);
-                if let Some(agent) = model.agents.get_mut(agent_id) {
-                    agent.orphaned_queue_pane_id = None;
-                }
-            }
-            (data, pending_count)
         };
         self.persist();
         Ok(Some(popped))
@@ -3293,6 +3421,93 @@ mod tests {
         let (turn, pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
         assert_eq!(turn.text, "after close");
         assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn queued_wait_turn_blocks_when_target_failed() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        source.pane_id = Some("source-pane".to_string());
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Failed;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        enqueue_wait_turn(&state, "source", "after target", "target").unwrap();
+
+        // A failed target intentionally keeps its waiters blocked.
+        assert!(state.pop_ready_agent_turn("source").unwrap().is_none());
+    }
+
+    #[test]
+    fn claim_ready_agent_turn_serializes_concurrent_drains() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "first".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "second".to_string())
+            .unwrap();
+
+        // First claim pops the front turn and marks the agent draining.
+        match state.claim_ready_agent_turn("agent-1").unwrap() {
+            AgentTurnClaim::Ready { turn, .. } => assert_eq!(turn.text, "first"),
+            _ => panic!("expected the first turn to be claimed"),
+        }
+        // A concurrent claim is refused while the first drain is in flight, even though
+        // "second" is itself ready — this is what prevents the double-send.
+        assert!(matches!(
+            state.claim_ready_agent_turn("agent-1").unwrap(),
+            AgentTurnClaim::Draining
+        ));
+        // Finishing the first drain lets the next one proceed.
+        state.finish_agent_drain("agent-1");
+        match state.claim_ready_agent_turn("agent-1").unwrap() {
+            AgentTurnClaim::Ready { turn, .. } => assert_eq!(turn.text, "second"),
+            _ => panic!("expected the second turn to be claimed"),
+        }
+    }
+
+    #[test]
+    fn claim_next_turn_or_mark_idle_holds_for_typing_then_drains() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+        state.set_agent_typing("agent-1", true).unwrap();
+
+        // While the user is typing the idle advance settles to Done and holds the queue,
+        // setting the status atomically with reading the typing flag.
+        assert!(matches!(
+            state.claim_next_turn_or_mark_idle("agent-1").unwrap(),
+            IdleAdvance::Idle
+        ));
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued".to_string()]
+        );
+
+        // Once typing clears, the next advance claims the held turn instead of stalling.
+        state.set_agent_typing("agent-1", false).unwrap();
+        match state.claim_next_turn_or_mark_idle("agent-1").unwrap() {
+            IdleAdvance::Sent { turn, .. } => assert_eq!(turn.text, "queued"),
+            _ => panic!("expected the held turn to drain once typing cleared"),
+        }
     }
 
     #[test]

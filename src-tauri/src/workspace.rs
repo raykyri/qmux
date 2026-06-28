@@ -313,7 +313,10 @@ pub fn mark_agent_spawn_failed(
     agent_id: &str,
     reserved_pane_id: &str,
 ) -> Result<AgentInfo, String> {
-    let agent = state
+    // No release of waiters here: a failed target intentionally keeps its waiters
+    // blocked (see `queued_turn_wait_is_resolved_locked`), so a dependent turn doesn't
+    // silently fire when the agent it was waiting on errored out instead of finishing.
+    state
         .mutate_agent(agent_id, |agent| {
             if agent.pane_id.as_deref() == Some(reserved_pane_id) {
                 agent.pane_id = None;
@@ -321,18 +324,17 @@ pub fn mark_agent_spawn_failed(
             }
             agent.status = AgentStatus::Failed;
         })?
-        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
-    crate::turn_queue::release_waiters_for_agent(state, &agent.id)?;
-    Ok(agent)
+        .ok_or_else(|| format!("agent {agent_id} was not found"))
 }
 
 pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
+    // No release of waiters here, by design: a failed target keeps its waiters blocked
+    // (see `mark_agent_spawn_failed` and `queued_turn_wait_is_resolved_locked`).
     let mut agent = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
     agent.status = AgentStatus::Failed;
     state.update_agent(agent.clone())?;
-    crate::turn_queue::release_waiters_for_agent(state, &agent.id)?;
     Ok(agent)
 }
 
