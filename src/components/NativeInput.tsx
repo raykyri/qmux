@@ -142,6 +142,7 @@ interface NativeInputProps {
   transcriptText: string;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
+  shortcutLabelForPane: (paneId?: string | null) => string | null;
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
@@ -167,6 +168,7 @@ export default function NativeInput({
   transcriptText,
   transcriptCopyText,
   composerPolicy,
+  shortcutLabelForPane,
   onQueueChange,
   onDraftChange,
   onQueuedTurnCollapseToggle,
@@ -267,6 +269,10 @@ export default function NativeInput({
   const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
+
+  function waitLabelWithShortcut(label: string, shortcutLabel?: string | null) {
+    return shortcutLabel ? `${label} (${shortcutLabel})` : label;
+  }
 
   // Close the actions menu on an outside click or Escape while it is open. The
   // popover is portaled out of menuRef, so a click counts as "inside" if it lands
@@ -977,7 +983,10 @@ export default function NativeInput({
                 {turn.waitFor ? (
                   <div className="queued-turn-wait-label" aria-hidden="true">
                     {index === 0 ? "Waiting on" : "Wait on"}{" "}
-                    {turn.waitFor.label ?? "selected terminal"}
+                    {waitLabelWithShortcut(
+                      turn.waitFor.label ?? "selected terminal",
+                      shortcutLabelForPane(turn.waitFor.paneId),
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -1282,10 +1291,12 @@ export default function NativeInput({
                             type="button"
                             role="menuitem"
                             className="wait-target-item"
-                            title={target.label}
+                            title={waitLabelWithShortcut(target.label, target.shortcutLabel)}
                             onClick={() => void submitWaitTurn(target)}
                           >
-                            <span className="wait-target-title">{target.label}</span>
+                            <span className="wait-target-title">
+                              {waitLabelWithShortcut(target.label, target.shortcutLabel)}
+                            </span>
                             <span className="wait-target-status">
                               {waitTargetStatusLabel(target.status)}
                             </span>

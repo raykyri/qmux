@@ -111,6 +111,7 @@ export interface WaitTarget {
   agentId: string;
   paneId: string;
   label: string;
+  shortcutLabel?: string | null;
   status: AgentInfo["status"];
 }
 

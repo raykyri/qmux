@@ -1010,6 +1010,16 @@ export default function App() {
     const groupedIds = new Set(grouped.map((pane) => pane.id));
     return [...grouped, ...panes.filter((pane) => !groupedIds.has(pane.id))];
   }, [groups, panes]);
+  const shortcutLabelForPaneId = useCallback(
+    (paneId?: string | null) => {
+      if (!paneId) {
+        return null;
+      }
+      const index = sidebarPanes.findIndex((pane) => pane.id === paneId);
+      return index >= 0 && index < 9 ? `⌘${index + 1}` : null;
+    },
+    [sidebarPanes],
+  );
   const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
   const activeQueueSplit = activeAgent ? (queueSplitByAgent[activeAgent.id] ?? false) : false;
   const activeQueueSplitHeight = activeAgent ? queueSplitHeightByAgent[activeAgent.id] : undefined;
@@ -1676,11 +1686,20 @@ export default function App() {
             agentId: agent.id,
             paneId: pane.id,
             label: displayPaneTitle(pane, agent),
+            shortcutLabel: shortcutLabelForPaneId(pane.id),
             status: agent.status,
           },
         ];
       });
-  }, [activeAgent?.id, agents, panes, terminalTitleByPane, manuallyTitledPaneIds, config]);
+  }, [
+    activeAgent?.id,
+    agents,
+    panes,
+    terminalTitleByPane,
+    manuallyTitledPaneIds,
+    config,
+    shortcutLabelForPaneId,
+  ]);
   const activeCollapsedQueuedTurns = useMemo(
     () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, collapsedQueuedTurnsByAgent],
@@ -4171,7 +4190,7 @@ export default function App() {
       ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
       : statusLabel(pane.status);
     const paneStatus =
-      paneAgent?.status === "running" && paneQueueCount > 0
+      (paneAgent?.status === "running" || paneAgent?.status === "idle") && paneQueueCount > 0
         ? `${paneQueueCount} queued`
         : rawStatus === "Running"
           ? null
@@ -5648,6 +5667,7 @@ export default function App() {
                     composerPolicy={getAgentUiAdapter(activeAgent.adapter).composerPolicy(
                       activeAgent,
                     )}
+                    shortcutLabelForPane={shortcutLabelForPaneId}
                     onQueueChange={setAgentQueuedTurns}
                     onDraftChange={setAgentDraft}
                     onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
