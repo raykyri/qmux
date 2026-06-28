@@ -1167,7 +1167,7 @@ export default function NativeInput({
                         void sendNextQueuedTurn();
                       }}
                     >
-                      Send next queued
+                      Send top queued item now!
                     </button>
                     <button
                       type="button"
@@ -1176,14 +1176,13 @@ export default function NativeInput({
                       disabled={submitting}
                       onClick={() => {
                         setMenuOpen(false);
-                        const lastIndex = queuedTurns.length - 1;
-                        const lastTurn = queuedTurns[lastIndex];
-                        void setItemPauseAfter(lastIndex, lastTurn, !lastTurn.pauseAfter);
+                        const topTurn = queuedTurns[0];
+                        void setItemPauseAfter(0, topTurn, !topTurn.pauseAfter);
                       }}
                     >
-                      {queuedTurns[queuedTurns.length - 1]?.pauseAfter
-                        ? "Remove pause after send"
-                        : "Pause after send"}
+                      {queuedTurns[0]?.pauseAfter
+                        ? "Remove pause after top queued item"
+                        : "Pause after top queued item"}
                     </button>
                     <div className="composer-menu-divider" role="separator" />
                   </>
@@ -1215,7 +1214,7 @@ export default function NativeInput({
                 {recentMessages.length > 0 ? (
                   <>
                     <div className="composer-menu-divider" role="separator" />
-                    <div className="composer-menu-label">Recent messages</div>
+                    <div className="composer-menu-label">Copy recent messages</div>
                     {recentMessages.map((message, index) => (
                       <button
                         key={`${index}-${message}`}
@@ -1337,7 +1336,7 @@ export default function NativeInput({
                       }
                     >
                       <div className="composer-menu-label wait-target-placeholder">
-                        Queue after
+                        Queue after existing session...
                       </div>
                       {waitTargets.map((target) => (
                         <button

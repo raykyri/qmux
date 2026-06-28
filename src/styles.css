@@ -3771,9 +3771,9 @@ header + .turn-blocks {
 
 .queue-menu-button {
   flex: 0 0 auto;
-  min-width: var(--control-h-md);
+  min-width: 22px;
   margin-left: -1px;
-  padding: 0 7px;
+  padding: 0 4px;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
