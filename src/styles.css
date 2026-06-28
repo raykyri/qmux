@@ -936,6 +936,12 @@ button:disabled {
   box-shadow: none;
 }
 
+.group-context-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .group-context-actions .group-context-danger:hover,
 .group-context-actions .group-context-danger:focus-visible {
   background: #2c1a17;
@@ -3817,6 +3823,31 @@ header + .turn-blocks {
   font-variant-numeric: tabular-nums;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   pointer-events: none;
+}
+
+.folder-picker-status {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  padding: 7px 13px;
+  border: 1px solid #364245;
+  border-radius: 999px;
+  background: #1d2325;
+  color: #e7e7e2;
+  font-size: var(--fs-sm);
+  line-height: 1;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.folder-picker-status svg {
+  flex: none;
+  animation: dictation-mic-spin 0.9s linear infinite;
 }
 
 .native-input-submit-actions {

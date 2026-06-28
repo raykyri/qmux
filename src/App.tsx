@@ -22,6 +22,7 @@ import {
   Folder,
   GitBranch,
   House,
+  LoaderCircle,
   MessageSquareText,
   Minus,
   MoreHorizontal,
@@ -249,6 +250,12 @@ const APP_TOAST_TIMEOUT_MS = 5000;
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
+
+function waitForPaintedFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
 
 interface PendingFirstMessageTitle {
   paneId: string;
@@ -969,6 +976,7 @@ export default function App() {
   const askSubmittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [appToast, setAppToast] = useState<string | null>(null);
+  const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
   // buttons disabled) until the close/delete actually finishes.
@@ -2012,7 +2020,9 @@ export default function App() {
 
   async function changeGroupDirectory(groupId: string) {
     setError(null);
+    setFolderPickerStatus("Opening folder picker…");
     try {
+      await waitForPaintedFrame();
       const group = await pickGroupDirectory(groupId);
       if (!group) {
         return;
@@ -2020,6 +2030,8 @@ export default function App() {
       await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFolderPickerStatus(null);
     }
   }
 
@@ -4815,6 +4827,18 @@ export default function App() {
               <Pencil size={13} aria-hidden="true" />
               <span>Rename group</span>
             </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setGroupMenu(null);
+                void createGroupAfter(groupMenuGroup);
+              }}
+            >
+              <Plus size={13} aria-hidden="true" />
+              <span>New group</span>
+            </button>
+            <div className="group-context-divider" role="separator" />
             {settings.codeMode ? (
               <button
                 type="button"
@@ -4841,17 +4865,7 @@ export default function App() {
               <MessageSquareText size={13} aria-hidden="true" />
               <span>New agent</span>
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setGroupMenu(null);
-                void createGroupAfter(groupMenuGroup);
-              }}
-            >
-              <Plus size={13} aria-hidden="true" />
-              <span>New group</span>
-            </button>
+            <div className="group-context-divider" role="separator" />
             <button
               type="button"
               role="menuitem"
@@ -6096,6 +6110,12 @@ export default function App() {
       {appToast ? (
         <div className="composer-toast app-toast" role="status" aria-live="polite">
           {appToast}
+        </div>
+      ) : null}
+      {folderPickerStatus ? (
+        <div className="folder-picker-status" role="status" aria-live="polite">
+          <LoaderCircle size={14} aria-hidden="true" />
+          <span>{folderPickerStatus}</span>
         </div>
       ) : null}
     </main>
