@@ -744,6 +744,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
     function setUpTerminal(mountEl: HTMLDivElement, hostEl: HTMLDivElement): () => void {
       let hoveredOscLink: string | null = null;
+      let terminalForSelection: Terminal | null = null;
+      let lastCopiedSelection = "";
+      let clearingSelection = false;
+      const clearTerminalSelection = () => {
+        const currentTerminal = terminalForSelection;
+        if (!currentTerminal?.hasSelection()) {
+          return;
+        }
+        lastCopiedSelection = "";
+        clearingSelection = true;
+        currentTerminal.clearSelection();
+        window.setTimeout(() => {
+          clearingSelection = false;
+        }, 0);
+      };
       const terminal = new Terminal({
         allowProposedApi: true,
         convertEol: false,
@@ -762,6 +777,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
               return;
             }
             event.preventDefault();
+            clearTerminalSelection();
             onOpenLinkRef.current?.(pane.id, url);
           },
           hover: (_event, text) => {
@@ -779,6 +795,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         smoothScrollDuration: scrollDurationMsRef.current,
         theme: TERMINAL_THEME,
       });
+      terminalForSelection = terminal;
 
       const fit = new FitAddon();
       const unicode = new Unicode11Addon();
@@ -793,8 +810,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         setSearchResults({ index: resultIndex, count: resultCount });
       });
       let copyOnSelectTimer: number | null = null;
-      let lastCopiedSelection = "";
-      let clearingSelection = false;
       const selectionDisposable = terminal.onSelectionChange(() => {
         if (!copyOnSelectRef.current || clearingSelection) {
           return;
@@ -1008,9 +1023,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
             callback(undefined);
             return;
           }
-          const links = findLineLinks(line.translateToString(true), bufferLineNumber, (url) =>
-            onOpenLinkRef.current?.(pane.id, url),
-          );
+          const links = findLineLinks(line.translateToString(true), bufferLineNumber, (url) => {
+            clearTerminalSelection();
+            onOpenLinkRef.current?.(pane.id, url);
+          });
           callback(links.length > 0 ? links : undefined);
         },
       });
@@ -1040,6 +1056,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         pressedLinkKey = null;
         event.preventDefault();
         event.stopImmediatePropagation();
+        clearTerminalSelection();
         onOpenLinkRef.current?.(pane.id, link.url);
       };
       const handleContextMenu = (event: MouseEvent) => {
@@ -1050,6 +1067,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         }
         event.preventDefault();
         event.stopImmediatePropagation();
+        clearTerminalSelection();
         onLinkContextMenuRef.current?.(pane.id, url, event.clientX, event.clientY);
       };
       hostEl.addEventListener("mousedown", handleLinkMouseDown, true);
