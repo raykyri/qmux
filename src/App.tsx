@@ -4003,6 +4003,22 @@ export default function App() {
         focusTabById(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
       };
 
+      const cycleCurrentGroupTab = (direction: -1 | 1) => {
+        const currentGroupId = activePaneRef.current?.groupId ?? lastActiveGroupId;
+        if (!currentGroupId) {
+          return;
+        }
+        const tabIds = sidebarPanes
+          .filter((pane) => pane.groupId === currentGroupId)
+          .map((pane) => pane.id);
+        if (tabIds.length === 0) {
+          return;
+        }
+        const listedIndex = tabIds.indexOf(activePaneId ?? "");
+        const currentIndex = listedIndex !== -1 ? listedIndex : direction === 1 ? -1 : 0;
+        focusPaneTab(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
+      };
+
       // Cmd-1..9 / Ctrl-1..9 jump to real pane tabs in sidebar order. Claimed
       // before the editable-target bail so the app-level tab shortcuts keep
       // working from terminal and composer focus.
@@ -4033,13 +4049,13 @@ export default function App() {
         return;
       }
 
-      // Ctrl-Tab / Ctrl-Shift-Tab cycle through Home and the open tabs like a
-      // browser. Claimed here in the capture phase (before the terminal/editable
-      // bail) so it works regardless of focus; Tab with Ctrl is never a text-editing key.
+      // Ctrl-Tab / Ctrl-Shift-Tab cycle through panes in the current group only.
+      // Claimed here in the capture phase (before the terminal/editable bail) so it
+      // works regardless of focus; Tab with Ctrl is never a text-editing key.
       if (key === "tab" && event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        cycleTab(event.shiftKey ? -1 : 1, true);
+        cycleCurrentGroupTab(event.shiftKey ? -1 : 1);
         return;
       }
 
