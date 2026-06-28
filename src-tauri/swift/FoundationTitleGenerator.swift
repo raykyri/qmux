@@ -63,7 +63,7 @@ public func qmuxGenerateFoundationTitle(
         case .success(let title):
             return makeResponse(title: title)
         case .failure(let error):
-            return makeResponse(error: error.localizedDescription)
+            return makeResponse(error: describeError(error))
         }
     } else {
         return makeResponse(error: "Apple Foundation Models require macOS 26.0 or newer")
@@ -156,6 +156,43 @@ private func sanitizeTitle(_ rawTitle: String) -> String? {
     }
     let end = unquoted.index(unquoted.startIndex, offsetBy: maxTitleCharacters - 3)
     return String(unquoted[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+}
+
+private func describeError(_ error: Error) -> String {
+    var descriptions: [String] = []
+    collectErrorDescriptions(error as NSError, into: &descriptions)
+    return descriptions.isEmpty ? error.localizedDescription : descriptions.joined(separator: " | ")
+}
+
+private func collectErrorDescriptions(_ error: NSError, into descriptions: inout [String]) {
+    let description = describeNSError(error)
+    if !descriptions.contains(description) {
+        descriptions.append(description)
+    }
+
+    if let underlyingError = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+        collectErrorDescriptions(underlyingError, into: &descriptions)
+    }
+    if let underlyingErrors = error.userInfo[NSMultipleUnderlyingErrorsKey] as? [NSError] {
+        for underlyingError in underlyingErrors {
+            collectErrorDescriptions(underlyingError, into: &descriptions)
+        }
+    }
+}
+
+private func describeNSError(_ error: NSError) -> String {
+    var parts = ["\(error.domain) code \(error.code)"]
+    let description = error.localizedDescription
+    if !description.isEmpty {
+        parts.append(description)
+    }
+    if let failureReason = error.localizedFailureReason, !failureReason.isEmpty {
+        parts.append(failureReason)
+    }
+    if let recoverySuggestion = error.localizedRecoverySuggestion, !recoverySuggestion.isEmpty {
+        parts.append(recoverySuggestion)
+    }
+    return parts.joined(separator: ": ")
 }
 
 private func makeResponse(title: String? = nil, error: String? = nil) -> UnsafeMutablePointer<CChar>? {

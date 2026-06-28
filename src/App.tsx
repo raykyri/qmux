@@ -310,19 +310,6 @@ function appleFoundationModelsTitleAvailable(config: RuntimeConfig | null): bool
   return config?.tabTitleGeneration.appleFoundationModelsAvailable === true;
 }
 
-function tabTitleSettingsForRuntime(
-  settings: AppSettings,
-  config: RuntimeConfig,
-): AppSettings {
-  if (
-    settings.tabTitleProvider === "appleFoundationModels" &&
-    !appleFoundationModelsTitleAvailable(config)
-  ) {
-    return { ...settings, tabTitleProvider: "disabled" };
-  }
-  return settings;
-}
-
 function sanitizeGeneratedTitle(rawTitle: string): string | null {
   const normalized = sanitizeTerminalTitle(rawTitle);
   if (!normalized) {
@@ -2126,7 +2113,6 @@ export default function App() {
         }
 
         setConfig(runtimeConfig);
-        setSettings((current) => tabTitleSettingsForRuntime(current, runtimeConfig));
         setWorkspaceFolder(existingWorkspaceFolder);
         setLauncherAdapterId(
           preferredLauncherAdapterId &&
