@@ -27,6 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 const CODEX_QMUX_PROFILE: &str = "qmux-codex";
+const CODEX_QMUX_TERMINAL_TITLE_CONFIG: &str = r#"terminal_title=["thread","task-progress"]"#;
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -454,14 +455,7 @@ impl CodexAdapter {
             args_contain_prompt(&request.args),
         )?;
 
-        let options = CodexLaunchOptions::default();
-        let args = build_codex_args(
-            &cwd,
-            Some(&state.config().workspace_root),
-            None,
-            &options,
-            request.args,
-        );
+        let args = build_codex_shell_args(&cwd, Some(&state.config().workspace_root), request.args);
         let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
@@ -736,6 +730,19 @@ fn build_codex_args(
     }
     args.push("--search".to_string());
 
+    args.extend(tail_args);
+    args
+}
+
+fn build_codex_shell_args(
+    cwd: &Path,
+    additional_workspace_root: Option<&Path>,
+    tail_args: Vec<String>,
+) -> Vec<String> {
+    let options = CodexLaunchOptions::default();
+    let mut args = build_codex_args(cwd, additional_workspace_root, None, &options, Vec::new());
+    args.push("--config".to_string());
+    args.push(CODEX_QMUX_TERMINAL_TITLE_CONFIG.to_string());
     args.extend(tail_args);
     args
 }
@@ -1567,6 +1574,41 @@ mod tests {
                 "--config",
                 "approvals_reviewer=\"auto_review\"",
                 "--search"
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_args_add_qmux_terminal_title_config_before_user_args() {
+        let args = build_codex_shell_args(
+            Path::new("/tmp/qmux"),
+            Some(Path::new("/tmp/qmux/.qmux/workspaces")),
+            vec![
+                "--config".to_string(),
+                "terminal_title=[\"project\"]".to_string(),
+                "--".to_string(),
+                "start here".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--cd",
+                "/tmp/qmux",
+                "--add-dir",
+                "/tmp/qmux/.qmux/workspaces",
+                "--profile",
+                "qmux-codex",
+                "--sandbox",
+                "workspace-write",
+                "--search",
+                "--config",
+                "terminal_title=[\"thread\",\"task-progress\"]",
+                "--config",
+                "terminal_title=[\"project\"]",
+                "--",
+                "start here"
             ]
         );
     }
