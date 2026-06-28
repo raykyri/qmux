@@ -62,6 +62,7 @@ export interface InitialPaneSize {
 export interface GroupInfo {
   id: string;
   name: string;
+  nameOverride?: string | null;
   dir: string;
   managedDir: string;
   baseRepo?: string | null;

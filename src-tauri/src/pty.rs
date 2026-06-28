@@ -974,6 +974,17 @@ fn start_reader_thread(
             .ok()
             .flatten()
             .map(|agent| agent.id);
+        // A natural exit normally leaves no undo snapshot (unlike `kill_pane`), but if this
+        // is the group's last pane and the group still has queued turns, removing it would
+        // prune that pending work with no way back. Capture a close snapshot first so it
+        // can be reopened, matching the explicit-close path.
+        if state
+            .closing_pane_would_strand_queued_work(&pane_id)
+            .unwrap_or(false)
+            && let Err(err) = state.capture_last_closed_pane(&pane_id)
+        {
+            eprintln!("qmux: failed to capture exited pane {pane_id}: {err}");
+        }
         if let Err(err) = state.remove_pane(&pane_id) {
             // A failure here (e.g. a poisoned model lock) leaves a dead pane in
             // state; log it so the stale entry has a trace rather than vanishing.
@@ -1517,6 +1528,7 @@ mod tests {
                 GroupInfo {
                     id: "group-1".to_string(),
                     name: "group".to_string(),
+                    name_override: None,
                     dir: workspace.to_string_lossy().to_string(),
                     managed_dir: workspace.join("managed").to_string_lossy().to_string(),
                     base_repo: Some(repo.to_string_lossy().to_string()),

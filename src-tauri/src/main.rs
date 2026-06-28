@@ -51,7 +51,7 @@ use turn_queue::{
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
     agent_worktree_status, clear_agent_working_status, create_group, remove_agent_worktree,
-    set_group_dir,
+    rename_group, set_group_dir,
 };
 
 /// Menu id for the Quit item we substitute for the native predefined one (see
@@ -347,6 +347,20 @@ fn group_create(
     request: CreateGroupRequest,
 ) -> Result<GroupInfo, String> {
     create_group(&state, request)
+}
+
+#[tauri::command]
+fn group_remove(state: tauri::State<'_, AppState>, group_id: String) -> Result<(), String> {
+    state.remove_group(&group_id)
+}
+
+#[tauri::command]
+fn group_rename(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+    name: Option<String>,
+) -> Result<GroupInfo, String> {
+    rename_group(&state, &group_id, name)
 }
 
 #[tauri::command(async)]
@@ -809,6 +823,8 @@ fn main() {
             list_agent_transcripts,
             set_agent_transcript,
             group_create,
+            group_remove,
+            group_rename,
             group_create_pick,
             group_pick_dir,
             spawn_shell,

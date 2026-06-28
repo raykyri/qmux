@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct GroupInfo {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_override: Option<String>,
     /// User-facing working directory represented by this group.
     pub dir: String,
     /// Qmux-owned storage for the group's manifest and any generated worktrees.
@@ -87,21 +89,23 @@ pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<Gro
         Some(dir) => canonical_dir(dir)?,
         None => state.default_open_dir(),
     };
-    let display_name = request
+    let generated_name = group_name_for_dir(&dir);
+    let name_override = request
         .name
         .clone()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| group_name_for_dir(&dir));
-    let managed_dir = match request.name.as_deref() {
-        Some(name) => unique_group_dir(&state.config().workspace_root, name)?,
-        None => unique_group_dir(&state.config().workspace_root, &display_name)?,
-    };
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty());
+    let display_name = name_override
+        .clone()
+        .unwrap_or_else(|| generated_name.clone());
+    let managed_dir = unique_group_dir(&state.config().workspace_root, &display_name)?;
     fs::create_dir_all(managed_dir.join(".qmux"))
         .map_err(|err| format!("failed to create group dir {}: {err}", dir.display()))?;
 
     let group = GroupInfo {
         id,
-        name: display_name,
+        name: generated_name,
+        name_override,
         dir: dir.display().to_string(),
         managed_dir: managed_dir.display().to_string(),
         base_repo: request.base_repo,
@@ -131,6 +135,28 @@ pub fn set_group_dir(state: &AppState, group_id: &str, dir: String) -> Result<Gr
     group.name = group_name_for_dir(&dir);
     group.base_repo = None;
     group.base_ref = None;
+    write_group_manifest(&group)?;
+    state.update_group(group.clone())?;
+    state.emit(crate::events::QmuxEvent::new(
+        "group.updated",
+        None,
+        None,
+        serde_json::json!({ "group": group.clone() }),
+    ));
+    Ok(group)
+}
+
+pub fn rename_group(
+    state: &AppState,
+    group_id: &str,
+    name: Option<String>,
+) -> Result<GroupInfo, String> {
+    let mut group = state
+        .group(group_id)?
+        .ok_or_else(|| format!("group {group_id} was not found"))?;
+    group.name_override = name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty());
     write_group_manifest(&group)?;
     state.update_group(group.clone())?;
     state.emit(crate::events::QmuxEvent::new(
@@ -700,10 +726,12 @@ mod tests {
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
     };
 
-    fn test_state() -> AppState {
+    fn test_state_with_workspace(workspace_root: PathBuf) -> AppState {
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let socket_path = workspace_root.join("qmux.sock");
         AppState::new(QmuxConfig {
-            workspace_root: PathBuf::from("/tmp/qmux-workspace-tests"),
-            socket_path: PathBuf::from("/tmp/qmux-workspace-tests.sock"),
+            workspace_root,
+            socket_path,
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
@@ -719,6 +747,20 @@ mod tests {
             claude_plugin_dir: std::path::PathBuf::new(),
             opencode_plugin_dir: std::path::PathBuf::new(),
         })
+    }
+
+    fn test_state() -> AppState {
+        test_state_with_workspace(PathBuf::from("/tmp/qmux-workspace-tests"))
+    }
+
+    fn temp_workspace(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("qmux-workspace-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     fn sample_agent(id: &str, pane_id: Option<&str>, status: AgentStatus) -> AgentInfo {
@@ -740,6 +782,71 @@ mod tests {
             paused: false,
             created_at: 1,
         }
+    }
+
+    #[test]
+    fn rename_group_sets_and_clears_name_override() {
+        let workspace = temp_workspace("rename");
+        let managed_root = workspace.join("managed");
+        let source_dir = workspace.join("dirs/project");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&managed_root).unwrap();
+        let state = test_state_with_workspace(managed_root);
+        let group = create_group(
+            &state,
+            CreateGroupRequest {
+                name: None,
+                dir: Some(source_dir.to_string_lossy().to_string()),
+                after_group_id: None,
+                base_repo: None,
+                base_ref: None,
+            },
+        )
+        .unwrap();
+
+        let renamed = rename_group(&state, &group.id, Some("  Research  ".to_string())).unwrap();
+
+        assert_eq!(renamed.name_override.as_deref(), Some("Research"));
+        let manifest_path = PathBuf::from(&renamed.managed_dir).join(".qmux/group.json");
+        let manifest: GroupInfo =
+            serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest.name_override.as_deref(), Some("Research"));
+
+        let cleared = rename_group(&state, &group.id, Some(" ".to_string())).unwrap();
+
+        assert_eq!(cleared.name_override, None);
+        std::fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn set_group_dir_preserves_name_override() {
+        let workspace = temp_workspace("rename-dir");
+        let managed_root = workspace.join("managed");
+        let first_dir = workspace.join("dirs/first");
+        let second_dir = workspace.join("dirs/second");
+        std::fs::create_dir_all(&first_dir).unwrap();
+        std::fs::create_dir_all(&second_dir).unwrap();
+        std::fs::create_dir_all(&managed_root).unwrap();
+        let state = test_state_with_workspace(managed_root);
+        let group = create_group(
+            &state,
+            CreateGroupRequest {
+                name: None,
+                dir: Some(first_dir.to_string_lossy().to_string()),
+                after_group_id: None,
+                base_repo: None,
+                base_ref: None,
+            },
+        )
+        .unwrap();
+        rename_group(&state, &group.id, Some("Research".to_string())).unwrap();
+
+        let moved =
+            set_group_dir(&state, &group.id, second_dir.to_string_lossy().to_string()).unwrap();
+
+        assert_eq!(moved.name, "second");
+        assert_eq!(moved.name_override.as_deref(), Some("Research"));
+        std::fs::remove_dir_all(workspace).ok();
     }
 
     #[test]

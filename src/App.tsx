@@ -19,11 +19,14 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  Folder,
   GitBranch,
   House,
+  LoaderCircle,
   MessageSquareText,
   Minus,
   MoreHorizontal,
+  Pencil,
   Plus,
   Settings,
   SquareTerminal,
@@ -75,6 +78,7 @@ import type {
   AskLauncherState,
   BrowserOverlayState,
   BrowserOverlaySize,
+  CloseGroupContinuation,
   CloseDialogState,
   ExitDialogState,
   ExitPreflightRequest,
@@ -137,7 +141,7 @@ import {
   clearAgentWorkingStatus,
   closeWorktreePane,
   confirmAppExit,
-  createGroupWithFolder,
+  createGroup,
   forkAgent,
   getLauncherAdapterPreference,
   getAgentDraft,
@@ -158,6 +162,8 @@ import {
   paneActivity,
   pickGroupDirectory,
   removeQueuedAgentTurn,
+  removeGroup,
+  renameGroup,
   renamePane,
   restoreLastClosedPane,
   setLauncherAdapterPreference,
@@ -244,6 +250,12 @@ const APP_TOAST_TIMEOUT_MS = 5000;
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
+
+function waitForPaintedFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
 
 interface PendingFirstMessageTitle {
   paneId: string;
@@ -964,6 +976,7 @@ export default function App() {
   const askSubmittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [appToast, setAppToast] = useState<string | null>(null);
+  const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
   // buttons disabled) until the close/delete actually finishes.
@@ -972,6 +985,7 @@ export default function App() {
   const [exitPreflightRequest, setExitPreflightRequest] =
     useState<ExitPreflightRequest | null>(null);
   const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
+  const [renameGroupId, setRenameGroupId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
@@ -1770,7 +1784,7 @@ export default function App() {
 
     const snapshotGroups = groups.map((group) => ({
       id: group.id,
-      label: middleTruncatePath(formatPaneDir(group.dir)),
+      label: group.nameOverride?.trim() || middleTruncatePath(formatPaneDir(group.dir)),
       tabs: panes.filter((pane) => pane.groupId === group.id).map(tabForPane),
     }));
     const orphanTabs = panes.filter((pane) => !groupedPaneIds.has(pane.id)).map(tabForPane);
@@ -1981,6 +1995,15 @@ export default function App() {
     return `…${tail.slice(-Math.max(4, maxChars - 1))}`;
   }
 
+  function defaultGroupName(group: GroupInfo): string {
+    const base = group.dir.split("/").filter(Boolean).pop();
+    return base && base.length > 0 ? base : formatPaneDir(group.dir);
+  }
+
+  function displayGroupName(group: GroupInfo): string {
+    return group.nameOverride?.trim() || defaultGroupName(group);
+  }
+
   function launchGroupId() {
     if (activePane?.groupId) {
       return activePane.groupId;
@@ -1997,7 +2020,9 @@ export default function App() {
 
   async function changeGroupDirectory(groupId: string) {
     setError(null);
+    setFolderPickerStatus("Opening folder picker…");
     try {
+      await waitForPaintedFrame();
       const group = await pickGroupDirectory(groupId);
       if (!group) {
         return;
@@ -2005,16 +2030,15 @@ export default function App() {
       await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFolderPickerStatus(null);
     }
   }
 
-  async function createGroupAfter(groupId: string) {
+  async function createGroupAfter(group: GroupInfo) {
     setError(null);
     try {
-      const group = await createGroupWithFolder(groupId);
-      if (!group) {
-        return;
-      }
+      await createGroup({ dir: group.dir, afterGroupId: group.id });
       await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2464,14 +2488,16 @@ export default function App() {
         return;
       }
 
-      const [latestPanes, latestAgents, latestTurns] = await Promise.all([
+      const [latestPanes, latestAgents, latestTurns, latestGroups] = await Promise.all([
         listPanes(),
         listAgents(),
         listTurns(),
+        listGroups(),
       ]);
       setPanesPreservingRecoveredDismissals(latestPanes);
       setAgents(latestAgents);
       setTurns(latestTurns);
+      setGroups(latestGroups);
       setActivePaneId(pane.id);
 
       const restoredAgent = latestAgents.find(
@@ -2828,10 +2854,59 @@ export default function App() {
   function openRenameDialog(pane: PaneInfo) {
     const paneAgent = agents.find((agent) => agent.paneId === pane.id);
     setRenameValue(displayPaneTitle(pane, paneAgent));
+    setRenameGroupId(null);
     setRenamePaneId(pane.id);
   }
 
+  function openGroupRenameDialog(group: GroupInfo) {
+    setRenameValue(displayGroupName(group));
+    setRenamePaneId(null);
+    setRenameGroupId(group.id);
+  }
+
+  function closeRenameDialog() {
+    setRenamePaneId(null);
+    setRenameGroupId(null);
+  }
+
   async function submitRename() {
+    const groupId = renameGroupId;
+    if (groupId) {
+      const title = renameValue.trim();
+      const previous = groups.find((group) => group.id === groupId);
+      const clearingUserTitle = title.length === 0;
+      const nextNameOverride = clearingUserTitle ? null : title;
+      closeRenameDialog();
+      if (!previous) {
+        return;
+      }
+      const previousNameOverride = previous.nameOverride?.trim() || null;
+      if (
+        previousNameOverride === nextNameOverride ||
+        (previousNameOverride === null && nextNameOverride === defaultGroupName(previous))
+      ) {
+        return;
+      }
+
+      setGroups((current) =>
+        current.map((group) =>
+          group.id === groupId ? { ...group, nameOverride: nextNameOverride } : group,
+        ),
+      );
+      try {
+        const updated = await renameGroup(groupId, nextNameOverride);
+        setGroups((current) =>
+          current.map((group) => (group.id === groupId ? updated : group)),
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setGroups((current) =>
+          current.map((group) => (group.id === groupId ? previous : group)),
+        );
+      }
+      return;
+    }
+
     const paneId = renamePaneId;
     if (!paneId) {
       return;
@@ -2844,7 +2919,7 @@ export default function App() {
       ? (previous ? (defaultPaneTitle(previous, paneAgent, config) ?? previous.title) : "")
       : title;
     const previousWasManuallyTitled = manuallyTitledPaneIds.has(paneId);
-    setRenamePaneId(null);
+    closeRenameDialog();
     if (!previous) {
       return;
     }
@@ -2910,14 +2985,67 @@ export default function App() {
     setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
   }
 
-  async function closePane(paneToClose: PaneInfo) {
+  async function closePane(paneToClose: PaneInfo): Promise<boolean> {
     setError(null);
     try {
       await killPane(paneToClose.id);
       forgetClosedPane(paneToClose);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
+  async function removeClosedGroup(groupClose: CloseGroupContinuation) {
+    setError(null);
+    try {
+      await removeGroup(groupClose.groupId);
+      await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function continueGroupClose(groupClose: CloseGroupContinuation) {
+    const paneById = new Map(panesRef.current.map((pane) => [pane.id, pane]));
+    const nextIndex = groupClose.remainingPaneIds.findIndex((paneId) => paneById.has(paneId));
+    if (nextIndex < 0) {
+      await removeClosedGroup(groupClose);
+      return;
+    }
+
+    const paneToClose = paneById.get(groupClose.remainingPaneIds[nextIndex]);
+    if (!paneToClose) {
+      await removeClosedGroup(groupClose);
+      return;
+    }
+
+    const nextGroupClose: CloseGroupContinuation = {
+      ...groupClose,
+      remainingPaneIds: groupClose.remainingPaneIds.slice(nextIndex + 1),
+    };
+    const dialog = await closeDialogForPane(paneToClose, { checkWorktreeStatus: true });
+    if (dialog) {
+      setCloseDialog({ ...dialog, groupClose: nextGroupClose });
+      return;
+    }
+
+    const closed = await closePane(paneToClose);
+    if (closed) {
+      await continueGroupClose(nextGroupClose);
+    }
+  }
+
+  async function requestCloseGroup(group: GroupInfo) {
+    setGroupMenu(null);
+    const groupPanes = panesRef.current.filter((pane) => pane.groupId === group.id);
+    await continueGroupClose({
+      groupId: group.id,
+      groupName: displayGroupName(group),
+      remainingPaneIds: groupPanes.map((pane) => pane.id),
+      totalCount: groupPanes.length,
+    });
   }
 
   async function closeDialogForPane(
@@ -3083,12 +3211,16 @@ export default function App() {
     if (!dialog || dialog.kind !== "worktree" || resolvingClose) {
       return;
     }
+    const groupClose = dialog.groupClose;
     setError(null);
     setResolvingClose(choice);
     try {
       await closeWorktreePane(dialog.agentId, choice === "delete");
       forgetClosedPane(dialog.pane);
       setCloseDialog(null);
+      if (groupClose) {
+        await continueGroupClose(groupClose);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setCloseDialog(null);
@@ -3103,8 +3235,12 @@ export default function App() {
     if (!dialog || dialog.kind !== "stop") {
       return;
     }
+    const groupClose = dialog.groupClose;
     setCloseDialog(null);
-    await closePane(dialog.pane);
+    const closed = await closePane(dialog.pane);
+    if (closed && groupClose) {
+      await continueGroupClose(groupClose);
+    }
   }
 
   async function confirmPaneClose() {
@@ -3112,8 +3248,12 @@ export default function App() {
     if (!dialog || (dialog.kind !== "pane" && dialog.kind !== "runningProcess")) {
       return;
     }
+    const groupClose = dialog.groupClose;
     setCloseDialog(null);
-    await closePane(dialog.pane);
+    const closed = await closePane(dialog.pane);
+    if (closed && groupClose) {
+      await continueGroupClose(groupClose);
+    }
   }
 
   async function confirmExit() {
@@ -3520,12 +3660,12 @@ export default function App() {
   // Focus and select the name when the rename dialog opens, so the user can type
   // a new name straight away.
   useEffect(() => {
-    if (renamePaneId) {
+    if (renamePaneId || renameGroupId) {
       const input = renameInputRef.current;
       input?.focus();
       input?.select();
     }
-  }, [renamePaneId]);
+  }, [renamePaneId, renameGroupId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4555,22 +4695,50 @@ export default function App() {
           </div>
           {groups.map((group) => {
             const groupPanes = panes.filter((pane) => pane.groupId === group.id);
+            const hasGroupPanes = groupPanes.length > 0;
+            const isActiveGroup = activePane?.groupId === group.id;
+            const groupDisplayName = displayGroupName(group);
             return (
-              <section key={group.id} className="pane-group" data-group-id={group.id}>
+              <section
+                key={group.id}
+                className={`pane-group${hasGroupPanes ? " has-panes" : ""}${
+                  isActiveGroup ? " is-active-group" : ""
+                }`}
+                data-group-id={group.id}
+              >
                 <div className="pane-group-header" title={group.dir}>
-                  <span className="pane-group-title">{middleTruncatePath(formatPaneDir(group.dir))}</span>
-                  <button
-                    type="button"
-                    className="pane-group-menu-button"
-                    aria-label={`Group options for ${group.name}`}
-                    title="Group options"
-                    onClick={(event) => openGroupMenu(event, group)}
-                  >
-                    <MoreHorizontal size={14} aria-hidden="true" />
-                  </button>
+                  <span className="pane-group-title">
+                    <Folder className="pane-group-folder" size={13} aria-hidden="true" />
+                    <span
+                      className="pane-group-name"
+                      title={groupDisplayName}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openGroupRenameDialog(group);
+                      }}
+                    >
+                      {groupDisplayName}
+                    </span>
+                  </span>
+                  <span className="pane-group-aux">
+                    <button
+                      type="button"
+                      className="pane-group-menu-button"
+                      aria-label={`Group options for ${groupDisplayName}`}
+                      title="Group options"
+                      onClick={(event) => openGroupMenu(event, group)}
+                    >
+                      <MoreHorizontal size={14} aria-hidden="true" />
+                    </button>
+                  </span>
                 </div>
-                {groupPanes.map((pane, index) =>
-                  renderPaneTabRow(pane, index, groupPanes, group.id),
+                {!hasGroupPanes ? null : (
+                  <div className="pane-list-body">
+                    {groupPanes.map((pane, index) =>
+                      renderPaneTabRow(pane, index, groupPanes, group.id),
+                    )}
+                  </div>
                 )}
               </section>
             );
@@ -4623,45 +4791,51 @@ export default function App() {
       {groupMenu && groupMenuGroup ? (
         <div
           className="pane-context-menu group-context-menu"
-          role="dialog"
-          aria-label={`${groupMenuGroup.name} group options`}
+          role="menu"
+          aria-label="Group options"
           style={{ left: groupMenu.x, top: groupMenu.y }}
           onMouseDown={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          <dl className="pane-context-details">
-            <div>
-              <dt>Group</dt>
-              <dd>{groupMenuGroup.name}</dd>
-            </div>
-            <div>
-              <dt>Directory</dt>
-              <dd>{groupMenuGroup.dir}</dd>
-            </div>
-          </dl>
-          <div className="pane-context-actions group-context-actions">
+          <div className="group-context-actions">
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setGroupMenu(null);
                 void changeGroupDirectory(groupMenuGroup.id);
               }}
             >
+              <Folder size={13} aria-hidden="true" />
               <span>Change directory</span>
             </button>
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setGroupMenu(null);
-                void createGroupAfter(groupMenuGroup.id);
+                openGroupRenameDialog(groupMenuGroup);
+              }}
+            >
+              <Pencil size={13} aria-hidden="true" />
+              <span>Rename group</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setGroupMenu(null);
+                void createGroupAfter(groupMenuGroup);
               }}
             >
               <Plus size={13} aria-hidden="true" />
-              <span>New group after</span>
+              <span>New group</span>
             </button>
+            <div className="group-context-divider" role="separator" />
             {settings.codeMode ? (
               <button
                 type="button"
+                role="menuitem"
                 onClick={() => {
                   setGroupMenu(null);
                   void addShellPaneInGroup(groupMenuGroup.id);
@@ -4673,6 +4847,7 @@ export default function App() {
             ) : null}
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setGroupMenu(null);
                 setActivePaneId(HOME_TAB_ID);
@@ -4682,6 +4857,18 @@ export default function App() {
             >
               <MessageSquareText size={13} aria-hidden="true" />
               <span>New agent</span>
+            </button>
+            <div className="group-context-divider" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="group-context-danger"
+              onClick={() => {
+                void requestCloseGroup(groupMenuGroup);
+              }}
+            >
+              <X size={13} aria-hidden="true" />
+              <span>Close group</span>
             </button>
           </div>
         </div>
@@ -5445,7 +5632,18 @@ export default function App() {
             aria-modal="true"
             aria-labelledby="close-dialog-title"
           >
-            <h2 id="close-dialog-title">Close {closeDialog.pane.title}?</h2>
+            <h2 id="close-dialog-title">
+              {closeDialog.groupClose
+                ? `Close ${closeDialog.groupClose.groupName}?`
+                : `Close ${closeDialog.pane.title}?`}
+            </h2>
+            {closeDialog.groupClose ? (
+              <p>
+                Closing tab{" "}
+                {closeDialog.groupClose.totalCount - closeDialog.groupClose.remainingPaneIds.length}{" "}
+                of {closeDialog.groupClose.totalCount}: {closeDialog.pane.title}
+              </p>
+            ) : null}
             {closeDialog.kind === "worktree" ? (
               <>
                 <p>
@@ -5592,13 +5790,13 @@ export default function App() {
         </div>
       ) : null}
 
-      {renamePaneId ? (
+      {renamePaneId || renameGroupId ? (
         <div
           className="confirm-dialog-backdrop"
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setRenamePaneId(null);
+              closeRenameDialog();
             }
           }}
         >
@@ -5612,7 +5810,7 @@ export default function App() {
               void submitRename();
             }}
           >
-            <h2 id="rename-dialog-title">Rename tab</h2>
+            <h2 id="rename-dialog-title">{renameGroupId ? "Rename group" : "Rename tab"}</h2>
             <input
               ref={renameInputRef}
               className="rename-dialog-input"
@@ -5621,13 +5819,13 @@ export default function App() {
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  setRenamePaneId(null);
+                  closeRenameDialog();
                 }
               }}
-              aria-label="Tab name"
+              aria-label={renameGroupId ? "Group name" : "Tab name"}
             />
             <div className="confirm-dialog-actions">
-              <button type="button" onClick={() => setRenamePaneId(null)}>
+              <button type="button" onClick={closeRenameDialog}>
                 Cancel
               </button>
               <button type="submit">Rename</button>
@@ -5637,7 +5835,11 @@ export default function App() {
       ) : null}
 
       <section className="workspace">
-        {error ? <div className="error-banner">{error}</div> : null}
+        {error ? (
+          <div className="error-banner" role="alert" aria-live="assertive">
+            {error}
+          </div>
+        ) : null}
 
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
@@ -5902,6 +6104,12 @@ export default function App() {
       {appToast ? (
         <div className="composer-toast app-toast" role="status" aria-live="polite">
           {appToast}
+        </div>
+      ) : null}
+      {folderPickerStatus ? (
+        <div className="folder-picker-status" role="status" aria-live="polite">
+          <LoaderCircle size={14} aria-hidden="true" />
+          <span>{folderPickerStatus}</span>
         </div>
       ) : null}
     </main>

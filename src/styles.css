@@ -198,8 +198,12 @@ button:disabled {
      unavailable. Lower the alpha for a stronger see-through effect. */
   background: rgba(14, 16, 17, 0.72);
   /* Top padding clears the macOS traffic-light buttons, which the Overlay
-     title bar draws over the top-left of the window (i.e. over the sidebar). */
-  padding: 32px 10px 12px;
+     title bar draws over the top-left of the window (i.e. over the sidebar).
+     Horizontal padding is trimmed 10→6px and handed to the group cards' interior
+     padding, so groups sit closer to the edges and breathe more while tabs keep
+     their width. The Home row and action buttons re-add the 4px as margin so only
+     the group cards widen. */
+  padding: 32px 6px 12px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
   user-select: none;
@@ -286,7 +290,10 @@ button:disabled {
   column-gap: 6px;
   width: 100%;
   min-height: 30px;
-  padding: 6px 9px;
+  /* Nested tabs indent via the left padding, so the status dot/icon shifts right
+     together with the title (the row, selection fill, and close × keep the full
+     width). The close/clear-status overlays add the same offset to stay over the dot. */
+  padding: 5px 9px 5px calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
@@ -295,8 +302,6 @@ button:disabled {
   text-align: left;
   cursor: pointer;
   user-select: none;
-  /* Nested tabs indent their text content by depth × indent; the row, selection
-     highlight, status dot, and close affordance keep fixed left columns. */
 }
 
 .pane-tab:hover {
@@ -354,11 +359,11 @@ button:disabled {
    rather than part of the reorderable list. */
 .pane-home-row {
   flex: 0 0 auto;
-  margin-bottom: 4px;
+  margin: 0 4px 4px;
 }
 
 .sidebar:not(.is-code-mode) .pane-home-row {
-  margin-bottom: 0;
+  margin: 0 4px;
 }
 
 .pane-home-row .pane-tab {
@@ -368,7 +373,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr);
   align-items: center;
-  column-gap: 6px;
+  column-gap: 8px;
   padding-bottom: 5px;
   /* Home is not draggable; keep the standard clickable tab cursor. */
   cursor: pointer;
@@ -378,7 +383,7 @@ button:disabled {
   justify-self: center;
   flex: none;
   color: #8a938e;
-  transform: translateX(-1px);
+  transform: translateX(0);
 }
 
 .pane-home-row.is-selected .pane-tab svg {
@@ -388,56 +393,85 @@ button:disabled {
 .pane-group {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
   min-width: 0;
-  padding: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.055);
+  /* Interior padding holds the 4px trimmed from the sidebar's horizontal padding,
+     so tabs keep their width while the card grows outward and gains breathing room. */
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 7px;
+  background: rgba(255, 255, 255, 0.013);
 }
 
 .pane-group + .pane-group {
-  margin-top: 8px;
+  margin-top: 3px;
 }
 
 .pane-group-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22px;
-  align-items: start;
-  min-height: 26px;
-  padding: 3px 4px 3px 7px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 25px;
+  padding: 2px 4px 2px 5px;
+  border-radius: 5px;
   color: #b9c0bc;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   line-height: 1.2;
   user-select: none;
 }
 
+.pane-group.has-panes .pane-group-header {
+  margin-bottom: 2px;
+}
+
+.pane-group-folder {
+  flex: none;
+  color: #7f8884;
+}
+
 .pane-group-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.pane-group-name {
   min-width: 0;
   overflow: hidden;
+  color: #d6dbd6;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* The active group (holding the selected tab) brightens slightly. */
+.pane-group.is-active-group .pane-group-name {
+  color: #edf0ec;
+}
+
+.pane-group-aux {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 6px;
+}
+
 .pane-group-menu-button {
   display: inline-flex;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
   align-items: center;
   justify-content: center;
-  justify-self: end;
-  margin-top: 1px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: #8a938e;
   cursor: pointer;
-  opacity: 0;
-}
-
-.pane-group-header:hover .pane-group-menu-button,
-.pane-group-menu-button:focus-visible {
-  opacity: 1;
 }
 
 .pane-group-menu-button:hover,
@@ -446,6 +480,13 @@ button:disabled {
   background: var(--control-bg-hover);
   color: #ffffff;
   outline: none;
+}
+
+.pane-list-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
 }
 
 /* The drop target is a standalone horizontal rule sitting in the 2px gap between
@@ -574,7 +615,7 @@ button:disabled {
 .pane-tab-clear-status {
   position: absolute;
   top: 50%;
-  left: 9px;
+  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
   z-index: 2;
   display: flex;
   width: 10px;
@@ -650,6 +691,7 @@ button:disabled {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+  line-height: 1.4;
   overflow-wrap: anywhere;
   white-space: normal;
 }
@@ -659,7 +701,6 @@ button:disabled {
   min-width: 0;
   flex-direction: column;
   gap: 1px;
-  margin-left: calc(var(--pane-depth, 0) * var(--pane-indent, 14px));
 }
 
 .pane-tab small {
@@ -854,14 +895,68 @@ button:disabled {
   cursor: default;
 }
 
+.group-context-menu {
+  width: min(220px, calc(100vw - 16px));
+  padding: 4px;
+  user-select: none;
+}
+
 .group-context-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 0;
 }
 
 .group-context-actions button {
-  justify-content: flex-start;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  justify-content: start;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
   min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #d9ddd9;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-context-actions button:hover,
+.group-context-actions button:focus-visible {
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
+  outline: none;
+  box-shadow: none;
+}
+
+.group-context-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.group-context-actions .group-context-danger:hover,
+.group-context-actions .group-context-danger:focus-visible {
+  background: #2c1a17;
+  color: #ffb4a3;
+}
+
+.group-context-actions svg {
+  justify-self: center;
+}
+
+.group-context-actions span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The close affordance is a plain linkified glyph that sits directly over the
@@ -870,7 +965,7 @@ button:disabled {
 .pane-tab-close {
   position: absolute;
   top: 50%;
-  left: 9px;
+  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
   z-index: 1;
   display: flex;
   width: 7px;
@@ -931,6 +1026,8 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   align-items: stretch;
   gap: 6px;
+  /* Offsets the reduced sidebar padding so the action row keeps its original width. */
+  margin: 0 4px;
   --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
@@ -1967,6 +2064,7 @@ button:disabled {
 }
 
 .workspace {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -1974,13 +2072,21 @@ button:disabled {
 }
 
 .error-banner {
-  margin: 10px 16px 0;
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  z-index: 35;
+  max-width: 720px;
+  margin: 0 auto;
   border: 1px solid #755149;
   border-radius: 6px;
   background: #2a211f;
   color: #ffd3c7;
   padding: 10px 12px;
   font-size: 13px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+  pointer-events: auto;
 }
 
 .terminal-stage {
@@ -3726,6 +3832,31 @@ header + .turn-blocks {
   font-variant-numeric: tabular-nums;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   pointer-events: none;
+}
+
+.folder-picker-status {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  padding: 7px 13px;
+  border: 1px solid #364245;
+  border-radius: 999px;
+  background: #1d2325;
+  color: #e7e7e2;
+  font-size: var(--fs-sm);
+  line-height: 1;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.folder-picker-status svg {
+  flex: none;
+  animation: dictation-mic-spin 0.9s linear infinite;
 }
 
 .native-input-submit-actions {

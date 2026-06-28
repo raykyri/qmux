@@ -180,7 +180,11 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           openBrowserOverlay(event.paneId, url, event.payload.sandbox === true);
         }
       }
-      if (event.type === "group.created" || event.type === "group.updated") {
+      if (
+        event.type === "group.created" ||
+        event.type === "group.updated" ||
+        event.type === "group.removed"
+      ) {
         const seq = (groupsRefreshSeq += 1);
         void listGroups()
           .then((latest) => {
