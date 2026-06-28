@@ -2650,10 +2650,18 @@ button:disabled {
   /* Floats over the transcript, anchored to the bottom, growing upward with the
      queue but never taller than the pane. */
   max-height: 100%;
+  overflow: hidden;
   padding: 10px 13px 10px 12px;
   /* Mostly opaque so the unwrapped queue/composer stay legible over the
      transcript, with only a short fade at the very top. */
   background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
+}
+
+.turn-sidebar.has-header .turn-sidebar-input:not(.is-split) {
+  /* Keep the floating queue/composer out from under the absolute 40px header.
+     Without this cap, a tall unsplit queue can grow behind the header, making the
+     top queued item impossible to scroll fully into view. */
+  max-height: calc(100% - 41px);
 }
 
 .turn-sidebar-input-rail {
