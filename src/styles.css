@@ -2780,7 +2780,9 @@ header + .turn-blocks {
 }
 
 .tagged-user-instruction-toggle {
+  display: inline;
   justify-self: start;
+  min-height: 0;
   min-width: 0;
   max-width: 100%;
   border: 0;
@@ -2790,7 +2792,7 @@ header + .turn-blocks {
   color: #8f9994;
   font: inherit;
   font-size: calc(14px + var(--transcript-font-delta, 0px));
-  line-height: inherit;
+  line-height: 1.35;
   overflow: hidden;
   text-align: left;
   text-decoration-line: underline;
