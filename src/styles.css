@@ -3831,7 +3831,7 @@ header + .turn-blocks {
 .composer-toast {
   position: fixed;
   left: 50%;
-  bottom: 84px;
+  bottom: 42px;
   z-index: 30;
   transform: translateX(-50%);
   padding: 6px 12px;
@@ -3846,12 +3846,15 @@ header + .turn-blocks {
 
 .app-toast {
   max-width: min(520px, calc(100vw - 48px));
-  border-color: #5b4630;
-  background: #241f18;
-  color: #ffdca8;
   line-height: 1.35;
   text-align: center;
   white-space: normal;
+}
+
+.app-toast.is-warning {
+  border-color: #5b4630;
+  background: #241f18;
+  color: #ffdca8;
 }
 
 /* First-use load of the shared Whisper voice model — pinned to the bottom
