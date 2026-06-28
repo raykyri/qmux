@@ -2772,13 +2772,6 @@ header + .turn-blocks {
   min-width: 0;
 }
 
-.tagged-user-instruction.is-collapsed {
-  display: block;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-}
-
 .tagged-user-instruction-toggle {
   display: inline;
   justify-self: start;
