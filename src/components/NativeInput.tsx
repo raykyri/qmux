@@ -518,7 +518,13 @@ export default function NativeInput({
     setWaitOpen(false);
     setSubmitting(true);
     try {
-      const result = await queueWaitAgentTurn(agent.id, trimmed, target.agentId);
+      const result = await queueWaitAgentTurn(
+        agent.id,
+        trimmed,
+        target.agentId,
+        target.paneId,
+        target.label,
+      );
       onQueueChange(agent.id, result.queuedTurns);
       onTurnSubmitted(agent.id, trimmed, "queue");
       recordRecentMessage(trimmed);

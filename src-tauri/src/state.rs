@@ -1619,6 +1619,23 @@ impl AppState {
         data: String,
         wait_for_agent_id: &str,
     ) -> Result<usize, String> {
+        self.enqueue_agent_wait_turn_with_target_label(
+            agent_id,
+            data,
+            wait_for_agent_id,
+            None,
+            None,
+        )
+    }
+
+    pub fn enqueue_agent_wait_turn_with_target_label(
+        &self,
+        agent_id: &str,
+        data: String,
+        wait_for_agent_id: &str,
+        wait_for_pane_id: Option<&str>,
+        wait_for_label: Option<&str>,
+    ) -> Result<usize, String> {
         if agent_id == wait_for_agent_id {
             return Err("a queued turn cannot wait on its own agent".to_string());
         }
@@ -1641,7 +1658,16 @@ impl AppState {
                 return Err("that wait would create a queue dependency cycle".to_string());
             }
 
-            let label = wait_target_label_locked(&model, target);
+            let supplied_label = wait_for_pane_id.and_then(|pane_id| {
+                if target.pane_id.as_deref() != Some(pane_id) {
+                    return None;
+                }
+                wait_for_label
+                    .map(str::trim)
+                    .filter(|label| !label.is_empty())
+                    .map(ToString::to_string)
+            });
+            let label = supplied_label.or_else(|| wait_target_label_locked(&model, target));
             let wait_for = QueuedTurnWait {
                 agent_id: wait_for_agent_id.to_string(),
                 pane_id: target.pane_id.clone(),
@@ -3133,6 +3159,70 @@ mod tests {
         let (turn, pending) = state.pop_ready_agent_turn("source").unwrap().unwrap();
         assert_eq!(turn.text, "after target");
         assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn queued_wait_turn_uses_supplied_label_when_target_pane_matches() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Running;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.title = "Shell".to_string();
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after target".to_string(),
+                "target",
+                Some("target-pane"),
+                Some("Dynamic terminal title"),
+            )
+            .unwrap();
+
+        let queued = state.agent_queued_turns("source").unwrap();
+        let wait_for = queued[0].wait_for.as_ref().unwrap();
+        assert_eq!(wait_for.label.as_deref(), Some("Dynamic terminal title"));
+    }
+
+    #[test]
+    fn queued_wait_turn_ignores_supplied_label_when_target_pane_is_stale() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let mut source = sample_agent("source");
+        source.status = AgentStatus::Done;
+        let mut target = sample_agent("target");
+        target.status = AgentStatus::Running;
+        target.pane_id = Some("target-pane".to_string());
+        let mut target_pane = sample_pane_runtime("target-pane");
+        target_pane.info.title = "Backend title".to_string();
+        target_pane.info.agent_id = Some("target".to_string());
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state.insert_pane(target_pane).unwrap();
+
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after target".to_string(),
+                "target",
+                Some("stale-pane"),
+                Some("Dynamic terminal title"),
+            )
+            .unwrap();
+
+        let queued = state.agent_queued_turns("source").unwrap();
+        let wait_for = queued[0].wait_for.as_ref().unwrap();
+        assert_eq!(wait_for.label.as_deref(), Some("Backend title"));
     }
 
     #[test]

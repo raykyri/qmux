@@ -38,6 +38,10 @@ pub struct QueueWaitAgentTurnRequest {
     pub agent_id: String,
     pub data: String,
     pub wait_for_agent_id: String,
+    #[serde(default)]
+    pub wait_for_pane_id: Option<String>,
+    #[serde(default)]
+    pub wait_for_label: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,8 +266,13 @@ pub fn queue_wait_agent_turn(
         return Err(format!("agent {} has failed", agent.id));
     }
 
-    let pending_turns =
-        state.enqueue_agent_wait_turn(&agent.id, data, &request.wait_for_agent_id)?;
+    let pending_turns = state.enqueue_agent_wait_turn_with_target_label(
+        &agent.id,
+        data,
+        &request.wait_for_agent_id,
+        request.wait_for_pane_id.as_deref(),
+        request.wait_for_label.as_deref(),
+    )?;
     let queued_turns = state.agent_queued_turns(&agent.id)?;
     state.emit(QmuxEvent::new(
         "agent.turn_queued",

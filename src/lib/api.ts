@@ -188,9 +188,21 @@ export function submitAgentTurn(agentId: string, data: string, mode: SubmitAgent
   });
 }
 
-export function queueWaitAgentTurn(agentId: string, data: string, waitForAgentId: string) {
+export function queueWaitAgentTurn(
+  agentId: string,
+  data: string,
+  waitForAgentId: string,
+  waitForPaneId?: string | null,
+  waitForLabel?: string | null,
+) {
   return invoke<SubmitAgentTurnResult>("agent_queue_wait_turn", {
-    request: { agentId, data, waitForAgentId },
+    request: {
+      agentId,
+      data,
+      waitForAgentId,
+      waitForPaneId: waitForPaneId ?? null,
+      waitForLabel: waitForLabel ?? null,
+    },
   });
 }
 
