@@ -72,6 +72,22 @@ async function writeTranscriptItem(sessionId, payload) {
   }
 }
 
+async function writeTranscriptEvent(sessionId, payload) {
+  if (!IN_QMUX || !WORKSPACE_ROOT) return;
+  try {
+    const dir = join(WORKSPACE_ROOT, ".qmux", "opencode");
+    await mkdir(dir, { recursive: true });
+    const line = JSON.stringify({
+      type: "event_msg",
+      payload,
+      session_id: sessionId,
+    });
+    await appendFile(join(dir, `${AGENT_ID}.jsonl`), `${line}\n`, "utf8");
+  } catch {
+    // Swallow: transcript tailing is best-effort.
+  }
+}
+
 async function writeTranscriptMessage(sessionId, role, content) {
   await writeTranscriptItem(sessionId, { type: "message", role, content });
 }
@@ -145,6 +161,7 @@ export const QmuxNotifyPlugin = async () => {
   const writtenToolUses = new Set();
   const writtenToolResults = new Set();
   const idleNotifiedAt = new Map();
+  const interruptNotifiedAt = new Map();
 
   async function notifyIdle(sessionId) {
     const key = sessionId ?? "__unknown__";
@@ -153,6 +170,19 @@ export const QmuxNotifyPlugin = async () => {
     if (now - previous < 1000) return;
     idleNotifiedAt.set(key, now);
     await notify("Stop", { session_id: sessionId });
+  }
+
+  async function notifyInterrupted(sessionId, reason) {
+    const key = sessionId ?? "__unknown__";
+    const now = Date.now();
+    const previous = interruptNotifiedAt.get(key) ?? 0;
+    if (now - previous < 1000) return;
+    interruptNotifiedAt.set(key, now);
+    await writeTranscriptEvent(sessionId, {
+      type: "turn_aborted",
+      reason: reason ?? "interrupted",
+    });
+    await notify("Stop", { session_id: sessionId, reason: reason ?? "interrupted" });
   }
 
   async function handleEvent(input) {
@@ -176,7 +206,31 @@ export const QmuxNotifyPlugin = async () => {
       const status = properties?.status?.type ?? properties?.info?.status ?? null;
       if (status === "idle") {
         await notifyIdle(sid);
+      } else if (status === "busy" || status === "retry") {
+        await notify("PreToolUse", { session_id: sid });
       }
+      return;
+    }
+
+    if (
+      type === "permission.updated" ||
+      type === "permission.asked" ||
+      type === "permission.v2.asked"
+    ) {
+      await notify("PermissionRequest", { session_id: sid });
+      return;
+    }
+
+    if (
+      type === "session.next.interrupt.requested" ||
+      (type === "tui.command.execute" && properties?.command === "session.interrupt")
+    ) {
+      await notifyInterrupted(sid, type);
+      return;
+    }
+
+    if (type === "command.executed") {
+      await notifyIdle(sid);
       return;
     }
 
@@ -258,6 +312,12 @@ export const QmuxNotifyPlugin = async () => {
         }
         await writeTranscriptMessage(sid, role, content);
       }
+    },
+
+    // Slash/command execution starts work even though it is not a model tool call.
+    "command.execute.before": async (input) => {
+      const sid = input?.sessionID ?? lastSessionId;
+      await notify("PreToolUse", { session_id: sid });
     },
 
     // Tool events: forward lifecycle notifications and write exact tool payloads.

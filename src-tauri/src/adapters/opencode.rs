@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, ensure_on_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -120,6 +120,10 @@ impl AgentAdapter for OpencodeAdapter {
         line: &str,
     ) -> Option<Turn> {
         parse_transcript_line(agent_id, source_index, line)
+    }
+
+    fn parse_transcript_lifecycle_event(&self, line: &str) -> Option<TranscriptLifecycleEvent> {
+        parse_transcript_lifecycle_event(line)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -714,6 +718,16 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
     })
 }
 
+fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    (payload.get("type").and_then(Value::as_str) == Some("turn_aborted"))
+        .then_some(TranscriptLifecycleEvent::Interrupted)
+}
+
 fn parse_opencode_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBlock>> {
     match content? {
         Value::String(text) => Some(vec![TurnBlock::Text { text: text.clone() }]),
@@ -1150,6 +1164,31 @@ mod tests {
     fn parse_transcript_line_ignores_non_response_item() {
         let line = r#"{"type":"other","payload":{}}"#;
         assert!(parse_transcript_line("agent-1", 0, line).is_none());
+    }
+
+    #[test]
+    fn parse_opencode_turn_aborted_lifecycle_event() {
+        let abort_line = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "turn_aborted",
+                "reason": "session.next.interrupt.requested"
+            },
+            "session_id": "sess-1"
+        })
+        .to_string();
+        let ordinary_event_line = json!({
+            "type": "event_msg",
+            "payload": { "type": "status", "message": "ok" },
+            "session_id": "sess-1"
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_transcript_lifecycle_event(&abort_line),
+            Some(TranscriptLifecycleEvent::Interrupted)
+        );
+        assert_eq!(parse_transcript_lifecycle_event(&ordinary_event_line), None);
     }
 
     #[test]
