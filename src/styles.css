@@ -2064,14 +2064,49 @@ button:disabled {
   flex-direction: column;
 }
 
-.error-banner {
-  margin: 10px 16px 0;
+/* Errors float over the app content as a dismissible alert rather than taking
+   flow space in the workspace column, which would shrink the terminal beneath. */
+.error-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 50;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 48px));
   border: 1px solid #755149;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #2a211f;
   color: #ffd3c7;
   padding: 10px 12px;
   font-size: 13px;
+  line-height: 1.35;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.error-toast-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-toast-dismiss {
+  flex: 0 0 auto;
+  margin: -2px -2px 0 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.error-toast-dismiss:hover {
+  opacity: 1;
 }
 
 .terminal-stage {

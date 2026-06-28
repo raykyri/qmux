@@ -245,6 +245,10 @@ const OPENROUTER_TITLE_MAX_COMPLETION_TOKENS = 1000;
 const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const APP_TOAST_TIMEOUT_MS = 5000;
+// Errors float over the app as a dismissible alert rather than reflowing the
+// terminal; give them a longer dwell than a passive status toast since they are
+// actionable, but still auto-clear so a stale message never lingers.
+const ERROR_TOAST_TIMEOUT_MS = 10000;
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
@@ -1036,6 +1040,15 @@ export default function App() {
       setLastActiveGroupId(activePane.groupId);
     }
   }, [activePane?.groupId]);
+  // Auto-clear the error alert after a spell so a stale message never lingers over
+  // the app. Re-runs (and resets the timer) whenever the error text changes.
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    const timer = window.setTimeout(() => setError(null), ERROR_TOAST_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [error]);
   const handleTerminalTitleChange = useCallback((paneId: string, rawTitle: string) => {
     const title = sanitizeTerminalTitle(rawTitle);
     setTerminalTitleByPane((current) => {
@@ -5831,7 +5844,6 @@ export default function App() {
       ) : null}
 
       <section className="workspace">
-        {error ? <div className="error-banner">{error}</div> : null}
 
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
@@ -6096,6 +6108,19 @@ export default function App() {
       {appToast ? (
         <div className="composer-toast app-toast" role="status" aria-live="polite">
           {appToast}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="error-toast" role="alert" aria-live="assertive">
+          <span className="error-toast-message">{error}</span>
+          <button
+            type="button"
+            className="error-toast-dismiss"
+            aria-label="Dismiss error"
+            onClick={() => setError(null)}
+          >
+            ×
+          </button>
         </div>
       ) : null}
     </main>
