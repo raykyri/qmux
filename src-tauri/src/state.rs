@@ -152,6 +152,7 @@ pub struct ClosedPaneSnapshot {
     pub pane: PaneInfo,
     pub group: Option<GroupInfo>,
     pub agent: Option<ClosedPaneAgentSnapshot>,
+    pub orphaned_agents: Vec<ClosedPaneAgentSnapshot>,
     pub index: usize,
     pub scrollback: Vec<u8>,
 }
@@ -1068,7 +1069,28 @@ impl AppState {
             pane.depth = model.pane_depth.get(pane_id).copied().unwrap_or(0);
             let group = model.groups.get(&pane.group_id).cloned();
 
+            let group_pane_count = model
+                .panes
+                .values()
+                .filter(|candidate| candidate.info.group_id == pane.group_id)
+                .count();
+            let closing_last_group_pane = group_pane_count == 1;
             let pane_agent_id = pane.agent_id.clone();
+            let snapshot_agent = |agent: &AgentInfo| {
+                let turns = model.turns.get(&agent.id).cloned().unwrap_or_default();
+                let queued_turns = model
+                    .agent_turn_queues
+                    .get(&agent.id)
+                    .map(|queue| queue.iter().cloned().collect())
+                    .unwrap_or_default();
+                let draft = model.agent_drafts.get(&agent.id).cloned();
+                ClosedPaneAgentSnapshot {
+                    agent: agent.clone(),
+                    turns,
+                    queued_turns,
+                    draft,
+                }
+            };
             let agent = pane_agent_id
                 .as_deref()
                 .and_then(|agent_id| model.agents.get(agent_id))
@@ -1079,26 +1101,28 @@ impl AppState {
                         .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
                 })
                 .cloned()
-                .map(|agent| {
-                    let turns = model.turns.get(&agent.id).cloned().unwrap_or_default();
-                    let queued_turns = model
-                        .agent_turn_queues
-                        .get(&agent.id)
-                        .map(|queue| queue.iter().cloned().collect())
-                        .unwrap_or_default();
-                    let draft = model.agent_drafts.get(&agent.id).cloned();
-                    ClosedPaneAgentSnapshot {
-                        agent,
-                        turns,
-                        queued_turns,
-                        draft,
-                    }
-                });
+                .map(|agent| snapshot_agent(&agent));
+            let captured_agent_id = agent
+                .as_ref()
+                .map(|agent_snapshot| agent_snapshot.agent.id.as_str());
+            let orphaned_agents = model
+                .agents
+                .values()
+                .filter(|agent| Some(agent.id.as_str()) != captured_agent_id)
+                .filter(|agent| {
+                    agent.orphaned_queue_pane_id.as_deref() == Some(pane_id)
+                        || (closing_last_group_pane
+                            && agent.group_id == pane.group_id
+                            && agent.pane_id.is_none())
+                })
+                .map(snapshot_agent)
+                .collect();
 
             ClosedPaneSnapshot {
                 pane,
                 group,
                 agent,
+                orphaned_agents,
                 index,
                 scrollback: Vec::new(),
             }
@@ -1196,54 +1220,22 @@ impl AppState {
             model.shell_agent_resumes.remove(&snapshot.pane.id);
 
             if let Some(agent_snapshot) = &snapshot.agent {
-                let mut agent = agent_snapshot.agent.clone();
-                if matches!(snapshot.pane.kind, PaneKind::Shell) {
-                    let has_queue = !agent_snapshot.queued_turns.is_empty();
-                    agent.pane_id = None;
-                    agent.orphaned_queue_pane_id = has_queue.then(|| snapshot.pane.id.clone());
-                    agent.status = AgentStatus::Idle;
-                } else {
-                    agent.pane_id = Some(snapshot.pane.id.clone());
-                    agent.orphaned_queue_pane_id = None;
-                }
-
-                if matches!(snapshot.pane.kind, PaneKind::Shell)
-                    && let Some(resume) = shell_agent_resume(&agent)
-                {
-                    model
-                        .shell_agent_resumes
-                        .insert(snapshot.pane.id.clone(), resume);
-                }
-
-                let agent_id = agent.id.clone();
-                model.agents.insert(agent_id.clone(), agent);
-                if agent_snapshot.turns.is_empty() {
-                    model.turns.remove(&agent_id);
-                } else {
-                    model
-                        .turns
-                        .insert(agent_id.clone(), agent_snapshot.turns.clone());
-                }
-                if agent_snapshot.queued_turns.is_empty() {
-                    model.agent_turn_queues.remove(&agent_id);
-                } else {
-                    model.agent_turn_queues.insert(
-                        agent_id.clone(),
-                        agent_snapshot.queued_turns.iter().cloned().collect(),
-                    );
-                }
-                match agent_snapshot
-                    .draft
-                    .clone()
-                    .filter(|draft| !draft.trim().is_empty())
-                {
-                    Some(draft) => {
-                        model.agent_drafts.insert(agent_id, draft);
-                    }
-                    None => {
-                        model.agent_drafts.remove(&agent_id);
-                    }
-                }
+                restore_closed_agent_snapshot_locked(
+                    &mut model,
+                    &snapshot.pane,
+                    agent_snapshot,
+                    matches!(snapshot.pane.kind, PaneKind::Agent),
+                    matches!(snapshot.pane.kind, PaneKind::Shell),
+                );
+            }
+            for agent_snapshot in &snapshot.orphaned_agents {
+                restore_closed_agent_snapshot_locked(
+                    &mut model,
+                    &snapshot.pane,
+                    agent_snapshot,
+                    false,
+                    false,
+                );
             }
         }
         self.persist();
@@ -1332,7 +1324,8 @@ impl AppState {
             // Re-level any children orphaned by the removal so the tree stays valid
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
-            removed_group_id.filter(|group_id| remove_group_if_empty_locked(&mut model, group_id))
+            removed_group_id
+                .filter(|group_id| remove_group_without_open_panes_locked(&mut model, group_id))
         };
         // The pane's control-socket token is captured by its in-pane process as
         // QMUX_TOKEN; once the pane is gone for good it can never legitimately be used
@@ -1617,14 +1610,7 @@ impl AppState {
             {
                 return Err("group still has open panes".to_string());
             }
-            if model
-                .agents
-                .values()
-                .any(|agent| agent.group_id == group_id)
-            {
-                return Err("group still has queued or recoverable agents".to_string());
-            }
-            remove_group_if_empty_locked(&mut model, group_id)
+            remove_group_without_open_panes_locked(&mut model, group_id)
         };
         if removed {
             self.persist();
@@ -2910,7 +2896,75 @@ fn ordered_groups(model: &Model) -> Vec<GroupInfo> {
         .collect()
 }
 
-fn remove_group_if_empty_locked(model: &mut Model, group_id: &str) -> bool {
+fn restore_closed_agent_snapshot_locked(
+    model: &mut Model,
+    pane: &PaneInfo,
+    agent_snapshot: &ClosedPaneAgentSnapshot,
+    attach_to_pane: bool,
+    queue_shell_resume: bool,
+) {
+    let mut agent = agent_snapshot.agent.clone();
+    if attach_to_pane {
+        agent.pane_id = Some(pane.id.clone());
+        agent.orphaned_queue_pane_id = None;
+    } else {
+        let has_queue = !agent_snapshot.queued_turns.is_empty();
+        agent.pane_id = None;
+        agent.orphaned_queue_pane_id = has_queue.then(|| pane.id.clone());
+        agent.status = AgentStatus::Idle;
+    }
+
+    if queue_shell_resume && let Some(resume) = shell_agent_resume(&agent) {
+        model.shell_agent_resumes.insert(pane.id.clone(), resume);
+    }
+
+    let agent_id = agent.id.clone();
+    model.agents.insert(agent_id.clone(), agent);
+    if agent_snapshot.turns.is_empty() {
+        model.turns.remove(&agent_id);
+    } else {
+        model
+            .turns
+            .insert(agent_id.clone(), agent_snapshot.turns.clone());
+    }
+    if agent_snapshot.queued_turns.is_empty() {
+        model.agent_turn_queues.remove(&agent_id);
+    } else {
+        model.agent_turn_queues.insert(
+            agent_id.clone(),
+            agent_snapshot.queued_turns.iter().cloned().collect(),
+        );
+    }
+    match agent_snapshot
+        .draft
+        .clone()
+        .filter(|draft| !draft.trim().is_empty())
+    {
+        Some(draft) => {
+            model.agent_drafts.insert(agent_id, draft);
+        }
+        None => {
+            model.agent_drafts.remove(&agent_id);
+        }
+    }
+}
+
+fn prune_agent_locked(model: &mut Model, agent_id: &str) {
+    if let Some(agent) = model.agents.get(agent_id).cloned() {
+        upsert_recent_session_for_agent_locked(model, &agent, now_millis(), true);
+    }
+    model.agents.remove(agent_id);
+    model.turns.remove(agent_id);
+    model.agent_turn_queues.remove(agent_id);
+    model.agent_drafts.remove(agent_id);
+    model.agent_typing.remove(agent_id);
+    model.agent_pending_pause.remove(agent_id);
+    model.agent_draining.remove(agent_id);
+    model.agent_send_tracking.remove(agent_id);
+    clear_recent_session_binding_locked(model, Some(agent_id), None);
+}
+
+fn remove_group_without_open_panes_locked(model: &mut Model, group_id: &str) -> bool {
     if model
         .panes
         .values()
@@ -2918,16 +2972,21 @@ fn remove_group_if_empty_locked(model: &mut Model, group_id: &str) -> bool {
     {
         return false;
     }
-    if model
+
+    let agent_ids = model
         .agents
         .values()
-        .any(|agent| agent.group_id == group_id)
-    {
-        return false;
+        .filter(|agent| agent.group_id == group_id)
+        .map(|agent| agent.id.clone())
+        .collect::<Vec<_>>();
+    let pruned_agents = !agent_ids.is_empty();
+    for agent_id in agent_ids {
+        prune_agent_locked(model, &agent_id);
     }
     let removed = model.groups.remove(group_id).is_some();
+    let order_len_before = model.group_order.len();
     model.group_order.retain(|id| id != group_id);
-    removed
+    removed || pruned_agents || order_len_before != model.group_order.len()
 }
 
 fn ordered_panes(model: &Model) -> Vec<PaneInfo> {
@@ -4057,6 +4116,36 @@ mod tests {
     }
 
     #[test]
+    fn capture_last_group_pane_records_orphaned_agents_for_restore() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let mut agent = sample_agent("agent-1");
+        agent.pane_id = None;
+        agent.orphaned_queue_pane_id = Some("pane-7".to_string());
+        state.insert_agent(agent).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "recover me".to_string())
+            .unwrap();
+
+        state.capture_last_closed_pane("pane-7").unwrap();
+
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+        assert!(snapshot.agent.is_none());
+        assert_eq!(snapshot.orphaned_agents.len(), 1);
+        assert_eq!(snapshot.orphaned_agents[0].agent.id, "agent-1");
+        assert_eq!(
+            snapshot.orphaned_agents[0].queued_turns[0].text,
+            "recover me"
+        );
+        assert_eq!(
+            snapshot.group.as_ref().map(|group| group.id.as_str()),
+            Some("group-1")
+        );
+    }
+
+    #[test]
     fn restore_closed_pane_metadata_reinserts_pruned_agent_and_layout() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
@@ -4122,10 +4211,12 @@ mod tests {
     }
 
     #[test]
-    fn remove_pane_keeps_its_agent_when_turns_are_queued() {
+    fn remove_pane_keeps_queued_agent_while_sibling_pane_remains() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-8")).unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
         state
             .enqueue_agent_turn("agent-1", "later".to_string())
@@ -4165,7 +4256,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_pane_keeps_group_when_sibling_panes_or_agents_remain() {
+    fn remove_pane_keeps_group_when_sibling_panes_remain() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
         state.insert_group_after(sample_group(), None).unwrap();
@@ -4174,10 +4265,9 @@ mod tests {
 
         state.remove_pane("pane-1").unwrap();
         assert_eq!(state.list_groups().unwrap().len(), 1);
-        state.insert_agent(sample_agent("agent-1")).unwrap();
         state.remove_pane("pane-2").unwrap();
 
-        assert_eq!(state.list_groups().unwrap().len(), 1);
+        assert!(state.list_groups().unwrap().is_empty());
     }
 
     #[test]
@@ -4197,7 +4287,87 @@ mod tests {
     }
 
     #[test]
-    fn remove_group_refuses_open_panes_and_recoverable_agents() {
+    fn last_agent_pane_close_removes_group_and_restore_recreates_it() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let mut pane = sample_pane_runtime("pane-7");
+        pane.info.kind = PaneKind::Agent;
+        pane.info.agent_id = Some("agent-1".to_string());
+        state.insert_pane(pane).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued restore".to_string())
+            .unwrap();
+        state.capture_last_closed_pane("pane-7").unwrap();
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        assert!(state.list_groups().unwrap().is_empty());
+        assert!(state.agent("agent-1").unwrap().is_none());
+
+        state.restore_closed_pane_metadata(&snapshot).unwrap();
+        let mut restored_pane = sample_pane_runtime("pane-7");
+        restored_pane.info = snapshot.pane.clone();
+        state.insert_pane(restored_pane).unwrap();
+        state
+            .place_restored_pane(&snapshot.pane.id, snapshot.index, snapshot.pane.depth)
+            .unwrap();
+
+        assert_eq!(state.list_groups().unwrap()[0].id, "group-1");
+        let restored_agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(restored_agent.pane_id.as_deref(), Some("pane-7"));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued restore".to_string()]
+        );
+    }
+
+    #[test]
+    fn last_pane_close_prunes_orphaned_agents_and_restore_rehydrates_them() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let mut agent = sample_agent("agent-1");
+        agent.pane_id = None;
+        agent.orphaned_queue_pane_id = Some("pane-7".to_string());
+        state.insert_agent(agent).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued restore".to_string())
+            .unwrap();
+        state.capture_last_closed_pane("pane-7").unwrap();
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        assert!(state.list_groups().unwrap().is_empty());
+        assert!(state.agent("agent-1").unwrap().is_none());
+
+        state.restore_closed_pane_metadata(&snapshot).unwrap();
+        let mut restored_pane = sample_pane_runtime("pane-7");
+        restored_pane.info = snapshot.pane.clone();
+        state.insert_pane(restored_pane).unwrap();
+        state
+            .place_restored_pane(&snapshot.pane.id, snapshot.index, snapshot.pane.depth)
+            .unwrap();
+
+        assert_eq!(state.list_groups().unwrap()[0].id, "group-1");
+        let restored_agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(restored_agent.pane_id, None);
+        assert_eq!(
+            restored_agent.orphaned_queue_pane_id.as_deref(),
+            Some("pane-7")
+        );
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued restore".to_string()]
+        );
+    }
+
+    #[test]
+    fn remove_group_refuses_open_panes_but_prunes_recoverable_agents() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
         state.insert_group_after(sample_group(), None).unwrap();
@@ -4210,11 +4380,30 @@ mod tests {
         let state = AppState::new(test_config(temp_workspace()));
         state.insert_group_after(sample_group(), None).unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
-        assert_eq!(
-            state.remove_group("group-1").unwrap_err(),
-            "group still has queued or recoverable agents"
-        );
-        assert_eq!(state.list_groups().unwrap().len(), 1);
+        state.remove_group("group-1").unwrap();
+        assert!(state.list_groups().unwrap().is_empty());
+        assert!(state.agent("agent-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_group_prunes_agents_when_group_row_is_already_missing_and_persists() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            state.restore_session();
+            state.insert_agent(sample_agent("agent-1")).unwrap();
+
+            state.remove_group("group-1").unwrap();
+
+            assert!(state.agent("agent-1").unwrap().is_none());
+        }
+
+        let state = AppState::new(config);
+        state.restore_session();
+        assert!(state.agent("agent-1").unwrap().is_none());
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

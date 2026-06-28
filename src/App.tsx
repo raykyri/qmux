@@ -5845,7 +5845,11 @@ export default function App() {
       ) : null}
 
       <section className="workspace">
-        {error ? <div className="error-banner">{error}</div> : null}
+        {error ? (
+          <div className="error-banner" role="alert" aria-live="assertive">
+            {error}
+          </div>
+        ) : null}
 
         <div ref={terminalStageRef} className="terminal-stage">
           {homeActive && !launcherOpen ? (
