@@ -2301,6 +2301,27 @@ impl AppState {
         Ok(cleared)
     }
 
+    pub fn agent_has_outstanding_send_source(
+        &self,
+        agent_id: &str,
+        source: AgentSendSource,
+    ) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_send_tracking
+            .get(agent_id)
+            .is_some_and(|tracking| {
+                tracking
+                    .outstanding_sends
+                    .iter()
+                    .any(|send| send.source == source)
+            }))
+    }
+
     pub fn mark_transcript_tail(&self, agent_id: &str, path: &str) -> Result<bool, String> {
         let key = format!("{agent_id}:{path}");
         let mut tails = self

@@ -1,7 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, ensure_on_path, reusable_session_agent, shell_quote_arg, shell_quote_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, reusable_session_agent,
+    shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -114,6 +115,10 @@ impl AgentAdapter for CodexAdapter {
         line: &str,
     ) -> Option<Turn> {
         parse_transcript_line(agent_id, source_index, line)
+    }
+
+    fn parse_transcript_lifecycle_event(&self, line: &str) -> Option<TranscriptLifecycleEvent> {
+        parse_transcript_lifecycle_event(line)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -1395,6 +1400,16 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
     })
 }
 
+fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    (payload.get("type").and_then(Value::as_str) == Some("turn_aborted"))
+        .then_some(TranscriptLifecycleEvent::Interrupted)
+}
+
 fn parse_codex_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBlock>> {
     match content? {
         Value::String(text) => Some(vec![TurnBlock::Text { text: text.clone() }]),
@@ -2341,6 +2356,30 @@ trusted_hash = "sha256:trusted"
         assert!(parse_transcript_line("agent-1", 1, &event_line).is_none());
         assert!(parse_transcript_line("agent-1", 2, &developer_line).is_none());
         assert!(parse_transcript_line("agent-1", 3, &reasoning_line).is_none());
+    }
+
+    #[test]
+    fn parse_codex_turn_aborted_lifecycle_event() {
+        let abort_line = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "turn_aborted",
+                "turn_id": "turn-1",
+                "reason": "interrupted"
+            }
+        })
+        .to_string();
+        let user_message_line = json!({
+            "type": "event_msg",
+            "payload": { "type": "user_message", "message": "fix the bug" }
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_transcript_lifecycle_event(&abort_line),
+            Some(TranscriptLifecycleEvent::Interrupted)
+        );
+        assert_eq!(parse_transcript_lifecycle_event(&user_message_line), None);
     }
 
     #[test]

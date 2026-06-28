@@ -1,7 +1,8 @@
-use crate::adapters::adapter_registry;
+use crate::adapters::{TranscriptLifecycleEvent, adapter_registry};
 use crate::events::QmuxEvent;
-use crate::state::AppState;
-use crate::workspace::AgentInfo;
+use crate::state::{AgentSendSource, AppState};
+use crate::turn_queue::{IdleResolution, advance_after_idle};
+use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -201,6 +202,7 @@ pub fn start_transcript_tail(
                 // last tick. line_index advances for every complete line (parsed or
                 // not) so source indices stay aligned with the file's line numbers.
                 for line in complete_lines(&snapshot.data) {
+                    let lifecycle_event = adapter.parse_transcript_lifecycle_event(&line);
                     if let Some(turn) = adapter.parse_transcript_line(&agent_id, line_index, &line)
                     {
                         // Surface a persistence failure rather than silently emitting a
@@ -217,6 +219,24 @@ pub fn start_transcript_tail(
                             ));
                         }
                     }
+                    if let Some(lifecycle_event) = lifecycle_event {
+                        match transcript_lifecycle_agent_event(
+                            &state,
+                            &agent_id,
+                            &transcript_path,
+                            lifecycle_event,
+                        ) {
+                            Ok(Some(event)) => state.emit(event),
+                            Ok(None) => {}
+                            Err(err) => {
+                                state.emit(transcript_persist_error(
+                                    &agent_id,
+                                    &transcript_path,
+                                    &err,
+                                ));
+                            }
+                        }
+                    }
                     line_index += 1;
                 }
                 consumed += complete_len(&snapshot.data);
@@ -231,6 +251,77 @@ pub fn start_transcript_tail(
 /// Consecutive failed reads (at 500ms each, ~3s) before the bound transcript file
 /// being unreadable is surfaced as an unexpected state rather than a write race.
 const READ_FAILURE_NOTICE_THRESHOLD: u32 = 6;
+
+fn transcript_lifecycle_agent_event(
+    state: &AppState,
+    agent_id: &str,
+    transcript_path: &str,
+    lifecycle_event: TranscriptLifecycleEvent,
+) -> Result<Option<QmuxEvent>, String> {
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(None);
+    };
+    if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+        return Ok(None);
+    }
+    // If a normal Stop/idle hook already drained a queued turn, a late transcript
+    // abort marker belongs to the previous turn. Do not drain again while that
+    // queued send is still waiting for its prompt-submit echo.
+    if state.agent_has_outstanding_send_source(agent_id, AgentSendSource::QueuedTurn)? {
+        return Ok(None);
+    }
+
+    match advance_after_idle(state, agent_id) {
+        Ok(IdleResolution::Drained) => transcript_lifecycle_updated_agent_event(
+            state,
+            agent_id,
+            transcript_path,
+            lifecycle_event,
+            "agent.running",
+        ),
+        Ok(IdleResolution::Paused | IdleResolution::Idle) => {
+            transcript_lifecycle_updated_agent_event(
+                state,
+                agent_id,
+                transcript_path,
+                lifecycle_event,
+                "agent.done",
+            )
+        }
+        Err(err) => Ok(Some(QmuxEvent::new(
+            "agent.queue_error",
+            agent.pane_id,
+            Some(agent_id.to_string()),
+            json!({
+                "error": err,
+                "transcriptLifecycleEvent": lifecycle_event.as_str(),
+                "transcriptPath": transcript_path,
+            }),
+        ))),
+    }
+}
+
+fn transcript_lifecycle_updated_agent_event(
+    state: &AppState,
+    agent_id: &str,
+    transcript_path: &str,
+    lifecycle_event: TranscriptLifecycleEvent,
+    event_type: &str,
+) -> Result<Option<QmuxEvent>, String> {
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(None);
+    };
+    Ok(Some(QmuxEvent::new(
+        event_type,
+        agent.pane_id.clone(),
+        Some(agent.id.clone()),
+        json!({
+            "agent": agent,
+            "transcriptLifecycleEvent": lifecycle_event.as_str(),
+            "transcriptPath": transcript_path,
+        }),
+    )))
+}
 
 fn recover_missing_transcript(
     state: &AppState,
@@ -967,6 +1058,9 @@ fn should_recover_missing(err_kind: ErrorKind, have_read_bound_file: bool) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+    };
     use std::time::UNIX_EPOCH;
 
     #[test]
@@ -1026,6 +1120,71 @@ mod tests {
         assert_eq!(complete_len("{\"a\":1}\n"), 8);
         assert_eq!(complete_len("{\"a\":1}\n{\"b\":2"), 8);
         assert_eq!(complete_len("{\"a\":1}\n{\"b\":2}\n"), 16);
+    }
+
+    #[test]
+    fn transcript_lifecycle_interruption_marks_running_agent_done() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+
+        let event = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::Interrupted,
+        )
+        .unwrap()
+        .expect("interruption should emit an agent event");
+
+        assert_eq!(event.event_type, "agent.done");
+        assert_eq!(event.payload["transcriptLifecycleEvent"], "interrupted");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Done));
+    }
+
+    #[test]
+    fn transcript_lifecycle_interruption_ignores_non_working_agent() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+
+        let event = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::Interrupted,
+        )
+        .unwrap();
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn transcript_lifecycle_interruption_does_not_double_drain_queued_send() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "already drained".to_string(),
+                AgentSendSource::QueuedTurn,
+            )
+            .unwrap();
+
+        let event = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::Interrupted,
+        )
+        .unwrap();
+
+        assert!(event.is_none());
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Running));
     }
 
     #[test]
@@ -1319,5 +1478,57 @@ mod tests {
             session_id_from_transcript_path(Path::new("/tmp/.jsonl")),
             None
         );
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(QmuxConfig {
+            workspace_root: temp_dir(),
+            socket_path: PathBuf::from("/tmp/qmux-transcript-test.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: PathBuf::new(),
+            opencode_plugin_dir: PathBuf::new(),
+        })
+    }
+
+    fn sample_agent(status: AgentStatus) -> AgentInfo {
+        AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/qmux-transcript-test".to_string(),
+            branch: None,
+            pane_id: Some("pane-1".to_string()),
+            orphaned_queue_pane_id: None,
+            session_id: None,
+            transcript_path: Some("/tmp/session.jsonl".to_string()),
+            status,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            paused: false,
+            created_at: 1,
+        }
+    }
+
+    fn temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "qmux-transcript-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ))
     }
 }

@@ -153,6 +153,19 @@ pub struct PermissionAction {
     pub input: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptLifecycleEvent {
+    Interrupted,
+}
+
+impl TranscriptLifecycleEvent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TranscriptLifecycleEvent::Interrupted => "interrupted",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ComposerPolicy {
     pub ready_statuses: Vec<AgentStatus>,
@@ -216,6 +229,10 @@ pub trait AgentAdapter: Send + Sync {
         source_index: usize,
         line: &str,
     ) -> Option<Turn>;
+
+    fn parse_transcript_lifecycle_event(&self, _line: &str) -> Option<TranscriptLifecycleEvent> {
+        None
+    }
 
     fn composer_policy(&self) -> ComposerPolicy;
 }

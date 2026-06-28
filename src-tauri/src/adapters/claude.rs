@@ -1,8 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
-    ShellCommandIntegration, SpawnAgentRequest, ensure_on_path, reusable_session_agent,
-    shell_quote_arg, shell_quote_path,
+    ShellCommandIntegration, SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
+    reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -142,6 +142,10 @@ impl AgentAdapter for ClaudeAdapter {
         line: &str,
     ) -> Option<Turn> {
         parse_transcript_line(agent_id, source_index, line)
+    }
+
+    fn parse_transcript_lifecycle_event(&self, line: &str) -> Option<TranscriptLifecycleEvent> {
+        parse_transcript_lifecycle_event(line)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -1253,6 +1257,39 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
     })
 }
 
+fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("interruptedMessageId").is_some() || value.get("interrupted_message_id").is_some()
+    {
+        return Some(TranscriptLifecycleEvent::Interrupted);
+    }
+
+    let message = value.get("message").unwrap_or(&value);
+    let content = message.get("content").or_else(|| value.get("content"))?;
+    claude_content_has_interruption_marker(content).then_some(TranscriptLifecycleEvent::Interrupted)
+}
+
+fn claude_content_has_interruption_marker(content: &Value) -> bool {
+    match content {
+        Value::String(text) => is_claude_interruption_marker(text),
+        Value::Array(items) => items.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("text")
+                && item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_claude_interruption_marker)
+        }),
+        _ => false,
+    }
+}
+
+fn is_claude_interruption_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+    )
+}
+
 fn parse_blocks(content: &Value) -> Vec<TurnBlock> {
     match content {
         Value::String(text) => vec![TurnBlock::Text { text: text.clone() }],
@@ -1954,6 +1991,48 @@ mod tests {
 
         assert!(event.payload.get("sendTracking").is_none());
         assert_eq!(state.outstanding_agent_sends("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_claude_interrupted_lifecycle_events() {
+        let plain_interrupt = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "[Request interrupted by user]" }]
+            }
+        })
+        .to_string();
+        let tool_interrupt = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "[Request interrupted by user for tool use]" }]
+            },
+            "interruptedMessageId": "msg_123"
+        })
+        .to_string();
+        let ordinary_user_message = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "please keep going" }]
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_transcript_lifecycle_event(&plain_interrupt),
+            Some(TranscriptLifecycleEvent::Interrupted)
+        );
+        assert_eq!(
+            parse_transcript_lifecycle_event(&tool_interrupt),
+            Some(TranscriptLifecycleEvent::Interrupted)
+        );
+        assert_eq!(
+            parse_transcript_lifecycle_event(&ordinary_user_message),
+            None
+        );
     }
 
     #[test]
