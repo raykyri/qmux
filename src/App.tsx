@@ -144,6 +144,7 @@ import {
   getRuntimeConfig,
   generateFoundationTabTitle,
   killPane,
+  listenToMenuBarSelectPane,
   listGroups,
   listAgents,
   listClaudeSkills,
@@ -170,6 +171,7 @@ import {
   spawnAgent,
   spawnShell,
   submitAgentTurn,
+  updateMenuBar,
   worktreeStatus,
 } from "./lib/api";
 import type {
@@ -186,6 +188,7 @@ import type {
   WaitTarget,
 } from "./types";
 import type { ShowHideShortcutSetting } from "./lib/api";
+import type { MenuBarSnapshot, MenuBarStatusTone } from "./lib/api";
 
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 const LEFT_SIDEBAR_MIN_WIDTH = 208;
@@ -1063,6 +1066,40 @@ export default function App() {
     return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
   }
 
+  function queuedTurnsForAgent(agent: AgentInfo | undefined): QueuedTurn[] {
+    return agent ? (queuedTurnsByAgent[agent.id] ?? []) : [];
+  }
+
+  function paneWaitsOnOtherPane(agent: AgentInfo | undefined): boolean {
+    if (!agent) {
+      return false;
+    }
+    const firstQueuedTurn = queuedTurnsForAgent(agent)[0];
+    return Boolean(firstQueuedTurn?.waitFor && firstQueuedTurn.waitFor.agentId !== agent.id);
+  }
+
+  function paneTabStatusTone(agent: AgentInfo | undefined): MenuBarStatusTone {
+    return agent ? (agentStatusTone(agent.status) as MenuBarStatusTone) : "idle";
+  }
+
+  function paneTabStatusLabel(pane: PaneInfo, agent: AgentInfo | undefined): string | null {
+    const queueCount = queuedTurnsForAgent(agent).length;
+    const rawStatus = agent ? agentStatusLabel(agent.status) : statusLabel(pane.status);
+    return (agent?.status === "running" || agent?.status === "idle") && queueCount > 0
+      ? `${queueCount} queued`
+      : rawStatus === "Running"
+        ? null
+        : rawStatus;
+  }
+
+  function paneTabStatusMetaLabel(pane: PaneInfo, agent: AgentInfo | undefined): string | null {
+    const tabStatus = paneTabStatusLabel(pane, agent);
+    if (pane.recovered && tabStatus) {
+      return `Restored, ${tabStatus}`;
+    }
+    return pane.recovered ? "Restored" : tabStatus;
+  }
+
   function showAppToast(message: string) {
     setAppToast(message);
     if (appToastTimerRef.current !== null) {
@@ -1702,6 +1739,63 @@ export default function App() {
     shortcutLabelForPaneId,
     queuedTurnsByAgent,
   ]);
+  const menuBarSnapshot = useMemo<MenuBarSnapshot>(() => {
+    const agentByPaneId = new Map<string, AgentInfo>();
+    for (const agent of agents) {
+      if (agent.paneId) {
+        agentByPaneId.set(agent.paneId, agent);
+      }
+    }
+    const groupedPaneIds = new Set<string>();
+    const tabForPane = (pane: PaneInfo) => {
+      const paneAgent = agentByPaneId.get(pane.id);
+      const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
+      groupedPaneIds.add(pane.id);
+      return {
+        paneId: pane.id,
+        title: displayPaneTitle(pane, paneAgent),
+        path: settings.codeMode && settings.showTabDirectories && paneDir
+          ? formatPaneDir(paneDir)
+          : null,
+        depth: pane.depth ?? 0,
+        statusTone: paneTabStatusTone(paneAgent),
+        statusLabel: paneTabStatusMetaLabel(pane, paneAgent),
+        waitingOnPane: paneWaitsOnOtherPane(paneAgent),
+        selected: pane.id === activePane?.id,
+      };
+    };
+
+    const snapshotGroups = groups.map((group) => ({
+      id: group.id,
+      label: middleTruncatePath(formatPaneDir(group.dir)),
+      tabs: panes.filter((pane) => pane.groupId === group.id).map(tabForPane),
+    }));
+    const orphanTabs = panes.filter((pane) => !groupedPaneIds.has(pane.id)).map(tabForPane);
+    if (orphanTabs.length > 0) {
+      snapshotGroups.push({
+        id: "__orphaned__",
+        label: "Other Tabs",
+        tabs: orphanTabs,
+      });
+    }
+    return { groups: snapshotGroups };
+  }, [
+    activePane?.id,
+    agents,
+    config,
+    groups,
+    manuallyTitledPaneIds,
+    panes,
+    queuedTurnsByAgent,
+    settings.codeMode,
+    settings.showTabDirectories,
+    terminalTitleByPane,
+  ]);
+
+  useEffect(() => {
+    void updateMenuBar(menuBarSnapshot).catch(() => undefined);
+  }, [menuBarSnapshot]);
+
   const activeCollapsedQueuedTurns = useMemo(
     () => (activeAgent ? collapsedQueuedTurnsByAgent[activeAgent.id] ?? [] : []),
     [activeAgent?.id, collapsedQueuedTurnsByAgent],
@@ -2417,6 +2511,32 @@ export default function App() {
     setLauncherOpen(false);
     focusLauncherInput();
   }
+
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void listenToMenuBarSelectPane(({ paneId }) => {
+      if (disposed || !panesRef.current.some((pane) => pane.id === paneId)) {
+        return;
+      }
+      focusPaneTab(paneId);
+      acknowledgePaneIfDone(paneId);
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        cleanup = unlisten;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+    // The listener reads live pane/agent state through refs and uses stable state
+    // setters, so it should be registered once for the app lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function openAgentLauncher() {
     if (homeActive) {
@@ -4137,28 +4257,14 @@ export default function App() {
     const paneAgent = agents.find((agent) => agent.paneId === pane.id);
     const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
     const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
-    const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
+    const paneAgentStatusTone = paneTabStatusTone(paneAgent);
     const paneAgentStatusClass =
       paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
     const canClearWorkingStatus =
       paneAgent?.status === "running" || paneAgent?.status === "starting";
-    const paneQueuedTurns = paneAgent ? (queuedTurnsByAgent[paneAgent.id] ?? []) : [];
-    const paneQueueCount = paneQueuedTurns.length;
-    const paneTopQueueWaitsOnOtherPane = Boolean(
-      paneAgent &&
-        paneQueuedTurns[0]?.waitFor &&
-        paneQueuedTurns[0].waitFor?.agentId !== paneAgent.id,
-    );
+    const paneTopQueueWaitsOnOtherPane = paneWaitsOnOtherPane(paneAgent);
     const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
-    const rawStatus = paneAgent
-      ? agentStatusLabel(paneAgent.status)
-      : statusLabel(pane.status);
-    const paneStatus =
-      (paneAgent?.status === "running" || paneAgent?.status === "idle") && paneQueueCount > 0
-        ? `${paneQueueCount} queued`
-        : rawStatus === "Running"
-          ? null
-          : rawStatus;
+    const paneStatus = paneTabStatusLabel(pane, paneAgent);
     const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
     const paneBranch = paneAgent?.branch ?? null;
     const paneWorktreeName =

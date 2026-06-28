@@ -6,6 +6,7 @@ mod dictation_cache;
 mod events;
 mod file_server;
 mod launch_path;
+mod menu_bar;
 mod persistence;
 mod pty;
 mod recovery;
@@ -24,6 +25,7 @@ use adapters::{
 };
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
+use menu_bar::menu_bar_update;
 use pty::{
     InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
@@ -700,6 +702,9 @@ fn main() {
                 if let Err(err) = route_window_close_to_frontend(app) {
                     eprintln!("qmux: failed to reroute window close shortcut: {err}");
                 }
+                if let Err(err) = menu_bar::init(app.handle()) {
+                    eprintln!("qmux: failed to initialize menu bar icon: {err}");
+                }
                 app.manage(show_hide_shortcut::ShowHideShortcutState::default());
                 show_hide_shortcut::init(app.handle(), &state.config().workspace_root);
                 // On macOS, give the window an NSVisualEffectView so the sidebar can
@@ -794,6 +799,7 @@ fn main() {
             app_confirm_exit,
             app_set_prevent_sleep,
             generate_foundation_tab_title,
+            menu_bar_update,
             show_hide_shortcut_get,
             show_hide_shortcut_set,
             show_hide_shortcut_capture_set,

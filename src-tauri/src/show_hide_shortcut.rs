@@ -199,7 +199,7 @@ fn replace_registered_shortcut<R: Runtime>(
     state.status(Some(accelerator))
 }
 
-fn toggle_qmux_visibility<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+pub fn toggle_qmux_visibility<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
@@ -209,15 +209,28 @@ fn toggle_qmux_visibility<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         && window.is_focused().unwrap_or(false);
 
     if should_hide {
-        app.hide()?;
+        hide_qmux_window(app)?;
     } else {
-        app.show()?;
-        window.show()?;
-        window.unminimize()?;
-        window.set_focus()?;
+        show_qmux_window(app)?;
     }
 
     Ok(())
+}
+
+pub fn show_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    app.show()?;
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()?;
+    Ok(())
+}
+
+pub fn hide_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    app.hide()
 }
 
 fn display_accelerator(shortcut: Shortcut) -> String {

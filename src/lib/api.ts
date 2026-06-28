@@ -41,6 +41,39 @@ export interface ShowHideShortcutSetting {
   error?: string | null;
 }
 
+export type MenuBarStatusTone =
+  | "active"
+  | "pending"
+  | "idle"
+  | "attention"
+  | "done"
+  | "error";
+
+export interface MenuBarTab {
+  paneId: string;
+  title: string;
+  path?: string | null;
+  depth: number;
+  statusTone: MenuBarStatusTone;
+  statusLabel?: string | null;
+  waitingOnPane: boolean;
+  selected: boolean;
+}
+
+export interface MenuBarGroup {
+  id: string;
+  label: string;
+  tabs: MenuBarTab[];
+}
+
+export interface MenuBarSnapshot {
+  groups: MenuBarGroup[];
+}
+
+export interface MenuBarSelectPaneEvent {
+  paneId: string;
+}
+
 export function getShowHideShortcut() {
   return invoke<ShowHideShortcutSetting>("show_hide_shortcut_get");
 }
@@ -51,6 +84,18 @@ export function setShowHideShortcut(accelerator: string | null) {
 
 export function setShowHideShortcutCaptureActive(active: boolean) {
   return invoke<void>("show_hide_shortcut_capture_set", { active });
+}
+
+export function updateMenuBar(snapshot: MenuBarSnapshot) {
+  return invoke<void>("menu_bar_update", { snapshot });
+}
+
+export function listenToMenuBarSelectPane(
+  onSelectPane: (event: MenuBarSelectPaneEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<MenuBarSelectPaneEvent>("menu-bar-select-pane", (event) =>
+    onSelectPane(event.payload),
+  );
 }
 
 /** Skills the qmux-managed Claude plugin can inject into launched Claude agents. */
