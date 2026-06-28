@@ -305,6 +305,11 @@ fn group_create(
     create_group(&state, request)
 }
 
+#[tauri::command]
+fn group_remove(state: tauri::State<'_, AppState>, group_id: String) -> Result<(), String> {
+    state.remove_group(&group_id)
+}
+
 #[tauri::command(async)]
 fn group_create_pick(
     state: tauri::State<'_, AppState>,
@@ -763,6 +768,7 @@ fn main() {
             list_agent_transcripts,
             set_agent_transcript,
             group_create,
+            group_remove,
             group_create_pick,
             group_pick_dir,
             spawn_shell,

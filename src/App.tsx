@@ -19,6 +19,7 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  Folder,
   GitBranch,
   House,
   MessageSquareText,
@@ -75,6 +76,7 @@ import type {
   AskLauncherState,
   BrowserOverlayState,
   BrowserOverlaySize,
+  CloseGroupContinuation,
   CloseDialogState,
   ExitDialogState,
   ExitPreflightRequest,
@@ -137,7 +139,7 @@ import {
   clearAgentWorkingStatus,
   closeWorktreePane,
   confirmAppExit,
-  createGroupWithFolder,
+  createGroup,
   forkAgent,
   getLauncherAdapterPreference,
   getAgentDraft,
@@ -158,6 +160,7 @@ import {
   paneActivity,
   pickGroupDirectory,
   removeQueuedAgentTurn,
+  removeGroup,
   renamePane,
   restoreLastClosedPane,
   setLauncherAdapterPreference,
@@ -1981,6 +1984,13 @@ export default function App() {
     return `…${tail.slice(-Math.max(4, maxChars - 1))}`;
   }
 
+  // The group header shows just the folder we're in (its basename) — group.name is a
+  // generated id like "group-1", so the directory's final segment is the human label.
+  function groupFolderName(group: GroupInfo): string {
+    const base = group.dir.split("/").filter(Boolean).pop();
+    return base && base.length > 0 ? base : formatPaneDir(group.dir);
+  }
+
   function launchGroupId() {
     if (activePane?.groupId) {
       return activePane.groupId;
@@ -2008,13 +2018,10 @@ export default function App() {
     }
   }
 
-  async function createGroupAfter(groupId: string) {
+  async function createGroupAfter(group: GroupInfo) {
     setError(null);
     try {
-      const group = await createGroupWithFolder(groupId);
-      if (!group) {
-        return;
-      }
+      await createGroup({ dir: group.dir, afterGroupId: group.id });
       await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2464,14 +2471,16 @@ export default function App() {
         return;
       }
 
-      const [latestPanes, latestAgents, latestTurns] = await Promise.all([
+      const [latestPanes, latestAgents, latestTurns, latestGroups] = await Promise.all([
         listPanes(),
         listAgents(),
         listTurns(),
+        listGroups(),
       ]);
       setPanesPreservingRecoveredDismissals(latestPanes);
       setAgents(latestAgents);
       setTurns(latestTurns);
+      setGroups(latestGroups);
       setActivePaneId(pane.id);
 
       const restoredAgent = latestAgents.find(
@@ -2910,14 +2919,67 @@ export default function App() {
     setPaneContextMenu((current) => (current?.paneId === paneToClose.id ? null : current));
   }
 
-  async function closePane(paneToClose: PaneInfo) {
+  async function closePane(paneToClose: PaneInfo): Promise<boolean> {
     setError(null);
     try {
       await killPane(paneToClose.id);
       forgetClosedPane(paneToClose);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
+  async function removeClosedGroup(groupClose: CloseGroupContinuation) {
+    setError(null);
+    try {
+      await removeGroup(groupClose.groupId);
+      await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function continueGroupClose(groupClose: CloseGroupContinuation) {
+    const paneById = new Map(panesRef.current.map((pane) => [pane.id, pane]));
+    const nextIndex = groupClose.remainingPaneIds.findIndex((paneId) => paneById.has(paneId));
+    if (nextIndex < 0) {
+      await removeClosedGroup(groupClose);
+      return;
+    }
+
+    const paneToClose = paneById.get(groupClose.remainingPaneIds[nextIndex]);
+    if (!paneToClose) {
+      await removeClosedGroup(groupClose);
+      return;
+    }
+
+    const nextGroupClose: CloseGroupContinuation = {
+      ...groupClose,
+      remainingPaneIds: groupClose.remainingPaneIds.slice(nextIndex + 1),
+    };
+    const dialog = await closeDialogForPane(paneToClose, { checkWorktreeStatus: true });
+    if (dialog) {
+      setCloseDialog({ ...dialog, groupClose: nextGroupClose });
+      return;
+    }
+
+    const closed = await closePane(paneToClose);
+    if (closed) {
+      await continueGroupClose(nextGroupClose);
+    }
+  }
+
+  async function requestCloseGroup(group: GroupInfo) {
+    setGroupMenu(null);
+    const groupPanes = panesRef.current.filter((pane) => pane.groupId === group.id);
+    await continueGroupClose({
+      groupId: group.id,
+      groupName: groupFolderName(group),
+      remainingPaneIds: groupPanes.map((pane) => pane.id),
+      totalCount: groupPanes.length,
+    });
   }
 
   async function closeDialogForPane(
@@ -3090,12 +3152,16 @@ export default function App() {
     if (!dialog || dialog.kind !== "worktree" || resolvingClose) {
       return;
     }
+    const groupClose = dialog.groupClose;
     setError(null);
     setResolvingClose(choice);
     try {
       await closeWorktreePane(dialog.agentId, choice === "delete");
       forgetClosedPane(dialog.pane);
       setCloseDialog(null);
+      if (groupClose) {
+        await continueGroupClose(groupClose);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setCloseDialog(null);
@@ -3110,8 +3176,12 @@ export default function App() {
     if (!dialog || dialog.kind !== "stop") {
       return;
     }
+    const groupClose = dialog.groupClose;
     setCloseDialog(null);
-    await closePane(dialog.pane);
+    const closed = await closePane(dialog.pane);
+    if (closed && groupClose) {
+      await continueGroupClose(groupClose);
+    }
   }
 
   async function confirmPaneClose() {
@@ -3119,8 +3189,12 @@ export default function App() {
     if (!dialog || (dialog.kind !== "pane" && dialog.kind !== "runningProcess")) {
       return;
     }
+    const groupClose = dialog.groupClose;
     setCloseDialog(null);
-    await closePane(dialog.pane);
+    const closed = await closePane(dialog.pane);
+    if (closed && groupClose) {
+      await continueGroupClose(groupClose);
+    }
   }
 
   async function confirmExit() {
@@ -4562,22 +4636,40 @@ export default function App() {
           </div>
           {groups.map((group) => {
             const groupPanes = panes.filter((pane) => pane.groupId === group.id);
+            const hasGroupPanes = groupPanes.length > 0;
+            const isActiveGroup = activePane?.groupId === group.id;
+            const folderName = groupFolderName(group);
             return (
-              <section key={group.id} className="pane-group" data-group-id={group.id}>
+              <section
+                key={group.id}
+                className={`pane-group${hasGroupPanes ? " has-panes" : ""}${
+                  isActiveGroup ? " is-active-group" : ""
+                }`}
+                data-group-id={group.id}
+              >
                 <div className="pane-group-header" title={group.dir}>
-                  <span className="pane-group-title">{middleTruncatePath(formatPaneDir(group.dir))}</span>
-                  <button
-                    type="button"
-                    className="pane-group-menu-button"
-                    aria-label={`Group options for ${group.name}`}
-                    title="Group options"
-                    onClick={(event) => openGroupMenu(event, group)}
-                  >
-                    <MoreHorizontal size={14} aria-hidden="true" />
-                  </button>
+                  <span className="pane-group-title">
+                    <Folder className="pane-group-folder" size={13} aria-hidden="true" />
+                    <span className="pane-group-name">{folderName}</span>
+                  </span>
+                  <span className="pane-group-aux">
+                    <button
+                      type="button"
+                      className="pane-group-menu-button"
+                      aria-label={`Group options for ${folderName}`}
+                      title="Group options"
+                      onClick={(event) => openGroupMenu(event, group)}
+                    >
+                      <MoreHorizontal size={14} aria-hidden="true" />
+                    </button>
+                  </span>
                 </div>
-                {groupPanes.map((pane, index) =>
-                  renderPaneTabRow(pane, index, groupPanes, group.id),
+                {!hasGroupPanes ? null : (
+                  <div className="pane-list-body">
+                    {groupPanes.map((pane, index) =>
+                      renderPaneTabRow(pane, index, groupPanes, group.id),
+                    )}
+                  </div>
                 )}
               </section>
             );
@@ -4630,45 +4722,28 @@ export default function App() {
       {groupMenu && groupMenuGroup ? (
         <div
           className="pane-context-menu group-context-menu"
-          role="dialog"
-          aria-label={`${groupMenuGroup.name} group options`}
+          role="menu"
+          aria-label="Group options"
           style={{ left: groupMenu.x, top: groupMenu.y }}
           onMouseDown={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          <dl className="pane-context-details">
-            <div>
-              <dt>Group</dt>
-              <dd>{groupMenuGroup.name}</dd>
-            </div>
-            <div>
-              <dt>Directory</dt>
-              <dd>{groupMenuGroup.dir}</dd>
-            </div>
-          </dl>
-          <div className="pane-context-actions group-context-actions">
+          <div className="group-context-actions">
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setGroupMenu(null);
                 void changeGroupDirectory(groupMenuGroup.id);
               }}
             >
+              <Folder size={13} aria-hidden="true" />
               <span>Change directory</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setGroupMenu(null);
-                void createGroupAfter(groupMenuGroup.id);
-              }}
-            >
-              <Plus size={13} aria-hidden="true" />
-              <span>New group after</span>
             </button>
             {settings.codeMode ? (
               <button
                 type="button"
+                role="menuitem"
                 onClick={() => {
                   setGroupMenu(null);
                   void addShellPaneInGroup(groupMenuGroup.id);
@@ -4680,6 +4755,7 @@ export default function App() {
             ) : null}
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setGroupMenu(null);
                 setActivePaneId(HOME_TAB_ID);
@@ -4689,6 +4765,28 @@ export default function App() {
             >
               <MessageSquareText size={13} aria-hidden="true" />
               <span>New agent</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setGroupMenu(null);
+                void createGroupAfter(groupMenuGroup);
+              }}
+            >
+              <Plus size={13} aria-hidden="true" />
+              <span>New group</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="group-context-danger"
+              onClick={() => {
+                void requestCloseGroup(groupMenuGroup);
+              }}
+            >
+              <X size={13} aria-hidden="true" />
+              <span>Close group</span>
             </button>
           </div>
         </div>
@@ -5452,7 +5550,18 @@ export default function App() {
             aria-modal="true"
             aria-labelledby="close-dialog-title"
           >
-            <h2 id="close-dialog-title">Close {closeDialog.pane.title}?</h2>
+            <h2 id="close-dialog-title">
+              {closeDialog.groupClose
+                ? `Close ${closeDialog.groupClose.groupName}?`
+                : `Close ${closeDialog.pane.title}?`}
+            </h2>
+            {closeDialog.groupClose ? (
+              <p>
+                Closing tab{" "}
+                {closeDialog.groupClose.totalCount - closeDialog.groupClose.remainingPaneIds.length}{" "}
+                of {closeDialog.groupClose.totalCount}: {closeDialog.pane.title}
+              </p>
+            ) : null}
             {closeDialog.kind === "worktree" ? (
               <>
                 <p>

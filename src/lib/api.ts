@@ -133,6 +133,10 @@ export function createGroupWithFolder(afterGroupId?: string | null) {
   return invoke<GroupInfo | null>("group_create_pick", { afterGroupId: afterGroupId ?? null });
 }
 
+export function removeGroup(groupId: string) {
+  return invoke<void>("group_remove", { groupId });
+}
+
 export function pickGroupDirectory(groupId: string) {
   return invoke<GroupInfo | null>("group_pick_dir", { groupId });
 }

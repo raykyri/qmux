@@ -150,6 +150,7 @@ pub struct ClosedPaneAgentSnapshot {
 #[derive(Clone, Debug)]
 pub struct ClosedPaneSnapshot {
     pub pane: PaneInfo,
+    pub group: Option<GroupInfo>,
     pub agent: Option<ClosedPaneAgentSnapshot>,
     pub index: usize,
     pub scrollback: Vec<u8>,
@@ -1065,6 +1066,7 @@ impl AppState {
 
             let mut pane = runtime.info.clone();
             pane.depth = model.pane_depth.get(pane_id).copied().unwrap_or(0);
+            let group = model.groups.get(&pane.group_id).cloned();
 
             let pane_agent_id = pane.agent_id.clone();
             let agent = pane_agent_id
@@ -1095,6 +1097,7 @@ impl AppState {
 
             ClosedPaneSnapshot {
                 pane,
+                group,
                 agent,
                 index,
                 scrollback: Vec::new(),
@@ -1181,6 +1184,15 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.groups.contains_key(&snapshot.pane.group_id)
+                && let Some(group) = snapshot.group.clone()
+            {
+                let group_id = group.id.clone();
+                model.groups.insert(group_id.clone(), group);
+                if !model.group_order.iter().any(|id| id == &group_id) {
+                    model.group_order.push(group_id);
+                }
+            }
             model.shell_agent_resumes.remove(&snapshot.pane.id);
 
             if let Some(agent_snapshot) = &snapshot.agent {
@@ -1271,12 +1283,16 @@ impl AppState {
     }
 
     pub fn remove_pane(&self, pane_id: &str) -> Result<(), String> {
-        {
+        let removed_group_id = {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            let removed_group_id = model
+                .panes
+                .get(pane_id)
+                .map(|pane| pane.info.group_id.clone());
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
 
@@ -1316,7 +1332,8 @@ impl AppState {
             // Re-level any children orphaned by the removal so the tree stays valid
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
-        }
+            removed_group_id.filter(|group_id| remove_group_if_empty_locked(&mut model, group_id))
+        };
         // The pane's control-socket token is captured by its in-pane process as
         // QMUX_TOKEN; once the pane is gone for good it can never legitimately be used
         // again, so drop it rather than leave a live credential resolving (via
@@ -1334,6 +1351,14 @@ impl AppState {
             eprintln!("qmux: failed to remove scrollback for pane {pane_id}: {err}");
         }
         self.persist();
+        if let Some(group_id) = removed_group_id {
+            self.emit(QmuxEvent::new(
+                "group.removed",
+                None,
+                None,
+                json!({ "groupId": group_id }),
+            ));
+        }
         Ok(())
     }
 
@@ -1575,6 +1600,41 @@ impl AppState {
             model.groups.insert(group.id.clone(), group);
         }
         self.persist();
+        Ok(())
+    }
+
+    pub fn remove_group(&self, group_id: &str) -> Result<(), String> {
+        let removed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model
+                .panes
+                .values()
+                .any(|pane| pane.info.group_id == group_id)
+            {
+                return Err("group still has open panes".to_string());
+            }
+            if model
+                .agents
+                .values()
+                .any(|agent| agent.group_id == group_id)
+            {
+                return Err("group still has queued or recoverable agents".to_string());
+            }
+            remove_group_if_empty_locked(&mut model, group_id)
+        };
+        if removed {
+            self.persist();
+            self.emit(QmuxEvent::new(
+                "group.removed",
+                None,
+                None,
+                json!({ "groupId": group_id }),
+            ));
+        }
         Ok(())
     }
 
@@ -2850,6 +2910,26 @@ fn ordered_groups(model: &Model) -> Vec<GroupInfo> {
         .collect()
 }
 
+fn remove_group_if_empty_locked(model: &mut Model, group_id: &str) -> bool {
+    if model
+        .panes
+        .values()
+        .any(|pane| pane.info.group_id == group_id)
+    {
+        return false;
+    }
+    if model
+        .agents
+        .values()
+        .any(|agent| agent.group_id == group_id)
+    {
+        return false;
+    }
+    let removed = model.groups.remove(group_id).is_some();
+    model.group_order.retain(|id| id != group_id);
+    removed
+}
+
 fn ordered_panes(model: &Model) -> Vec<PaneInfo> {
     ordered_pane_ids(model)
         .into_iter()
@@ -3965,6 +4045,7 @@ mod tests {
         let snapshot = state.take_last_closed_pane().unwrap().unwrap();
         assert_eq!(snapshot.pane.id, "pane-2");
         assert_eq!(snapshot.pane.depth, 1);
+        assert_eq!(snapshot.group.as_ref().map(|group| group.id.as_str()), None);
         assert_eq!(snapshot.index, 1);
         assert_eq!(snapshot.scrollback, b"old output");
         let agent = snapshot.agent.unwrap();
@@ -4057,6 +4138,82 @@ mod tests {
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["later".to_string()]
         );
+    }
+
+    #[test]
+    fn remove_group_removes_empty_group() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+
+        state.remove_group("group-1").unwrap();
+
+        assert!(state.list_groups().unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_pane_removes_group_when_last_pane_closes() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        assert!(state.list_groups().unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_pane_keeps_group_when_sibling_panes_or_agents_remain() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+
+        state.remove_pane("pane-1").unwrap();
+        assert_eq!(state.list_groups().unwrap().len(), 1);
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        state.remove_pane("pane-2").unwrap();
+
+        assert_eq!(state.list_groups().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restore_closed_pane_metadata_recreates_removed_group() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        state.capture_last_closed_pane("pane-7").unwrap();
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+        assert!(state.list_groups().unwrap().is_empty());
+
+        state.restore_closed_pane_metadata(&snapshot).unwrap();
+        assert_eq!(state.list_groups().unwrap()[0].id, "group-1");
+    }
+
+    #[test]
+    fn remove_group_refuses_open_panes_and_recoverable_agents() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+
+        assert_eq!(
+            state.remove_group("group-1").unwrap_err(),
+            "group still has open panes"
+        );
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+        assert_eq!(
+            state.remove_group("group-1").unwrap_err(),
+            "group still has queued or recoverable agents"
+        );
+        assert_eq!(state.list_groups().unwrap().len(), 1);
     }
 
     #[test]
