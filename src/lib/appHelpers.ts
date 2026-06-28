@@ -210,7 +210,7 @@ export function agentStatusLabel(status: AgentInfo["status"]) {
     case "awaitingInput":
       return "Awaiting input";
     case "awaitingPermission":
-      return "Approval needed";
+      return "Requesting approval";
     case "done":
       return "Done";
     case "idle":

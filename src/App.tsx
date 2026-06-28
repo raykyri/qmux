@@ -1028,7 +1028,10 @@ export default function App() {
   // ask never sends twice or — worse, in "new thread" mode — forks twice.
   const askSubmittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const [appToast, setAppToast] = useState<string | null>(null);
+  const [appToast, setAppToast] = useState<{
+    message: string;
+    tone: "normal" | "warning";
+  } | null>(null);
   const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
@@ -1227,8 +1230,8 @@ export default function App() {
     return pane.recovered ? "Restored" : tabStatus;
   }
 
-  function showAppToast(message: string) {
-    setAppToast(message);
+  function showAppToast(message: string, tone: "normal" | "warning" = "normal") {
+    setAppToast({ message, tone });
     if (appToastTimerRef.current !== null) {
       window.clearTimeout(appToastTimerRef.current);
     }
@@ -1265,6 +1268,7 @@ export default function App() {
         `${firstMessageTitleProviderLabel(titleConfig)} title error: ${
           err instanceof Error ? err.message : String(err)
         }`,
+        "warning",
       );
       return;
     }
@@ -1294,6 +1298,7 @@ export default function App() {
     } catch (err) {
       showAppToast(
         `Couldn't set terminal title: ${err instanceof Error ? err.message : String(err)}`,
+        "warning",
       );
     }
   }
@@ -2827,6 +2832,7 @@ export default function App() {
       requestAnimationFrame(() => {
         terminalPaneRefs.current.get(pane.id)?.focus();
       });
+      showAppToast("Tab restored");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -3390,7 +3396,7 @@ export default function App() {
 
     const liveReason =
       agent?.status === "awaitingPermission"
-        ? "is waiting for you to approve a tool use"
+        ? "is waiting to approve a tool use"
         : agent?.status === "awaitingInput"
           ? "is waiting for your input"
           : agent?.status === "running" || agent?.status === "starting"
@@ -6527,8 +6533,12 @@ export default function App() {
         </div>
       ) : null}
       {appToast ? (
-        <div className="composer-toast app-toast" role="status" aria-live="polite">
-          {appToast}
+        <div
+          className={`composer-toast app-toast${appToast.tone === "warning" ? " is-warning" : ""}`}
+          role="status"
+          aria-live="polite"
+        >
+          {appToast.message}
         </div>
       ) : null}
       {folderPickerStatus ? (
