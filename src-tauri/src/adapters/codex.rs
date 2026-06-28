@@ -961,6 +961,7 @@ fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path, existing_profile: Optio
         "# This profile enables qMux Codex lifecycle hooks only for qMux-launched panes.\n",
     );
     raw.push_str(&format!("# qMux executable: {}\n\n", qmux_cli.display()));
+    raw.push_str("terminal_title = [\"thread\", \"task-progress\"]\n\n");
     raw.push_str("[features]\n");
     raw.push_str("hooks = true\n\n");
 
@@ -1783,6 +1784,7 @@ mod tests {
         let profile = fs::read_to_string(profile_path).unwrap();
         let shim = fs::read_to_string(shim_path).unwrap();
 
+        assert!(profile.contains("terminal_title = [\"thread\", \"task-progress\"]"));
         assert!(profile.contains("[features]"));
         assert!(profile.contains("hooks = true"));
         assert!(profile.contains("[[hooks.SessionStart]]"));
