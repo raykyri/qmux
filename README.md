@@ -4,7 +4,7 @@ qmux is a desktop app for running terminals and coding agents
 side-by-side, with vertical tabs and a Cursor-like sidebar for
 transcript rendering.
 
-<img src="qmux.png" alt="qmux screenshot" width="700" style="max-width: 100%; height: auto;">
+<p align="center"><img src="qmux.png" alt="qmux screenshot" width="700" style="max-width: 100%; height: auto;"></p>
 
 It includes native UI for launching agents, queueing follow-ups,
 tracking agent status, and driving TUI-based agents.
@@ -165,3 +165,7 @@ locations. Each adapter's `binary` is optional and defaults to the command name
 backward compatibility. If the config file is absent, qmux uses the platform data
 directory for workspace state and the platform runtime directory, or a `run/`
 subdirectory of the data directory, for the control socket.
+
+## License
+
+AGPL-V3 (C) 2026
