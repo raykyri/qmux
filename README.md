@@ -102,7 +102,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-=` / `Cmd-+`: increase terminal font size.
 - `Cmd--`: decrease terminal font size.
 - `Cmd-0`: reset terminal font size.
-- `Cmd-O`: open the workspace folder selector.
 - `Cmd-1`..`Cmd-9` / `Ctrl-1`..`Ctrl-9`: focus the corresponding pane tab.
 - Hold `Cmd`: show floating shortcut hints for Home and pane tabs in the `Cmd-1`..
   `Cmd-9` range.
@@ -139,7 +138,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
   caller's pane, serves other in-pane commands (`qmux open`, `qmux fork`).
 - A loopback-only (`127.0.0.1`) HTTP server with per-pane random tokens backs
   browser-overlay file targets. It serves only files under the workspace root, the
-  selected workspace folder, and the requesting pane's own cwd/worktree. The
+  requesting pane's group directory, and the requesting pane's own cwd/worktree. The
   frontend only ever sees fully-formed `http://127.0.0.1/...` URLs.
 - Transcript tailing starts once an adapter binds a transcript path: Claude via
   `SessionStart`, Codex via an explicit `SessionStart` path or session-id lookup,

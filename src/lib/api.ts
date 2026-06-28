@@ -53,16 +53,6 @@ export function setShowHideShortcutCaptureActive(active: boolean) {
   return invoke<void>("show_hide_shortcut_capture_set", { active });
 }
 
-export function getWorkspaceFolder() {
-  return invoke<string | null>("workspace_folder_get");
-}
-
-// Opens the native folder chooser; resolves to the newly selected folder, or null
-// if the user cancels.
-export function pickWorkspaceFolder() {
-  return invoke<string | null>("workspace_folder_pick");
-}
-
 /** Skills the qmux-managed Claude plugin can inject into launched Claude agents. */
 export function listClaudeSkills() {
   return invoke<ClaudeSkill[]>("list_claude_skills");
@@ -74,6 +64,32 @@ export function listPanes() {
 
 export function listGroups() {
   return invoke<GroupInfo[]>("list_groups");
+}
+
+export function createGroup(request?: {
+  name?: string | null;
+  dir?: string | null;
+  afterGroupId?: string | null;
+  baseRepo?: string | null;
+  baseRef?: string | null;
+}) {
+  return invoke<GroupInfo>("group_create", {
+    request: {
+      name: request?.name ?? null,
+      dir: request?.dir ?? null,
+      afterGroupId: request?.afterGroupId ?? null,
+      baseRepo: request?.baseRepo ?? null,
+      baseRef: request?.baseRef ?? null,
+    },
+  });
+}
+
+export function createGroupWithFolder(afterGroupId?: string | null) {
+  return invoke<GroupInfo | null>("group_create_pick", { afterGroupId: afterGroupId ?? null });
+}
+
+export function pickGroupDirectory(groupId: string) {
+  return invoke<GroupInfo | null>("group_pick_dir", { groupId });
 }
 
 export function listAgents() {
@@ -119,10 +135,12 @@ export function setAgentTranscript(agentId: string, path: string | null) {
 export function spawnShell(
   initialSize?: InitialPaneSize | null,
   sourcePaneId?: string | null,
+  groupId?: string | null,
 ) {
   return invoke<PaneInfo>("spawn_shell", {
     initialSize: initialSize ?? null,
     sourcePaneId: sourcePaneId ?? null,
+    groupId: groupId ?? null,
   });
 }
 

@@ -19,11 +19,11 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
-  Folder,
   GitBranch,
   House,
   MessageSquareText,
   Minus,
+  MoreHorizontal,
   Plus,
   Settings,
   SquareTerminal,
@@ -136,14 +136,15 @@ import {
   clearAgentWorkingStatus,
   closeWorktreePane,
   confirmAppExit,
+  createGroupWithFolder,
   forkAgent,
   getLauncherAdapterPreference,
   getAgentDraft,
   getShowHideShortcut,
   getRuntimeConfig,
-  getWorkspaceFolder,
   generateFoundationTabTitle,
   killPane,
+  listGroups,
   listAgents,
   listClaudeSkills,
   listAgentTranscripts,
@@ -153,7 +154,7 @@ import {
   moveQueuedAgentTurn,
   openExternalUrl,
   paneActivity,
-  pickWorkspaceFolder,
+  pickGroupDirectory,
   removeQueuedAgentTurn,
   renamePane,
   restoreLastClosedPane,
@@ -174,6 +175,7 @@ import {
 import type {
   AgentInfo,
   ClaudeSkill,
+  GroupInfo,
   InitialPaneSize,
   PaneInfo,
   QueuedTurn,
@@ -819,14 +821,14 @@ export default function App() {
   const appToastTimerRef = useRef<number | null>(null);
   const suppressPaneTabClickRef = useRef(false);
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
-  const selectingWorkspaceFolderRef = useRef(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const configRef = useRef<RuntimeConfig | null>(null);
   configRef.current = config;
-  // The single "open folder" new shells/agents launch in; null until the user picks
-  // one (then they fall back to the qmux process cwd). Drives the sidebar folder button.
-  const [workspaceFolder, setWorkspaceFolder] = useState<string | null>(null);
-  const [selectingWorkspaceFolder, setSelectingWorkspaceFolder] = useState(false);
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [lastActiveGroupId, setLastActiveGroupId] = useState<string | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ groupId: string; x: number; y: number } | null>(
+    null,
+  );
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const applyRecoveredDismissals = useCallback((paneList: PaneInfo[]) => {
     const dismissed = dismissedRecoveredPaneIdsRef.current;
@@ -1002,9 +1004,20 @@ export default function App() {
     () => agents.find((agent) => agent.paneId === activePane?.id),
     [activePane?.id, agents],
   );
+  const groupById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
+  const sidebarPanes = useMemo(() => {
+    const grouped = groups.flatMap((group) => panes.filter((pane) => pane.groupId === group.id));
+    const groupedIds = new Set(grouped.map((pane) => pane.id));
+    return [...grouped, ...panes.filter((pane) => !groupedIds.has(pane.id))];
+  }, [groups, panes]);
   const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
   const activeQueueSplit = activeAgent ? (queueSplitByAgent[activeAgent.id] ?? false) : false;
   const activeQueueSplitHeight = activeAgent ? queueSplitHeightByAgent[activeAgent.id] : undefined;
+  useEffect(() => {
+    if (activePane?.groupId) {
+      setLastActiveGroupId(activePane.groupId);
+    }
+  }, [activePane?.groupId]);
   const handleTerminalTitleChange = useCallback((paneId: string, rawTitle: string) => {
     const title = sanitizeTerminalTitle(rawTitle);
     setTerminalTitleByPane((current) => {
@@ -1850,24 +1863,58 @@ export default function App() {
     return `…${tail.slice(-Math.max(4, maxChars - 1))}`;
   }
 
-  // Prompt for a workspace folder with the native chooser; a cancel resolves to null
-  // and leaves the current folder untouched.
-  async function selectWorkspaceFolder() {
-    if (selectingWorkspaceFolderRef.current) {
-      return;
+  function launchGroupId() {
+    if (activePane?.groupId) {
+      return activePane.groupId;
     }
-    selectingWorkspaceFolderRef.current = true;
-    setSelectingWorkspaceFolder(true);
+    if (lastActiveGroupId && groupById.has(lastActiveGroupId)) {
+      return lastActiveGroupId;
+    }
+    return null;
+  }
+
+  async function refreshGroups() {
+    setGroups(await listGroups());
+  }
+
+  async function changeGroupDirectory(groupId: string) {
+    setError(null);
     try {
-      const folder = await pickWorkspaceFolder();
-      if (folder) {
-        setWorkspaceFolder(folder);
+      const group = await pickGroupDirectory(groupId);
+      if (!group) {
+        return;
       }
+      await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      selectingWorkspaceFolderRef.current = false;
-      setSelectingWorkspaceFolder(false);
+    }
+  }
+
+  async function createGroupAfter(groupId: string) {
+    setError(null);
+    try {
+      const group = await createGroupWithFolder(groupId);
+      if (!group) {
+        return;
+      }
+      await refreshGroups();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function addShellPaneInGroup(groupId: string | null) {
+    setError(null);
+    try {
+      const sourcePaneId =
+        activePane?.kind === "shell" && activePane.groupId === groupId ? activePane.id : null;
+      const pane = await spawnShell(estimateInitialPaneSize(false), sourcePaneId, groupId);
+      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
+      setActivePaneId(pane.id);
+      setLastActiveGroupId(pane.groupId);
+      await refreshGroups();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -2076,16 +2123,26 @@ export default function App() {
   const contextMenuTerminalTitle = contextMenuPane
     ? (terminalTitleByPane[contextMenuPane.id] ?? null)
     : null;
+  const groupMenuGroup = groupMenu ? groups.find((group) => group.id === groupMenu.groupId) : null;
   const appleFoundationTitleAvailable = appleFoundationModelsTitleAvailable(config);
+  const draggingPaneGroup = draggingPaneId
+    ? panes.find((pane) => pane.id === draggingPaneId)?.groupId
+    : undefined;
+  const draggingGroupPanes = draggingPaneGroup
+    ? panes.filter((pane) => pane.groupId === draggingPaneGroup)
+    : [];
   const draggingPaneIndex = draggingPaneId
-    ? panes.findIndex((pane) => pane.id === draggingPaneId)
+    ? draggingGroupPanes.findIndex((pane) => pane.id === draggingPaneId)
     : -1;
   // The dragged tab moves with its whole subtree, so dim that contiguous range.
   const draggingSubtreeEnd =
-    draggingPaneIndex >= 0 ? subtreeEnd(panes, draggingPaneIndex) : -1;
+    draggingPaneIndex >= 0 ? subtreeEnd(draggingGroupPanes, draggingPaneIndex) : -1;
   // Context-menu pane index, for enabling/disabling Indent/Outdent.
+  const contextMenuGroupPanes = contextMenuPane
+    ? panes.filter((pane) => pane.groupId === contextMenuPane.groupId)
+    : [];
   const contextMenuPaneIndex = paneContextMenu
-    ? panes.findIndex((pane) => pane.id === paneContextMenu.paneId)
+    ? contextMenuGroupPanes.findIndex((pane) => pane.id === paneContextMenu.paneId)
     : -1;
 
   useEffect(() => {
@@ -2096,14 +2153,14 @@ export default function App() {
         const [
           runtimeConfig,
           preferredLauncherAdapterId,
-          existingWorkspaceFolder,
+          existingGroups,
           existingPanes,
           existingAgents,
           existingTurns,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
-          getWorkspaceFolder().catch(() => null),
+          listGroups().catch((): GroupInfo[] => []),
           listPanes(),
           listAgents(),
           listTurns(),
@@ -2113,7 +2170,7 @@ export default function App() {
         }
 
         setConfig(runtimeConfig);
-        setWorkspaceFolder(existingWorkspaceFolder);
+        setGroups(existingGroups);
         setLauncherAdapterId(
           preferredLauncherAdapterId &&
             runtimeConfig.adapters.some((adapter) => adapter.id === preferredLauncherAdapterId)
@@ -2155,13 +2212,17 @@ export default function App() {
         if (existingPanes.length > 0) {
           setPanesPreservingRecoveredDismissals(existingPanes);
           setActivePaneId(existingPanes[0].id);
+          setLastActiveGroupId(existingPanes[0].groupId);
           return;
         }
 
         const pane = await spawnShell(estimateInitialPaneSize(false));
         if (!cancelled) {
+          const latestGroups = await listGroups().catch((): GroupInfo[] => []);
+          setGroups(latestGroups);
           setPanesPreservingRecoveredDismissals([pane]);
           setActivePaneId(pane.id);
+          setLastActiveGroupId(pane.groupId);
         }
       } catch (err) {
         if (!cancelled) {
@@ -2305,6 +2366,7 @@ export default function App() {
     setPaneContextMenu,
     setExitDialog,
     setAgents,
+    setGroups,
     setThinkingAgentIds,
     setTurns,
     setTranscriptNoticeByAgent,
@@ -2317,15 +2379,7 @@ export default function App() {
   });
 
   async function addShellPane() {
-    setError(null);
-    try {
-      // Inherit the focused shell's working directory, like a terminal "new tab here".
-      const pane = await spawnShell(estimateInitialPaneSize(false), activePane?.id);
-      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
-      setActivePaneId(pane.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    await addShellPaneInGroup(launchGroupId());
   }
 
   async function restoreClosedPane() {
@@ -2515,26 +2569,32 @@ export default function App() {
     clientY: number,
     dragId: string,
   ): PaneDropTarget | null {
-    const rows = Array.from(container.children).filter(
+    const dragPane = panes.find((pane) => pane.id === dragId);
+    if (!dragPane) {
+      return null;
+    }
+    const groupPanes = panes.filter((pane) => pane.groupId === dragPane.groupId);
+    const rows = Array.from(container.querySelectorAll(".pane-tab-row")).filter(
       (child): child is HTMLElement =>
         child instanceof HTMLElement &&
         child.classList.contains("pane-tab-row") &&
+        child.dataset.groupId === dragPane.groupId &&
         // The fixed Home row isn't a reorder/nest target and isn't in `panes`, so
-        // excluding it keeps the row index aligned with the panes array below.
+        // excluding it keeps the row index aligned with the group pane array below.
         !child.classList.contains("pane-home-row"),
     );
     if (rows.length === 0) {
       return null;
     }
-    const dragIndex = panes.findIndex((pane) => pane.id === dragId);
-    const dragEnd = dragIndex >= 0 ? subtreeEnd(panes, dragIndex) : -1;
+    const dragIndex = groupPanes.findIndex((pane) => pane.id === dragId);
+    const dragEnd = dragIndex >= 0 ? subtreeEnd(groupPanes, dragIndex) : -1;
     const inDraggedSubtree = (index: number) =>
       dragIndex >= 0 && index >= dragIndex && index < dragEnd;
 
     const gapTarget = (index: number): PaneDropTarget | null =>
       dragIndex >= 0 && index >= dragIndex && index <= dragEnd
         ? null // dropping into/adjacent to its own block is a no-op
-        : { kind: "gap", index };
+        : { kind: "gap", groupId: dragPane.groupId, index };
 
     for (const [index, row] of rows.entries()) {
       const rect = row.getBoundingClientRect();
@@ -2548,29 +2608,37 @@ export default function App() {
       if (fraction > 0.7) {
         return gapTarget(index + 1);
       }
-      const pane = panes[index];
+      const pane = groupPanes[index];
       if (!pane || inDraggedSubtree(index)) {
         return null;
       }
-      return { kind: "nest", paneId: pane.id };
+      return { kind: "nest", groupId: dragPane.groupId, paneId: pane.id };
     }
     return gapTarget(rows.length);
   }
 
   function applyDropTarget(dragId: string, target: PaneDropTarget) {
+    const groupPanes = panes.filter((pane) => pane.groupId === target.groupId);
     const next =
       target.kind === "nest"
-        ? nestUnder(panes, dragId, target.paneId)
-        : moveToGap(panes, dragId, target.index);
-    applyPaneLayout(next);
+        ? nestUnder(groupPanes, dragId, target.paneId)
+        : moveToGap(groupPanes, dragId, target.index);
+    applyPaneLayout(target.groupId, next);
   }
 
   // Optimistically applies a new tab layout (order + depth) and persists it, with the
   // same request-sequence guard the old reorder used so stale responses never clobber
   // a newer local state.
-  function applyPaneLayout(next: PaneInfo[]) {
+  function applyPaneLayout(groupId: string, nextGroupPanes: PaneInfo[]) {
+    const next = groups.flatMap((group) =>
+      group.id === groupId
+        ? nextGroupPanes
+        : panes.filter((pane) => pane.groupId === group.id),
+    );
+    const groupedIds = new Set(next.map((pane) => pane.id));
+    next.push(...panes.filter((pane) => !groupedIds.has(pane.id)));
     const nextLayout = toLayout(next);
-    if (sameLayout(nextLayout, toLayout(panes))) {
+    if (sameLayout(nextLayout, toLayout(sidebarPanes))) {
       return; // structural no-op — don't churn a backend round-trip
     }
     const requestSeq = paneReorderRequestSeqRef.current + 1;
@@ -2616,18 +2684,27 @@ export default function App() {
     if (contextMenuPaneIndex < 0) {
       return;
     }
-    applyPaneLayout(indentAt(panes, contextMenuPaneIndex));
+    const groupId = contextMenuPane?.groupId;
+    if (!groupId) {
+      return;
+    }
+    applyPaneLayout(groupId, indentAt(contextMenuGroupPanes, contextMenuPaneIndex));
   }
 
   function outdentContextMenuPane() {
     if (contextMenuPaneIndex < 0) {
       return;
     }
-    applyPaneLayout(outdentAt(panes, contextMenuPaneIndex));
+    const groupId = contextMenuPane?.groupId;
+    if (!groupId) {
+      return;
+    }
+    applyPaneLayout(groupId, outdentAt(contextMenuGroupPanes, contextMenuPaneIndex));
   }
 
   function openPaneContextMenu(event: ReactMouseEvent, pane: PaneInfo) {
     event.preventDefault();
+    setGroupMenu(null);
     const maxX = Math.max(8, window.innerWidth - PANE_CONTEXT_MENU_WIDTH - 8);
     const maxY = Math.max(8, window.innerHeight - PANE_CONTEXT_MENU_ESTIMATED_HEIGHT - 8);
     setPaneContextMenu({
@@ -2907,9 +2984,11 @@ export default function App() {
     setError(null);
     rememberLauncherAdapter(launchAdapter.id);
     try {
+      const targetGroupId = launchGroupId();
       const pane = await spawnAgent({
         adapterId: launchAdapter.id,
         prompt: finalPrompt,
+        groupId: targetGroupId,
         baseRepo: null,
         baseRef: "HEAD",
         initialSize: estimateInitialPaneSize(true),
@@ -2918,6 +2997,7 @@ export default function App() {
       });
       setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
+      setLastActiveGroupId(pane.groupId);
       expandNewAgentTranscriptByDefault(pane);
       if (pane.agentId) {
         setAgentQueuedTurns(pane.agentId, []);
@@ -2930,7 +3010,8 @@ export default function App() {
       setPrompt("");
       setSelectedSkillId(null);
       setLauncherOpen(false);
-      setAgents(await listAgents());
+      const [latestAgents] = await Promise.all([listAgents(), refreshGroups()]);
+      setAgents(latestAgents);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -3139,14 +3220,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!paneContextMenu) {
+    if (!paneContextMenu && !groupMenu) {
       return;
     }
-    const handleDismiss = () => setPaneContextMenu(null);
+    const handleDismiss = () => {
+      setPaneContextMenu(null);
+      setGroupMenu(null);
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         setPaneContextMenu(null);
+        setGroupMenu(null);
       }
     };
     window.addEventListener("mousedown", handleDismiss);
@@ -3157,13 +3242,16 @@ export default function App() {
       window.removeEventListener("resize", handleDismiss);
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [paneContextMenu]);
+  }, [paneContextMenu, groupMenu]);
 
   useEffect(() => {
     if (paneContextMenu && !panes.some((pane) => pane.id === paneContextMenu.paneId)) {
       setPaneContextMenu(null);
     }
-  }, [paneContextMenu, panes]);
+    if (groupMenu && !groups.some((group) => group.id === groupMenu.groupId)) {
+      setGroupMenu(null);
+    }
+  }, [paneContextMenu, panes, groupMenu, groups]);
 
   // Persist application settings whenever they change, so the choice survives a
   // restart. Writing on the initial value is harmless.
@@ -3368,8 +3456,8 @@ export default function App() {
 
       const cycleTab = (direction: -1 | 1, includeHome: boolean) => {
         const tabIds = includeHome
-          ? [HOME_TAB_ID, ...panes.map((pane) => pane.id)]
-          : panes.map((pane) => pane.id);
+          ? [HOME_TAB_ID, ...sidebarPanes.map((pane) => pane.id)]
+          : sidebarPanes.map((pane) => pane.id);
         if (tabIds.length === 0) {
           return;
         }
@@ -3379,7 +3467,7 @@ export default function App() {
           currentIndex = listedIndex;
         } else if (includeHome) {
           // Active tab not in the list (e.g. null): default to the first real pane.
-          currentIndex = panes.length > 0 ? 1 : 0;
+          currentIndex = sidebarPanes.length > 0 ? 1 : 0;
         } else {
           // Skipping Home while Home is active: position so forward lands on the
           // first pane and backward on the last.
@@ -3394,7 +3482,7 @@ export default function App() {
       if (/^[1-9]$/.test(key) && !event.altKey && !event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
-        const pane = panes[Number(key) - 1];
+        const pane = sidebarPanes[Number(key) - 1];
         if (pane) {
           focusPaneTab(pane.id);
         }
@@ -3455,15 +3543,6 @@ export default function App() {
         event.preventDefault();
         event.stopPropagation();
         setSettingsOpen(true);
-        return;
-      }
-
-      // Cmd-O opens the workspace folder selector from anywhere, matching the
-      // folder button in the sidebar.
-      if (commandOnly && key === "o") {
-        event.preventDefault();
-        event.stopPropagation();
-        void selectWorkspaceFolder();
         return;
       }
 
@@ -3543,7 +3622,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [activePaneId, panes]);
+  }, [activePaneId, panes, sidebarPanes, activePane, lastActiveGroupId, groupById]);
 
   useEffect(() => {
     if (!launcherVisible) {
@@ -4066,6 +4145,213 @@ export default function App() {
     </form>
   );
 
+  function openGroupMenu(event: ReactMouseEvent, group: GroupInfo) {
+    event.preventDefault();
+    event.stopPropagation();
+    setPaneContextMenu(null);
+    setGroupMenu({
+      groupId: group.id,
+      x: clamp(event.clientX, 8, Math.max(8, window.innerWidth - 260)),
+      y: clamp(event.clientY, 8, Math.max(8, window.innerHeight - 180)),
+    });
+  }
+
+  function renderPaneTabRow(pane: PaneInfo, index: number, groupPanes: PaneInfo[], groupId: string) {
+    const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+    const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
+    const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
+    const paneAgentWorktreeStatus = paneAgent ? worktreeStatusByAgent[paneAgent.id] : undefined;
+    const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
+    const paneAgentStatusClass =
+      paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
+    const canClearWorkingStatus =
+      paneAgent?.status === "running" || paneAgent?.status === "starting";
+    const paneQueueCount = paneAgent ? (queuedTurnsByAgent[paneAgent.id]?.length ?? 0) : 0;
+    const rawStatus = paneAgent
+      ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
+      : statusLabel(pane.status);
+    const paneStatus =
+      paneAgent?.status === "running" && paneQueueCount > 0
+        ? `${paneQueueCount} queued`
+        : rawStatus === "Running"
+          ? null
+          : rawStatus;
+    const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
+    const paneBranch = paneAgent?.branch ?? null;
+    const paneWorktreeName =
+      paneBranch && paneAgent?.worktreeDir
+        ? (paneAgent.worktreeDir.split("/").filter(Boolean).pop() ?? null)
+        : null;
+    const paneGitMeta = [paneBranch, paneWorktreeName].filter(Boolean).join(" · ");
+    const paneGitMetaTitle = [paneBranch, paneBranch ? paneAgent?.worktreeDir : null]
+      .filter(Boolean)
+      .join(" · ");
+    const dropGap =
+      paneDropTarget?.kind === "gap" && paneDropTarget.groupId === groupId
+        ? paneDropTarget.index
+        : null;
+    const isNestTarget =
+      paneDropTarget?.kind === "nest" &&
+      paneDropTarget.groupId === groupId &&
+      paneDropTarget.paneId === pane.id;
+    const isDraggingRow =
+      draggingPaneGroup === groupId &&
+      draggingPaneIndex >= 0 &&
+      index >= draggingPaneIndex &&
+      index < draggingSubtreeEnd;
+    const shortcutIndex = sidebarPanes.findIndex((sidebarPane) => sidebarPane.id === pane.id);
+    const className = [
+      "pane-tab-row",
+      pane.id === activePane?.id ? "is-selected" : "",
+      canClearWorkingStatus ? "has-clearable-status" : "",
+      isDraggingRow ? "is-dragging" : "",
+      dropGap === index ? "is-drop-before" : "",
+      dropGap === groupPanes.length && index === groupPanes.length - 1 ? "is-drop-after" : "",
+      isNestTarget ? "is-drop-nest" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return (
+      <div
+        key={pane.id}
+        className={className}
+        data-group-id={groupId}
+        style={{ "--pane-depth": pane.depth ?? 0 } as CSSProperties}
+        onContextMenu={(event) => openPaneContextMenu(event, pane)}
+        onPointerDown={(event) => handlePaneTabPointerDown(event, pane.id)}
+        onPointerMove={handlePaneTabPointerMove}
+        onPointerUp={handlePaneTabPointerUp}
+        onPointerCancel={handlePaneTabPointerCancel}
+        onClick={() => handlePaneTabClick(pane.id)}
+        onDoubleClick={() => handlePaneTabDoubleClick(pane)}
+      >
+        {isNestTarget ? (
+          <div className="pane-tab-nest-indicator" aria-hidden="true">
+            <span className="pane-tab-nest-gutter">
+              <ChevronRight size={12} aria-hidden="true" />
+            </span>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="pane-tab"
+          onClick={(event) => {
+            event.stopPropagation();
+            handlePaneTabClick(pane.id);
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            handlePaneTabDoubleClick(pane);
+          }}
+        >
+          <span
+            className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${
+              canClearWorkingStatus ? " is-clearable-placeholder" : ""
+            }`}
+            aria-hidden="true"
+          />
+          <span className="pane-tab-content">
+            <span className={`pane-tab-title${paneTitleIsUserSet ? " is-user-set" : ""}`}>
+              {paneDisplayTitle}
+            </span>
+            {settings.codeMode && settings.showTabDirectories && paneDir ? (
+              <span className="pane-tab-path" title={paneDir}>
+                {formatPaneDir(paneDir)}
+              </span>
+            ) : null}
+            {settings.codeMode && paneGitMeta ? (
+              <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
+                {paneGitMeta}
+              </span>
+            ) : null}
+          </span>
+          {pane.recovered || paneStatus ? (
+            <span className="pane-tab-meta">
+              {pane.recovered ? (
+                <small className="pane-tab-status" title="Restored after restart">
+                  Restored
+                </small>
+              ) : null}
+              {paneStatus ? (
+                paneAgent?.status === "failed" ? (
+                  <small
+                    className="pane-tab-status pane-tab-status-clickable"
+                    role="button"
+                    tabIndex={0}
+                    title="Dismiss failed status"
+                    aria-label="Dismiss failed status"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void acknowledgeAgentStatus(paneAgent.id, true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void acknowledgeAgentStatus(paneAgent.id, true);
+                      }
+                    }}
+                  >
+                    {paneStatus}
+                  </small>
+                ) : (
+                  <small className="pane-tab-status">{paneStatus}</small>
+                )
+              ) : null}
+            </span>
+          ) : null}
+        </button>
+        {canClearWorkingStatus && paneAgent ? (
+          <button
+            type="button"
+            className="pane-tab-clear-status pane-tab-dot-button"
+            aria-label={`Clear working status for ${paneDisplayTitle}`}
+            title="Clear working status"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onDoubleClick={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              void clearAgentWorkingIndicator(paneAgent.id);
+            }}
+          >
+            <span
+              className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}`}
+              aria-hidden="true"
+            />
+          </button>
+        ) : null}
+        <a
+          className="pane-tab-close"
+          role="button"
+          tabIndex={0}
+          aria-label={`Close ${paneDisplayTitle}`}
+          title={`Close ${paneDisplayTitle}`}
+          onPointerDown={(event) => handlePaneTabClosePointerDown(event, pane)}
+          onClick={(event) => handlePaneTabCloseClick(event, pane)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              void requestClosePane(pane, { confirmAlways: true });
+            }
+          }}
+        >
+          <X size={13.5} aria-hidden="true" />
+        </a>
+        {shortcutHintsShown && shortcutIndex >= 0 && shortcutIndex < 9 ? (
+          <span className="pane-tab-shortcut-hint" aria-hidden="true">
+            ⌘{shortcutIndex + 1}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <main
       ref={appRef}
@@ -4121,224 +4407,31 @@ export default function App() {
               </span>
             ) : null}
           </div>
-          {panes.map((pane, index) => {
-            const paneAgent = agents.find((agent) => agent.paneId === pane.id);
-            const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
-            const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
-            const paneAgentWorktreeStatus = paneAgent
-              ? worktreeStatusByAgent[paneAgent.id]
-              : undefined;
-            const paneAgentStatusTone = paneAgent ? agentStatusTone(paneAgent.status) : "idle";
-            const paneAgentStatusClass =
-              paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
-            const canClearWorkingStatus =
-              paneAgent?.status === "running" || paneAgent?.status === "starting";
-            const paneQueueCount = paneAgent
-              ? (queuedTurnsByAgent[paneAgent.id]?.length ?? 0)
-              : 0;
-            const rawStatus = paneAgent
-              ? agentStatusLabel(paneAgent.status, paneAgentWorktreeStatus)
-              : statusLabel(pane.status);
-            // "Running" is the steady state for every pane, so it is just noise —
-            // except while turns are queued to send once the agent finishes, in
-            // which case surface the pending count in that otherwise-empty slot.
-            const paneStatus =
-              paneAgent?.status === "running" && paneQueueCount > 0
-                ? `${paneQueueCount} queued`
-                : rawStatus === "Running"
-                  ? null
-                  : rawStatus;
-            // Agent panes live in a worktree; shells show the directory they
-            // launched in (their spawn-time cwd).
-            const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
-            // Git context shown under the path for worktree agents. The pane runs
-            // in the worktree, so label it by the worktree's folder name rather
-            // than repeating the full path; the tooltip carries the full dir.
-            const paneBranch = paneAgent?.branch ?? null;
-            const paneWorktreeName =
-              paneBranch && paneAgent?.worktreeDir
-                ? (paneAgent.worktreeDir.split("/").filter(Boolean).pop() ?? null)
-                : null;
-            const paneGitMeta = [paneBranch, paneWorktreeName].filter(Boolean).join(" · ");
-            const paneGitMetaTitle = [paneBranch, paneBranch ? paneAgent?.worktreeDir : null]
-              .filter(Boolean)
-              .join(" · ");
-            const dropGap = paneDropTarget?.kind === "gap" ? paneDropTarget.index : null;
-            const isNestTarget =
-              paneDropTarget?.kind === "nest" && paneDropTarget.paneId === pane.id;
-            const isDraggingRow =
-              draggingPaneIndex >= 0 &&
-              index >= draggingPaneIndex &&
-              index < draggingSubtreeEnd;
-            const className = [
-              "pane-tab-row",
-              pane.id === activePane?.id ? "is-selected" : "",
-              canClearWorkingStatus ? "has-clearable-status" : "",
-              isDraggingRow ? "is-dragging" : "",
-              dropGap === index ? "is-drop-before" : "",
-              dropGap === panes.length && index === panes.length - 1 ? "is-drop-after" : "",
-              isNestTarget ? "is-drop-nest" : "",
-            ]
-              .filter(Boolean)
-              .join(" ");
+          {groups.map((group) => {
+            const groupPanes = panes.filter((pane) => pane.groupId === group.id);
             return (
-              <div
-                key={pane.id}
-                className={className}
-                style={{ "--pane-depth": pane.depth ?? 0 } as CSSProperties}
-                onContextMenu={(event) => openPaneContextMenu(event, pane)}
-                onPointerDown={(event) => handlePaneTabPointerDown(event, pane.id)}
-                onPointerMove={handlePaneTabPointerMove}
-                onPointerUp={handlePaneTabPointerUp}
-                onPointerCancel={handlePaneTabPointerCancel}
-                onClick={() => handlePaneTabClick(pane.id)}
-                onDoubleClick={() => handlePaneTabDoubleClick(pane)}
-              >
-                {isNestTarget ? (
-                  <div className="pane-tab-nest-indicator" aria-hidden="true">
-                    <span className="pane-tab-nest-gutter">
-                      <ChevronRight size={12} aria-hidden="true" />
-                    </span>
-                  </div>
-                ) : null}
-                <button
-                  type="button"
-                  className="pane-tab"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handlePaneTabClick(pane.id);
-                  }}
-                  onDoubleClick={(event) => {
-                    event.stopPropagation();
-                    handlePaneTabDoubleClick(pane);
-                  }}
-                >
-                  <span
-                    className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${
-                      canClearWorkingStatus ? " is-clearable-placeholder" : ""
-                    }`}
-                    aria-hidden="true"
-                  />
-                  <span className="pane-tab-content">
-                    <span
-                      className={`pane-tab-title${paneTitleIsUserSet ? " is-user-set" : ""}`}
-                    >
-                      {paneDisplayTitle}
-                    </span>
-                    {settings.codeMode && settings.showTabDirectories && paneDir ? (
-                      <span className="pane-tab-path" title={paneDir}>
-                        {formatPaneDir(paneDir)}
-                      </span>
-                    ) : null}
-                    {settings.codeMode && paneGitMeta ? (
-                      <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
-                        {paneGitMeta}
-                      </span>
-                    ) : null}
-                  </span>
-                  {pane.recovered || paneStatus ? (
-                    <span className="pane-tab-meta">
-                      {pane.recovered ? (
-                        <small className="pane-tab-status" title="Restored after restart">
-                          Restored
-                        </small>
-                      ) : null}
-                      {paneStatus ? (
-                        paneAgent?.status === "failed" ? (
-                          <small
-                            className="pane-tab-status pane-tab-status-clickable"
-                            role="button"
-                            tabIndex={0}
-                            title="Dismiss failed status"
-                            aria-label="Dismiss failed status"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void acknowledgeAgentStatus(paneAgent.id, true);
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                void acknowledgeAgentStatus(paneAgent.id, true);
-                              }
-                            }}
-                          >
-                            {paneStatus}
-                          </small>
-                        ) : (
-                          <small className="pane-tab-status">{paneStatus}</small>
-                        )
-                      ) : null}
-                    </span>
-                  ) : null}
-                </button>
-                {canClearWorkingStatus && paneAgent ? (
+              <section key={group.id} className="pane-group" data-group-id={group.id}>
+                <div className="pane-group-header" title={group.dir}>
+                  <span className="pane-group-title">{middleTruncatePath(formatPaneDir(group.dir))}</span>
                   <button
                     type="button"
-                    className="pane-tab-clear-status pane-tab-dot-button"
-                    aria-label={`Clear working status for ${paneDisplayTitle}`}
-                    title="Clear working status"
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                    onDoubleClick={(event) => {
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void clearAgentWorkingIndicator(paneAgent.id);
-                    }}
+                    className="pane-group-menu-button"
+                    aria-label={`Group options for ${group.name}`}
+                    title="Group options"
+                    onClick={(event) => openGroupMenu(event, group)}
                   >
-                    <span
-                      className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}`}
-                      aria-hidden="true"
-                    />
+                    <MoreHorizontal size={14} aria-hidden="true" />
                   </button>
-                ) : null}
-                <a
-                  className="pane-tab-close"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Close ${paneDisplayTitle}`}
-                  title={`Close ${paneDisplayTitle}`}
-                  onPointerDown={(event) => handlePaneTabClosePointerDown(event, pane)}
-                  onClick={(event) => handlePaneTabCloseClick(event, pane)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void requestClosePane(pane, { confirmAlways: true });
-                    }
-                  }}
-                >
-                  <X size={13.5} aria-hidden="true" />
-                </a>
-                {shortcutHintsShown && index < 9 ? (
-                  <span className="pane-tab-shortcut-hint" aria-hidden="true">
-                    ⌘{index + 1}
-                  </span>
-                ) : null}
-              </div>
+                </div>
+                {groupPanes.map((pane, index) =>
+                  renderPaneTabRow(pane, index, groupPanes, group.id),
+                )}
+              </section>
             );
           })}
         </nav>
 
         <div className={`sidebar-actions${settings.codeMode ? "" : " is-agent-only"}`}>
-          <button
-            type="button"
-            className="sidebar-folder-button"
-            onClick={selectWorkspaceFolder}
-            disabled={selectingWorkspaceFolder}
-            aria-busy={selectingWorkspaceFolder}
-            title={`${workspaceFolder ?? "Select a workspace folder"} (⌘O)`}
-          >
-            <Folder size={14} aria-hidden="true" />
-            <span className="sidebar-folder-label">
-              {workspaceFolder
-                ? middleTruncatePath(formatPaneDir(workspaceFolder))
-                : "Open folder…"}
-            </span>
-          </button>
           {settings.codeMode ? (
             <div className="sidebar-action-with-hint">
               <button type="button" onClick={addShellPane}>
@@ -4380,6 +4473,73 @@ export default function App() {
           </button>
         </div>
       </aside>
+
+      {groupMenu && groupMenuGroup ? (
+        <div
+          className="pane-context-menu group-context-menu"
+          role="dialog"
+          aria-label={`${groupMenuGroup.name} group options`}
+          style={{ left: groupMenu.x, top: groupMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <dl className="pane-context-details">
+            <div>
+              <dt>Group</dt>
+              <dd>{groupMenuGroup.name}</dd>
+            </div>
+            <div>
+              <dt>Directory</dt>
+              <dd>{groupMenuGroup.dir}</dd>
+            </div>
+          </dl>
+          <div className="pane-context-actions group-context-actions">
+            <button
+              type="button"
+              onClick={() => {
+                setGroupMenu(null);
+                void changeGroupDirectory(groupMenuGroup.id);
+              }}
+            >
+              <span>Change directory</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setGroupMenu(null);
+                void createGroupAfter(groupMenuGroup.id);
+              }}
+            >
+              <Plus size={13} aria-hidden="true" />
+              <span>New group after</span>
+            </button>
+            {settings.codeMode ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setGroupMenu(null);
+                  void addShellPaneInGroup(groupMenuGroup.id);
+                }}
+              >
+                <SquareTerminal size={13} aria-hidden="true" />
+                <span>New shell</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                setGroupMenu(null);
+                setActivePaneId(HOME_TAB_ID);
+                setLastActiveGroupId(groupMenuGroup.id);
+                setLauncherOpen(true);
+              }}
+            >
+              <MessageSquareText size={13} aria-hidden="true" />
+              <span>New agent</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {paneContextMenu && contextMenuPane ? (
         <div
@@ -4434,7 +4594,7 @@ export default function App() {
           <div className="pane-context-actions">
             <button
               type="button"
-              disabled={!canOutdent(panes, contextMenuPaneIndex)}
+              disabled={!canOutdent(contextMenuGroupPanes, contextMenuPaneIndex)}
               onClick={outdentContextMenuPane}
             >
               <ChevronLeft size={13} aria-hidden="true" />
@@ -4442,7 +4602,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              disabled={!canIndent(panes, contextMenuPaneIndex)}
+              disabled={!canIndent(contextMenuGroupPanes, contextMenuPaneIndex)}
               onClick={indentContextMenuPane}
             >
               <ChevronRight size={13} aria-hidden="true" />

@@ -15,7 +15,7 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Bumped whenever the on-disk shape changes incompatibly. A file written by a
 /// newer or unknown version is treated as empty rather than misinterpreted.
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = "state.json";
 const PREFERENCES_FILE: &str = "preferences.json";
 const STATE_DIR: &str = ".qmux";
@@ -33,6 +33,8 @@ pub struct PersistedState {
     pub panes: Vec<PaneInfo>,
     #[serde(default)]
     pub groups: Vec<GroupInfo>,
+    #[serde(default)]
+    pub group_order: Vec<String>,
     #[serde(default)]
     pub agents: Vec<AgentInfo>,
     #[serde(default)]
@@ -55,6 +57,7 @@ impl Default for PersistedState {
             next_id: 0,
             panes: Vec::new(),
             groups: Vec::new(),
+            group_order: Vec::new(),
             agents: Vec::new(),
             queues: HashMap::new(),
             recent_sessions: Vec::new(),
@@ -72,10 +75,6 @@ pub fn state_path(workspace_root: &Path) -> PathBuf {
 pub struct AppPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher_adapter_id: Option<String>,
-    /// The single "open folder" the app roots new shells/agents in and (later) the
-    /// file panel. Absolute, canonicalized. Absent until the user picks one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_folder: Option<String>,
     /// Whether new and recovered shells run as login shells (sourcing the user's
     /// login profile files in addition to the interactive rc). Absent means the
     /// default, on — matching how terminal emulators launch shells.
@@ -406,6 +405,7 @@ mod tests {
             title: "Shell".to_string(),
             kind: PaneKind::Shell,
             agent_id: None,
+            group_id: "group-1".to_string(),
             cwd: "/tmp/work".to_string(),
             cols: 120,
             rows: 40,

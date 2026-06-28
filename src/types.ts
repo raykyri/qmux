@@ -31,6 +31,7 @@ export interface PaneInfo {
   title: string;
   kind: PaneKind;
   agentId?: string | null;
+  groupId: string;
   cwd: string;
   cols: number;
   rows: number;
@@ -62,6 +63,7 @@ export interface GroupInfo {
   id: string;
   name: string;
   dir: string;
+  managedDir: string;
   baseRepo?: string | null;
   baseRef?: string | null;
   parentId?: string | null;

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { listAgents, listPanes, listenToEvents } from "../lib/api";
+import { listAgents, listGroups, listPanes, listenToEvents } from "../lib/api";
 import {
   isAgentInfo,
   isQueuedTurn,
@@ -11,7 +11,7 @@ import {
   upsertAgent,
 } from "../lib/appHelpers";
 import type { ExitDialogState, PaneContextMenuState } from "../appTypes";
-import type { AgentInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, Turn } from "../types";
+import type { AgentInfo, GroupInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, Turn } from "../types";
 
 // The backend event stream drives most of the app's live state. This hook owns
 // the single global subscription: it is intentionally set up once (empty deps),
@@ -26,6 +26,7 @@ export interface UseQmuxEventsHandlers {
   setPaneContextMenu: Dispatch<SetStateAction<PaneContextMenuState | null>>;
   setExitDialog: Dispatch<SetStateAction<ExitDialogState | null>>;
   setAgents: Dispatch<SetStateAction<AgentInfo[]>>;
+  setGroups: Dispatch<SetStateAction<GroupInfo[]>>;
   // Tracks which agents are actively working, for the transcript "Working…"
   // indicator. Only live transitions into a working status flip it on, so an
   // agent restored into a working status never falsely shows it (see below).
@@ -54,6 +55,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setPaneContextMenu,
     setExitDialog,
     setAgents,
+    setGroups,
     setThinkingAgentIds,
     setTurns,
     setTranscriptNoticeByAgent,
@@ -73,6 +75,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     let agentRefreshSeq = 0;
     // Same idea for pane-list refetches (a fork adds a pane backend-side).
     let panesRefreshSeq = 0;
+    let groupsRefreshSeq = 0;
 
     void listenToEvents((event) => {
       if (disposed) {
@@ -173,6 +176,16 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         if (typeof url === "string") {
           openBrowserOverlay(event.paneId, url, event.payload.sandbox === true);
         }
+      }
+      if (event.type === "group.created" || event.type === "group.updated") {
+        const seq = (groupsRefreshSeq += 1);
+        void listGroups()
+          .then((latest) => {
+            if (!disposed && seq === groupsRefreshSeq) {
+              setGroups(latest);
+            }
+          })
+          .catch(() => undefined);
       }
       if (event.type === "agent.forked") {
         // The fork created a new pane backend-side; refetch the ordered list so the

@@ -183,6 +183,7 @@ impl CodexAdapter {
             PtySpawnSpec {
                 pane_id: Some(pane_id.clone()),
                 agent_id: Some(agent.id.clone()),
+                group_id: agent.group_id.clone(),
                 kind: PaneKind::Agent,
                 title: self.display_name().to_string(),
                 program: binary,
@@ -240,6 +241,7 @@ impl CodexAdapter {
             PtySpawnSpec {
                 pane_id: Some(pane.id.clone()),
                 agent_id: Some(agent.id.clone()),
+                group_id: agent.group_id.clone(),
                 kind: PaneKind::Agent,
                 title: pane.title.clone(),
                 program: binary,
@@ -365,6 +367,7 @@ impl CodexAdapter {
             PtySpawnSpec {
                 pane_id: Some(pane_id.clone()),
                 agent_id: Some(agent.id.clone()),
+                group_id: agent.group_id.clone(),
                 kind: PaneKind::Agent,
                 title: self.display_name().to_string(),
                 program: binary,
@@ -416,6 +419,9 @@ impl CodexAdapter {
         // that session instead of minting a duplicate; any other invocation starts a
         // fresh agent in the current directory.
         let cwd_str = cwd.display().to_string();
+        let pane_group_id = state
+            .pane_group_id(&request.pane_id)?
+            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
         let agent = match reusable_session_agent(
             state,
             self.id(),
@@ -426,7 +432,7 @@ impl CodexAdapter {
             None => prepare_agent_workspace(
                 state,
                 PrepareAgentWorkspaceRequest {
-                    group_id: None,
+                    group_id: Some(pane_group_id),
                     base_repo: Some(cwd_str.clone()),
                     base_ref: Some("HEAD".to_string()),
                     adapter: self.id().to_string(),
@@ -2485,6 +2491,7 @@ trusted_hash = "sha256:trusted"
                     title: "Codex".to_string(),
                     kind: PaneKind::Agent,
                     agent_id: Some("agent-1".to_string()),
+                    group_id: "group-1".to_string(),
                     cwd: "/tmp/qmux-codex-test".to_string(),
                     cols: 80,
                     rows: 24,

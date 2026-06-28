@@ -155,6 +155,7 @@ pub fn resume_recent_session(
         title: adapter.display_name().to_string(),
         kind: PaneKind::Agent,
         agent_id: Some(agent.id.clone()),
+        group_id: agent.group_id.clone(),
         cwd: agent.worktree_dir.clone(),
         cols: size.cols,
         rows: size.rows,

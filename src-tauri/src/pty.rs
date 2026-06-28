@@ -6,7 +6,9 @@ use crate::state::{
     ShellAgentResume,
 };
 use crate::turn_queue::release_waiters_for_agent;
-use crate::workspace::{capture_agent_worktree_removal, remove_captured_worktree};
+use crate::workspace::{
+    CreateGroupRequest, capture_agent_worktree_removal, create_group, remove_captured_worktree,
+};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -77,6 +79,7 @@ impl PaneActivity {
 pub struct PtySpawnSpec {
     pub pane_id: Option<String>,
     pub agent_id: Option<String>,
+    pub group_id: String,
     pub kind: PaneKind,
     pub title: String,
     pub program: String,
@@ -101,18 +104,35 @@ pub fn spawn_shell_pane(
     state: &AppState,
     initial_size: Option<InitialPaneSize>,
     source_pane_id: Option<&str>,
+    group_id: Option<&str>,
 ) -> Result<PaneInfo, String> {
     // A user-opened shell inherits the focused shell's current directory when one is
     // given and still valid (matching how terminal emulators open a "new tab here");
-    // otherwise it opens in the workspace folder / home, never the bare `/` a
+    // otherwise it opens in the target group directory / home, never the bare `/` a
     // Finder/Dock launch inherits as its cwd.
+    let source_group_id = source_pane_id.and_then(|id| state.pane_group_id(id).ok().flatten());
+    let group = match group_id.or(source_group_id.as_deref()) {
+        Some(group_id) => state
+            .group(group_id)?
+            .ok_or_else(|| format!("group {group_id} was not found"))?,
+        None => create_group(
+            state,
+            CreateGroupRequest {
+                name: None,
+                dir: None,
+                after_group_id: None,
+                base_repo: None,
+                base_ref: None,
+            },
+        )?,
+    };
     let cwd = source_pane_id
         .and_then(|id| state.inheritable_shell_cwd(id))
-        .unwrap_or_else(|| state.default_open_dir());
+        .unwrap_or_else(|| PathBuf::from(&group.dir));
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,
-        shell_spawn_spec(state, pane_id, cwd, initial_size, false, None)?,
+        shell_spawn_spec(state, pane_id, group.id, cwd, initial_size, false, None)?,
     )
 }
 
@@ -133,12 +153,17 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     let resume_dir = resume
         .as_ref()
         .and_then(|resume| recoverable_dir(&resume.cwd));
+    let group_dir = state
+        .group(&pane.group_id)
+        .ok()
+        .flatten()
+        .and_then(|group| recoverable_dir(&group.dir));
     let cwd = resume_dir
         .clone()
         .or_else(|| recoverable_dir(&pane.cwd))
-        // A recovered shell whose last dir was deleted between sessions reopens in
-        // the workspace folder / home rather than the bare `/` a Finder/Dock launch
-        // inherits as its process cwd.
+        .or(group_dir)
+        // A recovered shell whose last dir was deleted between sessions reopens in the
+        // group directory / home rather than the bare `/` a Finder/Dock launch inherits.
         .unwrap_or_else(|| state.default_open_dir());
     let resume_command = resume
         .filter(|_| resume_dir.is_some())
@@ -152,6 +177,7 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
         shell_spawn_spec(
             state,
             pane.id.clone(),
+            pane.group_id.clone(),
             cwd,
             initial_size,
             true,
@@ -175,6 +201,7 @@ fn shell_resume_command(state: &AppState, resume: &ShellAgentResume) -> Option<S
 fn shell_spawn_spec(
     state: &AppState,
     pane_id: String,
+    group_id: String,
     cwd: PathBuf,
     initial_size: Option<InitialPaneSize>,
     recovered: bool,
@@ -215,6 +242,7 @@ fn shell_spawn_spec(
     Ok(PtySpawnSpec {
         pane_id: Some(pane_id),
         agent_id: None,
+        group_id,
         kind: PaneKind::Shell,
         title: "Shell".to_string(),
         program: shell,
@@ -651,6 +679,7 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
         title: spec.title,
         kind: spec.kind,
         agent_id: spec.agent_id,
+        group_id: spec.group_id,
         cwd: spec.cwd.display().to_string(),
         cols: initial_size.cols,
         rows: initial_size.rows,
@@ -1434,6 +1463,7 @@ mod tests {
             PtySpawnSpec {
                 pane_id: Some(pane_id.to_string()),
                 agent_id: None,
+                group_id: "group-1".to_string(),
                 kind: PaneKind::Shell,
                 title: "test".to_string(),
                 program: "/bin/sh".to_string(),
@@ -1483,16 +1513,20 @@ mod tests {
 
         let state = test_state_with_workspace(workspace.clone());
         state
-            .insert_group(GroupInfo {
-                id: "group-1".to_string(),
-                name: "group".to_string(),
-                dir: workspace.to_string_lossy().to_string(),
-                base_repo: Some(repo.to_string_lossy().to_string()),
-                base_ref: None,
-                parent_id: None,
-                created_at: 1,
-                agents: vec!["agent-1".to_string()],
-            })
+            .insert_group_after(
+                GroupInfo {
+                    id: "group-1".to_string(),
+                    name: "group".to_string(),
+                    dir: workspace.to_string_lossy().to_string(),
+                    managed_dir: workspace.join("managed").to_string_lossy().to_string(),
+                    base_repo: Some(repo.to_string_lossy().to_string()),
+                    base_ref: None,
+                    parent_id: None,
+                    created_at: 1,
+                    agents: vec!["agent-1".to_string()],
+                },
+                None,
+            )
             .unwrap();
         let pane = spawn_test_pty(
             &state,

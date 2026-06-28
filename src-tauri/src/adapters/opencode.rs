@@ -183,6 +183,7 @@ impl OpencodeAdapter {
             PtySpawnSpec {
                 pane_id: Some(pane_id.clone()),
                 agent_id: Some(agent.id.clone()),
+                group_id: agent.group_id.clone(),
                 kind: PaneKind::Agent,
                 title: self.display_name().to_string(),
                 program: binary,
@@ -235,6 +236,7 @@ impl OpencodeAdapter {
             PtySpawnSpec {
                 pane_id: Some(pane.id.clone()),
                 agent_id: Some(agent.id.clone()),
+                group_id: agent.group_id.clone(),
                 kind: PaneKind::Agent,
                 title: pane.title.clone(),
                 program: binary,
@@ -299,7 +301,7 @@ impl OpencodeAdapter {
         let agent = prepare_agent_workspace(
             state,
             PrepareAgentWorkspaceRequest {
-                group_id: None,
+                group_id: state.pane_group_id(&request.pane_id)?,
                 base_repo: Some(cwd.display().to_string()),
                 base_ref: Some("HEAD".to_string()),
                 adapter: self.id().to_string(),

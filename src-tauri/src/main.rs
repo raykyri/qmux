@@ -49,6 +49,7 @@ use turn_queue::{
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
     agent_worktree_status, clear_agent_working_status, create_group, remove_agent_worktree,
+    set_group_dir,
 };
 
 /// Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) out of
@@ -112,26 +113,6 @@ fn launcher_adapter_preference_set(
     persistence::save_preferences(&state.config().workspace_root, &preferences)
 }
 
-/// The current workspace folder, or `None` if the user hasn't chosen one yet.
-#[tauri::command]
-fn workspace_folder_get(state: tauri::State<'_, AppState>) -> Option<String> {
-    state.workspace_folder()
-}
-
-/// Prompts for a folder with the native macOS chooser and, when one is selected,
-/// makes it the workspace folder (validated, persisted, broadcast). Returns the new
-/// folder, or `None` if the user cancels.
-///
-/// `(async)` runs this on a worker thread rather than the main thread, so the blocking
-/// `osascript` modal doesn't freeze the qmux window while the chooser is open.
-#[tauri::command(async)]
-fn workspace_folder_pick(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
-    match pick_folder_dialog()? {
-        Some(path) => state.set_workspace_folder(path).map(Some),
-        None => Ok(None),
-    }
-}
-
 /// Shows the native macOS folder chooser via `osascript` and returns the selected
 /// POSIX path, or `None` when the user cancels. Hand-rolled (cf. the login-shell PATH
 /// probe in launch_path.rs) to avoid pulling in a dialog plugin; macOS-only, matching
@@ -142,7 +123,7 @@ fn pick_folder_dialog() -> Result<Option<String>, String> {
     // surfaces as a non-zero exit with empty stdout — reported as `None` (no error) so
     // a cancel is silent.
     let script = "tell me to activate\n\
-        set chosenFolder to choose folder with prompt \"Select the workspace folder\"\n\
+        set chosenFolder to choose folder with prompt \"Select the group directory\"\n\
         POSIX path of chosenFolder";
     let output = std::process::Command::new("osascript")
         .arg("-e")
@@ -322,13 +303,51 @@ fn group_create(
     create_group(&state, request)
 }
 
+#[tauri::command(async)]
+fn group_create_pick(
+    state: tauri::State<'_, AppState>,
+    after_group_id: Option<String>,
+) -> Result<Option<GroupInfo>, String> {
+    match pick_folder_dialog()? {
+        Some(path) => create_group(
+            &state,
+            CreateGroupRequest {
+                name: None,
+                dir: Some(path),
+                after_group_id,
+                base_repo: None,
+                base_ref: None,
+            },
+        )
+        .map(Some),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command(async)]
+fn group_pick_dir(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+) -> Result<Option<GroupInfo>, String> {
+    match pick_folder_dialog()? {
+        Some(path) => set_group_dir(&state, &group_id, path).map(Some),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
 fn spawn_shell(
     state: tauri::State<'_, AppState>,
     initial_size: Option<InitialPaneSize>,
     source_pane_id: Option<String>,
+    group_id: Option<String>,
 ) -> Result<PaneInfo, String> {
-    spawn_shell_pane(&state, initial_size, source_pane_id.as_deref())
+    spawn_shell_pane(
+        &state,
+        initial_size,
+        source_pane_id.as_deref(),
+        group_id.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -676,9 +695,6 @@ fn main() {
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
-                // Seed the cached workspace folder from preferences before command
-                // handlers (and any recovery spawns) can read it.
-                state.init_workspace_folder();
                 // Best-effort: if the menu tweak fails, ⌘W keeps its default
                 // (window-closing) behavior rather than aborting startup.
                 if let Err(err) = route_window_close_to_frontend(app) {
@@ -724,8 +740,6 @@ fn main() {
             get_runtime_config,
             launcher_adapter_preference_get,
             launcher_adapter_preference_set,
-            workspace_folder_get,
-            workspace_folder_pick,
             open_external_url,
             dictation_cache_metadata,
             dictation_cache_read,
@@ -744,6 +758,8 @@ fn main() {
             list_agent_transcripts,
             set_agent_transcript,
             group_create,
+            group_create_pick,
+            group_pick_dir,
             spawn_shell,
             use_login_shell_set,
             agent_spawn,

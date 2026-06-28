@@ -43,8 +43,8 @@ export type PaneTabPointerDrag = {
 // Where a tab drag will land: either a gap between rows (reorder) or onto a row
 // (nest the dragged tab under it).
 export type PaneDropTarget =
-  | { kind: "gap"; index: number }
-  | { kind: "nest"; paneId: string };
+  | { kind: "gap"; groupId: string; index: number }
+  | { kind: "nest"; groupId: string; paneId: string };
 
 export type BrowserOverlaySize = {
   width: number;

@@ -10,7 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct GroupInfo {
     pub id: String,
     pub name: String,
+    /// User-facing working directory represented by this group.
     pub dir: String,
+    /// Qmux-owned storage for the group's manifest and any generated worktrees.
+    pub managed_dir: String,
     pub base_repo: Option<String>,
     pub base_ref: Option<String>,
     pub parent_id: Option<String>,
@@ -60,6 +63,8 @@ pub enum AgentStatus {
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupRequest {
     pub name: Option<String>,
+    pub dir: Option<String>,
+    pub after_group_id: Option<String>,
     pub base_repo: Option<String>,
     pub base_ref: Option<String>,
 }
@@ -78,24 +83,27 @@ pub struct PrepareAgentWorkspaceRequest {
 
 pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<GroupInfo, String> {
     let id = state.next_id("group");
-    let dir = match request.name.as_deref() {
-        // An explicitly requested name keeps the numeric-suffix collision policy.
-        Some(name) => unique_group_dir(&state.config().workspace_root, name)?,
-        // Otherwise generate a fresh, human-readable name, regenerating until one
-        // doesn't collide with an existing worktree.
-        None => unique_friendly_group_dir(&state.config().workspace_root)?,
+    let dir = match request.dir.as_deref() {
+        Some(dir) => canonical_dir(dir)?,
+        None => state.default_open_dir(),
     };
-    fs::create_dir_all(dir.join(".qmux"))
+    let display_name = request
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| group_name_for_dir(&dir));
+    let managed_dir = match request.name.as_deref() {
+        Some(name) => unique_group_dir(&state.config().workspace_root, name)?,
+        None => unique_group_dir(&state.config().workspace_root, &display_name)?,
+    };
+    fs::create_dir_all(managed_dir.join(".qmux"))
         .map_err(|err| format!("failed to create group dir {}: {err}", dir.display()))?;
 
     let group = GroupInfo {
         id,
-        name: dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("group")
-            .to_string(),
+        name: display_name,
         dir: dir.display().to_string(),
+        managed_dir: managed_dir.display().to_string(),
         base_repo: request.base_repo,
         base_ref: request.base_ref,
         parent_id: None,
@@ -104,7 +112,33 @@ pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<Gro
     };
 
     write_group_manifest(&group)?;
-    state.insert_group(group.clone())?;
+    state.insert_group_after(group.clone(), request.after_group_id.as_deref())?;
+    state.emit(crate::events::QmuxEvent::new(
+        "group.created",
+        None,
+        None,
+        serde_json::json!({ "group": group.clone() }),
+    ));
+    Ok(group)
+}
+
+pub fn set_group_dir(state: &AppState, group_id: &str, dir: String) -> Result<GroupInfo, String> {
+    let mut group = state
+        .group(group_id)?
+        .ok_or_else(|| format!("group {group_id} was not found"))?;
+    let dir = canonical_dir(&dir)?;
+    group.dir = dir.display().to_string();
+    group.name = group_name_for_dir(&dir);
+    group.base_repo = None;
+    group.base_ref = None;
+    write_group_manifest(&group)?;
+    state.update_group(group.clone())?;
+    state.emit(crate::events::QmuxEvent::new(
+        "group.updated",
+        None,
+        None,
+        serde_json::json!({ "group": group.clone() }),
+    ));
     Ok(group)
 }
 
@@ -120,6 +154,11 @@ pub fn prepare_agent_workspace(
             state,
             CreateGroupRequest {
                 name: None,
+                dir: request
+                    .base_repo
+                    .clone()
+                    .or_else(|| Some(state.default_open_dir().display().to_string())),
+                after_group_id: None,
                 base_repo: request
                     .base_repo
                     .clone()
@@ -137,7 +176,7 @@ pub fn prepare_agent_workspace(
     let base_repo = request
         .base_repo
         .or_else(|| group.base_repo.clone())
-        .or_else(|| default_base_repo(state));
+        .or_else(|| Some(group.dir.clone()));
     let base_ref = request
         .base_ref
         .or_else(|| group.base_ref.clone())
@@ -147,11 +186,11 @@ pub fn prepare_agent_workspace(
     let worktree_dir = if request.use_worktree {
         // Isolated git worktree under the group dir (or a plain directory when the
         // base is not a git repo).
-        let dir = PathBuf::from(&group.dir).join(&agent_name);
+        let dir = PathBuf::from(&group.managed_dir).join(&agent_name);
         match base_repo.as_deref().filter(|repo| is_git_repo(repo)) {
             Some(base_repo) => {
                 let branch_name =
-                    format!("qmux/{}/{}", sanitize_ref_segment(&group.name), agent_name);
+                    format!("qmux/{}/{}", sanitize_ref_segment(&group.id), agent_name);
                 create_worktree(base_repo, &dir, &branch_name, &base_ref)?;
                 branch = Some(branch_name);
             }
@@ -478,10 +517,32 @@ fn soft_delete_branch(run_dir: &str, branch: &str) -> Result<bool, String> {
 }
 
 /// The directory a launched agent works in when the caller doesn't specify one:
-/// the chosen workspace folder if set (and still a directory), else the user's
-/// home directory, else the qmux process cwd. See `AppState::default_open_dir`.
+/// the group's directory if it still exists, else the app default.
 fn default_base_repo(state: &AppState) -> Option<String> {
     Some(state.default_open_dir().display().to_string())
+}
+
+fn canonical_dir(path: &str) -> Result<PathBuf, String> {
+    let canonical =
+        fs::canonicalize(path).map_err(|err| format!("failed to resolve {path}: {err}"))?;
+    if !canonical.is_dir() {
+        return Err(format!("{} is not a directory", canonical.display()));
+    }
+    Ok(canonical)
+}
+
+fn group_name_for_dir(dir: &Path) -> String {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            if dir.parent().is_none() {
+                "Root".to_string()
+            } else {
+                default_group_name()
+            }
+        })
 }
 
 /// A friendly, human-readable name for a new group / worktree, e.g.
@@ -492,23 +553,6 @@ fn default_group_name() -> String {
     names::Generator::default()
         .next()
         .unwrap_or_else(|| format!("group-{}", now_millis()))
-}
-
-/// Allocates a directory under `root` named with a freshly generated friendly
-/// name, regenerating on collision so a new worktree never reuses the name of an
-/// existing one.
-fn unique_friendly_group_dir(root: &Path) -> Result<PathBuf, String> {
-    let mut generator = names::Generator::default();
-    for _ in 0..1000 {
-        let Some(name) = generator.next() else { break };
-        let candidate = root.join(sanitize_path_segment(&name));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    // Pathological case (every generated name collided): fall back to numeric
-    // suffixing to guarantee forward progress.
-    unique_group_dir(root, &default_group_name())
 }
 
 fn unique_group_dir(root: &Path, requested_name: &str) -> Result<PathBuf, String> {
@@ -627,7 +671,7 @@ fn verify_base_ref(base_repo: &str, base_ref: &str) -> Result<(), String> {
 }
 
 fn write_group_manifest(group: &GroupInfo) -> Result<(), String> {
-    let manifest_path = PathBuf::from(&group.dir).join(".qmux/group.json");
+    let manifest_path = PathBuf::from(&group.managed_dir).join(".qmux/group.json");
     let raw = serde_json::to_string_pretty(group)
         .map_err(|err| format!("failed to encode group manifest: {err}"))?;
     fs::write(&manifest_path, raw)
@@ -945,22 +989,5 @@ mod tests {
         assert!(branch_exists(&repo, "feature"));
 
         fs::remove_dir_all(&repo).ok();
-    }
-
-    #[test]
-    fn unique_friendly_group_dir_skips_existing_worktrees() {
-        let root = std::env::temp_dir().join(format!("qmux-friendly-{}", now_millis()));
-        fs::create_dir_all(&root).unwrap();
-
-        // Occupy a directory, then assert the allocator never hands it back.
-        let taken = unique_friendly_group_dir(&root).unwrap();
-        fs::create_dir_all(&taken).unwrap();
-        for _ in 0..20 {
-            let next = unique_friendly_group_dir(&root).unwrap();
-            assert_ne!(next, taken, "allocator returned an existing worktree dir");
-            assert!(!next.exists());
-        }
-
-        fs::remove_dir_all(&root).ok();
     }
 }

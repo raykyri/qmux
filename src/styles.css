@@ -385,6 +385,65 @@ button:disabled {
   color: #ffffff;
 }
 
+.pane-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pane-group + .pane-group {
+  margin-top: 8px;
+}
+
+.pane-group-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 6px 3px 9px;
+  color: #b9c0bc;
+  font-size: calc(13px + var(--turn-font-delta, 0px));
+  line-height: 1.2;
+  user-select: none;
+}
+
+.pane-group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-group-menu-button {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #8a938e;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.pane-group-header:hover .pane-group-menu-button,
+.pane-group-menu-button:focus-visible {
+  opacity: 1;
+}
+
+.pane-group-menu-button:hover,
+.pane-group-menu-button:focus-visible {
+  border-color: var(--control-border);
+  background: var(--control-bg-hover);
+  color: #ffffff;
+  outline: none;
+}
+
 /* The drop target is a standalone horizontal rule sitting in the 2px gap between
    rows rather than an inset border hugging the tab — a border would curl around
    the tab's rounded corners. */
@@ -781,6 +840,14 @@ button:disabled {
   cursor: default;
 }
 
+.group-context-actions {
+  flex-direction: column;
+}
+
+.group-context-actions button {
+  justify-content: flex-start;
+}
+
 /* The close affordance is a plain linkified glyph that sits directly over the
    status dot (same left offset + size as .pane-tab-dot), not a boxed button.
    On hover the dot is hidden and only the × shows. */
@@ -853,23 +920,6 @@ button:disabled {
 
 .sidebar-actions.is-agent-only {
   grid-template-columns: minmax(0, 1fr) auto;
-}
-
-/* The workspace-folder button is its own full-width row above the New shell/New
-   agent/Settings row, regardless of how many columns that row has. */
-.sidebar-actions .sidebar-folder-button {
-  grid-column: 1 / -1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-/* JS middle-truncates the label to keep the folder name visible; this is the
-   safety net for a sidebar narrower than the truncation budget. */
-.sidebar-folder-label {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .sidebar-action-with-hint {

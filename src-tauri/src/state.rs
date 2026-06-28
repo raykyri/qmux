@@ -75,11 +75,6 @@ struct AppStateInner {
     transcript_tails: Mutex<HashSet<String>>,
     next_id: AtomicU64,
     app_handle: Mutex<Option<AppHandle>>,
-    // The single "open folder" new shells and agents launch in (see
-    // `workspace_folder`). Cached in memory so the spawn hot paths and file-server
-    // root checks don't re-read preferences from disk; seeded at startup by
-    // `init_workspace_folder` and kept in sync by `set_workspace_folder`.
-    workspace_folder: Mutex<Option<String>>,
     // Persistence stays off until restore_session() runs so constructing a state
     // (notably in tests) never touches disk. Once enabled, every model mutation
     // snapshots to workspace_root/.qmux/state.json.
@@ -98,6 +93,7 @@ struct Model {
     /// `ordered_panes` stamps it onto each returned `PaneInfo`. Absent id == depth 0.
     pane_depth: HashMap<String, u16>,
     groups: HashMap<String, GroupInfo>,
+    group_order: Vec<String>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
@@ -385,6 +381,7 @@ pub struct PaneInfo {
     pub title: String,
     pub kind: PaneKind,
     pub agent_id: Option<String>,
+    pub group_id: String,
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
@@ -440,7 +437,6 @@ impl AppState {
                 transcript_tails: Mutex::new(HashSet::new()),
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
-                workspace_folder: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
@@ -459,28 +455,11 @@ impl AppState {
         self.inner.file_server.lock().ok().and_then(|slot| *slot)
     }
 
-    /// The current "open folder", or `None` if the user hasn't chosen one (in which
-    /// case shells/agents fall back to the qmux process cwd, as before).
-    pub fn workspace_folder(&self) -> Option<String> {
-        self.inner
-            .workspace_folder
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
-    }
-
-    /// The directory new shells and agents open in when the caller doesn't give an
-    /// explicit cwd: the chosen workspace folder if set (and still a directory),
-    /// else the user's home directory, else the qmux process cwd. The home step
+    /// The directory a newly-created group opens in when the caller doesn't give an
+    /// explicit path: the user's home directory, else the qmux process cwd. The home step
     /// keeps a Finder/Dock launch — whose process cwd is the filesystem root — from
     /// opening shells at `/`.
     pub fn default_open_dir(&self) -> std::path::PathBuf {
-        if let Some(folder) = self.workspace_folder() {
-            let folder = std::path::PathBuf::from(folder);
-            if folder.is_dir() {
-                return folder;
-            }
-        }
         if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
             && home.is_dir()
         {
@@ -501,54 +480,6 @@ impl AppState {
         }
         let cwd = std::path::PathBuf::from(&pane.info.cwd);
         cwd.is_dir().then_some(cwd)
-    }
-
-    /// Seeds the in-memory workspace folder from persisted preferences at startup.
-    /// A persisted folder that no longer resolves to a directory is dropped so a
-    /// since-deleted path can't make every later spawn fail. With nothing persisted
-    /// (a fresh install), the folder defaults to the user's home directory so the
-    /// app opens rooted in ~ rather than unset. The default is computed each startup
-    /// rather than persisted, so it stays out of preferences until the user explicitly
-    /// picks a folder.
-    pub fn init_workspace_folder(&self) {
-        let folder = persistence::load_preferences(&self.inner.config.workspace_root)
-            .ok()
-            .and_then(|prefs| prefs.workspace_folder)
-            .filter(|path| std::path::Path::new(path).is_dir())
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(std::path::PathBuf::from)
-                    .filter(|home| home.is_dir())
-                    .map(|home| home.display().to_string())
-            });
-        if let Ok(mut slot) = self.inner.workspace_folder.lock() {
-            *slot = folder;
-        }
-    }
-
-    /// Validates and canonicalizes `path`, caches it, persists it to preferences, and
-    /// broadcasts `workspace.folder_changed`. Returns the canonical path stored.
-    pub fn set_workspace_folder(&self, path: String) -> Result<String, String> {
-        let canonical = std::fs::canonicalize(&path)
-            .map_err(|err| format!("failed to resolve {path}: {err}"))?;
-        if !canonical.is_dir() {
-            return Err(format!("{} is not a directory", canonical.display()));
-        }
-        let canonical = canonical.display().to_string();
-        if let Ok(mut slot) = self.inner.workspace_folder.lock() {
-            *slot = Some(canonical.clone());
-        }
-        let mut preferences =
-            persistence::load_preferences(&self.inner.config.workspace_root).unwrap_or_default();
-        preferences.workspace_folder = Some(canonical.clone());
-        persistence::save_preferences(&self.inner.config.workspace_root, &preferences)?;
-        self.emit(QmuxEvent::new(
-            "workspace.folder_changed",
-            None,
-            None,
-            json!({ "folder": canonical }),
-        ));
-        Ok(canonical)
     }
 
     /// Whether shells should run as login shells (sourcing the user's login
@@ -602,11 +533,11 @@ impl AppState {
     /// working area.
     pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
         let mut roots = vec![self.inner.config.workspace_root.clone()];
-        if let Some(folder) = self.workspace_folder() {
-            roots.push(std::path::PathBuf::from(folder));
-        }
         if let Ok(model) = self.inner.model.lock() {
             if let Some(pane) = model.panes.get(pane_id) {
+                if let Some(group) = model.groups.get(&pane.info.group_id) {
+                    roots.push(std::path::PathBuf::from(&group.dir));
+                }
                 roots.push(std::path::PathBuf::from(&pane.info.cwd));
             }
             for agent in model.agents.values() {
@@ -649,7 +580,26 @@ impl AppState {
 
         if let Ok(mut model) = self.inner.model.lock() {
             for group in persisted.groups {
+                if !model.group_order.iter().any(|id| id == &group.id) {
+                    model.group_order.push(group.id.clone());
+                }
                 model.groups.insert(group.id.clone(), group);
+            }
+            if !persisted.group_order.is_empty() {
+                let mut seen = HashSet::new();
+                model.group_order = persisted
+                    .group_order
+                    .into_iter()
+                    .filter(|id| model.groups.contains_key(id) && seen.insert(id.clone()))
+                    .collect();
+                let mut missing = model
+                    .groups
+                    .keys()
+                    .filter(|id| !seen.contains(*id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                missing.sort();
+                model.group_order.extend(missing);
             }
             for mut agent in persisted.agents {
                 if let Some(pane_id) = agent
@@ -736,6 +686,7 @@ impl AppState {
                 next_id: self.inner.next_id.load(Ordering::Relaxed),
                 panes: ordered_panes(&model),
                 groups: model.groups.values().cloned().collect(),
+                group_order: ordered_group_ids(&model),
                 agents: model.agents.values().cloned().collect(),
                 queues: model
                     .agent_turn_queues
@@ -865,7 +816,7 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.groups.values().cloned().collect())
+        Ok(ordered_groups(&model))
     }
 
     pub fn list_agents(&self) -> Result<Vec<AgentInfo>, String> {
@@ -948,6 +899,18 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.groups.get(group_id).cloned())
+    }
+
+    pub fn pane_group_id(&self, pane_id: &str) -> Result<Option<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .panes
+            .get(pane_id)
+            .map(|runtime| runtime.info.group_id.clone()))
     }
 
     pub fn agent(&self, agent_id: &str) -> Result<Option<AgentInfo>, String> {
@@ -1341,27 +1304,30 @@ impl AppState {
             }
 
             let mut seen = HashSet::with_capacity(layout.len());
-            let mut prev_depth: Option<u16> = None;
+            let mut prev_depth_by_group: HashMap<String, u16> = HashMap::new();
             for entry in &layout {
                 if !seen.insert(entry.pane_id.clone()) {
                     return Err("pane layout contains a duplicate pane".to_string());
                 }
-                if !model.panes.contains_key(&entry.pane_id) {
+                let Some(pane) = model.panes.get(&entry.pane_id) else {
                     return Err(format!("pane {} was not found", entry.pane_id));
-                }
+                };
                 if entry.depth > MAX_PANE_DEPTH {
                     return Err(format!(
                         "pane depth {} exceeds the maximum of {MAX_PANE_DEPTH}",
                         entry.depth
                     ));
                 }
-                let ceiling = prev_depth.map_or(0, |prev| prev + 1);
+                let group_id = pane.info.group_id.clone();
+                let ceiling = prev_depth_by_group
+                    .get(&group_id)
+                    .map_or(0, |prev| prev + 1);
                 if entry.depth > ceiling {
                     return Err(
                         "pane layout is not a valid tree (a depth skips a level)".to_string()
                     );
                 }
-                prev_depth = Some(entry.depth);
+                prev_depth_by_group.insert(group_id, entry.depth);
             }
 
             model.pane_order = layout.iter().map(|entry| entry.pane_id.clone()).collect();
@@ -1468,14 +1434,31 @@ impl AppState {
         self.persist();
     }
 
-    pub fn insert_group(&self, group: GroupInfo) -> Result<(), String> {
+    pub fn insert_group_after(
+        &self,
+        group: GroupInfo,
+        after_group_id: Option<&str>,
+    ) -> Result<(), String> {
         {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
-            model.groups.insert(group.id.clone(), group);
+            let group_id = group.id.clone();
+            let is_new = !model.groups.contains_key(&group_id);
+            model.groups.insert(group_id.clone(), group);
+            if is_new {
+                model.group_order.retain(|id| id != &group_id);
+                if let Some(after_group_id) = after_group_id
+                    && let Some(index) =
+                        model.group_order.iter().position(|id| id == after_group_id)
+                {
+                    model.group_order.insert(index + 1, group_id);
+                } else {
+                    model.group_order.push(group_id);
+                }
+            }
         }
         self.persist();
         Ok(())
@@ -1504,6 +1487,9 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.group_order.iter().any(|id| id == &group.id) {
+                model.group_order.push(group.id.clone());
+            }
             model.groups.insert(group.id.clone(), group);
         }
         self.persist();
@@ -2681,6 +2667,34 @@ fn ordered_pane_ids(model: &Model) -> Vec<String> {
     ids
 }
 
+fn ordered_group_ids(model: &Model) -> Vec<String> {
+    let mut ids = Vec::with_capacity(model.groups.len());
+    let mut seen = HashSet::with_capacity(model.groups.len());
+
+    for group_id in &model.group_order {
+        if model.groups.contains_key(group_id) && seen.insert(group_id.clone()) {
+            ids.push(group_id.clone());
+        }
+    }
+
+    let mut missing_from_order = model
+        .groups
+        .keys()
+        .filter(|group_id| !seen.contains(*group_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_from_order.sort();
+    ids.extend(missing_from_order);
+    ids
+}
+
+fn ordered_groups(model: &Model) -> Vec<GroupInfo> {
+    ordered_group_ids(model)
+        .into_iter()
+        .filter_map(|group_id| model.groups.get(&group_id).cloned())
+        .collect()
+}
+
 fn ordered_panes(model: &Model) -> Vec<PaneInfo> {
     ordered_pane_ids(model)
         .into_iter()
@@ -2703,21 +2717,24 @@ fn normalize_pane_depths(model: &mut Model) {
     let id_set: HashSet<&String> = ids.iter().collect();
     model.pane_depth.retain(|id, _| id_set.contains(id));
 
-    let mut prev_depth: u16 = 0;
-    for (index, id) in ids.iter().enumerate() {
+    let mut prev_depth_by_group: HashMap<String, u16> = HashMap::new();
+    for id in ids.iter() {
+        let group_id = model
+            .panes
+            .get(id)
+            .map(|pane| pane.info.group_id.clone())
+            .unwrap_or_default();
         let raw = model.pane_depth.get(id).copied().unwrap_or(0);
-        let ceiling = if index == 0 {
-            0
-        } else {
-            (prev_depth + 1).min(MAX_PANE_DEPTH)
-        };
+        let ceiling = prev_depth_by_group
+            .get(&group_id)
+            .map_or(0, |prev| (prev + 1).min(MAX_PANE_DEPTH));
         let depth = raw.min(ceiling);
         if depth == 0 {
             model.pane_depth.remove(id);
         } else {
             model.pane_depth.insert(id.clone(), depth);
         }
-        prev_depth = depth;
+        prev_depth_by_group.insert(group_id, depth);
     }
 }
 
@@ -2828,6 +2845,7 @@ mod tests {
             id: "group-1".to_string(),
             name: "group-1".to_string(),
             dir: "/tmp/work".to_string(),
+            managed_dir: "/tmp/qmux-workspaces/group-1".to_string(),
             base_repo: Some("/tmp/repo".to_string()),
             base_ref: Some("HEAD".to_string()),
             parent_id: None,
@@ -2842,6 +2860,7 @@ mod tests {
             title: "Shell".to_string(),
             kind: PaneKind::Shell,
             agent_id: agent_id.map(ToString::to_string),
+            group_id: "group-1".to_string(),
             cwd: "/tmp/work/agent-1".to_string(),
             cols: 132,
             rows: 43,
