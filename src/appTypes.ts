@@ -25,6 +25,12 @@ export type CloseDialogState =
 
 export type ExitDialogState = {
   paneCount: number;
+  promptPaneCount: number;
+};
+
+export type ExitPreflightRequest = {
+  paneCount: number;
+  nonce: number;
 };
 
 export type PaneContextMenuState = {
