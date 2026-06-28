@@ -518,7 +518,9 @@ button:disabled {
   align-self: center;
   width: 7px;
   height: 7px;
+  box-sizing: border-box;
   border-radius: 50%;
+  border: 0;
   background: transparent;
 }
 
@@ -533,7 +535,8 @@ button:disabled {
 }
 
 .pane-tab-dot.status-idle {
-  background: #7f8884;
+  border: 1px solid #7f8884;
+  background: transparent;
 }
 
 .pane-tab-dot.status-attention {
