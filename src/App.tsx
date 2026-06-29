@@ -1547,6 +1547,22 @@ export default function App() {
   function focusLauncherInput() {
     requestAnimationFrame(() => launcherInputRef.current?.focus());
   }
+  function cycleLauncherAdapter() {
+    if (launcherAdapterOptions.length === 0) {
+      return;
+    }
+
+    const currentIndex = launcherAdapterOptions.findIndex(
+      (option) => option.value === launchAdapter.id,
+    );
+    const nextIndex =
+      currentIndex === -1 ? 0 : (currentIndex + 1) % launcherAdapterOptions.length;
+    const nextAdapterId = launcherAdapterOptions[nextIndex]?.value;
+    if (nextAdapterId && nextAdapterId !== launchAdapter.id) {
+      rememberLauncherAdapter(nextAdapterId);
+    }
+    focusLauncherInput();
+  }
   // Live voice dictation for the launcher prompt, mirroring the composer's mic.
   // Reads/writes go through the live textarea so each re-transcription pass
   // overwrites the previous one in place.
@@ -4480,11 +4496,16 @@ export default function App() {
         return;
       }
 
-      // Cmd-N jumps to Home, replacing the old Cmd-0 Home shortcut.
+      // Cmd-N jumps to Home. Once Home's inline launcher is already active,
+      // repeat presses cycle the selected agent adapter.
       if (commandOnly && key === "n") {
         event.preventDefault();
         event.stopPropagation();
-        focusHomeTab();
+        if (homeActive) {
+          cycleLauncherAdapter();
+        } else {
+          focusHomeTab();
+        }
         return;
       }
 
@@ -4518,12 +4539,17 @@ export default function App() {
       }
 
       // Cmd-; / Ctrl-; opens qmux's agent picker, even from terminal focus.
+      // Once the picker is open, repeat presses cycle the selected agent adapter.
       // Claimed in the capture phase so focus doesn't matter; ⌘K is left alone
       // for the terminal to handle (e.g. clear-screen).
       if (key === ";") {
         event.preventDefault();
         event.stopPropagation();
-        setLauncherOpen(true);
+        if (launcherOpen) {
+          cycleLauncherAdapter();
+        } else {
+          setLauncherOpen(true);
+        }
         return;
       }
 
@@ -4625,7 +4651,18 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [activePaneId, panes, sidebarPanes, activePane, lastActiveGroupId, groupById]);
+  }, [
+    activePaneId,
+    panes,
+    sidebarPanes,
+    activePane,
+    lastActiveGroupId,
+    groupById,
+    homeActive,
+    launcherOpen,
+    launcherAdapterOptions,
+    launchAdapter.id,
+  ]);
 
   useEffect(() => {
     if (!launcherVisible) {
