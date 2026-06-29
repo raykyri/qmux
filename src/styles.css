@@ -106,6 +106,7 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  overflow: hidden;
   /* Kill the elastic rubber-band overscroll of the whole window. */
   overscroll-behavior: none;
 }
@@ -170,7 +171,9 @@ button:disabled {
   display: grid;
   grid-template-columns: var(--sidebar-width, 268px) minmax(0, 1fr);
   height: 100%;
+  max-height: 100vh;
   min-height: 0;
+  overflow: hidden;
   border-top: 1px solid #2a2d2f;
   /* Paint the content opaque but leave the sidebar column transparent, so the
      window's vibrancy material shows through only behind the sidebar. The hard
@@ -193,8 +196,11 @@ button:disabled {
   position: relative;
   display: flex;
   min-width: 0;
+  min-height: 0;
+  max-height: 100%;
   flex-direction: column;
   gap: 14px;
+  overflow: hidden;
   /* Mostly-opaque tint over the macOS vibrancy material: just a hint of
      translucency so it reads as a native source list without the desktop
      bleeding through. Degrades to a plain dark panel if vibrancy is
@@ -256,7 +262,9 @@ button:disabled {
   flex: 1;
   flex-direction: column;
   gap: 2px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   /* Horizontal step applied per nesting level (sidebar tab indentation). */
   --pane-indent: 14px;
 }
@@ -2150,6 +2158,7 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .error-banner {
