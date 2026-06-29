@@ -477,6 +477,10 @@ button:disabled {
   margin-bottom: 2px;
 }
 
+.pane-group.has-panes.is-collapsed .pane-group-header {
+  margin-bottom: 0;
+}
+
 .pane-group-folder {
   flex: none;
   color: #7f8884;

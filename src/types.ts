@@ -88,6 +88,7 @@ export interface GroupInfo {
   baseRef?: string | null;
   parentId?: string | null;
   createdAt: number;
+  collapsed: boolean;
   agents: string[];
 }
 

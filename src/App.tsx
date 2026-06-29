@@ -191,6 +191,7 @@ import {
   restoreLastClosedPane,
   setLauncherAdapterPreference,
   setActiveTab,
+  setGroupCollapsed,
   setPaneLayout,
   setPaneSplits as persistPaneSplits,
   setAgentDraft as persistAgentDraft,
@@ -3874,6 +3875,30 @@ export default function App() {
     });
   }
 
+  async function toggleGroupCollapsed(group: GroupInfo) {
+    setGroupMenu(null);
+    const collapsed = !group.collapsed;
+    setError(null);
+    setGroups((current) =>
+      current.map((candidate) =>
+        candidate.id === group.id ? { ...candidate, collapsed } : candidate,
+      ),
+    );
+    try {
+      const updated = await setGroupCollapsed(group.id, collapsed);
+      setGroups((current) =>
+        current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+      );
+    } catch (err) {
+      setGroups((current) =>
+        current.map((candidate) =>
+          candidate.id === group.id ? { ...candidate, collapsed: group.collapsed } : candidate,
+        ),
+      );
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function closeDialogForPane(
     paneToClose: PaneInfo,
     options?: { confirmAlways?: boolean; checkWorktreeStatus?: boolean },
@@ -5854,13 +5879,14 @@ export default function App() {
             const groupPanes = panes.filter((pane) => pane.groupId === group.id);
             const hasGroupPanes = groupPanes.length > 0;
             const isActiveGroup = activePane?.groupId === group.id;
+            const isCollapsedGroup = group.collapsed;
             const groupDisplayName = displayGroupName(group);
             return (
               <section
                 key={group.id}
                 className={`pane-group${hasGroupPanes ? " has-panes" : ""}${
                   isActiveGroup ? " is-active-group" : ""
-                }`}
+                }${isCollapsedGroup ? " is-collapsed" : ""}`}
                 data-group-id={group.id}
                 onContextMenu={(event) => openGroupMenu(event, group)}
               >
@@ -5908,7 +5934,7 @@ export default function App() {
                     </button>
                   </span>
                 </div>
-                {!hasGroupPanes ? null : (
+                {!hasGroupPanes || isCollapsedGroup ? null : (
                   <div className="pane-list-body">
                     {groupPanes.map((pane, index) =>
                       renderPaneTabRow(pane, index, groupPanes, group.id),
@@ -6034,6 +6060,20 @@ export default function App() {
               <span>New agent</span>
             </button>
             <div className="context-menu-divider" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                void toggleGroupCollapsed(groupMenuGroup);
+              }}
+            >
+              {groupMenuGroup.collapsed ? (
+                <PanelBottomOpen size={13} aria-hidden="true" />
+              ) : (
+                <PanelBottomClose size={13} aria-hidden="true" />
+              )}
+              <span>{groupMenuGroup.collapsed ? "Expand group" : "Collapse group"}</span>
+            </button>
             <button
               type="button"
               role="menuitem"

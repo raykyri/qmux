@@ -1533,6 +1533,7 @@ mod tests {
                     base_ref: None,
                     parent_id: None,
                     created_at: 1,
+                    collapsed: false,
                     agents: vec!["agent-1".to_string()],
                 },
                 None,

@@ -51,7 +51,7 @@ use turn_queue::{
 use workspace::{
     AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
     agent_worktree_status, clear_agent_working_status, create_group, remove_agent_worktree,
-    rename_group, set_group_dir,
+    rename_group, set_group_collapsed, set_group_dir,
 };
 
 /// Menu id for the Quit item we substitute for the native predefined one (see
@@ -371,6 +371,15 @@ fn group_rename(
     name: Option<String>,
 ) -> Result<GroupInfo, String> {
     rename_group(&state, &group_id, name)
+}
+
+#[tauri::command]
+fn group_set_collapsed(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+    collapsed: bool,
+) -> Result<GroupInfo, String> {
+    set_group_collapsed(&state, &group_id, collapsed)
 }
 
 #[tauri::command(async)]
@@ -859,6 +868,7 @@ fn main() {
             group_create,
             group_remove,
             group_rename,
+            group_set_collapsed,
             group_create_pick,
             group_pick_dir,
             spawn_shell,

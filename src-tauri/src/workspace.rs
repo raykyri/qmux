@@ -20,6 +20,8 @@ pub struct GroupInfo {
     pub base_ref: Option<String>,
     pub parent_id: Option<String>,
     pub created_at: u128,
+    #[serde(default)]
+    pub collapsed: bool,
     pub agents: Vec<String>,
 }
 
@@ -112,6 +114,7 @@ pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<Gro
         base_ref: request.base_ref,
         parent_id: None,
         created_at: now_millis(),
+        collapsed: false,
         agents: Vec::new(),
     };
 
@@ -157,6 +160,26 @@ pub fn rename_group(
     group.name_override = name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
+    write_group_manifest(&group)?;
+    state.update_group(group.clone())?;
+    state.emit(crate::events::QmuxEvent::new(
+        "group.updated",
+        None,
+        None,
+        serde_json::json!({ "group": group.clone() }),
+    ));
+    Ok(group)
+}
+
+pub fn set_group_collapsed(
+    state: &AppState,
+    group_id: &str,
+    collapsed: bool,
+) -> Result<GroupInfo, String> {
+    let mut group = state
+        .group(group_id)?
+        .ok_or_else(|| format!("group {group_id} was not found"))?;
+    group.collapsed = collapsed;
     write_group_manifest(&group)?;
     state.update_group(group.clone())?;
     state.emit(crate::events::QmuxEvent::new(
@@ -846,6 +869,36 @@ mod tests {
 
         assert_eq!(moved.name, "second");
         assert_eq!(moved.name_override.as_deref(), Some("Research"));
+        std::fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn set_group_collapsed_persists_to_manifest() {
+        let workspace = temp_workspace("collapse");
+        let managed_root = workspace.join("managed");
+        let source_dir = workspace.join("dirs/project");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&managed_root).unwrap();
+        let state = test_state_with_workspace(managed_root);
+        let group = create_group(
+            &state,
+            CreateGroupRequest {
+                name: None,
+                dir: Some(source_dir.to_string_lossy().to_string()),
+                after_group_id: None,
+                base_repo: None,
+                base_ref: None,
+            },
+        )
+        .unwrap();
+
+        let collapsed = set_group_collapsed(&state, &group.id, true).unwrap();
+
+        assert!(collapsed.collapsed);
+        let manifest_path = PathBuf::from(&collapsed.managed_dir).join(".qmux/group.json");
+        let manifest: GroupInfo =
+            serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+        assert!(manifest.collapsed);
         std::fs::remove_dir_all(workspace).ok();
     }
 
