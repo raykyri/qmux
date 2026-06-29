@@ -111,6 +111,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-Shift-H`: focus Home.
 - `Cmd-Shift-E` / `Ctrl-Shift-E`: expand or restore the active transcript pane,
   or toggle the browser overlay on shell-only panes.
+- `Cmd-D` / `Cmd-Shift-D`: split the active terminal downward.
 - `Cmd-W`: close the active pane.
 - `Ctrl-W`: close the active pane unless focus is in a terminal or text field.
 - `Cmd-,` / `Ctrl-,`: open settings.

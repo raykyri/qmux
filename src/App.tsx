@@ -4539,9 +4539,9 @@ export default function App() {
         return;
       }
 
-      // Cmd-D splits the active terminal downward, matching the tab context-menu
-      // action and common terminal split behavior.
-      if (commandOnly && key === "d") {
+      // Cmd-D / Cmd-Shift-D splits the active terminal downward, matching the tab
+      // context-menu action and common terminal split behavior.
+      if (event.metaKey && !event.ctrlKey && !event.altKey && key === "d") {
         event.preventDefault();
         event.stopPropagation();
         const pane = activePaneRef.current;
