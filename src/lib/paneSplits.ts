@@ -290,6 +290,27 @@ export function paneSplitForPane(splits: PaneSplitInfo[], paneId: string | null 
   return splits.find((split) => split.paneIds.includes(paneId)) ?? null;
 }
 
+export function paneSnapshotForPersistedPaneSplits(
+  persistedSplits: PaneSplitInfo[],
+  currentPanes: PaneInfo[],
+  requestedPanes: PaneInfo[],
+) {
+  const persistedPaneIds = new Set(persistedSplits.flatMap((split) => split.paneIds));
+  if (persistedPaneIds.size === 0) {
+    return currentPanes;
+  }
+
+  const currentPaneIds = new Set(currentPanes.map((pane) => pane.id));
+  if ([...persistedPaneIds].every((paneId) => currentPaneIds.has(paneId))) {
+    return currentPanes;
+  }
+
+  const requestedPaneIds = new Set(requestedPanes.map((pane) => pane.id));
+  return [...persistedPaneIds].every((paneId) => requestedPaneIds.has(paneId))
+    ? requestedPanes
+    : currentPanes;
+}
+
 export function adjacentPaneBelow(panes: PaneInfo[], pane: PaneInfo | null | undefined) {
   if (!pane) {
     return null;

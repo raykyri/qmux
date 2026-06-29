@@ -322,9 +322,37 @@ button:disabled {
   box-shadow: none;
 }
 
-.pane-tab-row.is-split-visible:not(.is-selected) .pane-tab {
-  background: rgba(255, 255, 255, 0.045);
-  color: rgba(244, 244, 239, 0.86);
+/* The panes of the active split read as a single connected card: every member
+   shares the selected fill and the run is bracket-rounded so only the group's
+   outer corners are round (inner edges stay square). The focused pane is marked
+   by an inset amber rail instead of a separate fill, so the two stay unified
+   rather than reading as one bright tab plus faint ones. */
+.pane-tab-row.is-split-active .pane-tab {
+  background: var(--control-bg-hover);
+  border-color: transparent;
+  border-radius: 0;
+  color: #f1f3ef;
+}
+
+.pane-tab-row.is-split-active.is-selected .pane-tab {
+  color: #ffffff;
+  box-shadow: inset 3px 0 0 var(--pane-tab-active-dot-color);
+}
+
+.pane-tab-row.is-split-active-first .pane-tab {
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+}
+
+.pane-tab-row.is-split-active-last .pane-tab {
+  border-bottom-left-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.pane-tab-row.is-split-active .pane-tab-gitmeta,
+.pane-tab-row.is-split-active .pane-tab-path,
+.pane-tab-row.is-split-active .pane-tab small {
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .pane-tab-shortcut-hint {
@@ -697,7 +725,7 @@ button:disabled {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-  line-height: 1.4;
+  line-height: 1.35;
   overflow-wrap: anywhere;
   white-space: normal;
 }
@@ -2191,7 +2219,7 @@ button:disabled {
 
 .terminal-split-drop-placeholder {
   position: absolute;
-  left: 10px;
+  left: 0;
   right: 0;
   z-index: 5;
   border: 1px solid rgba(215, 168, 79, 0.74);
@@ -2227,7 +2255,7 @@ button:disabled {
 .terminal-split-resizer::before {
   content: "";
   position: absolute;
-  left: 10px;
+  left: 0;
   right: 0;
   top: 4px;
   height: 1px;
@@ -2362,6 +2390,18 @@ button:disabled {
   overflow: hidden;
 }
 
+.turn-pane-stack.has-active-split-cell::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 7;
+  width: 2px;
+  background: rgba(215, 168, 79, 0.45);
+  pointer-events: none;
+}
+
 .turn-pane-split-cell {
   position: absolute;
   right: 0;
@@ -2370,7 +2410,10 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   background: #171b1d;
-  box-shadow: inset 0 1px 0 #2a2d2f;
+}
+
+.turn-pane-split-cell + .turn-pane-split-cell {
+  box-shadow: inset 0 1px 0 rgba(244, 244, 239, 0.12);
 }
 
 .turn-pane-split-cell.is-active {
@@ -2379,7 +2422,6 @@ button:disabled {
 
 .turn-pane-split-cell.is-active .turn-sidebar {
   background: #181d1f;
-  box-shadow: inset 2px 0 0 rgba(215, 168, 79, 0.45);
 }
 
 .turn-pane-stack .turn-pane-resizer {

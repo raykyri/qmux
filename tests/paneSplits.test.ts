@@ -9,6 +9,7 @@ import {
   detachPaneFromSplitMemberships,
   joinPaneSplit,
   normalizePaneSplitsForPanes,
+  paneSnapshotForPersistedPaneSplits,
 } from "../src/lib/paneSplits";
 import type { PaneInfo, PaneSplitInfo } from "../src/types";
 
@@ -246,6 +247,36 @@ test("joinPaneSplit records inserted pane intent", () => {
   assert.deepEqual(joined[0].intent, {
     "pane-2": insertedRelativeIntent("pane-1", "below", "command", 456),
   });
+});
+
+test("paneSnapshotForPersistedPaneSplits keeps a split when current panes lag a new pane", () => {
+  const currentPanes = panes(["pane-1"]);
+  const requestedPanes = panes(["pane-1", "pane-2"]);
+  const persistedSplits = [split(["pane-1", "pane-2"])];
+  const paneSnapshot = paneSnapshotForPersistedPaneSplits(
+    persistedSplits,
+    currentPanes,
+    requestedPanes,
+  );
+
+  assert.strictEqual(paneSnapshot, requestedPanes);
+  assert.deepEqual(
+    normalizePaneSplitsForPanes(persistedSplits, paneSnapshot).map(
+      (candidate) => candidate.paneIds,
+    ),
+    [["pane-1", "pane-2"]],
+  );
+});
+
+test("paneSnapshotForPersistedPaneSplits uses current panes once they include the split", () => {
+  const currentPanes = panes(["pane-1", "pane-2", "pane-3"]);
+  const requestedPanes = panes(["pane-1", "pane-2"]);
+  const persistedSplits = [split(["pane-1", "pane-2"])];
+
+  assert.strictEqual(
+    paneSnapshotForPersistedPaneSplits(persistedSplits, currentPanes, requestedPanes),
+    currentPanes,
+  );
 });
 
 test("joinPaneSplit preserves existing split intent when inserting another pane", () => {

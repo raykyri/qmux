@@ -113,6 +113,7 @@ import {
   normalizePaneSplitsForPanes,
   paneSplitForPane,
   paneSplitsEqual,
+  paneSnapshotForPersistedPaneSplits,
   resizeSplitFractions,
   splitFractions,
 } from "./lib/paneSplits";
@@ -2659,6 +2660,9 @@ export default function App() {
     ? contextMenuGroupPanes.findIndex((pane) => pane.id === paneContextMenu.paneId)
     : -1;
   const contextMenuPaneSplit = paneSplitForPane(paneSplits, contextMenuPane?.id);
+  const contextMenuPaneHasSplit = Boolean(
+    contextMenuPaneSplit && contextMenuPaneSplit.paneIds.length >= 2,
+  );
   const contextMenuAdjacentBelow = adjacentPaneBelow(panes, contextMenuPane);
   const contextMenuAdjacentBelowSplit = paneSplitForPane(
     paneSplits,
@@ -2829,7 +2833,12 @@ export default function App() {
     setPaneSplitsState(normalized);
     void persistPaneSplits(normalized)
       .then((persisted) => {
-        setPaneSplitsState(normalizePaneSplitsForPanes(persisted, panesRef.current));
+        const paneBasis = paneSnapshotForPersistedPaneSplits(
+          persisted,
+          panesRef.current,
+          paneSnapshot,
+        );
+        setPaneSplitsState(normalizePaneSplitsForPanes(persisted, paneBasis));
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
@@ -5082,6 +5091,15 @@ export default function App() {
     const paneStatus = paneTabStatusLabel(pane, paneAgent);
     const paneSplit = paneSplitForPane(paneSplits, pane.id);
     const paneVisibleInSplit = visibleTerminalPaneIdSet.has(pane.id) && pane.id !== activePane?.id;
+    // The panes of the active split render as one connected card in the sidebar.
+    // Flag the run (and its top/bottom edges) so only the split you're viewing is
+    // grouped — an inactive split keeps plain tabs. Members are contiguous within
+    // their group, so the neighbours bracket the run.
+    const paneInActiveSplit = Boolean(activePaneSplit) && visibleTerminalPaneIdSet.has(pane.id);
+    const isActiveSplitFirst =
+      paneInActiveSplit && !visibleTerminalPaneIdSet.has(groupPanes[index - 1]?.id ?? "");
+    const isActiveSplitLast =
+      paneInActiveSplit && !visibleTerminalPaneIdSet.has(groupPanes[index + 1]?.id ?? "");
     const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
     const paneBranch = paneAgent?.branch ?? null;
     const paneWorktreeName =
@@ -5111,6 +5129,9 @@ export default function App() {
       pane.id === activePane?.id ? "is-selected" : "",
       paneSplit ? "is-split-member" : "",
       paneVisibleInSplit ? "is-split-visible" : "",
+      paneInActiveSplit ? "is-split-active" : "",
+      isActiveSplitFirst ? "is-split-active-first" : "",
+      isActiveSplitLast ? "is-split-active-last" : "",
       paneAgent?.id === waitTargetHoverAgentId ? "is-wait-target-preview" : "",
       canClearWorkingStatus ? "has-clearable-status" : "",
       isDraggingRow ? "is-dragging" : "",
@@ -5681,7 +5702,7 @@ export default function App() {
               <div
                 className={`pane-context-status-row status-${agentStatusTone(contextMenuAgent.status)}`}
               >
-                <dt>Agent status</dt>
+                <dt>Agent</dt>
                 <dd>
                   {agentStatusLabel(contextMenuAgent.status) ?? "Idle"}
                 </dd>
@@ -5726,7 +5747,9 @@ export default function App() {
               }}
             >
               <PanelBottomClose size={13} aria-hidden="true" />
-              <span>Split terminal</span>
+              <span>
+                {contextMenuPaneHasSplit ? "Add split to current terminal" : "Split terminal"}
+              </span>
               <kbd className="context-menu-shortcut">⌘D</kbd>
             </button>
             {canJoinContextMenuBelow && contextMenuAdjacentBelow ? (
@@ -5747,14 +5770,13 @@ export default function App() {
               <button
                 type="button"
                 role="menuitem"
-                title="Detach this tab from its split, keeping the other tabs grouped"
                 onClick={() => {
                   setPaneContextMenu(null);
                   removePaneFromSplit(contextMenuPane);
                 }}
               >
                 <PanelBottomOpen size={13} aria-hidden="true" />
-                <span>Remove from split</span>
+                <span>Detach from split</span>
               </button>
             ) : null}
             <div className="context-menu-divider" role="separator" />
@@ -6757,7 +6779,11 @@ export default function App() {
       </section>
 
       {hasTurnSidebar && splitRightPaneMode ? (
-        <aside className="turn-pane turn-pane-stack">
+        <aside
+          className={`turn-pane turn-pane-stack${
+            activeTurnPaneSurface?.hasTurnSidebar ? " has-active-split-cell" : ""
+          }`}
+        >
           {renderTurnPaneResizer()}
           {visibleTurnPaneSurfaces.map((surface) => (
             <section
