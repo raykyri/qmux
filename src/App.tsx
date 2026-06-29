@@ -922,6 +922,7 @@ export default function App() {
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
+  const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
   const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
   const appToastTimerRef = useRef<number | null>(null);
@@ -1089,6 +1090,7 @@ export default function App() {
     useState<TitleGenerationTestState | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
   const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
+  paneSplitsRef.current = paneSplits;
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
   // Per-pane browser overlay state, so each tab keeps its own page and open/closed.
@@ -2318,6 +2320,46 @@ export default function App() {
     return null;
   }
 
+  function insertionSiblingForNewTab(targetGroupId: string | null): string | null {
+    const currentPane = activePaneRef.current;
+    if (!currentPane) {
+      return null;
+    }
+    const currentPanes = panesRef.current;
+    const currentPaneIds = new Set(currentPanes.map((pane) => pane.id));
+    if (!currentPaneIds.has(currentPane.id)) {
+      return null;
+    }
+    if (targetGroupId && currentPane.groupId !== targetGroupId) {
+      return null;
+    }
+
+    const split = paneSplitForPane(paneSplitsRef.current, currentPane.id);
+    if (!split) {
+      return currentPane.id;
+    }
+
+    for (let index = split.paneIds.length - 1; index >= 0; index -= 1) {
+      const splitPaneId = split.paneIds[index];
+      const splitPane = currentPanes.find((pane) => pane.id === splitPaneId);
+      if (splitPane && splitPane.groupId === currentPane.groupId) {
+        return splitPane.id;
+      }
+    }
+    return currentPane.id;
+  }
+
+  async function panesWithNewTabInLaunchPosition(
+    pane: PaneInfo,
+    targetGroupId: string | null,
+  ): Promise<PaneInfo[]> {
+    const siblingPaneId = insertionSiblingForNewTab(targetGroupId);
+    if (!siblingPaneId || siblingPaneId === pane.id) {
+      return [...panesRef.current.filter((existing) => existing.id !== pane.id), pane];
+    }
+    return placePaneAfter(pane.id, siblingPaneId);
+  }
+
   async function refreshGroups() {
     setGroups(await listGroups());
   }
@@ -2363,7 +2405,8 @@ export default function App() {
       const sourcePaneId =
         activePane?.kind === "shell" && activePane.groupId === groupId ? activePane.id : null;
       const pane = await spawnShell(estimateInitialPaneSize(false), sourcePaneId, groupId);
-      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
+      const orderedPanes = await panesWithNewTabInLaunchPosition(pane, groupId);
+      setPanesPreservingRecoveredDismissals(orderedPanes);
       setActivePaneId(pane.id);
       setLastActiveGroupId(pane.groupId);
       await refreshGroups();
@@ -4105,7 +4148,8 @@ export default function App() {
         useWorktree: createInWorktree,
         options: launcherOptions,
       });
-      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
+      const orderedPanes = await panesWithNewTabInLaunchPosition(pane, targetGroupId);
+      setPanesPreservingRecoveredDismissals(orderedPanes);
       setActivePaneId(pane.id);
       setLastActiveGroupId(pane.groupId);
       expandNewAgentTranscriptByDefault(pane);
