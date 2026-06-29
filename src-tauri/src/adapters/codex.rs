@@ -27,7 +27,6 @@ use std::thread;
 use std::time::Duration;
 
 const CODEX_QMUX_PROFILE: &str = "qmux-codex";
-const CODEX_QMUX_TERMINAL_TITLE_CONFIG: &str = r#"tui.terminal_title=["thread","task-progress"]"#;
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -455,7 +454,14 @@ impl CodexAdapter {
             args_contain_prompt(&request.args),
         )?;
 
-        let args = build_codex_shell_args(&cwd, Some(&state.config().workspace_root), request.args);
+        let options = CodexLaunchOptions::default();
+        let args = build_codex_args(
+            &cwd,
+            Some(&state.config().workspace_root),
+            None,
+            &options,
+            request.args,
+        );
         let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
@@ -734,19 +740,6 @@ fn build_codex_args(
     args
 }
 
-fn build_codex_shell_args(
-    cwd: &Path,
-    additional_workspace_root: Option<&Path>,
-    tail_args: Vec<String>,
-) -> Vec<String> {
-    let options = CodexLaunchOptions::default();
-    let mut args = build_codex_args(cwd, additional_workspace_root, None, &options, Vec::new());
-    args.push("--config".to_string());
-    args.push(CODEX_QMUX_TERMINAL_TITLE_CONFIG.to_string());
-    args.extend(tail_args);
-    args
-}
-
 fn build_codex_resume_args(
     cwd: &Path,
     additional_workspace_root: Option<&Path>,
@@ -968,8 +961,6 @@ fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path, existing_profile: Optio
         "# This profile enables qMux Codex lifecycle hooks only for qMux-launched panes.\n",
     );
     raw.push_str(&format!("# qMux executable: {}\n\n", qmux_cli.display()));
-    raw.push_str("[tui]\n");
-    raw.push_str("terminal_title = [\"thread\", \"task-progress\"]\n\n");
     raw.push_str("[features]\n");
     raw.push_str("hooks = true\n\n");
 
@@ -1580,41 +1571,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_args_add_qmux_terminal_title_config_before_user_args() {
-        let args = build_codex_shell_args(
-            Path::new("/tmp/qmux"),
-            Some(Path::new("/tmp/qmux/.qmux/workspaces")),
-            vec![
-                "--config".to_string(),
-                "tui.terminal_title=[\"project\"]".to_string(),
-                "--".to_string(),
-                "start here".to_string(),
-            ],
-        );
-
-        assert_eq!(
-            args,
-            vec![
-                "--cd",
-                "/tmp/qmux",
-                "--add-dir",
-                "/tmp/qmux/.qmux/workspaces",
-                "--profile",
-                "qmux-codex",
-                "--sandbox",
-                "workspace-write",
-                "--search",
-                "--config",
-                "tui.terminal_title=[\"thread\",\"task-progress\"]",
-                "--config",
-                "tui.terminal_title=[\"project\"]",
-                "--",
-                "start here"
-            ]
-        );
-    }
-
-    #[test]
     fn prompt_tail_args_trim_and_delimit_initial_prompt() {
         assert_eq!(prompt_tail_args("   "), Vec::<String>::new());
         assert_eq!(
@@ -1827,7 +1783,6 @@ mod tests {
         let profile = fs::read_to_string(profile_path).unwrap();
         let shim = fs::read_to_string(shim_path).unwrap();
 
-        assert!(profile.contains("[tui]\nterminal_title = [\"thread\", \"task-progress\"]"));
         assert!(profile.contains("[features]"));
         assert!(profile.contains("hooks = true"));
         assert!(profile.contains("[[hooks.SessionStart]]"));
