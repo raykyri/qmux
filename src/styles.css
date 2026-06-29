@@ -63,6 +63,9 @@
   /* Button/resizer hover edge: a touch brighter than the base border and lightly
      tinted toward the accent, without the loud full-accent outline. */
   --control-border-hover-accent: #4a5d56;
+  --split-border-hover: rgba(215, 168, 79, 0.65);
+  --split-border-active: rgba(255, 220, 143, 0.78);
+  --split-active-indicator: rgba(215, 168, 79, 0.32);
   --control-fg: #f1f0e8;
   --control-fg-muted: #b9c0bc;
   --focus-ring: #6cae9d;
@@ -244,7 +247,7 @@ button:disabled {
 
 .sidebar-resizer:hover::before,
 .sidebar-resizer:focus-visible::before {
-  background: var(--control-border-hover-accent);
+  background: var(--split-border-hover);
 }
 
 .pane-list {
@@ -279,6 +282,8 @@ button:disabled {
 .pane-tab-row {
   position: relative;
   min-width: 0;
+  --pane-tab-left-rail-width: 3px;
+  --pane-tab-left-offset: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
 }
 
 .pane-tab {
@@ -290,11 +295,11 @@ button:disabled {
   column-gap: 6px;
   width: 100%;
   min-height: 30px;
-  /* Nested tabs indent via the left padding, so the status dot/icon shifts right
-     together with the title (the row, selection fill, and close × keep the full
-     width). The close/clear-status overlays add the same offset to stay over the dot. */
-  padding: 5px 9px 5px calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  /* Nested tabs indent via the shared content offset. The left rail is subtracted
+     from padding so selected and unselected tabs keep their contents aligned. */
+  padding: 5px 9px 5px calc(var(--pane-tab-left-offset) - var(--pane-tab-left-rail-width));
   border: 1px solid transparent;
+  border-left: var(--pane-tab-left-rail-width) solid transparent;
   border-radius: 4px;
   background: transparent;
   color: #b9c0bc;
@@ -302,6 +307,10 @@ button:disabled {
   text-align: left;
   cursor: pointer;
   user-select: none;
+}
+
+.pane-tab:focus-visible {
+  border-left-width: var(--pane-tab-left-rail-width);
 }
 
 .pane-tab:hover,
@@ -317,6 +326,7 @@ button:disabled {
   /* A moderate selected state instead of the bright system accent fill: a slightly
      lighter shade of the button gray with a soft, slightly lighter border. */
   border-color: var(--control-border);
+  border-left-color: var(--split-border-active);
   background: var(--control-bg-hover);
   color: #ffffff;
   box-shadow: none;
@@ -324,9 +334,9 @@ button:disabled {
 
 /* The panes of the active split read as a single connected card: every member
    shares the selected fill and the run is bracket-rounded so only the group's
-   outer corners are round (inner edges stay square). The focused pane is marked
-   by an inset amber rail instead of a separate fill, so the two stay unified
-   rather than reading as one bright tab plus faint ones. */
+   outer corners are round (inner edges stay square). The focused pane keeps the
+   same accent border as a normal selected tab, separate from the amber running
+   status dot. */
 .pane-tab-row.is-split-active .pane-tab {
   background: var(--control-bg-hover);
   border-color: transparent;
@@ -335,8 +345,8 @@ button:disabled {
 }
 
 .pane-tab-row.is-split-active.is-selected .pane-tab {
+  border-left-color: var(--split-border-active);
   color: #ffffff;
-  box-shadow: inset 3px 0 0 var(--pane-tab-active-dot-color);
 }
 
 .pane-tab-row.is-split-active-first .pane-tab {
@@ -557,13 +567,13 @@ button:disabled {
   pointer-events: none;
 }
 
-/* Anchored to the target tab's own content (9px base + its depth), so the gutter
+/* Anchored to the target tab's own content, so the gutter
    marks the one extra step the child indents and the solid outline sits where the
    child's content will start — correct even when the target is already nested. */
 .pane-tab-nest-indicator::before {
   content: "";
   position: absolute;
-  left: calc(9px + (var(--pane-depth, 0) + 1) * var(--pane-indent, 14px));
+  left: calc(var(--pane-tab-left-offset) + var(--pane-indent, 14px));
   right: 0;
   top: 0;
   bottom: 0;
@@ -573,7 +583,7 @@ button:disabled {
 
 .pane-tab-nest-gutter {
   position: absolute;
-  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  left: var(--pane-tab-left-offset);
   top: 0;
   bottom: 0;
   width: var(--pane-indent, 14px);
@@ -649,7 +659,7 @@ button:disabled {
 .pane-tab-clear-status {
   position: absolute;
   top: 50%;
-  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  left: var(--pane-tab-left-offset);
   z-index: 2;
   display: flex;
   width: 10px;
@@ -1002,7 +1012,7 @@ button:disabled {
 .pane-tab-close {
   position: absolute;
   top: 50%;
-  left: calc(9px + var(--pane-depth, 0) * var(--pane-indent, 14px));
+  left: var(--pane-tab-left-offset);
   z-index: 1;
   display: flex;
   width: 7px;
@@ -2241,18 +2251,23 @@ button:disabled {
   background: rgba(255, 220, 143, 0.78);
 }
 
-.terminal-split-resizer {
+.terminal-split-resizer,
+.turn-pane-split-divider {
   position: absolute;
   left: 0;
   right: 0;
   height: 9px;
   transform: translateY(-4px);
   z-index: 4;
+}
+
+.terminal-split-resizer {
   cursor: row-resize;
   touch-action: none;
 }
 
-.terminal-split-resizer::before {
+.terminal-split-resizer::before,
+.turn-pane-split-divider::before {
   content: "";
   position: absolute;
   left: 0;
@@ -2264,7 +2279,7 @@ button:disabled {
 
 .terminal-split-resizer:hover::before,
 .terminal-split-resizer:focus-visible::before {
-  background: rgba(215, 168, 79, 0.65);
+  background: var(--split-border-hover);
 }
 
 .terminal-split-resizer:focus-visible {
@@ -2390,15 +2405,20 @@ button:disabled {
   overflow: hidden;
 }
 
-.turn-pane-stack.has-active-split-cell::after {
+.turn-pane-split-divider {
+  z-index: 7;
+  pointer-events: none;
+}
+
+.turn-pane-split-cell.is-active::after {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
-  z-index: 7;
+  left: -1px;
+  z-index: 9;
   width: 2px;
-  background: rgba(215, 168, 79, 0.45);
+  background: var(--split-active-indicator);
   pointer-events: none;
 }
 
@@ -2410,10 +2430,6 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   background: #171b1d;
-}
-
-.turn-pane-split-cell + .turn-pane-split-cell {
-  box-shadow: inset 0 1px 0 rgba(244, 244, 239, 0.12);
 }
 
 .turn-pane-split-cell.is-active {
@@ -2464,7 +2480,7 @@ button:disabled {
 
 .turn-pane-resizer:hover::before,
 .turn-pane-resizer:focus-visible::before {
-  background: var(--control-border-hover-accent);
+  background: var(--split-border-hover);
 }
 
 .turn-sidebar {

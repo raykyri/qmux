@@ -1596,14 +1596,6 @@ export default function App() {
   // ever mounted at a time (the inline one yields to the modal), so they can share
   // the launcher refs/state and the focus/auto-grow effects below.
   const launcherVisible = launcherOpen || homeActive;
-  const appModalOpen =
-    launcherOpen ||
-    askLauncher !== null ||
-    settingsOpen ||
-    closeDialog !== null ||
-    exitDialog !== null ||
-    renamePaneId !== null ||
-    renameGroupId !== null;
 
   // Called on each keystroke in an agent's composer or terminal. Sets a backend
   // "typing" hold (so a finishing turn won't auto-drain into what the user is typing)
@@ -6636,7 +6628,6 @@ export default function App() {
                   <button
                     type="button"
                     className="danger"
-                    autoFocus
                     disabled={resolvingClose !== null}
                     onClick={() => void resolveCloseDialog("delete")}
                   >
@@ -6644,6 +6635,7 @@ export default function App() {
                   </button>
                   <button
                     type="button"
+                    autoFocus
                     disabled={resolvingClose !== null}
                     onClick={() => void resolveCloseDialog("keep")}
                   >
@@ -6834,7 +6826,7 @@ export default function App() {
               copyOnSelect={settings.copyOnSelect}
               selectionClearOnCopy={settings.selectionClearOnCopy}
               pasteProtection={pasteProtection}
-              inputBlocked={appModalOpen}
+              inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
               onUserInput={noteUserInput}
               onOpenLink={openPaneLink}
@@ -6901,6 +6893,14 @@ export default function App() {
               {renderTurnPaneSurface(surface, false)}
               {renderFloatingTranscriptExpandButton(surface)}
             </section>
+          ))}
+          {terminalSplitDividerOffsets.map((offset, index) => (
+            <div
+              key={`turn-${activePaneSplit?.id ?? "split"}-${index}`}
+              className="turn-pane-split-divider"
+              style={{ top: `${offset * 100}%` }}
+              aria-hidden="true"
+            />
           ))}
         </aside>
       ) : hasTurnSidebar && activeTurnPaneSurface ? (

@@ -674,7 +674,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     ref,
     () => ({
       focus() {
-        if (!activeRef.current || !visibleRef.current || inputBlockedRef.current) {
+        if (!activeRef.current || !visibleRef.current) {
           return;
         }
         terminalRef.current?.focus();
@@ -929,7 +929,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       }
 
       terminal.open(mountEl);
-      if (activeRef.current && visibleRef.current && !inputBlockedRef.current) {
+      if (activeRef.current && visibleRef.current) {
         terminal.focus();
       }
 
@@ -1332,7 +1332,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     }
 
     stabilizeTerminalRef.current?.();
-    if (!active || inputBlocked) {
+    if (!active) {
       return;
     }
 
@@ -1345,7 +1345,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       window.clearTimeout(settle);
       captureTerminalScroll();
     };
-  }, [active, visible, inputBlocked, pane.id, captureTerminalScroll, restoreTerminalViewport]);
+  }, [active, visible, pane.id, captureTerminalScroll, restoreTerminalViewport]);
 
   // Apply live terminal settings to an already-open terminal, then re-fit when
   // cell metrics change so rows/cols and the PTY size track the new grid.
