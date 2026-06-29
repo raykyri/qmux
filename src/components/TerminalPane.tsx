@@ -330,8 +330,20 @@ const RESTORE_SCROLL_CATCHUP_DELAYS_MS = [80, 250];
 
 interface TerminalScrollSnapshot {
   viewportY: number;
-  baseY: number;
+  bottomOffset: number;
+  cols: number;
   followingBottom: boolean;
+}
+
+function snapshotTerminalScroll(terminal: Terminal): TerminalScrollSnapshot {
+  const buffer = terminal.buffer.active;
+  const bottomOffset = Math.max(0, buffer.baseY - buffer.viewportY);
+  return {
+    viewportY: buffer.viewportY,
+    bottomOffset,
+    cols: terminal.cols,
+    followingBottom: bottomOffset === 0,
+  };
 }
 
 // Colors for search highlights, tuned to read against the terminal background.
@@ -501,7 +513,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const stabilizeTerminalRef = useRef<(() => void) | null>(null);
   const scrollSnapshotRef = useRef<TerminalScrollSnapshot>({
     viewportY: 0,
-    baseY: 0,
+    bottomOffset: 0,
+    cols: pane.cols,
     followingBottom: true,
   });
 
@@ -559,12 +572,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     if (!terminal) {
       return;
     }
-    const buffer = terminal.buffer.active;
-    scrollSnapshotRef.current = {
-      viewportY: buffer.viewportY,
-      baseY: buffer.baseY,
-      followingBottom: buffer.viewportY >= buffer.baseY,
-    };
+    scrollSnapshotRef.current = snapshotTerminalScroll(terminal);
   }, []);
 
   const restoreTerminalViewport = useCallback(
@@ -578,10 +586,12 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       if (restoreScrollToBottomPendingRef.current || snapshot.followingBottom) {
         terminal.scrollToBottom();
       } else {
-        const targetLine = Math.max(
-          0,
-          Math.min(snapshot.viewportY, terminal.buffer.active.baseY),
-        );
+        const currentBaseY = terminal.buffer.active.baseY;
+        const targetViewportY =
+          terminal.cols === snapshot.cols
+            ? snapshot.viewportY
+            : currentBaseY - snapshot.bottomOffset;
+        const targetLine = Math.max(0, Math.min(targetViewportY, currentBaseY));
         terminal.scrollToLine(targetLine);
       }
       captureTerminalScroll(terminal);
@@ -972,7 +982,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           // while invisible can reflow scrollback before the user returns.
           return;
         }
-        const scrollSnapshot = scrollSnapshotRef.current;
+        const scrollSnapshot = snapshotTerminalScroll(terminal);
         fit.fit();
         if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
           syncedCols = terminal.cols;
