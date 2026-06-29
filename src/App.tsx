@@ -95,6 +95,8 @@ import {
   canIndent,
   canOutdent,
   indentAt,
+  isLeafPane,
+  movePanePromotingChildrenAdjacentToPane,
   moveToGap,
   nestUnder,
   outdentAt,
@@ -104,6 +106,7 @@ import {
 } from "./lib/paneTree";
 import {
   adjacentPaneBelow,
+  detachPaneFromSplitMemberships,
   joinPaneSplit,
   normalizePaneSplitsForPanes,
   paneSplitForPane,
@@ -2449,6 +2452,28 @@ export default function App() {
     };
   }
 
+  function terminalSplitDropPlaceholderStyle(): CSSProperties | undefined {
+    if (paneDropTarget?.kind !== "terminal-split") {
+      return undefined;
+    }
+    const index = visibleTerminalPaneIds.indexOf(paneDropTarget.targetPaneId);
+    if (index < 0) {
+      return undefined;
+    }
+    const paneTop = activePaneSplit
+      ? activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0)
+      : 0;
+    const paneHeight = activePaneSplit ? (activeSplitFractions[index] ?? 0) : 1;
+    const top =
+      paneDropTarget.position === "below" ? paneTop + paneHeight / 2 : paneTop;
+    return {
+      top: `${top * 100}%`,
+      height: `${(paneHeight / 2) * 100}%`,
+    };
+  }
+
+  const terminalSplitDropStyle = terminalSplitDropPlaceholderStyle();
+
   const terminalSplitDividerOffsets = activePaneSplit
     ? activePaneSplit.paneIds.slice(0, -1).map((_, index) =>
         activeSplitFractions.slice(0, index + 1).reduce((sum, value) => sum + value, 0),
@@ -2904,6 +2929,7 @@ export default function App() {
     paneTabPointerDragRef.current = {
       pointerId: event.pointerId,
       paneId,
+      startX: event.clientX,
       startY: event.clientY,
       active: false,
     };
@@ -2917,7 +2943,8 @@ export default function App() {
     }
 
     if (!drag.active) {
-      if (Math.abs(event.clientY - drag.startY) < PANE_TAB_DRAG_START_THRESHOLD) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < PANE_TAB_DRAG_START_THRESHOLD) {
         return;
       }
       drag.active = true;
@@ -2926,11 +2953,7 @@ export default function App() {
     }
 
     event.preventDefault();
-    const list = paneListRef.current;
-    if (!list) {
-      return;
-    }
-    updatePaneDropTarget(computeDropTarget(list, event.clientY, drag.paneId));
+    updatePaneDropTarget(computePaneDragDropTarget(event.clientX, event.clientY, drag.paneId));
   }
 
   function handlePaneTabPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2956,10 +2979,9 @@ export default function App() {
       suppressPaneTabClickRef.current = false;
     }, PANE_TAB_DRAG_CLICK_SUPPRESS_MS);
 
-    const list = paneListRef.current;
     const target =
       paneDropTargetRef.current ??
-      (list ? computeDropTarget(list, event.clientY, drag.paneId) : null);
+      computePaneDragDropTarget(event.clientX, event.clientY, drag.paneId);
     clearPaneTabDrag();
     if (target === null) {
       return;
@@ -3006,7 +3028,34 @@ export default function App() {
   // ~30% of a row is a reorder gap, the middle ~40% nests into that row. Rows inside
   // the dragged tab's own subtree are never targets (can't nest into self), and gaps
   // adjacent to that block are suppressed (would be a no-op move).
-  function computeDropTarget(
+  function computePaneDragDropTarget(
+    clientX: number,
+    clientY: number,
+    dragId: string,
+  ): PaneDropTarget | null {
+    const stage = terminalStageRef.current;
+    if (stage && pointInRect(stage.getBoundingClientRect(), clientX, clientY)) {
+      return computeTerminalSplitDropTarget(clientY, dragId);
+    }
+
+    const list = paneListRef.current;
+    if (list && pointInRect(list.getBoundingClientRect(), clientX, clientY)) {
+      return computeSidebarDropTarget(list, clientY, dragId);
+    }
+
+    return null;
+  }
+
+  function pointInRect(rect: DOMRect, clientX: number, clientY: number) {
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }
+
+  function computeSidebarDropTarget(
     container: HTMLElement,
     clientY: number,
     dragId: string,
@@ -3059,7 +3108,58 @@ export default function App() {
     return gapTarget(rows.length);
   }
 
+  function computeTerminalSplitDropTarget(
+    clientY: number,
+    dragId: string,
+  ): PaneDropTarget | null {
+    const stageRect = terminalStageRef.current?.getBoundingClientRect();
+    const dragPane = panes.find((pane) => pane.id === dragId);
+    if (!stageRect || !dragPane || visibleTerminalPanes.length === 0) {
+      return null;
+    }
+
+    const groupPanes = panes.filter((pane) => pane.groupId === dragPane.groupId);
+    const dragIndex = groupPanes.findIndex((pane) => pane.id === dragId);
+    const dragEnd = dragIndex >= 0 ? subtreeEnd(groupPanes, dragIndex) : -1;
+    const targetInDraggedSubtree = (paneId: string) => {
+      const targetIndex = groupPanes.findIndex((pane) => pane.id === paneId);
+      return targetIndex >= dragIndex && targetIndex < dragEnd;
+    };
+
+    let topFraction = 0;
+    for (const [index, pane] of visibleTerminalPanes.entries()) {
+      const heightFraction = activePaneSplit ? (activeSplitFractions[index] ?? 0) : 1;
+      const top = stageRect.top + topFraction * stageRect.height;
+      const height = heightFraction * stageRect.height;
+      const bottom = top + height;
+      if (clientY < top || clientY > bottom) {
+        topFraction += heightFraction;
+        continue;
+      }
+      if (
+        pane.id === dragId ||
+        pane.groupId !== dragPane.groupId ||
+        targetInDraggedSubtree(pane.id) ||
+        !isLeafPane(groupPanes, pane.id)
+      ) {
+        return null;
+      }
+      return {
+        kind: "terminal-split",
+        groupId: pane.groupId,
+        targetPaneId: pane.id,
+        position: clientY < top + height / 2 ? "above" : "below",
+      };
+    }
+
+    return null;
+  }
+
   function applyDropTarget(dragId: string, target: PaneDropTarget) {
+    if (target.kind === "terminal-split") {
+      void splitDraggedPaneIntoTerminal(dragId, target);
+      return;
+    }
     const groupPanes = panes.filter((pane) => pane.groupId === target.groupId);
     const next =
       target.kind === "nest"
@@ -3068,17 +3168,101 @@ export default function App() {
     applyPaneLayout(target.groupId, next);
   }
 
+  async function splitDraggedPaneIntoTerminal(
+    dragId: string,
+    target: Extract<PaneDropTarget, { kind: "terminal-split" }>,
+  ) {
+    setError(null);
+    const dragPane = panes.find((pane) => pane.id === dragId);
+    const targetPane = panes.find((pane) => pane.id === target.targetPaneId);
+    if (
+      !dragPane ||
+      !targetPane ||
+      dragPane.groupId !== target.groupId ||
+      targetPane.groupId !== target.groupId
+    ) {
+      return;
+    }
+
+    const groupPanes = panes.filter((pane) => pane.groupId === target.groupId);
+    if (!isLeafPane(groupPanes, target.targetPaneId)) {
+      return;
+    }
+
+    const nextGroupPanes = movePanePromotingChildrenAdjacentToPane(
+      groupPanes,
+      dragId,
+      target.targetPaneId,
+      target.position,
+    );
+    const nextPanes = panesWithGroupOrder(target.groupId, nextGroupPanes);
+    const nextLayout = toLayout(nextPanes);
+    const layoutChanged = !sameLayout(nextLayout, toLayout(sidebarPanes));
+    const topPaneId = target.position === "above" ? dragId : target.targetPaneId;
+    const belowPaneId = target.position === "above" ? target.targetPaneId : dragId;
+    const detachedSplits = detachPaneFromSplitMemberships(paneSplits, dragId);
+    const optimisticSplits = joinPaneSplit(detachedSplits, nextPanes, topPaneId, belowPaneId);
+    const requestSeq = paneReorderRequestSeqRef.current + 1;
+    paneReorderRequestSeqRef.current = requestSeq;
+    // Keep panes and splits consistent during the optimistic reorder so the
+    // pane-change normalization effect doesn't persist the pre-drop split shape.
+    setPanesPreservingRecoveredDismissals(nextPanes);
+    setPaneSplitsState(optimisticSplits);
+
+    const persist = paneReorderPersistChainRef.current
+      .catch(() => undefined)
+      .then(() => (layoutChanged ? setPaneLayout(nextLayout) : nextPanes));
+
+    paneReorderPersistChainRef.current = persist
+      .then((orderedPanes) => {
+        if (paneReorderRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+
+        setPanesPreservingRecoveredDismissals(orderedPanes);
+        savePaneSplits(
+          joinPaneSplit(detachedSplits, orderedPanes, topPaneId, belowPaneId),
+          orderedPanes,
+        );
+        setActivePaneId(dragId);
+        setLastActiveGroupId(target.groupId);
+        requestAnimationFrame(() => {
+          terminalPaneRefs.current.get(dragId)?.focus();
+        });
+      })
+      .catch((err) => {
+        if (paneReorderRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+        void Promise.all([
+          listPanes(),
+          getPaneSplits().catch(() => paneSplits),
+        ])
+          .then(([latestPanes, latestSplits]) => {
+            if (paneReorderRequestSeqRef.current === requestSeq) {
+              setPanesPreservingRecoveredDismissals(latestPanes);
+              setPaneSplitsState(normalizePaneSplitsForPanes(latestSplits, latestPanes));
+            }
+          })
+          .catch(() => undefined);
+      });
+  }
+
+  function panesWithGroupOrder(groupId: string, nextGroupPanes: PaneInfo[]) {
+    const next = groups.flatMap((group) =>
+      group.id === groupId ? nextGroupPanes : panes.filter((pane) => pane.groupId === group.id),
+    );
+    const groupedIds = new Set(next.map((pane) => pane.id));
+    next.push(...panes.filter((pane) => !groupedIds.has(pane.id)));
+    return next;
+  }
+
   // Optimistically applies a new tab layout (order + depth) and persists it, with the
   // same request-sequence guard the old reorder used so stale responses never clobber
   // a newer local state.
   function applyPaneLayout(groupId: string, nextGroupPanes: PaneInfo[]) {
-    const next = groups.flatMap((group) =>
-      group.id === groupId
-        ? nextGroupPanes
-        : panes.filter((pane) => pane.groupId === group.id),
-    );
-    const groupedIds = new Set(next.map((pane) => pane.id));
-    next.push(...panes.filter((pane) => !groupedIds.has(pane.id)));
+    const next = panesWithGroupOrder(groupId, nextGroupPanes);
     const nextLayout = toLayout(next);
     if (sameLayout(nextLayout, toLayout(sidebarPanes))) {
       return; // structural no-op — don't churn a backend round-trip
@@ -6445,6 +6629,13 @@ export default function App() {
               onActivate={activateTerminalPane}
             />
           ))}
+          {terminalSplitDropStyle ? (
+            <div
+              className="terminal-split-drop-placeholder"
+              style={terminalSplitDropStyle}
+              aria-hidden="true"
+            />
+          ) : null}
           {activePaneSplit
             ? terminalSplitDividerOffsets.map((offset, index) => (
                 <div

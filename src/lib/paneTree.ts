@@ -138,3 +138,41 @@ export function moveToGap(panes: PaneInfo[], dragId: string, gap: number): PaneI
   const rootDepth = below ? depthOf(below) : above ? depthOf(above) : 0;
   return normalizeDepths(placeBlock(rest, block, insertAt, rootDepth));
 }
+
+export function isLeafPane(panes: PaneInfo[], paneId: string): boolean {
+  const index = panes.findIndex((pane) => pane.id === paneId);
+  return index >= 0 && subtreeEnd(panes, index) === index + 1;
+}
+
+export function movePanePromotingChildrenAdjacentToPane(
+  panes: PaneInfo[],
+  dragId: string,
+  targetId: string,
+  position: "above" | "below",
+): PaneInfo[] {
+  const from = panes.findIndex((pane) => pane.id === dragId);
+  const targetIndex = panes.findIndex((pane) => pane.id === targetId);
+  if (from < 0 || targetIndex < 0 || from === targetIndex || !isLeafPane(panes, targetId)) {
+    return panes;
+  }
+
+  const end = subtreeEnd(panes, from);
+  if (targetIndex >= from && targetIndex < end) {
+    return panes;
+  }
+
+  const dragPane = panes[from];
+  const targetDepth = depthOf(panes[targetIndex]);
+  const promotedDescendants = panes
+    .slice(from + 1, end)
+    .map((pane) => ({ ...pane, depth: Math.max(0, depthOf(pane) - 1) }));
+  const rest = [
+    ...panes.slice(0, from),
+    ...promotedDescendants,
+    ...panes.slice(end),
+  ];
+  const targetInRest = targetIndex < from ? targetIndex : targetIndex - 1;
+  const insertAt = position === "above" ? targetInRest : targetInRest + 1;
+  const moved = { ...dragPane, depth: targetDepth };
+  return normalizeDepths([...rest.slice(0, insertAt), moved, ...rest.slice(insertAt)]);
+}

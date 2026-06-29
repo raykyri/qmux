@@ -46,6 +46,58 @@ function equalSizes(paneIds: string[]) {
   return Object.fromEntries(paneIds.map((paneId) => [paneId, size]));
 }
 
+function normalizedSizesForPaneIds(split: PaneSplitInfo, paneIds: string[]) {
+  const raw = paneIds.map((paneId) => split.sizes?.[paneId] ?? 0);
+  const total = raw.reduce(
+    (sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0),
+    0,
+  );
+  if (total <= 0) {
+    return equalSizes(paneIds);
+  }
+  return Object.fromEntries(
+    paneIds.map((paneId, index) => [
+      paneId,
+      Number.isFinite(raw[index]) && raw[index] > 0 ? raw[index] / total : 0,
+    ]),
+  );
+}
+
+function joinedPaneSizes(existingSplits: PaneSplitInfo[], paneIds: string[]) {
+  const paneIdSet = new Set(paneIds);
+  const weights = new Map<string, number>();
+
+  for (const split of existingSplits) {
+    const splitPaneIds = split.paneIds.filter((paneId) => paneIdSet.has(paneId));
+    if (splitPaneIds.length === 0) {
+      continue;
+    }
+    const sizes = normalizedSizesForPaneIds(split, splitPaneIds);
+    for (const paneId of splitPaneIds) {
+      if (!weights.has(paneId)) {
+        weights.set(paneId, (sizes[paneId] ?? 0) * splitPaneIds.length);
+      }
+    }
+  }
+
+  for (const paneId of paneIds) {
+    if (!weights.has(paneId)) {
+      weights.set(paneId, 1);
+    }
+  }
+
+  const total = [...weights.values()].reduce(
+    (sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0),
+    0,
+  );
+  if (total <= 0) {
+    return equalSizes(paneIds);
+  }
+  return Object.fromEntries(
+    paneIds.map((paneId) => [paneId, (weights.get(paneId) ?? 0) / total]),
+  );
+}
+
 export function normalizePaneSplitsForPanes(
   splits: PaneSplitInfo[],
   panes: PaneInfo[],
@@ -130,8 +182,29 @@ export function joinPaneSplit(
         !existingSplitIds.has(split.id) &&
         !split.paneIds.some((paneId) => existingPaneIds.has(paneId)),
     ),
-    { id, paneIds, sizes: equalSizes(paneIds) },
+    { id, paneIds, sizes: joinedPaneSizes(existing, paneIds) },
   ];
+}
+
+export function detachPaneFromSplitMemberships(
+  splits: PaneSplitInfo[],
+  paneId: string,
+): PaneSplitInfo[] {
+  return splits
+    .map((split) => {
+      if (!split.paneIds.includes(paneId)) {
+        return split;
+      }
+      const paneIds = split.paneIds.filter((id) => id !== paneId);
+      return {
+        ...split,
+        paneIds,
+        sizes: Object.fromEntries(
+          Object.entries(split.sizes ?? {}).filter(([id]) => id !== paneId),
+        ),
+      };
+    })
+    .filter((split) => split.paneIds.length >= 2);
 }
 
 export function splitFractions(split: PaneSplitInfo): number[] {

@@ -2184,6 +2184,30 @@ button:disabled {
   z-index: 2;
 }
 
+.terminal-split-drop-placeholder {
+  position: absolute;
+  left: 10px;
+  right: 0;
+  z-index: 5;
+  border: 1px solid rgba(215, 168, 79, 0.74);
+  background: rgba(215, 168, 79, 0.12);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 239, 197, 0.12),
+    0 0 18px rgba(215, 168, 79, 0.12);
+  pointer-events: none;
+}
+
+.terminal-split-drop-placeholder::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-1px);
+  background: rgba(255, 220, 143, 0.78);
+}
+
 .terminal-split-resizer {
   position: absolute;
   left: 0;

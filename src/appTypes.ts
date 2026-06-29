@@ -52,15 +52,22 @@ export type PaneContextMenuState = {
 export type PaneTabPointerDrag = {
   pointerId: number;
   paneId: string;
+  startX: number;
   startY: number;
   active: boolean;
 };
 
-// Where a tab drag will land: either a gap between rows (reorder) or onto a row
-// (nest the dragged tab under it).
+// Where a tab drag will land: a gap between rows (reorder), onto a row (nest), or
+// into the visible terminal stack (split above/below the target pane).
 export type PaneDropTarget =
   | { kind: "gap"; groupId: string; index: number }
-  | { kind: "nest"; groupId: string; paneId: string };
+  | { kind: "nest"; groupId: string; paneId: string }
+  | {
+      kind: "terminal-split";
+      groupId: string;
+      targetPaneId: string;
+      position: "above" | "below";
+    };
 
 export type BrowserOverlaySize = {
   width: number;
