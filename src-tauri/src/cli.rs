@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::Command;
 use std::time::Duration;
 
@@ -205,11 +205,50 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
         command.env(env.key, env.value);
     }
 
-    let err = command.exec();
-    Err(format!(
-        "failed to launch agent binary '{}': {err}",
-        launch.binary
-    ))
+    // The agent must own Ctrl-C/Ctrl-\ itself, so restore the default disposition in the
+    // child after fork (it inherits the SIG_IGN we install below before exec). SIGTSTP is
+    // left untouched so a stop still suspends both processes together.
+    unsafe {
+        command.pre_exec(|| {
+            // Runs in the forked child before exec; only async-signal-safe calls allowed.
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+
+    // Ignore SIGINT/SIGQUIT in the supervisor before spawning so a terminal-generated
+    // signal (delivered to the whole foreground process group during any cooked-mode
+    // window) can't kill us before wait() returns. Surviving the signal is what
+    // guarantees the detach cleanup below always runs.
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+        libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("failed to launch agent binary '{}': {err}", launch.binary))?;
+    let status = child
+        .wait()
+        .map_err(|err| format!("failed to wait for agent binary '{}': {err}", launch.binary))?;
+
+    // Cleanup belongs to the runner, not the injected shell function. A suspended or
+    // backgrounded job can return control to the shell before exiting; detaching here,
+    // after wait() reports a real exit, keeps the pane-agent binding alive across
+    // job-control stop/continue cycles.
+    let _ = request_silent(
+        "agent.detach_pane",
+        json!({ "paneId": env::var("QMUX_PANE_ID").ok() }),
+    );
+
+    std::process::exit(exit_code_for_status(status));
+}
+
+fn exit_code_for_status(status: std::process::ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| status.signal().map(|signal| 128 + signal).unwrap_or(1))
 }
 
 fn request_silent(command: &str, payload: Value) -> Result<(), String> {

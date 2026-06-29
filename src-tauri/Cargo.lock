@@ -2387,6 +2387,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "getrandom 0.2.17",
+ "libc",
  "names",
  "portable-pty",
  "serde",

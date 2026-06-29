@@ -73,9 +73,9 @@ const QUIT_MENU_ID: &str = "qmux-quit";
 /// Every other default item is preserved — notably the Edit menu that wires up ⌘C/⌘V/⌘A.
 #[cfg(desktop)]
 fn customize_app_menu(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItemKind};
     #[cfg(target_os = "macos")]
     use tauri::menu::MenuItemBuilder;
+    use tauri::menu::{Menu, MenuItemKind};
 
     let menu = Menu::default(app.handle())?;
     for item in menu.items()? {
