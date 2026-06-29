@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { selectPaneAfterClose } from "../src/lib/appHelpers";
 import { movePanePromotingChildrenAdjacentToPane } from "../src/lib/paneTree";
 import {
   detachPaneFromSplitMemberships,
@@ -39,6 +40,21 @@ function splitWithSizes(sizes: Record<string, number>, id = "split-1"): PaneSpli
     id,
     paneIds: Object.keys(sizes),
     sizes,
+  };
+}
+
+function insertedRelativeIntent(
+  anchorPaneId: string,
+  position: "above" | "below",
+  source: "command" | "join" | "drag-half" | "drag-divider" = "join",
+  createdAt = 123,
+) {
+  return {
+    kind: "inserted-relative" as const,
+    anchorPaneId,
+    position,
+    source,
+    createdAt,
   };
 }
 
@@ -85,6 +101,26 @@ test("normalizePaneSplitsForPanes drops a split when fewer than two panes remain
   assert.deepEqual(normalized, []);
 });
 
+test("normalizePaneSplitsForPanes prunes split intent for missing panes and anchors", () => {
+  const normalized = normalizePaneSplitsForPanes(
+    [
+      {
+        ...split(["pane-1", "pane-2", "pane-3"]),
+        intent: {
+          "pane-2": insertedRelativeIntent("pane-1", "below", "command", 1),
+          "pane-3": insertedRelativeIntent("pane-missing", "below", "drag-half", 2),
+          "pane-missing": insertedRelativeIntent("pane-1", "below", "join", 3),
+        },
+      },
+    ],
+    panes(["pane-1", "pane-2"]),
+  );
+
+  assert.deepEqual(normalized[0].intent, {
+    "pane-2": insertedRelativeIntent("pane-1", "below", "command", 1),
+  });
+});
+
 test("normalizePaneSplitsForPanes still rejects non-contiguous remaining panes", () => {
   const normalized = normalizePaneSplitsForPanes(
     [split(["pane-1", "pane-2", "pane-3"])],
@@ -92,6 +128,36 @@ test("normalizePaneSplitsForPanes still rejects non-contiguous remaining panes",
   );
 
   assert.deepEqual(normalized, []);
+});
+
+test("selectPaneAfterClose prefers the next split pane when closing the top split pane", () => {
+  assert.equal(
+    selectPaneAfterClose(panes(["pane-outside", "pane-1", "pane-2"]), "pane-1", [
+      split(["pane-1", "pane-2"]),
+    ]),
+    "pane-2",
+  );
+});
+
+test("selectPaneAfterClose prefers a previous split pane when closing middle or bottom panes", () => {
+  const currentPanes = panes(["pane-1", "pane-2", "pane-3", "pane-outside"]);
+  const currentSplits = [split(["pane-1", "pane-2", "pane-3"])];
+
+  assert.equal(selectPaneAfterClose(currentPanes, "pane-2", currentSplits), "pane-1");
+  assert.equal(selectPaneAfterClose(currentPanes, "pane-3", currentSplits), "pane-2");
+});
+
+test("selectPaneAfterClose skips stale split members before leaving the split", () => {
+  assert.equal(
+    selectPaneAfterClose(panes(["pane-outside", "pane-1", "pane-3"]), "pane-1", [
+      split(["pane-1", "pane-missing", "pane-3"]),
+    ]),
+    "pane-3",
+  );
+});
+
+test("selectPaneAfterClose falls back to neighboring tabs outside a split", () => {
+  assert.equal(selectPaneAfterClose(panes(["pane-1", "pane-2", "pane-3"]), "pane-2"), "pane-1");
 });
 
 test("movePanePromotingChildrenAdjacentToPane moves a leaf below a target at the target depth", () => {
@@ -165,6 +231,44 @@ test("joinPaneSplit inserts a dragged pane into an existing split after reorderi
   assert.deepEqual(joined.map((candidate) => candidate.paneIds), [
     ["pane-1", "pane-3", "pane-2"],
   ]);
+});
+
+test("joinPaneSplit records inserted pane intent", () => {
+  const joined = joinPaneSplit([], panes(["pane-1", "pane-2"]), "pane-1", "pane-2", {
+    insertedPaneId: "pane-2",
+    source: "command",
+    createdAt: 456,
+  });
+
+  assert.deepEqual(joined[0].intent, {
+    "pane-2": insertedRelativeIntent("pane-1", "below", "command", 456),
+  });
+});
+
+test("joinPaneSplit preserves existing split intent when inserting another pane", () => {
+  const joined = joinPaneSplit(
+    [
+      {
+        ...splitWithSizes({ "pane-1": 0.5, "pane-2": 0.5 }),
+        intent: {
+          "pane-2": insertedRelativeIntent("pane-1", "below", "command", 1),
+        },
+      },
+    ],
+    panes(["pane-1", "pane-2", "pane-3"]),
+    "pane-2",
+    "pane-3",
+    {
+      insertedPaneId: "pane-3",
+      source: "drag-half",
+      createdAt: 2,
+    },
+  );
+
+  assert.deepEqual(joined[0].intent, {
+    "pane-2": insertedRelativeIntent("pane-1", "below", "command", 1),
+    "pane-3": insertedRelativeIntent("pane-2", "below", "drag-half", 2),
+  });
 });
 
 test("joinPaneSplit preserves existing split proportions when inserting a pane", () => {
@@ -243,4 +347,23 @@ test("detachPaneFromSplitMemberships lets a pane reorder within its existing spl
   assert.deepEqual(joined.map((candidate) => candidate.paneIds), [
     ["pane-1", "pane-3", "pane-2"],
   ]);
+});
+
+test("detachPaneFromSplitMemberships drops intent for detached panes and detached anchors", () => {
+  const detached = detachPaneFromSplitMemberships(
+    [
+      {
+        ...split(["pane-1", "pane-2", "pane-3"]),
+        intent: {
+          "pane-2": insertedRelativeIntent("pane-1", "below", "command", 1),
+          "pane-3": insertedRelativeIntent("pane-2", "below", "drag-half", 2),
+        },
+      },
+    ],
+    "pane-1",
+  );
+
+  assert.deepEqual(detached[0].intent, {
+    "pane-3": insertedRelativeIntent("pane-2", "below", "drag-half", 2),
+  });
 });

@@ -491,6 +491,19 @@ pub struct PaneSplitInfo {
     pub pane_ids: Vec<String>,
     #[serde(default)]
     pub sizes: HashMap<String, f64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub intent: HashMap<String, PaneSplitIntent>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneSplitIntent {
+    pub kind: String,
+    pub anchor_pane_id: String,
+    pub position: String,
+    pub source: String,
+    #[serde(default)]
+    pub created_at: f64,
 }
 
 /// One entry in a `set_pane_layout` request: a pane and its target nesting depth,
@@ -3230,7 +3243,7 @@ fn normalized_pane_splits(
             used_panes.insert(pane_id.clone());
         }
         used_split_ids.insert(id.clone());
-        let pane_id_set = pane_ids.iter().collect::<HashSet<_>>();
+        let pane_id_set = pane_ids.iter().cloned().collect::<HashSet<_>>();
         let sizes = split
             .sizes
             .into_iter()
@@ -3238,11 +3251,29 @@ fn normalized_pane_splits(
                 pane_id_set.contains(pane_id) && size.is_finite() && *size > 0.0
             })
             .collect();
+        let intent = split
+            .intent
+            .into_iter()
+            .filter(|(pane_id, entry)| {
+                pane_id_set.contains(pane_id)
+                    && entry.kind == "inserted-relative"
+                    && pane_id != &entry.anchor_pane_id
+                    && pane_id_set.contains(&entry.anchor_pane_id)
+                    && matches!(entry.position.as_str(), "above" | "below")
+                    && matches!(
+                        entry.source.as_str(),
+                        "command" | "join" | "drag-half" | "drag-divider"
+                    )
+                    && entry.created_at.is_finite()
+                    && entry.created_at >= 0.0
+            })
+            .collect();
 
         result.push(PaneSplitInfo {
             id,
             pane_ids,
             sizes,
+            intent,
         });
     }
 
@@ -4054,6 +4085,7 @@ mod tests {
                 id: "split-a".to_string(),
                 pane_ids: vec!["pane-1".to_string(), "pane-3".to_string()],
                 sizes: HashMap::new(),
+                intent: HashMap::new(),
             }])
             .unwrap_err();
         assert!(invalid.contains("adjacent"));
@@ -4063,6 +4095,7 @@ mod tests {
                 id: "split-a".to_string(),
                 pane_ids: vec!["pane-1".to_string(), "pane-2".to_string()],
                 sizes: HashMap::from([("pane-1".to_string(), 0.4), ("pane-2".to_string(), 0.6)]),
+                intent: HashMap::new(),
             }])
             .unwrap();
         assert_eq!(splits.len(), 1);
@@ -4074,6 +4107,63 @@ mod tests {
             .unwrap();
 
         assert!(state.pane_splits().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pane_splits_preserve_valid_intent_and_prune_stale_intent() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+
+        let splits = state
+            .set_pane_splits(vec![PaneSplitInfo {
+                id: "split-a".to_string(),
+                pane_ids: vec![
+                    "pane-1".to_string(),
+                    "pane-2".to_string(),
+                    "pane-3".to_string(),
+                ],
+                sizes: HashMap::new(),
+                intent: HashMap::from([
+                    (
+                        "pane-2".to_string(),
+                        PaneSplitIntent {
+                            kind: "inserted-relative".to_string(),
+                            anchor_pane_id: "pane-1".to_string(),
+                            position: "below".to_string(),
+                            source: "command".to_string(),
+                            created_at: 1.0,
+                        },
+                    ),
+                    (
+                        "pane-3".to_string(),
+                        PaneSplitIntent {
+                            kind: "inserted-relative".to_string(),
+                            anchor_pane_id: "pane-missing".to_string(),
+                            position: "below".to_string(),
+                            source: "drag-half".to_string(),
+                            created_at: 2.0,
+                        },
+                    ),
+                ]),
+            }])
+            .unwrap();
+
+        assert_eq!(splits.len(), 1);
+        assert_eq!(
+            splits[0].intent.get("pane-2"),
+            Some(&PaneSplitIntent {
+                kind: "inserted-relative".to_string(),
+                anchor_pane_id: "pane-1".to_string(),
+                position: "below".to_string(),
+                source: "command".to_string(),
+                created_at: 1.0,
+            })
+        );
+        assert!(!splits[0].intent.contains_key("pane-3"));
     }
 
     #[test]

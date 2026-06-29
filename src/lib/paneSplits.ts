@@ -1,6 +1,26 @@
-import type { PaneInfo, PaneSplitInfo } from "../types";
+import type {
+  PaneInfo,
+  PaneSplitInfo,
+  PaneSplitIntent,
+  PaneSplitIntentPosition,
+  PaneSplitIntentSource,
+} from "../types";
 
 const MIN_SPLIT_FRACTION = 0.12;
+const INSERTED_RELATIVE_INTENT_KIND = "inserted-relative";
+const VALID_INTENT_SOURCES = new Set<PaneSplitIntentSource>([
+  "command",
+  "join",
+  "drag-half",
+  "drag-divider",
+]);
+const VALID_INTENT_POSITIONS = new Set<PaneSplitIntentPosition>(["above", "below"]);
+
+interface JoinPaneSplitOptions {
+  source?: PaneSplitIntentSource;
+  insertedPaneId?: string;
+  createdAt?: number;
+}
 
 function panePositions(panes: PaneInfo[]) {
   const groupIndexes = new Map<string, number>();
@@ -63,6 +83,37 @@ function normalizedSizesForPaneIds(split: PaneSplitInfo, paneIds: string[]) {
   );
 }
 
+function isValidPaneSplitIntent(value: unknown, paneIdSet: Set<string>): value is PaneSplitIntent {
+  const intent = value as Partial<PaneSplitIntent> | null;
+  return (
+    Boolean(intent) &&
+    intent?.kind === INSERTED_RELATIVE_INTENT_KIND &&
+    typeof intent.anchorPaneId === "string" &&
+    paneIdSet.has(intent.anchorPaneId) &&
+    typeof intent.position === "string" &&
+    VALID_INTENT_POSITIONS.has(intent.position as PaneSplitIntentPosition) &&
+    typeof intent.source === "string" &&
+    VALID_INTENT_SOURCES.has(intent.source as PaneSplitIntentSource) &&
+    typeof intent.createdAt === "number" &&
+    Number.isFinite(intent.createdAt) &&
+    intent.createdAt >= 0
+  );
+}
+
+function normalizedIntentForPaneIds(
+  split: PaneSplitInfo,
+  paneIds: string[],
+): Record<string, PaneSplitIntent> | undefined {
+  const paneIdSet = new Set(paneIds);
+  const entries = Object.entries(split.intent ?? {}).filter(
+    ([paneId, intent]) =>
+      paneIdSet.has(paneId) &&
+      isValidPaneSplitIntent(intent, paneIdSet) &&
+      intent.anchorPaneId !== paneId,
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 function joinedPaneSizes(existingSplits: PaneSplitInfo[], paneIds: string[]) {
   const paneIdSet = new Set(paneIds);
   const weights = new Map<string, number>();
@@ -98,6 +149,97 @@ function joinedPaneSizes(existingSplits: PaneSplitInfo[], paneIds: string[]) {
   );
 }
 
+function insertedPaneIntent(
+  paneIds: string[],
+  paneId: string,
+  belowPaneId: string,
+  options: JoinPaneSplitOptions,
+): [string, PaneSplitIntent] | null {
+  if (!options.insertedPaneId || !paneIds.includes(options.insertedPaneId)) {
+    return null;
+  }
+
+  const source = options.source ?? "join";
+  const createdAt = options.createdAt ?? Date.now();
+  if (!VALID_INTENT_SOURCES.has(source) || !Number.isFinite(createdAt) || createdAt < 0) {
+    return null;
+  }
+
+  let anchorPaneId: string | null = null;
+  let position: PaneSplitIntentPosition | null = null;
+  if (options.insertedPaneId === paneId && paneIds.includes(belowPaneId)) {
+    anchorPaneId = belowPaneId;
+    position = "above";
+  } else if (options.insertedPaneId === belowPaneId && paneIds.includes(paneId)) {
+    anchorPaneId = paneId;
+    position = "below";
+  } else {
+    const index = paneIds.indexOf(options.insertedPaneId);
+    if (index > 0) {
+      anchorPaneId = paneIds[index - 1];
+      position = "below";
+    } else if (index >= 0 && index < paneIds.length - 1) {
+      anchorPaneId = paneIds[index + 1];
+      position = "above";
+    }
+  }
+
+  if (!anchorPaneId || !position || anchorPaneId === options.insertedPaneId) {
+    return null;
+  }
+
+  return [
+    options.insertedPaneId,
+    {
+      kind: INSERTED_RELATIVE_INTENT_KIND,
+      anchorPaneId,
+      position,
+      source,
+      createdAt,
+    },
+  ];
+}
+
+function joinedPaneIntent(
+  existingSplits: PaneSplitInfo[],
+  paneIds: string[],
+  paneId: string,
+  belowPaneId: string,
+  options: JoinPaneSplitOptions,
+): Record<string, PaneSplitIntent> | undefined {
+  const paneIdSet = new Set(paneIds);
+  const intent: Record<string, PaneSplitIntent> = {};
+
+  for (const split of existingSplits) {
+    const existingIntent = normalizedIntentForPaneIds(
+      split,
+      split.paneIds.filter((candidate) => paneIdSet.has(candidate)),
+    );
+    for (const [intentPaneId, entry] of Object.entries(existingIntent ?? {})) {
+      if (!intent[intentPaneId]) {
+        intent[intentPaneId] = entry;
+      }
+    }
+  }
+
+  const existingPaneIds = new Set(existingSplits.flatMap((split) => split.paneIds));
+  const inserted = insertedPaneIntent(paneIds, paneId, belowPaneId, options);
+  if (inserted && !existingPaneIds.has(inserted[0])) {
+    intent[inserted[0]] = inserted[1];
+  }
+
+  const normalized = normalizedIntentForPaneIds(
+    {
+      id: "joined-intent",
+      paneIds,
+      sizes: {},
+      intent,
+    },
+    paneIds,
+  );
+  return normalized;
+}
+
 export function normalizePaneSplitsForPanes(
   splits: PaneSplitInfo[],
   panes: PaneInfo[],
@@ -122,7 +264,7 @@ export function normalizePaneSplitsForPanes(
       used.add(paneId);
     }
     usedSplitIds.add(split.id);
-    normalized.push({
+    const normalizedSplit: PaneSplitInfo = {
       id: split.id,
       paneIds,
       sizes: Object.fromEntries(
@@ -130,7 +272,12 @@ export function normalizePaneSplitsForPanes(
           ([paneId, size]) => paneIds.includes(paneId) && Number.isFinite(size) && size > 0,
         ),
       ),
-    });
+    };
+    const intent = normalizedIntentForPaneIds(split, paneIds);
+    if (intent) {
+      normalizedSplit.intent = intent;
+    }
+    normalized.push(normalizedSplit);
   }
 
   return normalized;
@@ -157,6 +304,7 @@ export function joinPaneSplit(
   panes: PaneInfo[],
   paneId: string,
   belowPaneId: string,
+  options: JoinPaneSplitOptions = {},
 ): PaneSplitInfo[] {
   const normalized = normalizePaneSplitsForPanes(splits, panes);
   // Use the raw split membership here, not only the already-normalized groups.
@@ -176,13 +324,23 @@ export function joinPaneSplit(
   const id = existing[0]?.id ?? splitIdFor(paneIds);
   const existingPaneIds = new Set(existing.flatMap((split) => split.paneIds));
   const existingSplitIds = new Set(existing.map((split) => split.id));
+  const joinedSplit: PaneSplitInfo = {
+    id,
+    paneIds,
+    sizes: joinedPaneSizes(existing, paneIds),
+  };
+  const intent = joinedPaneIntent(existing, paneIds, paneId, belowPaneId, options);
+  if (intent) {
+    joinedSplit.intent = intent;
+  }
+
   return [
     ...normalized.filter(
       (split) =>
         !existingSplitIds.has(split.id) &&
         !split.paneIds.some((paneId) => existingPaneIds.has(paneId)),
     ),
-    { id, paneIds, sizes: joinedPaneSizes(existing, paneIds) },
+    joinedSplit,
   ];
 }
 
@@ -196,13 +354,30 @@ export function detachPaneFromSplitMemberships(
         return split;
       }
       const paneIds = split.paneIds.filter((id) => id !== paneId);
-      return {
+      const nextSplit: PaneSplitInfo = {
         ...split,
         paneIds,
         sizes: Object.fromEntries(
           Object.entries(split.sizes ?? {}).filter(([id]) => id !== paneId),
         ),
       };
+      delete nextSplit.intent;
+      const intent = normalizedIntentForPaneIds(
+        {
+          ...split,
+          paneIds,
+          intent: Object.fromEntries(
+            Object.entries(split.intent ?? {}).filter(
+              ([id, entry]) => id !== paneId && entry.anchorPaneId !== paneId,
+            ),
+          ),
+        },
+        paneIds,
+      );
+      if (intent) {
+        nextSplit.intent = intent;
+      }
+      return nextSplit;
     })
     .filter((split) => split.paneIds.length >= 2);
 }

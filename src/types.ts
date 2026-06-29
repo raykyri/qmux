@@ -42,10 +42,23 @@ export interface PaneInfo {
   depth?: number;
 }
 
+export type PaneSplitIntentSource = "command" | "join" | "drag-half" | "drag-divider";
+
+export type PaneSplitIntentPosition = "above" | "below";
+
+export interface PaneSplitIntent {
+  kind: "inserted-relative";
+  anchorPaneId: string;
+  position: PaneSplitIntentPosition;
+  source: PaneSplitIntentSource;
+  createdAt: number;
+}
+
 export interface PaneSplitInfo {
   id: string;
   paneIds: string[];
   sizes: Record<string, number>;
+  intent?: Record<string, PaneSplitIntent>;
 }
 
 export type PaneActivity =

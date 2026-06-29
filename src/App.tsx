@@ -2220,7 +2220,13 @@ export default function App() {
       );
       const orderedPanes = await placePaneAfter(pane.id, sourcePane.id);
       setPanesPreservingRecoveredDismissals(orderedPanes);
-      savePaneSplits(joinPaneSplit(paneSplits, orderedPanes, sourcePane.id, pane.id), orderedPanes);
+      savePaneSplits(
+        joinPaneSplit(paneSplits, orderedPanes, sourcePane.id, pane.id, {
+          insertedPaneId: pane.id,
+          source: "command",
+        }),
+        orderedPanes,
+      );
       setActivePaneId(pane.id);
       setLastActiveGroupId(pane.groupId);
       await refreshGroups();
@@ -2234,7 +2240,12 @@ export default function App() {
 
   function joinPaneBelow(sourcePane: PaneInfo, belowPane: PaneInfo) {
     setPaneContextMenu(null);
-    savePaneSplits(joinPaneSplit(paneSplits, panes, sourcePane.id, belowPane.id));
+    savePaneSplits(
+      joinPaneSplit(paneSplits, panes, sourcePane.id, belowPane.id, {
+        insertedPaneId: belowPane.id,
+        source: "join",
+      }),
+    );
     setActivePaneId(sourcePane.id);
   }
 
@@ -3202,7 +3213,10 @@ export default function App() {
     const topPaneId = target.position === "above" ? dragId : target.targetPaneId;
     const belowPaneId = target.position === "above" ? target.targetPaneId : dragId;
     const detachedSplits = detachPaneFromSplitMemberships(paneSplits, dragId);
-    const optimisticSplits = joinPaneSplit(detachedSplits, nextPanes, topPaneId, belowPaneId);
+    const optimisticSplits = joinPaneSplit(detachedSplits, nextPanes, topPaneId, belowPaneId, {
+      insertedPaneId: dragId,
+      source: "drag-half",
+    });
     const requestSeq = paneReorderRequestSeqRef.current + 1;
     paneReorderRequestSeqRef.current = requestSeq;
     // Keep panes and splits consistent during the optimistic reorder so the
@@ -3222,7 +3236,10 @@ export default function App() {
 
         setPanesPreservingRecoveredDismissals(orderedPanes);
         savePaneSplits(
-          joinPaneSplit(detachedSplits, orderedPanes, topPaneId, belowPaneId),
+          joinPaneSplit(detachedSplits, orderedPanes, topPaneId, belowPaneId, {
+            insertedPaneId: dragId,
+            source: "drag-half",
+          }),
           orderedPanes,
         );
         setActivePaneId(dragId);
@@ -3480,7 +3497,7 @@ export default function App() {
         if (currentActivePaneId !== paneToClose.id) {
           return currentActivePaneId;
         }
-        return selectPaneAfterClose(current, paneToClose.id);
+        return selectPaneAfterClose(current, paneToClose.id, paneSplits);
       });
       return nextPanes;
     });

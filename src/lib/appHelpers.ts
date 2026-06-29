@@ -6,6 +6,7 @@ import { FONT_OPTIONS } from "./settings";
 import type {
   AgentInfo,
   PaneInfo,
+  PaneSplitInfo,
   QmuxEvent,
   QueuedTurn,
   TranscriptCopyPayload,
@@ -37,11 +38,35 @@ export function buildQuotedMessage(quote: string, question: string): string {
   return trimmedQuestion ? `${quoted}\n\n${trimmedQuestion}` : quoted;
 }
 
-export function selectPaneAfterClose(panes: PaneInfo[], closedPaneId: string): string | null {
+export function selectPaneAfterClose(
+  panes: PaneInfo[],
+  closedPaneId: string,
+  paneSplits: PaneSplitInfo[] = [],
+): string | null {
   const closedIndex = panes.findIndex((pane) => pane.id === closedPaneId);
   if (closedIndex === -1) {
     return panes[0]?.id ?? null;
   }
+
+  const availablePaneIds = new Set(panes.map((pane) => pane.id));
+  availablePaneIds.delete(closedPaneId);
+  const split = paneSplits.find((candidate) => candidate.paneIds.includes(closedPaneId));
+  const splitIndex = split?.paneIds.indexOf(closedPaneId) ?? -1;
+  if (split && splitIndex >= 0) {
+    for (let index = splitIndex - 1; index >= 0; index -= 1) {
+      const previousSplitPaneId = split.paneIds[index];
+      if (previousSplitPaneId && availablePaneIds.has(previousSplitPaneId)) {
+        return previousSplitPaneId;
+      }
+    }
+    for (let index = splitIndex + 1; index < split.paneIds.length; index += 1) {
+      const nextSplitPaneId = split.paneIds[index];
+      if (nextSplitPaneId && availablePaneIds.has(nextSplitPaneId)) {
+        return nextSplitPaneId;
+      }
+    }
+  }
+
   return panes[closedIndex - 1]?.id ?? panes[closedIndex + 1]?.id ?? null;
 }
 
