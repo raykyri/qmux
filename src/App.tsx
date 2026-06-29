@@ -27,6 +27,7 @@ import {
   Minus,
   MoreHorizontal,
   PanelBottomClose,
+  PanelBottomOpen,
   Pencil,
   Plus,
   Settings,
@@ -96,6 +97,7 @@ import {
   canOutdent,
   indentAt,
   isLeafPane,
+  movePaneAfterSubtree,
   movePanePromotingChildrenAdjacentToPane,
   moveToGap,
   nestUnder,
@@ -2247,6 +2249,68 @@ export default function App() {
       }),
     );
     setActivePaneId(sourcePane.id);
+  }
+
+  // Detach a single tab from its split while keeping the remaining members grouped.
+  function removePaneFromSplit(pane: PaneInfo) {
+    setPaneContextMenu(null);
+    setError(null);
+    const split = paneSplitForPane(paneSplits, pane.id);
+    if (!split || split.paneIds.length < 2) {
+      return;
+    }
+    const nextSplits = detachPaneFromSplitMemberships(paneSplits, pane.id);
+    const memberIndex = split.paneIds.indexOf(pane.id);
+    const isEdgeMember = memberIndex === 0 || memberIndex === split.paneIds.length - 1;
+    if (isEdgeMember) {
+      // An edge member leaves the remaining members contiguous, so the tab can stay
+      // put — only the split membership changes.
+      savePaneSplits(nextSplits);
+      setActivePaneId(pane.id);
+      return;
+    }
+
+    // A middle member can't stay between the others without re-forming the split, so
+    // lift it just below the remaining block before persisting.
+    const lastRemainingId = split.paneIds[split.paneIds.length - 1];
+    const groupPanes = panes.filter((candidate) => candidate.groupId === pane.groupId);
+    const nextGroupPanes = movePaneAfterSubtree(groupPanes, pane.id, lastRemainingId);
+    const nextPanes = panesWithGroupOrder(pane.groupId, nextGroupPanes);
+    const nextLayout = toLayout(nextPanes);
+    const requestSeq = paneReorderRequestSeqRef.current + 1;
+    paneReorderRequestSeqRef.current = requestSeq;
+    // Apply panes and splits together so the pane-change normalization effect doesn't
+    // briefly persist the pre-detach split shape.
+    setPanesPreservingRecoveredDismissals(nextPanes);
+    setPaneSplitsState(nextSplits);
+
+    const persist = paneReorderPersistChainRef.current
+      .catch(() => undefined)
+      .then(() => setPaneLayout(nextLayout));
+
+    paneReorderPersistChainRef.current = persist
+      .then((orderedPanes) => {
+        if (paneReorderRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setPanesPreservingRecoveredDismissals(orderedPanes);
+        savePaneSplits(nextSplits, orderedPanes);
+        setActivePaneId(pane.id);
+      })
+      .catch((err) => {
+        if (paneReorderRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+        void Promise.all([listPanes(), getPaneSplits().catch(() => paneSplits)])
+          .then(([latestPanes, latestSplits]) => {
+            if (paneReorderRequestSeqRef.current === requestSeq) {
+              setPanesPreservingRecoveredDismissals(latestPanes);
+              setPaneSplitsState(normalizePaneSplitsForPanes(latestSplits, latestPanes));
+            }
+          })
+          .catch(() => undefined);
+      });
   }
 
   async function refreshAgentTurnQueue(agentId: string) {
@@ -5677,6 +5741,20 @@ export default function App() {
               >
                 <PanelBottomClose size={13} aria-hidden="true" />
                 <span>Join with terminal below</span>
+              </button>
+            ) : null}
+            {contextMenuPaneSplit ? (
+              <button
+                type="button"
+                role="menuitem"
+                title="Detach this tab from its split, keeping the other tabs grouped"
+                onClick={() => {
+                  setPaneContextMenu(null);
+                  removePaneFromSplit(contextMenuPane);
+                }}
+              >
+                <PanelBottomOpen size={13} aria-hidden="true" />
+                <span>Remove from split</span>
               </button>
             ) : null}
             <div className="context-menu-divider" role="separator" />

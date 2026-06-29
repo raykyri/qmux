@@ -176,3 +176,29 @@ export function movePanePromotingChildrenAdjacentToPane(
   const moved = { ...dragPane, depth: targetDepth };
   return normalizeDepths([...rest.slice(0, insertAt), moved, ...rest.slice(insertAt)]);
 }
+
+/** Move the dragged subtree to sit immediately after `afterId`'s subtree, re-rooting
+ *  it as a sibling of `afterId` (same depth). Used to lift a tab out from between
+ *  split members so the remaining members stay contiguous. No-op if either id is
+ *  missing, they're the same, or the target lies inside the dragged subtree. */
+export function movePaneAfterSubtree(
+  panes: PaneInfo[],
+  dragId: string,
+  afterId: string,
+): PaneInfo[] {
+  const from = panes.findIndex((pane) => pane.id === dragId);
+  const afterIndex = panes.findIndex((pane) => pane.id === afterId);
+  if (from < 0 || afterIndex < 0 || from === afterIndex) {
+    return panes;
+  }
+  const end = subtreeEnd(panes, from);
+  if (afterIndex >= from && afterIndex < end) {
+    return panes; // can't move a tab to sit after its own descendant
+  }
+
+  const block = panes.slice(from, end);
+  const rest = [...panes.slice(0, from), ...panes.slice(end)];
+  const afterInRest = afterIndex < from ? afterIndex : afterIndex - block.length;
+  const insertAt = subtreeEnd(rest, afterInRest);
+  return normalizeDepths(placeBlock(rest, block, insertAt, depthOf(rest[afterInRest])));
+}

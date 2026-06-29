@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { selectPaneAfterClose } from "../src/lib/appHelpers";
-import { movePanePromotingChildrenAdjacentToPane } from "../src/lib/paneTree";
+import {
+  movePaneAfterSubtree,
+  movePanePromotingChildrenAdjacentToPane,
+} from "../src/lib/paneTree";
 import {
   detachPaneFromSplitMemberships,
   joinPaneSplit,
@@ -366,4 +369,85 @@ test("detachPaneFromSplitMemberships drops intent for detached panes and detache
   assert.deepEqual(detached[0].intent, {
     "pane-3": insertedRelativeIntent("pane-2", "below", "drag-half", 2),
   });
+});
+
+test("movePaneAfterSubtree lifts a middle tab to just below the block", () => {
+  const moved = movePaneAfterSubtree(panes(["pane-1", "pane-2", "pane-3"]), "pane-2", "pane-3");
+
+  assert.deepEqual(
+    moved.map((candidate) => candidate.id),
+    ["pane-1", "pane-3", "pane-2"],
+  );
+});
+
+test("movePaneAfterSubtree keeps trailing tabs after the moved tab", () => {
+  const moved = movePaneAfterSubtree(
+    panes(["x", "pane-1", "pane-2", "pane-3", "y"]),
+    "pane-2",
+    "pane-3",
+  );
+
+  assert.deepEqual(
+    moved.map((candidate) => candidate.id),
+    ["x", "pane-1", "pane-3", "pane-2", "y"],
+  );
+});
+
+test("movePaneAfterSubtree places the moved tab after the target's whole subtree", () => {
+  const tree = [pane("a"), pane("b"), pane("c"), pane("c-child", 1), pane("d")];
+  const moved = movePaneAfterSubtree(tree, "b", "c");
+
+  assert.deepEqual(
+    moved.map((candidate) => ({ id: candidate.id, depth: candidate.depth })),
+    [
+      { id: "a", depth: 0 },
+      { id: "c", depth: 0 },
+      { id: "c-child", depth: 1 },
+      { id: "b", depth: 0 },
+      { id: "d", depth: 0 },
+    ],
+  );
+});
+
+test("movePaneAfterSubtree is a no-op when the target lies inside the dragged subtree", () => {
+  const tree = [pane("a"), pane("b"), pane("b-child", 1)];
+  const moved = movePaneAfterSubtree(tree, "b", "b-child");
+
+  assert.deepEqual(
+    moved.map((candidate) => candidate.id),
+    ["a", "b", "b-child"],
+  );
+});
+
+test("detaching a middle member keeps the remaining tabs as a contiguous split", () => {
+  const before = panes(["pane-1", "pane-2", "pane-3"]);
+  const splits = [split(["pane-1", "pane-2", "pane-3"])];
+
+  // Mirror removePaneFromSplit: drop the tab from the split, then relocate it.
+  const detached = detachPaneFromSplitMemberships(splits, "pane-2");
+  const reordered = movePaneAfterSubtree(before, "pane-2", "pane-3");
+  const normalized = normalizePaneSplitsForPanes(detached, reordered);
+
+  assert.deepEqual(
+    reordered.map((candidate) => candidate.id),
+    ["pane-1", "pane-3", "pane-2"],
+  );
+  assert.deepEqual(
+    normalized.map((candidate) => candidate.paneIds),
+    [["pane-1", "pane-3"]],
+  );
+});
+
+test("detaching an edge member leaves the remaining split contiguous without reordering", () => {
+  const before = panes(["pane-1", "pane-2", "pane-3"]);
+  const splits = [split(["pane-1", "pane-2", "pane-3"])];
+
+  // Edge members don't move; the membership change alone keeps the rest grouped.
+  const detached = detachPaneFromSplitMemberships(splits, "pane-1");
+  const normalized = normalizePaneSplitsForPanes(detached, before);
+
+  assert.deepEqual(
+    normalized.map((candidate) => candidate.paneIds),
+    [["pane-2", "pane-3"]],
+  );
 });
