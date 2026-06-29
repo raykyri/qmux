@@ -567,6 +567,28 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
   }, []);
 
+  const restoreTerminalViewport = useCallback(
+    (
+      snapshot: TerminalScrollSnapshot = scrollSnapshotRef.current,
+      terminal: Terminal | null = terminalRef.current,
+    ) => {
+      if (!terminal) {
+        return;
+      }
+      if (restoreScrollToBottomPendingRef.current || snapshot.followingBottom) {
+        terminal.scrollToBottom();
+      } else {
+        const targetLine = Math.max(
+          0,
+          Math.min(snapshot.viewportY, terminal.buffer.active.baseY),
+        );
+        terminal.scrollToLine(targetLine);
+      }
+      captureTerminalScroll(terminal);
+    },
+    [captureTerminalScroll],
+  );
+
   const scrollRestoredTerminalToBottom = useCallback(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -950,12 +972,14 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           // while invisible can reflow scrollback before the user returns.
           return;
         }
+        const scrollSnapshot = scrollSnapshotRef.current;
         fit.fit();
         if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
           syncedCols = terminal.cols;
           syncedRows = terminal.rows;
           void resizePane(pane.id, terminal.cols, terminal.rows);
         }
+        restoreTerminalViewport(scrollSnapshot, terminal);
         refreshTerminal();
       };
       const scheduleFit = () => {
@@ -1263,6 +1287,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     scheduleRestoreScrollToBottom,
     cancelRestoreScrollToBottom,
     captureTerminalScroll,
+    restoreTerminalViewport,
   ]);
 
   // Replay durable scrollback before releasing the backend's pre-attach backlog.
@@ -1299,23 +1324,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [pane.id, requestAttach, startRestoreScrollToBottom, waitForTerminalReady, writeTerminalData]);
 
   useLayoutEffect(() => {
-    const restoreSavedViewport = () => {
-      const terminal = terminalRef.current;
-      if (!terminal) {
-        return;
-      }
-      const snapshot = scrollSnapshotRef.current;
-      if (restoreScrollToBottomPendingRef.current || snapshot.followingBottom) {
-        terminal.scrollToBottom();
-      } else {
-        const targetLine = Math.max(
-          0,
-          Math.min(snapshot.viewportY, terminal.buffer.active.baseY),
-        );
-        terminal.scrollToLine(targetLine);
-      }
-      captureTerminalScroll(terminal);
-    };
+    const restoreSavedViewport = () => restoreTerminalViewport();
 
     if (!visible) {
       captureTerminalScroll();
@@ -1336,7 +1345,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       window.clearTimeout(settle);
       captureTerminalScroll();
     };
-  }, [active, visible, inputBlocked, pane.id, captureTerminalScroll]);
+  }, [active, visible, inputBlocked, pane.id, captureTerminalScroll, restoreTerminalViewport]);
 
   // Apply live terminal settings to an already-open terminal, then re-fit when
   // cell metrics change so rows/cols and the PTY size track the new grid.
