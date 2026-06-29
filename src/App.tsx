@@ -275,6 +275,8 @@ const OPENROUTER_TITLE_MAX_COMPLETION_TOKENS = 1000;
 const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const APP_TOAST_TIMEOUT_MS = 5000;
+const TITLE_GENERATION_TEST_MESSAGE =
+  "Review the launch plan, identify the highest-risk blockers, and suggest next steps.";
 // How long the composer can sit idle before its draft is flushed to disk. The
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
@@ -331,6 +333,11 @@ type FirstMessageTitleConfig =
   | ({ provider: "openRouter" } & OpenRouterTitleConfig);
 
 type OpenRouterTitleReasoningEffort = "none" | "minimal";
+
+type TitleGenerationTestState =
+  | { status: "running"; providerLabel: string }
+  | { status: "success"; providerLabel: string; title: string }
+  | { status: "error"; providerLabel: string; message: string };
 
 function sanitizeTerminalTitle(rawTitle: string): string | null {
   const title = rawTitle
@@ -424,6 +431,23 @@ function firstMessageTitleConfig(
 
 function firstMessageTitleProviderLabel(config: FirstMessageTitleConfig): string {
   return config.provider === "appleFoundationModels" ? "Apple Foundation Models" : "OpenRouter";
+}
+
+function tabTitleProviderLabel(provider: AppSettings["tabTitleProvider"]): string {
+  return (
+    TAB_TITLE_PROVIDER_OPTIONS.find((option) => option.id === provider)?.label ?? "Tab titles"
+  );
+}
+
+function focusConfirmDialogButton(button: HTMLButtonElement | null, force = false) {
+  if (!button) {
+    return;
+  }
+  const dialog = button.closest(".confirm-dialog");
+  const activeElement = document.activeElement;
+  if (force || !dialog?.contains(activeElement)) {
+    button.focus();
+  }
 }
 
 function unknownErrorMessage(err: unknown): string {
@@ -898,6 +922,7 @@ export default function App() {
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
+  const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
   const appToastTimerRef = useRef<number | null>(null);
   const suppressPaneTabClickRef = useRef(false);
@@ -1048,6 +1073,7 @@ export default function App() {
   } | null>(null);
   const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  const closeConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
   // buttons disabled) until the close/delete actually finishes.
   const [resolvingClose, setResolvingClose] = useState<"keep" | "delete" | null>(null);
@@ -1059,6 +1085,8 @@ export default function App() {
   const [renameGroupId, setRenameGroupId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const [titleGenerationTest, setTitleGenerationTest] =
+    useState<TitleGenerationTestState | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
   const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
@@ -1267,6 +1295,57 @@ export default function App() {
       setAppToast(null);
       appToastTimerRef.current = null;
     }, APP_TOAST_TIMEOUT_MS);
+  }
+
+  async function testFirstMessageTitleGeneration() {
+    const settingsSnapshot = settingsRef.current;
+    const titleConfig = firstMessageTitleConfig(settingsSnapshot, configRef.current);
+    const providerLabel = titleConfig
+      ? firstMessageTitleProviderLabel(titleConfig)
+      : tabTitleProviderLabel(settingsSnapshot.tabTitleProvider);
+    const requestSeq = titleGenerationTestSeqRef.current + 1;
+    titleGenerationTestSeqRef.current = requestSeq;
+
+    if (!titleConfig) {
+      const message =
+        settingsSnapshot.tabTitleProvider === "openRouter"
+          ? "Add an OpenRouter key and model before testing."
+          : settingsSnapshot.tabTitleProvider === "appleFoundationModels"
+            ? "Apple Foundation Models are not available in this build."
+            : "Choose a title generation provider before testing.";
+      setTitleGenerationTest({ status: "error", providerLabel, message });
+      return;
+    }
+
+    const sourceMessage = firstMessageTitleSource(TITLE_GENERATION_TEST_MESSAGE);
+    if (!sourceMessage) {
+      setTitleGenerationTest({
+        status: "error",
+        providerLabel,
+        message: "Test message could not be prepared.",
+      });
+      return;
+    }
+
+    setTitleGenerationTest({ status: "running", providerLabel });
+    try {
+      const title = await generateFirstMessageTitle(sourceMessage, titleConfig);
+      if (!title) {
+        throw new Error(`${providerLabel} returned no title.`);
+      }
+      if (titleGenerationTestSeqRef.current !== requestSeq) {
+        return;
+      }
+      setTitleGenerationTest({ status: "success", providerLabel, title });
+      showAppToast(`${providerLabel} title test: ${title}`);
+    } catch (err) {
+      if (titleGenerationTestSeqRef.current !== requestSeq) {
+        return;
+      }
+      const message = unknownErrorMessage(err);
+      setTitleGenerationTest({ status: "error", providerLabel, message });
+      showAppToast(`${providerLabel} title test failed: ${message}`, "warning");
+    }
   }
 
   async function applyFirstMessageTitle(
@@ -2727,6 +2806,10 @@ export default function App() {
     : null;
   const groupMenuGroup = groupMenu ? groups.find((group) => group.id === groupMenu.groupId) : null;
   const appleFoundationTitleAvailable = appleFoundationModelsTitleAvailable(config);
+  const titleGenerationTestVisible =
+    settings.tabTitleProvider === "openRouter" ||
+    settings.tabTitleProvider === "appleFoundationModels";
+  const titleGenerationTestRunning = titleGenerationTest?.status === "running";
   const draggingPaneGroup = draggingPaneId
     ? panes.find((pane) => pane.id === draggingPaneId)?.groupId
     : undefined;
@@ -3877,21 +3960,29 @@ export default function App() {
   }, [exitPreflightRequest]);
 
   useEffect(() => {
+    if (!closeDialog) {
+      return;
+    }
+
+    const focusCloseButton = (force = false) =>
+      focusConfirmDialogButton(closeConfirmButtonRef.current, force);
+
+    focusCloseButton(true);
+    const frame = requestAnimationFrame(() => focusCloseButton());
+    const settle = window.setTimeout(() => focusCloseButton(), 100);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, [closeDialog]);
+
+  useEffect(() => {
     if (!exitDialog) {
       return;
     }
 
-    const focusQuitButton = (force = false) => {
-      const button = exitConfirmButtonRef.current;
-      if (!button) {
-        return;
-      }
-      const dialog = button.closest(".confirm-dialog");
-      const activeElement = document.activeElement;
-      if (force || !dialog?.contains(activeElement)) {
-        button.focus();
-      }
-    };
+    const focusQuitButton = (force = false) =>
+      focusConfirmDialogButton(exitConfirmButtonRef.current, force);
 
     focusQuitButton(true);
     const frame = requestAnimationFrame(() => focusQuitButton());
@@ -4276,6 +4367,16 @@ export default function App() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    titleGenerationTestSeqRef.current += 1;
+    setTitleGenerationTest(null);
+  }, [
+    settings.tabTitleProvider,
+    settings.openRouterKey,
+    settings.openRouterModel,
+    config?.tabTitleGeneration.appleFoundationModelsAvailable,
+  ]);
 
   useEffect(() => {
     let disposed = false;
@@ -6390,6 +6491,45 @@ export default function App() {
                 </div>
               </>
             ) : null}
+            {titleGenerationTestVisible ? (
+              <div className="settings-title-test">
+                <div className="settings-row">
+                  <span className="settings-label">Test title generation</span>
+                  <button
+                    type="button"
+                    className="settings-test-button"
+                    disabled={titleGenerationTestRunning}
+                    aria-describedby={
+                      titleGenerationTest ? "settings-title-test-message" : undefined
+                    }
+                    onClick={() => void testFirstMessageTitleGeneration()}
+                  >
+                    {titleGenerationTestRunning ? (
+                      <LoaderCircle
+                        className="settings-test-spinner"
+                        size={14}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <MessageSquareText size={14} aria-hidden="true" />
+                    )}
+                    {titleGenerationTestRunning ? "Testing..." : "Test title"}
+                  </button>
+                </div>
+                {titleGenerationTest ? (
+                  <p
+                    id="settings-title-test-message"
+                    className={`settings-hint settings-title-test-message is-${titleGenerationTest.status}`}
+                  >
+                    {titleGenerationTest.status === "running"
+                      ? `${titleGenerationTest.providerLabel} is generating a title...`
+                      : titleGenerationTest.status === "success"
+                        ? `${titleGenerationTest.providerLabel}: "${titleGenerationTest.title}"`
+                        : `${titleGenerationTest.providerLabel}: ${titleGenerationTest.message}`}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
               </div>
             ) : (
               <div className="settings-content" role="tabpanel">
@@ -6723,6 +6863,7 @@ export default function App() {
                     {resolvingClose === "delete" ? "Deleting…" : "Delete worktree"}
                   </button>
                   <button
+                    ref={closeConfirmButtonRef}
                     type="button"
                     autoFocus
                     disabled={resolvingClose !== null}
@@ -6740,6 +6881,7 @@ export default function App() {
                     Cancel
                   </button>
                   <button
+                    ref={closeConfirmButtonRef}
                     type="button"
                     className="danger"
                     autoFocus
@@ -6766,6 +6908,7 @@ export default function App() {
                     Cancel
                   </button>
                   <button
+                    ref={closeConfirmButtonRef}
                     type="button"
                     className="danger"
                     autoFocus
@@ -6783,6 +6926,7 @@ export default function App() {
                     Cancel
                   </button>
                   <button
+                    ref={closeConfirmButtonRef}
                     type="button"
                     className="danger"
                     autoFocus

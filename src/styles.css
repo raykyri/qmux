@@ -1411,6 +1411,36 @@ button:disabled {
   opacity: 0.85;
 }
 
+.settings-title-test {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-test-button {
+  min-width: 118px;
+}
+
+.settings-test-spinner {
+  animation: dictation-mic-spin 0.9s linear infinite;
+}
+
+.settings-title-test-message {
+  margin-left: auto;
+  max-width: 260px;
+  text-align: right;
+}
+
+.settings-title-test-message.is-success {
+  color: #b9f0d6;
+  opacity: 1;
+}
+
+.settings-title-test-message.is-error {
+  color: #ffb4a8;
+  opacity: 1;
+}
+
 .settings-divider {
   height: 1px;
   margin: 2px 0;
