@@ -2342,8 +2342,16 @@ export default function App() {
   async function createGroupAfter(group: GroupInfo) {
     setError(null);
     try {
-      await createGroup({ dir: group.dir, afterGroupId: group.id });
+      const newGroup = await createGroup({ dir: group.dir, afterGroupId: group.id });
+      const pane = await spawnShell(estimateInitialPaneSize(false), null, newGroup.id);
+      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
+      setActivePaneId(pane.id);
+      setLauncherOpen(false);
+      setLastActiveGroupId(pane.groupId);
       await refreshGroups();
+      requestAnimationFrame(() => {
+        terminalPaneRefs.current.get(pane.id)?.focus();
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
