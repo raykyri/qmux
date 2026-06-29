@@ -45,6 +45,21 @@ export interface UseQmuxEventsHandlers {
   // Fired once the single backend subscription is live, so panes can safely flush
   // their pre-attach output backlog (attachPane) without dropping cold-start bytes.
   onEventsReady: () => void;
+  onAgentSpawned?: (agent: AgentInfo, paneId: string | null, source: string | null) => void;
+  onAgentPromptSubmitted?: (agentId: string, prompt: string) => void;
+}
+
+function stringField(value: unknown, field: string): string | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const fieldValue = (value as Record<string, unknown>)[field];
+  return typeof fieldValue === "string" ? fieldValue : null;
+}
+
+function agentPromptSubmittedText(payload: Record<string, unknown>): string | null {
+  const hookPayload = payload.payload;
+  return stringField(hookPayload, "prompt") ?? stringField(hookPayload, "input");
 }
 
 export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
@@ -65,6 +80,8 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     dispatchPtyData,
     openBrowserOverlay,
     onEventsReady,
+    onAgentSpawned,
+    onAgentPromptSubmitted,
   } = handlers;
 
   useEffect(() => {
@@ -142,6 +159,13 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const updatedAgent = event.payload.agent;
         if (isAgentInfo(updatedAgent)) {
           setAgents((current) => upsertAgent(current, updatedAgent));
+          if (event.type === "agent.spawned") {
+            onAgentSpawned?.(
+              updatedAgent,
+              event.paneId ?? updatedAgent.paneId ?? null,
+              stringField(event.payload, "source"),
+            );
+          }
           // Light up "Working…" only on a *live* transition into a working
           // status. The boot snapshot loads agents via setAgents(list) (the
           // else-branch below), which never touches this set, so a stale
@@ -172,6 +196,12 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
               }
             })
             .catch(() => undefined);
+        }
+      }
+      if (event.agentId && event.type === "agent.prompt_submitted") {
+        const prompt = agentPromptSubmittedText(event.payload);
+        if (prompt) {
+          onAgentPromptSubmitted?.(event.agentId, prompt);
         }
       }
       if (event.type === "browser.open" && event.paneId) {

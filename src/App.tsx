@@ -970,6 +970,8 @@ export default function App() {
   const [manuallyTitledPaneIds, setManuallyTitledPaneIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const manuallyTitledPaneIdsRef = useRef(manuallyTitledPaneIds);
+  manuallyTitledPaneIdsRef.current = manuallyTitledPaneIds;
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   // Agents we believe are actively working *right now*, used to show the
   // "Working…" indicator at the bottom of the transcript. This is driven by live
@@ -1236,18 +1238,18 @@ export default function App() {
   }, []);
 
   function paneUsesDefaultTitle(pane: PaneInfo, agent: AgentInfo | undefined): boolean {
-    if (manuallyTitledPaneIds.has(pane.id)) {
+    if (manuallyTitledPaneIdsRef.current.has(pane.id)) {
       return false;
     }
-    const defaultTitle = defaultPaneTitle(pane, agent, config);
+    const defaultTitle = defaultPaneTitle(pane, agent, configRef.current);
     return defaultTitle !== null && pane.title === defaultTitle;
   }
 
   function paneHasUserSetTitle(pane: PaneInfo, agent: AgentInfo | undefined): boolean {
-    if (manuallyTitledPaneIds.has(pane.id)) {
+    if (manuallyTitledPaneIdsRef.current.has(pane.id)) {
       return true;
     }
-    const defaultTitle = defaultPaneTitle(pane, agent, config);
+    const defaultTitle = defaultPaneTitle(pane, agent, configRef.current);
     return defaultTitle !== null && pane.title !== defaultTitle;
   }
 
@@ -1449,6 +1451,34 @@ export default function App() {
       return;
     }
     pendingFirstTitleByAgentRef.current.delete(agentId);
+  }
+
+  function registerShellCodexFirstMessageTitle(
+    agent: AgentInfo,
+    paneId: string | null,
+    source: string | null,
+  ) {
+    if (source !== "shell" || agent.adapter !== CODEX_ADAPTER_ID) {
+      return;
+    }
+    const resolvedPaneId = paneId ?? agent.paneId ?? null;
+    if (!resolvedPaneId || pendingFirstTitleByAgentRef.current.has(agent.id)) {
+      return;
+    }
+
+    const pane = panesRef.current.find((candidate) => candidate.id === resolvedPaneId);
+    if (pane && paneHasUserSetTitle(pane, agent)) {
+      return;
+    }
+
+    pendingFirstTitleByAgentRef.current.set(
+      agent.id,
+      createPendingFirstMessageTitle(resolvedPaneId),
+    );
+  }
+
+  function handleAgentPromptSubmitted(agentId: string, prompt: string) {
+    applyPendingFirstMessageTitle(agentId, prompt);
   }
 
   // Drop per-pane UI state for panes that have closed so it can't leak or resurface.
@@ -3143,6 +3173,8 @@ export default function App() {
     dispatchPtyData,
     openBrowserOverlay,
     onEventsReady: handleEventsReady,
+    onAgentSpawned: registerShellCodexFirstMessageTitle,
+    onAgentPromptSubmitted: handleAgentPromptSubmitted,
   });
 
   async function addShellPane() {
