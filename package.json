@@ -8,6 +8,7 @@
     "dev:tauri": "tauri dev",
     "build": "scripts/build.sh",
     "build:web": "tsc && vite build",
+    "test:pane-splits": "node scripts/test-pane-splits.mjs",
     "check:scrollback": "node scripts/check-terminal-scrollback.mjs",
     "tauri": "tauri"
   },

@@ -50,6 +50,7 @@ export function normalizePaneSplitsForPanes(
   splits: PaneSplitInfo[],
   panes: PaneInfo[],
 ): PaneSplitInfo[] {
+  const availablePaneIds = new Set(panes.map((pane) => pane.id));
   const used = new Set<string>();
   const usedSplitIds = new Set<string>();
   const normalized: PaneSplitInfo[] = [];
@@ -60,7 +61,7 @@ export function normalizePaneSplitsForPanes(
     }
     const paneIds = orderedContiguousPaneIds(
       panes,
-      split.paneIds.filter((paneId) => !used.has(paneId)),
+      split.paneIds.filter((paneId) => availablePaneIds.has(paneId) && !used.has(paneId)),
     );
     if (!paneIds) {
       continue;
@@ -107,7 +108,7 @@ export function joinPaneSplit(
 ): PaneSplitInfo[] {
   const normalized = normalizePaneSplitsForPanes(splits, panes);
   // Use the raw split membership here, not only the already-normalized groups.
-  // `Split below` inserts a new tab between existing split members, so the old
+  // `Split terminal` inserts a new tab between existing split members, so the old
   // group can be temporarily non-contiguous in the new tab order until this merge
   // builds the replacement group.
   const existing = splits.filter(
@@ -131,27 +132,6 @@ export function joinPaneSplit(
     ),
     { id, paneIds, sizes: equalSizes(paneIds) },
   ];
-}
-
-export function removePaneFromSplit(
-  splits: PaneSplitInfo[],
-  panes: PaneInfo[],
-  paneId: string,
-): PaneSplitInfo[] {
-  return normalizePaneSplitsForPanes(
-    splits.map((split) =>
-      split.paneIds.includes(paneId)
-        ? {
-            ...split,
-            paneIds: split.paneIds.filter((id) => id !== paneId),
-            sizes: Object.fromEntries(
-              Object.entries(split.sizes ?? {}).filter(([id]) => id !== paneId),
-            ),
-          }
-        : split,
-    ),
-    panes,
-  );
 }
 
 export function splitFractions(split: PaneSplitInfo): number[] {

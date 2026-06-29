@@ -27,10 +27,8 @@ import {
   Minus,
   MoreHorizontal,
   PanelBottomClose,
-  PanelBottomOpen,
   Pencil,
   Plus,
-  Rows3,
   Settings,
   SquareChevronLeft,
   SquareChevronRight,
@@ -110,7 +108,6 @@ import {
   normalizePaneSplitsForPanes,
   paneSplitForPane,
   paneSplitsEqual,
-  removePaneFromSplit,
   resizeSplitFractions,
   splitFractions,
 } from "./lib/paneSplits";
@@ -2237,12 +2234,6 @@ export default function App() {
     setActivePaneId(sourcePane.id);
   }
 
-  function unsplitPane(pane: PaneInfo) {
-    setPaneContextMenu(null);
-    savePaneSplits(removePaneFromSplit(paneSplits, panes, pane.id));
-    setActivePaneId(pane.id);
-  }
-
   async function refreshAgentTurnQueue(agentId: string) {
     const queuedTurns = await listAgentTurnQueue(agentId);
     setAgentQueuedTurns(agentId, queuedTurns);
@@ -2575,7 +2566,9 @@ export default function App() {
   const canJoinContextMenuBelow = Boolean(
     contextMenuPane &&
       contextMenuAdjacentBelow &&
-      contextMenuPaneSplit?.id !== contextMenuAdjacentBelowSplit?.id,
+      (!contextMenuPaneSplit ||
+        !contextMenuAdjacentBelowSplit ||
+        contextMenuPaneSplit.id !== contextMenuAdjacentBelowSplit.id),
   );
 
   useEffect(() => {
@@ -5464,42 +5457,24 @@ export default function App() {
                 void splitPaneBelow(contextMenuPane);
               }}
             >
-              <PanelBottomOpen size={13} aria-hidden="true" />
-              <span>Split below</span>
+              <PanelBottomClose size={13} aria-hidden="true" />
+              <span>Split terminal</span>
               <kbd className="context-menu-shortcut">⌘D</kbd>
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!canJoinContextMenuBelow || !contextMenuAdjacentBelow}
-              title={
-                contextMenuAdjacentBelow
-                  ? "Show this tab and the next tab in one vertical split"
-                  : "No tab below"
-              }
-              onClick={() => {
-                if (contextMenuAdjacentBelow) {
+            {canJoinContextMenuBelow && contextMenuAdjacentBelow ? (
+              <button
+                type="button"
+                role="menuitem"
+                title="Show this tab and the next tab in one vertical split"
+                onClick={() => {
                   setPaneContextMenu(null);
                   joinPaneBelow(contextMenuPane, contextMenuAdjacentBelow);
-                }
-              }}
-            >
-              <Rows3 size={13} aria-hidden="true" />
-              <span>Join below</span>
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!contextMenuPaneSplit}
-              title="Remove this tab from its terminal split"
-              onClick={() => {
-                setPaneContextMenu(null);
-                unsplitPane(contextMenuPane);
-              }}
-            >
-              <PanelBottomClose size={13} aria-hidden="true" />
-              <span>Unsplit</span>
-            </button>
+                }}
+              >
+                <PanelBottomClose size={13} aria-hidden="true" />
+                <span>Join with terminal below</span>
+              </button>
+            ) : null}
             <div className="context-menu-divider" role="separator" />
             <button
               type="button"
