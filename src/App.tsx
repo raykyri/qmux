@@ -1052,6 +1052,7 @@ export default function App() {
   // buttons disabled) until the close/delete actually finishes.
   const [resolvingClose, setResolvingClose] = useState<"keep" | "delete" | null>(null);
   const [exitDialog, setExitDialog] = useState<ExitDialogState | null>(null);
+  const exitConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const [exitPreflightRequest, setExitPreflightRequest] =
     useState<ExitPreflightRequest | null>(null);
   const [renamePaneId, setRenamePaneId] = useState<string | null>(null);
@@ -3874,6 +3875,32 @@ export default function App() {
       cancelled = true;
     };
   }, [exitPreflightRequest]);
+
+  useEffect(() => {
+    if (!exitDialog) {
+      return;
+    }
+
+    const focusQuitButton = (force = false) => {
+      const button = exitConfirmButtonRef.current;
+      if (!button) {
+        return;
+      }
+      const dialog = button.closest(".confirm-dialog");
+      const activeElement = document.activeElement;
+      if (force || !dialog?.contains(activeElement)) {
+        button.focus();
+      }
+    };
+
+    focusQuitButton(true);
+    const frame = requestAnimationFrame(() => focusQuitButton());
+    const settle = window.setTimeout(() => focusQuitButton(), 100);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, [exitDialog]);
 
   function handlePaneTabClosePointerDown(
     event: ReactPointerEvent<HTMLElement>,
@@ -6797,6 +6824,7 @@ export default function App() {
                 Cancel
               </button>
               <button
+                ref={exitConfirmButtonRef}
                 type="button"
                 className="danger"
                 autoFocus
