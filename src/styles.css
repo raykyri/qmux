@@ -2694,6 +2694,14 @@ button:disabled {
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
+.turn-pane-floating-expand-button {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 5;
+  backdrop-filter: blur(6px);
+}
+
 /* Fork menu opens downward, right edge pinned to the button so it grows leftward. */
 .turn-pane-fork {
   position: relative;
@@ -2768,6 +2776,11 @@ button:disabled {
 .turn-timeline.is-empty {
   align-content: center;
   padding: 24px;
+}
+
+.turn-pane-split-cell .turn-timeline,
+.turn-pane.is-headerless-expanded .turn-timeline {
+  padding-top: 44px;
 }
 
 /* Stack the placeholder text and any transcript-health notice vertically. */

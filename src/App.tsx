@@ -19,11 +19,13 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  Expand,
   Folder,
   GitBranch,
   House,
   LoaderCircle,
   MessageSquareText,
+  Minimize2,
   Minus,
   MoreHorizontal,
   PanelBottomClose,
@@ -1064,6 +1066,9 @@ export default function App() {
   const [transcriptExpandedByPane, setTranscriptExpandedByPane] = useState<
     Record<string, boolean>
   >({});
+  const [splitTranscriptExpandedByPane, setSplitTranscriptExpandedByPane] = useState<
+    Record<string, boolean>
+  >({});
   const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
   const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
     {},
@@ -1370,6 +1375,12 @@ export default function App() {
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
     setTranscriptExpandedByPane((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([paneId]) => ids.has(paneId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    setSplitTranscriptExpandedByPane((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([paneId]) => ids.has(paneId)),
       );
@@ -1704,21 +1715,61 @@ export default function App() {
     setQueueSplitByAgent((current) => ({ ...current, [agentId]: !(current[agentId] ?? false) }));
   }
 
+  function toggledPaneRecord(current: Record<string, boolean>, paneId: string) {
+    const next = { ...current };
+    if (next[paneId]) {
+      delete next[paneId];
+    } else {
+      next[paneId] = true;
+    }
+    return next;
+  }
+
+  function paneRecordWithFlag(
+    current: Record<string, boolean>,
+    paneId: string,
+    expanded: boolean,
+  ) {
+    if (expanded) {
+      return current[paneId] ? current : { ...current, [paneId]: true };
+    }
+    if (!current[paneId]) {
+      return current;
+    }
+    const next = { ...current };
+    delete next[paneId];
+    return next;
+  }
+
+  function setTranscriptExpandedForPane(
+    paneId: string,
+    expanded: boolean,
+    splitMode = splitRightPaneMode,
+  ) {
+    if (splitMode) {
+      setSplitTranscriptExpandedByPane((current) =>
+        paneRecordWithFlag(current, paneId, expanded),
+      );
+      return;
+    }
+    setTranscriptExpandedByPane((current) => paneRecordWithFlag(current, paneId, expanded));
+  }
+
+  function toggleTranscriptExpandedForPane(paneId: string, splitMode = splitRightPaneMode) {
+    if (splitMode) {
+      setSplitTranscriptExpandedByPane((current) => toggledPaneRecord(current, paneId));
+      return;
+    }
+    setTranscriptExpandedByPane((current) => toggledPaneRecord(current, paneId));
+  }
+
   function toggleActiveTranscriptExpanded() {
     const paneId = activePane?.id;
-    if (!paneId || !hasTurnSidebar || splitRightPaneMode) {
+    if (!paneId || !activePaneHasTurnSidebar) {
       return;
     }
 
-    setTranscriptExpandedByPane((current) => {
-      const next = { ...current };
-      if (next[paneId]) {
-        delete next[paneId];
-      } else {
-        next[paneId] = true;
-      }
-      return next;
-    });
+    toggleTranscriptExpandedForPane(paneId);
   }
 
   function expandNewAgentTranscriptByDefault(pane: PaneInfo) {
@@ -1901,10 +1952,17 @@ export default function App() {
   const activePaneHasTurnPaneHeader = activePaneHasTurnSidebar && !splitRightPaneMode;
   const hasTurnSidebar = visibleTurnPaneSurfaces.length > 0;
   const activeTranscriptExpanded = Boolean(
-    !splitRightPaneMode &&
-      activePane &&
+    activePane &&
       activePaneHasTurnSidebar &&
-      transcriptExpandedByPane[activePane.id],
+      (splitRightPaneMode
+        ? splitTranscriptExpandedByPane[activePane.id]
+        : transcriptExpandedByPane[activePane.id]),
+  );
+  const showFloatingBrowserControls = Boolean(
+    activePane &&
+      !activeTranscriptExpanded &&
+      !activeBrowserOverlay?.open &&
+      !activePaneHasTurnPaneHeader,
   );
   const visibleTurnPaneAgentIds = visibleTurnPaneSurfaces
     .map((surface) => surface.agent?.id)
@@ -4082,7 +4140,7 @@ export default function App() {
     requestClosePaneRef.current = requestClosePane;
     splitPaneBelowRef.current = splitPaneBelow;
     canToggleActiveTranscriptExpandedRef.current = Boolean(
-      activePane && activePaneHasTurnPaneHeader,
+      activePane && activePaneHasTurnSidebar,
     );
     toggleActiveTranscriptExpandedRef.current = toggleActiveTranscriptExpanded;
   });
@@ -5090,7 +5148,6 @@ export default function App() {
     const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
     const paneStatus = paneTabStatusLabel(pane, paneAgent);
     const paneSplit = paneSplitForPane(paneSplits, pane.id);
-    const paneVisibleInSplit = visibleTerminalPaneIdSet.has(pane.id) && pane.id !== activePane?.id;
     // The panes of the active split render as one connected card in the sidebar.
     // Flag the run (and its top/bottom edges) so only the split you're viewing is
     // grouped — an inactive split keeps plain tabs. Members are contiguous within
@@ -5128,7 +5185,6 @@ export default function App() {
       "pane-tab-row",
       pane.id === activePane?.id ? "is-selected" : "",
       paneSplit ? "is-split-member" : "",
-      paneVisibleInSplit ? "is-split-visible" : "",
       paneInActiveSplit ? "is-split-active" : "",
       isActiveSplitFirst ? "is-split-active-first" : "",
       isActiveSplitLast ? "is-split-active-last" : "",
@@ -5304,6 +5360,34 @@ export default function App() {
       top: `${surface.topFraction * 100}%`,
       height: `${surface.heightFraction * 100}%`,
     };
+  }
+
+  function renderFloatingTranscriptExpandButton(surface: TurnPaneSurface) {
+    const expanded = surface.pane.id === activePane?.id && activeTranscriptExpanded;
+    const label = expanded ? "Restore transcript" : "Expand transcript";
+    return (
+      <button
+        type="button"
+        className={`turn-pane-header-button turn-pane-floating-expand-button${
+          expanded ? " is-active" : ""
+        }`}
+        title={`${label} (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
+        aria-label={label}
+        aria-pressed={expanded}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          activateTerminalPane(surface.pane.id);
+          setTranscriptExpandedForPane(surface.pane.id, !expanded, true);
+        }}
+      >
+        {expanded ? (
+          <Minimize2 size={14} aria-hidden="true" />
+        ) : (
+          <Expand size={14} aria-hidden="true" />
+        )}
+      </button>
+    );
   }
 
   function renderTurnPaneSurface(surface: TurnPaneSurface, showHeader: boolean) {
@@ -6778,7 +6862,14 @@ export default function App() {
         </div>
       </section>
 
-      {hasTurnSidebar && splitRightPaneMode ? (
+      {hasTurnSidebar && activeTranscriptExpanded && activeTurnPaneSurface ? (
+        <aside
+          className={`turn-pane is-expanded${splitRightPaneMode ? " is-headerless-expanded" : ""}`}
+        >
+          {renderTurnPaneSurface(activeTurnPaneSurface, !splitRightPaneMode)}
+          {splitRightPaneMode ? renderFloatingTranscriptExpandButton(activeTurnPaneSurface) : null}
+        </aside>
+      ) : hasTurnSidebar && splitRightPaneMode ? (
         <aside
           className={`turn-pane turn-pane-stack${
             activeTurnPaneSurface?.hasTurnSidebar ? " has-active-split-cell" : ""
@@ -6796,12 +6887,13 @@ export default function App() {
               onFocusCapture={() => activateTerminalPane(surface.pane.id)}
             >
               {renderTurnPaneSurface(surface, false)}
+              {renderFloatingTranscriptExpandButton(surface)}
             </section>
           ))}
         </aside>
       ) : hasTurnSidebar && activeTurnPaneSurface ? (
-        <aside className={`turn-pane${activeTranscriptExpanded ? " is-expanded" : ""}`}>
-          {activeTranscriptExpanded ? null : renderTurnPaneResizer()}
+        <aside className="turn-pane">
+          {renderTurnPaneResizer()}
           {renderTurnPaneSurface(activeTurnPaneSurface, true)}
         </aside>
       ) : null}
@@ -6821,7 +6913,7 @@ export default function App() {
       ) : null}
       {/* The floating toggle sits over the terminal only when the active tab has no
           visible right-pane header; otherwise the toggle lives in that header. */}
-      {activePane && !activeBrowserOverlay?.open && !activePaneHasTurnPaneHeader ? (
+      {showFloatingBrowserControls ? (
         <BrowserOverlayControls
           open={false}
           shortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
