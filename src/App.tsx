@@ -1276,7 +1276,7 @@ export default function App() {
     const queueCount = queuedTurnsForAgent(agent).length;
     const rawStatus = agent ? agentStatusLabel(agent.status) : statusLabel(pane.status);
     return (agent?.status === "running" || agent?.status === "idle") && queueCount > 0
-      ? `${queueCount} ${paneWaitsOnOtherPane(agent) ? "queued after" : "queued"}`
+      ? `${queueCount} ${paneWaitsOnOtherPane(agent) ? "waiting" : "queued"}`
       : rawStatus === "Running"
         ? null
         : rawStatus;
