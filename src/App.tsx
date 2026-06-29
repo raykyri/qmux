@@ -163,6 +163,7 @@ import {
   confirmAppExit,
   createGroup,
   forkAgent,
+  getActiveTab,
   getPaneSplits,
   getLauncherAdapterPreference,
   getAgentDraft,
@@ -189,6 +190,7 @@ import {
   renamePane,
   restoreLastClosedPane,
   setLauncherAdapterPreference,
+  setActiveTab,
   setPaneLayout,
   setPaneSplits as persistPaneSplits,
   setAgentDraft as persistAgentDraft,
@@ -896,6 +898,7 @@ export default function App() {
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
+  const activeTabPersistenceReadyRef = useRef(false);
   const appToastTimerRef = useRef<number | null>(null);
   const suppressPaneTabClickRef = useRef(false);
   const dismissedRecoveredPaneIdsRef = useRef<Set<string>>(new Set());
@@ -1171,6 +1174,16 @@ export default function App() {
       setLastActiveGroupId(activePane.groupId);
     }
   }, [activePane?.groupId]);
+  useEffect(() => {
+    if (!activeTabPersistenceReadyRef.current) {
+      return;
+    }
+    const nextActiveTabId = homeActive ? HOME_TAB_ID : (activePane?.id ?? null);
+    if (!nextActiveTabId) {
+      return;
+    }
+    void setActiveTab(nextActiveTabId).catch(() => undefined);
+  }, [homeActive, activePane?.id]);
   const handleTerminalTitleChange = useCallback((paneId: string, rawTitle: string) => {
     const title = sanitizeTerminalTitle(rawTitle);
     setTerminalTitleByPane((current) => {
@@ -2741,6 +2754,7 @@ export default function App() {
         const [
           runtimeConfig,
           preferredLauncherAdapterId,
+          preferredActiveTabId,
           existingGroups,
           existingPanes,
           existingPaneSplits,
@@ -2749,6 +2763,7 @@ export default function App() {
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
+          getActiveTab().catch(() => null),
           listGroups().catch((): GroupInfo[] => []),
           listPanes(),
           getPaneSplits().catch((): PaneSplitInfo[] => []),
@@ -2801,19 +2816,29 @@ export default function App() {
         setDraftsByAgentState(restoredDrafts);
 
         if (existingPanes.length > 0) {
+          const restoredActivePane =
+            preferredActiveTabId && preferredActiveTabId !== HOME_TAB_ID
+              ? existingPanes.find((pane) => pane.id === preferredActiveTabId)
+              : undefined;
+          const fallbackPane = restoredActivePane ?? existingPanes[0];
+          const nextActivePaneId =
+            preferredActiveTabId === HOME_TAB_ID ? HOME_TAB_ID : fallbackPane.id;
           setPanesPreservingRecoveredDismissals(existingPanes);
-          setActivePaneId(existingPanes[0].id);
-          setLastActiveGroupId(existingPanes[0].groupId);
+          setActivePaneId(nextActivePaneId);
+          setLastActiveGroupId(fallbackPane.groupId);
+          activeTabPersistenceReadyRef.current = true;
           return;
         }
 
         const pane = await spawnShell(estimateInitialPaneSize(false));
         if (!cancelled) {
           const latestGroups = await listGroups().catch((): GroupInfo[] => []);
+          const nextActivePaneId = preferredActiveTabId === HOME_TAB_ID ? HOME_TAB_ID : pane.id;
           setGroups(latestGroups);
           setPanesPreservingRecoveredDismissals([pane]);
-          setActivePaneId(pane.id);
+          setActivePaneId(nextActivePaneId);
           setLastActiveGroupId(pane.groupId);
+          activeTabPersistenceReadyRef.current = true;
         }
       } catch (err) {
         if (!cancelled) {

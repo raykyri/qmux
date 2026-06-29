@@ -159,6 +159,16 @@ fn launcher_adapter_preference_set(
     persistence::save_preferences(&state.config().workspace_root, &preferences)
 }
 
+#[tauri::command]
+fn active_tab_get(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+    state.active_tab_id()
+}
+
+#[tauri::command]
+fn active_tab_set(state: tauri::State<'_, AppState>, tab_id: Option<String>) -> Result<(), String> {
+    state.set_active_tab_id(tab_id)
+}
+
 /// Shows the native macOS folder chooser via `osascript` and returns the selected
 /// POSIX path, or `None` when the user cancels. Hand-rolled (cf. the login-shell PATH
 /// probe in launch_path.rs) to avoid pulling in a dialog plugin; macOS-only, matching
@@ -827,6 +837,8 @@ fn main() {
             get_runtime_config,
             launcher_adapter_preference_get,
             launcher_adapter_preference_set,
+            active_tab_get,
+            active_tab_set,
             open_external_url,
             dictation_cache_metadata,
             dictation_cache_read,

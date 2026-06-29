@@ -36,6 +36,14 @@ export function setLauncherAdapterPreference(adapterId: string) {
   return invoke<void>("launcher_adapter_preference_set", { adapterId });
 }
 
+export function getActiveTab() {
+  return invoke<string | null>("active_tab_get");
+}
+
+export function setActiveTab(tabId: string | null) {
+  return invoke<void>("active_tab_set", { tabId });
+}
+
 export interface ShowHideShortcutSetting {
   accelerator: string | null;
   registered: boolean;

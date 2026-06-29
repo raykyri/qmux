@@ -52,6 +52,10 @@ pub struct PersistedState {
     /// shared top-to-bottom terminal viewport; older state files simply have none.
     #[serde(default)]
     pub pane_splits: Vec<PaneSplitInfo>,
+    /// The selected tab in the frontend. This may be a pane id or the Home tab
+    /// sentinel; the frontend validates it against the recovered panes on boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tab_id: Option<String>,
 }
 
 impl Default for PersistedState {
@@ -67,6 +71,7 @@ impl Default for PersistedState {
             recent_sessions: Vec::new(),
             drafts: HashMap::new(),
             pane_splits: Vec::new(),
+            active_tab_id: None,
         }
     }
 }
@@ -477,12 +482,14 @@ mod tests {
         let state = PersistedState {
             next_id: 17,
             panes: vec![sample_pane()],
+            active_tab_id: Some("pane-1".to_string()),
             ..PersistedState::default()
         };
         save(&root, &state).unwrap();
 
         let loaded = load_with_diagnostics(&root).state;
         assert_eq!(loaded.next_id, 17);
+        assert_eq!(loaded.active_tab_id.as_deref(), Some("pane-1"));
         assert_eq!(loaded.panes.len(), 1);
         let pane = &loaded.panes[0];
         assert_eq!(pane.id, "pane-1");

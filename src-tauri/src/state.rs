@@ -119,6 +119,9 @@ struct Model {
     /// Agent-session resumes queued at restore, keyed by the recovered shell pane id;
     /// each is drained by that pane's respawn. Transient (not persisted).
     shell_agent_resumes: HashMap<String, ShellAgentResume>,
+    /// The selected frontend tab, persisted so restarts return to the same place.
+    /// The value is either a pane id or the frontend's Home tab sentinel.
+    active_tab_id: Option<String>,
     /// One-entry undo stack for an explicitly closed tab. Transient: a closed tab can
     /// be restored during the current app run, but it is not resurrected after restart.
     last_closed_pane: Option<ClosedPaneSnapshot>,
@@ -398,6 +401,13 @@ fn pop_ready_locked(model: &mut Model, agent_id: &str) -> Option<(QueuedTurn, us
     Some((turn, pending_count))
 }
 
+fn sanitize_active_tab_id(tab_id: Option<String>) -> Option<String> {
+    tab_id.and_then(|id| {
+        let trimmed = id.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
     let mut seen = HashSet::new();
     let mut stack = vec![target.to_string()];
@@ -671,6 +681,7 @@ impl AppState {
             eprintln!("qmux: {}", warning.message);
         }
         let persisted = outcome.state;
+        let active_tab_id = sanitize_active_tab_id(persisted.active_tab_id.clone());
         let shell_pane_ids = persisted
             .panes
             .iter()
@@ -746,6 +757,7 @@ impl AppState {
                     model.recent_sessions.insert(session.id.clone(), session);
                 }
             }
+            model.active_tab_id = active_tab_id;
             model.pane_splits = persisted.pane_splits;
             let now = now_millis();
             let agents = model.agents.values().cloned().collect::<Vec<_>>();
@@ -804,6 +816,7 @@ impl AppState {
                 drafts: model.agent_drafts.clone(),
                 pane_splits: normalized_pane_splits(&model, model.pane_splits.clone(), false)
                     .unwrap_or_default(),
+                active_tab_id: model.active_tab_id.clone(),
             }
         };
 
@@ -917,6 +930,36 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(ordered_panes(&model))
+    }
+
+    pub fn active_tab_id(&self) -> Result<Option<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.active_tab_id.clone())
+    }
+
+    pub fn set_active_tab_id(&self, tab_id: Option<String>) -> Result<(), String> {
+        let tab_id = sanitize_active_tab_id(tab_id);
+        let changed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.active_tab_id == tab_id {
+                false
+            } else {
+                model.active_tab_id = tab_id;
+                true
+            }
+        };
+        if changed {
+            self.persist();
+        }
+        Ok(())
     }
 
     pub fn pane_splits(&self) -> Result<Vec<PaneSplitInfo>, String> {
@@ -5153,6 +5196,34 @@ mod tests {
             .enqueue_agent_turn("agent-1", "ghost".to_string())
             .unwrap();
         assert!(!crate::persistence::state_path(&workspace).exists());
+    }
+
+    #[test]
+    fn active_tab_round_trips_through_persistence() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+            state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+
+            state
+                .set_active_tab_id(Some(" pane-2 ".to_string()))
+                .unwrap();
+            assert_eq!(state.active_tab_id().unwrap().as_deref(), Some("pane-2"));
+
+            let saved = crate::persistence::load_with_diagnostics(&workspace).state;
+            assert_eq!(saved.active_tab_id.as_deref(), Some("pane-2"));
+        }
+
+        let state = AppState::new(config);
+        state.restore_session();
+        assert_eq!(state.active_tab_id().unwrap().as_deref(), Some("pane-2"));
+
+        state.set_active_tab_id(Some("   ".to_string())).unwrap();
+        assert_eq!(state.active_tab_id().unwrap(), None);
     }
 
     #[test]
