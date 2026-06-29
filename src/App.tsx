@@ -1253,6 +1253,14 @@ export default function App() {
     return defaultTitle !== null && pane.title !== defaultTitle;
   }
 
+  function paneStillBelongsToAgent(
+    pane: PaneInfo,
+    agent: AgentInfo | undefined,
+    expectedAgentId: string | undefined,
+  ): boolean {
+    return !expectedAgentId || agent?.id === expectedAgentId || pane.agentId === expectedAgentId;
+  }
+
   function displayPaneTitle(pane: PaneInfo, agent: AgentInfo | undefined): string {
     const terminalTitle = terminalTitleByPane[pane.id];
     return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
@@ -1359,6 +1367,7 @@ export default function App() {
     sourceMessage: string,
     titleConfig: FirstMessageTitleConfig,
     fallbackPane?: PaneInfo,
+    expectedAgentId?: string,
   ) {
     if (!sourceMessage) {
       return;
@@ -1369,6 +1378,9 @@ export default function App() {
     const paneAgent = pane
       ? agentsRef.current.find((agent) => agent.paneId === pane.id)
       : undefined;
+    if (pane && !paneStillBelongsToAgent(pane, paneAgent, expectedAgentId)) {
+      return;
+    }
     if (pane && paneHasUserSetTitle(pane, paneAgent)) {
       return;
     }
@@ -1394,6 +1406,12 @@ export default function App() {
     const currentPaneAgent = currentPane
       ? agentsRef.current.find((agent) => agent.paneId === currentPane.id)
       : undefined;
+    if (
+      currentPane &&
+      !paneStillBelongsToAgent(currentPane, currentPaneAgent, expectedAgentId)
+    ) {
+      return;
+    }
     if (!currentPane || paneHasUserSetTitle(currentPane, currentPaneAgent)) {
       return;
     }
@@ -1447,7 +1465,7 @@ export default function App() {
     const titleConfig = firstMessageTitleConfig(settingsRef.current, configRef.current);
     if (titleConfig) {
       pendingFirstTitleByAgentRef.current.delete(agentId);
-      void applyFirstMessageTitle(pending.paneId, sourceMessage, titleConfig);
+      void applyFirstMessageTitle(pending.paneId, sourceMessage, titleConfig, undefined, agentId);
       return;
     }
     pendingFirstTitleByAgentRef.current.delete(agentId);
