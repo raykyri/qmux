@@ -965,6 +965,7 @@ export default function App() {
   const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
     Record<string, boolean[]>
   >({});
+  const [waitTargetHoverAgentId, setWaitTargetHoverAgentId] = useState<string | null>(null);
   const [draftsByAgent, setDraftsByAgentState] = useState<Record<string, string>>({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [shortcutHintsVisible, setShortcutHintsVisible] = useState(false);
@@ -5029,6 +5030,7 @@ export default function App() {
       pane.id === activePane?.id ? "is-selected" : "",
       paneSplit ? "is-split-member" : "",
       paneVisibleInSplit ? "is-split-visible" : "",
+      paneAgent?.id === waitTargetHoverAgentId ? "is-wait-target-preview" : "",
       canClearWorkingStatus ? "has-clearable-status" : "",
       isDraggingRow ? "is-dragging" : "",
       dropGap === index ? "is-drop-before" : "",
@@ -5308,6 +5310,7 @@ export default function App() {
                 onQueueChange={setAgentQueuedTurns}
                 onDraftChange={setAgentDraft}
                 onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
+                onWaitTargetHover={setWaitTargetHoverAgentId}
                 onTurnSubmitted={(agentId, text, mode) => {
                   // Show "Working…" the instant a send starts a run, before the
                   // backend's status event round-trips. Gate on the agent being

@@ -44,10 +44,10 @@ const QUEUED_TURN_ANIM_MS = 120;
 const QUEUE_DRAG_START_THRESHOLD = 4;
 const QUEUE_DRAG_CLICK_SUPPRESS_MS = 100;
 const QUEUED_TURN_CLICK_DELAY_MS = 220;
-// Terminal title progress markers tend to be a leading glyph plus spacing; strip
+// Terminal title progress markers tend to be leading glyphs and spacing; strip
 // those only for the queued-turn wait footer so the stored wait target stays raw.
 const WAIT_TITLE_PROGRESS_PREFIX_RE =
-  /^[ \t]*(?:[·•●○◦∙⋅⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✢✣✤✥✦✧✶✷✸✹✺✻✼✽✾✿][ \t]+)+/u;
+  /^[ \t·•●○◦∙⋅⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✢✣✤✥✦✧✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿\uFE0E\uFE0F]+/u;
 
 type QueuePointerDrag = {
   pointerId: number;
@@ -171,6 +171,7 @@ interface NativeInputProps {
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
+  onWaitTargetHover: (agentId: string | null) => void;
   onTurnSubmitted: (agentId: string, text: string, mode: SubmitAgentTurnMode) => void;
   onUserInput: (agentId: string) => void;
   // Read/write a tab's last queue scroll position (kept in App so it survives the
@@ -197,6 +198,7 @@ export default function NativeInput({
   onQueueChange,
   onDraftChange,
   onQueuedTurnCollapseToggle,
+  onWaitTargetHover,
   onTurnSubmitted,
   onUserInput,
   getQueueScroll,
@@ -331,6 +333,7 @@ export default function NativeInput({
 
   useEffect(() => {
     if (!waitOpen) {
+      onWaitTargetHover(null);
       return;
     }
     const handlePointerDown = (event: MouseEvent) => {
@@ -352,7 +355,9 @@ export default function NativeInput({
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [waitOpen]);
+  }, [onWaitTargetHover, waitOpen]);
+
+  useEffect(() => () => onWaitTargetHover(null), [onWaitTargetHover]);
 
   // Place the portaled popover above the ⋮ trigger, opening upward (away from the
   // bottom edge). It right-aligns to the trigger, then clamps horizontally within
@@ -543,6 +548,7 @@ export default function NativeInput({
 
     dictation.stop();
     setWaitOpen(false);
+    onWaitTargetHover(null);
     setSubmitting(true);
     try {
       const result = await queueWaitAgentTurn(
@@ -1016,7 +1022,12 @@ export default function NativeInput({
                   </div>
                 ) : null}
                 {turn.waitFor ? (
-                  <div className="queued-turn-wait-label" aria-hidden="true">
+                  <div
+                    className="queued-turn-wait-label"
+                    aria-hidden="true"
+                    onPointerEnter={() => onWaitTargetHover(turn.waitFor?.agentId ?? null)}
+                    onPointerLeave={() => onWaitTargetHover(null)}
+                  >
                     {index === 0 ? "Waiting on" : "Wait on"}{" "}
                     {waitFooterLabelWithShortcut(
                       turn.waitFor.label ?? "selected terminal",
@@ -1345,6 +1356,10 @@ export default function NativeInput({
                           role="menuitem"
                           className="wait-target-item"
                           title={waitLabelWithShortcut(target.label, target.shortcutLabel)}
+                          onPointerEnter={() => onWaitTargetHover(target.agentId)}
+                          onPointerLeave={() => onWaitTargetHover(null)}
+                          onFocus={() => onWaitTargetHover(target.agentId)}
+                          onBlur={() => onWaitTargetHover(null)}
                           onClick={() => void submitWaitTurn(target)}
                         >
                           <span className={waitTargetStatusDotClass(target)} aria-hidden="true" />

@@ -304,7 +304,8 @@ button:disabled {
   user-select: none;
 }
 
-.pane-tab:hover {
+.pane-tab:hover,
+.pane-tab-row.is-wait-target-preview .pane-tab {
   /* A touch lighter than the sidebar rather than darker, so hover lifts off the
      panel — but kept below the selected fill so the two stay distinct. */
   --pane-tab-status-bg: rgba(27, 31, 33, 0.7);
@@ -1007,13 +1008,15 @@ button:disabled {
   color: #ffd3c7;
 }
 
-.pane-tab-row:hover .pane-tab-close {
+.pane-tab-row:hover .pane-tab-close,
+.pane-tab-row.is-wait-target-preview .pane-tab-close {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
 }
 
-.pane-tab-row.has-clearable-status:hover .pane-tab-close {
+.pane-tab-row.has-clearable-status:hover .pane-tab-close,
+.pane-tab-row.has-clearable-status.is-wait-target-preview .pane-tab-close {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1021,11 +1024,13 @@ button:disabled {
 
 /* Hide the status dot while hovering so the × takes its place. Use visibility
    (not opacity) so it wins over the status-dot-pulse opacity animation. */
-.pane-tab-row:hover .pane-tab-dot {
+.pane-tab-row:hover .pane-tab-dot,
+.pane-tab-row.is-wait-target-preview .pane-tab-dot {
   visibility: hidden;
 }
 
-.pane-tab-row.has-clearable-status:hover .pane-tab-clear-status .pane-tab-dot {
+.pane-tab-row.has-clearable-status:hover .pane-tab-clear-status .pane-tab-dot,
+.pane-tab-row.has-clearable-status.is-wait-target-preview .pane-tab-clear-status .pane-tab-dot {
   visibility: visible;
 }
 
@@ -3630,6 +3635,7 @@ header + .turn-blocks {
 
 .queued-turn-wait-label {
   color: #d8b878;
+  cursor: default;
 }
 
 /* "Paused" status sits at the far left of the composer's submit row (the
