@@ -2055,6 +2055,9 @@ export default function App() {
         .map((pane, index) => turnPaneSurfaceForPane(pane, index))
         .filter((surface) => surface.hasTurnSidebar)
     : [];
+  const splitTurnPaneSurfaceByPaneId = new Map(
+    splitTurnPaneSurfaces.map((surface) => [surface.pane.id, surface]),
+  );
   const visibleTurnPaneSurfaces = splitRightPaneMode
     ? splitTurnPaneSurfaces
     : activeTurnPaneSurface?.hasTurnSidebar
@@ -2063,12 +2066,17 @@ export default function App() {
   const activePaneHasTurnSidebar = Boolean(activeTurnPaneSurface?.hasTurnSidebar);
   const activePaneHasTurnPaneHeader = activePaneHasTurnSidebar && !splitRightPaneMode;
   const hasTurnSidebar = visibleTurnPaneSurfaces.length > 0;
+  const hasGlobalTurnSidebar = hasTurnSidebar && !splitRightPaneMode;
   const activeTranscriptExpanded = Boolean(
     activePane &&
       activePaneHasTurnSidebar &&
       (splitRightPaneMode
         ? splitTranscriptExpandedByPane[activePane.id]
         : transcriptExpandedByPane[activePane.id]),
+  );
+  const activePaneReservesTurnPaneWidth = Boolean(
+    hasGlobalTurnSidebar ||
+      (splitRightPaneMode && activePaneHasTurnSidebar && !activeTranscriptExpanded),
   );
   const showFloatingBrowserControls = Boolean(
     activePane &&
@@ -2728,7 +2736,10 @@ export default function App() {
     "--turn-font-delta": `${turnFontDelta}px`,
     "--transcript-expanded-font-delta": `${transcriptExpandedFontDelta}px`,
     "--transcript-expanded-line-height-delta": `${transcriptExpandedLineHeightDelta}`,
-    ...(hasTurnSidebar ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
+    ...(activePaneReservesTurnPaneWidth ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
+    ...(splitRightPaneMode && hasTurnSidebar
+      ? { "--inline-turn-pane-width": `${turnPaneWidth}px` }
+      : {}),
   } as CSSProperties;
 
   function terminalPaneStyle(paneId: string): CSSProperties | undefined {
@@ -2741,10 +2752,13 @@ export default function App() {
     }
     const top = activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0);
     const height = activeSplitFractions[index] ?? 0;
+    const reservesInlineTurnPane =
+      !activeTranscriptExpanded && splitTurnPaneSurfaceByPaneId.has(paneId);
     return {
       top: `${top * 100}%`,
       bottom: "auto",
       height: `${height * 100}%`,
+      right: reservesInlineTurnPane ? "var(--inline-turn-pane-width)" : 0,
     };
   }
 
@@ -5823,7 +5837,7 @@ export default function App() {
   return (
     <main
       ref={appRef}
-      className={`app-shell ${hasTurnSidebar ? "has-turn-sidebar" : ""}${
+      className={`app-shell ${hasGlobalTurnSidebar ? "has-turn-sidebar" : ""}${
         activeTranscriptExpanded ? " has-expanded-transcript" : ""
       }${settings.reduceMotion ? " reduce-motion" : ""}`}
       style={appStyle}
@@ -7225,6 +7239,33 @@ export default function App() {
                 />
               ))
             : null}
+          {!activeTranscriptExpanded && splitRightPaneMode
+            ? visibleTurnPaneSurfaces.map((surface) => (
+                <section
+                  key={surface.pane.id}
+                  className={`turn-pane turn-pane-split-cell${
+                    surface.pane.id === activePane?.id ? " is-active" : ""
+                  }`}
+                  style={turnPaneSplitCellStyle(surface)}
+                  onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
+                  onFocusCapture={() => activateTerminalPane(surface.pane.id)}
+                >
+                  {renderTurnPaneResizer()}
+                  {renderTurnPaneSurface(surface, false)}
+                  {renderFloatingTranscriptExpandButton(surface)}
+                </section>
+              ))
+            : null}
+          {!activeTranscriptExpanded && splitRightPaneMode && hasTurnSidebar
+            ? terminalSplitDividerOffsets.map((offset, index) => (
+                <div
+                  key={`turn-${activePaneSplit?.id ?? "split"}-${index}`}
+                  className="turn-pane-split-divider turn-pane-inline-split-divider"
+                  style={{ top: `${offset * 100}%` }}
+                  aria-hidden="true"
+                />
+              ))
+            : null}
         </div>
       </section>
 
@@ -7235,37 +7276,7 @@ export default function App() {
           {renderTurnPaneSurface(activeTurnPaneSurface, !splitRightPaneMode)}
           {splitRightPaneMode ? renderFloatingTranscriptExpandButton(activeTurnPaneSurface) : null}
         </aside>
-      ) : hasTurnSidebar && splitRightPaneMode ? (
-        <aside
-          className={`turn-pane turn-pane-stack${
-            activeTurnPaneSurface?.hasTurnSidebar ? " has-active-split-cell" : ""
-          }`}
-        >
-          {renderTurnPaneResizer()}
-          {visibleTurnPaneSurfaces.map((surface) => (
-            <section
-              key={surface.pane.id}
-              className={`turn-pane turn-pane-split-cell${
-                surface.pane.id === activePane?.id ? " is-active" : ""
-              }`}
-              style={turnPaneSplitCellStyle(surface)}
-              onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
-              onFocusCapture={() => activateTerminalPane(surface.pane.id)}
-            >
-              {renderTurnPaneSurface(surface, false)}
-              {renderFloatingTranscriptExpandButton(surface)}
-            </section>
-          ))}
-          {terminalSplitDividerOffsets.map((offset, index) => (
-            <div
-              key={`turn-${activePaneSplit?.id ?? "split"}-${index}`}
-              className="turn-pane-split-divider"
-              style={{ top: `${offset * 100}%` }}
-              aria-hidden="true"
-            />
-          ))}
-        </aside>
-      ) : hasTurnSidebar && activeTurnPaneSurface ? (
+      ) : hasGlobalTurnSidebar && activeTurnPaneSurface ? (
         <aside className="turn-pane">
           {renderTurnPaneResizer()}
           {renderTurnPaneSurface(activeTurnPaneSurface, true)}
