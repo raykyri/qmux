@@ -905,6 +905,7 @@ export default function App() {
   const canToggleActiveTranscriptExpandedRef = useRef(false);
   const toggleActiveTranscriptExpandedRef = useRef<() => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
+  const suppressGroupMenuButtonClickRef = useRef(false);
   const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
   const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
   const closeActiveBrowserOverlayRef = useRef<() => void>(() => {});
@@ -5376,6 +5377,24 @@ export default function App() {
     });
   }
 
+  function toggleGroupMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>, group: GroupInfo) {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX || rect.right;
+    const y = event.clientY || rect.bottom;
+    setPaneContextMenu(null);
+    setGroupMenu((current) =>
+      current?.groupId === group.id
+        ? null
+        : {
+            groupId: group.id,
+            x: clamp(x, 8, Math.max(8, window.innerWidth - GROUP_CONTEXT_MENU_WIDTH - 8)),
+            y: clamp(y, 8, Math.max(8, window.innerHeight - GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT - 8)),
+          },
+    );
+  }
+
   function renderPaneTabRow(pane: PaneInfo, index: number, groupPanes: PaneInfo[], groupId: string) {
     const paneAgent = agents.find((agent) => agent.paneId === pane.id);
     const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
@@ -5865,8 +5884,25 @@ export default function App() {
                       type="button"
                       className="pane-group-menu-button"
                       aria-label={`Group options for ${groupDisplayName}`}
+                      aria-haspopup="menu"
+                      aria-expanded={groupMenu?.groupId === group.id ? true : undefined}
                       title="Group options"
-                      onClick={(event) => openGroupMenu(event, group)}
+                      onMouseDown={(event) => {
+                        if (event.button !== 0) {
+                          return;
+                        }
+                        suppressGroupMenuButtonClickRef.current = true;
+                        toggleGroupMenuFromButton(event, group);
+                      }}
+                      onClick={(event) => {
+                        if (suppressGroupMenuButtonClickRef.current) {
+                          suppressGroupMenuButtonClickRef.current = false;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          return;
+                        }
+                        toggleGroupMenuFromButton(event, group);
+                      }}
                     >
                       <MoreHorizontal size={14} aria-hidden="true" />
                     </button>
