@@ -1860,9 +1860,12 @@ export default function App() {
     if (!activeWaitAgent) {
       return [];
     }
-    const paneById = new Map(panes.map((pane) => [pane.id, pane]));
-    return agents
-      .flatMap((agent) => {
+    return sidebarPanes
+      .flatMap((pane) => {
+        const agent = agentByPaneId.get(pane.id);
+        if (!agent) {
+          return [];
+        }
         if (agent.id === activeWaitAgent.id || agent.status === "failed") {
           return [];
         }
@@ -1873,10 +1876,6 @@ export default function App() {
           agent.status === "awaitingInput" ||
           agent.status === "awaitingPermission";
         if (!hasActiveWork && queuedTurns.length === 0) {
-          return [];
-        }
-        const pane = agent.paneId ? paneById.get(agent.paneId) : undefined;
-        if (!pane) {
           return [];
         }
         return [
