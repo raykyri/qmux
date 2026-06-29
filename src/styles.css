@@ -791,7 +791,7 @@ button:disabled {
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
-  font-size: 12px;
+  font-size: 13.5px;
   user-select: text;
 }
 
@@ -839,6 +839,7 @@ button:disabled {
   display: grid;
   gap: 1px;
   margin: 0;
+  font-size: 12px;
 }
 
 .pane-context-details div {
@@ -861,58 +862,19 @@ button:disabled {
 }
 
 .pane-context-actions {
-  display: flex;
-  gap: 6px;
   margin-top: 6px;
-  padding: 6px 6px 2px;
+  padding-top: 4px;
   border-top: 0.5px solid rgba(255, 255, 255, 0.12);
-}
-
-.pane-context-actions button {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 28px;
-  padding: 3px 8px 5px;
-  border: 0.5px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  color: #d9ddd9;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.pane-context-actions .pane-context-close {
-  flex: 0 0 28px;
-  width: 28px;
-  padding-right: 0;
-  padding-left: 0;
-}
-
-.pane-context-actions button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.pane-context-actions button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.group-context-menu {
-  width: min(220px, calc(100vw - 16px));
-  padding: 4px;
   user-select: none;
 }
 
+.pane-context-actions,
 .group-context-actions {
   display: grid;
   gap: 1px;
-  margin: 0;
-  padding: 0;
 }
 
+.pane-context-actions button,
 .group-context-actions button {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
@@ -927,40 +889,81 @@ button:disabled {
   border-radius: 5px;
   background: transparent;
   color: #d9ddd9;
-  font-size: 12px;
+  font-size: inherit;
   line-height: 1.2;
   text-align: left;
   cursor: pointer;
 }
 
-.group-context-actions button:hover,
-.group-context-actions button:focus-visible {
+.pane-context-actions button.context-menu-has-shortcut,
+.group-context-actions button.context-menu-has-shortcut {
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+}
+
+.pane-context-actions button:hover:not(:disabled),
+.pane-context-actions button:focus-visible:not(:disabled),
+.group-context-actions button:hover:not(:disabled),
+.group-context-actions button:focus-visible:not(:disabled) {
   background: rgba(255, 255, 255, 0.09);
   color: #ffffff;
   outline: none;
   box-shadow: none;
 }
 
-.group-context-divider {
+.pane-context-actions button:disabled,
+.group-context-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.group-context-menu {
+  width: min(220px, calc(100vw - 16px));
+  padding: 4px;
+  user-select: none;
+}
+
+.group-context-actions {
+  margin: 0;
+  padding: 0;
+}
+
+.context-menu-divider {
   height: 1px;
   margin: 4px 6px;
   background: rgba(255, 255, 255, 0.12);
 }
 
-.group-context-actions .group-context-danger:hover,
-.group-context-actions .group-context-danger:focus-visible {
-  background: #2c1a17;
+.pane-context-actions .context-menu-danger:hover:not(:disabled),
+.pane-context-actions .context-menu-danger:focus-visible:not(:disabled),
+.group-context-actions .context-menu-danger:hover:not(:disabled),
+.group-context-actions .context-menu-danger:focus-visible:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.pane-context-actions .context-menu-danger:hover:not(:disabled) span,
+.pane-context-actions .context-menu-danger:focus-visible:not(:disabled) span,
+.group-context-actions .context-menu-danger:hover:not(:disabled) span,
+.group-context-actions .context-menu-danger:focus-visible:not(:disabled) span {
   color: #ffb4a3;
 }
 
+.pane-context-actions svg,
 .group-context-actions svg {
   justify-self: center;
 }
 
+.pane-context-actions span,
 .group-context-actions span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu-shortcut {
+  min-width: 0;
+  color: #8a938e;
+  font: inherit;
   white-space: nowrap;
 }
 

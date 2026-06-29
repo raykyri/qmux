@@ -32,6 +32,8 @@ import {
   Plus,
   Rows3,
   Settings,
+  SquareChevronLeft,
+  SquareChevronRight,
   SquareTerminal,
   X,
 } from "lucide-react";
@@ -250,7 +252,9 @@ const MIN_INITIAL_ROWS = 5;
 const MAX_INITIAL_COLS = 500;
 const MAX_INITIAL_ROWS = 200;
 const PANE_CONTEXT_MENU_WIDTH = 320;
-const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 250;
+const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 360;
+const GROUP_CONTEXT_MENU_WIDTH = 220;
+const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
 const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
   [CLAUDE_ADAPTER_ID]: claudeModelIconUrl,
   [CODEX_ADAPTER_ID]: openAiModelIconUrl,
@@ -866,6 +870,7 @@ export default function App() {
   // re-registering it on every state change.
   const activePaneRef = useRef<PaneInfo | undefined>(undefined);
   const requestClosePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
+  const splitPaneBelowRef = useRef<(pane: PaneInfo) => void | Promise<void>>(() => {});
   const canToggleActiveTranscriptExpandedRef = useRef(false);
   const toggleActiveTranscriptExpandedRef = useRef<() => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
@@ -3148,6 +3153,7 @@ export default function App() {
 
   function openPaneContextMenu(event: ReactMouseEvent, pane: PaneInfo) {
     event.preventDefault();
+    event.stopPropagation();
     setGroupMenu(null);
     const maxX = Math.max(8, window.innerWidth - PANE_CONTEXT_MENU_WIDTH - 8);
     const maxY = Math.max(8, window.innerHeight - PANE_CONTEXT_MENU_ESTIMATED_HEIGHT - 8);
@@ -3806,6 +3812,7 @@ export default function App() {
     toggleActiveBrowserOverlayRef.current = toggleActiveBrowserOverlay;
     closeActiveBrowserOverlayRef.current = closeActiveBrowserOverlay;
     requestClosePaneRef.current = requestClosePane;
+    splitPaneBelowRef.current = splitPaneBelow;
     canToggleActiveTranscriptExpandedRef.current = Boolean(
       activePane && activePaneHasTurnPaneHeader,
     );
@@ -4195,6 +4202,18 @@ export default function App() {
           toggleActiveTranscriptExpandedRef.current();
         } else if (activePaneRef.current) {
           toggleActiveBrowserOverlayRef.current();
+        }
+        return;
+      }
+
+      // Cmd-D splits the active terminal downward, matching the tab context-menu
+      // action and common terminal split behavior.
+      if (commandOnly && key === "d") {
+        event.preventDefault();
+        event.stopPropagation();
+        const pane = activePaneRef.current;
+        if (pane) {
+          void splitPaneBelowRef.current(pane);
         }
         return;
       }
@@ -4785,8 +4804,8 @@ export default function App() {
     setPaneContextMenu(null);
     setGroupMenu({
       groupId: group.id,
-      x: clamp(event.clientX, 8, Math.max(8, window.innerWidth - 260)),
-      y: clamp(event.clientY, 8, Math.max(8, window.innerHeight - 180)),
+      x: clamp(event.clientX, 8, Math.max(8, window.innerWidth - GROUP_CONTEXT_MENU_WIDTH - 8)),
+      y: clamp(event.clientY, 8, Math.max(8, window.innerHeight - GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT - 8)),
     });
   }
 
@@ -5217,6 +5236,7 @@ export default function App() {
                   isActiveGroup ? " is-active-group" : ""
                 }`}
                 data-group-id={group.id}
+                onContextMenu={(event) => openGroupMenu(event, group)}
               >
                 <div className="pane-group-header" title={group.dir}>
                   <span className="pane-group-title">
@@ -5343,7 +5363,7 @@ export default function App() {
               <Plus size={13} aria-hidden="true" />
               <span>New group</span>
             </button>
-            <div className="group-context-divider" role="separator" />
+            <div className="context-menu-divider" role="separator" />
             {settings.codeMode ? (
               <button
                 type="button"
@@ -5370,11 +5390,11 @@ export default function App() {
               <MessageSquareText size={13} aria-hidden="true" />
               <span>New agent</span>
             </button>
-            <div className="group-context-divider" role="separator" />
+            <div className="context-menu-divider" role="separator" />
             <button
               type="button"
               role="menuitem"
-              className="group-context-danger"
+              className="context-menu-danger"
               onClick={() => {
                 void requestCloseGroup(groupMenuGroup);
               }}
@@ -5433,17 +5453,24 @@ export default function App() {
               <dd>{contextMenuPane.cwd}</dd>
             </div>
           </dl>
-          <div className="pane-context-actions">
+          <div className="pane-context-actions" role="menu" aria-label="Tab actions">
             <button
               type="button"
+              role="menuitem"
+              className="context-menu-has-shortcut"
               title="Create a new shell split below this tab"
-              onClick={() => void splitPaneBelow(contextMenuPane)}
+              onClick={() => {
+                setPaneContextMenu(null);
+                void splitPaneBelow(contextMenuPane);
+              }}
             >
               <PanelBottomOpen size={13} aria-hidden="true" />
               <span>Split below</span>
+              <kbd className="context-menu-shortcut">⌘D</kbd>
             </button>
             <button
               type="button"
+              role="menuitem"
               disabled={!canJoinContextMenuBelow || !contextMenuAdjacentBelow}
               title={
                 contextMenuAdjacentBelow
@@ -5452,6 +5479,7 @@ export default function App() {
               }
               onClick={() => {
                 if (contextMenuAdjacentBelow) {
+                  setPaneContextMenu(null);
                   joinPaneBelow(contextMenuPane, contextMenuAdjacentBelow);
                 }
               }}
@@ -5461,32 +5489,47 @@ export default function App() {
             </button>
             <button
               type="button"
+              role="menuitem"
               disabled={!contextMenuPaneSplit}
               title="Remove this tab from its terminal split"
-              onClick={() => unsplitPane(contextMenuPane)}
+              onClick={() => {
+                setPaneContextMenu(null);
+                unsplitPane(contextMenuPane);
+              }}
             >
               <PanelBottomClose size={13} aria-hidden="true" />
               <span>Unsplit</span>
             </button>
+            <div className="context-menu-divider" role="separator" />
             <button
               type="button"
+              role="menuitem"
               disabled={!canOutdent(contextMenuGroupPanes, contextMenuPaneIndex)}
-              onClick={outdentContextMenuPane}
+              onClick={() => {
+                outdentContextMenuPane();
+                setPaneContextMenu(null);
+              }}
             >
-              <ChevronLeft size={13} aria-hidden="true" />
+              <SquareChevronLeft size={13} aria-hidden="true" />
               <span>Outdent</span>
             </button>
             <button
               type="button"
+              role="menuitem"
               disabled={!canIndent(contextMenuGroupPanes, contextMenuPaneIndex)}
-              onClick={indentContextMenuPane}
+              onClick={() => {
+                indentContextMenuPane();
+                setPaneContextMenu(null);
+              }}
             >
-              <ChevronRight size={13} aria-hidden="true" />
+              <SquareChevronRight size={13} aria-hidden="true" />
               <span>Indent</span>
             </button>
+            <div className="context-menu-divider" role="separator" />
             <button
               type="button"
-              className="pane-context-close"
+              role="menuitem"
+              className="context-menu-danger"
               aria-label={`Close ${contextMenuDisplayTitle}`}
               title={`Close ${contextMenuDisplayTitle}`}
               onClick={() => {
@@ -5495,6 +5538,7 @@ export default function App() {
               }}
             >
               <X size={13} aria-hidden="true" />
+              <span>Close tab</span>
             </button>
           </div>
         </div>
