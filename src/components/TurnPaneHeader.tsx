@@ -3,6 +3,7 @@ import {
   GitBranch,
   Globe,
   Minimize2,
+  PanelRightClose,
   SquareCenterlineDashedVertical,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -39,6 +40,7 @@ interface TurnPaneHeaderProps {
   transcriptExpanded: boolean;
   transcriptShortcutLabel: string;
   onToggleTranscriptExpanded: () => void;
+  onCollapseRightBar: () => void;
 }
 
 export default function TurnPaneHeader({
@@ -56,6 +58,7 @@ export default function TurnPaneHeader({
   transcriptExpanded,
   transcriptShortcutLabel,
   onToggleTranscriptExpanded,
+  onCollapseRightBar,
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -317,6 +320,15 @@ export default function TurnPaneHeader({
           ) : (
             <Expand size={14} aria-hidden="true" />
           )}
+        </button>
+        <button
+          type="button"
+          className="turn-pane-header-button"
+          title="Collapse right bar"
+          aria-label="Collapse right bar"
+          onClick={onCollapseRightBar}
+        >
+          <PanelRightClose size={14} aria-hidden="true" />
         </button>
       </div>
       {/* Portaled to <body> so the fixed-position toast escapes the header's

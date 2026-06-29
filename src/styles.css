@@ -2766,12 +2766,26 @@ button:disabled {
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
-.turn-pane-floating-expand-button {
+.turn-pane-floating-controls {
   position: absolute;
   top: 8px;
   right: 10px;
   z-index: 5;
+  display: flex;
+  gap: 6px;
+}
+
+.turn-pane-floating-expand-button,
+.turn-pane-floating-collapse-button,
+.turn-pane-floating-restore-button {
   backdrop-filter: blur(6px);
+}
+
+.turn-pane-floating-restore-button {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 9;
 }
 
 /* Fork menu opens downward, right edge pinned to the button so it grows leftward. */
@@ -4381,7 +4395,9 @@ header + .turn-blocks {
 .browser-overlay-controls {
   position: absolute;
   top: 8px;
-  right: calc(var(--turn-pane-width, 0px) + 12px);
+  right: calc(
+    var(--turn-pane-width, 0px) + var(--right-bar-restore-control-offset, 0px) + 12px
+  );
   z-index: 9;
   display: flex;
   gap: 6px;

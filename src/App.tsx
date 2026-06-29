@@ -30,6 +30,8 @@ import {
   MoreHorizontal,
   PanelBottomClose,
   PanelBottomOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   Settings,
@@ -1107,6 +1109,7 @@ export default function App() {
   const [splitTranscriptExpandedByPane, setSplitTranscriptExpandedByPane] = useState<
     Record<string, boolean>
   >({});
+  const [rightBarCollapsed, setRightBarCollapsed] = useState(false);
   const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
   const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
     {},
@@ -1930,6 +1933,11 @@ export default function App() {
       return;
     }
 
+    if (rightBarCollapsed) {
+      setRightBarCollapsed(false);
+      return;
+    }
+
     toggleTranscriptExpandedForPane(paneId);
   }
 
@@ -2112,9 +2120,9 @@ export default function App() {
       ? [activeTurnPaneSurface]
       : [];
   const activePaneHasTurnSidebar = Boolean(activeTurnPaneSurface?.hasTurnSidebar);
-  const activePaneHasTurnPaneHeader = activePaneHasTurnSidebar && !splitRightPaneMode;
-  const hasTurnSidebar = visibleTurnPaneSurfaces.length > 0;
-  const hasGlobalTurnSidebar = hasTurnSidebar && !splitRightPaneMode;
+  const visibleRightBarSurfaces = rightBarCollapsed ? [] : visibleTurnPaneSurfaces;
+  const hasVisibleRightBar = visibleRightBarSurfaces.length > 0;
+  const hasGlobalTurnSidebar = hasVisibleRightBar && !splitRightPaneMode;
   const activeTranscriptExpanded = Boolean(
     activePane &&
       activePaneHasTurnSidebar &&
@@ -2122,17 +2130,23 @@ export default function App() {
         ? splitTranscriptExpandedByPane[activePane.id]
         : transcriptExpandedByPane[activePane.id]),
   );
+  const activeTranscriptVisibleExpanded = activeTranscriptExpanded && !rightBarCollapsed;
+  const activePaneHasTurnPaneHeader =
+    activePaneHasTurnSidebar && !splitRightPaneMode && !rightBarCollapsed;
   const activePaneReservesTurnPaneWidth = Boolean(
     hasGlobalTurnSidebar ||
-      (splitRightPaneMode && activePaneHasTurnSidebar && !activeTranscriptExpanded),
+      (splitRightPaneMode &&
+        !rightBarCollapsed &&
+        activePaneHasTurnSidebar &&
+        !activeTranscriptVisibleExpanded),
   );
   const showFloatingBrowserControls = Boolean(
     activePane &&
-      !activeTranscriptExpanded &&
+      !activeTranscriptVisibleExpanded &&
       !activeBrowserOverlay?.open &&
       !activePaneHasTurnPaneHeader,
   );
-  const visibleTurnPaneAgentIds = visibleTurnPaneSurfaces
+  const visibleTurnPaneAgentIds = visibleRightBarSurfaces
     .map((surface) => surface.agent?.id)
     .filter((agentId): agentId is string => Boolean(agentId));
   const visibleTurnPaneAgentIdsKey = visibleTurnPaneAgentIds.join("\0");
@@ -2739,7 +2753,7 @@ export default function App() {
   // turn pane's current width reserved), capped by a comfortable absolute maximum.
   function maxSidebarWidth() {
     const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-    const reservedTurnPane = hasTurnSidebar ? turnPaneWidth : 0;
+    const reservedTurnPane = hasVisibleRightBar ? turnPaneWidth : 0;
     const available = Math.floor(appWidth - TERMINAL_MIN_WIDTH - reservedTurnPane);
     return Math.max(LEFT_SIDEBAR_MIN_WIDTH, Math.min(LEFT_SIDEBAR_MAX_WIDTH, available));
   }
@@ -2775,8 +2789,8 @@ export default function App() {
   // its base size, capped at +1px, so the transcript/composer track the terminal
   // zoom without overpowering it. No change at or below the base size.
   const turnFontDelta = Math.min(1, Math.max(0, (terminalFontSize - TERMINAL_FONT_SIZE) * 0.25));
-  const transcriptExpandedFontDelta = activeTranscriptExpanded ? 1 : 0;
-  const transcriptExpandedLineHeightDelta = activeTranscriptExpanded ? 0.1 : 0;
+  const transcriptExpandedFontDelta = activeTranscriptVisibleExpanded ? 1 : 0;
+  const transcriptExpandedLineHeightDelta = activeTranscriptVisibleExpanded ? 0.1 : 0;
 
   const appStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
@@ -2784,8 +2798,11 @@ export default function App() {
     "--turn-font-delta": `${turnFontDelta}px`,
     "--transcript-expanded-font-delta": `${transcriptExpandedFontDelta}px`,
     "--transcript-expanded-line-height-delta": `${transcriptExpandedLineHeightDelta}`,
+    ...(rightBarCollapsed && activePaneHasTurnSidebar
+      ? { "--right-bar-restore-control-offset": "34px" }
+      : {}),
     ...(activePaneReservesTurnPaneWidth ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
-    ...(splitRightPaneMode && hasTurnSidebar
+    ...(splitRightPaneMode && hasVisibleRightBar
       ? { "--inline-turn-pane-width": `${turnPaneWidth}px` }
       : {}),
   } as CSSProperties;
@@ -2801,7 +2818,9 @@ export default function App() {
     const top = activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0);
     const height = activeSplitFractions[index] ?? 0;
     const reservesInlineTurnPane =
-      !activeTranscriptExpanded && splitTurnPaneSurfaceByPaneId.has(paneId);
+      !rightBarCollapsed &&
+      !activeTranscriptVisibleExpanded &&
+      splitTurnPaneSurfaceByPaneId.has(paneId);
     return {
       top: `${top * 100}%`,
       bottom: "auto",
@@ -5020,7 +5039,7 @@ export default function App() {
   }, [launcherOpen, activePane?.id]);
 
   useEffect(() => {
-    if (!hasTurnSidebar) {
+    if (!hasVisibleRightBar) {
       return;
     }
 
@@ -5031,7 +5050,7 @@ export default function App() {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [hasTurnSidebar]);
+  }, [hasVisibleRightBar]);
 
   // Keep the sidebar within bounds as the window resizes or the turn pane claims
   // space (deps refresh the clamp's view of available width).
@@ -5043,7 +5062,7 @@ export default function App() {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [hasTurnSidebar, turnPaneWidth]);
+  }, [hasVisibleRightBar, turnPaneWidth]);
 
   async function updateShowHideShortcut(accelerator: string | null) {
     setShowHideShortcutSaving(true);
@@ -5711,30 +5730,64 @@ export default function App() {
     };
   }
 
-  function renderFloatingTranscriptExpandButton(surface: TurnPaneSurface) {
+  function renderFloatingTurnPaneControls(surface: TurnPaneSurface) {
     const expanded = surface.pane.id === activePane?.id && activeTranscriptExpanded;
     const label = expanded ? "Restore transcript" : "Expand transcript";
     return (
+      <div className="turn-pane-floating-controls">
+        <button
+          type="button"
+          className={`turn-pane-header-button turn-pane-floating-expand-button${
+            expanded ? " is-active" : ""
+          }`}
+          title={`${label} (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
+          aria-label={label}
+          aria-pressed={expanded}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            activateTerminalPane(surface.pane.id);
+            setTranscriptExpandedForPane(surface.pane.id, !expanded, true);
+          }}
+        >
+          {expanded ? (
+            <Minimize2 size={14} aria-hidden="true" />
+          ) : (
+            <Expand size={14} aria-hidden="true" />
+          )}
+        </button>
+        <button
+          type="button"
+          className="turn-pane-header-button turn-pane-floating-collapse-button"
+          title="Collapse right bar"
+          aria-label="Collapse right bar"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            activateTerminalPane(surface.pane.id);
+            setRightBarCollapsed(true);
+          }}
+        >
+          <PanelRightClose size={14} aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
+
+  function renderFloatingRightBarRestoreButton() {
+    if (!rightBarCollapsed || !activePaneHasTurnSidebar) {
+      return null;
+    }
+
+    return (
       <button
         type="button"
-        className={`turn-pane-header-button turn-pane-floating-expand-button${
-          expanded ? " is-active" : ""
-        }`}
-        title={`${label} (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
-        aria-label={label}
-        aria-pressed={expanded}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.stopPropagation();
-          activateTerminalPane(surface.pane.id);
-          setTranscriptExpandedForPane(surface.pane.id, !expanded, true);
-        }}
+        className="turn-pane-header-button turn-pane-floating-restore-button"
+        title="Show right bar"
+        aria-label="Show right bar"
+        onClick={() => setRightBarCollapsed(false)}
       >
-        {expanded ? (
-          <Minimize2 size={14} aria-hidden="true" />
-        ) : (
-          <Expand size={14} aria-hidden="true" />
-        )}
+        <PanelRightOpen size={14} aria-hidden="true" />
       </button>
     );
   }
@@ -5801,6 +5854,7 @@ export default function App() {
               transcriptExpanded={activeTranscriptExpanded}
               transcriptShortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
               onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
+              onCollapseRightBar={() => setRightBarCollapsed(true)}
             />
           ) : undefined
         }
@@ -5888,7 +5942,7 @@ export default function App() {
     <main
       ref={appRef}
       className={`app-shell ${hasGlobalTurnSidebar ? "has-turn-sidebar" : ""}${
-        activeTranscriptExpanded ? " has-expanded-transcript" : ""
+        activeTranscriptVisibleExpanded ? " has-expanded-transcript" : ""
       }${settings.reduceMotion ? " reduce-motion" : ""}`}
       style={appStyle}
     >
@@ -7289,8 +7343,8 @@ export default function App() {
                 />
               ))
             : null}
-          {!activeTranscriptExpanded && splitRightPaneMode
-            ? visibleTurnPaneSurfaces.map((surface) => (
+          {!activeTranscriptVisibleExpanded && splitRightPaneMode && hasVisibleRightBar
+            ? visibleRightBarSurfaces.map((surface) => (
                 <section
                   key={surface.pane.id}
                   className={`turn-pane turn-pane-split-cell${
@@ -7302,11 +7356,11 @@ export default function App() {
                 >
                   {renderTurnPaneResizer()}
                   {renderTurnPaneSurface(surface, false)}
-                  {renderFloatingTranscriptExpandButton(surface)}
+                  {renderFloatingTurnPaneControls(surface)}
                 </section>
               ))
             : null}
-          {!activeTranscriptExpanded && splitRightPaneMode && hasTurnSidebar
+          {!activeTranscriptVisibleExpanded && splitRightPaneMode && hasVisibleRightBar
             ? terminalSplitDividerOffsets.map((offset, index) => (
                 <div
                   key={`turn-${activePaneSplit?.id ?? "split"}-${index}`}
@@ -7319,12 +7373,12 @@ export default function App() {
         </div>
       </section>
 
-      {hasTurnSidebar && activeTranscriptExpanded && activeTurnPaneSurface ? (
+      {hasVisibleRightBar && activeTranscriptVisibleExpanded && activeTurnPaneSurface ? (
         <aside
           className={`turn-pane is-expanded${splitRightPaneMode ? " is-headerless-expanded" : ""}`}
         >
           {renderTurnPaneSurface(activeTurnPaneSurface, !splitRightPaneMode)}
-          {splitRightPaneMode ? renderFloatingTranscriptExpandButton(activeTurnPaneSurface) : null}
+          {splitRightPaneMode ? renderFloatingTurnPaneControls(activeTurnPaneSurface) : null}
         </aside>
       ) : hasGlobalTurnSidebar && activeTurnPaneSurface ? (
         <aside className="turn-pane">
@@ -7332,6 +7386,7 @@ export default function App() {
           {renderTurnPaneSurface(activeTurnPaneSurface, true)}
         </aside>
       ) : null}
+      {renderFloatingRightBarRestoreButton()}
 
       {activePane && activeBrowserOverlay?.open ? (
         <BrowserOverlay
