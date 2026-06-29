@@ -1596,6 +1596,14 @@ export default function App() {
   // ever mounted at a time (the inline one yields to the modal), so they can share
   // the launcher refs/state and the focus/auto-grow effects below.
   const launcherVisible = launcherOpen || homeActive;
+  const appModalOpen =
+    launcherOpen ||
+    askLauncher !== null ||
+    settingsOpen ||
+    closeDialog !== null ||
+    exitDialog !== null ||
+    renamePaneId !== null ||
+    renameGroupId !== null;
 
   // Called on each keystroke in an agent's composer or terminal. Sets a backend
   // "typing" hold (so a finishing turn won't auto-drain into what the user is typing)
@@ -6732,10 +6740,15 @@ export default function App() {
               and stop any running agents or processes.
             </p>
             <div className="confirm-dialog-actions">
-              <button type="button" autoFocus onClick={() => setExitDialog(null)}>
+              <button type="button" onClick={() => setExitDialog(null)}>
                 Cancel
               </button>
-              <button type="button" className="danger" onClick={() => void confirmExit()}>
+              <button
+                type="button"
+                className="danger"
+                autoFocus
+                onClick={() => void confirmExit()}
+              >
                 Quit qmux
               </button>
             </div>
@@ -6822,7 +6835,7 @@ export default function App() {
               copyOnSelect={settings.copyOnSelect}
               selectionClearOnCopy={settings.selectionClearOnCopy}
               pasteProtection={pasteProtection}
-              inputBlocked={settingsOpen}
+              inputBlocked={appModalOpen}
               requestAttach={requestPaneAttach}
               onUserInput={noteUserInput}
               onOpenLink={openPaneLink}

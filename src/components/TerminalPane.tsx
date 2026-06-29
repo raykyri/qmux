@@ -458,6 +458,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onActivateRef.current = onActivate;
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const activeRef = useRef(active);
+  activeRef.current = active;
   // In-app confirm (window.confirm is a no-op in the webview), reached from the
   // paste handler inside the once-per-pane setup effect via a ref so it stays current.
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -650,6 +652,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     ref,
     () => ({
       focus() {
+        if (!activeRef.current || !visibleRef.current || inputBlockedRef.current) {
+          return;
+        }
         terminalRef.current?.focus();
         stabilizeTerminalRef.current?.();
       },
@@ -902,7 +907,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       }
 
       terminal.open(mountEl);
-      terminal.focus();
+      if (activeRef.current && visibleRef.current && !inputBlockedRef.current) {
+        terminal.focus();
+      }
 
       terminalRef.current = terminal;
       terminalReadyRef.current = true;
@@ -1316,7 +1323,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     }
 
     stabilizeTerminalRef.current?.();
-    if (!active) {
+    if (!active || inputBlocked) {
       return;
     }
 
@@ -1329,7 +1336,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       window.clearTimeout(settle);
       captureTerminalScroll();
     };
-  }, [active, visible, pane.id, captureTerminalScroll]);
+  }, [active, visible, inputBlocked, pane.id, captureTerminalScroll]);
 
   // Apply live terminal settings to an already-open terminal, then re-fit when
   // cell metrics change so rows/cols and the PTY size track the new grid.
