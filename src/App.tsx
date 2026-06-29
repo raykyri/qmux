@@ -1888,11 +1888,13 @@ export default function App() {
     : activeTurnPaneSurface?.hasTurnSidebar
       ? [activeTurnPaneSurface]
       : [];
+  const activePaneHasTurnSidebar = Boolean(activeTurnPaneSurface?.hasTurnSidebar);
+  const activePaneHasTurnPaneHeader = activePaneHasTurnSidebar && !splitRightPaneMode;
   const hasTurnSidebar = visibleTurnPaneSurfaces.length > 0;
   const activeTranscriptExpanded = Boolean(
     !splitRightPaneMode &&
       activePane &&
-      activeTurnPaneSurface?.hasTurnSidebar &&
+      activePaneHasTurnSidebar &&
       transcriptExpandedByPane[activePane.id],
   );
   const visibleTurnPaneAgentIds = visibleTurnPaneSurfaces
@@ -3805,7 +3807,7 @@ export default function App() {
     closeActiveBrowserOverlayRef.current = closeActiveBrowserOverlay;
     requestClosePaneRef.current = requestClosePane;
     canToggleActiveTranscriptExpandedRef.current = Boolean(
-      activePane && activeTurnPaneSurface?.hasTurnSidebar,
+      activePane && activePaneHasTurnPaneHeader,
     );
     toggleActiveTranscriptExpandedRef.current = toggleActiveTranscriptExpanded;
   });
@@ -6476,16 +6478,16 @@ export default function App() {
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
           size={activeBrowserOverlay.size}
-          toggleShortcutLabel={hasTurnSidebar ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}
+          toggleShortcutLabel={activePaneHasTurnPaneHeader ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}
           onNavigate={navigateActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
           onClose={toggleActiveBrowserOverlay}
           onResize={(size) => setBrowserOverlaySize(activePane.id, size)}
         />
       ) : null}
-      {/* The floating toggle sits over the terminal only when the right pane is
-          closed; otherwise the toggle lives in the right pane's top bar. */}
-      {activePane && !activeBrowserOverlay?.open && !hasTurnSidebar ? (
+      {/* The floating toggle sits over the terminal only when the active tab has no
+          visible right-pane header; otherwise the toggle lives in that header. */}
+      {activePane && !activeBrowserOverlay?.open && !activePaneHasTurnPaneHeader ? (
         <BrowserOverlayControls
           open={false}
           shortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
