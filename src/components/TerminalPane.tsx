@@ -4,7 +4,7 @@ import type { ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
-import type { ILink, ITheme } from "@xterm/xterm";
+import type { IBufferLine, IBufferRange, ILink, ILinkProvider, ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
   forwardRef,
@@ -210,8 +210,194 @@ interface TerminalLineLink {
   endX: number;
 }
 
+interface XtermCellWithExtendedAttrs {
+  extended?: {
+    urlId?: number;
+  };
+}
+
+interface XtermLineInternals {
+  getTrimmedLength?: () => number;
+}
+
+interface XtermLineViewInternals {
+  _line?: XtermLineInternals;
+}
+
+interface XtermOscLinkService {
+  getLinkData(linkId: number): { uri?: unknown } | undefined;
+}
+
+interface XtermLinkifierInternals {
+  _activeLine?: number;
+  _activeProviderReplies?: Map<number, unknown> | undefined;
+  _clearCurrentLink?: () => void;
+  _lastBufferCell?: unknown;
+}
+
+interface XtermCoreInternals {
+  _linkProviderService?: {
+    linkProviders?: ILinkProvider[];
+  };
+  _oscLinkService?: XtermOscLinkService;
+  linkifier?: XtermLinkifierInternals;
+}
+
+interface XtermTerminalInternals {
+  _core?: XtermCoreInternals;
+}
+
 function terminalLineLinkKey(link: TerminalLineLink): string {
   return `${link.y}:${link.startX}:${link.endX}:${link.url}`;
+}
+
+function xtermCore(terminal: Terminal): XtermCoreInternals | undefined {
+  return (terminal as unknown as XtermTerminalInternals)._core;
+}
+
+function removeDefaultOscLinkProvider(terminal: Terminal) {
+  const providers = xtermCore(terminal)?._linkProviderService?.linkProviders;
+  // The OSC 8 provider is registered by xterm's constructor before app code can
+  // add providers. Replace that instance so OSC links follow qmux's Cmd gate too.
+  if (providers?.length === 1) {
+    providers.splice(0, 1);
+  }
+}
+
+function resetXtermLinkHover(terminal: Terminal) {
+  const linkifier = xtermCore(terminal)?.linkifier;
+  linkifier?._clearCurrentLink?.();
+  if (linkifier) {
+    linkifier._lastBufferCell = undefined;
+    linkifier._activeProviderReplies = undefined;
+    linkifier._activeLine = -1;
+  }
+  terminal.element?.classList.remove("xterm-cursor-pointer");
+  terminal.element
+    ?.querySelector<HTMLElement>(".xterm-screen")
+    ?.classList.remove("xterm-cursor-pointer");
+}
+
+function terminalMouseEventClone(event: MouseEvent, metaKey: boolean): MouseEvent {
+  return new MouseEvent("mousemove", {
+    altKey: event.altKey,
+    bubbles: true,
+    button: event.button,
+    buttons: event.buttons,
+    cancelable: true,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    ctrlKey: event.ctrlKey,
+    metaKey,
+    screenX: event.screenX,
+    screenY: event.screenY,
+    shiftKey: event.shiftKey,
+    view: window,
+  });
+}
+
+function replayTerminalMouseMove(
+  terminal: Terminal,
+  event: MouseEvent | null,
+  metaKey: boolean,
+) {
+  if (!event) {
+    return;
+  }
+  const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen");
+  if (!screen) {
+    return;
+  }
+  const rect = screen.getBoundingClientRect();
+  if (
+    event.clientX < rect.left ||
+    event.clientX >= rect.right ||
+    event.clientY < rect.top ||
+    event.clientY >= rect.bottom
+  ) {
+    return;
+  }
+  screen.dispatchEvent(terminalMouseEventClone(event, metaKey));
+}
+
+function oscLinkCellId(cell: unknown): number {
+  const linkId = (cell as XtermCellWithExtendedAttrs | undefined)?.extended?.urlId;
+  return typeof linkId === "number" ? linkId : 0;
+}
+
+function oscLineLength(line: IBufferLine, terminal: Terminal): number {
+  const internalLength = (line as unknown as XtermLineViewInternals)._line?.getTrimmedLength?.();
+  const lineLength = typeof internalLength === "number" ? internalLength : line.length;
+  return Math.min(lineLength, line.length, terminal.cols);
+}
+
+function findOscLineLinks(
+  terminal: Terminal,
+  y: number,
+  activate: (event: MouseEvent, url: string) => void,
+  hover: (event: MouseEvent, url: string) => void,
+  leave: () => void,
+): ILink[] {
+  const line = terminal.buffer.active.getLine(y - 1);
+  const oscLinkService = xtermCore(terminal)?._oscLinkService;
+  if (!line || !oscLinkService) {
+    return [];
+  }
+
+  const links: ILink[] = [];
+  const lineLength = oscLineLength(line, terminal);
+  let currentLinkId = 0;
+  let currentStart = -1;
+  let finishLink = false;
+
+  for (let x = 0; x < lineLength; x += 1) {
+    const linkId = oscLinkCellId(line.getCell(x));
+    if (linkId) {
+      if (currentStart === -1) {
+        currentStart = x;
+        currentLinkId = linkId;
+        continue;
+      }
+      finishLink = linkId !== currentLinkId;
+    } else if (currentStart !== -1) {
+      finishLink = true;
+    }
+
+    if (finishLink || (currentStart !== -1 && x === lineLength - 1)) {
+      const url = safeHref(oscLinkService.getLinkData(currentLinkId)?.uri);
+      if (url) {
+        const range: IBufferRange = {
+          start: { x: currentStart + 1, y },
+          end: {
+            x: x + (!finishLink && x === lineLength - 1 ? 1 : 0),
+            y,
+          },
+        };
+        links.push({
+          text: url,
+          range,
+          activate: (event, text) => {
+            if (event.metaKey) {
+              activate(event, text);
+            }
+          },
+          hover,
+          leave,
+        });
+      }
+
+      finishLink = false;
+      if (linkId) {
+        currentStart = x;
+        currentLinkId = linkId;
+      } else {
+        currentStart = -1;
+        currentLinkId = 0;
+      }
+    }
+  }
+
+  return links;
 }
 
 // Finds links in one terminal line (1-based buffer row `y`). Single-line only: a URL
@@ -242,7 +428,7 @@ function findLineLinks(lineText: string, y: number, activate: (url: string) => v
     text: link.url,
     range: { start: { x: link.startX, y }, end: { x: link.endX, y } },
     activate: (event, text) => {
-      if (!event.defaultPrevented) {
+      if (event.metaKey && !event.defaultPrevented) {
         activate(text);
       }
     },
@@ -781,6 +967,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
     function setUpTerminal(mountEl: HTMLDivElement, hostEl: HTMLDivElement): () => void {
       let hoveredOscLink: string | null = null;
+      let terminalLinkModifierActive = false;
+      let lastTerminalMouseEvent: MouseEvent | null = null;
       let terminalForSelection: Terminal | null = null;
       let lastCopiedSelection = "";
       let clearingSelection = false;
@@ -809,6 +997,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         linkHandler: {
           allowNonHttpProtocols: true,
           activate: (event, text) => {
+            if (!event.metaKey) {
+              return;
+            }
             const url = safeHref(text);
             if (!url) {
               return;
@@ -817,8 +1008,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
             clearTerminalSelection();
             onOpenLinkRef.current?.(pane.id, url);
           },
-          hover: (_event, text) => {
-            hoveredOscLink = safeHref(text) ?? null;
+          hover: (event, text) => {
+            hoveredOscLink = event.metaKey ? safeHref(text) ?? null : null;
           },
           leave: () => {
             hoveredOscLink = null;
@@ -1055,10 +1246,80 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         captureTerminalScroll(terminal);
       });
 
-      // Make http(s)/mailto URLs in the scrollback look clickable. Mouse handlers below
-      // resolve the link under the actual event and route it through qmux's link actions.
+      removeDefaultOscLinkProvider(terminal);
+
+      const setTerminalLinkModifierActive = (active: boolean, replayHover = true) => {
+        if (terminalLinkModifierActive === active) {
+          return;
+        }
+        terminalLinkModifierActive = active;
+        hostEl.classList.toggle("terminal-link-modifier-active", active);
+        resetXtermLinkHover(terminal);
+        if (active && replayHover) {
+          replayTerminalMouseMove(terminal, lastTerminalMouseEvent, active);
+        }
+      };
+      const handleTerminalMouseMove = (event: MouseEvent) => {
+        lastTerminalMouseEvent = event;
+        if (event.metaKey !== terminalLinkModifierActive) {
+          setTerminalLinkModifierActive(event.metaKey, false);
+        }
+      };
+      const handleTerminalMouseLeave = () => {
+        lastTerminalMouseEvent = null;
+      };
+      const handleTerminalLinkModifierKeyDown = (event: KeyboardEvent) => {
+        if (event.metaKey || event.key === "Meta") {
+          setTerminalLinkModifierActive(true);
+        }
+      };
+      const handleTerminalLinkModifierKeyUp = (event: KeyboardEvent) => {
+        if (!event.metaKey || event.key === "Meta") {
+          setTerminalLinkModifierActive(false);
+        }
+      };
+      const handleTerminalLinkModifierBlur = () => {
+        setTerminalLinkModifierActive(false);
+      };
+      hostEl.addEventListener("mousemove", handleTerminalMouseMove, true);
+      hostEl.addEventListener("mouseleave", handleTerminalMouseLeave, true);
+      window.addEventListener("keydown", handleTerminalLinkModifierKeyDown, true);
+      window.addEventListener("keyup", handleTerminalLinkModifierKeyUp, true);
+      window.addEventListener("blur", handleTerminalLinkModifierBlur);
+
+      const oscLinkProviderDisposable = terminal.registerLinkProvider({
+        provideLinks(bufferLineNumber, callback) {
+          if (!terminalLinkModifierActive) {
+            callback(undefined);
+            return;
+          }
+          const links = findOscLineLinks(
+            terminal,
+            bufferLineNumber,
+            (event, url) => {
+              event.preventDefault();
+              clearTerminalSelection();
+              onOpenLinkRef.current?.(pane.id, url);
+            },
+            (_event, url) => {
+              hoveredOscLink = url;
+            },
+            () => {
+              hoveredOscLink = null;
+            },
+          );
+          callback(links.length > 0 ? links : undefined);
+        },
+      });
+
+      // Make http(s)/mailto URLs in the scrollback look clickable only while
+      // Cmd is held. Mouse handlers below resolve activation from the actual event.
       const linkProviderDisposable = terminal.registerLinkProvider({
         provideLinks(bufferLineNumber, callback) {
+          if (!terminalLinkModifierActive) {
+            callback(undefined);
+            return;
+          }
           const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
           if (!line) {
             callback(undefined);
@@ -1077,7 +1338,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // actual mouse event to avoid depending on hover state being current.
       let pressedLinkKey: string | null = null;
       const handleLinkMouseDown = (event: MouseEvent) => {
-        if (event.button !== 0) {
+        if (event.button !== 0 || !event.metaKey) {
           pressedLinkKey = null;
           return;
         }
@@ -1086,6 +1347,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       };
       const handleLinkMouseUp = (event: MouseEvent) => {
         if (event.button !== 0) {
+          return;
+        }
+        if (!event.metaKey) {
+          pressedLinkKey = null;
           return;
         }
         const link = terminalLinkAtMouseEvent(terminal, event);
@@ -1101,6 +1366,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         onOpenLinkRef.current?.(pane.id, link.url);
       };
       const handleContextMenu = (event: MouseEvent) => {
+        if (!event.metaKey) {
+          return;
+        }
         const link = terminalLinkAtMouseEvent(terminal, event);
         const url = link?.url ?? hoveredOscLink;
         if (!url) {
@@ -1241,16 +1509,22 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         hostEl.removeEventListener("paste", handlePaste, true);
         hostEl.removeEventListener("copy", handleCopy, true);
         hostEl.removeEventListener("wheel", handleRestoreScrollWheel);
+        hostEl.removeEventListener("mousemove", handleTerminalMouseMove, true);
+        hostEl.removeEventListener("mouseleave", handleTerminalMouseLeave, true);
         hostEl.removeEventListener("mousedown", handleLinkMouseDown, true);
         hostEl.removeEventListener("mouseup", handleLinkMouseUp, true);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
         hostEl.removeEventListener("mouseup", handleSelectionMouseUp, true);
+        window.removeEventListener("keydown", handleTerminalLinkModifierKeyDown, true);
+        window.removeEventListener("keyup", handleTerminalLinkModifierKeyUp, true);
+        window.removeEventListener("blur", handleTerminalLinkModifierBlur);
         if (copyOnSelectTimer !== null) {
           window.clearTimeout(copyOnSelectTimer);
         }
         inputDisposable.dispose();
         titleDisposable.dispose();
         scrollDisposable.dispose();
+        oscLinkProviderDisposable.dispose();
         linkProviderDisposable.dispose();
         selectionDisposable.dispose();
         resultsDisposable.dispose();
