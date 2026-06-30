@@ -731,7 +731,7 @@ function openRouterTitlePayload(
       {
         role: "system",
         content:
-          "Create a concise terminal tab title for the user's first message. Return only the title, without quotes. Use 2-6 words.",
+          "Create a concise terminal tab title for the user's first message. Return only the title, without quotes. Use 2-6 words. Use sentence case, not title case.",
       },
       {
         role: "user",

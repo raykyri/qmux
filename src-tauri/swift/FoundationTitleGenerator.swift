@@ -112,6 +112,7 @@ private func generateTitle(_ message: String) async throws -> String {
         Create concise QMUX terminal tab titles from first user messages.
         Output only the title.
         Use 4-8 words.
+        Use sentence case, not title case.
         Remove filler words.
         Capture the main technical intent.
         Do not answer the message.
