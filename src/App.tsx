@@ -1196,6 +1196,10 @@ export default function App() {
     const groupedIds = new Set(grouped.map((pane) => pane.id));
     return [...grouped, ...panes.filter((pane) => !groupedIds.has(pane.id))];
   }, [groups, panes]);
+  const cycleableSidebarPanes = useMemo(
+    () => sidebarPanes.filter((pane) => groupById.get(pane.groupId)?.collapsed !== true),
+    [groupById, sidebarPanes],
+  );
   const shortcutLabelForPaneId = useCallback(
     (paneId?: string | null) => {
       if (!paneId) {
@@ -4734,10 +4738,14 @@ export default function App() {
         focusPaneTab(tabId);
       };
 
-      const cycleTab = (direction: -1 | 1, includeHome: boolean) => {
+      const cycleTab = (
+        direction: -1 | 1,
+        includeHome: boolean,
+        cyclePanes = sidebarPanes,
+      ) => {
         const tabIds = includeHome
-          ? [HOME_TAB_ID, ...sidebarPanes.map((pane) => pane.id)]
-          : sidebarPanes.map((pane) => pane.id);
+          ? [HOME_TAB_ID, ...cyclePanes.map((pane) => pane.id)]
+          : cyclePanes.map((pane) => pane.id);
         if (tabIds.length === 0) {
           return;
         }
@@ -4747,29 +4755,13 @@ export default function App() {
           currentIndex = listedIndex;
         } else if (includeHome) {
           // Active tab not in the list (e.g. null): default to the first real pane.
-          currentIndex = sidebarPanes.length > 0 ? 1 : 0;
+          currentIndex = cyclePanes.length > 0 ? 1 : 0;
         } else {
           // Skipping Home while Home is active: position so forward lands on the
           // first pane and backward on the last.
           currentIndex = direction === 1 ? -1 : 0;
         }
         focusTabById(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
-      };
-
-      const cycleCurrentGroupTab = (direction: -1 | 1) => {
-        const currentGroupId = activePaneRef.current?.groupId ?? lastActiveGroupId;
-        if (!currentGroupId) {
-          return;
-        }
-        const tabIds = sidebarPanes
-          .filter((pane) => pane.groupId === currentGroupId)
-          .map((pane) => pane.id);
-        if (tabIds.length === 0) {
-          return;
-        }
-        const listedIndex = tabIds.indexOf(activePaneId ?? "");
-        const currentIndex = listedIndex !== -1 ? listedIndex : direction === 1 ? -1 : 0;
-        focusPaneTab(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
       };
 
       // Cmd-1..9 / Ctrl-1..9 jump to real pane tabs in sidebar order. Claimed
@@ -4807,13 +4799,13 @@ export default function App() {
         return;
       }
 
-      // Ctrl-Tab / Ctrl-Shift-Tab cycle through panes in the current group only.
+      // Ctrl-Tab / Ctrl-Shift-Tab cycle through visible pane tabs across groups.
       // Claimed here in the capture phase (before the terminal/editable bail) so it
       // works regardless of focus; Tab with Ctrl is never a text-editing key.
       if (key === "tab" && event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        cycleCurrentGroupTab(event.shiftKey ? -1 : 1);
+        cycleTab(event.shiftKey ? -1 : 1, false, cycleableSidebarPanes);
         return;
       }
 
@@ -4944,6 +4936,7 @@ export default function App() {
     activePaneId,
     panes,
     sidebarPanes,
+    cycleableSidebarPanes,
     activePane,
     lastActiveGroupId,
     groupById,

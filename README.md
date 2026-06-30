@@ -105,7 +105,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-1`..`Cmd-9` / `Ctrl-1`..`Ctrl-9`: focus the corresponding pane tab.
 - Hold `Cmd`: show floating shortcut hints for Home and pane tabs in the `Cmd-1`..
   `Cmd-9` range.
-- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through Home and open tabs.
+- `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through visible pane tabs across groups.
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
 - `Cmd-Shift-T`: restore the most recently closed pane.
 - `Cmd-Shift-H`: focus Home.
