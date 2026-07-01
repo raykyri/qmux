@@ -3080,6 +3080,9 @@ button:disabled {
 }
 
 .turn-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: #96e0cf;
   font-size: calc(11.5px + var(--transcript-font-delta, 0px));
   font-weight: 700;
@@ -3087,6 +3090,47 @@ button:disabled {
   /* Don't let the role label ("User"/"Claude") get caught in a transcript
      selection — only the message text should be copied/asked about. */
   user-select: none;
+}
+
+.turn-card-role-label {
+  min-width: 0;
+}
+
+.turn-title-regenerate-button {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 18px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0;
+  color: rgba(217, 221, 217, 0.42);
+  cursor: pointer;
+}
+
+.turn-title-regenerate-button:hover:not(:disabled),
+.turn-title-regenerate-button:focus-visible:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  color: #d9ddd9;
+}
+
+.turn-title-regenerate-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.turn-title-regenerate-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.turn-title-regenerate-glyph {
+  font-size: calc(10.5px + var(--transcript-font-delta, 0px));
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .turn-card.role-system header,

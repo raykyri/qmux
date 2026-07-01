@@ -275,6 +275,7 @@ const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
 const MAX_OPENROUTER_TITLE_SOURCE_CHARS = 4000;
 const OPENROUTER_TITLE_MAX_COMPLETION_TOKENS = 1000;
+const OPENROUTER_TITLE_TIMEOUT_MS = 15_000;
 const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const APP_TOAST_TIMEOUT_MS = 5000;
@@ -774,15 +775,31 @@ async function summarizeFirstMessageTitle(
   for (let index = 0; index < attempts.length; index += 1) {
     const reasoningEffort = attempts[index];
     const payload = openRouterTitlePayload(sourceMessage, titleConfig, reasoningEffort);
-    const response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${titleConfig.apiKey}`,
-        "Content-Type": "application/json",
-        "X-Title": "qmux",
-      },
-      body: JSON.stringify(payload),
-    });
+    const abortController = new AbortController();
+    const timeout = window.setTimeout(
+      () => abortController.abort(),
+      OPENROUTER_TITLE_TIMEOUT_MS,
+    );
+    let response: Response;
+    try {
+      response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${titleConfig.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Title": "qmux",
+        },
+        body: JSON.stringify(payload),
+        signal: abortController.signal,
+      });
+    } catch (err) {
+      if (abortController.signal.aborted) {
+        throw new Error("OpenRouter title request timed out after 15 seconds.");
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeout);
+    }
     const responsePayload = await readOpenRouterPayload(response);
     if (!response.ok) {
       const message = openRouterPayloadErrorMessage(responsePayload) ?? response.statusText;
@@ -926,6 +943,7 @@ export default function App() {
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
+  const titleRegenerationSeqByPaneRef = useRef<Record<string, number>>({});
   const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
   const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
@@ -974,6 +992,11 @@ export default function App() {
   );
   const manuallyTitledPaneIdsRef = useRef(manuallyTitledPaneIds);
   manuallyTitledPaneIdsRef.current = manuallyTitledPaneIds;
+  const [regeneratingTitlePaneIds, setRegeneratingTitlePaneIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const regeneratingTitlePaneIdsRef = useRef(regeneratingTitlePaneIds);
+  regeneratingTitlePaneIdsRef.current = regeneratingTitlePaneIds;
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   // Agents we believe are actively working *right now*, used to show the
   // "Working…" indicator at the bottom of the transcript. This is driven by live
@@ -1318,6 +1341,20 @@ export default function App() {
     }, APP_TOAST_TIMEOUT_MS);
   }
 
+  function setPaneTitleRegenerationBusy(paneId: string, busy: boolean) {
+    const next = new Set(regeneratingTitlePaneIdsRef.current);
+    if (busy) {
+      next.add(paneId);
+    } else {
+      next.delete(paneId);
+    }
+    if (next.size === regeneratingTitlePaneIdsRef.current.size) {
+      return;
+    }
+    regeneratingTitlePaneIdsRef.current = next;
+    setRegeneratingTitlePaneIds(next);
+  }
+
   async function testFirstMessageTitleGeneration() {
     const settingsSnapshot = settingsRef.current;
     const titleConfig = firstMessageTitleConfig(settingsSnapshot, configRef.current);
@@ -1441,6 +1478,76 @@ export default function App() {
     }
   }
 
+  async function regeneratePaneTitleFromUserMessage(
+    paneId: string,
+    rawMessage: string,
+    expectedAgentId?: string,
+  ) {
+    if (regeneratingTitlePaneIdsRef.current.has(paneId)) {
+      return;
+    }
+
+    const titleConfig = firstMessageTitleConfig(settingsRef.current, configRef.current);
+    if (!titleConfig) {
+      showAppToast("Title generation is disabled or unavailable.", "warning");
+      return;
+    }
+
+    const sourceMessage = firstMessageTitleSource(rawMessage);
+    if (!sourceMessage) {
+      showAppToast("No title text remains after removing instruction blocks.", "warning");
+      return;
+    }
+
+    const requestSeq = (titleRegenerationSeqByPaneRef.current[paneId] ?? 0) + 1;
+    titleRegenerationSeqByPaneRef.current[paneId] = requestSeq;
+    setPaneTitleRegenerationBusy(paneId, true);
+
+    try {
+      const title = await generateFirstMessageTitle(sourceMessage, titleConfig);
+      if (titleRegenerationSeqByPaneRef.current[paneId] !== requestSeq) {
+        return;
+      }
+      if (!title) {
+        showAppToast(`${firstMessageTitleProviderLabel(titleConfig)} returned no title.`, "warning");
+        return;
+      }
+
+      const pane = panesRef.current.find((candidate) => candidate.id === paneId);
+      const paneAgent = pane
+        ? agentsRef.current.find((agent) => agent.paneId === pane.id)
+        : undefined;
+      if (!pane || !paneStillBelongsToAgent(pane, paneAgent, expectedAgentId)) {
+        return;
+      }
+
+      const updated = await renamePane(paneId, title);
+      if (titleRegenerationSeqByPaneRef.current[paneId] !== requestSeq) {
+        return;
+      }
+      setManuallyTitledPaneIds((current) => {
+        const next = new Set(current);
+        next.add(paneId);
+        return next;
+      });
+      setPanesPreservingRecoveredDismissals((current) =>
+        current.map((candidate) =>
+          candidate.id === paneId ? { ...candidate, title: updated.title } : candidate,
+        ),
+      );
+      showAppToast(`Renamed tab: ${updated.title}`);
+    } catch (err) {
+      showAppToast(
+        `${firstMessageTitleProviderLabel(titleConfig)} title error: ${unknownErrorMessage(err)}`,
+        "warning",
+      );
+    } finally {
+      if (titleRegenerationSeqByPaneRef.current[paneId] === requestSeq) {
+        setPaneTitleRegenerationBusy(paneId, false);
+      }
+    }
+  }
+
   function applyPendingFirstMessageTitle(
     agentId: string,
     rawMessage: string,
@@ -1520,6 +1627,14 @@ export default function App() {
       const next = new Set([...current].filter((paneId) => ids.has(paneId)));
       return next.size === current.size ? current : next;
     });
+    setRegeneratingTitlePaneIds((current) => {
+      const next = new Set([...current].filter((paneId) => ids.has(paneId)));
+      if (next.size === current.size) {
+        return current;
+      }
+      regeneratingTitlePaneIdsRef.current = next;
+      return next;
+    });
     setBrowserOverlayByPane((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([paneId]) => ids.has(paneId)),
@@ -1541,6 +1656,11 @@ export default function App() {
     for (const [agentId, pending] of pendingFirstTitleByAgentRef.current) {
       if (!ids.has(pending.paneId)) {
         pendingFirstTitleByAgentRef.current.delete(agentId);
+      }
+    }
+    for (const paneId of Object.keys(titleRegenerationSeqByPaneRef.current)) {
+      if (!ids.has(paneId)) {
+        delete titleRegenerationSeqByPaneRef.current[paneId];
       }
     }
   }, [panes]);
@@ -2944,6 +3064,7 @@ export default function App() {
     : null;
   const groupMenuGroup = groupMenu ? groups.find((group) => group.id === groupMenu.groupId) : null;
   const appleFoundationTitleAvailable = appleFoundationModelsTitleAvailable(config);
+  const titleGenerationEnabled = firstMessageTitleConfig(settings, config) !== null;
   const titleGenerationTestVisible =
     settings.tabTitleProvider === "openRouter" ||
     settings.tabTitleProvider === "appleFoundationModels";
@@ -5865,6 +5986,13 @@ export default function App() {
           showSelectionAskForPane(surface.pane, agent, quote, anchor)
         }
         onDismissSelection={dismissSelectionAskSoon}
+        onRegenerateTitleFromUserMessage={
+          agent && titleGenerationEnabled
+            ? (message) =>
+                void regeneratePaneTitleFromUserMessage(surface.pane.id, message, agent.id)
+            : undefined
+        }
+        titleGenerationBusy={regeneratingTitlePaneIds.has(surface.pane.id)}
         header={
           showHeader ? (
             <TurnPaneHeader

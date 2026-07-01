@@ -1,6 +1,7 @@
 import {
   createContext,
   memo,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -82,6 +83,10 @@ interface TurnOverlayProps {
   // Code-mode transcript detail: when false, hide historical tool/thinking
   // activity from the visible transcript while keeping normal messages.
   showActivityDetail?: boolean;
+  // When supplied, user-message headers get a small action that asks App to
+  // regenerate the tab title from that message.
+  onRegenerateTitleFromUserMessage?: (message: string) => void;
+  titleGenerationBusy?: boolean;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -229,10 +234,18 @@ export default function TurnOverlay({
   thinking = false,
   thinkingLabel = "Working…",
   showActivityDetail = true,
+  onRegenerateTitleFromUserMessage,
+  titleGenerationBusy = false,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const regenerateTitleFromUserMessageRef = useRef(onRegenerateTitleFromUserMessage);
+  regenerateTitleFromUserMessageRef.current = onRegenerateTitleFromUserMessage;
+  const titleGenerationEnabled = Boolean(onRegenerateTitleFromUserMessage);
+  const handleRegenerateTitleFromUserMessage = useCallback((message: string) => {
+    regenerateTitleFromUserMessageRef.current?.(message);
+  }, []);
 
   // On mouse-up, offer an "ask about this" action for any non-whitespace selection
   // within the transcript — any message (user, assistant, or system), tool output, or
@@ -528,6 +541,9 @@ export default function TurnOverlay({
                 item={item}
                 assistantLabel={assistantLabel}
                 showName={showName}
+                titleGenerationEnabled={titleGenerationEnabled}
+                onRegenerateTitleFromUserMessage={handleRegenerateTitleFromUserMessage}
+                titleGenerationBusy={titleGenerationBusy}
               />
             );
           })
@@ -745,15 +761,28 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
   assistantLabel,
   showName,
+  titleGenerationEnabled,
+  onRegenerateTitleFromUserMessage,
+  titleGenerationBusy,
 }: {
   item: MessageItem;
   assistantLabel: string;
   showName: boolean;
+  titleGenerationEnabled: boolean;
+  onRegenerateTitleFromUserMessage: (message: string) => void;
+  titleGenerationBusy: boolean;
 }) {
   return (
     <>
       {item.blocks.length > 0 ? (
-        <MessageItemView item={item} assistantLabel={assistantLabel} showName={showName} />
+        <MessageItemView
+          item={item}
+          assistantLabel={assistantLabel}
+          showName={showName}
+          titleGenerationEnabled={titleGenerationEnabled}
+          onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
+          titleGenerationBusy={titleGenerationBusy}
+        />
       ) : null}
       {item.activities.map((activity) => (
         <ActivityItemView key={activity.key} item={activity} isRootActivity />
@@ -766,12 +795,24 @@ function MessageItemView({
   item,
   assistantLabel,
   showName,
+  titleGenerationEnabled,
+  onRegenerateTitleFromUserMessage,
+  titleGenerationBusy,
 }: {
   item: MessageItem;
   assistantLabel: string;
   showName: boolean;
+  titleGenerationEnabled: boolean;
+  onRegenerateTitleFromUserMessage: (message: string) => void;
+  titleGenerationBusy: boolean;
 }) {
   const taggedInstructionMessage = messageItemIsTaggedInstruction(item);
+  const titleSourceText =
+    item.role === "user" && titleGenerationEnabled ? messageItemText(item) : null;
+  const showTitleAction = Boolean(showName && !taggedInstructionMessage && titleSourceText);
+  const titleActionLabel = titleGenerationBusy
+    ? "Generating tab title"
+    : "Regenerate tab title from this message";
   return (
     <article
       className={`turn-card role-${item.role}${
@@ -779,7 +820,27 @@ function MessageItemView({
       }`}
     >
       {showName && !taggedInstructionMessage ? (
-        <header>{turnRoleLabel(item.role, assistantLabel)}</header>
+        <header>
+          <span className="turn-card-role-label">{turnRoleLabel(item.role, assistantLabel)}</span>
+          {showTitleAction && titleSourceText ? (
+            <button
+              type="button"
+              className="turn-title-regenerate-button"
+              title={titleActionLabel}
+              aria-label={titleActionLabel}
+              disabled={titleGenerationBusy}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRegenerateTitleFromUserMessage?.(titleSourceText);
+              }}
+            >
+              <span className="turn-title-regenerate-glyph" aria-hidden="true">
+                Tt
+              </span>
+            </button>
+          ) : null}
+        </header>
       ) : null}
       <div className="turn-blocks">
         {item.blocks.map((block, index) => (
@@ -788,6 +849,13 @@ function MessageItemView({
       </div>
     </article>
   );
+}
+
+function messageItemText(item: MessageItem): string | null {
+  const text = item.blocks
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("\n\n");
+  return text.trim() ? text : null;
 }
 
 function messageItemIsTaggedInstruction(item: MessageItem) {
