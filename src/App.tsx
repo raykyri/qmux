@@ -265,6 +265,8 @@ const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 360;
 const GROUP_CONTEXT_MENU_WIDTH = 220;
 const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
+const SETTINGS_CONTEXT_MENU_WIDTH = 160;
+const SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT = 66;
 const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
   [CLAUDE_ADAPTER_ID]: claudeModelIconUrl,
   [CODEX_ADAPTER_ID]: openAiModelIconUrl,
@@ -958,6 +960,7 @@ export default function App() {
   const [groupMenu, setGroupMenu] = useState<{ groupId: string; x: number; y: number } | null>(
     null,
   );
+  const [settingsMenu, setSettingsMenu] = useState<{ x: number; y: number } | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const applyRecoveredDismissals = useCallback((paneList: PaneInfo[]) => {
     const dismissed = dismissedRecoveredPaneIdsRef.current;
@@ -2577,10 +2580,13 @@ export default function App() {
     }
   }
 
-  async function createGroupAfter(group: GroupInfo) {
+  async function createGroupWithShell(anchorGroup: GroupInfo | null) {
     setError(null);
     try {
-      const newGroup = await createGroup({ dir: group.dir, afterGroupId: group.id });
+      const newGroup = await createGroup({
+        dir: anchorGroup?.dir ?? null,
+        afterGroupId: anchorGroup?.id ?? null,
+      });
       const pane = await spawnShell(estimateInitialPaneSize(false), null, newGroup.id);
       setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
       setActivePaneId(pane.id);
@@ -2593,6 +2599,20 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function createGroupAfter(group: GroupInfo) {
+    await createGroupWithShell(group);
+  }
+
+  async function createGroupFromSettingsMenu() {
+    setSettingsMenu(null);
+    const anchorGroupId = launchGroupId();
+    const fallbackGroup = groups.length > 0 ? groups[groups.length - 1] : null;
+    const anchorGroup = anchorGroupId
+      ? (groupById.get(anchorGroupId) ?? fallbackGroup)
+      : fallbackGroup;
+    await createGroupWithShell(anchorGroup);
   }
 
   async function addShellPaneInGroup(groupId: string | null) {
@@ -3866,6 +3886,7 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     setGroupMenu(null);
+    setSettingsMenu(null);
     const maxX = Math.max(8, window.innerWidth - PANE_CONTEXT_MENU_WIDTH - 8);
     const maxY = Math.max(8, window.innerHeight - PANE_CONTEXT_MENU_ESTIMATED_HEIGHT - 8);
     setPaneContextMenu({
@@ -4625,18 +4646,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!paneContextMenu && !groupMenu) {
+    if (!paneContextMenu && !groupMenu && !settingsMenu) {
       return;
     }
     const handleDismiss = () => {
       setPaneContextMenu(null);
       setGroupMenu(null);
+      setSettingsMenu(null);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         setPaneContextMenu(null);
         setGroupMenu(null);
+        setSettingsMenu(null);
         return;
       }
 
@@ -4679,7 +4702,7 @@ export default function App() {
       window.removeEventListener("resize", handleDismiss);
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [paneContextMenu, groupMenu, groups]);
+  }, [paneContextMenu, groupMenu, settingsMenu, groups]);
 
   useEffect(() => {
     if (paneContextMenu && !panes.some((pane) => pane.id === paneContextMenu.paneId)) {
@@ -5003,6 +5026,7 @@ export default function App() {
       if (key === ",") {
         event.preventDefault();
         event.stopPropagation();
+        setSettingsMenu(null);
         setSettingsOpen(true);
         return;
       }
@@ -5634,6 +5658,7 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     setPaneContextMenu(null);
+    setSettingsMenu(null);
     setGroupMenu({
       groupId: group.id,
       x: clamp(event.clientX, 8, Math.max(8, window.innerWidth - GROUP_CONTEXT_MENU_WIDTH - 8)),
@@ -5648,6 +5673,7 @@ export default function App() {
     const x = event.clientX || rect.right;
     const y = event.clientY || rect.bottom;
     setPaneContextMenu(null);
+    setSettingsMenu(null);
     setGroupMenu((current) =>
       current?.groupId === group.id
         ? null
@@ -5657,6 +5683,21 @@ export default function App() {
             y: clamp(y, 8, Math.max(8, window.innerHeight - GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT - 8)),
           },
     );
+  }
+
+  function toggleSettingsMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const maxX = Math.max(8, window.innerWidth - SETTINGS_CONTEXT_MENU_WIDTH - 8);
+    const maxY = Math.max(8, window.innerHeight - SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT - 8);
+    const x = clamp(rect.right - SETTINGS_CONTEXT_MENU_WIDTH, 8, maxX);
+    const upwardY = rect.top - SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT - 6;
+    const downwardY = rect.bottom + 6;
+    const y = clamp(upwardY >= 8 ? upwardY : downwardY, 8, maxY);
+    setPaneContextMenu(null);
+    setGroupMenu(null);
+    setSettingsMenu((current) => (current ? null : { x, y }));
   }
 
   function renderPaneTabRow(pane: PaneInfo, index: number, groupPanes: PaneInfo[], groupId: string) {
@@ -6261,14 +6302,52 @@ export default function App() {
           <button
             type="button"
             className="sidebar-settings-button"
-            aria-label="Settings"
-            title="Settings"
-            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings menu"
+            aria-haspopup="menu"
+            aria-expanded={settingsMenu ? true : undefined}
+            title="Settings menu"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={toggleSettingsMenuFromButton}
           >
             <Settings size={14} aria-hidden="true" />
           </button>
         </div>
       </aside>
+
+      {settingsMenu ? (
+        <div
+          className="pane-context-menu settings-context-menu"
+          role="menu"
+          aria-label="Settings menu"
+          style={{ left: settingsMenu.x, top: settingsMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="group-context-actions">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                void createGroupFromSettingsMenu();
+              }}
+            >
+              <Plus size={13} aria-hidden="true" />
+              <span>New Group</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setSettingsMenu(null);
+                setSettingsOpen(true);
+              }}
+            >
+              <Settings size={13} aria-hidden="true" />
+              <span>Settings</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {groupMenu && groupMenuGroup ? (
         <div

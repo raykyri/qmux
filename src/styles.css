@@ -973,6 +973,12 @@ button:disabled {
   user-select: none;
 }
 
+.settings-context-menu {
+  width: min(160px, calc(100vw - 16px));
+  padding: 4px;
+  user-select: none;
+}
+
 .group-context-actions {
   margin: 0;
   padding: 0;
