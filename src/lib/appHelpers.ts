@@ -70,6 +70,39 @@ export function selectPaneAfterClose(
   return panes[closedIndex - 1]?.id ?? panes[closedIndex + 1]?.id ?? null;
 }
 
+export function cycleTabId(
+  tabIds: string[],
+  activeTabId: string | null | undefined,
+  direction: -1 | 1,
+  paneSplits: PaneSplitInfo[] = [],
+  fallbackIndex?: number,
+): string | null {
+  if (tabIds.length === 0) {
+    return null;
+  }
+
+  const listedIndex = tabIds.indexOf(activeTabId ?? "");
+  const currentIndex =
+    listedIndex !== -1 ? listedIndex : (fallbackIndex ?? (direction === 1 ? -1 : 0));
+  const activeSplitPaneIds =
+    listedIndex !== -1 && activeTabId
+      ? new Set(
+          paneSplits.find((candidate) => candidate.paneIds.includes(activeTabId))?.paneIds ?? [],
+        )
+      : null;
+
+  let nextIndex = currentIndex;
+  for (let visited = 0; visited < tabIds.length; visited += 1) {
+    nextIndex = (nextIndex + direction + tabIds.length) % tabIds.length;
+    const nextTabId = tabIds[nextIndex];
+    if (!activeSplitPaneIds?.has(nextTabId)) {
+      return nextTabId;
+    }
+  }
+
+  return listedIndex !== -1 ? tabIds[listedIndex] : tabIds[0];
+}
+
 // Validates a turn payload arriving over the backend event stream before it is
 // trusted as a Turn. The data is structured by Rust, but guarding at the boundary
 // keeps a malformed/renamed field from silently producing an invalid turn the UI

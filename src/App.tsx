@@ -73,6 +73,7 @@ import {
   agentStatusTone,
   buildQuotedMessage,
   clamp,
+  cycleTabId,
   formatTranscriptCopyJson,
   isEditableTarget,
   isTerminalTarget,
@@ -4936,18 +4937,27 @@ export default function App() {
           return;
         }
         const listedIndex = tabIds.indexOf(activePaneId ?? "");
-        let currentIndex: number;
+        let fallbackIndex: number;
         if (listedIndex !== -1) {
-          currentIndex = listedIndex;
+          fallbackIndex = listedIndex;
         } else if (includeHome) {
           // Active tab not in the list (e.g. null): default to the first real pane.
-          currentIndex = cyclePanes.length > 0 ? 1 : 0;
+          fallbackIndex = cyclePanes.length > 0 ? 1 : 0;
         } else {
           // Skipping Home while Home is active: position so forward lands on the
           // first pane and backward on the last.
-          currentIndex = direction === 1 ? -1 : 0;
+          fallbackIndex = direction === 1 ? -1 : 0;
         }
-        focusTabById(tabIds[(currentIndex + direction + tabIds.length) % tabIds.length]);
+        const nextTabId = cycleTabId(
+          tabIds,
+          activePaneId,
+          direction,
+          paneSplits,
+          fallbackIndex,
+        );
+        if (nextTabId) {
+          focusTabById(nextTabId);
+        }
       };
 
       // Cmd-1..9 / Ctrl-1..9 jump to real pane tabs in sidebar order. Claimed
@@ -5131,6 +5141,7 @@ export default function App() {
     launcherOpen,
     launcherAdapterOptions,
     launchAdapter.id,
+    paneSplits,
   ]);
 
   useEffect(() => {
