@@ -65,6 +65,7 @@
   --control-border-hover-accent: #4a5d56;
   --split-border-hover: rgba(215, 168, 79, 0.65);
   --split-border-active: rgba(255, 220, 143, 0.78);
+  --split-border-active-muted: rgba(255, 220, 143, 0.28);
   --split-active-indicator: rgba(215, 168, 79, 0.32);
   --control-fg: #f1f0e8;
   --control-fg-muted: #b9c0bc;
@@ -348,6 +349,7 @@ button:disabled {
 .pane-tab-row.is-split-active .pane-tab {
   background: var(--control-bg-hover);
   border-color: transparent;
+  border-left-color: var(--split-border-active-muted);
   border-radius: 0;
   color: #f1f3ef;
 }
