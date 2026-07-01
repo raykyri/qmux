@@ -2581,29 +2581,23 @@ export default function App() {
     }
   }
 
-  async function createGroupWithShell(anchorGroup: GroupInfo | null) {
+  async function createEmptyGroup(anchorGroup: GroupInfo | null) {
     setError(null);
     try {
       const newGroup = await createGroup({
         dir: anchorGroup?.dir ?? null,
         afterGroupId: anchorGroup?.id ?? null,
       });
-      const pane = await spawnShell(estimateInitialPaneSize(false), null, newGroup.id);
-      setPanesPreservingRecoveredDismissals((current) => [...current, pane]);
-      setActivePaneId(pane.id);
       setLauncherOpen(false);
-      setLastActiveGroupId(pane.groupId);
+      setLastActiveGroupId(newGroup.id);
       await refreshGroups();
-      requestAnimationFrame(() => {
-        terminalPaneRefs.current.get(pane.id)?.focus();
-      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
   async function createGroupAfter(group: GroupInfo) {
-    await createGroupWithShell(group);
+    await createEmptyGroup(group);
   }
 
   async function createGroupFromSettingsMenu() {
@@ -2613,7 +2607,7 @@ export default function App() {
     const anchorGroup = anchorGroupId
       ? (groupById.get(anchorGroupId) ?? fallbackGroup)
       : fallbackGroup;
-    await createGroupWithShell(anchorGroup);
+    await createEmptyGroup(anchorGroup);
   }
 
   async function addShellPaneInGroup(groupId: string | null) {
@@ -2693,6 +2687,9 @@ export default function App() {
     const split = paneSplitForPane(paneSplits, pane.id);
     if (!split || split.paneIds.length < 2) {
       return;
+    }
+    for (const splitPaneId of split.paneIds) {
+      terminalPaneRefs.current.get(splitPaneId)?.preserveViewport();
     }
     const nextSplits = detachPaneFromSplitMemberships(paneSplits, pane.id);
     const memberIndex = split.paneIds.indexOf(pane.id);

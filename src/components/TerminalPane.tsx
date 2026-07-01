@@ -495,6 +495,9 @@ function terminalLinkAtMouseEvent(term: Terminal, event: MouseEvent): TerminalLi
 
 export interface TerminalPaneHandle {
   focus: () => void;
+  // Capture the current xterm viewport and re-apply it on the next frame. Used by
+  // split layout changes that keep the terminal mounted but alter its geometry.
+  preserveViewport: () => void;
   // Writes a decoded PTY chunk into this pane, buffering until xterm has opened so
   // cold-start output is never dropped. Called by the app's central event dispatch.
   write: (data: string | Uint8Array) => void;
@@ -876,9 +879,27 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         terminalRef.current?.focus();
         stabilizeTerminalRef.current?.();
       },
+      preserveViewport() {
+        const terminal = terminalRef.current;
+        if (!terminal) {
+          return;
+        }
+        const snapshot = snapshotTerminalScroll(terminal);
+        scrollSnapshotRef.current = snapshot;
+        const restore = () => {
+          const currentTerminal = terminalRef.current;
+          if (!currentTerminal) {
+            return;
+          }
+          restoreTerminalViewport(snapshot, currentTerminal);
+          stabilizeTerminalRef.current?.();
+        };
+        restore();
+        window.requestAnimationFrame(restore);
+      },
       write: writeTerminalData,
     }),
-    [writeTerminalData],
+    [restoreTerminalViewport, writeTerminalData],
   );
 
   const findNext = () => {
