@@ -5732,6 +5732,20 @@ export default function App() {
     const isActiveSplitLast =
       paneInActiveSplit && !visibleTerminalPaneIdSet.has(groupPanes[index + 1]?.id ?? "");
     const paneDir = paneAgent?.worktreeDir ?? pane.cwd;
+    const splitMembersShareDir = Boolean(
+      paneSplit &&
+        paneSplit.paneIds.length > 1 &&
+        paneSplit.paneIds.every((paneId) => {
+          const splitPane = paneById.get(paneId);
+          if (!splitPane) {
+            return false;
+          }
+          const splitPaneAgent = agentByPaneId.get(paneId);
+          return (splitPaneAgent?.worktreeDir ?? splitPane.cwd) === paneDir;
+        }),
+    );
+    const hidePaneDir =
+      splitMembersShareDir && paneSplit?.paneIds[paneSplit.paneIds.length - 1] !== pane.id;
     const paneBranch = paneAgent?.branch ?? null;
     const paneWorktreeName =
       paneBranch && paneAgent?.worktreeDir
@@ -5815,7 +5829,7 @@ export default function App() {
             <span className={`pane-tab-title${paneTitleIsUserSet ? " is-user-set" : ""}`}>
               {paneDisplayTitle}
             </span>
-            {settings.codeMode && settings.showTabDirectories && paneDir ? (
+            {settings.codeMode && settings.showTabDirectories && paneDir && !hidePaneDir ? (
               <span className="pane-tab-path" title={paneDir}>
                 {formatPaneDir(paneDir)}
               </span>
