@@ -1,7 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, shell_quote_arg, shell_quote_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, reusable_session_agent,
+    shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -319,18 +320,33 @@ impl GrokAdapter {
             ));
         }
 
-        let agent = prepare_agent_workspace(
+        // A restart-driven resume (`grok --resume <id>`) rebinds the original agent
+        // for that session instead of minting a duplicate; any other invocation starts
+        // a fresh agent in the current directory.
+        let cwd_str = cwd.display().to_string();
+        let pane_group_id = state
+            .pane_group_id(&request.pane_id)?
+            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let agent = match reusable_session_agent(
             state,
-            PrepareAgentWorkspaceRequest {
-                group_id: state.pane_group_id(&request.pane_id)?,
-                base_repo: Some(cwd.display().to_string()),
-                base_ref: Some("HEAD".to_string()),
-                adapter: self.id().to_string(),
-                model: None,
-                // Typing `grok` in a shell runs in the current directory; no worktree.
-                use_worktree: false,
-            },
-        )?;
+            self.id(),
+            grok_resume_session_id(&request.args),
+            &cwd_str,
+        )? {
+            Some(existing) => existing,
+            None => prepare_agent_workspace(
+                state,
+                PrepareAgentWorkspaceRequest {
+                    group_id: Some(pane_group_id),
+                    base_repo: Some(cwd_str),
+                    base_ref: Some("HEAD".to_string()),
+                    adapter: self.id().to_string(),
+                    model: None,
+                    // Typing `grok` in a shell runs in the current directory; no worktree.
+                    use_worktree: false,
+                },
+            )?,
+        };
         let agent = attach_grok_agent_pane(
             state,
             &agent.id,
@@ -387,25 +403,32 @@ impl GrokAdapter {
                         .or_else(|| string_field(&notification.payload, "sessionId"));
                     // Grok's SessionStart hook reports the rollout transcript path when
                     // it has one (Claude-compatible). Prefer it so the timeline tails
-                    // Grok's own transcript; otherwise fall back to the qMux-managed
-                    // JSONL path so a tail still starts and binds once content appears.
-                    let transcript_path = string_field(&notification.payload, "transcript_path")
-                        .or_else(|| string_field(&notification.payload, "transcriptPath"))
-                        .unwrap_or_else(|| {
-                            Self::transcript_path_for(state, &current.id)
-                                .display()
-                                .to_string()
-                        });
-                    let transcript_path_for_tail = transcript_path.clone();
+                    // Grok's own transcript.
+                    let hook_transcript_path =
+                        string_field(&notification.payload, "transcript_path")
+                            .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                    let fallback_transcript_path = Self::transcript_path_for(state, &current.id)
+                        .display()
+                        .to_string();
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
                     // wiping either the pane_id it set or the session_id we set.
-                    state.mutate_agent(&current.id, |agent| {
+                    let updated = state.mutate_agent(&current.id, |agent| {
                         if let Some(session_id) = session_id {
                             agent.session_id = Some(session_id);
                         }
-                        agent.transcript_path = Some(transcript_path);
+                        // Only overwrite a recorded path when this event actually carries
+                        // one. A late/duplicate SessionStart that omits the field must not
+                        // rebind the tail out from under a running transcript, which would
+                        // silently freeze the timeline. When nothing is recorded yet, bind
+                        // the qMux-managed fallback so a tail still starts and picks up
+                        // content once it appears.
+                        if let Some(transcript_path) = hook_transcript_path {
+                            agent.transcript_path = Some(transcript_path);
+                        } else if agent.transcript_path.is_none() {
+                            agent.transcript_path = Some(fallback_transcript_path);
+                        }
                         // A session starting doesn't mean a turn is running. Keep status
                         // unchanged here; the first real prompt/tool hook promotes the
                         // agent to Running.
@@ -413,12 +436,15 @@ impl GrokAdapter {
 
                     // Start tailing the bound transcript. The file may not exist yet, so
                     // the tail waits for it to appear rather than erroring.
-                    start_transcript_tail(
-                        state.clone(),
-                        current.id.clone(),
-                        transcript_path_for_tail,
-                        self.id().to_string(),
-                    );
+                    if let Some(transcript_path) = updated.and_then(|agent| agent.transcript_path)
+                    {
+                        start_transcript_tail(
+                            state.clone(),
+                            current.id.clone(),
+                            transcript_path,
+                            self.id().to_string(),
+                        );
+                    }
                 }
                 "agent.session_start"
             }
@@ -776,6 +802,25 @@ fn args_contain_prompt(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// Extracts the session id from a `grok --resume <id>` (or `-r <id>` /
+/// `--resume=<id>`) shell argument list, so a resume launch can rebind the original
+/// agent. `None` when the invocation doesn't resume a specific session.
+fn grok_resume_session_id(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--resume" || arg == "-r" {
+            return iter
+                .next()
+                .map(String::as_str)
+                .filter(|next| !next.starts_with('-'));
+        }
+        if let Some(value) = arg.strip_prefix("--resume=") {
+            return (!value.is_empty()).then_some(value);
+        }
+    }
+    None
 }
 
 /// Grok flags that take a separate value argument, so the following token is the
@@ -1359,6 +1404,62 @@ mod tests {
         assert_eq!(
             agent.transcript_path.as_deref(),
             Some("/home/user/.grok/sessions/grok-session-1/rollout.jsonl")
+        );
+    }
+
+    #[test]
+    fn session_start_without_transcript_path_keeps_recorded_path() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Idle;
+        agent.session_id = Some("grok-session-1".to_string());
+        agent.transcript_path =
+            Some("/home/user/.grok/sessions/grok-session-1/rollout.jsonl".to_string());
+        state.insert_agent(agent).unwrap();
+
+        // A late/duplicate SessionStart (e.g. after a resume) that omits the field
+        // must not rebind the tail to the qMux fallback path.
+        let event = ingest(&state, hook_for_agent("SessionStart", "agent-1", json!({})));
+
+        assert_eq!(event.event_type, "agent.session_start");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(
+            agent.transcript_path.as_deref(),
+            Some("/home/user/.grok/sessions/grok-session-1/rollout.jsonl")
+        );
+        // Nor blank a recorded session id.
+        assert_eq!(agent.session_id.as_deref(), Some("grok-session-1"));
+    }
+
+    #[test]
+    fn resume_session_id_parses_resume_forms() {
+        let args = |values: &[&str]| values.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(
+            grok_resume_session_id(&args(&["--resume", "sess-1"])),
+            Some("sess-1")
+        );
+        assert_eq!(
+            grok_resume_session_id(&args(&["-r", "sess-1"])),
+            Some("sess-1")
+        );
+        assert_eq!(
+            grok_resume_session_id(&args(&["--resume=sess-1"])),
+            Some("sess-1")
+        );
+        assert_eq!(
+            grok_resume_session_id(&args(&["--model", "grok-code", "--resume", "sess-1"])),
+            Some("sess-1")
+        );
+
+        // Not a resume of a specific session.
+        assert_eq!(grok_resume_session_id(&args(&[])), None);
+        assert_eq!(grok_resume_session_id(&args(&["fix the bug"])), None);
+        assert_eq!(grok_resume_session_id(&args(&["--resume"])), None);
+        assert_eq!(grok_resume_session_id(&args(&["--resume="])), None);
+        assert_eq!(
+            grok_resume_session_id(&args(&["--resume", "--model"])),
+            None
         );
     }
 
