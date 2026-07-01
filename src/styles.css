@@ -503,6 +503,13 @@ button:disabled {
   white-space: nowrap;
 }
 
+.pane-group-count {
+  flex: none;
+  color: #747d79;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 /* The active group (holding the selected tab) brightens slightly. */
 .pane-group.is-active-group .pane-group-name {
   color: #edf0ec;

@@ -6235,6 +6235,9 @@ export default function App() {
                     >
                       {groupDisplayName}
                     </span>
+                    {isCollapsedGroup ? (
+                      <span className="pane-group-count">({groupPanes.length})</span>
+                    ) : null}
                   </span>
                   <span className="pane-group-aux">
                     <button
