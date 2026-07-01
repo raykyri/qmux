@@ -3962,9 +3962,11 @@ export default function App() {
     });
   }
 
-  async function toggleGroupCollapsed(group: GroupInfo) {
+  async function applyGroupCollapsed(group: GroupInfo, collapsed: boolean) {
     setGroupMenu(null);
-    const collapsed = !group.collapsed;
+    if (group.collapsed === collapsed) {
+      return;
+    }
     setError(null);
     setGroups((current) =>
       current.map((candidate) =>
@@ -3984,6 +3986,14 @@ export default function App() {
       );
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function toggleGroupCollapsed(group: GroupInfo) {
+    await applyGroupCollapsed(group, !group.collapsed);
+  }
+
+  async function expandGroup(group: GroupInfo) {
+    await applyGroupCollapsed(group, false);
   }
 
   async function closeDialogForPane(
@@ -4506,7 +4516,39 @@ export default function App() {
         event.preventDefault();
         setPaneContextMenu(null);
         setGroupMenu(null);
+        return;
       }
+
+      if (!groupMenu || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key !== "c" && key !== "e" && key !== "r") {
+        return;
+      }
+
+      const group = groups.find((candidate) => candidate.id === groupMenu.groupId);
+      if (!group) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      if (key === "r") {
+        setGroupMenu(null);
+        openGroupRenameDialog(group);
+        return;
+      }
+
+      if (key === "e") {
+        void expandGroup(group);
+        return;
+      }
+
+      void toggleGroupCollapsed(group);
     };
     window.addEventListener("mousedown", handleDismiss);
     window.addEventListener("resize", handleDismiss);
@@ -4516,7 +4558,7 @@ export default function App() {
       window.removeEventListener("resize", handleDismiss);
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [paneContextMenu, groupMenu]);
+  }, [paneContextMenu, groupMenu, groups]);
 
   useEffect(() => {
     if (paneContextMenu && !panes.some((pane) => pane.id === paneContextMenu.paneId)) {
@@ -6124,6 +6166,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
+              className="context-menu-has-shortcut"
               onClick={() => {
                 setGroupMenu(null);
                 openGroupRenameDialog(groupMenuGroup);
@@ -6131,6 +6174,7 @@ export default function App() {
             >
               <Pencil size={13} aria-hidden="true" />
               <span>Rename group</span>
+              <kbd className="context-menu-shortcut">R</kbd>
             </button>
             <button
               type="button"
@@ -6174,6 +6218,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
+              className="context-menu-has-shortcut"
               onClick={() => {
                 void toggleGroupCollapsed(groupMenuGroup);
               }}
@@ -6184,6 +6229,9 @@ export default function App() {
                 <PanelBottomClose size={13} aria-hidden="true" />
               )}
               <span>{groupMenuGroup.collapsed ? "Expand group" : "Collapse group"}</span>
+              <kbd className="context-menu-shortcut">
+                {groupMenuGroup.collapsed ? "C/E" : "C"}
+              </kbd>
             </button>
             <button
               type="button"
