@@ -43,10 +43,12 @@ import {
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import { CODEX_ADAPTER_ID } from "./adapters/codex";
+import { GROK_ADAPTER_ID } from "./adapters/grok";
 import { OPENCODE_ADAPTER_ID } from "./adapters/opencode";
 import claudeModelIconUrl from "./assets/model-icons/claude-ai.svg";
 import openAiModelIconUrl from "./assets/model-icons/openai.svg";
 import openCodeModelIconUrl from "./assets/model-icons/opencode-dark.svg";
+import grokModelIconUrl from "./assets/model-icons/grok.svg";
 import NativeInput from "./components/NativeInput";
 import {
   ComposerSubmitShortcutGlyph,
@@ -271,6 +273,7 @@ const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
   [CLAUDE_ADAPTER_ID]: claudeModelIconUrl,
   [CODEX_ADAPTER_ID]: openAiModelIconUrl,
   [OPENCODE_ADAPTER_ID]: openCodeModelIconUrl,
+  [GROK_ADAPTER_ID]: grokModelIconUrl,
 };
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;

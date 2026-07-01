@@ -3360,7 +3360,8 @@ fn random_token() -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig,
     };
     use crate::persistence::PersistedState;
     use crate::scrollback::append_pane_scrollback;
@@ -3396,6 +3397,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

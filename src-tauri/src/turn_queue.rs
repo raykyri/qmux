@@ -702,7 +702,8 @@ mod tests {
     use super::*;
     use crate::adapters::{ComposerPolicy, PermissionAction};
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig, QmuxConfig,
     };
     use crate::state::{PaneBacklog, PaneInfo, PaneKind, PaneRuntime, PaneStatus};
     use crate::workspace::{detach_pane_agent, mark_agent_failed};
@@ -739,6 +740,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

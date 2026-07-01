@@ -1059,7 +1059,8 @@ fn should_recover_missing(err_kind: ErrorKind, have_read_bound_file: bool) -> bo
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig, QmuxConfig,
     };
     use std::time::UNIX_EPOCH;
 
@@ -1493,6 +1494,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

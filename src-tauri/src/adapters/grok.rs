@@ -1,7 +1,7 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -15,66 +15,76 @@ use crate::workspace::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::env;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+/// The xAI Grok Build lifecycle hook events qMux installs. Grok's hook system is
+/// Claude-compatible (a `hooks` block in `~/.grok/user-settings.json` whose entries
+/// run a command per event, receiving the event JSON on stdin), so qMux drives the
+/// agent timeline from the same events it uses for Claude.
+const GROK_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "Stop",
+];
+
+/// Adapter for the xAI Grok Build CLI. Grok ships a Claude-compatible hook system
+/// (shell commands run at lifecycle events, event JSON on stdin), so qMux integrates
+/// it like its Claude and Codex adapters rather than like OpenCode: a qMux-managed
+/// hook command is installed into `~/.grok/user-settings.json` and forwards each
+/// lifecycle event back to qMux via `qmux notify <event>`. The hook command no-ops
+/// outside qMux (it checks for the `QMUX_*` env vars only qMux-launched panes set),
+/// so standalone `grok` runs are unaffected. Agent status (running, idle, awaiting
+/// permission) is driven by these hooks; the transcript timeline binds to the
+/// transcript path the `SessionStart` hook reports when Grok provides one.
 #[derive(Clone, Debug)]
-pub struct OpencodeAdapter {
+pub struct GrokAdapter {
     binary: String,
-    plugin_dir: PathBuf,
 }
 
-impl OpencodeAdapter {
+impl GrokAdapter {
     pub fn new(config: &QmuxConfig) -> Self {
         Self {
-            binary: config.opencode_binary(),
-            plugin_dir: config.opencode_plugin_dir.clone(),
+            binary: config.grok_binary(),
         }
     }
 
     fn ensure_binary(&self) -> Result<String, String> {
         let binary = ensure_on_path(&self.binary).ok_or_else(|| {
             format!(
-                "OpenCode adapter binary '{}' was not found on PATH or standard macOS tool paths. Install OpenCode CLI or update adapters.opencode.binary in qmux.config.json.",
+                "Grok adapter binary '{}' was not found on PATH or standard macOS tool paths. Install the Grok CLI or update adapters.grok.binary in qmux.config.json.",
                 self.binary
             )
         })?;
         Ok(binary.display().to_string())
     }
 
-    /// The qmux-managed JSONL transcript path for an agent. The opencode plugin
-    /// appends one JSON line per message part here; qmux tails it with the same
-    /// transcript pipeline used for Claude and Codex.
+    /// The qMux-managed JSONL transcript fallback path for an agent, used when Grok's
+    /// `SessionStart` hook does not report a transcript path of its own. It is shaped
+    /// for `parse_transcript_line` and tailed with the same pipeline used for Claude,
+    /// Codex, and OpenCode.
     fn transcript_path_for(state: &AppState, agent_id: &str) -> PathBuf {
         state
             .config()
             .workspace_root
             .join(".qmux")
-            .join("opencode")
+            .join("grok")
             .join(format!("{agent_id}.jsonl"))
-    }
-
-    /// `OPENCODE_CONFIG_DIR` env value pointing at the qmux-managed plugin dir,
-    /// emitted only when the plugin directory actually exists so a checkout
-    /// without one launches cleanly.
-    fn config_dir_env(&self) -> Option<(String, String)> {
-        if self.plugin_dir.is_dir() {
-            Some((
-                "OPENCODE_CONFIG_DIR".to_string(),
-                self.plugin_dir.display().to_string(),
-            ))
-        } else {
-            None
-        }
     }
 }
 
-impl AgentAdapter for OpencodeAdapter {
+impl AgentAdapter for GrokAdapter {
     fn id(&self) -> &'static str {
-        "opencode"
+        "grok"
     }
 
     fn display_name(&self) -> &'static str {
-        "OpenCode"
+        "Grok"
     }
 
     fn launch(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
@@ -100,9 +110,13 @@ impl AgentAdapter for OpencodeAdapter {
 
     fn shell_commands(&self) -> Vec<ShellCommandIntegration> {
         vec![ShellCommandIntegration {
-            command_name: "opencode",
+            command_name: "grok",
             adapter_id: self.id(),
         }]
+    }
+
+    fn shell_resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("grok --resume {}", shell_quote_arg(session_id)))
     }
 
     fn ingest_notification(
@@ -110,7 +124,7 @@ impl AgentAdapter for OpencodeAdapter {
         state: &AppState,
         notification: AdapterNotification,
     ) -> Result<AdapterNotificationOutcome, String> {
-        self.ingest_opencode_notification(state, notification)
+        self.ingest_grok_notification(state, notification)
     }
 
     fn parse_transcript_line(
@@ -144,10 +158,11 @@ impl AgentAdapter for OpencodeAdapter {
     }
 }
 
-impl OpencodeAdapter {
+impl GrokAdapter {
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
-        let _options = OpencodeLaunchOptions::from_value(request.options)?;
+        let _options = GrokLaunchOptions::from_value(request.options)?;
+        ensure_grok_integration()?;
 
         let agent = prepare_agent_workspace(
             state,
@@ -167,20 +182,18 @@ impl OpencodeAdapter {
         if !cwd.is_dir() {
             let _ = mark_agent_failed(state, &agent.id);
             return Err(format!(
-                "OpenCode working directory {} does not exist",
+                "Grok working directory {} does not exist",
                 cwd.display()
             ));
         }
 
         let has_initial_prompt = prompt_has_initial_text(&request.prompt);
-        let args = build_opencode_args(&cwd, request.model.as_deref(), &request.prompt);
+        let args = build_grok_args(&cwd, request.model.as_deref(), &request.prompt);
 
         let pane_id = state.next_id("pane");
         let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
-        if let Some(config_dir_env) = self.config_dir_env() {
-            envs.push(config_dir_env);
-        }
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
 
         let spawn_result = spawn_pty(
             state,
@@ -202,7 +215,7 @@ impl OpencodeAdapter {
 
         match spawn_result {
             Ok(pane) => {
-                attach_opencode_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
+                attach_grok_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
                 Ok(pane)
             }
             Err(err) => {
@@ -219,6 +232,7 @@ impl OpencodeAdapter {
         agent: &AgentInfo,
     ) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
+        ensure_grok_integration()?;
         let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
             format!(
                 "agent worktree {} no longer exists; relaunch manually",
@@ -226,14 +240,15 @@ impl OpencodeAdapter {
             )
         })?;
 
+        // Resume the recorded session when there is one (`grok --resume <id>`;
+        // sessions live under ~/.grok/sessions), so a recovered pane continues the
+        // prior conversation instead of starting over.
         let (args, resumed) =
-            build_opencode_resume_args(&cwd, agent.model.as_deref(), agent.session_id.as_deref());
+            build_grok_resume_args(&cwd, agent.model.as_deref(), agent.session_id.as_deref());
 
         let mut envs = qmux_pane_envs(state, &pane.id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
-        if let Some(config_dir_env) = self.config_dir_env() {
-            envs.push(config_dir_env);
-        }
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
 
         let info = spawn_pty(
             state,
@@ -252,13 +267,14 @@ impl OpencodeAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
+                // A resumed session replays its own scrollback, so skip qMux's restore
+                // to avoid double output; a fresh relaunch keeps it.
                 skip_scrollback_restore: resumed,
             },
         )?;
 
-        // A recovered opencode process is launched without an inline prompt,
-        // even when resuming a session, so it is ready once the TUI appears. The
-        // first real prompt/tool hook will promote it to Running.
+        // A recovered Grok process launches without an inline prompt, so it is ready
+        // once the TUI appears. The first real prompt/tool hook promotes it to Running.
         let mut restored = agent.clone();
         restored.pane_id = Some(pane.id.clone());
         restored.status = AgentStatus::Idle;
@@ -289,6 +305,7 @@ impl OpencodeAdapter {
         request: PrepareShellAgentLaunchRequest,
     ) -> Result<PreparedShellAgentLaunch, String> {
         let binary = self.ensure_binary()?;
+        ensure_grok_integration()?;
 
         if state.pane_writer(&request.pane_id)?.is_none() {
             return Err(format!("pane {} was not found", request.pane_id));
@@ -297,7 +314,7 @@ impl OpencodeAdapter {
         let cwd = PathBuf::from(&request.cwd);
         if !cwd.is_dir() {
             return Err(format!(
-                "OpenCode working directory {} does not exist",
+                "Grok working directory {} does not exist",
                 cwd.display()
             ));
         }
@@ -310,23 +327,21 @@ impl OpencodeAdapter {
                 base_ref: Some("HEAD".to_string()),
                 adapter: self.id().to_string(),
                 model: None,
-                // Typing `opencode` in a shell runs in the current directory; no worktree.
+                // Typing `grok` in a shell runs in the current directory; no worktree.
                 use_worktree: false,
             },
         )?;
-        let agent = attach_opencode_agent_pane(
+        let agent = attach_grok_agent_pane(
             state,
             &agent.id,
             request.pane_id.clone(),
             args_contain_prompt(&request.args),
         )?;
 
-        let args = build_opencode_args_from_shell(&cwd, None, &request.args);
+        let args = build_grok_args_from_shell(&cwd, &request.args);
         let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
-        if let Some(config_dir_env) = self.config_dir_env() {
-            envs.push(config_dir_env);
-        }
+        envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         let agent_id = agent.id.clone();
         let worktree_dir = agent.worktree_dir.clone();
 
@@ -348,7 +363,7 @@ impl OpencodeAdapter {
         })
     }
 
-    fn ingest_opencode_notification(
+    fn ingest_grok_notification(
         &self,
         state: &AppState,
         notification: AdapterNotification,
@@ -370,6 +385,18 @@ impl OpencodeAdapter {
                 if let Some(current) = agent.as_ref() {
                     let session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"));
+                    // Grok's SessionStart hook reports the rollout transcript path when
+                    // it has one (Claude-compatible). Prefer it so the timeline tails
+                    // Grok's own transcript; otherwise fall back to the qMux-managed
+                    // JSONL path so a tail still starts and binds once content appears.
+                    let transcript_path = string_field(&notification.payload, "transcript_path")
+                        .or_else(|| string_field(&notification.payload, "transcriptPath"))
+                        .unwrap_or_else(|| {
+                            Self::transcript_path_for(state, &current.id)
+                                .display()
+                                .to_string()
+                        });
+                    let transcript_path_for_tail = transcript_path.clone();
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
@@ -378,28 +405,18 @@ impl OpencodeAdapter {
                         if let Some(session_id) = session_id {
                             agent.session_id = Some(session_id);
                         }
-                        // Bind the qmux-managed transcript path. The opencode plugin
-                        // writes JSONL here; qmux tails it with the same pipeline used
-                        // for Claude and Codex.
-                        let transcript_path = Self::transcript_path_for(state, &current.id)
-                            .display()
-                            .to_string();
                         agent.transcript_path = Some(transcript_path);
-                        // A session starting doesn't mean a turn is running. Keep
-                        // status unchanged here; the first real prompt/tool hook
-                        // promotes the agent to Running.
+                        // A session starting doesn't mean a turn is running. Keep status
+                        // unchanged here; the first real prompt/tool hook promotes the
+                        // agent to Running.
                     })?;
 
-                    // Start tailing the qmux-managed transcript file. The plugin may
-                    // not have written anything yet, so the tail waits for the file
-                    // to appear rather than erroring.
-                    let transcript_path = Self::transcript_path_for(state, &current.id)
-                        .display()
-                        .to_string();
+                    // Start tailing the bound transcript. The file may not exist yet, so
+                    // the tail waits for it to appear rather than erroring.
                     start_transcript_tail(
                         state.clone(),
                         current.id.clone(),
-                        transcript_path,
+                        transcript_path_for_tail,
                         self.id().to_string(),
                     );
                 }
@@ -485,8 +502,7 @@ impl OpencodeAdapter {
             None => None,
         };
         // Carry the updated agent so the frontend can apply this status change
-        // surgically instead of refetching the entire agent list on every hook
-        // event (which also avoids out-of-order refetches clobbering newer state).
+        // surgically instead of refetching the entire agent list on every hook event.
         if let (Value::Object(payload), Some(agent)) = (&mut event_payload, agent.as_ref()) {
             payload.insert(
                 "agent".to_string(),
@@ -506,63 +522,49 @@ impl OpencodeAdapter {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct OpencodeLaunchOptions {}
+struct GrokLaunchOptions {}
 
-impl OpencodeLaunchOptions {
+impl GrokLaunchOptions {
     fn from_value(value: Value) -> Result<Self, String> {
         if value.is_null() {
             return Ok(Self::default());
         }
-        serde_json::from_value(value)
-            .map_err(|err| format!("invalid OpenCode adapter options: {err}"))
+        serde_json::from_value(value).map_err(|err| format!("invalid Grok adapter options: {err}"))
     }
 }
 
-fn build_opencode_args(cwd: &Path, model: Option<&str>, prompt: &str) -> Vec<String> {
+/// Builds the argument list for a qMux-launched Grok process. Uses the xAI Grok
+/// Build CLI contract: `--cwd <dir>` for the working directory, `--model <model>`,
+/// and the initial prompt as a trailing positional argument (which starts the
+/// interactive TUI and submits the prompt immediately — unlike `-p/--prompt`, which
+/// runs headless and exits, so it can't back an interactive pane).
+fn build_grok_args(cwd: &Path, model: Option<&str>, prompt: &str) -> Vec<String> {
     let mut args = Vec::new();
+
+    // The working directory is passed explicitly so Grok runs in the agent's cwd
+    // even when the process cwd differs (e.g. worktree paths).
+    args.push("--cwd".to_string());
+    args.push(cwd.display().to_string());
 
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
         args.push("--model".to_string());
         args.push(model.to_string());
     }
 
+    // The interactive initial prompt is a trailing positional, so it must come after
+    // all flags.
     let prompt = prompt.trim();
     if !prompt.is_empty() {
-        args.push("--prompt".to_string());
         args.push(prompt.to_string());
     }
 
-    // The project directory is passed as a positional arg so opencode runs in
-    // the agent's cwd even when the process cwd differs (e.g. worktree paths).
-    args.push(cwd.display().to_string());
-
     args
 }
 
-fn build_opencode_args_from_shell(
-    cwd: &Path,
-    model: Option<&str>,
-    tail_args: &[String],
-) -> Vec<String> {
-    let mut args = Vec::new();
-
-    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
-        args.push("--model".to_string());
-        args.push(model.to_string());
-    }
-
-    args.extend(tail_args.iter().cloned());
-
-    // If no positional project arg was supplied via tail_args, pass the cwd.
-    let has_positional = tail_args.iter().any(|arg| !arg.starts_with('-'));
-    if !has_positional {
-        args.push(cwd.display().to_string());
-    }
-
-    args
-}
-
-fn build_opencode_resume_args(
+/// Builds args for recovering a Grok agent. With a recorded session id, resumes it
+/// via `grok --cwd <dir> [--model <m>] --resume <id>` and returns `true`; without
+/// one, falls back to a fresh interactive launch and returns `false`.
+fn build_grok_resume_args(
     cwd: &Path,
     model: Option<&str>,
     session_id: Option<&str>,
@@ -571,26 +573,158 @@ fn build_opencode_resume_args(
         .map(str::trim)
         .filter(|session_id| !session_id.is_empty())
     else {
-        return (build_opencode_args(cwd, model, ""), false);
+        return (build_grok_args(cwd, model, ""), false);
     };
 
-    let mut args = Vec::new();
-    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
-        args.push("--model".to_string());
-        args.push(model.to_string());
-    }
-    args.push("--session".to_string());
+    let mut args = build_grok_args(cwd, model, "");
+    args.push("--resume".to_string());
     args.push(session_id.to_string());
-    args.push(cwd.display().to_string());
-
     (args, true)
+}
+
+/// Builds args for a `grok ...` invocation typed in a shell pane. The user's own
+/// args are forwarded verbatim; a `--cwd` is supplied only when the user did not
+/// pass one so the agent still runs in the pane's cwd.
+fn build_grok_args_from_shell(cwd: &Path, tail_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    if !args_contain_directory(tail_args) {
+        args.push("--cwd".to_string());
+        args.push(cwd.display().to_string());
+    }
+    args.extend(tail_args.iter().cloned());
+    args
+}
+
+/// Installs the qMux Grok hook integration: an env-gated shim and a `hooks` block
+/// in `~/.grok/user-settings.json` whose entries run the shim for each lifecycle
+/// event. Idempotent — re-running replaces qMux's own hook entries and preserves
+/// everything else in the file. Called before every Grok launch/resume.
+fn ensure_grok_integration() -> Result<(), String> {
+    let grok_home = grok_home()?;
+    write_grok_integration_files(&grok_home)
+}
+
+/// The Grok config home. Honors a `GROK_HOME` override (used by tests and unusual
+/// installs); otherwise `~/.grok`, where Grok keeps its user settings and sessions.
+fn grok_home() -> Result<PathBuf, String> {
+    env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".grok")))
+        .ok_or_else(|| "GROK_HOME and HOME are not set; cannot configure Grok hooks".to_string())
+}
+
+fn qmux_cli_path() -> Result<String, String> {
+    env::current_exe()
+        .map(|path| path.display().to_string())
+        .map_err(|err| format!("failed to resolve qmux executable for Grok hooks: {err}"))
+}
+
+fn write_grok_integration_files(grok_home: &Path) -> Result<(), String> {
+    let qmux_dir = grok_home.join("qmux");
+    fs::create_dir_all(&qmux_dir)
+        .map_err(|err| format!("failed to create {}: {err}", qmux_dir.display()))?;
+
+    let shim_path = qmux_dir.join("qmux-grok-hook");
+    fs::write(&shim_path, grok_hook_shim())
+        .map_err(|err| format!("failed to write {}: {err}", shim_path.display()))?;
+    fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755))
+        .map_err(|err| format!("failed to chmod {}: {err}", shim_path.display()))?;
+
+    let settings_path = grok_home.join("user-settings.json");
+    // Read-modify-write so qMux only manages its own hook entries and never
+    // clobbers the user's model, trust, or other hooks. A present-but-unparseable
+    // file is an error rather than something to overwrite blindly.
+    let existing = match fs::read_to_string(&settings_path) {
+        Ok(raw) if !raw.trim().is_empty() => serde_json::from_str::<Value>(&raw)
+            .map_err(|err| format!("failed to parse {}: {err}", settings_path.display()))?,
+        _ => json!({}),
+    };
+    let merged = merge_grok_hooks(existing, &shim_path);
+    let raw = serde_json::to_string_pretty(&merged)
+        .map_err(|err| format!("failed to encode Grok settings: {err}"))?;
+    fs::write(&settings_path, raw)
+        .map_err(|err| format!("failed to write {}: {err}", settings_path.display()))?;
+    Ok(())
+}
+
+/// POSIX shim that forwards a Grok lifecycle event to `qmux notify <event>`. No-ops
+/// (exit 0) unless launched inside a qMux pane, so a standalone `grok` run that
+/// inherits the globally-installed hook is unaffected. The event JSON Grok writes to
+/// the shim's stdin is passed through to qmux, which reads it as the hook payload.
+fn grok_hook_shim() -> &'static str {
+    r#"#!/bin/sh
+event="${1:-}"
+if [ -z "$event" ]; then
+  exit 0
+fi
+if [ -z "${QMUX_SOCK:-}" ] || [ -z "${QMUX_TOKEN:-}" ] || [ -z "${QMUX_PANE_ID:-}" ] || [ -z "${QMUX_AGENT_ID:-}" ] || [ -z "${QMUX_CLI:-}" ]; then
+  exit 0
+fi
+exec "$QMUX_CLI" notify "$event"
+"#
+}
+
+/// Merges qMux's hook entries into a Grok `user-settings.json` value. Existing keys
+/// and any non-qMux hook entries are preserved; qMux's own entries (identified by a
+/// command that runs the shim) are replaced so repeated launches don't accumulate
+/// duplicates. The settings shape is Claude-compatible:
+/// `{"hooks": {"<Event>": [{"matcher": "", "hooks": [{"type": "command", "command": "<shim> <Event>"}]}]}}`.
+fn merge_grok_hooks(mut settings: Value, shim_path: &Path) -> Value {
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    let command_prefix = shell_quote_path(shim_path);
+    let obj = settings.as_object_mut().expect("settings is an object");
+    let hooks_entry = obj.entry("hooks").or_insert_with(|| json!({}));
+    if !hooks_entry.is_object() {
+        *hooks_entry = json!({});
+    }
+    let hooks = hooks_entry.as_object_mut().expect("hooks is an object");
+    for event in GROK_HOOK_EVENTS {
+        let entry = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
+        if !entry.is_array() {
+            *entry = json!([]);
+        }
+        let list = entry.as_array_mut().expect("event hooks is an array");
+        list.retain(|item| !is_qmux_grok_hook_entry(item, shim_path));
+        list.push(json!({
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": format!("{command_prefix} {event}"),
+                }
+            ]
+        }));
+    }
+    settings
+}
+
+/// Whether a hook matcher entry is one qMux installed, i.e. one of its `command`s
+/// runs the qMux Grok shim. Used to replace qMux's own entries on re-install without
+/// touching hooks the user added themselves.
+fn is_qmux_grok_hook_entry(entry: &Value, shim_path: &Path) -> bool {
+    let needle = shim_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("qmux-grok-hook");
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| command.contains(needle))
+            })
+        })
 }
 
 fn prompt_has_initial_text(prompt: &str) -> bool {
     !prompt.trim().is_empty()
 }
 
-fn attach_opencode_agent_pane(
+fn attach_grok_agent_pane(
     state: &AppState,
     agent_id: &str,
     pane_id: String,
@@ -608,27 +742,73 @@ fn attach_opencode_agent_pane(
     Ok(agent)
 }
 
-/// Whether a manual `opencode ...` invocation carries an inline prompt via
-/// `--prompt <text>`. Erring toward "no prompt" is safe: the agent just starts
-/// idle and the first real turn (UserPromptSubmit/PreToolUse) promotes it.
+/// Whether a manual `grok ...` invocation carries a prompt — either a headless
+/// prompt flag (`-p`/`--prompt`/`--single <text>`) or a trailing positional (the
+/// interactive initial message). Value-taking flags and their values are skipped so
+/// `grok --model grok-4` or `grok --resume <id>` is treated as interactive (no
+/// prompt). Erring toward "no prompt" is safe: the agent starts idle and the first
+/// real turn promotes it.
 fn args_contain_prompt(args: &[String]) -> bool {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--prompt" {
-            // --prompt takes a value; if there's a next arg, it's the prompt text.
-            return iter.next().is_some();
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
         }
-        if arg.starts_with("--prompt=") {
-            return arg.len() > "--prompt=".len();
+        // Headless prompt flags carry the prompt as their value.
+        if arg == "-p" || arg == "--prompt" || arg == "--single" {
+            return true;
         }
-        // A positional arg (not a flag) is treated as a project path, not a prompt.
-        // opencode's TUI doesn't accept a positional prompt; only --prompt does.
+        if arg.starts_with("--prompt=") || arg.starts_with("--single=") {
+            return arg
+                .split_once('=')
+                .is_some_and(|(_, value)| !value.is_empty());
+        }
+        // A value-taking flag consumes the next arg, so that value isn't a prompt.
+        if grok_value_flag(arg) {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        // A bare positional is the interactive initial prompt.
+        return true;
     }
     false
 }
 
-/// Resolves an idle opencode agent: drains the next queued turn, or enters/stays
-/// paused. Returns whether a turn was drained. Status/paused are written by
+/// Grok flags that take a separate value argument, so the following token is the
+/// flag's value rather than a positional prompt. Inline `--flag=value` forms start
+/// with `-` and are skipped by the generic flag check, so they need no entry here.
+fn grok_value_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--cwd"
+            | "--model"
+            | "-m"
+            | "--base-url"
+            | "-u"
+            | "--api-key"
+            | "-k"
+            | "--max-tool-rounds"
+            | "--session-id"
+            | "-s"
+            | "--resume"
+            | "-r"
+            | "--output-format"
+    )
+}
+
+/// Whether the user already supplied a `--cwd` so qMux does not add a duplicate one
+/// when forwarding shell args.
+fn args_contain_directory(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--cwd" || arg.starts_with("--cwd="))
+}
+
+/// Resolves an idle Grok agent: drains the next queued turn, or enters/stays paused.
+/// Returns whether a turn was drained. Status/paused are written by
 /// `advance_after_idle`; the passed agent is only used for its id afterward.
 fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, String> {
     match advance_after_idle(state, &agent.id) {
@@ -646,14 +826,13 @@ fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, 
     }
 }
 
-/// Parses a line written by the qmux opencode plugin into a `Turn`.
+/// Parses a line written by the qMux Grok plugin into a `Turn`.
 ///
-/// The plugin writes one JSON line per message part, shaped as:
+/// The plugin writes one JSON line per message part, mirroring the Codex/OpenCode
+/// transcript shape so the same `TurnBlock` variants apply:
 /// ```json
 /// {"type":"response_item","payload":{"type":"message","role":"user","content":[...]},"session_id":"..."}
 /// ```
-///
-/// This mirrors the Codex transcript shape so the same `TurnBlock` variants apply.
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
     let value = serde_json::from_str::<Value>(line).ok()?;
     if value.get("type").and_then(Value::as_str) != Some("response_item") {
@@ -670,7 +849,7 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
             if role == "developer" || role == "system" {
                 return None;
             }
-            let blocks = parse_opencode_message_blocks(payload.get("content"))?;
+            let blocks = parse_grok_message_blocks(payload.get("content"))?;
             (role.to_string(), blocks)
         }
         "tool_use" | "function_call" | "custom_tool_call" => {
@@ -728,7 +907,7 @@ fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEve
         .then_some(TranscriptLifecycleEvent::Interrupted)
 }
 
-fn parse_opencode_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBlock>> {
+fn parse_grok_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBlock>> {
     match content? {
         Value::String(text) => Some(vec![TurnBlock::Text { text: text.clone() }]),
         Value::Array(items) => {
@@ -801,8 +980,8 @@ mod tests {
 
     fn test_config() -> QmuxConfig {
         QmuxConfig {
-            workspace_root: PathBuf::from("/tmp/qmux-opencode-tests"),
-            socket_path: PathBuf::from("/tmp/qmux-opencode-tests.sock"),
+            workspace_root: PathBuf::from("/tmp/qmux-grok-tests"),
+            socket_path: PathBuf::from("/tmp/qmux-grok-tests.sock"),
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
                     binary: Some("claude".to_string()),
@@ -831,8 +1010,8 @@ mod tests {
         AgentInfo {
             id: "agent-1".to_string(),
             group_id: "group-1".to_string(),
-            adapter: "opencode".to_string(),
-            worktree_dir: "/tmp/qmux-opencode-tests".to_string(),
+            adapter: "grok".to_string(),
+            worktree_dir: "/tmp/qmux-grok-tests".to_string(),
             branch: None,
             pane_id: None,
             orphaned_queue_pane_id: None,
@@ -859,7 +1038,7 @@ mod tests {
     }
 
     fn ingest(state: &AppState, notification: AdapterNotification) -> QmuxEvent {
-        let outcome = OpencodeAdapter::new(state.config())
+        let outcome = GrokAdapter::new(state.config())
             .ingest_notification(state, notification)
             .unwrap();
         match outcome {
@@ -870,87 +1049,121 @@ mod tests {
 
     #[test]
     fn launch_options_reject_unknown_fields() {
-        let err = OpencodeLaunchOptions::from_value(json!({ "bogus": true })).unwrap_err();
-        assert!(err.contains("invalid OpenCode adapter options"));
+        let err = GrokLaunchOptions::from_value(json!({ "bogus": true })).unwrap_err();
+        assert!(err.contains("invalid Grok adapter options"));
     }
 
     #[test]
-    fn build_args_adds_cwd_model_and_prompt() {
-        let args = build_opencode_args(
-            Path::new("/tmp/qmux"),
-            Some("anthropic/claude-sonnet-4-5"),
-            "fix the bug",
-        );
+    fn build_args_adds_cwd_model_and_positional_prompt() {
+        let args = build_grok_args(Path::new("/tmp/qmux"), Some("grok-code"), "fix the bug");
 
+        // The prompt is a trailing positional, after --cwd and --model.
         assert_eq!(
             args,
-            vec![
-                "--model",
-                "anthropic/claude-sonnet-4-5",
-                "--prompt",
-                "fix the bug",
-                "/tmp/qmux"
-            ]
+            vec!["--cwd", "/tmp/qmux", "--model", "grok-code", "fix the bug"]
         );
     }
 
     #[test]
     fn build_args_omit_empty_prompt_and_model() {
-        let args = build_opencode_args(Path::new("/tmp/qmux"), None, "  ");
+        let args = build_grok_args(Path::new("/tmp/qmux"), None, "  ");
 
-        assert_eq!(args, vec!["/tmp/qmux"]);
+        assert_eq!(args, vec!["--cwd", "/tmp/qmux"]);
     }
 
     #[test]
     fn resume_args_include_session_id_when_present() {
-        let (args, resumed) = build_opencode_resume_args(
-            Path::new("/tmp/qmux"),
-            Some("anthropic/claude-sonnet-4-5"),
-            Some(" session-123 "),
-        );
+        let (args, resumed) =
+            build_grok_resume_args(Path::new("/tmp/qmux"), Some("grok-code"), Some(" sess-1 "));
 
         assert!(resumed);
         assert_eq!(
             args,
             vec![
+                "--cwd",
+                "/tmp/qmux",
                 "--model",
-                "anthropic/claude-sonnet-4-5",
-                "--session",
-                "session-123",
-                "/tmp/qmux"
+                "grok-code",
+                "--resume",
+                "sess-1"
             ]
         );
     }
 
     #[test]
     fn resume_args_fall_back_to_fresh_launch_without_session_id() {
-        let (args, resumed) = build_opencode_resume_args(Path::new("/tmp/qmux"), None, Some("   "));
+        let (args, resumed) = build_grok_resume_args(Path::new("/tmp/qmux"), None, Some("   "));
 
         assert!(!resumed);
-        assert_eq!(args, vec!["/tmp/qmux"]);
+        assert_eq!(args, vec!["--cwd", "/tmp/qmux"]);
     }
 
     #[test]
-    fn args_contain_prompt_detects_prompt_flag() {
+    fn shell_resume_command_resumes_the_session() {
+        let command = GrokAdapter::new(&test_config())
+            .shell_resume_command("sess-1")
+            .expect("grok supports shell resume");
+        assert_eq!(command, "grok --resume 'sess-1'");
+    }
+
+    #[test]
+    fn shell_args_supply_cwd_only_when_absent() {
+        // No cwd in the user's args: qMux adds the pane cwd.
+        let args = build_grok_args_from_shell(
+            Path::new("/tmp/qmux"),
+            &["--model".to_string(), "grok-code".to_string()],
+        );
+        assert_eq!(args, vec!["--cwd", "/tmp/qmux", "--model", "grok-code"]);
+
+        // User already passed a cwd: forward verbatim, no duplicate.
+        let args = build_grok_args_from_shell(
+            Path::new("/tmp/qmux"),
+            &["--cwd".to_string(), "/elsewhere".to_string()],
+        );
+        assert_eq!(args, vec!["--cwd", "/elsewhere"]);
+    }
+
+    #[test]
+    fn args_contain_prompt_detects_prompt_and_positional() {
+        // Interactive, no prompt: bare flags or resume/model only.
         assert!(!args_contain_prompt(&[]));
         assert!(!args_contain_prompt(&[
             "--model".to_string(),
-            "anthropic/claude-sonnet-4-5".to_string()
+            "grok-code".to_string()
         ]));
-        assert!(!args_contain_prompt(&["/tmp/qmux".to_string()]));
+        assert!(!args_contain_prompt(&[
+            "--cwd".to_string(),
+            "/tmp".to_string()
+        ]));
+        // `--resume <id>` consumes the id as a value, not a positional prompt.
+        assert!(!args_contain_prompt(&[
+            "--resume".to_string(),
+            "sess-1".to_string()
+        ]));
 
+        // Headless prompt flags.
         assert!(args_contain_prompt(&[
             "--prompt".to_string(),
             "fix the bug".to_string()
         ]));
+        assert!(args_contain_prompt(&[
+            "-p".to_string(),
+            "fix the bug".to_string()
+        ]));
         assert!(args_contain_prompt(&["--prompt=fix the bug".to_string()]));
+        // A trailing positional is the interactive initial prompt.
+        assert!(args_contain_prompt(&["fix the bug".to_string()]));
+        assert!(args_contain_prompt(&[
+            "--model".to_string(),
+            "grok-code".to_string(),
+            "fix the bug".to_string()
+        ]));
     }
 
     #[test]
     fn composer_policy_queues_running_panes() {
-        let policy = OpencodeAdapter {
-            binary: "opencode".to_string(),
-            plugin_dir: PathBuf::new(),
+        let policy = GrokAdapter {
+            binary: "grok".to_string(),
         }
         .composer_policy();
 
@@ -968,7 +1181,7 @@ mod tests {
         state.insert_agent(agent).unwrap();
 
         let attached =
-            attach_opencode_agent_pane(&state, "agent-1", "pane-1".to_string(), false).unwrap();
+            attach_grok_agent_pane(&state, "agent-1", "pane-1".to_string(), false).unwrap();
 
         assert!(matches!(attached.status, AgentStatus::Idle));
         let stored = state.agent("agent-1").unwrap().expect("agent exists");
@@ -984,7 +1197,7 @@ mod tests {
         state.insert_agent(agent).unwrap();
 
         let attached =
-            attach_opencode_agent_pane(&state, "agent-1", "pane-1".to_string(), true).unwrap();
+            attach_grok_agent_pane(&state, "agent-1", "pane-1".to_string(), true).unwrap();
 
         assert!(matches!(attached.status, AgentStatus::Running));
     }
@@ -1001,74 +1214,22 @@ mod tests {
             hook_for_agent(
                 "SessionStart",
                 "agent-1",
-                json!({ "session_id": "opencode-session-1" }),
+                json!({ "session_id": "grok-session-1" }),
             ),
         );
 
         assert_eq!(event.event_type, "agent.session_start");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
-        assert_eq!(agent.session_id.as_deref(), Some("opencode-session-1"));
-        // SessionStart does not promote to Running (matches Claude/Codex idle convention).
+        assert_eq!(agent.session_id.as_deref(), Some("grok-session-1"));
+        // SessionStart does not promote to Running (matches Claude/Codex/OpenCode).
         assert!(matches!(agent.status, AgentStatus::Starting));
-        // Transcript path is bound to the qmux-managed JSONL file.
         assert!(
             agent
                 .transcript_path
                 .as_deref()
                 .unwrap()
-                .ends_with("/.qmux/opencode/agent-1.jsonl")
+                .ends_with("/.qmux/grok/agent-1.jsonl")
         );
-    }
-
-    #[test]
-    fn session_start_preserves_awaiting_input_status() {
-        let state = test_state();
-        let mut agent = sample_agent();
-        agent.status = AgentStatus::AwaitingInput;
-        state.insert_agent(agent).unwrap();
-
-        let event = ingest(
-            &state,
-            hook_for_agent(
-                "SessionStart",
-                "agent-1",
-                json!({ "session_id": "opencode-session-1" }),
-            ),
-        );
-
-        assert_eq!(event.event_type, "agent.session_start");
-        let agent = state.agent("agent-1").unwrap().expect("agent exists");
-        assert_eq!(agent.session_id.as_deref(), Some("opencode-session-1"));
-        assert!(matches!(agent.status, AgentStatus::AwaitingInput));
-    }
-
-    #[test]
-    fn shell_escape_prompt_submit_preserves_ready_opencode_status() {
-        let state = test_state();
-        let mut agent = sample_agent();
-        agent.status = AgentStatus::Done;
-        state.insert_agent(agent).unwrap();
-        state
-            .record_agent_send(
-                "agent-1",
-                "!git status".to_string(),
-                crate::state::AgentSendSource::DirectSend,
-            )
-            .unwrap();
-
-        let event = ingest(
-            &state,
-            hook_for_agent(
-                "UserPromptSubmit",
-                "agent-1",
-                json!({ "prompt": "!git status" }),
-            ),
-        );
-
-        assert_eq!(event.event_type, "agent.prompt_submitted");
-        assert_eq!(event.payload["sendTracking"]["status"], "matched");
-        let agent = state.agent("agent-1").unwrap().expect("agent exists");
-        assert!(matches!(agent.status, AgentStatus::Done));
     }
 
     #[test]
@@ -1136,28 +1297,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_transcript_line_extracts_tool_result() {
-        let line = r#"{"type":"response_item","payload":{"type":"tool_result","tool_use_id":"call-1","content":"output","is_error":false},"session_id":"sess-1"}"#;
-
-        let turn = parse_transcript_line("agent-1", 2, line).unwrap();
-
-        assert_eq!(turn.role, "assistant");
-        assert_eq!(turn.blocks.len(), 1);
-        match &turn.blocks[0] {
-            TurnBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
-                assert_eq!(tool_use_id.as_deref(), Some("call-1"));
-                assert_eq!(content, "output");
-                assert!(!is_error);
-            }
-            other => panic!("expected tool result block, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn parse_transcript_line_ignores_developer_messages() {
         let line = r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"system"}]},"session_id":"sess-1"}"#;
 
@@ -1165,19 +1304,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_transcript_line_ignores_non_response_item() {
-        let line = r#"{"type":"other","payload":{}}"#;
-        assert!(parse_transcript_line("agent-1", 0, line).is_none());
-    }
-
-    #[test]
-    fn parse_opencode_turn_aborted_lifecycle_event() {
+    fn parse_grok_turn_aborted_lifecycle_event() {
         let abort_line = json!({
             "type": "event_msg",
-            "payload": {
-                "type": "turn_aborted",
-                "reason": "session.next.interrupt.requested"
-            },
+            "payload": { "type": "turn_aborted", "reason": "interrupt" },
             "session_id": "sess-1"
         })
         .to_string();
@@ -1198,9 +1328,128 @@ mod tests {
     #[test]
     fn transcript_path_is_under_workspace_root() {
         let state = test_state();
-        let path = OpencodeAdapter::transcript_path_for(&state, "agent-42");
+        let path = GrokAdapter::transcript_path_for(&state, "agent-42");
 
-        assert!(path.ends_with(".qmux/opencode/agent-42.jsonl"));
-        assert!(path.starts_with("/tmp/qmux-opencode-tests"));
+        assert!(path.ends_with(".qmux/grok/agent-42.jsonl"));
+        assert!(path.starts_with("/tmp/qmux-grok-tests"));
+    }
+
+    #[test]
+    fn session_start_prefers_hook_provided_transcript_path() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Starting;
+        state.insert_agent(agent).unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({
+                    "session_id": "grok-session-1",
+                    "transcript_path": "/home/user/.grok/sessions/grok-session-1/rollout.jsonl"
+                }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.session_start");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        // The hook-provided path wins over the qMux-managed fallback.
+        assert_eq!(
+            agent.transcript_path.as_deref(),
+            Some("/home/user/.grok/sessions/grok-session-1/rollout.jsonl")
+        );
+    }
+
+    #[test]
+    fn grok_hook_shim_is_env_gated_and_forwards_notify() {
+        let shim = grok_hook_shim();
+        // No-ops outside qMux: every required env var is checked.
+        assert!(shim.contains("QMUX_SOCK"));
+        assert!(shim.contains("QMUX_TOKEN"));
+        assert!(shim.contains("QMUX_PANE_ID"));
+        assert!(shim.contains("QMUX_AGENT_ID"));
+        assert!(shim.contains("QMUX_CLI"));
+        // Inside qMux it forwards the event to `qmux notify`.
+        assert!(shim.contains(r#"exec "$QMUX_CLI" notify "$event""#));
+    }
+
+    #[test]
+    fn merge_grok_hooks_installs_events_and_preserves_existing() {
+        let shim = Path::new("/home/user/.grok/qmux/qmux-grok-hook");
+        // Existing settings carry an unrelated key and a user's own SessionStart hook.
+        let existing = json!({
+            "model": "grok-code-fast",
+            "hooks": {
+                "SessionStart": [
+                    { "matcher": "", "hooks": [{ "type": "command", "command": "echo user-hook" }] }
+                ]
+            }
+        });
+
+        let merged = merge_grok_hooks(existing, shim);
+
+        // Unrelated settings are preserved untouched.
+        assert_eq!(merged["model"], "grok-code-fast");
+        // Every qMux event gets an entry whose command runs the shim.
+        for event in GROK_HOOK_EVENTS {
+            let entries = merged["hooks"][event].as_array().expect("event array");
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| is_qmux_grok_hook_entry(entry, shim)),
+                "missing qMux hook entry for {event}"
+            );
+        }
+        // The user's own SessionStart hook is preserved alongside qMux's.
+        let session_start = merged["hooks"]["SessionStart"].as_array().unwrap();
+        assert!(
+            session_start
+                .iter()
+                .any(|entry| entry["hooks"][0]["command"] == "echo user-hook")
+        );
+        assert_eq!(session_start.len(), 2);
+    }
+
+    #[test]
+    fn merge_grok_hooks_is_idempotent() {
+        let shim = Path::new("/home/user/.grok/qmux/qmux-grok-hook");
+        let once = merge_grok_hooks(json!({}), shim);
+        let twice = merge_grok_hooks(once.clone(), shim);
+
+        // Re-installing replaces qMux's entry rather than appending a duplicate.
+        for event in GROK_HOOK_EVENTS {
+            assert_eq!(
+                twice["hooks"][event].as_array().unwrap().len(),
+                1,
+                "duplicate qMux hook entry for {event}"
+            );
+        }
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn write_grok_integration_files_creates_shim_and_settings() {
+        let home = std::env::temp_dir().join(format!("qmux-grok-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+
+        write_grok_integration_files(&home).unwrap();
+
+        let shim_path = home.join("qmux").join("qmux-grok-hook");
+        let shim_meta = fs::metadata(&shim_path).expect("shim written");
+        // Executable bit set so Grok can run it.
+        assert_eq!(shim_meta.permissions().mode() & 0o111, 0o111);
+
+        let settings_raw = fs::read_to_string(home.join("user-settings.json")).unwrap();
+        let settings: Value = serde_json::from_str(&settings_raw).unwrap();
+        for event in GROK_HOOK_EVENTS {
+            assert!(
+                settings["hooks"][event].is_array(),
+                "missing hooks for {event}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&home);
     }
 }
