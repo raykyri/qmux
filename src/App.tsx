@@ -4938,8 +4938,9 @@ export default function App() {
         if (listedIndex !== -1) {
           fallbackIndex = listedIndex;
         } else if (includeHome) {
-          // Active tab not in the list (e.g. null): default to the first real pane.
-          fallbackIndex = cyclePanes.length > 0 ? 1 : 0;
+          // Active tab not in the list (e.g. a pane inside a collapsed group):
+          // position so forward lands on the first visible pane and backward on Home.
+          fallbackIndex = direction === 1 ? 0 : Math.min(1, tabIds.length - 1);
         } else {
           // Skipping Home while Home is active: position so forward lands on the
           // first pane and backward on the last.
@@ -5008,7 +5009,7 @@ export default function App() {
       if ((key === "[" || key === "]") && event.metaKey && event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
-        cycleTab(key === "[" ? -1 : 1, true);
+        cycleTab(key === "[" ? -1 : 1, true, cycleableSidebarPanes);
         return;
       }
 
