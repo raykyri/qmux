@@ -1942,10 +1942,10 @@ export default function App() {
   );
 
   const openPaneLink = useCallback(
-    (paneId: string, url: string) => {
-      openLinkForPane(paneId, url);
+    (_paneId: string, url: string) => {
+      void openExternalUrl(url);
     },
-    [openLinkForPane],
+    [],
   );
 
   const openPaneLinkMenu = useCallback(
