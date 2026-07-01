@@ -3103,28 +3103,36 @@ button:disabled {
 }
 
 .turn-title-regenerate-button {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 18px;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  min-height: 0;
+  height: auto;
   margin-left: auto;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
   padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: rgba(217, 221, 217, 0.42);
+  font: inherit;
+  line-height: 1;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
   cursor: pointer;
 }
 
 .turn-title-regenerate-button:hover:not(:disabled),
 .turn-title-regenerate-button:focus-visible:not(:disabled) {
-  background: rgba(255, 255, 255, 0.07);
+  background: transparent;
   color: #d9ddd9;
 }
 
 .turn-title-regenerate-button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 1px var(--focus-ring);
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 .turn-title-regenerate-button:disabled {
@@ -3134,7 +3142,7 @@ button:disabled {
 
 .turn-title-regenerate-glyph {
   font-size: calc(10.5px + var(--transcript-font-delta, 0px));
-  line-height: 1;
+  line-height: inherit;
   text-transform: none;
   letter-spacing: 0;
 }
