@@ -6392,17 +6392,6 @@ export default function App() {
               <span>Rename group</span>
               <kbd className="context-menu-shortcut">R</kbd>
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setGroupMenu(null);
-                void createGroupAfter(groupMenuGroup);
-              }}
-            >
-              <Plus size={13} aria-hidden="true" />
-              <span>New group</span>
-            </button>
             <div className="context-menu-divider" role="separator" />
             {settings.codeMode ? (
               <button
@@ -6431,6 +6420,17 @@ export default function App() {
               <span>New agent</span>
             </button>
             <div className="context-menu-divider" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setGroupMenu(null);
+                void createGroupAfter(groupMenuGroup);
+              }}
+            >
+              <Plus size={13} aria-hidden="true" />
+              <span>New group</span>
+            </button>
             <button
               type="button"
               role="menuitem"
