@@ -1098,6 +1098,13 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           return;
         }
         clearCopyOnSelectTimer();
+        if (!terminal.hasSelection()) {
+          // Reset the dedup marker immediately rather than in the debounced
+          // tick: starting a new selection within the debounce window cancels
+          // the timer, and re-selecting the same text must still copy.
+          lastCopiedSelection = "";
+          return;
+        }
         // Trailing debounce covers keyboard/programmatic selection changes;
         // mouse selections copy immediately on release below.
         copyOnSelectTimer = window.setTimeout(() => {
