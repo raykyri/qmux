@@ -546,9 +546,10 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-self: end;
-  gap: 6px;
+  gap: 4px;
 }
 
+.pane-group-collapse-button,
 .pane-group-menu-button {
   display: inline-flex;
   width: 18px;
@@ -564,6 +565,8 @@ button:disabled {
   cursor: pointer;
 }
 
+.pane-group-collapse-button:hover,
+.pane-group-collapse-button:focus-visible,
 .pane-group-menu-button:hover,
 .pane-group-menu-button:focus-visible {
   border-color: var(--control-border);

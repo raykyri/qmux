@@ -3513,7 +3513,7 @@ export default function App() {
     }
     if (
       event.target instanceof HTMLElement &&
-      event.target.closest(".pane-group-menu-button")
+      event.target.closest(".pane-group-collapse-button, .pane-group-menu-button")
     ) {
       return;
     }
@@ -6522,6 +6522,26 @@ export default function App() {
                   <span className="pane-group-aux">
                     <button
                       type="button"
+                      className="pane-group-collapse-button"
+                      aria-label={`${isCollapsedGroup ? "Expand" : "Collapse"} ${groupDisplayName}`}
+                      title={isCollapsedGroup ? "Expand group" : "Collapse group"}
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void toggleGroupCollapsed(group);
+                      }}
+                    >
+                      {isCollapsedGroup ? (
+                        <PanelBottomOpen size={14} aria-hidden="true" />
+                      ) : (
+                        <PanelBottomClose size={14} aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
                       className="pane-group-menu-button"
                       aria-label={`Group options for ${groupDisplayName}`}
                       aria-haspopup="menu"
@@ -6675,6 +6695,24 @@ export default function App() {
               <span>Rename group</span>
               <kbd className="context-menu-shortcut">R</kbd>
             </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="context-menu-has-shortcut"
+              onClick={() => {
+                void toggleGroupCollapsed(groupMenuGroup);
+              }}
+            >
+              {groupMenuGroup.collapsed ? (
+                <PanelBottomOpen size={13} aria-hidden="true" />
+              ) : (
+                <PanelBottomClose size={13} aria-hidden="true" />
+              )}
+              <span>{groupMenuGroup.collapsed ? "Expand group" : "Collapse group"}</span>
+              <kbd className="context-menu-shortcut">
+                {groupMenuGroup.collapsed ? "C/E" : "C"}
+              </kbd>
+            </button>
             <div className="context-menu-divider" role="separator" />
             {settings.codeMode ? (
               <button
@@ -6714,24 +6752,6 @@ export default function App() {
             >
               <Plus size={13} aria-hidden="true" />
               <span>New group...</span>
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="context-menu-has-shortcut"
-              onClick={() => {
-                void toggleGroupCollapsed(groupMenuGroup);
-              }}
-            >
-              {groupMenuGroup.collapsed ? (
-                <PanelBottomOpen size={13} aria-hidden="true" />
-              ) : (
-                <PanelBottomClose size={13} aria-hidden="true" />
-              )}
-              <span>{groupMenuGroup.collapsed ? "Expand group" : "Collapse group"}</span>
-              <kbd className="context-menu-shortcut">
-                {groupMenuGroup.collapsed ? "C/E" : "C"}
-              </kbd>
             </button>
             <button
               type="button"
