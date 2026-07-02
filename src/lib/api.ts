@@ -150,6 +150,10 @@ export function renameGroup(groupId: string, name: string | null) {
   return invoke<GroupInfo>("group_rename", { groupId, name });
 }
 
+export function reorderGroups(groupIds: string[]) {
+  return invoke<GroupInfo[]>("group_reorder", { groupIds });
+}
+
 export function setGroupCollapsed(groupId: string, collapsed: boolean) {
   return invoke<GroupInfo>("group_set_collapsed", { groupId, collapsed });
 }

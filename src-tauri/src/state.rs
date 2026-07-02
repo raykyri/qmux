@@ -998,6 +998,34 @@ impl AppState {
         Ok(ordered_groups(&model))
     }
 
+    pub fn reorder_groups(&self, group_ids: Vec<String>) -> Result<Vec<GroupInfo>, String> {
+        let groups = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if group_ids.len() != model.groups.len() {
+                return Err("group order is stale; refresh before reordering".to_string());
+            }
+
+            let mut seen = HashSet::with_capacity(group_ids.len());
+            for group_id in &group_ids {
+                if !seen.insert(group_id.clone()) {
+                    return Err("group order contains a duplicate group".to_string());
+                }
+                if !model.groups.contains_key(group_id) {
+                    return Err(format!("group {group_id} was not found"));
+                }
+            }
+
+            model.group_order = group_ids;
+            ordered_groups(&model)
+        };
+        self.persist();
+        Ok(groups)
+    }
+
     pub fn list_agents(&self) -> Result<Vec<AgentInfo>, String> {
         let model = self
             .inner
@@ -3441,6 +3469,15 @@ mod tests {
         }
     }
 
+    fn sample_group_with_id(id: &str) -> GroupInfo {
+        let mut group = sample_group();
+        group.id = id.to_string();
+        group.name = id.to_string();
+        group.managed_dir = format!("/tmp/qmux-workspaces/{id}");
+        group.agents.clear();
+        group
+    }
+
     fn sample_pane(id: &str, agent_id: Option<&str>) -> PaneInfo {
         PaneInfo {
             id: id.to_string(),
@@ -4344,6 +4381,75 @@ mod tests {
 
         let stale = state.reorder_panes(vec!["pane-1".to_string()]).unwrap_err();
         assert!(stale.contains("stale"));
+    }
+
+    #[test]
+    fn group_reorder_round_trips_through_persistence_and_rejects_stale_orders() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state
+                .insert_group_after(sample_group_with_id("group-1"), None)
+                .unwrap();
+            state
+                .insert_group_after(sample_group_with_id("group-2"), Some("group-1"))
+                .unwrap();
+            state
+                .insert_group_after(sample_group_with_id("group-3"), Some("group-2"))
+                .unwrap();
+
+            let reordered = state
+                .reorder_groups(vec![
+                    "group-3".to_string(),
+                    "group-1".to_string(),
+                    "group-2".to_string(),
+                ])
+                .unwrap();
+            assert_eq!(
+                reordered
+                    .into_iter()
+                    .map(|group| group.id)
+                    .collect::<Vec<_>>(),
+                vec![
+                    "group-3".to_string(),
+                    "group-1".to_string(),
+                    "group-2".to_string()
+                ]
+            );
+
+            let duplicate = state
+                .reorder_groups(vec![
+                    "group-3".to_string(),
+                    "group-3".to_string(),
+                    "group-2".to_string(),
+                ])
+                .unwrap_err();
+            assert!(duplicate.contains("duplicate"));
+
+            let stale = state
+                .reorder_groups(vec!["group-3".to_string()])
+                .unwrap_err();
+            assert!(stale.contains("stale"));
+        }
+
+        let state = AppState::new(config);
+        assert!(state.restore_session().is_empty());
+        assert_eq!(
+            state
+                .list_groups()
+                .unwrap()
+                .into_iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "group-3".to_string(),
+                "group-1".to_string(),
+                "group-2".to_string()
+            ]
+        );
     }
 
     fn layout(items: &[(&str, u16)]) -> Vec<PaneLayoutEntry> {

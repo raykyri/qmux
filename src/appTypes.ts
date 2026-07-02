@@ -57,6 +57,14 @@ export type PaneTabPointerDrag = {
   active: boolean;
 };
 
+export type GroupPointerDrag = {
+  pointerId: number;
+  groupId: string;
+  startX: number;
+  startY: number;
+  active: boolean;
+};
+
 // Where a tab drag will land: a gap between rows (reorder), onto a row (nest), or
 // into the visible terminal stack (split above/below the target pane).
 export type PaneDropTarget =
@@ -68,6 +76,8 @@ export type PaneDropTarget =
       targetPaneId: string;
       position: "above" | "below";
     };
+
+export type GroupDropTarget = { index: number };
 
 export type BrowserOverlaySize = {
   width: number;

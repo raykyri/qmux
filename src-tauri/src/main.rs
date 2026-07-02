@@ -374,6 +374,14 @@ fn group_rename(
 }
 
 #[tauri::command]
+fn group_reorder(
+    state: tauri::State<'_, AppState>,
+    group_ids: Vec<String>,
+) -> Result<Vec<GroupInfo>, String> {
+    state.reorder_groups(group_ids)
+}
+
+#[tauri::command]
 fn group_set_collapsed(
     state: tauri::State<'_, AppState>,
     group_id: String,
@@ -868,6 +876,7 @@ fn main() {
             group_create,
             group_remove,
             group_rename,
+            group_reorder,
             group_set_collapsed,
             group_create_pick,
             group_pick_dir,

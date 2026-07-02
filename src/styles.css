@@ -445,6 +445,7 @@ button:disabled {
 }
 
 .pane-group {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -455,6 +456,10 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.013);
+}
+
+.pane-group.is-group-dragging {
+  opacity: 0.48;
 }
 
 .pane-group + .pane-group {
@@ -475,6 +480,7 @@ button:disabled {
   padding: 2px 4px 2px 5px;
   border-radius: 5px;
   color: #b9c0bc;
+  cursor: grab;
   font-size: calc(12px + var(--turn-font-delta, 0px));
   line-height: 1.2;
   user-select: none;
@@ -563,7 +569,9 @@ button:disabled {
    rows rather than an inset border hugging the tab — a border would curl around
    the tab's rounded corners. */
 .pane-tab-row.is-drop-before::before,
-.pane-tab-row.is-drop-after::after {
+.pane-tab-row.is-drop-after::after,
+.pane-group.is-group-drop-before::before,
+.pane-group.is-group-drop-after::after {
   content: "";
   position: absolute;
   left: 0;
@@ -581,6 +589,14 @@ button:disabled {
 
 .pane-tab-row.is-drop-after::after {
   bottom: -2px;
+}
+
+.pane-group.is-group-drop-before::before {
+  top: -3px;
+}
+
+.pane-group.is-group-drop-after::after {
+  bottom: -3px;
 }
 
 /* Nest drop indicator: a solid rounded outline over the target tab whose left edge

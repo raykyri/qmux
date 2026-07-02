@@ -91,6 +91,8 @@ import type {
   CloseDialogState,
   ExitDialogState,
   ExitPreflightRequest,
+  GroupDropTarget,
+  GroupPointerDrag,
   PaneContextMenuState,
   PaneDropTarget,
   PaneTabPointerDrag,
@@ -192,6 +194,7 @@ import {
   removeGroup,
   renameGroup,
   renamePane,
+  reorderGroups,
   restoreLastClosedPane,
   setLauncherAdapterPreference,
   setActiveTab,
@@ -929,6 +932,7 @@ export default function App() {
   const canToggleActiveTranscriptExpandedRef = useRef(false);
   const toggleActiveTranscriptExpandedRef = useRef<() => void>(() => {});
   const paneTabPointerDragRef = useRef<PaneTabPointerDrag | null>(null);
+  const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
   const suppressGroupMenuButtonClickRef = useRef(false);
   const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
   const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
@@ -944,8 +948,11 @@ export default function App() {
   // auto-drain that agent's queue. Holds the agent id + the pending release timer.
   const agentTypingRef = useRef<{ agentId: string; timer: number } | null>(null);
   const paneDropTargetRef = useRef<PaneDropTarget | null>(null);
+  const groupDropTargetRef = useRef<GroupDropTarget | null>(null);
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneReorderRequestSeqRef = useRef(0);
+  const groupReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
+  const groupReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
   const titleRegenerationSeqByPaneRef = useRef<Record<string, number>>({});
   const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
@@ -1127,6 +1134,8 @@ export default function App() {
   paneSplitsRef.current = paneSplits;
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
+  const [groupDropTarget, setGroupDropTarget] = useState<GroupDropTarget | null>(null);
   // Per-pane browser overlay state, so each tab keeps its own page and open/closed.
   const [browserOverlayByPane, setBrowserOverlayByPane] = useState<
     Record<string, BrowserOverlayState>
@@ -3485,6 +3494,84 @@ export default function App() {
     setLauncherOpen(true);
   }
 
+  function handleGroupHeaderPointerDown(event: ReactPointerEvent<HTMLDivElement>, groupId: string) {
+    if (event.button !== 0) {
+      return;
+    }
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.closest(".pane-group-menu-button")
+    ) {
+      return;
+    }
+    groupPointerDragRef.current = {
+      pointerId: event.pointerId,
+      groupId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleGroupHeaderPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = groupPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < PANE_TAB_DRAG_START_THRESHOLD) {
+        return;
+      }
+      drag.active = true;
+      setDraggingGroupId(drag.groupId);
+      updateGroupDropTarget(null);
+      updatePaneDropTarget(null);
+    }
+
+    event.preventDefault();
+    updateGroupDropTarget(computeGroupDragDropTarget(event.clientX, event.clientY, drag.groupId));
+  }
+
+  function handleGroupHeaderPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = groupPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already have been released by the platform.
+    }
+
+    groupPointerDragRef.current = null;
+    if (!drag.active) {
+      return;
+    }
+
+    event.preventDefault();
+    const target =
+      groupDropTargetRef.current ??
+      computeGroupDragDropTarget(event.clientX, event.clientY, drag.groupId);
+    clearGroupDrag();
+    if (target === null) {
+      return;
+    }
+    applyGroupDropTarget(drag.groupId, target);
+  }
+
+  function handleGroupHeaderPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = groupPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    groupPointerDragRef.current = null;
+    clearGroupDrag();
+  }
+
   function handlePaneTabPointerDown(event: ReactPointerEvent<HTMLDivElement>, paneId: string) {
     if (event.button !== 0) {
       return;
@@ -3587,10 +3674,21 @@ export default function App() {
     setPaneDropTarget(target);
   }
 
+  function updateGroupDropTarget(target: GroupDropTarget | null) {
+    groupDropTargetRef.current = target;
+    setGroupDropTarget(target);
+  }
+
   function clearPaneTabDrag() {
     paneDropTargetRef.current = null;
     setDraggingPaneId(null);
     setPaneDropTarget(null);
+  }
+
+  function clearGroupDrag() {
+    groupDropTargetRef.current = null;
+    setDraggingGroupId(null);
+    setGroupDropTarget(null);
   }
 
   // Classifies a pointer position during a drag into a drop target: the top/bottom
@@ -3622,6 +3720,40 @@ export default function App() {
       clientY >= rect.top &&
       clientY <= rect.bottom
     );
+  }
+
+  function computeGroupDragDropTarget(
+    clientX: number,
+    clientY: number,
+    dragGroupId: string,
+  ): GroupDropTarget | null {
+    const list = paneListRef.current;
+    if (!list || !pointInRect(list.getBoundingClientRect(), clientX, clientY)) {
+      return null;
+    }
+
+    const rows = Array.from(list.querySelectorAll(".pane-group")).filter(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && child.classList.contains("pane-group"),
+    );
+    const dragIndex = groups.findIndex((group) => group.id === dragGroupId);
+    if (rows.length === 0 || dragIndex < 0) {
+      return null;
+    }
+
+    const gapTarget = (index: number): GroupDropTarget | null =>
+      index === dragIndex || index === dragIndex + 1 ? null : { index };
+
+    for (const [index, row] of rows.entries()) {
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top) {
+        return gapTarget(index);
+      }
+      if (clientY <= rect.bottom) {
+        return gapTarget(clientY < rect.top + rect.height / 2 ? index : index + 1);
+      }
+    }
+    return gapTarget(rows.length);
   }
 
   function computeSidebarDropTarget(
@@ -3735,6 +3867,27 @@ export default function App() {
         ? nestUnder(groupPanes, dragId, target.paneId)
         : moveToGap(groupPanes, dragId, target.index);
     applyPaneLayout(target.groupId, next);
+  }
+
+  function applyGroupDropTarget(dragGroupId: string, target: GroupDropTarget) {
+    const dragIndex = groups.findIndex((group) => group.id === dragGroupId);
+    if (dragIndex < 0 || target.index === dragIndex || target.index === dragIndex + 1) {
+      return;
+    }
+
+    const withoutDragged = groups.filter((group) => group.id !== dragGroupId);
+    const insertIndex = clamp(
+      target.index > dragIndex ? target.index - 1 : target.index,
+      0,
+      withoutDragged.length,
+    );
+    const dragGroup = groups[dragIndex];
+    const next = [
+      ...withoutDragged.slice(0, insertIndex),
+      dragGroup,
+      ...withoutDragged.slice(insertIndex),
+    ];
+    applyGroupOrder(next);
   }
 
   async function splitDraggedPaneIntoTerminal(
@@ -3872,6 +4025,39 @@ export default function App() {
       });
   }
 
+  function applyGroupOrder(nextGroups: GroupInfo[]) {
+    const nextIds = nextGroups.map((group) => group.id);
+    if (sameStringList(nextIds, groups.map((group) => group.id))) {
+      return;
+    }
+
+    const requestSeq = groupReorderRequestSeqRef.current + 1;
+    groupReorderRequestSeqRef.current = requestSeq;
+    setGroups(nextGroups);
+
+    const persist = groupReorderPersistChainRef.current
+      .catch(() => undefined)
+      .then(() => reorderGroups(nextIds));
+    groupReorderPersistChainRef.current = persist
+      .then((orderedGroups) => {
+        if (groupReorderRequestSeqRef.current === requestSeq) {
+          setGroups(orderedGroups);
+        }
+      })
+      .catch(() => {
+        if (groupReorderRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        void listGroups()
+          .then((latest) => {
+            if (groupReorderRequestSeqRef.current === requestSeq) {
+              setGroups(latest);
+            }
+          })
+          .catch(() => undefined);
+      });
+  }
+
   function sameLayout(a: PaneLayoutItem[], b: PaneLayoutItem[]) {
     return (
       a.length === b.length &&
@@ -3879,6 +4065,10 @@ export default function App() {
         (item, index) => item.paneId === b[index].paneId && item.depth === b[index].depth,
       )
     );
+  }
+
+  function sameStringList(a: string[], b: string[]) {
+    return a.length === b.length && a.every((item, index) => item === b[index]);
   }
 
   function indentContextMenuPane() {
@@ -6216,7 +6406,7 @@ export default function App() {
         />
         <nav
           ref={paneListRef}
-          className={`pane-list${draggingPaneId ? " is-dragging" : ""}`}
+          className={`pane-list${draggingPaneId || draggingGroupId ? " is-dragging" : ""}`}
           aria-label="Panes"
         >
           {/* Fixed Home tab: not a real pane, so it can't be closed, reordered, or
@@ -6243,22 +6433,36 @@ export default function App() {
               </span>
             ) : null}
           </div>
-          {groups.map((group) => {
+          {groups.map((group, groupIndex) => {
             const groupPanes = panes.filter((pane) => pane.groupId === group.id);
             const hasGroupPanes = groupPanes.length > 0;
             const isActiveGroup = activePane?.groupId === group.id;
             const isCollapsedGroup = group.collapsed;
             const groupDisplayName = displayGroupName(group);
+            const groupDropGap = groupDropTarget?.index ?? null;
             return (
               <section
                 key={group.id}
                 className={`pane-group${hasGroupPanes ? " has-panes" : ""}${
                   isActiveGroup ? " is-active-group" : ""
-                }${isCollapsedGroup ? " is-collapsed" : ""}`}
+                }${isCollapsedGroup ? " is-collapsed" : ""}${
+                  draggingGroupId === group.id ? " is-group-dragging" : ""
+                }${groupDropGap === groupIndex ? " is-group-drop-before" : ""}${
+                  groupDropGap === groups.length && groupIndex === groups.length - 1
+                    ? " is-group-drop-after"
+                    : ""
+                }`}
                 data-group-id={group.id}
                 onContextMenu={(event) => openGroupMenu(event, group)}
               >
-                <div className="pane-group-header" title={group.dir}>
+                <div
+                  className="pane-group-header"
+                  title={group.dir}
+                  onPointerDown={(event) => handleGroupHeaderPointerDown(event, group.id)}
+                  onPointerMove={handleGroupHeaderPointerMove}
+                  onPointerUp={handleGroupHeaderPointerUp}
+                  onPointerCancel={handleGroupHeaderPointerCancel}
+                >
                   <span className="pane-group-title">
                     <Folder className="pane-group-folder" size={13} aria-hidden="true" />
                     <span
