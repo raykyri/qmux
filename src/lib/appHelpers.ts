@@ -42,32 +42,63 @@ export function selectPaneAfterClose(
   panes: PaneInfo[],
   closedPaneId: string,
   paneSplits: PaneSplitInfo[] = [],
+  options?: {
+    isPaneInCollapsedGroup?: (pane: PaneInfo) => boolean;
+  },
 ): string | null {
+  const selectPreferredPane = (candidates: PaneInfo[]) => {
+    if (candidates.length === 0) {
+      return null;
+    }
+    const isPaneInCollapsedGroup = options?.isPaneInCollapsedGroup;
+    if (!isPaneInCollapsedGroup) {
+      return candidates[0].id;
+    }
+    return candidates.find((pane) => !isPaneInCollapsedGroup(pane))?.id ?? candidates[0].id;
+  };
+
   const closedIndex = panes.findIndex((pane) => pane.id === closedPaneId);
   if (closedIndex === -1) {
-    return panes[0]?.id ?? null;
+    return selectPreferredPane(panes);
   }
 
   const availablePaneIds = new Set(panes.map((pane) => pane.id));
   availablePaneIds.delete(closedPaneId);
+  const paneById = new Map(panes.map((pane) => [pane.id, pane]));
+  const candidates: PaneInfo[] = [];
+  const candidateIds = new Set<string>();
+  const addCandidate = (paneId?: string) => {
+    if (!paneId || paneId === closedPaneId || candidateIds.has(paneId)) {
+      return;
+    }
+    if (!availablePaneIds.has(paneId)) {
+      return;
+    }
+    const pane = paneById.get(paneId);
+    if (!pane) {
+      return;
+    }
+    candidateIds.add(paneId);
+    candidates.push(pane);
+  };
+
   const split = paneSplits.find((candidate) => candidate.paneIds.includes(closedPaneId));
   const splitIndex = split?.paneIds.indexOf(closedPaneId) ?? -1;
   if (split && splitIndex >= 0) {
     for (let index = splitIndex - 1; index >= 0; index -= 1) {
-      const previousSplitPaneId = split.paneIds[index];
-      if (previousSplitPaneId && availablePaneIds.has(previousSplitPaneId)) {
-        return previousSplitPaneId;
-      }
+      addCandidate(split.paneIds[index]);
     }
     for (let index = splitIndex + 1; index < split.paneIds.length; index += 1) {
-      const nextSplitPaneId = split.paneIds[index];
-      if (nextSplitPaneId && availablePaneIds.has(nextSplitPaneId)) {
-        return nextSplitPaneId;
-      }
+      addCandidate(split.paneIds[index]);
     }
   }
 
-  return panes[closedIndex - 1]?.id ?? panes[closedIndex + 1]?.id ?? null;
+  for (let offset = 1; offset < panes.length; offset += 1) {
+    addCandidate(panes[closedIndex - offset]?.id);
+    addCandidate(panes[closedIndex + offset]?.id);
+  }
+
+  return selectPreferredPane(candidates);
 }
 
 export function cycleTabId(

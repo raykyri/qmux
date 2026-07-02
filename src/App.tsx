@@ -4263,7 +4263,10 @@ export default function App() {
         if (currentActivePaneId !== paneToClose.id) {
           return currentActivePaneId;
         }
-        return selectPaneAfterClose(current, paneToClose.id, paneSplits);
+        return selectPaneAfterClose(current, paneToClose.id, paneSplits, {
+          isPaneInCollapsedGroup: (pane) =>
+            groupById.get(pane.groupId)?.collapsed === true,
+        });
       });
       return nextPanes;
     });

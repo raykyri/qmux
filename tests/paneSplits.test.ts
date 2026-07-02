@@ -13,12 +13,12 @@ import {
 } from "../src/lib/paneSplits";
 import type { PaneInfo, PaneSplitInfo } from "../src/types";
 
-function pane(id: string, depth = 0): PaneInfo {
+function pane(id: string, depth = 0, groupId = "group-1"): PaneInfo {
   return {
     id,
     title: id,
     kind: "shell",
-    groupId: "group-1",
+    groupId,
     cwd: "/tmp",
     cols: 80,
     rows: 24,
@@ -37,6 +37,10 @@ function split(paneIds: string[]): PaneSplitInfo {
     paneIds,
     sizes: Object.fromEntries(paneIds.map((paneId) => [paneId, 1 / paneIds.length])),
   };
+}
+
+function isPaneInCollapsedGroup(pane: PaneInfo) {
+  return pane.groupId === "group-collapsed";
 }
 
 function splitWithSizes(sizes: Record<string, number>, id = "split-1"): PaneSplitInfo {
@@ -162,6 +166,55 @@ test("selectPaneAfterClose skips stale split members before leaving the split", 
 
 test("selectPaneAfterClose falls back to neighboring tabs outside a split", () => {
   assert.equal(selectPaneAfterClose(panes(["pane-1", "pane-2", "pane-3"]), "pane-2"), "pane-1");
+});
+
+test("selectPaneAfterClose prefers visible tabs over collapsed-group neighbors", () => {
+  assert.equal(
+    selectPaneAfterClose(
+      [
+        pane("pane-visible-before", 0, "group-visible"),
+        pane("pane-collapsed-previous", 0, "group-collapsed"),
+        pane("pane-closing", 0, "group-visible"),
+        pane("pane-visible-next", 0, "group-visible"),
+      ],
+      "pane-closing",
+      [],
+      { isPaneInCollapsedGroup },
+    ),
+    "pane-visible-next",
+  );
+});
+
+test("selectPaneAfterClose prefers visible tabs over collapsed split members", () => {
+  assert.equal(
+    selectPaneAfterClose(
+      [
+        pane("pane-visible", 0, "group-visible"),
+        pane("pane-closing", 0, "group-collapsed"),
+        pane("pane-split-peer", 0, "group-collapsed"),
+      ],
+      "pane-closing",
+      [split(["pane-closing", "pane-split-peer"])],
+      { isPaneInCollapsedGroup },
+    ),
+    "pane-visible",
+  );
+});
+
+test("selectPaneAfterClose falls back to collapsed groups when no visible tabs remain", () => {
+  assert.equal(
+    selectPaneAfterClose(
+      [
+        pane("pane-collapsed-previous", 0, "group-collapsed"),
+        pane("pane-closing", 0, "group-collapsed"),
+        pane("pane-collapsed-next", 0, "group-collapsed"),
+      ],
+      "pane-closing",
+      [],
+      { isPaneInCollapsedGroup },
+    ),
+    "pane-collapsed-previous",
+  );
 });
 
 test("cycleTabId skips other panes in the active split", () => {
