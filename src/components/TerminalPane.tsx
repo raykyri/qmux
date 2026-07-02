@@ -1074,9 +1074,12 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (text === lastCopiedSelection) {
           return;
         }
-        lastCopiedSelection = text;
         void writeClipboardText(text)
           .then(() => {
+            // Record the copy only once the write lands, so a failed write
+            // (webview clipboard permission, unfocused document) doesn't
+            // suppress retrying the same selection.
+            lastCopiedSelection = text;
             onSelectionCopiedRef.current?.(pane.id);
             if (!selectionClearOnCopyRef.current) {
               return;
