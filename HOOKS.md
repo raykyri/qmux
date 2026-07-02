@@ -14,9 +14,10 @@ process started outside qmux's setup will not have these hooks.
 Different agents have different hook configuration formats and
 payloads, so each integration is contained in an adapter:
 
-For Claude, we write <agent cwd>/.qmux/qmux-hooks.json, then start
-Claude with --settings <that file>. This applies to launcher-created
-agents, resumes/forks, and claude run inside a qmux shell wrapper.
+For Claude, we write <qmux workspace root>/.qmux/qmux-hooks.json, then
+start Claude with --settings <that file>. This applies to
+launcher-created agents, resumes/forks, and claude run inside a qmux
+shell wrapper.
 For the exact hooks, see src-tauri/src/adapters/claude.rs:23.
 
 For Codex, we write a qmux-managed profile under `CODEX_HOME`:

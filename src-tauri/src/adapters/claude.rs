@@ -204,7 +204,7 @@ impl ClaudeAdapter {
             ));
         }
         let pane_id = state.next_id("pane");
-        let settings_path = match write_hook_settings(&agent) {
+        let settings_path = match write_hook_settings(state.config()) {
             Ok(settings_path) => settings_path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -332,7 +332,7 @@ impl ClaudeAdapter {
             )
         })?;
 
-        let settings_path = match write_hook_settings(&agent) {
+        let settings_path = match write_hook_settings(state.config()) {
             Ok(settings_path) => settings_path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -425,7 +425,7 @@ impl ClaudeAdapter {
             )
         })?;
 
-        let settings_path = write_hook_settings(agent)?;
+        let settings_path = write_hook_settings(state.config())?;
         let mut args = vec![
             "--settings".to_string(),
             settings_path.display().to_string(),
@@ -548,7 +548,7 @@ impl ClaudeAdapter {
                 },
             )?,
         };
-        let settings_path = match write_hook_settings(&agent) {
+        let settings_path = match write_hook_settings(state.config()) {
             Ok(settings_path) => settings_path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -934,9 +934,8 @@ pub struct PrepareShellClaudeLaunchRequest {
     pub args: Vec<String>,
 }
 
-pub fn write_hook_settings(agent: &AgentInfo) -> Result<PathBuf, String> {
-    let agent_dir = PathBuf::from(&agent.worktree_dir);
-    let qmux_dir = agent_dir.join(".qmux");
+pub fn write_hook_settings(config: &QmuxConfig) -> Result<PathBuf, String> {
+    let qmux_dir = config.workspace_root.join(".qmux");
     fs::create_dir_all(&qmux_dir)
         .map_err(|err| format!("failed to create {}: {err}", qmux_dir.display()))?;
 
@@ -1499,6 +1498,42 @@ mod tests {
             claude_plugin_dir: PathBuf::new(),
             opencode_plugin_dir: PathBuf::new(),
         })
+    }
+
+    #[test]
+    fn hook_settings_are_written_under_qmux_workspace_root() {
+        let workspace_root = unique_test_dir("qmux-claude-global-hooks");
+        let project_dir = unique_test_dir("qmux-claude-project");
+        let config = QmuxConfig {
+            workspace_root: workspace_root.clone(),
+            socket_path: unique_test_dir("qmux-claude-hooks-socket").join("qmux.sock"),
+            adapters: AdapterConfigs {
+                claude: ClaudeAdapterConfig {
+                    binary: Some("claude".to_string()),
+                },
+                codex: CodexAdapterConfig {
+                    binary: Some("codex".to_string()),
+                },
+                opencode: OpencodeAdapterConfig {
+                    binary: Some("opencode".to_string()),
+                },
+            },
+            legacy_claude_binary: None,
+            claude_plugin_dir: PathBuf::new(),
+            opencode_plugin_dir: PathBuf::new(),
+        };
+
+        let settings_path = write_hook_settings(&config).unwrap();
+
+        assert_eq!(settings_path, workspace_root.join(".qmux/qmux-hooks.json"));
+        assert!(settings_path.is_file());
+        assert!(!project_dir.join(".qmux/qmux-hooks.json").exists());
+        let raw = fs::read_to_string(settings_path).unwrap();
+        assert!(raw.contains("\"hooks\""));
+        assert!(raw.contains(" notify SessionStart"));
+
+        let _ = fs::remove_dir_all(workspace_root);
+        let _ = fs::remove_dir_all(project_dir);
     }
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
