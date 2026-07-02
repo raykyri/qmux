@@ -523,6 +523,20 @@ button:disabled {
   white-space: nowrap;
 }
 
+.pane-group-status-icons {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pane-group-status-icons .pane-tab-dot {
+  grid-column: auto;
+  justify-self: auto;
+  align-self: center;
+}
+
 /* The active group (holding the selected tab) brightens slightly. */
 .pane-group.is-active-group .pane-group-name {
   color: #edf0ec;

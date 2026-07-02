@@ -1344,6 +1344,19 @@ export default function App() {
     return pane.recovered ? "Restored" : tabStatus;
   }
 
+  function collapsedGroupStatusAgents(groupPanes: PaneInfo[]): AgentInfo[] {
+    return groupPanes
+      .map((pane) => agentByPaneId.get(pane.id))
+      .filter(
+        (agent): agent is AgentInfo =>
+          agent !== undefined && agent.status !== "done" && agent.status !== "idle",
+      );
+  }
+
+  function collapsedGroupStatusLabel(agent: AgentInfo) {
+    return agentStatusLabel(agent.status) ?? agent.status;
+  }
+
   function showAppToast(message: string, tone: "normal" | "warning" = "normal") {
     setAppToast({ message, tone });
     if (appToastTimerRef.current !== null) {
@@ -6440,6 +6453,9 @@ export default function App() {
             const isCollapsedGroup = group.collapsed;
             const groupDisplayName = displayGroupName(group);
             const groupDropGap = groupDropTarget?.index ?? null;
+            const collapsedStatusAgents = isCollapsedGroup
+              ? collapsedGroupStatusAgents(groupPanes)
+              : [];
             return (
               <section
                 key={group.id}
@@ -6478,6 +6494,29 @@ export default function App() {
                     </span>
                     {isCollapsedGroup ? (
                       <span className="pane-group-count">{groupPanes.length}</span>
+                    ) : null}
+                    {collapsedStatusAgents.length > 0 ? (
+                      <span
+                        className="pane-group-status-icons"
+                        role="img"
+                        aria-label={collapsedStatusAgents
+                          .map(collapsedGroupStatusLabel)
+                          .join(", ")}
+                      >
+                        {collapsedStatusAgents.map((agent) => {
+                          const statusTone = agentStatusTone(agent.status);
+                          const statusClass =
+                            agent.status === "awaitingInput" ? " status-awaiting-input" : "";
+                          return (
+                            <span
+                              key={agent.id}
+                              className={`pane-tab-dot status-${statusTone}${statusClass}`}
+                              title={collapsedGroupStatusLabel(agent)}
+                              aria-hidden="true"
+                            />
+                          );
+                        })}
+                      </span>
                     ) : null}
                   </span>
                   <span className="pane-group-aux">
