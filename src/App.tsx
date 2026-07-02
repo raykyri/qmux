@@ -17,6 +17,8 @@ import type {
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Eye,
   EyeOff,
   Expand,
@@ -6535,9 +6537,9 @@ export default function App() {
                       }}
                     >
                       {isCollapsedGroup ? (
-                        <PanelBottomOpen size={14} aria-hidden="true" />
+                        <ChevronsUpDown size={14} aria-hidden="true" />
                       ) : (
-                        <PanelBottomClose size={14} aria-hidden="true" />
+                        <ChevronsDownUp size={14} aria-hidden="true" />
                       )}
                     </button>
                     <button
@@ -6704,9 +6706,9 @@ export default function App() {
               }}
             >
               {groupMenuGroup.collapsed ? (
-                <PanelBottomOpen size={13} aria-hidden="true" />
+                <ChevronsUpDown size={13} aria-hidden="true" />
               ) : (
-                <PanelBottomClose size={13} aria-hidden="true" />
+                <ChevronsDownUp size={13} aria-hidden="true" />
               )}
               <span>{groupMenuGroup.collapsed ? "Expand group" : "Collapse group"}</span>
               <kbd className="context-menu-shortcut">
