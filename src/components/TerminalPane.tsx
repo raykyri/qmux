@@ -1059,40 +1059,70 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         setSearchResults({ index: resultIndex, count: resultCount });
       });
       let copyOnSelectTimer: number | null = null;
+      const clearCopyOnSelectTimer = () => {
+        if (copyOnSelectTimer !== null) {
+          window.clearTimeout(copyOnSelectTimer);
+          copyOnSelectTimer = null;
+        }
+      };
+      const copySelectionNow = () => {
+        const text = terminal.getSelection();
+        if (!text) {
+          lastCopiedSelection = "";
+          return;
+        }
+        if (text === lastCopiedSelection) {
+          return;
+        }
+        lastCopiedSelection = text;
+        void writeClipboardText(text)
+          .then(() => {
+            onSelectionCopiedRef.current?.(pane.id);
+            if (!selectionClearOnCopyRef.current) {
+              return;
+            }
+            lastCopiedSelection = "";
+            clearingSelection = true;
+            terminal.clearSelection();
+            window.setTimeout(() => {
+              clearingSelection = false;
+            }, 0);
+          })
+          .catch(() => undefined);
+      };
       const selectionDisposable = terminal.onSelectionChange(() => {
         if (!copyOnSelectRef.current || clearingSelection) {
           return;
         }
-        if (copyOnSelectTimer !== null) {
-          window.clearTimeout(copyOnSelectTimer);
-        }
+        clearCopyOnSelectTimer();
+        // Trailing debounce covers keyboard/programmatic selection changes;
+        // mouse selections copy immediately on release below.
         copyOnSelectTimer = window.setTimeout(() => {
           copyOnSelectTimer = null;
-          const text = terminal.getSelection();
-          if (!text) {
-            lastCopiedSelection = "";
-            return;
-          }
-          if (text === lastCopiedSelection) {
-            return;
-          }
-          lastCopiedSelection = text;
-          void writeClipboardText(text)
-            .then(() => {
-              onSelectionCopiedRef.current?.(pane.id);
-              if (!selectionClearOnCopyRef.current) {
-                return;
-              }
-              lastCopiedSelection = "";
-              clearingSelection = true;
-              terminal.clearSelection();
-              window.setTimeout(() => {
-                clearingSelection = false;
-              }, 0);
-            })
-            .catch(() => undefined);
+          copySelectionNow();
         }, 120);
       });
+      // Mouse selections copy the moment the drag ends instead of waiting out
+      // the debounce. Track the press on this pane so a release anywhere
+      // (drags often end outside the pane) finalizes only this pane's
+      // selection.
+      let selectionDragActive = false;
+      const handleCopySelectMouseDown = () => {
+        selectionDragActive = true;
+      };
+      const handleCopySelectMouseUp = () => {
+        if (!selectionDragActive) {
+          return;
+        }
+        selectionDragActive = false;
+        if (!copyOnSelectRef.current || clearingSelection) {
+          return;
+        }
+        clearCopyOnSelectTimer();
+        copySelectionNow();
+      };
+      hostEl.addEventListener("mousedown", handleCopySelectMouseDown, true);
+      window.addEventListener("mouseup", handleCopySelectMouseUp, true);
 
       // Cmd-F (macOS) / Ctrl-F (elsewhere) opens the find bar over the scrollback.
       // Returning false stops xterm from forwarding the keystroke to the PTY.
@@ -1536,6 +1566,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         hostEl.removeEventListener("mouseup", handleLinkMouseUp, true);
         hostEl.removeEventListener("contextmenu", handleContextMenu, true);
         hostEl.removeEventListener("mouseup", handleSelectionMouseUp, true);
+        hostEl.removeEventListener("mousedown", handleCopySelectMouseDown, true);
+        window.removeEventListener("mouseup", handleCopySelectMouseUp, true);
         window.removeEventListener("keydown", handleTerminalLinkModifierKeyDown, true);
         window.removeEventListener("keyup", handleTerminalLinkModifierKeyUp, true);
         window.removeEventListener("blur", handleTerminalLinkModifierBlur);
