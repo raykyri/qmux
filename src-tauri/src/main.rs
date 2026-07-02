@@ -782,6 +782,7 @@ fn main() {
     let exit_state = state.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(show_hide_shortcut::handle_global_shortcut)

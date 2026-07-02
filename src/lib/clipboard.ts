@@ -1,6 +1,18 @@
-// Copy text to the clipboard, falling back to the legacy execCommand path for
-// WebViews that don't grant the async Clipboard API permission.
+import { writeText as writeTauriClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+
+// Copy text to the clipboard. The native Tauri path comes first: WKWebView's
+// async Clipboard API is focus- and permission-sensitive, and the final
+// execCommand fallback steals focus to an off-screen textarea.
 export async function writeClipboardText(text: string) {
+  if ("__TAURI_INTERNALS__" in window) {
+    try {
+      await writeTauriClipboardText(text);
+      return;
+    } catch {
+      // Fall through to the web clipboard paths.
+    }
+  }
+
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
