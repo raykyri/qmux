@@ -31,8 +31,23 @@ And then we start Codex with --profile qmux-codex, and the profile
 points each Codex hook at the shim. For exact hooks,
 see src-tauri/src/adapters/codex.rs:29.
 
-Both hook systems call back into qmux via qmux notify <event>, which
-sends a token-scoped hook.notify request back to the app.
+For Grok (xAI Grok Build), whose hook system is Claude-compatible, we
+write a shim and merge a qmux-managed `hooks` block into the global
+Grok user settings:
+
+```
+$GROK_HOME/qmux/qmux-grok-hook    (default $GROK_HOME = ~/.grok)
+$GROK_HOME/user-settings.json     (qmux merges its hooks block in)
+```
+
+Grok has no per-launch settings flag, so the hooks are installed
+globally and the shim no-ops unless the qmux env vars are present, the
+same way the Codex shim does. The merge preserves the user's other
+settings and any hooks they added themselves. For exact hooks,
+see src-tauri/src/adapters/grok.rs:24.
+
+All three hook systems call back into qmux via qmux notify <event>,
+which sends a token-scoped hook.notify request back to the app.
 
 
 ## Claude
@@ -90,4 +105,26 @@ sends a token-scoped hook.notify request back to the app.
   tracking, respects pause and typing state, drains the next queued turn
   if allowed, and emits either `agent.running` or `agent.done`.
 - Unknown Codex hook events: forwarded as `agent.hook.<event>` with the
+  raw hook payload.
+
+
+## Grok
+
+- `SessionStart`: records the session id from `session_id` or
+  `sessionId`. Binds the transcript path Grok reports in `transcript_path`
+  / `transcriptPath` and tails it; if none is reported, falls back to a
+  qmux-managed JSONL path under `<workspaceRoot>/.qmux/grok`. This does
+  not mark the agent as running.
+- `UserPromptSubmit`: marks the agent `Running` and emits
+  `agent.prompt_submitted`. qmux reads `prompt` or `input` from the
+  payload and matches it against outstanding send tracking.
+- `PreToolUse`: marks the agent `Running` and emits `agent.tool_use`.
+- `PostToolUse`: marks the agent `Running` and emits
+  `agent.tool_result`.
+- `PermissionRequest`: marks the agent `AwaitingPermission` and emits
+  `agent.awaiting_permission`.
+- `Stop`: treats the agent as idle. qmux clears outstanding send
+  tracking, respects pause and typing state, drains the next queued turn
+  if allowed, and emits either `agent.running` or `agent.done`.
+- Unknown Grok hook events: forwarded as `agent.hook.<event>` with the
   raw hook payload.

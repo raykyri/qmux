@@ -116,6 +116,10 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             run_agent_exec("codex".to_string(), args.collect())?;
             Ok(true)
         }
+        "grok" => {
+            run_agent_exec("grok".to_string(), args.collect())?;
+            Ok(true)
+        }
         "fork" => {
             let mut use_worktree = false;
             let mut prompt_parts = Vec::new();
@@ -174,7 +178,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "usage: qmux [ping|notify|pane-write|cwd|agent-exec|agent-detach|claude|codex|fork|open]"
+                "usage: qmux [ping|notify|pane-write|cwd|agent-exec|agent-detach|claude|codex|grok|fork|open]"
             );
             Ok(true)
         }

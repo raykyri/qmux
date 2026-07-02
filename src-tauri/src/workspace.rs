@@ -746,7 +746,8 @@ fn now_millis() -> u128 {
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig, QmuxConfig,
     };
 
     fn test_state_with_workspace(workspace_root: PathBuf) -> AppState {
@@ -764,6 +765,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

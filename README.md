@@ -10,15 +10,15 @@ It includes native UI for launching agents, queueing follow-ups,
 tracking agent status, and driving TUI-based agents.
 
 Agents are integrated through a pluggable adapter layer. Claude Code,
-Codex, and OpenCode (limited support) are included as adapters, but
-new agents can be added by implementing the adapter trait in Rust and
-adding a matching UI adapter on the frontend.
+Codex, OpenCode (limited support), and Grok (limited support) are
+included as adapters, but new agents can be added by implementing the
+adapter trait in Rust and adding a matching UI adapter on the frontend.
 
 ## Features
 
 - Shell panes backed by Rust-owned PTYs in Tauri.
-- Agent panes for Claude Code, Codex, and OpenCode, launched from the app
-  or by running `claude` / `codex` / `opencode` inside a shell pane.
+- Agent panes for Claude Code, Codex, OpenCode, and Grok, launched from the app
+  or by running `claude` / `codex` / `opencode` / `grok` inside a shell pane.
 - Transcript JSONL tailing and a native follow-up composer: send, queue,
   steer, edit/reorder queued turns, and approve/deny permission prompts where
   supported.
@@ -44,7 +44,7 @@ Prerequisites:
 - macOS.
 - Rust toolchain.
 - Node.js and npm.
-- The agent CLIs you want to use on `PATH`: `claude`, `codex`, and/or `opencode`.
+- The agent CLIs you want to use on `PATH`: `claude`, `codex`, `opencode`, and/or `grok`.
 
 Install dependencies:
 
@@ -124,8 +124,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Shell panes spawn `$SHELL`.
 - Agent panes spawn the adapter's configured agent binary, either in the current
   repo/directory or in a qmux-created agent worktree. Shell functions can route
-  `claude`, `codex`, and `opencode` through qmux from shell panes, but the adapter
-  binary still needs to be installed or configured.
+  `claude`, `codex`, `opencode`, and `grok` through qmux from shell panes, but the
+  adapter binary still needs to be installed or configured.
 - Each pane receives:
   - `QMUX_PANE_ID`
   - `QMUX_SOCK`
@@ -154,7 +154,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
   "adapters": {
     "claude": { "binary": "claude" },
     "codex": { "binary": "codex" },
-    "opencode": { "binary": "opencode" }
+    "opencode": { "binary": "opencode" },
+    "grok": { "binary": "grok" }
   }
 }
 ```
@@ -162,8 +163,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 Relative paths are resolved from the process working directory when that
 directory is under `$HOME`; otherwise they fall back to the platform data/runtime
 locations. Each adapter's `binary` is optional and defaults to the command name
-(`claude`, `codex`, `opencode`); a top-level `claudeBinary` is still honored for
-backward compatibility. If the config file is absent, qmux uses the platform data
+(`claude`, `codex`, `opencode`, `grok`); a top-level `claudeBinary` is still honored
+for backward compatibility. If the config file is absent, qmux uses the platform data
 directory for workspace state and the platform runtime directory, or a `run/`
 subdirectory of the data directory, for the control socket.
 

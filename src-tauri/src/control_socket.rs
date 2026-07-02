@@ -371,7 +371,8 @@ fn write_response(stream: &mut UnixStream, result: Result<Value, String>) -> std
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig, QmuxConfig,
     };
     use crate::workspace::{AgentInfo, AgentStatus};
     use std::io::Read;
@@ -395,6 +396,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { claudeUiAdapter } from "./claude";
 import { codexUiAdapter } from "./codex";
+import { grokUiAdapter } from "./grok";
 import { opencodeUiAdapter } from "./opencode";
 import type { AgentInfo, PaneInfo, Turn, TurnBlock } from "../types";
 
@@ -34,7 +35,12 @@ export interface AgentUiAdapter {
   contextRows?: (agent: AgentInfo, pane: PaneInfo) => Array<{ label: string; value: string }>;
 }
 
-export const agentUiAdapters = [claudeUiAdapter, codexUiAdapter, opencodeUiAdapter];
+export const agentUiAdapters = [
+  claudeUiAdapter,
+  codexUiAdapter,
+  opencodeUiAdapter,
+  grokUiAdapter,
+];
 
 export function findAgentUiAdapter(adapterId: string | null | undefined): AgentUiAdapter | null {
   return agentUiAdapters.find((adapter) => adapter.id === adapterId) ?? null;

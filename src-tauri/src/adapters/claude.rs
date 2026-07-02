@@ -1347,7 +1347,8 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig,
     };
     use crate::state::{AgentSendSource, PaneInfo, PaneRuntime, PaneStatus};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
@@ -1472,6 +1473,9 @@ mod tests {
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
                 },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: PathBuf::new(),
@@ -1492,6 +1496,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,
@@ -2253,7 +2260,8 @@ mod tests {
     #[test]
     fn list_skills_enumerates_named_namespaced_skills() {
         use crate::config::{
-            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+            OpencodeAdapterConfig,
         };
 
         let plugin_dir = env::temp_dir().join(format!("qmux-plugin-list-{}", std::process::id()));
@@ -2293,6 +2301,9 @@ mod tests {
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
                 },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: plugin_dir.clone(),
@@ -2311,7 +2322,8 @@ mod tests {
     #[test]
     fn list_skills_is_empty_without_a_plugin_dir() {
         use crate::config::{
-            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+            OpencodeAdapterConfig,
         };
 
         let config = QmuxConfig {
@@ -2327,6 +2339,9 @@ mod tests {
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
                 },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: env::temp_dir().join("qmux-nonexistent-plugin-dir"),
@@ -2339,7 +2354,8 @@ mod tests {
     #[test]
     fn list_skills_keeps_ids_unique_when_frontmatter_names_collide() {
         use crate::config::{
-            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+            OpencodeAdapterConfig,
         };
 
         let plugin_dir = env::temp_dir().join(format!("qmux-plugin-dup-{}", std::process::id()));
@@ -2371,6 +2387,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

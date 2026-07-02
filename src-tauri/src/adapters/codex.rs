@@ -1450,7 +1450,8 @@ fn codex_tool_input(payload: &Value) -> Value {
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig,
     };
     use crate::state::{AppState, PaneInfo, PaneRuntime, PaneStatus};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
@@ -2481,6 +2482,9 @@ trusted_hash = "sha256:trusted"
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

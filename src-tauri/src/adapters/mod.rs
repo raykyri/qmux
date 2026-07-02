@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod grok;
 pub mod opencode;
 
 use crate::config::QmuxConfig;
@@ -10,6 +11,7 @@ use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus};
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
+use grok::GrokAdapter;
 use opencode::OpencodeAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -286,6 +288,7 @@ pub fn adapter_registry(config: &QmuxConfig) -> AdapterRegistry {
         Box::new(ClaudeAdapter::new(config)),
         Box::new(CodexAdapter::new(config)),
         Box::new(OpencodeAdapter::new(config)),
+        Box::new(GrokAdapter::new(config)),
     ])
 }
 
@@ -405,7 +408,8 @@ fn notification_adapter_id(
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig,
     };
     use std::path::PathBuf;
 
@@ -422,6 +426,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,
@@ -447,13 +454,15 @@ mod tests {
         let registry = adapter_registry(&test_config());
 
         let metadata = registry.metadata();
-        assert_eq!(metadata.len(), 3);
+        assert_eq!(metadata.len(), 4);
         assert_eq!(metadata[0].id, "claude");
         assert!(metadata[0].default);
         assert_eq!(metadata[1].id, "codex");
         assert!(!metadata[1].default);
         assert_eq!(metadata[2].id, "opencode");
         assert!(!metadata[2].default);
+        assert_eq!(metadata[3].id, "grok");
+        assert!(!metadata[3].default);
     }
 
     #[test]

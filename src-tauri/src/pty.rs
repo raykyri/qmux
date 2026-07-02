@@ -1170,7 +1170,8 @@ fn running_process(pid: u32) -> Option<RunningProcess> {
 mod tests {
     use super::*;
     use crate::config::{
-        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
+        AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+        OpencodeAdapterConfig, QmuxConfig,
     };
     use crate::scrollback::read_pane_scrollback;
     use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
@@ -1219,6 +1220,9 @@ mod tests {
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
                 },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: std::path::PathBuf::new(),
@@ -1239,6 +1243,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

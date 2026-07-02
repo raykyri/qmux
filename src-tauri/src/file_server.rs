@@ -490,8 +490,8 @@ mod tests {
     #[test]
     fn serves_files_under_root_with_range_and_blocks_the_rest() {
         use crate::config::{
-            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, OpencodeAdapterConfig,
-            QmuxConfig,
+            AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
+            OpencodeAdapterConfig, QmuxConfig,
         };
         let base = std::env::temp_dir().join(format!("qmux-fs-serve-{}", std::process::id()));
         let root = base.join("ws");
@@ -513,6 +513,9 @@ mod tests {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,

@@ -41,6 +41,8 @@ pub struct AdapterConfigs {
     pub codex: CodexAdapterConfig,
     #[serde(default)]
     pub opencode: OpencodeAdapterConfig,
+    #[serde(default)]
+    pub grok: GrokAdapterConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -60,6 +62,13 @@ pub struct CodexAdapterConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpencodeAdapterConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokAdapterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
 }
@@ -180,6 +189,14 @@ impl QmuxConfig {
             .unwrap_or_else(|| "opencode".to_string())
     }
 
+    pub fn grok_binary(&self) -> String {
+        self.adapters
+            .grok
+            .binary
+            .clone()
+            .unwrap_or_else(|| "grok".to_string())
+    }
+
     fn default_config() -> Result<Self, String> {
         let data_root =
             qmux_data_root().ok_or_else(|| "could not determine data directory".to_string())?;
@@ -197,6 +214,9 @@ impl QmuxConfig {
                 },
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
+                },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
                 },
             },
             legacy_claude_binary: None,
@@ -423,6 +443,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(configured.opencode_binary(), "/opt/bin/opencode");
+    }
+
+    #[test]
+    fn grok_binary_defaults_and_can_be_configured() {
+        let default_config: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(default_config.grok_binary(), "grok");
+
+        let configured: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "adapters": {
+                "grok": {
+                  "binary": "/opt/bin/grok"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(configured.grok_binary(), "/opt/bin/grok");
     }
 
     #[test]
