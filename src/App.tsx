@@ -2582,7 +2582,7 @@ export default function App() {
     }
   }
 
-  async function createEmptyGroup(anchorGroup: GroupInfo | null) {
+  async function createGroupWithInitialShell(anchorGroup: GroupInfo | null) {
     setError(null);
     try {
       const newGroup = await createGroup({
@@ -2590,11 +2590,19 @@ export default function App() {
         afterGroupId: anchorGroup?.id ?? null,
       });
       setLauncherOpen(false);
-      setLastActiveGroupId(newGroup.id);
+      await createInitialShellForGroup(newGroup.id);
       await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function createInitialShellForGroup(groupId: string) {
+    const pane = await spawnShell(estimateInitialPaneSize(false), null, groupId);
+    const orderedPanes = await panesWithNewTabInLaunchPosition(pane, groupId);
+    setPanesPreservingRecoveredDismissals(orderedPanes);
+    setActivePaneId(pane.id);
+    setLastActiveGroupId(pane.groupId);
   }
 
   async function createGroupAfterWithFolder(group: GroupInfo) {
@@ -2606,7 +2614,7 @@ export default function App() {
       if (!newGroup) {
         return;
       }
-      setLastActiveGroupId(newGroup.id);
+      await createInitialShellForGroup(newGroup.id);
       await refreshGroups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2622,7 +2630,7 @@ export default function App() {
     const anchorGroup = anchorGroupId
       ? (groupById.get(anchorGroupId) ?? fallbackGroup)
       : fallbackGroup;
-    await createEmptyGroup(anchorGroup);
+    await createGroupWithInitialShell(anchorGroup);
   }
 
   async function addShellPaneInGroup(groupId: string | null) {
@@ -6265,7 +6273,7 @@ export default function App() {
                       {groupDisplayName}
                     </span>
                     {isCollapsedGroup ? (
-                      <span className="pane-group-count">({groupPanes.length})</span>
+                      <span className="pane-group-count">{groupPanes.length}</span>
                     ) : null}
                   </span>
                   <span className="pane-group-aux">

@@ -461,6 +461,11 @@ button:disabled {
   margin-top: 3px;
 }
 
+.pane-group.is-collapsed {
+  padding-top: 3.5px;
+  padding-bottom: 3.5px;
+}
+
 .pane-group-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
