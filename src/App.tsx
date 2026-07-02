@@ -165,6 +165,7 @@ import {
   closeWorktreePane,
   confirmAppExit,
   createGroup,
+  createGroupWithFolder,
   forkAgent,
   getActiveTab,
   getPaneSplits,
@@ -2596,8 +2597,22 @@ export default function App() {
     }
   }
 
-  async function createGroupAfter(group: GroupInfo) {
-    await createEmptyGroup(group);
+  async function createGroupAfterWithFolder(group: GroupInfo) {
+    setError(null);
+    setFolderPickerStatus("Opening folder picker…");
+    try {
+      await waitForPaintedFrame();
+      const newGroup = await createGroupWithFolder(group.id);
+      if (!newGroup) {
+        return;
+      }
+      setLastActiveGroupId(newGroup.id);
+      await refreshGroups();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFolderPickerStatus(null);
+    }
   }
 
   async function createGroupFromSettingsMenu() {
@@ -6440,13 +6455,14 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
+              disabled={folderPickerStatus !== null}
               onClick={() => {
                 setGroupMenu(null);
-                void createGroupAfter(groupMenuGroup);
+                void createGroupAfterWithFolder(groupMenuGroup);
               }}
             >
               <Plus size={13} aria-hidden="true" />
-              <span>New group</span>
+              <span>New group...</span>
             </button>
             <button
               type="button"
