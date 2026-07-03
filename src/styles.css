@@ -3867,21 +3867,42 @@ header + .turn-blocks {
 
 /* "Pause after send" caption centered under a pause-after queued item, spanning the
    item's full width (below the text + actions grid row). */
-.queued-turn-pause-label,
-.queued-turn-wait-label {
+.queued-turn-pause-label {
   grid-column: 1 / -1;
   margin-top: 4px;
   text-align: center;
   font-size: var(--fs-sm);
-}
-
-.queued-turn-pause-label {
   color: var(--accent-color);
 }
 
+/* A queued turn gated on another agent reads as suspended: the card border goes
+   dashed and an hourglass pill under the text names what it waits on. */
+.queued-turn.has-wait {
+  border-style: dashed;
+  border-color: rgba(109, 167, 236, 0.5);
+}
+
 .queued-turn-wait-label {
-  color: #d8b878;
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 1px solid rgba(109, 167, 236, 0.25);
+  border-radius: 999px;
+  background: rgba(109, 167, 236, 0.08);
+  color: #6da7ec;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 17px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: default;
+}
+
+.queued-turn-wait-label::before {
+  content: "⧗ ";
 }
 
 /* "Paused" status sits at the far left of the composer's submit row (the

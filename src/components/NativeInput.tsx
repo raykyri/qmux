@@ -970,6 +970,7 @@ export default function NativeInput({
             const className = [
               "queued-turn",
               collapsed ? "is-collapsed" : "",
+              turn.waitFor ? "has-wait" : "",
               index === draggingIndex ? "is-dragging" : "",
               activeDrop === index ? "is-drop-before" : "",
               activeDrop === queuedTurns.length && index === queuedTurns.length - 1
