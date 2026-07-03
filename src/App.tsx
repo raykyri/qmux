@@ -2881,40 +2881,98 @@ export default function App() {
     }
   }
 
-  function replaceAgent(updatedAgent: AgentInfo) {
-    setAgents((current) =>
-      current.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent)),
-    );
+  function paneIdsForSplitStatusGroup(paneId: string): string[] {
+    const split = paneSplitForPane(paneSplitsRef.current, paneId);
+    if (!split) {
+      return [paneId];
+    }
+    const livePaneIds = new Set(panesRef.current.map((pane) => pane.id));
+    const paneIds = split.paneIds.filter((candidate) => livePaneIds.has(candidate));
+    return paneIds.length > 0 ? paneIds : [paneId];
   }
 
-  async function acknowledgeAgentStatus(agentId: string, includeFailed = false) {
+  function agentsForSplitStatusGroup(paneId: string): AgentInfo[] {
+    const paneIds = new Set(paneIdsForSplitStatusGroup(paneId));
+    return agentsRef.current.filter((agent) => agent.paneId && paneIds.has(agent.paneId));
+  }
+
+  function agentsForAgentStatusGroup(agentId: string): AgentInfo[] {
+    const agent = agentsRef.current.find((candidate) => candidate.id === agentId);
+    if (!agent) {
+      return [];
+    }
+    if (!agent.paneId) {
+      return [agent];
+    }
+    const groupedAgents = agentsForSplitStatusGroup(agent.paneId);
+    return groupedAgents.length > 0 ? groupedAgents : [agent];
+  }
+
+  function replaceAgents(updatedAgents: AgentInfo[]) {
+    if (updatedAgents.length === 0) {
+      return;
+    }
+    const updatedById = new Map<string, AgentInfo>(
+      updatedAgents.map((agent) => [agent.id, agent]),
+    );
+    setAgents((current) => current.map((agent) => updatedById.get(agent.id) ?? agent));
+  }
+
+  async function acknowledgeAgentStatuses(targetAgents: AgentInfo[], includeFailed = false) {
+    const dismissibleAgents = targetAgents.filter(
+      (agent) => agent.status === "done" || (includeFailed && agent.status === "failed"),
+    );
+    if (dismissibleAgents.length === 0) {
+      return;
+    }
     setError(null);
     try {
-      replaceAgent(await acknowledgeAgent(agentId, includeFailed));
+      replaceAgents(
+        await Promise.all(
+          dismissibleAgents.map((agent) => acknowledgeAgent(agent.id, includeFailed)),
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
+  async function acknowledgeAgentStatus(agentId: string, includeFailed = false) {
+    await acknowledgeAgentStatuses(agentsForAgentStatusGroup(agentId), includeFailed);
+  }
+
   async function clearAgentWorkingIndicator(agentId: string) {
+    const targetAgents = agentsForAgentStatusGroup(agentId).filter(
+      (agent) => agent.status === "running" || agent.status === "starting",
+    );
+    if (targetAgents.length === 0) {
+      return;
+    }
+    const targetAgentIds = targetAgents.map((agent) => agent.id);
+    const targetAgentIdSet = new Set(targetAgentIds);
     setError(null);
     try {
-      replaceAgent(await clearAgentWorkingStatus(agentId));
+      replaceAgents(await Promise.all(targetAgentIds.map((id) => clearAgentWorkingStatus(id))));
       setThinkingAgentIds((current) => {
-        if (!current.has(agentId)) {
+        if (targetAgentIds.every((id) => !current.has(id))) {
           return current;
         }
         const next = new Set(current);
-        next.delete(agentId);
+        for (const id of targetAgentIds) {
+          next.delete(id);
+        }
         return next;
       });
       setProcessingNewMessageByAgent((current) => {
-        if (!Object.prototype.hasOwnProperty.call(current, agentId)) {
-          return current;
-        }
+        let changed = false;
         const next = { ...current };
-        delete next[agentId];
-        return next;
+        for (const id of targetAgentIdSet) {
+          if (Object.prototype.hasOwnProperty.call(next, id)) {
+            delete next[id];
+            changed = true;
+          }
+        }
+        return changed ? next : current;
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2925,10 +2983,7 @@ export default function App() {
     if (!paneId || !document.hasFocus()) {
       return;
     }
-    const agent = agentsRef.current.find((candidate) => candidate.paneId === paneId);
-    if (agent?.status === "done") {
-      void acknowledgeAgentStatus(agent.id);
-    }
+    void acknowledgeAgentStatuses(agentsForSplitStatusGroup(paneId));
   }
 
   function focusActiveTerminal() {
@@ -3314,10 +3369,14 @@ export default function App() {
   // dismiss-on-select behavior as a done agent's review status — so it's never a
   // manual click. Guarded so it only fires for a pane that still carries the badge.
   useEffect(() => {
-    if (activePaneId && panes.some((pane) => pane.id === activePaneId && pane.recovered)) {
+    if (!activePaneId) {
+      return;
+    }
+    const paneIds = new Set(paneIdsForSplitStatusGroup(activePaneId));
+    if (panes.some((pane) => pane.recovered && paneIds.has(pane.id))) {
       dismissRecoveredBadge(activePaneId);
     }
-  }, [activePaneId, panes]);
+  }, [activePaneId, paneSplits, panes]);
 
   useLayoutEffect(() => {
     if (!activePaneId) {
@@ -4160,14 +4219,26 @@ export default function App() {
   }
 
   // The "Restored" badge is a one-time, post-restart hint, cleared automatically
-  // when its pane is selected (see the activePaneId effect). Clearing the flag
-  // locally and recording the pane id keeps later backend pane refetches from
-  // resurrecting the badge during this app session.
+  // when its pane or split group is selected (see the activePaneId effect). Clearing
+  // the flag locally and recording the pane ids keeps later backend pane refetches
+  // from resurrecting the badge during this app session.
   function dismissRecoveredBadge(paneId: string) {
-    dismissedRecoveredPaneIdsRef.current.add(paneId);
-    setPanesPreservingRecoveredDismissals((current) =>
-      current.map((pane) => (pane.id === paneId ? { ...pane, recovered: false } : pane)),
-    );
+    const paneIds = paneIdsForSplitStatusGroup(paneId);
+    for (const id of paneIds) {
+      dismissedRecoveredPaneIdsRef.current.add(id);
+    }
+    const paneIdSet = new Set(paneIds);
+    setPanesPreservingRecoveredDismissals((current) => {
+      let changed = false;
+      const next = current.map((pane) => {
+        if (pane.recovered && paneIdSet.has(pane.id)) {
+          changed = true;
+          return { ...pane, recovered: false };
+        }
+        return pane;
+      });
+      return changed ? next : current;
+    });
   }
 
   function openRenameDialog(pane: PaneInfo) {
