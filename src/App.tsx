@@ -63,6 +63,11 @@ import { LauncherSelect } from "./components/LauncherSelect";
 import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
 import BrowserOverlayControls from "./components/BrowserOverlayControls";
+import HomeCascades from "./components/HomeCascades";
+import type {
+  HomeCascadeView,
+  HomeCascadeWorkstream,
+} from "./components/HomeCascades";
 import LinkContextMenu from "./components/LinkContextMenu";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -899,6 +904,16 @@ function latestUserTurnId(turns: Turn[]): string | null {
   return latest;
 }
 
+function latestUserTurnText(turns: Turn[]): string | null {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const text = firstUserTurnText(turns[index]);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
 function defaultPaneTitle(
   pane: PaneInfo,
   agent: AgentInfo | undefined,
@@ -1163,6 +1178,7 @@ export default function App() {
     Record<string, boolean>
   >({});
   const [rightBarCollapsed, setRightBarCollapsed] = useState(false);
+  const [homeCascadeView, setHomeCascadeView] = useState<HomeCascadeView>("lanes");
   const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
   const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
     {},
@@ -2317,6 +2333,58 @@ export default function App() {
     .map((surface) => surface.agent?.id)
     .filter((agentId): agentId is string => Boolean(agentId));
   const visibleTurnPaneAgentIdsKey = visibleTurnPaneAgentIds.join("\0");
+  // The body calls component-scoped helpers (turnInfoForAgent, displayPaneTitle,
+  // paneTabStatus*, queuedTurnsForAgent, paneWaitsOnOtherPane) that are recreated
+  // each render, so they are intentionally NOT in the dep array. Instead we depend
+  // on the state atoms those helpers read — keep this list in sync when a helper
+  // starts reading new state, or the memo will serve stale workstreams.
+  const homeCascadeWorkstreams = useMemo<HomeCascadeWorkstream[]>(() => {
+    return sidebarPanes.flatMap((pane) => {
+      const agent = agentByPaneId.get(pane.id);
+      if (!agent) {
+        return [];
+      }
+      const group = groupById.get(pane.groupId);
+      const paneDir = agent.worktreeDir || pane.cwd;
+      const branchLabel = agent.branch?.trim() || null;
+      const pathLabel = formatPaneDir(paneDir);
+      const adapterLabel =
+        config?.adapters.find((adapter) => adapter.id === agent.adapter)?.label ??
+        findAgentUiAdapter(agent.adapter)?.label ??
+        agent.adapter;
+      const statusClass = agent.status === "awaitingInput" ? "status-awaiting-input" : "";
+      const turnInfo = turnInfoForAgent(agent);
+      return [
+        {
+          agentId: agent.id,
+          paneId: pane.id,
+          title: displayPaneTitle(pane, agent),
+          groupLabel: group ? displayGroupName(group) : formatPaneDir(pane.cwd),
+          locationLabel: branchLabel ? `${branchLabel} · ${pathLabel}` : pathLabel,
+          adapterLabel,
+          statusTone: paneTabStatusTone(agent),
+          statusClass,
+          statusLabel: paneTabStatusLabel(pane, agent),
+          waitingOnPane: paneWaitsOnOtherPane(agent),
+          latestUserTurn: latestUserTurnText(turnInfo.turns),
+          queuedTurns: (queuedTurnsByAgent[agent.id] ?? []).map((turn) => ({
+            text: turn.text,
+            pauseAfter: turn.pauseAfter,
+            waitForAgentId: turn.waitFor?.agentId ?? null,
+            waitForLabel: turn.waitFor?.label ?? null,
+          })),
+        },
+      ];
+    });
+  }, [
+    agentByPaneId,
+    agentTurnInfoById,
+    config,
+    groupById,
+    queuedTurnsByAgent,
+    sidebarPanes,
+    terminalTitleByPane,
+  ]);
 
   // Load session lists when a pane's right side is visible so transcript pickers are ready.
   useEffect(() => {
@@ -7967,6 +8035,12 @@ export default function App() {
           {homeActive && !launcherOpen ? (
             <div className="terminal-empty-state">
               <div className="home-launcher">{renderLauncher("inline")}</div>
+              <HomeCascades
+                workstreams={homeCascadeWorkstreams}
+                view={homeCascadeView}
+                onViewChange={setHomeCascadeView}
+                onActivatePane={setActivePaneId}
+              />
             </div>
           ) : null}
           {panes.map((pane) => (
