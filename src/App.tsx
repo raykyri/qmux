@@ -4309,6 +4309,18 @@ export default function App() {
 
   async function closePane(paneToClose: PaneInfo): Promise<boolean> {
     setError(null);
+    // Surviving split members are about to be relaid out (the splits normalizer
+    // drops the closed id and their fractions renormalize), so save their
+    // viewports first — mirroring what removePaneFromSplit does for the detach
+    // path — and let the resize restore from a trusted position.
+    const split = paneSplitForPane(paneSplits, paneToClose.id);
+    if (split) {
+      for (const splitPaneId of split.paneIds) {
+        if (splitPaneId !== paneToClose.id) {
+          terminalPaneRefs.current.get(splitPaneId)?.preserveViewport();
+        }
+      }
+    }
     try {
       await killPane(paneToClose.id);
       forgetClosedPane(paneToClose);

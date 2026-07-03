@@ -517,6 +517,20 @@ const RESTORE_SCROLL_IDLE_MS = 750;
 // that nudge the viewport after the synchronous scroll.
 const RESTORE_SCROLL_CATCHUP_DELAYS_MS = [80, 250];
 
+// xterm fires onScroll for user scrolls, but also for scrolls the browser or a
+// relayout inflicts on .xterm-viewport: clamped/zeroed scrollTop while a pane is
+// hidden, revealed, resized, or reflowed comes back through xterm's Viewport as a
+// scrollLines call. Capturing those would overwrite the saved position with
+// layout fallout — and because every restore re-captures, one bad capture becomes
+// permanent (a zeroed viewport restores to the top forever after). So a scroll
+// only updates the saved position when it plausibly reflects user intent: within
+// this window of a wheel/touch/scroll-key gesture on the pane...
+const USER_SCROLL_INTENT_MS = 400;
+// ...or outside a layout-flux window. Flux opens whenever geometry is about to
+// change (visibility flip, split resize, font change, fit) and must outlast the
+// settled-fit cascade (rAF, +50ms, +250ms) plus xterm's async viewport sync.
+const LAYOUT_FLUX_MS = 450;
+
 interface TerminalScrollSnapshot {
   viewportY: number;
   bottomOffset: number;
@@ -544,12 +558,21 @@ function snapshotTerminalScroll(terminal: Terminal): TerminalScrollSnapshot {
 // window, e.g. widening while scrolled far back). Wrapped continuation rows can
 // be merged away by a widening reflow (which would dispose the marker), so
 // anchor to the head row of the wrapped group, which survives.
-function anchorViewportTopMarker(terminal: Terminal): IMarker | null {
-  const buffer = terminal.buffer.active;
-  if (buffer.baseY - buffer.viewportY <= 0) {
+function anchorViewportTopMarker(
+  terminal: Terminal,
+  snapshot: TerminalScrollSnapshot,
+): IMarker | null {
+  if (snapshot.followingBottom) {
     return null; // following the bottom; restores snap to the bottom instead
   }
-  let line = buffer.viewportY;
+  if (snapshot.cols !== terminal.cols) {
+    // The snapshot predates a reflow that was never restored, so its line
+    // indexes don't map onto the current buffer; leave the restore to the
+    // bottom-offset fallback.
+    return null;
+  }
+  const buffer = terminal.buffer.active;
+  let line = Math.min(snapshot.viewportY, buffer.baseY);
   while (line > 0 && buffer.getLine(line)?.isWrapped) {
     line--;
   }
@@ -746,6 +769,16 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     cols: pane.cols,
     followingBottom: true,
   });
+  // Gate for the onScroll capture (see USER_SCROLL_INTENT_MS / LAYOUT_FLUX_MS).
+  const lastUserScrollIntentRef = useRef(0);
+  const layoutFluxUntilRef = useRef(0);
+  // Set when an onScroll capture is rejected: the live viewport no longer matches
+  // the saved position, so restores must come from the snapshot, not live state.
+  const viewportDisturbedRef = useRef(false);
+  // Whether the previous run of the visibility/geometry effect saw this pane
+  // visible and active; focus is taken only on the transition into that state,
+  // not on geometry-only re-runs (which would steal focus from other UI).
+  const wasVisibleActiveRef = useRef(false);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -802,6 +835,15 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       return;
     }
     scrollSnapshotRef.current = snapshotTerminalScroll(terminal);
+    viewportDisturbedRef.current = false;
+  }, []);
+
+  const markUserScrollIntent = useCallback(() => {
+    lastUserScrollIntentRef.current = performance.now();
+  }, []);
+
+  const markLayoutFlux = useCallback(() => {
+    layoutFluxUntilRef.current = performance.now() + LAYOUT_FLUX_MS;
   }, []);
 
   const restoreTerminalViewport = useCallback(
@@ -931,8 +973,15 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (!terminal) {
           return;
         }
-        const snapshot = snapshotTerminalScroll(terminal);
-        scrollSnapshotRef.current = snapshot;
+        // The caller is about to relayout this pane; treat the interval as flux
+        // so layout-driven scrolls don't overwrite the position saved here. If a
+        // rejected scroll already moved the live viewport, keep the saved
+        // snapshot instead of re-reading the disturbed state.
+        markLayoutFlux();
+        if (!viewportDisturbedRef.current) {
+          scrollSnapshotRef.current = snapshotTerminalScroll(terminal);
+        }
+        const snapshot = scrollSnapshotRef.current;
         const restore = () => {
           const currentTerminal = terminalRef.current;
           if (!currentTerminal) {
@@ -946,17 +995,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       },
       write: writeTerminalData,
     }),
-    [restoreTerminalViewport, writeTerminalData],
+    [markLayoutFlux, restoreTerminalViewport, writeTerminalData],
   );
 
   const findNext = () => {
     if (searchTerm) {
+      // Jumping to a match scrolls the viewport at the user's request; mark the
+      // intent so the onScroll guard saves the new position.
+      markUserScrollIntent();
       searchRef.current?.findNext(searchTerm, searchOptions);
     }
   };
 
   const findPrevious = () => {
     if (searchTerm) {
+      markUserScrollIntent();
       searchRef.current?.findPrevious(searchTerm, searchOptions);
     }
   };
@@ -992,8 +1045,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       setSearchResults({ index: -1, count: 0 });
       return;
     }
+    markUserScrollIntent();
     addon.findNext(searchTerm, { ...searchOptions, incremental: true });
-  }, [searchTerm, searchOpen, searchOptions]);
+  }, [searchTerm, searchOpen, searchOptions, markUserScrollIntent]);
 
   // Opening the bar focuses its input; closing it clears highlights and returns
   // focus to the terminal so typing keeps flowing to the PTY.
@@ -1281,8 +1335,15 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           // while invisible can reflow scrollback before the user returns.
           return;
         }
-        const scrollSnapshot = snapshotTerminalScroll(terminal);
-        const anchor = anchorViewportTopMarker(terminal);
+        markLayoutFlux();
+        // When a layout-driven scroll already moved the viewport (rejected by the
+        // onScroll guard), the live position is garbage — restore from the saved
+        // snapshot instead of faithfully preserving the garbage. The content
+        // anchor is placed at the snapshot's position for the same reason.
+        const scrollSnapshot = viewportDisturbedRef.current
+          ? scrollSnapshotRef.current
+          : snapshotTerminalScroll(terminal);
+        const anchor = anchorViewportTopMarker(terminal, scrollSnapshot);
         fit.fit();
         if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
           syncedCols = terminal.cols;
@@ -1297,6 +1358,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (cancelled) {
           return;
         }
+        markLayoutFlux();
         if (resizeFrame !== null) {
           window.cancelAnimationFrame(resizeFrame);
         }
@@ -1353,6 +1415,28 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         onTerminalTitleChangeRef.current?.(pane.id, title);
       });
       const scrollDisposable = terminal.onScroll(() => {
+        // Scrolls that land at the bottom are always safe to capture: they come
+        // from output follow, scrollOnUserInput snaps, or an explicit jump — all
+        // of which mean "follow the bottom" from now on. Anything else is only
+        // trusted near a real user gesture or outside layout flux; layout-driven
+        // scrolls (clamped/zeroed scrollTop translated by xterm's Viewport) are
+        // rejected so they cannot poison the saved position.
+        const buffer = terminal.buffer.active;
+        const atBottom = buffer.baseY - buffer.viewportY <= 0;
+        if (!atBottom) {
+          if (!visibleRef.current) {
+            viewportDisturbedRef.current = true;
+            return;
+          }
+          const now = performance.now();
+          if (
+            now < layoutFluxUntilRef.current &&
+            now - lastUserScrollIntentRef.current > USER_SCROLL_INTENT_MS
+          ) {
+            viewportDisturbedRef.current = true;
+            return;
+          }
+        }
         captureTerminalScroll(terminal);
       });
 
@@ -1609,16 +1693,38 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       // gesture means the user wants to read back — hand scroll control to them by
       // ending the restore window instead of yanking the viewport down again.
       const handleRestoreScrollWheel = (event: WheelEvent) => {
+        markUserScrollIntent();
         if (restoreScrollToBottomPendingRef.current && event.deltaY < 0) {
           cancelRestoreScrollToBottom();
         }
       };
       hostEl.addEventListener("wheel", handleRestoreScrollWheel, { passive: true });
 
+      // Gestures that can scroll the terminal (wheel above, scrollbar drags via
+      // mousedown, touch pans, and xterm's scroll keys) mark user intent so the
+      // onScroll guard accepts the resulting position as the one to save.
+      const handleScrollIntentKey = (event: KeyboardEvent) => {
+        switch (event.key) {
+          case "PageUp":
+          case "PageDown":
+          case "Home":
+          case "End":
+            markUserScrollIntent();
+        }
+      };
+      hostEl.addEventListener("mousedown", markUserScrollIntent, true);
+      hostEl.addEventListener("touchstart", markUserScrollIntent, { passive: true });
+      hostEl.addEventListener("touchmove", markUserScrollIntent, { passive: true });
+      hostEl.addEventListener("keydown", handleScrollIntentKey, true);
+
       return () => {
         hostEl.removeEventListener("paste", handlePaste, true);
         hostEl.removeEventListener("copy", handleCopy, true);
         hostEl.removeEventListener("wheel", handleRestoreScrollWheel);
+        hostEl.removeEventListener("mousedown", markUserScrollIntent, true);
+        hostEl.removeEventListener("touchstart", markUserScrollIntent);
+        hostEl.removeEventListener("touchmove", markUserScrollIntent);
+        hostEl.removeEventListener("keydown", handleScrollIntentKey, true);
         hostEl.removeEventListener("mousemove", handleTerminalMouseMove, true);
         hostEl.removeEventListener("mouseleave", handleTerminalMouseLeave, true);
         hostEl.removeEventListener("mousedown", handleLinkMouseDown, true);
@@ -1684,6 +1790,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     cancelRestoreScrollToBottom,
     captureTerminalScroll,
     restoreTerminalViewport,
+    markLayoutFlux,
+    markUserScrollIntent,
   ]);
 
   // Replay durable scrollback before releasing the backend's pre-attach backlog.
@@ -1719,29 +1827,57 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
   }, [pane.id, requestAttach, startRestoreScrollToBottom, waitForTerminalReady, writeTerminalData]);
 
+  // Re-runs on visibility, activation, and geometry changes (the style prop's
+  // top/height/right move whenever splits change or the transcript expands).
+  // Running as a layout effect matters: it opens the flux window and snapshots
+  // the still-trusted position before the browser processes the new layout and
+  // starts clamping .xterm-viewport's scrollTop.
   useLayoutEffect(() => {
-    const restoreSavedViewport = () => restoreTerminalViewport();
+    markLayoutFlux();
+    const wasVisibleActive = wasVisibleActiveRef.current;
+    wasVisibleActiveRef.current = visible && active;
 
     if (!visible) {
-      captureTerminalScroll();
+      if (!viewportDisturbedRef.current) {
+        captureTerminalScroll();
+      }
       return;
     }
 
     stabilizeTerminalRef.current?.();
-    if (!active) {
-      return;
+    if (active && !wasVisibleActive) {
+      terminalRef.current?.focus();
     }
 
-    terminalRef.current?.focus();
+    // Every visible pane gets its viewport restored — not just the active one; in
+    // a split, the inactive members lose their position just as visibly. The rAF
+    // and settle retries re-pin the position after late layout fallout, which the
+    // onScroll guard keeps from overwriting the snapshot in between.
+    const restoreSavedViewport = () => {
+      markLayoutFlux();
+      restoreTerminalViewport();
+    };
     restoreSavedViewport();
     const frame = requestAnimationFrame(restoreSavedViewport);
     const settle = window.setTimeout(restoreSavedViewport, 80);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
-      captureTerminalScroll();
+      if (!viewportDisturbedRef.current) {
+        captureTerminalScroll();
+      }
     };
-  }, [active, visible, pane.id, captureTerminalScroll, restoreTerminalViewport]);
+  }, [
+    active,
+    visible,
+    pane.id,
+    style?.top,
+    style?.height,
+    style?.right,
+    captureTerminalScroll,
+    restoreTerminalViewport,
+    markLayoutFlux,
+  ]);
 
   // Apply live terminal settings to an already-open terminal, then re-fit when
   // cell metrics change so rows/cols and the PTY size track the new grid.
