@@ -1268,6 +1268,16 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           });
           return false;
         }
+        if (
+          event.type === "keydown" &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !["Alt", "Control", "Meta", "Shift"].includes(event.key)
+        ) {
+          // Plain terminal input can trigger xterm's scrollOnUserInput snap, so
+          // treat any resulting scroll as intentional even during layout flux.
+          markUserScrollIntent();
+        }
         return true;
       });
 
@@ -1415,27 +1425,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         onTerminalTitleChangeRef.current?.(pane.id, title);
       });
       const scrollDisposable = terminal.onScroll(() => {
-        // Scrolls that land at the bottom are always safe to capture: they come
-        // from output follow, scrollOnUserInput snaps, or an explicit jump — all
-        // of which mean "follow the bottom" from now on. Anything else is only
-        // trusted near a real user gesture or outside layout flux; layout-driven
-        // scrolls (clamped/zeroed scrollTop translated by xterm's Viewport) are
-        // rejected so they cannot poison the saved position.
+        // During layout flux, even a scroll that lands at the bottom can be a
+        // browser/xterm clamp from resize or hide/reveal. Trust that only when
+        // the saved position was already following bottom; otherwise require a
+        // recent real gesture/input, or wait until the layout has settled.
         const buffer = terminal.buffer.active;
         const atBottom = buffer.baseY - buffer.viewportY <= 0;
-        if (!atBottom) {
-          if (!visibleRef.current) {
-            viewportDisturbedRef.current = true;
-            return;
-          }
-          const now = performance.now();
-          if (
-            now < layoutFluxUntilRef.current &&
-            now - lastUserScrollIntentRef.current > USER_SCROLL_INTENT_MS
-          ) {
-            viewportDisturbedRef.current = true;
-            return;
-          }
+        const now = performance.now();
+        const recentUserIntent = now - lastUserScrollIntentRef.current <= USER_SCROLL_INTENT_MS;
+        const savedBottomIntent = atBottom && scrollSnapshotRef.current.followingBottom;
+        if (
+          !savedBottomIntent &&
+          (!visibleRef.current || (now < layoutFluxUntilRef.current && !recentUserIntent))
+        ) {
+          viewportDisturbedRef.current = true;
+          return;
         }
         captureTerminalScroll(terminal);
       });
@@ -1655,6 +1659,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         if (!text) {
           return;
         }
+        markUserScrollIntent();
         const bracketed = terminal.modes.bracketedPasteMode;
         const verdict = inspectPaste(text, {
           ...pasteProtectionRef.current,
