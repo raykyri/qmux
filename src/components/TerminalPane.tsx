@@ -4,7 +4,7 @@ import type { ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
-import type { IBufferLine, IBufferRange, ILink, ILinkProvider, ITheme } from "@xterm/xterm";
+import type { IBufferLine, IBufferRange, ILink, ILinkProvider, IMarker, ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
   forwardRef,
@@ -535,6 +535,46 @@ function snapshotTerminalScroll(terminal: Terminal): TerminalScrollSnapshot {
   };
 }
 
+// Pin the viewport's top line with a content-tracking marker before a fit.
+// xterm markers follow their buffer line across reflow and scrollback trims, so
+// scrolling back to the marker after fit() shows the same content even when a
+// width change rewraps everything above the viewport — the row-offset math in
+// restoreTerminalViewport is only an approximation in that case (and clamps to
+// the top when the viewport sits above the reflowed buffer's bottom-offset
+// window, e.g. widening while scrolled far back). Wrapped continuation rows can
+// be merged away by a widening reflow (which would dispose the marker), so
+// anchor to the head row of the wrapped group, which survives.
+function anchorViewportTopMarker(terminal: Terminal): IMarker | null {
+  const buffer = terminal.buffer.active;
+  if (buffer.baseY - buffer.viewportY <= 0) {
+    return null; // following the bottom; restores snap to the bottom instead
+  }
+  let line = buffer.viewportY;
+  while (line > 0 && buffer.getLine(line)?.isWrapped) {
+    line--;
+  }
+  return terminal.registerMarker(line - (buffer.baseY + buffer.cursorY)) ?? null;
+}
+
+// Programmatic viewport restores must land instantly. With a nonzero
+// smoothScrollDuration, xterm's scrollToLine/scrollToBottom animate the DOM
+// viewport from its current (possibly stale, mid-reflow) scrollTop instead of
+// setting the buffer position directly, so a restore can settle on the wrong
+// line — the snapshot taken right after would then persist that wrong position.
+function scrollTerminalInstantly(terminal: Terminal, scroll: () => void) {
+  const smoothScrollDuration = terminal.options.smoothScrollDuration;
+  if (smoothScrollDuration) {
+    terminal.options.smoothScrollDuration = 0;
+  }
+  try {
+    scroll();
+  } finally {
+    if (smoothScrollDuration) {
+      terminal.options.smoothScrollDuration = smoothScrollDuration;
+    }
+  }
+}
+
 // Colors for search highlights, tuned to read against the terminal background.
 // The overview-ruler colors are required by the addon's types even though qmux
 // does not render a ruler.
@@ -768,20 +808,27 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     (
       snapshot: TerminalScrollSnapshot = scrollSnapshotRef.current,
       terminal: Terminal | null = terminalRef.current,
+      anchor: IMarker | null = null,
     ) => {
       if (!terminal) {
         return;
       }
       if (restoreScrollToBottomPendingRef.current || snapshot.followingBottom) {
-        terminal.scrollToBottom();
+        scrollTerminalInstantly(terminal, () => terminal.scrollToBottom());
       } else {
         const currentBaseY = terminal.buffer.active.baseY;
-        const targetViewportY =
-          terminal.cols === snapshot.cols
-            ? snapshot.viewportY
-            : currentBaseY - snapshot.bottomOffset;
+        let targetViewportY: number;
+        if (terminal.cols === snapshot.cols) {
+          targetViewportY = snapshot.viewportY;
+        } else if (anchor && !anchor.isDisposed && anchor.line >= 0) {
+          // A reflow changed line indexes; the marker tracked the content that
+          // was at the top of the viewport, so follow it.
+          targetViewportY = anchor.line;
+        } else {
+          targetViewportY = currentBaseY - snapshot.bottomOffset;
+        }
         const targetLine = Math.max(0, Math.min(targetViewportY, currentBaseY));
-        terminal.scrollToLine(targetLine);
+        scrollTerminalInstantly(terminal, () => terminal.scrollToLine(targetLine));
       }
       captureTerminalScroll(terminal);
     },
@@ -793,7 +840,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     if (!terminal) {
       return;
     }
-    terminal.scrollToBottom();
+    scrollTerminalInstantly(terminal, () => terminal.scrollToBottom());
     captureTerminalScroll(terminal);
   }, [captureTerminalScroll]);
 
@@ -1235,13 +1282,15 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           return;
         }
         const scrollSnapshot = snapshotTerminalScroll(terminal);
+        const anchor = anchorViewportTopMarker(terminal);
         fit.fit();
         if (terminal.cols !== syncedCols || terminal.rows !== syncedRows) {
           syncedCols = terminal.cols;
           syncedRows = terminal.rows;
           void resizePane(pane.id, terminal.cols, terminal.rows);
         }
-        restoreTerminalViewport(scrollSnapshot, terminal);
+        restoreTerminalViewport(scrollSnapshot, terminal, anchor);
+        anchor?.dispose();
         refreshTerminal();
       };
       const scheduleFit = () => {
