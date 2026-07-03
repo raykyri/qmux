@@ -3020,10 +3020,13 @@ export default function App() {
     }
     const top = activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0);
     const height = activeSplitFractions[index] ?? 0;
+    // Keep reserving the inline turn-pane width while the transcript is expanded:
+    // the expanded overlay covers the whole stage, so the reserved strip is
+    // invisible, and holding terminal geometry constant means expand/collapse
+    // never resizes the PTY. A resize would SIGWINCH full-screen TUIs (Claude
+    // Code clears and re-lays-out on every resize), losing their scroll position.
     const reservesInlineTurnPane =
-      !rightBarCollapsed &&
-      !activeTranscriptVisibleExpanded &&
-      splitTurnPaneSurfaceByPaneId.has(paneId);
+      !rightBarCollapsed && splitTurnPaneSurfaceByPaneId.has(paneId);
     return {
       top: `${top * 100}%`,
       bottom: "auto",
