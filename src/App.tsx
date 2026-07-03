@@ -466,6 +466,17 @@ function focusConfirmDialogButton(button: HTMLButtonElement | null, force = fals
   }
 }
 
+function scrollChildIntoViewVertically(container: HTMLElement, child: HTMLElement) {
+  const containerRect = container.getBoundingClientRect();
+  const childRect = child.getBoundingClientRect();
+
+  if (childRect.top < containerRect.top) {
+    container.scrollTop -= containerRect.top - childRect.top;
+  } else if (childRect.bottom > containerRect.bottom) {
+    container.scrollTop += childRect.bottom - containerRect.bottom;
+  }
+}
+
 function unknownErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -3305,6 +3316,26 @@ export default function App() {
     }
   }, [activePaneId, panes]);
 
+  useLayoutEffect(() => {
+    if (!activePaneId) {
+      return;
+    }
+    const paneList = paneListRef.current;
+    if (!paneList) {
+      return;
+    }
+
+    const selectedRow = Array.from(paneList.querySelectorAll<HTMLElement>(".pane-tab-row")).find(
+      (row) =>
+        activePaneId === HOME_TAB_ID
+          ? row.dataset.homeTab === "true"
+          : row.dataset.paneId === activePaneId,
+    );
+    if (selectedRow) {
+      scrollChildIntoViewVertically(paneList, selectedRow);
+    }
+  }, [activePaneId]);
+
   useEffect(() => {
     const handleFocus = () => acknowledgePaneIfDone(activePaneId);
     window.addEventListener("focus", handleFocus);
@@ -6021,6 +6052,7 @@ export default function App() {
       <div
         key={pane.id}
         className={className}
+        data-pane-id={pane.id}
         data-group-id={groupId}
         style={{ "--pane-depth": pane.depth ?? 0 } as CSSProperties}
         onContextMenu={(event) => openPaneContextMenu(event, pane)}
@@ -6431,6 +6463,7 @@ export default function App() {
               nested. Selecting it shows the empty content placeholder (the launcher). */}
           <div
             className={`pane-tab-row pane-home-row${homeActive ? " is-selected" : ""}`}
+            data-home-tab="true"
             onClick={() => setActivePaneId(HOME_TAB_ID)}
           >
             <button
