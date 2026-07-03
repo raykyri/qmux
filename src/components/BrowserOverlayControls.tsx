@@ -15,7 +15,7 @@ export default function BrowserOverlayControls({
   onToggle,
   onRefresh,
 }: BrowserOverlayControlsProps) {
-  const toggleTitle = `${open ? "Hide browser" : "Show browser"} (${shortcutLabel})`;
+  const toggleTitle = open ? "Hide browser (Esc)" : `Show browser (${shortcutLabel})`;
 
   return (
     <div className="browser-overlay-controls">

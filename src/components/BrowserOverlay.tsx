@@ -147,8 +147,8 @@ export default function BrowserOverlay({
     ? { width: `${size.width}px`, height: `${size.height}px` }
     : undefined;
   const closeTitle = toggleShortcutLabel
-    ? `Hide browser (${toggleShortcutLabel})`
-    : "Hide browser";
+    ? `Hide browser (Esc, ${toggleShortcutLabel})`
+    : "Hide browser (Esc)";
 
   return (
     <div

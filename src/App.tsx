@@ -4857,9 +4857,6 @@ export default function App() {
       if (event.key !== "Escape") {
         return;
       }
-      if (isTerminalTarget(event.target) || isTerminalTarget(document.activeElement)) {
-        return;
-      }
 
       const pane = activePaneRef.current;
       const browserOpen = pane ? browserOverlayByPaneRef.current[pane.id]?.open === true : false;
