@@ -3193,6 +3193,25 @@ export default function App() {
     };
   }
 
+  // Anchor the floating browser toggle to the active pane's own rectangle in a
+  // split, so it doesn't sit over the top pane (or shift with the app-level
+  // --turn-pane-width) when a lower pane is focused. The horizontal offset only
+  // reserves the inline turn-pane width when the active pane itself has one.
+  function floatingBrowserControlsStyle(): CSSProperties | undefined {
+    if (!activePaneSplit || !activePane) {
+      return undefined;
+    }
+    const index = activePaneSplit.paneIds.indexOf(activePane.id);
+    if (index <= 0) {
+      return undefined;
+    }
+    const top = activeSplitFractions.slice(0, index).reduce((sum, value) => sum + value, 0);
+    return {
+      top: `calc(${top * 100}% + 8px)`,
+      right: "calc(var(--turn-pane-width, 0px) + 12px)",
+    };
+  }
+
   function terminalSplitDropPlaceholderStyle(): CSSProperties | undefined {
     if (paneDropTarget?.kind !== "terminal-split") {
       return undefined;
@@ -8194,6 +8213,19 @@ export default function App() {
                 />
               ))
             : null}
+          {/* The floating toggle sits over the active pane only when that pane has
+              no visible right-pane header; otherwise the toggle lives in that
+              header. It is anchored inside the stage so a split can place it at
+              the focused pane's own top edge. */}
+          {showFloatingBrowserControls ? (
+            <BrowserOverlayControls
+              open={false}
+              shortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
+              style={floatingBrowserControlsStyle()}
+              onToggle={toggleActiveBrowserOverlay}
+              onRefresh={refreshActiveBrowserOverlay}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -8225,17 +8257,6 @@ export default function App() {
           onResize={(size) => setBrowserOverlaySize(activePane.id, size)}
         />
       ) : null}
-      {/* The floating toggle sits over the terminal only when the active tab has no
-          visible right-pane header; otherwise the toggle lives in that header. */}
-      {showFloatingBrowserControls ? (
-        <BrowserOverlayControls
-          open={false}
-          shortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
-          onToggle={toggleActiveBrowserOverlay}
-          onRefresh={refreshActiveBrowserOverlay}
-        />
-      ) : null}
-
       {linkMenu ? (
         <LinkContextMenu
           x={linkMenu.x}

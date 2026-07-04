@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { Globe, RotateCw, X } from "lucide-react";
 
 // Floating controls pinned to the top-right of the terminal (and of the browser when
@@ -5,6 +6,7 @@ import { Globe, RotateCw, X } from "lucide-react";
 interface BrowserOverlayControlsProps {
   open: boolean;
   shortcutLabel: string;
+  style?: CSSProperties;
   onToggle: () => void;
   onRefresh: () => void;
 }
@@ -12,13 +14,14 @@ interface BrowserOverlayControlsProps {
 export default function BrowserOverlayControls({
   open,
   shortcutLabel,
+  style,
   onToggle,
   onRefresh,
 }: BrowserOverlayControlsProps) {
   const toggleTitle = open ? "Hide browser (Esc)" : `Show browser (${shortcutLabel})`;
 
   return (
-    <div className="browser-overlay-controls">
+    <div className="browser-overlay-controls" style={style}>
       {open ? (
         <button
           type="button"
