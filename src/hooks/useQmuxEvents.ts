@@ -6,7 +6,6 @@ import {
   isQueuedTurn,
   isTurn,
   ptyDataFromPayload,
-  selectPaneAfterClose,
   transcriptHookEvent,
   upsertAgent,
 } from "../lib/appHelpers";
@@ -42,6 +41,10 @@ export interface UseQmuxEventsHandlers {
   // Binds a browser-overlay URL to a pane (the backend emits the fully-formed URL).
   // `sandbox` marks token-bearing file-server URLs so the iframe is sandboxed.
   openBrowserOverlay: (paneId: string, url: string, sandbox?: boolean) => void;
+  // Picks the next active pane when a pane closes, honoring split membership and
+  // collapsed groups. Supplied by App so the pty.exit path selects consistently with
+  // the user-initiated close path (forgetClosedPane).
+  selectPaneAfterClose: (panes: PaneInfo[], closedPaneId: string) => string | null;
   // Fired once the single backend subscription is live, so panes can safely flush
   // their pre-attach output backlog (attachPane) without dropping cold-start bytes.
   onEventsReady: () => void;
@@ -79,6 +82,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     refreshTranscriptOptions,
     dispatchPtyData,
     openBrowserOverlay,
+    selectPaneAfterClose: selectPaneAfterCloseWithContext,
     onEventsReady,
     onAgentSpawned,
     onAgentPromptSubmitted,
@@ -122,7 +126,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
             if (currentActivePaneId !== exitedPaneId) {
               return currentActivePaneId;
             }
-            return selectPaneAfterClose(current, exitedPaneId);
+            return selectPaneAfterCloseWithContext(current, exitedPaneId);
           });
           return nextPanes;
         });

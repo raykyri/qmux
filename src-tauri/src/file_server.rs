@@ -85,6 +85,7 @@ struct RequestHead {
     method: String,
     target: String,
     range: Option<String>,
+    host: Option<String>,
 }
 
 struct Response {
@@ -140,6 +141,7 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
     let target = parts.next()?.to_string();
 
     let mut range = None;
+    let mut host = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).ok()? == 0 {
@@ -149,10 +151,13 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
         if trimmed.is_empty() {
             break;
         }
-        if let Some((name, value)) = trimmed.split_once(':')
-            && name.trim().eq_ignore_ascii_case("range")
-        {
-            range = Some(value.trim().to_string());
+        if let Some((name, value)) = trimmed.split_once(':') {
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("range") {
+                range = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("host") {
+                host = Some(value.trim().to_string());
+            }
         }
     }
 
@@ -160,10 +165,45 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
         method,
         target,
         range,
+        host,
     })
 }
 
+/// Whether a `Host` header names a loopback address. A DNS-rebinding attack from a
+/// remote page reaches the loopback port with the *attacker's* hostname in `Host`,
+/// so rejecting a non-loopback host is cheap defense-in-depth on top of the token.
+/// Legit overlay/curl requests use `127.0.0.1:<port>` or `localhost:<port>`.
+fn is_loopback_host_header(host: &str) -> bool {
+    // Strip the port, honoring the [ipv6]:port bracket form.
+    let host = if let Some(after_bracket) = host.strip_prefix('[') {
+        match after_bracket.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(v4) = host.parse::<Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        return v6.is_loopback();
+    }
+    false
+}
+
 fn build_response(state: &AppState, head: &RequestHead) -> Response {
+    // Reject a non-loopback Host (DNS-rebinding defense-in-depth). A missing Host
+    // (e.g. a bare HTTP/1.0 client) is allowed — the per-pane token still gates access
+    // — but a browser rebinding attack always carries the attacker's hostname here.
+    if let Some(host) = &head.host
+        && !is_loopback_host_header(host)
+    {
+        return Response::error(403, "Forbidden");
+    }
     if head.method != "GET" && head.method != "HEAD" {
         return Response::error(405, "Method Not Allowed");
     }
@@ -415,6 +455,22 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_host_header_accepts_loopback_and_rejects_remote() {
+        assert!(is_loopback_host_header("127.0.0.1:5173"));
+        assert!(is_loopback_host_header("localhost:5173"));
+        assert!(is_loopback_host_header("127.0.0.1"));
+        assert!(is_loopback_host_header("LOCALHOST"));
+        assert!(is_loopback_host_header("[::1]:5173"));
+        assert!(is_loopback_host_header("127.9.9.9"));
+
+        assert!(!is_loopback_host_header("evil.com"));
+        assert!(!is_loopback_host_header("evil.com:5173"));
+        assert!(!is_loopback_host_header("127.0.0.1.evil.com"));
+        assert!(!is_loopback_host_header("0.0.0.0"));
+        assert!(!is_loopback_host_header("192.168.1.5:5173"));
+    }
 
     #[test]
     fn percent_round_trips_paths_with_spaces_and_specials() {

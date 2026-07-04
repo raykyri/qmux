@@ -904,8 +904,28 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         eprintln!("qmux: failed to capture closed pane {pane_id}: {err}");
     }
     if let Err(err) = kill_child(&pane_id, child) {
-        state.clear_last_closed_pane_for_pane(&pane_id);
-        return Err(err);
+        // The kill couldn't confirm the child dead. If it has since exited — it may
+        // have died from the group SIGTERM just after kill_child gave up — reap and
+        // reclaim the pane now instead of stranding it in the model. Otherwise leave
+        // it in place: the reader thread's EOF path reaps the still-live process when
+        // it finally exits, and removing it here would drop the child handle and orphan
+        // a zombie.
+        let exited = state
+            .pane_child(&pane_id)
+            .ok()
+            .flatten()
+            .and_then(|child| {
+                child
+                    .lock()
+                    .ok()
+                    .and_then(|mut child| child.try_wait().ok().flatten())
+            })
+            .is_some();
+        if !exited {
+            state.clear_last_closed_pane_for_pane(&pane_id);
+            return Err(err);
+        }
+        eprintln!("qmux: kill for pane {pane_id} errored but the child has exited; reclaiming: {err}");
     }
     state.remove_pane(&pane_id)?;
     if let Some(agent_id) = pane_agent_id
@@ -938,6 +958,10 @@ pub fn kill_all_panes(state: &AppState) {
         if let Err(err) = kill_child(&pane_id, child) {
             eprintln!("qmux: failed to kill pane {pane_id} on exit: {err}");
         }
+        // The reader-thread EOF path that normally removes these dirs won't run once
+        // the process is exiting, so clean them up here instead of leaking them into
+        // /tmp until the OS clears it.
+        remove_shell_integration_dir(&pane_id);
     }
 }
 

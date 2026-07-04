@@ -1006,7 +1006,16 @@ struct TranscriptRead {
 fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptRead> {
     let mut file = fs::File::open(path)?;
     let len = file.metadata()?.len();
-    if len < offset {
+    // A shrink below `offset` is an obvious truncation/rewrite. An in-place rewrite to
+    // the same-or-greater length is subtler: `offset` is always a newline boundary, so
+    // if the byte just before it is no longer '\n', the bytes up to `offset` changed and
+    // appending from here would splice new content onto a stale timeline. Rebuild in
+    // both cases. (This catches the common rewrite where line boundaries shift; a rewrite
+    // that happens to keep a newline at exactly `offset - 1` still reads as an append.)
+    let rewritten_in_place =
+        offset > 0 && len >= offset && !byte_before_is_newline(&mut file, offset)?;
+    if len < offset || rewritten_in_place {
+        file.seek(SeekFrom::Start(0))?;
         let (data, consumed_bytes) = read_complete_lines_utf8(&mut file)?;
         return Ok(TranscriptRead {
             data,
@@ -1023,6 +1032,15 @@ fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptR
         consumed_bytes,
         reset: false,
     })
+}
+
+/// Reads the single byte at `offset - 1` to check the tail offset still lands just
+/// after a newline. Caller guarantees `0 < offset <= len`, so the byte exists.
+fn byte_before_is_newline(file: &mut fs::File, offset: u64) -> std::io::Result<bool> {
+    file.seek(SeekFrom::Start(offset - 1))?;
+    let mut byte = [0u8; 1];
+    file.read_exact(&mut byte)?;
+    Ok(byte[0] == b'\n')
 }
 
 /// Reads from the file's current position to EOF and returns the longest prefix that
@@ -1304,6 +1322,34 @@ mod tests {
         let next = read_transcript_from(&path, read.consumed_bytes).unwrap();
         assert!(!next.reset);
         assert_eq!(next.data, "");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_resets_when_an_in_place_rewrite_moves_the_last_newline() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-rewrite-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+
+        fs::write(&path, "aa\nbb\n").unwrap(); // 6 bytes, trailing newline at offset 5
+        let first = read_transcript_from(&path, 0).unwrap();
+        assert!(!first.reset);
+        assert_eq!(first.consumed_bytes, 6);
+
+        // Rewritten in place to the same length, but the byte before offset 6 is no
+        // longer '\n' — the content up to the offset changed. Appending would splice new
+        // bytes onto a stale timeline, so this must be detected as a reset and rebuilt.
+        fs::write(&path, "wxyz\nQ").unwrap(); // 6 bytes, newline now at offset 4
+        let second = read_transcript_from(&path, first.consumed_bytes).unwrap();
+        assert!(second.reset);
+        assert_eq!(second.data, "wxyz\n");
 
         fs::remove_dir_all(&dir).ok();
     }

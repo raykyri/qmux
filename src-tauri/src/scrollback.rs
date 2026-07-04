@@ -109,12 +109,30 @@ fn trim_scrollback_file(path: &Path) -> Result<(), String> {
     // global scrollback I/O lock, so the temp name can't collide with a concurrent
     // trim of the same file.
     let tmp = path.with_extension(format!("trim.{}.tmp", std::process::id()));
-    fs::write(&tmp, &tail)
+    // fsync the temp before the rename (and the dir after) so a power loss can't order
+    // the rename ahead of the data and surface a zero-length or stale scrollback.
+    write_synced(&tmp, &tail)
         .map_err(|err| format!("failed to write scrollback temp {}: {err}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|err| {
         let _ = fs::remove_file(&tmp);
         format!("failed to commit scrollback {}: {err}", path.display())
-    })
+    })?;
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to `path` and fsyncs the file before returning, so its contents are
+/// durable before the caller renames it into place.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn pane_scrollback_path(workspace_root: &Path, pane_id: &str) -> Result<PathBuf, String> {

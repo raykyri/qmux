@@ -379,12 +379,14 @@ pub fn mark_agent_spawn_failed(
 pub fn mark_agent_failed(state: &AppState, agent_id: &str) -> Result<AgentInfo, String> {
     // No release of waiters here, by design: a failed target keeps its waiters blocked
     // (see `mark_agent_spawn_failed` and `queued_turn_wait_is_resolved_locked`).
-    let mut agent = state
-        .agent(agent_id)?
-        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
-    agent.status = AgentStatus::Failed;
-    state.update_agent(agent.clone())?;
-    Ok(agent)
+    // Field-scoped write (only status): a full-struct `update_agent` drops the lock
+    // between read and write and could clobber a concurrent SessionStart hook's
+    // session_id/transcript_path, leaving the session unresumable.
+    state
+        .mutate_agent(agent_id, |agent| {
+            agent.status = AgentStatus::Failed;
+        })?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))
 }
 
 pub fn acknowledge_agent(
@@ -392,14 +394,31 @@ pub fn acknowledge_agent(
     agent_id: &str,
     include_failed: bool,
 ) -> Result<AgentInfo, String> {
-    let mut agent = state
+    // Only acknowledge a Done/Failed agent, so an unrelated snapshot doesn't trigger a
+    // no-op persist. Re-check the status inside the field-scoped mutation so the write
+    // is atomic and can't clobber a concurrent hook's session fields (cf.
+    // `mark_agent_failed`).
+    let snapshot = state
         .agent(agent_id)?
         .ok_or_else(|| format!("agent {agent_id} was not found"))?;
-    if matches!(agent.status, AgentStatus::Done)
-        || (include_failed && matches!(agent.status, AgentStatus::Failed))
-    {
-        agent.status = AgentStatus::Idle;
-        state.update_agent(agent.clone())?;
+    let should_ack = matches!(snapshot.status, AgentStatus::Done)
+        || (include_failed && matches!(snapshot.status, AgentStatus::Failed));
+    if !should_ack {
+        return Ok(snapshot);
+    }
+
+    let acked = std::cell::Cell::new(false);
+    let agent = state
+        .mutate_agent(agent_id, |agent| {
+            if matches!(agent.status, AgentStatus::Done)
+                || (include_failed && matches!(agent.status, AgentStatus::Failed))
+            {
+                agent.status = AgentStatus::Idle;
+                acked.set(true);
+            }
+        })?
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    if acked.get() {
         state.emit(crate::events::QmuxEvent::new(
             "agent.acknowledged",
             agent.pane_id.clone(),

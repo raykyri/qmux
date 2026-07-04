@@ -967,6 +967,9 @@ fn main() {
             // descendants don't survive as orphans past quit.
             tauri::RunEvent::Exit => {
                 pty::kill_all_panes(&exit_state);
+                // Reclaim the control socket on a clean exit rather than leaving the
+                // file for the next launch's stale-socket cleanup.
+                let _ = std::fs::remove_file(&exit_state.config().socket_path);
             }
             _ => {}
         });

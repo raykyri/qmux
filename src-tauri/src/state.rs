@@ -660,27 +660,36 @@ impl AppState {
             .find_map(|(pane_id, pane_token)| (pane_token == token).then(|| pane_id.clone()))
     }
 
-    /// Roots a `browser.open` from a specific pane may reach: the workspace root, that
-    /// pane's own working directory, and (if it has one) its agent's worktree — not the
-    /// union of every pane's cwd. This keeps one pane from opening files under another
-    /// pane's directory, so an in-pane process can only render files within its own
-    /// working area.
+    /// Roots a `browser.open` from a specific pane may reach. A known pane is scoped
+    /// strictly to its own working area — its group directory, its cwd, and (if any) its
+    /// agent's worktree — and deliberately *not* the whole workspace root. The workspace
+    /// root holds every group's directory, all transcripts, hook settings and
+    /// `.qmux/state.json`, so serving it to every pane would let one pane's file token
+    /// render another agent's private files. (Same-group panes intentionally share a
+    /// group directory.)
+    ///
+    /// A pane that isn't in the model falls back to the workspace root. This is inert for
+    /// real requests: no live file token resolves to an out-of-model pane
+    /// (`remove_pane` reclaims the token, and `pane_for_file_token` 404s a stale one
+    /// before roots are consulted), so the fallback only keeps a synthetic lookup from
+    /// returning nothing.
     pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
-        let mut roots = vec![self.inner.config.workspace_root.clone()];
-        if let Ok(model) = self.inner.model.lock() {
-            if let Some(pane) = model.panes.get(pane_id) {
-                if let Some(group) = model.groups.get(&pane.info.group_id) {
-                    roots.push(std::path::PathBuf::from(&group.dir));
-                }
-                roots.push(std::path::PathBuf::from(&pane.info.cwd));
+        if let Ok(model) = self.inner.model.lock()
+            && let Some(pane) = model.panes.get(pane_id)
+        {
+            let mut roots = Vec::new();
+            if let Some(group) = model.groups.get(&pane.info.group_id) {
+                roots.push(std::path::PathBuf::from(&group.dir));
             }
+            roots.push(std::path::PathBuf::from(&pane.info.cwd));
             for agent in model.agents.values() {
                 if agent.pane_id.as_deref() == Some(pane_id) {
                     roots.push(std::path::PathBuf::from(&agent.worktree_dir));
                 }
             }
+            return roots;
         }
-        roots
+        vec![self.inner.config.workspace_root.clone()]
     }
 
     pub fn config(&self) -> &QmuxConfig {
@@ -790,7 +799,9 @@ impl AppState {
                     .push_front(turn);
             }
             for (agent_id, draft) in persisted.drafts {
-                if !draft.trim().is_empty() {
+                // Drop drafts whose agent no longer exists so dead entries don't
+                // accumulate in state.json across restarts. (Agents are hydrated above.)
+                if !draft.trim().is_empty() && model.agents.contains_key(&agent_id) {
                     model.agent_drafts.insert(agent_id, draft);
                 }
             }
@@ -5548,10 +5559,13 @@ mod tests {
         let workspace = temp_workspace();
         let config = test_config(workspace.clone());
 
-        // First process: stash a draft for one agent.
+        // First process: stash a draft for one agent. The agent must exist so the draft
+        // survives restore's orphaned-draft pruning (a real draft always has a live
+        // agent — the frontend only drafts for agents it knows about).
         {
             let state = AppState::new(config.clone());
             assert!(state.restore_session().is_empty());
+            state.insert_agent(sample_agent("agent-1")).unwrap();
             state
                 .set_agent_draft("agent-1", "half-written thought".to_string())
                 .unwrap();

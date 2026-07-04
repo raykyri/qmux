@@ -1260,6 +1260,22 @@ export default function App() {
     [visibleTerminalPaneIds],
   );
   const groupById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
+  // Kept current so callbacks captured once (e.g. the events hook's first-render
+  // capture) can still read the latest group collapse state through the ref.
+  const groupByIdRef = useRef(groupById);
+  groupByIdRef.current = groupById;
+  // Picks the next active pane after one closes, honoring split membership and skipping
+  // collapsed groups — the same rules forgetClosedPane uses. Stable + ref-backed so the
+  // pty.exit handler (captured once by useQmuxEvents) selects consistently with the
+  // user-initiated close path.
+  const selectPaneAfterCloseWithContext = useCallback(
+    (panesForSelection: PaneInfo[], closedPaneId: string) =>
+      selectPaneAfterClose(panesForSelection, closedPaneId, paneSplitsRef.current, {
+        isPaneInCollapsedGroup: (pane) =>
+          groupByIdRef.current.get(pane.groupId)?.collapsed === true,
+      }),
+    [],
+  );
   const sidebarPanes = useMemo(() => {
     const grouped = groups.flatMap((group) => panes.filter((pane) => pane.groupId === group.id));
     const groupedIds = new Set(grouped.map((pane) => pane.id));
@@ -3563,6 +3579,7 @@ export default function App() {
     refreshTranscriptOptions,
     dispatchPtyData,
     openBrowserOverlay,
+    selectPaneAfterClose: selectPaneAfterCloseWithContext,
     onEventsReady: handleEventsReady,
     onAgentSpawned: registerShellCodexFirstMessageTitle,
     onAgentPromptSubmitted: handleAgentPromptSubmitted,
@@ -4436,10 +4453,7 @@ export default function App() {
         if (currentActivePaneId !== paneToClose.id) {
           return currentActivePaneId;
         }
-        return selectPaneAfterClose(current, paneToClose.id, paneSplits, {
-          isPaneInCollapsedGroup: (pane) =>
-            groupById.get(pane.groupId)?.collapsed === true,
-        });
+        return selectPaneAfterCloseWithContext(current, paneToClose.id);
       });
       return nextPanes;
     });
@@ -4931,6 +4945,36 @@ export default function App() {
   function handleTerminalSelectionCopied() {
     showAppToast("Selection copied");
   }
+
+  // Stable prop identities for TerminalPane's handlers. The impls above are plain
+  // functions that close over fresh state / unstable helpers, so passing them directly
+  // gives a new identity every render and defeats TerminalPane's React.memo — making
+  // every mounted pane reconcile on unrelated App re-renders (composer keystrokes,
+  // streaming events). TerminalPane already ref-forwards these internally, so routing
+  // through a latest-ref wrapper is behavior-neutral; it just lets the memo hold.
+  const terminalHandlersRef = useRef({
+    noteUserInput,
+    handleTerminalAskSelection,
+    handleTerminalSelectionCopied,
+  });
+  terminalHandlersRef.current = {
+    noteUserInput,
+    handleTerminalAskSelection,
+    handleTerminalSelectionCopied,
+  };
+  const stableNoteUserInput = useCallback(
+    (agentId: string) => terminalHandlersRef.current.noteUserInput(agentId),
+    [],
+  );
+  const stableHandleTerminalAskSelection = useCallback(
+    (paneId: string, quote: string, anchor: SelectionAnchor) =>
+      terminalHandlersRef.current.handleTerminalAskSelection(paneId, quote, anchor),
+    [],
+  );
+  const stableHandleTerminalSelectionCopied = useCallback(
+    () => terminalHandlersRef.current.handleTerminalSelectionCopied(),
+    [],
+  );
   function openAskLauncher(mode: "ask" | "newThread") {
     const selection = selectionAsk;
     if (!selection) {
@@ -6570,7 +6614,7 @@ export default function App() {
                   }
                   applyPendingFirstMessageTitle(agentId, text);
                 }}
-                onUserInput={noteUserInput}
+                onUserInput={stableNoteUserInput}
                 getQueueScroll={getQueueScroll}
                 saveQueueScroll={saveQueueScroll}
                 onError={setError}
@@ -8067,11 +8111,11 @@ export default function App() {
               pasteProtection={pasteProtection}
               inputBlocked={settingsOpen}
               requestAttach={requestPaneAttach}
-              onUserInput={noteUserInput}
+              onUserInput={stableNoteUserInput}
               onOpenLink={openPaneLink}
               onLinkContextMenu={openPaneLinkMenu}
-              onAskSelection={handleTerminalAskSelection}
-              onSelectionCopied={handleTerminalSelectionCopied}
+              onAskSelection={stableHandleTerminalAskSelection}
+              onSelectionCopied={stableHandleTerminalSelectionCopied}
               onTerminalTitleChange={handleTerminalTitleChange}
               onActivate={activateTerminalPane}
             />
