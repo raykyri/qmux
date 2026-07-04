@@ -309,8 +309,10 @@ export function agentStatusLabel(status: AgentInfo["status"]) {
   }
 }
 
+export type AgentStatusTone = "active" | "pending" | "attention" | "done" | "error" | "idle";
+
 // Maps an agent status onto the status-dot tones used by the pane detail popover.
-export function agentStatusTone(status: AgentInfo["status"]) {
+export function agentStatusTone(status: AgentInfo["status"]): AgentStatusTone {
   switch (status) {
     case "running":
       return "active";

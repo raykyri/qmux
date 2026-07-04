@@ -64,10 +64,7 @@ import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
 import BrowserOverlayControls from "./components/BrowserOverlayControls";
 import HomeCascades from "./components/HomeCascades";
-import type {
-  HomeCascadeView,
-  HomeCascadeWorkstream,
-} from "./components/HomeCascades";
+import type { HomeCascadeWorkstream } from "./components/HomeCascades";
 import LinkContextMenu from "./components/LinkContextMenu";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -1196,7 +1193,6 @@ export default function App() {
     Record<string, boolean>
   >({});
   const [rightBarCollapsed, setRightBarCollapsed] = useState(false);
-  const [homeCascadeView, setHomeCascadeView] = useState<HomeCascadeView>("lanes");
   const [queueSplitByAgent, setQueueSplitByAgent] = useState<Record<string, boolean>>({});
   const [queueSplitHeightByAgent, setQueueSplitHeightByAgent] = useState<Record<string, number>>(
     {},
@@ -1404,7 +1400,7 @@ export default function App() {
   }
 
   function paneTabStatusTone(agent: AgentInfo | undefined): MenuBarStatusTone {
-    return agent ? (agentStatusTone(agent.status) as MenuBarStatusTone) : "idle";
+    return agent ? agentStatusTone(agent.status) : "idle";
   }
 
   function paneTabStatusLabel(pane: PaneInfo, agent: AgentInfo | undefined): string | null {
@@ -8121,8 +8117,6 @@ export default function App() {
               <div className="home-launcher">{renderLauncher("inline")}</div>
               <HomeCascades
                 workstreams={homeCascadeWorkstreams}
-                view={homeCascadeView}
-                onViewChange={setHomeCascadeView}
                 onActivatePane={setActivePaneId}
               />
             </div>

@@ -4,10 +4,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-
-export type HomeCascadeView = "lanes" | "columns";
+import type { AgentStatusTone } from "../lib/appHelpers";
 
 export interface HomeCascadeQueuedTurn {
   text: string;
@@ -20,7 +20,7 @@ export interface HomeCascadeWorkstream {
   agentId: string;
   paneId: string;
   title: string;
-  statusTone: string;
+  statusTone: AgentStatusTone;
   statusClass: string;
   waitingOnPane: boolean;
   latestUserTurn: string | null;
@@ -29,23 +29,31 @@ export interface HomeCascadeWorkstream {
 
 interface HomeCascadesProps {
   workstreams: HomeCascadeWorkstream[];
-  view: HomeCascadeView;
-  onViewChange: (view: HomeCascadeView) => void;
   onActivatePane: (paneId: string) => void;
 }
 
-type LinkKind = "seq" | "wait";
-
 interface LinkPath {
   key: string;
-  kind: LinkKind;
   d: string;
 }
 
 const LONG_TEXT_CHARS = 132;
 
+const STATUS_TONE_LABELS: Record<AgentStatusTone, string> = {
+  active: "running",
+  pending: "starting",
+  attention: "awaiting input",
+  done: "done",
+  error: "failed",
+  idle: "idle",
+};
+
 function queuedTurnKey(workstream: HomeCascadeWorkstream, index: number) {
   return `${workstream.agentId}:${index}`;
+}
+
+function currentTurnKey(workstream: HomeCascadeWorkstream) {
+  return `${workstream.agentId}:current`;
 }
 
 function isShortCommand(text: string) {
@@ -68,30 +76,21 @@ function statusDotClass(workstream: HomeCascadeWorkstream) {
     .join(" ");
 }
 
+function statusLabel(workstream: HomeCascadeWorkstream) {
+  return workstream.waitingOnPane
+    ? "waiting on another pane"
+    : STATUS_TONE_LABELS[workstream.statusTone];
+}
+
 function stopButtonPropagation(event: ReactMouseEvent<HTMLElement>) {
   event.stopPropagation();
 }
 
 function currentTurnText(workstream: HomeCascadeWorkstream) {
-  return workstream.latestUserTurn ?? "No user turn recorded yet";
+  return workstream.latestUserTurn ?? "No turn yet";
 }
 
-function pathBetweenRects(
-  fromRect: DOMRect,
-  toRect: DOMRect,
-  baseRect: DOMRect,
-  kind: LinkKind,
-) {
-  const cross = Math.abs(fromRect.left - toRect.left) > 64;
-  if (kind === "seq" && !cross) {
-    const x1 = fromRect.left + fromRect.width / 2 - baseRect.left;
-    const y1 = fromRect.bottom - baseRect.top + 1;
-    const x2 = toRect.left + toRect.width / 2 - baseRect.left;
-    const y2 = toRect.top - baseRect.top - 1;
-    const dy = Math.max(10, (y2 - y1) * 0.55);
-    return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
-  }
-
+function waitLinkPath(fromRect: DOMRect, toRect: DOMRect, baseRect: DOMRect) {
   const x1 = fromRect.right - baseRect.left + 2;
   const y1 = fromRect.top + fromRect.height / 2 - baseRect.top;
   const x2 = toRect.left - baseRect.left - 2;
@@ -106,16 +105,19 @@ function pathBetweenRects(
   ].join(" ");
 }
 
-export default function HomeCascades({
-  workstreams,
-  view,
-  onViewChange,
-  onActivatePane,
-}: HomeCascadesProps) {
+// Keep the fade mask in sync with what the rail actually clips on each side.
+function updateRailClipClasses(rail: HTMLElement) {
+  const clippedLeft = rail.scrollLeft > 1;
+  const clippedRight = rail.scrollLeft + rail.clientWidth < rail.scrollWidth - 1;
+  rail.classList.toggle("is-clipped-left", clippedLeft);
+  rail.classList.toggle("is-clipped-right", clippedRight);
+}
+
+export default function HomeCascades({ workstreams, onActivatePane }: HomeCascadesProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const headerRefs = useRef(new Map<string, HTMLElement>());
-  const currentRefs = useRef(new Map<string, HTMLElement>());
   const queuedRefs = useRef(new Map<string, HTMLElement>());
+  const railRefs = useRef(new Map<string, HTMLElement>());
   const [links, setLinks] = useState<LinkPath[]>([]);
   const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
   const [openCards, setOpenCards] = useState<Set<string>>(() => new Set());
@@ -123,6 +125,19 @@ export default function HomeCascades({
     () => new Map(workstreams.map((workstream) => [workstream.agentId, workstream])),
     [workstreams],
   );
+  // Agents that some queued turn (in any lane) is waiting on: their latest turn
+  // still feeds pending work, so it shouldn't fade even if the agent is done.
+  const waitTargetAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const workstream of workstreams) {
+      for (const turn of workstream.queuedTurns) {
+        if (turn.waitForAgentId) {
+          ids.add(turn.waitForAgentId);
+        }
+      }
+    }
+    return ids;
+  }, [workstreams]);
 
   const setHeaderRef = useCallback((agentId: string, element: HTMLElement | null) => {
     if (element) {
@@ -132,19 +147,19 @@ export default function HomeCascades({
     }
   }, []);
 
-  const setCurrentRef = useCallback((agentId: string, element: HTMLElement | null) => {
-    if (element) {
-      currentRefs.current.set(agentId, element);
-    } else {
-      currentRefs.current.delete(agentId);
-    }
-  }, []);
-
   const setQueuedRef = useCallback((key: string, element: HTMLElement | null) => {
     if (element) {
       queuedRefs.current.set(key, element);
     } else {
       queuedRefs.current.delete(key);
+    }
+  }, []);
+
+  const setRailRef = useCallback((agentId: string, element: HTMLElement | null) => {
+    if (element) {
+      railRefs.current.set(agentId, element);
+    } else {
+      railRefs.current.delete(agentId);
     }
   }, []);
 
@@ -173,43 +188,8 @@ export default function HomeCascades({
       const baseRect = wrap.getBoundingClientRect();
       const nextLinks: LinkPath[] = [];
 
-      if (view === "columns") {
-        for (const workstream of workstreams) {
-          const current = currentRefs.current.get(workstream.agentId);
-          const firstQueued = queuedRefs.current.get(queuedTurnKey(workstream, 0));
-          if (current && firstQueued) {
-            nextLinks.push({
-              key: `${workstream.agentId}:current:0`,
-              kind: "seq",
-              d: pathBetweenRects(
-                current.getBoundingClientRect(),
-                firstQueued.getBoundingClientRect(),
-                baseRect,
-                "seq",
-              ),
-            });
-          }
-          for (let index = 0; index < workstream.queuedTurns.length - 1; index += 1) {
-            if (workstream.queuedTurns[index].pauseAfter) {
-              continue;
-            }
-            const from = queuedRefs.current.get(queuedTurnKey(workstream, index));
-            const to = queuedRefs.current.get(queuedTurnKey(workstream, index + 1));
-            if (!from || !to) {
-              continue;
-            }
-            nextLinks.push({
-              key: `${workstream.agentId}:${index}:${index + 1}`,
-              kind: "seq",
-              d: pathBetweenRects(
-                from.getBoundingClientRect(),
-                to.getBoundingClientRect(),
-                baseRect,
-                "seq",
-              ),
-            });
-          }
-        }
+      for (const rail of railRefs.current.values()) {
+        updateRailClipClasses(rail);
       }
 
       for (const workstream of workstreams) {
@@ -225,12 +205,10 @@ export default function HomeCascades({
           }
           nextLinks.push({
             key: `${turn.waitForAgentId}:${workstream.agentId}:${index}:wait`,
-            kind: "wait",
-            d: pathBetweenRects(
+            d: waitLinkPath(
               from.getBoundingClientRect(),
               to.getBoundingClientRect(),
               baseRect,
-              "wait",
             ),
           });
         }
@@ -251,16 +229,56 @@ export default function HomeCascades({
     window.addEventListener("resize", scheduleMeasure);
     const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(wrap);
+    // Scrolling a rail moves link endpoints and changes which edges are clipped.
+    const rails = Array.from(railRefs.current.values());
+    for (const rail of rails) {
+      rail.addEventListener("scroll", scheduleMeasure, { passive: true });
+      observer.observe(rail);
+    }
     return () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", scheduleMeasure);
+      for (const rail of rails) {
+        rail.removeEventListener("scroll", scheduleMeasure);
+      }
       observer.disconnect();
     };
-  }, [openCards, view, workstreamByAgentId, workstreams]);
+  }, [openCards, workstreamByAgentId, workstreams]);
 
   if (workstreams.length === 0) {
     return null;
   }
+
+  const isSettled = (workstream: HomeCascadeWorkstream) =>
+    (workstream.statusTone === "done" || workstream.statusTone === "idle") &&
+    !waitTargetAgentIds.has(workstream.agentId);
+
+  const activatePaneFromCard = (
+    workstream: HomeCascadeWorkstream,
+    event: ReactKeyboardEvent<HTMLElement>,
+  ) => {
+    // Ignore keys bubbling from the expander / wait-pill buttons inside the card.
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onActivatePane(workstream.paneId);
+    }
+  };
+
+  const renderExpandToggle = (key: string, open: boolean) => (
+    <button
+      type="button"
+      className="home-cascade-more"
+      onClick={(event) => {
+        stopButtonPropagation(event);
+        toggleCardOpen(key);
+      }}
+    >
+      {open ? "⌃ less" : "⌄ more"}
+    </button>
+  );
 
   const renderLinkSvg = () => (
     <svg
@@ -286,32 +304,43 @@ export default function HomeCascades({
       {links.map((link) => (
         <path
           key={link.key}
-          className={`home-cascade-link home-cascade-link--${link.kind}`}
+          className="home-cascade-link home-cascade-link--wait"
           d={link.d}
-          markerEnd={link.kind === "wait" ? "url(#home-cascade-wait-arrow)" : undefined}
+          markerEnd="url(#home-cascade-wait-arrow)"
         />
       ))}
     </svg>
   );
 
-  const renderCurrentCard = (workstream: HomeCascadeWorkstream, compact = false) => (
-    <div
-      ref={(element) => setCurrentRef(workstream.agentId, element)}
-      className={`home-cascade-card home-cascade-card--current tone-${workstream.statusTone}${
-        workstream.latestUserTurn ? "" : " is-empty"
-      }${compact ? " is-compact" : ""}`}
-      title={currentTurnText(workstream)}
-    >
-      <span className={statusDotClass(workstream)} aria-hidden="true" />
-      <span className="home-cascade-card-text">{currentTurnText(workstream)}</span>
-    </div>
-  );
+  const renderCurrentCard = (workstream: HomeCascadeWorkstream) => {
+    const key = currentTurnKey(workstream);
+    const open = openCards.has(key);
+    const expandable =
+      workstream.latestUserTurn !== null && shouldOfferExpand(workstream.latestUserTurn);
+    return (
+      <div
+        className={[
+          "home-cascade-card",
+          "home-cascade-card--current",
+          `tone-${workstream.statusTone}`,
+          workstream.latestUserTurn ? "" : "is-empty",
+          workstream.latestUserTurn && isSettled(workstream) ? "is-settled" : "",
+          open ? "is-open" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        title={currentTurnText(workstream)}
+      >
+        <span className="home-cascade-card-text">{currentTurnText(workstream)}</span>
+        {expandable ? renderExpandToggle(key, open) : null}
+      </div>
+    );
+  };
 
   const renderQueuedCard = (
     workstream: HomeCascadeWorkstream,
     turn: HomeCascadeQueuedTurn,
     index: number,
-    showIndex = true,
   ) => {
     const key = queuedTurnKey(workstream, index);
     const target = turn.waitForAgentId ? workstreamByAgentId.get(turn.waitForAgentId) : null;
@@ -332,144 +361,74 @@ export default function HomeCascades({
           .filter(Boolean)
           .join(" ")}
         title={turn.text}
+        role="button"
+        tabIndex={0}
+        onClick={() => onActivatePane(workstream.paneId)}
+        onKeyDown={(event) => activatePaneFromCard(workstream, event)}
       >
-        {showIndex ? <span className="home-cascade-index">{index + 1}</span> : null}
         <span className="home-cascade-card-text">{turn.text}</span>
         {turn.waitForAgentId ? (
-          <span className="home-cascade-wait-pill" title={`Waiting on ${waitLabel}`}>
-            {waitLabel}
-          </span>
+          target ? (
+            <button
+              type="button"
+              className="home-cascade-wait-pill"
+              title={`Waiting on ${waitLabel} — click to open it`}
+              onClick={(event) => {
+                stopButtonPropagation(event);
+                onActivatePane(target.paneId);
+              }}
+            >
+              {waitLabel}
+            </button>
+          ) : (
+            <span className="home-cascade-wait-pill" title={`Waiting on ${waitLabel}`}>
+              {waitLabel}
+            </span>
+          )
         ) : null}
-        {expandable ? (
-          <button
-            type="button"
-            className="home-cascade-more"
-            onClick={(event) => {
-              stopButtonPropagation(event);
-              toggleCardOpen(key);
-            }}
-          >
-            {open ? "⌃ less" : "⌄ more"}
-          </button>
-        ) : null}
+        {expandable ? renderExpandToggle(key, open) : null}
       </div>
     );
   };
 
-  const renderPauseGate = (key: string, mode: HomeCascadeView) =>
-    mode === "lanes" ? (
-      <span key={key} className="home-cascade-gate" title="Pause after previous turn">
-        ⏸
-      </span>
-    ) : (
-      <div key={key} className="home-cascade-gate-row">
-        paused after previous turn
-      </div>
-    );
-
   return (
     <section className="home-cascades" aria-label="Agent workstreams">
-      <div className="home-cascade-header">
-        <div className="home-cascade-segmented" role="tablist" aria-label="Cascade view">
-          <button
-            type="button"
-            className={view === "lanes" ? "is-active" : ""}
-            role="tab"
-            aria-selected={view === "lanes"}
-            onClick={() => onViewChange("lanes")}
-          >
-            Lanes
-          </button>
-          <button
-            type="button"
-            className={view === "columns" ? "is-active" : ""}
-            role="tab"
-            aria-selected={view === "columns"}
-            onClick={() => onViewChange("columns")}
-          >
-            Columns
-          </button>
-        </div>
-      </div>
-
-      {view === "lanes" ? (
-        <div className="home-cascade-view home-cascade-lanes" ref={wrapRef}>
-          {renderLinkSvg()}
-          {workstreams.map((workstream) => (
-            <div
-              key={workstream.agentId}
-              className="home-cascade-lane"
+      <div className="home-cascade-view home-cascade-lanes" ref={wrapRef}>
+        {renderLinkSvg()}
+        {workstreams.map((workstream) => (
+          <div key={workstream.agentId} className="home-cascade-lane">
+            <button
+              type="button"
+              ref={(element) => setHeaderRef(workstream.agentId, element)}
+              className="home-cascade-lane-head"
+              aria-label={`Open ${workstream.title} — ${statusLabel(workstream)}`}
               onClick={() => onActivatePane(workstream.paneId)}
             >
-              <button
-                type="button"
-                ref={(element) => setHeaderRef(workstream.agentId, element)}
-                className="home-cascade-lane-head"
-                aria-label={`Open ${workstream.title}`}
-                onClick={(event) => {
-                  stopButtonPropagation(event);
-                  onActivatePane(workstream.paneId);
-                }}
-              >
-                <div className="home-cascade-title">
-                  <span className={statusDotClass(workstream)} aria-hidden="true" />
-                  <span>{workstream.title}</span>
+              <div className="home-cascade-title">
+                <span className={statusDotClass(workstream)} aria-hidden="true" />
+                <span>{workstream.title}</span>
+              </div>
+            </button>
+            <div
+              className="home-cascade-rail"
+              ref={(element) => setRailRef(workstream.agentId, element)}
+            >
+              {renderCurrentCard(workstream)}
+              {workstream.queuedTurns.map((turn, index) => (
+                <div key={queuedTurnKey(workstream, index)} className="home-cascade-lane-step">
+                  <span className="home-cascade-rail-line" aria-hidden="true" />
+                  {renderQueuedCard(workstream, turn, index)}
+                  {turn.pauseAfter ? (
+                    <span className="home-cascade-gate" title="Pause after previous turn">
+                      ⏸
+                    </span>
+                  ) : null}
                 </div>
-              </button>
-              <div className="home-cascade-rail">
-                {renderCurrentCard(workstream, true)}
-                {workstream.queuedTurns.map((turn, index) => (
-                  <div key={queuedTurnKey(workstream, index)} className="home-cascade-lane-step">
-                    <span className="home-cascade-rail-line" aria-hidden="true" />
-                    {renderQueuedCard(workstream, turn, index, false)}
-                    {turn.pauseAfter
-                      ? renderPauseGate(`${queuedTurnKey(workstream, index)}:gate`, "lanes")
-                      : null}
-                  </div>
-                ))}
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
-      ) : (
-        <div className="home-cascade-columns-scroll">
-          <div className="home-cascade-view home-cascade-columns" ref={wrapRef}>
-            {renderLinkSvg()}
-            {workstreams.map((workstream) => (
-              <div
-                key={workstream.agentId}
-                className="home-cascade-column"
-                onClick={() => onActivatePane(workstream.paneId)}
-              >
-                <button
-                  type="button"
-                  ref={(element) => setHeaderRef(workstream.agentId, element)}
-                  className="home-cascade-column-head"
-                  aria-label={`Open ${workstream.title}`}
-                  onClick={(event) => {
-                    stopButtonPropagation(event);
-                    onActivatePane(workstream.paneId);
-                  }}
-                >
-                  <div className="home-cascade-title">
-                    <span className={statusDotClass(workstream)} aria-hidden="true" />
-                    <span>{workstream.title}</span>
-                  </div>
-                </button>
-                {renderCurrentCard(workstream)}
-                {workstream.queuedTurns.map((turn, index) => (
-                  <div key={queuedTurnKey(workstream, index)} className="home-cascade-column-step">
-                    {renderQueuedCard(workstream, turn, index)}
-                    {turn.pauseAfter
-                      ? renderPauseGate(`${queuedTurnKey(workstream, index)}:gate`, "columns")
-                      : null}
-                  </div>
-                ))}
-              </div>
-            ))}
           </div>
-        </div>
-      )}
+        ))}
+      </div>
     </section>
   );
 }
