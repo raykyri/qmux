@@ -79,6 +79,11 @@ struct AppStateInner {
     // (notably in tests) never touches disk. Once enabled, every model mutation
     // snapshots to workspace_root/.qmux/state.json.
     persist_enabled: AtomicBool,
+    // Serializes the whole snapshot->write->rename in persist() so concurrent
+    // saves commit in snapshot order. Without it, a slower older snapshot's
+    // rename can land after a newer one and clobber it, losing the last change
+    // (or re-sending an already-drained queued turn) across a restart.
+    persist_lock: Mutex<()>,
     exit_confirmed: AtomicBool,
     // Loopback file-server port, set once at startup. The control socket pairs it with
     // a per-pane file token to build browser-overlay URLs.
@@ -554,6 +559,7 @@ impl AppState {
                 next_id: AtomicU64::new(1),
                 app_handle: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
+                persist_lock: Mutex::new(()),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
             }),
@@ -804,6 +810,18 @@ impl AppState {
         if !self.inner.persist_enabled.load(Ordering::Relaxed) {
             return;
         }
+
+        // Hold the persist lock across snapshot + write + rename so concurrent
+        // persists commit in snapshot order. The snapshot must be taken *inside*
+        // the lock: otherwise two threads could snapshot as S1,S2 but acquire the
+        // lock as 2,1 and rename S2 then S1. Recover from poisoning — a persist
+        // that panicked mid-write left the on-disk file intact (temp-then-rename),
+        // so the guard's data (nothing) is still fine to reuse.
+        let _persist_guard = self
+            .inner
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let snapshot = {
             let Ok(model) = self.inner.model.lock() else {
