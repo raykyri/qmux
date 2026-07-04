@@ -20,12 +20,8 @@ export interface HomeCascadeWorkstream {
   agentId: string;
   paneId: string;
   title: string;
-  groupLabel: string;
-  locationLabel: string | null;
-  adapterLabel: string;
   statusTone: string;
   statusClass: string;
-  statusLabel: string | null;
   waitingOnPane: boolean;
   latestUserTurn: string | null;
   queuedTurns: HomeCascadeQueuedTurn[];
@@ -70,21 +66,6 @@ function statusDotClass(workstream: HomeCascadeWorkstream) {
   ]
     .filter(Boolean)
     .join(" ");
-}
-
-function metaPathLabel(workstream: HomeCascadeWorkstream) {
-  const path = workstream.locationLabel;
-  const group = workstream.groupLabel;
-  if (!path) {
-    return group;
-  }
-  // groupLabel almost always mirrors the repo dir already present in the path
-  // (e.g. group "exwiki" vs path "~/Code/exwiki"); drop it when redundant.
-  const lastSegment = path.split(/[\s/·]+/).filter(Boolean).pop() ?? "";
-  if (!group || group === lastSegment || path.includes(`/${group}`)) {
-    return path;
-  }
-  return `${group} · ${path}`;
 }
 
 function stopButtonPropagation(event: ReactMouseEvent<HTMLElement>) {
@@ -330,6 +311,7 @@ export default function HomeCascades({
     workstream: HomeCascadeWorkstream,
     turn: HomeCascadeQueuedTurn,
     index: number,
+    showIndex = true,
   ) => {
     const key = queuedTurnKey(workstream, index);
     const target = turn.waitForAgentId ? workstreamByAgentId.get(turn.waitForAgentId) : null;
@@ -351,7 +333,7 @@ export default function HomeCascades({
           .join(" ")}
         title={turn.text}
       >
-        <span className="home-cascade-index">{index + 1}</span>
+        {showIndex ? <span className="home-cascade-index">{index + 1}</span> : null}
         <span className="home-cascade-card-text">{turn.text}</span>
         {turn.waitForAgentId ? (
           <span className="home-cascade-wait-pill" title={`Waiting on ${waitLabel}`}>
@@ -408,23 +390,6 @@ export default function HomeCascades({
             Columns
           </button>
         </div>
-        <div className="home-cascade-legend" aria-hidden="true">
-          <span>
-            <i className="home-cascade-legend-dot tone-active" /> running
-          </span>
-          <span>
-            <i className="home-cascade-legend-dot tone-attention" /> needs you
-          </span>
-          <span>
-            <i className="home-cascade-legend-dot tone-queued" /> queued
-          </span>
-          <span>
-            <i className="home-cascade-legend-dot tone-wait" /> waiting
-          </span>
-          <span>
-            <i className="home-cascade-legend-dot tone-gate" /> pause gate
-          </span>
-        </div>
       </div>
 
       {view === "lanes" ? (
@@ -449,15 +414,6 @@ export default function HomeCascades({
                 <div className="home-cascade-title">
                   <span className={statusDotClass(workstream)} aria-hidden="true" />
                   <span>{workstream.title}</span>
-                  {workstream.statusLabel ? (
-                    <span className="home-cascade-status">{workstream.statusLabel}</span>
-                  ) : null}
-                </div>
-                <div className="home-cascade-meta-row">
-                  <span className="home-cascade-adapter">{workstream.adapterLabel}</span>
-                  <span className="home-cascade-meta" title={metaPathLabel(workstream)}>
-                    {metaPathLabel(workstream)}
-                  </span>
                 </div>
               </button>
               <div className="home-cascade-rail">
@@ -465,7 +421,7 @@ export default function HomeCascades({
                 {workstream.queuedTurns.map((turn, index) => (
                   <div key={queuedTurnKey(workstream, index)} className="home-cascade-lane-step">
                     <span className="home-cascade-rail-line" aria-hidden="true" />
-                    {renderQueuedCard(workstream, turn, index)}
+                    {renderQueuedCard(workstream, turn, index, false)}
                     {turn.pauseAfter
                       ? renderPauseGate(`${queuedTurnKey(workstream, index)}:gate`, "lanes")
                       : null}
@@ -499,32 +455,16 @@ export default function HomeCascades({
                     <span className={statusDotClass(workstream)} aria-hidden="true" />
                     <span>{workstream.title}</span>
                   </div>
-                  <div className="home-cascade-column-subhead">
-                    <span className="home-cascade-adapter">{workstream.adapterLabel}</span>
-                    <span className="home-cascade-meta" title={metaPathLabel(workstream)}>
-                      {metaPathLabel(workstream)}
-                    </span>
-                    {workstream.statusLabel ? (
-                      <span className="home-cascade-status">{workstream.statusLabel}</span>
-                    ) : null}
-                  </div>
                 </button>
                 {renderCurrentCard(workstream)}
-                {workstream.queuedTurns.length > 0 ? (
-                  workstream.queuedTurns.map((turn, index) => (
-                    <div
-                      key={queuedTurnKey(workstream, index)}
-                      className="home-cascade-column-step"
-                    >
-                      {renderQueuedCard(workstream, turn, index)}
-                      {turn.pauseAfter
-                        ? renderPauseGate(`${queuedTurnKey(workstream, index)}:gate`, "columns")
-                        : null}
-                    </div>
-                  ))
-                ) : (
-                  <div className="home-cascade-empty-queue">No queued turns</div>
-                )}
+                {workstream.queuedTurns.map((turn, index) => (
+                  <div key={queuedTurnKey(workstream, index)} className="home-cascade-column-step">
+                    {renderQueuedCard(workstream, turn, index)}
+                    {turn.pauseAfter
+                      ? renderPauseGate(`${queuedTurnKey(workstream, index)}:gate`, "columns")
+                      : null}
+                  </div>
+                ))}
               </div>
             ))}
           </div>

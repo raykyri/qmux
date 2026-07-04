@@ -914,6 +914,24 @@ function latestUserTurnText(turns: Turn[]): string | null {
   return null;
 }
 
+// Strips prepended/inline tagged instruction blocks (<system-reminder> …) from a turn
+// for the compact cascade cards, using the same filter as the right pane. Queued turns
+// keep the raw text if stripping empties them (a card should never be blank); the latest
+// user turn returns null so its card falls back to the empty-state text.
+function cascadeQueuedTurnText(text: string): string {
+  const stripped = stripTaggedUserInstructionBlocks(text).trim();
+  return stripped.length > 0 ? stripped : text;
+}
+
+function cascadeLatestUserTurn(turns: Turn[]): string | null {
+  const text = latestUserTurnText(turns);
+  if (!text) {
+    return null;
+  }
+  const stripped = stripTaggedUserInstructionBlocks(text).trim();
+  return stripped.length > 0 ? stripped : null;
+}
+
 function defaultPaneTitle(
   pane: PaneInfo,
   agent: AgentInfo | undefined,
@@ -2375,14 +2393,6 @@ export default function App() {
       if (!agent) {
         return [];
       }
-      const group = groupById.get(pane.groupId);
-      const paneDir = agent.worktreeDir || pane.cwd;
-      const branchLabel = agent.branch?.trim() || null;
-      const pathLabel = formatPaneDir(paneDir);
-      const adapterLabel =
-        config?.adapters.find((adapter) => adapter.id === agent.adapter)?.label ??
-        findAgentUiAdapter(agent.adapter)?.label ??
-        agent.adapter;
       const statusClass = agent.status === "awaitingInput" ? "status-awaiting-input" : "";
       const turnInfo = turnInfoForAgent(agent);
       return [
@@ -2390,16 +2400,12 @@ export default function App() {
           agentId: agent.id,
           paneId: pane.id,
           title: displayPaneTitle(pane, agent),
-          groupLabel: group ? displayGroupName(group) : formatPaneDir(pane.cwd),
-          locationLabel: branchLabel ? `${branchLabel} · ${pathLabel}` : pathLabel,
-          adapterLabel,
           statusTone: paneTabStatusTone(agent),
           statusClass,
-          statusLabel: paneTabStatusLabel(pane, agent),
           waitingOnPane: paneWaitsOnOtherPane(agent),
-          latestUserTurn: latestUserTurnText(turnInfo.turns),
+          latestUserTurn: cascadeLatestUserTurn(turnInfo.turns),
           queuedTurns: (queuedTurnsByAgent[agent.id] ?? []).map((turn) => ({
-            text: turn.text,
+            text: cascadeQueuedTurnText(turn.text),
             pauseAfter: turn.pauseAfter,
             waitForAgentId: turn.waitFor?.agentId ?? null,
             waitForLabel: turn.waitFor?.label ?? null,
@@ -2410,8 +2416,6 @@ export default function App() {
   }, [
     agentByPaneId,
     agentTurnInfoById,
-    config,
-    groupById,
     queuedTurnsByAgent,
     sidebarPanes,
     terminalTitleByPane,
