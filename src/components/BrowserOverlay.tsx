@@ -1,4 +1,4 @@
-import { RotateCw, X } from "lucide-react";
+import { ExternalLink, RotateCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { BrowserOverlaySize } from "../appTypes";
@@ -36,6 +36,8 @@ interface BrowserOverlayProps {
   onNavigate: (rawInput: string) => void;
   // Reload the current page.
   onRefresh: () => void;
+  // Open the current page in the system's default external browser.
+  onOpenExternal: () => void;
   // Close the overlay.
   onClose: () => void;
   // Persist a user-resized overlay size in the app's per-pane React state.
@@ -50,6 +52,7 @@ export default function BrowserOverlay({
   toggleShortcutLabel,
   onNavigate,
   onRefresh,
+  onOpenExternal,
   onClose,
   onResize,
 }: BrowserOverlayProps) {
@@ -194,6 +197,16 @@ export default function BrowserOverlay({
             onClick={onRefresh}
           >
             <RotateCw size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="browser-overlay-button"
+            title="Open in external browser"
+            aria-label="Open in external browser"
+            onClick={onOpenExternal}
+            disabled={!url}
+          >
+            <ExternalLink size={14} aria-hidden="true" />
           </button>
           <button
             type="button"

@@ -8253,6 +8253,11 @@ export default function App() {
           toggleShortcutLabel={activePaneHasTurnPaneHeader ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}
           onNavigate={navigateActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
+          onOpenExternal={() => {
+            if (activeBrowserOverlay.url) {
+              void openExternalUrl(activeBrowserOverlay.url);
+            }
+          }}
           onClose={toggleActiveBrowserOverlay}
           onResize={(size) => setBrowserOverlaySize(activePane.id, size)}
         />
