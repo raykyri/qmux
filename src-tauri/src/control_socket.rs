@@ -288,6 +288,43 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
 /// required to live under one of the requesting pane's own roots (not the global
 /// union — so a pane can't open another pane's directory), served through the loopback
 /// file server, and flagged `sandbox = true` (its URL carries the file-server token).
+/// Whether an http(s) URL's host names a loopback address. Parses the authority
+/// by hand (no `url` crate in this build) but defends against the usual spoofs:
+/// `http://127.0.0.1@evil.com` (host is `evil.com`), `http://127.0.0.1.evil.com`
+/// (not a loopback literal), and userinfo/port/IPv6-bracket forms. Intentionally
+/// stricter than a browser — it accepts only `localhost` and parsed loopback IPs,
+/// not oddball encodings a browser would still resolve to loopback — so it fails
+/// closed.
+fn is_loopback_http_url(url: &str) -> bool {
+    let Some((_scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    // The authority ends at the first '/', '?' or '#'.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop any userinfo: the host is whatever follows the last '@'.
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    // Separate host from port, honoring the [ipv6]:port bracket form.
+    let host = if let Some(after_bracket) = host_port.strip_prefix('[') {
+        match after_bracket.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(v4) = host.parse::<std::net::Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        return v6.is_loopback();
+    }
+    false
+}
+
 fn resolve_browser_target(
     state: &AppState,
     authed_pane: &str,
@@ -298,6 +335,15 @@ fn resolve_browser_target(
         return Err("nothing to open".to_string());
     }
     if target.starts_with("http://") || target.starts_with("https://") {
+        // Only loopback origins may render unsandboxed. The webview CSP restricts
+        // frame-src to 127.0.0.1/localhost too, but enforce it here as the first
+        // gate so a prompt-injected agent can't force the overlay at an arbitrary
+        // origin (and gets a clear error rather than a silently-blank iframe).
+        if !is_loopback_http_url(target) {
+            return Err(format!(
+                "refusing to open '{target}': the browser overlay only loads http(s) URLs on localhost/127.0.0.1"
+            ));
+        }
         return Ok((target.to_string(), false));
     }
 
@@ -374,6 +420,28 @@ mod tests {
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
         OpencodeAdapterConfig, QmuxConfig,
     };
+
+    #[test]
+    fn loopback_url_check_accepts_localhost_and_rejects_spoofs() {
+        // Loopback origins the overlay may render unsandboxed.
+        assert!(is_loopback_http_url("http://localhost:3000/app"));
+        assert!(is_loopback_http_url("http://127.0.0.1:8080"));
+        assert!(is_loopback_http_url("https://127.0.0.1/"));
+        assert!(is_loopback_http_url("http://127.1.2.3:5173/x?y=1#z"));
+        assert!(is_loopback_http_url("http://[::1]:3000/"));
+        assert!(is_loopback_http_url("http://LocalHost/"));
+
+        // Non-loopback and spoofed hosts must be refused.
+        assert!(!is_loopback_http_url("http://example.com/"));
+        assert!(!is_loopback_http_url("http://127.0.0.1.evil.com/"));
+        assert!(!is_loopback_http_url("http://127.0.0.1@evil.com/"));
+        assert!(!is_loopback_http_url("http://evil.com/#127.0.0.1"));
+        assert!(!is_loopback_http_url("http://evil.com/?x=127.0.0.1"));
+        assert!(!is_loopback_http_url("http://0.0.0.0/"));
+        assert!(!is_loopback_http_url("http://2130706433/"));
+        assert!(!is_loopback_http_url("not-a-url"));
+    }
+
     use crate::workspace::{AgentInfo, AgentStatus};
     use std::io::Read;
     use std::path::PathBuf;

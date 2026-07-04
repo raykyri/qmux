@@ -196,7 +196,7 @@ pub fn start_transcript_tail(
                     ));
                 }
                 line_index = lines.len();
-                consumed = complete_len(&snapshot.data);
+                consumed = snapshot.consumed_bytes;
             } else {
                 // Steady state: parse only the complete lines that arrived since the
                 // last tick. line_index advances for every complete line (parsed or
@@ -239,7 +239,7 @@ pub fn start_transcript_tail(
                     }
                     line_index += 1;
                 }
-                consumed += complete_len(&snapshot.data);
+                consumed += snapshot.consumed_bytes;
             }
             first_read = false;
 
@@ -986,6 +986,13 @@ fn complete_lines(raw: &str) -> Vec<String> {
 struct TranscriptRead {
     /// File content from the read offset, or the whole file when `reset` is set.
     data: String,
+    /// Raw file bytes covered by `data`: the byte length of the newline-terminated
+    /// prefix that was read. The tail offset must advance by this, not by
+    /// `data.len()` — `from_utf8_lossy` can make `data` *longer* than the bytes read
+    /// when a complete line contains an invalid byte (each becomes a 3-byte U+FFFD),
+    /// and measuring the decoded string would overshoot the real file position and
+    /// wedge the tail into a perpetual reset.
+    consumed_bytes: u64,
     /// The file is now shorter than the requested offset (truncated or rewritten),
     /// so `data` holds the whole file and the caller must rebuild rather than append.
     reset: bool,
@@ -1000,14 +1007,22 @@ fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptR
     let mut file = fs::File::open(path)?;
     let len = file.metadata()?.len();
     if len < offset {
-        let data = read_complete_lines_utf8(&mut file)?;
-        return Ok(TranscriptRead { data, reset: true });
+        let (data, consumed_bytes) = read_complete_lines_utf8(&mut file)?;
+        return Ok(TranscriptRead {
+            data,
+            consumed_bytes,
+            reset: true,
+        });
     }
     if offset > 0 {
         file.seek(SeekFrom::Start(offset))?;
     }
-    let data = read_complete_lines_utf8(&mut file)?;
-    Ok(TranscriptRead { data, reset: false })
+    let (data, consumed_bytes) = read_complete_lines_utf8(&mut file)?;
+    Ok(TranscriptRead {
+        data,
+        consumed_bytes,
+        reset: false,
+    })
 }
 
 /// Reads from the file's current position to EOF and returns the longest prefix that
@@ -1016,24 +1031,18 @@ fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptR
 /// the middle of a multi-byte UTF-8 character. `read_to_string` would reject the whole
 /// read as invalid UTF-8 — surfacing a spurious "Transcript unavailable" until the
 /// character completes — so instead we cut at the last newline (the unterminated tail
-/// is what `complete_lines`/`complete_len` discard anyway). The kept prefix ends on a
-/// line boundary and is valid UTF-8; `from_utf8_lossy` therefore substitutes nothing,
-/// while still keeping a malformed byte from ever aborting the tail.
-fn read_complete_lines_utf8(file: &mut fs::File) -> std::io::Result<String> {
+/// is what `complete_lines` discards anyway). Returns the decoded prefix together with
+/// its raw byte length (`cut`): a complete line can still hold an invalid byte mid-way,
+/// which `from_utf8_lossy` expands to a 3-byte U+FFFD, so the decoded string's length is
+/// not a reliable file offset — the caller must advance by the raw byte count.
+fn read_complete_lines_utf8(file: &mut fs::File) -> std::io::Result<(String, u64)> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     let cut = bytes
         .iter()
         .rposition(|&byte| byte == b'\n')
         .map_or(0, |idx| idx + 1);
-    Ok(String::from_utf8_lossy(&bytes[..cut]).into_owned())
-}
-
-/// Byte length of the complete (newline-terminated) prefix of `raw`. Bytes after
-/// the final '\n' are an in-progress record and are not counted as consumed, so
-/// the next read picks them up once their newline lands.
-fn complete_len(raw: &str) -> u64 {
-    raw.rfind('\n').map_or(0, |idx| (idx + 1) as u64)
+    Ok((String::from_utf8_lossy(&bytes[..cut]).into_owned(), cut as u64))
 }
 
 /// Whether a tail bound to `bound_path` should keep running. `current` is the
@@ -1115,12 +1124,25 @@ mod tests {
     }
 
     #[test]
-    fn complete_len_counts_only_the_newline_terminated_prefix() {
-        assert_eq!(complete_len(""), 0);
-        assert_eq!(complete_len("{\"a\":1}"), 0);
-        assert_eq!(complete_len("{\"a\":1}\n"), 8);
-        assert_eq!(complete_len("{\"a\":1}\n{\"b\":2"), 8);
-        assert_eq!(complete_len("{\"a\":1}\n{\"b\":2}\n"), 16);
+    fn read_reports_only_the_newline_terminated_prefix_as_consumed() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-consumed-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+
+        // Two complete records plus an unterminated third: only the newline-terminated
+        // prefix counts as consumed, so the partial tail is picked up on a later read.
+        fs::write(&path, "{\"a\":1}\n{\"b\":2}\n{\"c\":3").unwrap();
+        let read = read_transcript_from(&path, 0).unwrap();
+        assert_eq!(read.data, "{\"a\":1}\n{\"b\":2}\n");
+        assert_eq!(read.consumed_bytes, 16);
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1204,7 +1226,7 @@ mod tests {
         let first = read_transcript_from(&path, 0).unwrap();
         assert!(!first.reset);
         assert_eq!(first.data, "a\nb\n");
-        let consumed = complete_len(&first.data);
+        let consumed = first.consumed_bytes;
         assert_eq!(consumed, 4);
 
         // An append is read back as just the new bytes, not the whole file.
@@ -1245,7 +1267,43 @@ mod tests {
         let read = read_transcript_from(&path, 0).unwrap();
         assert!(!read.reset);
         assert_eq!(read.data, "{\"a\":1}\n");
-        assert_eq!(complete_len(&read.data), 8);
+        assert_eq!(read.consumed_bytes, 8);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn incremental_read_advances_by_raw_bytes_over_an_invalid_utf8_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-badutf8-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+
+        // A COMPLETE (newline-terminated) line with a lone invalid byte mid-way.
+        // from_utf8_lossy expands 0xFF to a 3-byte U+FFFD, so the decoded string is
+        // longer than the file; measuring it would overshoot and wedge the tail into
+        // a perpetual reset (len < offset every tick). The offset must track raw bytes.
+        let mut bytes = b"caf".to_vec();
+        bytes.push(0xFF);
+        bytes.push(b'\n');
+        let raw_len = bytes.len() as u64;
+        fs::write(&path, &bytes).unwrap();
+
+        let read = read_transcript_from(&path, 0).unwrap();
+        assert!(!read.reset);
+        // Decoded string is longer than the bytes on disk...
+        assert!(read.data.len() as u64 > raw_len);
+        // ...but the consumed offset is the raw byte count, so a follow-up read from it
+        // sees EOF (len == offset), not a spurious reset (len < offset).
+        assert_eq!(read.consumed_bytes, raw_len);
+        let next = read_transcript_from(&path, read.consumed_bytes).unwrap();
+        assert!(!next.reset);
+        assert_eq!(next.data, "");
 
         fs::remove_dir_all(&dir).ok();
     }

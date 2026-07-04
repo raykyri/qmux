@@ -216,13 +216,7 @@ pub fn submit_agent_turn(
                     agent.id
                 ));
             }
-            send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
-            let queued_turns = state.agent_queued_turns(&agent.id)?;
-            Ok(SubmitAgentTurnResult {
-                queued: false,
-                pending_turns: queued_turns.len(),
-                queued_turns,
-            })
+            send_direct_or_queue(state, &agent, data)
         }
         SubmitAgentTurnMode::Send => {
             // Honor the pause even on an explicit send: queue the turn instead of writing
@@ -234,13 +228,7 @@ pub fn submit_agent_turn(
             if !policy.can_send(agent.status) {
                 return Err("agent is not ready for input; queue the turn instead".to_string());
             }
-            send_agent_turn(state, &agent, data, AgentSendSource::DirectSend)?;
-            let queued_turns = state.agent_queued_turns(&agent.id)?;
-            Ok(SubmitAgentTurnResult {
-                queued: false,
-                pending_turns: queued_turns.len(),
-                queued_turns,
-            })
+            send_direct_or_queue(state, &agent, data)
         }
         SubmitAgentTurnMode::Queue => {
             // A paused agent may be idle with an empty queue; still allow queueing (the
@@ -422,7 +410,7 @@ fn send_claimed_turn(
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
-            requeue_after_failed_drain(state, agent_id, turn);
+            state.requeue_inflight_after_failed_drain(agent_id, turn);
             state.finish_agent_drain(agent_id);
             return Err(format!("agent {agent_id} was not found"));
         }
@@ -433,10 +421,12 @@ fn send_claimed_turn(
         turn.text.clone(),
         AgentSendSource::QueuedTurn,
     ) {
-        requeue_after_failed_drain(state, agent_id, turn);
+        state.requeue_inflight_after_failed_drain(agent_id, turn);
         state.finish_agent_drain(agent_id);
         return Err(err);
     }
+    // Delivered: clear the in-flight record so it isn't re-queued on the next restart.
+    state.clear_agent_inflight(agent_id);
     // A pause-after turn arms the pause; it takes effect when this turn finishes
     // (see `advance_after_idle`), not now.
     if turn.pause_after {
@@ -655,12 +645,6 @@ fn queue_agent_turn(
 /// deliver it. If even the rollback fails the turn is genuinely lost, so log it
 /// rather than dropping it silently — the caller already propagates the original
 /// send error.
-fn requeue_after_failed_drain(state: &AppState, agent_id: &str, turn: QueuedTurn) {
-    if let Err(err) = state.prepend_agent_turn(agent_id, turn) {
-        eprintln!("qmux: dropped queued turn for agent {agent_id} after failed re-queue: {err}");
-    }
-}
-
 fn send_agent_turn(
     state: &AppState,
     agent: &AgentInfo,
@@ -695,6 +679,29 @@ fn send_agent_turn(
         eprintln!("qmux: failed to record send for agent {}: {err}", agent.id);
     }
     Ok(())
+}
+
+/// Sends a user turn straight to the agent, but only after reserving the drain guard
+/// so it can't race an in-flight queue drain into the same pane. If a drain — or
+/// another direct send — already owns the agent, the turn is queued behind it instead
+/// of writing a second turn concurrently. The guard is always released afterward.
+fn send_direct_or_queue(
+    state: &AppState,
+    agent: &AgentInfo,
+    data: String,
+) -> Result<SubmitAgentTurnResult, String> {
+    if !state.begin_direct_send(&agent.id)? {
+        return queue_agent_turn(state, agent, data);
+    }
+    let result = send_agent_turn(state, agent, data, AgentSendSource::DirectSend);
+    state.finish_agent_drain(&agent.id);
+    result?;
+    let queued_turns = state.agent_queued_turns(&agent.id)?;
+    Ok(SubmitAgentTurnResult {
+        queued: false,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
 }
 
 #[cfg(test)]

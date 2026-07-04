@@ -88,6 +88,12 @@ struct AppStateInner {
     // Loopback file-server port, set once at startup. The control socket pairs it with
     // a per-pane file token to build browser-overlay URLs.
     file_server: Mutex<Option<u16>>,
+    // Per-pane "send" locks. `write_pane` holds one across a whole paste+submit
+    // sequence so two concurrent submits to the same pane can't interleave into one
+    // merged turn across the inter-write delay. Kept separate from the raw writer
+    // lock so live keystrokes are never blocked behind a submit. Reclaimed in
+    // `remove_pane`.
+    pane_send_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Default)]
@@ -103,6 +109,11 @@ struct Model {
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
+    /// A queued turn claimed for delivery but not yet confirmed on the PTY, per agent
+    /// (at most one — `agent_draining` serializes drains). Popped out of the queue at
+    /// claim and persisted here so a crash mid-delivery re-queues it on restart
+    /// instead of losing it; cleared once the write lands. At-most-one per agent.
+    agent_inflight: HashMap<String, QueuedTurn>,
     agent_send_tracking: HashMap<String, AgentSendTracking>,
     agent_drafts: HashMap<String, String>,
     recent_sessions: HashMap<String, RecentSessionInfo>,
@@ -562,6 +573,7 @@ impl AppState {
                 persist_lock: Mutex::new(()),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
+                pane_send_locks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -708,6 +720,9 @@ impl AppState {
             .iter()
             .filter(|&(_agent_id, turns)| !turns.is_empty())
             .map(|(agent_id, _turns)| agent_id.clone())
+            // An in-flight turn (claimed pre-shutdown, delivery unconfirmed) is
+            // re-queued below, so its agent counts as having pending work too.
+            .chain(persisted.inflight.keys().cloned())
             .collect::<HashSet<_>>();
 
         if let Ok(mut model) = self.inner.model.lock() {
@@ -761,6 +776,18 @@ impl AppState {
                         .agent_turn_queues
                         .insert(agent_id, turns.into_iter().collect());
                 }
+            }
+            // Re-queue any in-flight turn (claimed for delivery but not confirmed before
+            // shutdown) at the front of its agent's queue, so it's re-delivered rather
+            // than lost. A crash in the tiny window after delivery but before the record
+            // cleared re-sends it — at-least-once, preferred over a silent drop. Live
+            // in-flight state starts empty after restore.
+            for (agent_id, turn) in persisted.inflight {
+                model
+                    .agent_turn_queues
+                    .entry(agent_id)
+                    .or_default()
+                    .push_front(turn);
             }
             for (agent_id, draft) in persisted.drafts {
                 if !draft.trim().is_empty() {
@@ -841,6 +868,7 @@ impl AppState {
                     .collect(),
                 recent_sessions: recent_sessions_sorted(&model),
                 drafts: model.agent_drafts.clone(),
+                inflight: model.agent_inflight.clone(),
                 pane_splits: normalized_pane_splits(&model, model.pane_splits.clone(), false)
                     .unwrap_or_default(),
                 active_tab_id: model.active_tab_id.clone(),
@@ -1507,6 +1535,16 @@ impl AppState {
                 model.agent_pending_pause.remove(&agent_id);
                 model.agent_draining.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
+                // A turn claimed for delivery but not yet settled when the pane goes
+                // away: roll it back to the front of the queue so it isn't lost (and so
+                // the has_queue check below keeps the agent for restart recovery).
+                if let Some(turn) = model.agent_inflight.remove(&agent_id) {
+                    model
+                        .agent_turn_queues
+                        .entry(agent_id.clone())
+                        .or_default()
+                        .push_front(turn);
+                }
                 let has_queue = model
                     .agent_turn_queues
                     .get(&agent_id)
@@ -1538,6 +1576,11 @@ impl AppState {
         // a live credential outlive the pane it scopes. Separate lock from `model`.
         if let Ok(mut tokens) = self.inner.file_tokens.lock() {
             tokens.remove(pane_id);
+        }
+        // Drop the pane's send lock so the map doesn't grow for the process lifetime.
+        // Separate lock from `model`.
+        if let Ok(mut locks) = self.inner.pane_send_locks.lock() {
+            locks.remove(pane_id);
         }
         if let Err(err) = remove_pane_scrollback(&self.inner.config.workspace_root, pane_id) {
             eprintln!("qmux: failed to remove scrollback for pane {pane_id}: {err}");
@@ -2185,6 +2228,11 @@ impl AppState {
             match pop_ready_locked(&mut model, agent_id) {
                 Some((turn, pending)) => {
                     model.agent_draining.insert(agent_id.to_string());
+                    // Keep a durable copy until delivery confirms, so a crash mid-send
+                    // re-queues the turn on restart instead of dropping it.
+                    model
+                        .agent_inflight
+                        .insert(agent_id.to_string(), turn.clone());
                     AgentTurnClaim::Ready { turn, pending }
                 }
                 None => return Ok(AgentTurnClaim::Idle),
@@ -2223,6 +2271,10 @@ impl AppState {
                 IdleAdvance::Idle
             } else if let Some((turn, pending)) = pop_ready_locked(&mut model, agent_id) {
                 model.agent_draining.insert(agent_id.to_string());
+                // Durable copy until delivery confirms (see claim_ready_agent_turn).
+                model
+                    .agent_inflight
+                    .insert(agent_id.to_string(), turn.clone());
                 IdleAdvance::Sent { turn, pending }
             } else {
                 if let Some(agent) = model.agents.get_mut(agent_id) {
@@ -2241,6 +2293,62 @@ impl AppState {
     pub fn finish_agent_drain(&self, agent_id: &str) {
         if let Ok(mut model) = self.inner.model.lock() {
             model.agent_draining.remove(agent_id);
+        }
+    }
+
+    /// Reserves the draining guard for a direct (user-initiated) send, serializing it
+    /// against queue drains through the same `agent_draining` flag. Returns `false`
+    /// when a drain — or another direct send — already owns the agent, so the caller
+    /// should queue behind it instead of writing a second turn into the same pane
+    /// concurrently. Pair every `true` with [`finish_agent_drain`].
+    pub fn begin_direct_send(&self, agent_id: &str) -> Result<bool, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        if model.agent_draining.contains(agent_id) {
+            return Ok(false);
+        }
+        model.agent_draining.insert(agent_id.to_string());
+        Ok(true)
+    }
+
+    /// Clears a delivered turn's in-flight record. Called once its bytes reach the PTY,
+    /// so a crash before this leaves the turn in the persisted queue (via
+    /// `restore_session`) to be re-delivered rather than lost.
+    pub fn clear_agent_inflight(&self, agent_id: &str) {
+        let changed = match self.inner.model.lock() {
+            Ok(mut model) => model.agent_inflight.remove(agent_id).is_some(),
+            Err(_) => false,
+        };
+        if changed {
+            self.persist();
+        }
+    }
+
+    /// Rolls a turn that failed to send back to the front of its queue and clears its
+    /// in-flight record in one locked step, so the persisted snapshot never holds the
+    /// same turn in both places (which would double-send it on restart).
+    pub fn requeue_inflight_after_failed_drain(&self, agent_id: &str, turn: QueuedTurn) {
+        let ok = match self.inner.model.lock() {
+            Ok(mut model) => {
+                model.agent_inflight.remove(agent_id);
+                model
+                    .agent_turn_queues
+                    .entry(agent_id.to_string())
+                    .or_default()
+                    .push_front(turn);
+                true
+            }
+            Err(_) => false,
+        };
+        if ok {
+            self.persist();
+        } else {
+            eprintln!(
+                "qmux: dropped queued turn for agent {agent_id} after failed re-queue (model lock poisoned)"
+            );
         }
     }
 
@@ -2283,24 +2391,6 @@ impl AppState {
                 waits_for_target.then(|| agent_id.clone())
             })
             .collect())
-    }
-
-    pub fn prepend_agent_turn(&self, agent_id: &str, turn: QueuedTurn) -> Result<usize, String> {
-        let len = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let queue = model
-                .agent_turn_queues
-                .entry(agent_id.to_string())
-                .or_default();
-            queue.push_front(turn);
-            queue.len()
-        };
-        self.persist();
-        Ok(len)
     }
 
     /// Inserts a turn into an agent's queue at `index` (clamped to the queue length),
@@ -2634,6 +2724,18 @@ impl AppState {
             .iter()
             .map(|(pane_id, pane)| (pane_id.clone(), pane.child.clone()))
             .collect())
+    }
+
+    /// Returns the per-pane send lock, minting one on first use. `write_pane` holds
+    /// it across a paste+submit sequence so concurrent submits don't interleave. See
+    /// the `pane_send_locks` field.
+    pub fn pane_send_lock(&self, pane_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .inner
+            .pane_send_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.entry(pane_id.to_string()).or_default().clone()
     }
 
     pub fn pane_backlog(&self, pane_id: &str) -> Result<Option<SharedBacklog>, String> {
@@ -4060,6 +4162,67 @@ mod tests {
             AgentTurnClaim::Ready { turn, .. } => assert_eq!(turn.text, "second"),
             _ => panic!("expected the second turn to be claimed"),
         }
+    }
+
+    #[test]
+    fn begin_direct_send_is_refused_while_a_drain_owns_the_agent() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_agent(sample_agent("agent-1")).unwrap();
+
+        // With nothing draining, a direct send reserves the guard.
+        assert!(state.begin_direct_send("agent-1").unwrap());
+        // A second direct send is refused while the first still owns the agent...
+        assert!(!state.begin_direct_send("agent-1").unwrap());
+        // ...and a queue drain is refused too, so neither can write a second turn into
+        // the pane concurrently.
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+        assert!(matches!(
+            state.claim_ready_agent_turn("agent-1").unwrap(),
+            AgentTurnClaim::Draining
+        ));
+        // Releasing the guard lets the drain proceed.
+        state.finish_agent_drain("agent-1");
+        assert!(matches!(
+            state.claim_ready_agent_turn("agent-1").unwrap(),
+            AgentTurnClaim::Ready { .. }
+        ));
+        std::fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn in_flight_turn_is_recovered_to_the_front_of_the_queue_on_restart() {
+        let workspace = temp_workspace();
+        // First run: enqueue two turns, claim the front (an in-flight send that never
+        // confirms), then "crash" by dropping without delivering or clearing it.
+        {
+            let state = AppState::new(test_config(workspace.clone()));
+            state.restore_session();
+            state.insert_agent(sample_agent("agent-1")).unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "first".to_string())
+                .unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "second".to_string())
+                .unwrap();
+            match state.claim_ready_agent_turn("agent-1").unwrap() {
+                AgentTurnClaim::Ready { turn, .. } => assert_eq!(turn.text, "first"),
+                _ => panic!("expected the first turn to be claimed"),
+            }
+        }
+        // Second run: the in-flight "first" is re-queued ahead of "second" rather than
+        // lost, so it will be re-delivered.
+        {
+            let state = AppState::new(test_config(workspace.clone()));
+            state.restore_session();
+            assert_eq!(
+                state.list_agent_turn_queue("agent-1").unwrap(),
+                vec!["first".to_string(), "second".to_string()]
+            );
+        }
+        std::fs::remove_dir_all(workspace).ok();
     }
 
     #[test]

@@ -748,11 +748,21 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
         .pane_writer(&options.pane_id)?
         .ok_or_else(|| format!("pane {} was not found", options.pane_id))?;
 
-    // Write the data (and paste markers) under the lock, then release it before the
-    // submit-key delay. The delay gives a TUI a beat to ingest a pasted turn before
-    // Return lands; holding the per-pane writer lock across that 15ms sleep would
-    // stall every other write to the same pane (live keystrokes, the next queued
-    // turn) behind it. The bracketed-paste body stays atomic within the first
+    // A submit is a multi-write sequence — paste body, a short delay, then Return —
+    // and the writer lock is released across the delay (below) so live keystrokes
+    // aren't stalled behind it. But two submits racing to the same pane could then
+    // interleave as `…A……B…\r\r`, merging both turns onto one line and dropping a
+    // Return. Hold the per-pane *send* lock across the whole sequence so submits
+    // serialize against each other; keystrokes (submit=false) skip it and stay
+    // unblocked. Recover from poisoning — the lock guards ordering only. `send_lock`
+    // is bound first so it outlives the guard that borrows it.
+    let send_lock = options.submit.then(|| state.pane_send_lock(&options.pane_id));
+    let _send_guard = send_lock
+        .as_deref()
+        .map(|lock| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+
+    // Write the data (and paste markers) under the writer lock, then release it before
+    // the submit-key delay. The bracketed-paste body stays atomic within this first
     // locked section; only the trailing Return is sent in a second short section.
     {
         let mut writer = writer
@@ -1089,7 +1099,7 @@ fn start_child_watcher(
             };
             if !exited {
                 tick = tick.wrapping_add(1);
-                if tick % DESCENDANT_REFRESH_TICKS == 0 {
+                if tick.is_multiple_of(DESCENDANT_REFRESH_TICKS) {
                     descendants = descendant_process_ids(root_pid);
                 }
                 continue;

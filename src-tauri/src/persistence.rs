@@ -49,6 +49,11 @@ pub struct PersistedState {
     /// queues and transcripts.
     #[serde(default)]
     pub drafts: HashMap<String, String>,
+    /// Per-agent in-flight turn: a queued turn claimed for delivery but not confirmed
+    /// on the PTY before shutdown. Recovered by re-queueing at the front so a crash
+    /// mid-delivery re-sends rather than loses it. Absent in older state files.
+    #[serde(default)]
+    pub inflight: HashMap<String, QueuedTurn>,
     /// Vertical terminal split groups. Each group glues adjacent pane tabs into a
     /// shared top-to-bottom terminal viewport; older state files simply have none.
     #[serde(default)]
@@ -71,6 +76,7 @@ impl Default for PersistedState {
             queues: HashMap::new(),
             recent_sessions: Vec::new(),
             drafts: HashMap::new(),
+            inflight: HashMap::new(),
             pane_splits: Vec::new(),
             active_tab_id: None,
         }
@@ -334,6 +340,7 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.pane_splits = take_vec(&mut map, "paneSplits", "pane split", &mut dropped);
     state.group_order = take_string_vec(&mut map, "groupOrder");
     state.queues = take_map_of_vecs(&mut map, "queues", "queued turn", &mut dropped);
+    state.inflight = take_typed_map(&mut map, "inflight", "in-flight turn", &mut dropped);
     state.drafts = take_string_map(&mut map, "drafts");
     state.active_tab_id = map
         .get("activeTabId")
@@ -397,6 +404,29 @@ fn take_map_of_vecs<T: DeserializeOwned>(
         }
         if !parsed_items.is_empty() {
             out.insert(entry_key, parsed_items);
+        }
+    }
+    out
+}
+
+/// Removes a `{ key: value }` field, deserializing each value on its own and dropping
+/// only the bad entries (rather than the whole map).
+fn take_typed_map<T: DeserializeOwned>(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+    dropped: &mut Vec<String>,
+) -> HashMap<String, T> {
+    let Some(Value::Object(entries)) = map.remove(key) else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (entry_key, value) in entries {
+        match serde_json::from_value::<T>(value) {
+            Ok(parsed) => {
+                out.insert(entry_key, parsed);
+            }
+            Err(err) => dropped.push(format!("{label} '{entry_key}': {err}")),
         }
     }
     out
