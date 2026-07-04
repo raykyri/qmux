@@ -1,25 +1,18 @@
-# Forking an agent session from inside the terminal
+# Forking an agent session
 
-Add skills and control-socket support, callable inside a running agent session, that
-fork it into a new tab nested under the current one. The fork inherits the session's
-transcript and continues independently; the original session is untouched. Claude and
-Codex are supported.
-
-- `/qmux:fork` — fork in place (the new tab runs in the same directory).
-- `/qmux:fork-worktree` — fork into a fresh git worktree.
-
-(`qmux:` is the Claude plugin namespace from `qmux-plugin/.claude-plugin/plugin.json`,
-the same mechanism the other injected skills use.)
+Add app, CLI, and control-socket support that forks a running agent session into a
+new tab. The fork inherits the session's transcript and continues independently;
+the original session is untouched. Claude and Codex are supported.
 
 ## Mechanism
 
 Claude Code can branch a session: `claude --resume <id> --fork-session` replays a
 session's history but writes to a *new* session id, so the fork and the original
 diverge without conflicting. Codex exposes the same concept through
-`codex fork <id>`. We drive that from a skill or UI action:
+`codex fork <id>`. We drive that from the app UI or the in-pane qmux CLI:
 
-1. **Skill** (`SKILL.md`) tells Claude to run one command and report the result:
-   `"${QMUX_CLI:-qmux}" fork [--worktree] [-- <launch prompt>]`.
+1. **Frontend** calls Tauri `agent_fork` for the right-pane fork menu and ask-in-fork
+   flows.
 2. **CLI** (`qmux fork [--worktree] [-- <launch prompt>]`) sends an `agent.fork`
    request over the existing token-gated control socket (`QMUX_SOCK` / `QMUX_TOKEN`),
    and prints the result so the user sees confirmation in the terminal.
@@ -32,8 +25,8 @@ diverge without conflicting. Codex exposes the same concept through
 
 ## Backend
 
-- `qmux_pane_envs` also exports `QMUX_CLI` (the qmux executable path) so a skill's
-  bash step can call it without relying on `qmux` being on `PATH`.
+- `qmux_pane_envs` exports the socket/token pair used by the in-pane qmux CLI to
+  authenticate control-socket requests.
 - `ClaudeAdapter::fork_pane(state, source, use_worktree, prompt)`:
   - Requires `source.session_id` (the SessionStart hook must have fired); errors with
     a clear message otherwise.
@@ -68,12 +61,6 @@ payload carries only `useWorktree` and an optional launch prompt). That's the sa
 authority the user already has acting in that terminal, so the boundary stays
 meaningful.
 
-## Skills
-
-`qmux-plugin/skills/fork/SKILL.md` and `.../fork-worktree/SKILL.md`: minimal,
-imperative — run one command, include `-- <launch prompt>` when the user provided a
-task for the fork, report its output, do nothing else.
-
 ## Notes / simplifications (v1)
 
 - Fork requires a started session (a brand-new session that hasn't hit SessionStart
@@ -84,11 +71,6 @@ task for the fork, report its output, do nothing else.
   the source keeps writing its own session file uninterrupted.
 - Worktree forks branch off the group's base repo at HEAD (like a launcher worktree),
   not off the source's uncommitted state.
-- `QMUX_CLI` is exported into a pane's environment at spawn time, so the skill only
-  works in panes started after this change. Sessions already running when qmux is
-  upgraded won't have it (and `qmux` isn't on `PATH`), so the skill there prints
-  "command not found" until qmux is restarted — restart re-spawns recovered panes with
-  the new env. New sessions work immediately.
 - The control plane's only spawn is `agent.fork`, scoped to the caller's own session.
   There's intentionally no fork rate/count cap: it's the same authority the user has
   in their terminal. A runaway agent could fork in a loop; revisit a backstop if that

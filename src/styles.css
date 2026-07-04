@@ -3584,6 +3584,15 @@ button:disabled {
   margin-top: -3px;
 }
 
+/* Give a collapsed tagged instruction (e.g. a task notification) breathing room
+   before whatever the agent does next — text or straight into tool activity. */
+.turn-card.role-user.is-tagged-instruction-message + .turn-card.role-assistant,
+.turn-card.role-user.is-tagged-instruction-message + .activity-group-block,
+.turn-card.role-user.is-tagged-instruction-message + .tool-block,
+.turn-card.role-user.is-tagged-instruction-message + .thinking-block {
+  margin-top: 5px;
+}
+
 .turn-card.is-tagged-instruction-message .turn-blocks {
   gap: 0;
   margin-top: 0;
