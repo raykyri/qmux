@@ -1285,15 +1285,30 @@ export default function App() {
     () => sidebarPanes.filter((pane) => groupById.get(pane.groupId)?.collapsed !== true),
     [groupById, sidebarPanes],
   );
+  // The panes that get a numbered jump shortcut (Cmd-1..9). A collapsed group hides its
+  // tabs, and a grouped split shares one tab for all its members, so those don't get a
+  // number: skip collapsed-group panes (already dropped by cycleableSidebarPanes) and
+  // keep only the first member of each split.
+  const numberedTabPanes = useMemo(
+    () =>
+      cycleableSidebarPanes.filter((pane) => {
+        const split = paneSplitForPane(paneSplits, pane.id);
+        return !split || split.paneIds[0] === pane.id;
+      }),
+    [cycleableSidebarPanes, paneSplits],
+  );
   const shortcutLabelForPaneId = useCallback(
     (paneId?: string | null) => {
       if (!paneId) {
         return null;
       }
-      const index = sidebarPanes.findIndex((pane) => pane.id === paneId);
+      // Number from the same list the Cmd-1..9 shortcut jumps through, so a tab's badge
+      // matches the key that reaches it (collapsed-group and non-first split members have
+      // no number).
+      const index = numberedTabPanes.findIndex((pane) => pane.id === paneId);
       return index >= 0 && index < 9 ? `⌘${index + 1}` : null;
     },
-    [sidebarPanes],
+    [numberedTabPanes],
   );
   const activeBrowserOverlay = activePane ? browserOverlayByPane[activePane.id] : undefined;
   useEffect(() => {
@@ -5418,13 +5433,14 @@ export default function App() {
         }
       };
 
-      // Cmd-1..9 / Ctrl-1..9 jump to real pane tabs in sidebar order. Claimed
-      // before the editable-target bail so the app-level tab shortcuts keep
-      // working from terminal and composer focus.
+      // Cmd-1..9 / Ctrl-1..9 jump to numbered pane tabs in sidebar order, skipping
+      // panes hidden in a collapsed group and the non-first members of a grouped split
+      // (which share the first member's tab). Claimed before the editable-target bail so
+      // the app-level tab shortcuts keep working from terminal and composer focus.
       if (/^[1-9]$/.test(key) && !event.altKey && !event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
-        const pane = sidebarPanes[Number(key) - 1];
+        const pane = numberedTabPanes[Number(key) - 1];
         if (pane) {
           focusPaneTab(pane.id);
         }
@@ -5592,6 +5608,7 @@ export default function App() {
     panes,
     sidebarPanes,
     cycleableSidebarPanes,
+    numberedTabPanes,
     activePane,
     lastActiveGroupId,
     groupById,
