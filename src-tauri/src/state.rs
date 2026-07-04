@@ -675,6 +675,15 @@ impl AppState {
     /// their persisted runtimes are stale (the old PTYs died with the previous
     /// process), so the pane metadata is returned for the caller to respawn into
     /// fresh PTYs. Returns the recoverable pane infos in a stable order.
+    /// Checks the persisted state file is readable before `restore_session`
+    /// hydrates and enables saving. Returns `Err` with a user-facing message when
+    /// the file exists but cannot be read, so startup can abort loudly instead of
+    /// overwriting an intact session with an empty one. See
+    /// [`persistence::preflight_state`].
+    pub fn preflight_persisted_state(&self) -> Result<(), String> {
+        persistence::preflight_state(&self.inner.config.workspace_root)
+    }
+
     pub fn restore_session(&self) -> Vec<PaneInfo> {
         let outcome = persistence::load_with_diagnostics(&self.inner.config.workspace_root);
         if let Some(warning) = outcome.warning.as_ref() {
@@ -2591,6 +2600,22 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.panes.get(pane_id).map(|pane| pane.child.clone()))
+    }
+
+    /// Snapshots every live pane's id and child handle. Used by the app-exit
+    /// teardown to take down each pane's process tree, since quit bypasses the
+    /// per-pane `kill_pane` path.
+    pub fn all_pane_children(&self) -> Result<Vec<(String, SharedChild)>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .panes
+            .iter()
+            .map(|(pane_id, pane)| (pane_id.clone(), pane.child.clone()))
+            .collect())
     }
 
     pub fn pane_backlog(&self, pane_id: &str) -> Result<Option<SharedBacklog>, String> {

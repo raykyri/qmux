@@ -169,6 +169,26 @@ fn active_tab_set(state: tauri::State<'_, AppState>, tab_id: Option<String>) -> 
     state.set_active_tab_id(tab_id)
 }
 
+/// Surfaces a fatal startup error in a native dialog, for GUI (Finder/Dock)
+/// launches that have no terminal to show the `eprintln`. Best-effort: if
+/// `osascript` fails the message is still on stderr for a terminal launch.
+#[cfg(target_os = "macos")]
+fn notify_fatal_startup(message: &str) {
+    // AppleScript string literals escape backslash and double-quote; embedded
+    // newlines are fine inside the quoted literal.
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display dialog \"{escaped}\" with title \"qmux\" buttons {{\"Quit\"}} default button \"Quit\" with icon stop"
+    );
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn notify_fatal_startup(_message: &str) {}
+
 /// Shows the native macOS folder chooser via `osascript` and returns the selected
 /// POSIX path, or `None` when the user cancels. Hand-rolled (cf. the login-shell PATH
 /// probe in launch_path.rs) to avoid pulling in a dialog plugin; macOS-only, matching
@@ -838,6 +858,15 @@ fn main() {
                     Ok(info) => state.set_file_server(info.port),
                     Err(err) => eprintln!("qmux: failed to start file server: {err}"),
                 }
+                // Refuse to continue if the saved session exists but can't be read:
+                // starting empty here would let the first save overwrite it with
+                // nothing and no backup. Abort loudly (terminal + GUI) so a relaunch
+                // after fixing the transient cause restores the session intact.
+                if let Err(err) = state.preflight_persisted_state() {
+                    eprintln!("\nqmux: {err}\n");
+                    notify_fatal_startup(&err);
+                    std::process::exit(1);
+                }
                 // Restore persisted groups/agents/queues, then respawn recoverable
                 // panes into fresh PTYs before the command handlers go live so the
                 // webview's first list_panes() already sees the recovered session.
@@ -925,13 +954,20 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building qmux")
-        .run(move |_app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event
-                && code != Some(tauri::RESTART_EXIT_CODE)
-                && exit_state.should_confirm_exit()
+        .run(move |_app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, code, .. }
+                if code != Some(tauri::RESTART_EXIT_CODE)
+                    && exit_state.should_confirm_exit() =>
             {
                 api.prevent_exit();
                 exit_state.request_exit_confirmation();
             }
+            // The process is really terminating now (exit confirmed, or nothing to
+            // confirm). Take down every pane's process tree so agent-spawned
+            // descendants don't survive as orphans past quit.
+            tauri::RunEvent::Exit => {
+                pty::kill_all_panes(&exit_state);
+            }
+            _ => {}
         });
 }

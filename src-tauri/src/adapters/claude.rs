@@ -1524,6 +1524,9 @@ mod tests {
                 opencode: OpencodeAdapterConfig {
                     binary: Some("opencode".to_string()),
                 },
+                grok: GrokAdapterConfig {
+                    binary: Some("grok".to_string()),
+                },
             },
             legacy_claude_binary: None,
             claude_plugin_dir: PathBuf::new(),

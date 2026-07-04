@@ -1,5 +1,6 @@
 use crate::state::{PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use crate::workspace::{AgentInfo, GroupInfo};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -161,6 +162,66 @@ pub struct LoadOutcome {
     pub warning: Option<LoadWarning>,
 }
 
+/// True when the user asked to force startup past an *unreadable* state file,
+/// discarding it. Set via the `QMUX_RESET_STATE` env var (documented in the
+/// abort message from `preflight_state`) — the GUI equivalent of a "hold a
+/// modifier to reset" escape hatch, chosen over live modifier detection because
+/// a Finder launch has no reliable key state to read at startup.
+fn reset_state_requested() -> bool {
+    std::env::var_os("QMUX_RESET_STATE").is_some_and(|value| value == "1" || value == "true")
+}
+
+/// Checked once at startup, *before* recovery hydrates state and enables saving.
+///
+/// If the state file exists but cannot be read (permission denied, fd
+/// exhaustion, an offline iCloud/network volume, EIO, …) then starting with an
+/// empty session would let the first boot-time `save` overwrite the intact file
+/// with nothing — and, unlike the corrupt-file path, there is no backup to
+/// recover from. So this refuses to continue: it returns `Err` with a
+/// user-facing message and the caller aborts startup, leaving the file untouched
+/// so a relaunch (after fixing the transient cause) restores the session.
+///
+/// A missing file (first run) or a readable file returns `Ok`. With
+/// `QMUX_RESET_STATE` set, an unreadable file is renamed aside to a `.bak` and
+/// `Ok` is returned so the user can deliberately start fresh without losing the
+/// original bytes.
+pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
+    let path = state_path(workspace_root);
+    // A plain open surfaces the same EACCES/EMFILE/EIO the later read would hit,
+    // without loading or holding the contents.
+    match fs::File::open(&path) {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) if reset_state_requested() => match preserve_rejected_state(&path, "unreadable") {
+            Ok(backup_path) => {
+                eprintln!(
+                    "qmux: QMUX_RESET_STATE set; moved unreadable state {} aside to {} and starting fresh",
+                    path.display(),
+                    backup_path.display()
+                );
+                Ok(())
+            }
+            Err(rename_err) => Err(format!(
+                "could not read persisted state {} ({err}) and could not move it aside to reset: {rename_err}",
+                path.display()
+            )),
+        },
+        Err(err) => Err(format!(
+            "Could not read your saved qmux session at {path}:\n  {err}\n\n\
+             Your panes and agents are still saved on disk, so qmux is refusing to start with an \
+             empty session and overwrite them. This is almost always temporary — fix the cause \
+             below and relaunch to get your session back:\n\
+             \x20 • Permission denied: check the file's ownership and permissions.\n\
+             \x20 • Too many open files: quit other apps (or raise the open-file limit), then relaunch.\n\
+             \x20 • File on iCloud/a network volume: wait for the volume to come back online.\n\n\
+             To start fresh on purpose instead — your current session file is moved aside to a \
+             .bak first, so nothing is lost — relaunch with:\n\
+             \x20 QMUX_RESET_STATE=1 open -a qmux",
+            path = path.display()
+        )),
+    }
+}
+
 /// Reads persisted state and reports why recovery had to fall back to an empty
 /// snapshot. Missing state is expected on first run and does not produce a warning.
 /// Corrupt or unsupported state files are renamed aside before future saves can
@@ -171,13 +232,15 @@ pub fn load_with_diagnostics(workspace_root: &Path) -> LoadOutcome {
         Ok(raw) => raw,
         Err(err) if err.kind() == ErrorKind::NotFound => return load_ok(PersistedState::default()),
         Err(err) => {
-            return load_warning(
-                path.clone(),
-                format!(
-                    "failed to read persisted state {}; recovery will start empty: {err}",
-                    path.display()
-                ),
-                None,
+            // `preflight_state` runs first and aborts startup on an unreadable
+            // file, so this is only reached if the read starts failing between
+            // preflight and here (e.g. transient EIO). Preserve the bytes aside
+            // as a `.bak` rather than starting empty and letting the next save
+            // overwrite an intact session with no way back.
+            return discard_state_file(
+                &path,
+                "unreadable",
+                format!("failed to read persisted state {}: {err}", path.display()),
             );
         }
     };
@@ -219,16 +282,151 @@ pub fn load_with_diagnostics(workspace_root: &Path) -> LoadOutcome {
         );
     }
 
-    match serde_json::from_value::<PersistedState>(value) {
-        Ok(state) => load_ok(state),
-        Err(err) => discard_state_file(
-            &path,
-            "corrupt",
-            format!(
-                "persisted state {} does not match the expected schema: {err}",
-                path.display()
-            ),
-        ),
+    // Deserialize collections element-by-element so a single malformed record
+    // (partial corruption, a hand-edit, an unforeseen schema drift in one entry)
+    // drops only that entry instead of discarding the entire session. The bad
+    // entry is left behind on disk until the next save re-serializes the good
+    // state over it; the dropped entries are surfaced as a warning.
+    let (state, dropped) = deserialize_lenient(value);
+    if dropped.is_empty() {
+        load_ok(state)
+    } else {
+        LoadOutcome {
+            state,
+            warning: Some(LoadWarning {
+                message: format!(
+                    "recovered persisted state {} but dropped {} unreadable entr{}: {}",
+                    path.display(),
+                    dropped.len(),
+                    if dropped.len() == 1 { "y" } else { "ies" },
+                    dropped.join("; ")
+                ),
+                path,
+                backup_path: None,
+            }),
+        }
+    }
+}
+
+/// Rebuilds a `PersistedState` from an already-validated JSON object, converting
+/// each collection element independently. Returns the recovered state plus a
+/// human-readable list of the entries that had to be dropped (empty on a clean
+/// load). Scalar top-level fields fall back to their defaults when malformed.
+fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
+    let mut dropped = Vec::new();
+    let mut state = PersistedState::default();
+    let Value::Object(mut map) = value else {
+        // The version check upstream already parsed this as an object; anything
+        // else is degenerate corruption, so recover an empty session.
+        dropped.push("persisted state root is not a JSON object".to_string());
+        return (state, dropped);
+    };
+
+    state.version = STATE_VERSION;
+    if let Some(next_id) = map.get("nextId").and_then(Value::as_u64) {
+        state.next_id = next_id;
+    }
+    state.panes = take_vec(&mut map, "panes", "pane", &mut dropped);
+    state.groups = take_vec(&mut map, "groups", "group", &mut dropped);
+    state.agents = take_vec(&mut map, "agents", "agent", &mut dropped);
+    state.recent_sessions =
+        take_vec(&mut map, "recentSessions", "recent session", &mut dropped);
+    state.pane_splits = take_vec(&mut map, "paneSplits", "pane split", &mut dropped);
+    state.group_order = take_string_vec(&mut map, "groupOrder");
+    state.queues = take_map_of_vecs(&mut map, "queues", "queued turn", &mut dropped);
+    state.drafts = take_string_map(&mut map, "drafts");
+    state.active_tab_id = map
+        .get("activeTabId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    (state, dropped)
+}
+
+/// Removes an array field and deserializes each element on its own, collecting a
+/// dropped-entry note for any that fail. A present-but-non-array field is itself
+/// reported and ignored.
+fn take_vec<T: DeserializeOwned>(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+    dropped: &mut Vec<String>,
+) -> Vec<T> {
+    match map.remove(key) {
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (index, item) in items.into_iter().enumerate() {
+                match serde_json::from_value::<T>(item) {
+                    Ok(parsed) => out.push(parsed),
+                    Err(err) => dropped.push(format!("{label} #{index}: {err}")),
+                }
+            }
+            out
+        }
+        Some(_) => {
+            dropped.push(format!("{label}s field was not an array; ignored it"));
+            Vec::new()
+        }
+        None => Vec::new(),
+    }
+}
+
+/// Removes a `{ key: [values] }` field, deserializing each value list leniently
+/// and dropping any bad elements. A key whose value list ends up empty is
+/// omitted, matching how `restore_session` treats empty queues.
+fn take_map_of_vecs<T: DeserializeOwned>(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+    dropped: &mut Vec<String>,
+) -> HashMap<String, Vec<T>> {
+    let Some(Value::Object(entries)) = map.remove(key) else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (entry_key, value) in entries {
+        let Value::Array(items) = value else {
+            dropped.push(format!("{label}s for '{entry_key}' were not an array; ignored"));
+            continue;
+        };
+        let mut parsed_items = Vec::with_capacity(items.len());
+        for (index, item) in items.into_iter().enumerate() {
+            match serde_json::from_value::<T>(item) {
+                Ok(parsed) => parsed_items.push(parsed),
+                Err(err) => dropped.push(format!("{label} '{entry_key}' #{index}: {err}")),
+            }
+        }
+        if !parsed_items.is_empty() {
+            out.insert(entry_key, parsed_items);
+        }
+    }
+    out
+}
+
+/// Removes a string-array field, keeping only the entries that are strings.
+fn take_string_vec(map: &mut serde_json::Map<String, Value>, key: &str) -> Vec<String> {
+    match map.remove(key) {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::String(value) => Some(value),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Removes a `{ key: "value" }` field, keeping only the string-valued entries.
+fn take_string_map(map: &mut serde_json::Map<String, Value>, key: &str) -> HashMap<String, String> {
+    match map.remove(key) {
+        Some(Value::Object(entries)) => entries
+            .into_iter()
+            .filter_map(|(entry_key, value)| match value {
+                Value::String(value) => Some((entry_key, value)),
+                _ => None,
+            })
+            .collect(),
+        _ => HashMap::new(),
     }
 }
 
@@ -474,6 +672,42 @@ mod tests {
             .expect("unsupported state should be preserved");
         assert!(!path.exists());
         assert_eq!(fs::read_to_string(backup_path).unwrap(), bad_state);
+    }
+
+    #[test]
+    fn load_drops_only_malformed_entries_and_keeps_the_rest() {
+        let root = temp_root();
+        // Start from a real, schema-valid snapshot with one good pane so the
+        // surviving entry is produced by the actual serializer.
+        let state = PersistedState {
+            next_id: 5,
+            panes: vec![sample_pane()],
+            ..PersistedState::default()
+        };
+        save(&root, &state).unwrap();
+
+        // Splice a malformed pane (missing required fields) beside the good one.
+        let path = state_path(&root);
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["panes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "id": "broken" }));
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let outcome = load_with_diagnostics(&root);
+        // The good pane survives; only the malformed one is dropped, and other
+        // top-level fields still load.
+        assert_eq!(outcome.state.panes.len(), 1);
+        assert_eq!(outcome.state.panes[0].id, "pane-1");
+        assert_eq!(outcome.state.next_id, 5);
+        let warning = outcome.warning.expect("dropped entries should warn");
+        assert!(warning.message.contains("pane #1"));
+        // A partial recovery rewrites the file on the next save rather than
+        // discarding it, so nothing is renamed aside.
+        assert!(warning.backup_path.is_none());
+        assert!(path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

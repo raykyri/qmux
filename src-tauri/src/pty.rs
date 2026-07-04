@@ -36,6 +36,18 @@ const MAX_INITIAL_ROWS: u16 = 200;
 /// state that later bytes in the same draw rely on.
 const BACKLOG_CAP: usize = 8 * 1024 * 1024;
 
+/// How often the per-pane child watcher checks whether the direct child (shell or
+/// agent) has exited. Cheap — a non-blocking `try_wait` under the child lock — so
+/// a couple of seconds keeps a stuck pane's "Running" state from lingering long
+/// without meaningful cost.
+const CHILD_WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How many watch intervals between refreshes of the descendant-pid snapshot the
+/// watcher falls back on when the direct child exits. Descendants that outlive
+/// their shell (dev servers, `sleep &`) are long-lived, so a coarse ~16s refresh
+/// catches them while keeping the `pgrep` walk off the steady-state path.
+const DESCENDANT_REFRESH_TICKS: u32 = 8;
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitialPaneSize {
@@ -698,7 +710,12 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     };
 
     state.insert_pane(runtime)?;
-    start_reader_thread(state.clone(), pane_id, reader, backlog);
+    // Capture the direct child's pid for the watcher before handing the child to
+    // the reader/watcher threads; the watcher uses it to reach descendants that
+    // outlive a naturally-exiting shell.
+    let root_pid = child.lock().ok().and_then(|guard| guard.process_id());
+    start_reader_thread(state.clone(), pane_id.clone(), reader, backlog);
+    start_child_watcher(state.clone(), pane_id, child, root_pid);
 
     Ok(pane)
 }
@@ -889,6 +906,31 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Best-effort teardown of every pane's process tree on app exit.
+///
+/// Quitting the app just calls `app.exit`, which bypasses the per-pane
+/// `kill_pane` path: nothing signals the panes' children, so anything an agent
+/// left running that survives the PTY hangup — dev servers, MCP/language
+/// servers, `setsid`/disowned jobs — is reparented to launchd and leaks across
+/// every quit. This runs the same process-group signal + descendant walk as
+/// closing a pane on each live pane, skipping the model/undo bookkeeping since
+/// the process is about to exit anyway. It cannot help a hard SIGKILL/force-quit,
+/// which no in-process handler can intercept.
+pub fn kill_all_panes(state: &AppState) {
+    let children = match state.all_pane_children() {
+        Ok(children) => children,
+        Err(err) => {
+            eprintln!("qmux: failed to enumerate panes for exit cleanup: {err}");
+            return;
+        }
+    };
+    for (pane_id, child) in children {
+        if let Err(err) = kill_child(&pane_id, child) {
+            eprintln!("qmux: failed to kill pane {pane_id} on exit: {err}");
+        }
+    }
+}
+
 pub fn close_worktree_pane(
     state: &AppState,
     agent_id: &str,
@@ -995,6 +1037,77 @@ fn start_reader_thread(
         }
         remove_shell_integration_dir(&pane_id);
         state.emit(QmuxEvent::pty_exit(pane_id, exit_code));
+    });
+}
+
+/// Watches a pane's direct child so a pane whose shell exits while a backgrounded
+/// descendant still holds the PTY slave open is torn down instead of hanging.
+///
+/// The reader thread only unblocks (and runs teardown) on PTY EOF, which never
+/// arrives while any descendant keeps a slave fd open. Left alone, such a pane
+/// leaks its reader thread, leaves the exited shell as a zombie, and stays stuck
+/// "Running" in the UI. This watcher notices the direct child has exited and
+/// forces the surviving descendants down so the slave closes, the reader hits
+/// EOF, and the existing per-pane cleanup runs.
+///
+/// A backgrounded job gets its own process group and is reparented off the shell
+/// the instant the shell exits, so after the fact neither the shell's process
+/// group nor a live ppid walk can find it. We therefore keep a recent snapshot of
+/// the descendant pids (refreshed while the child is alive) and signal that
+/// snapshot — plus the process group, for anything still in it — on exit. A job
+/// spawned and orphaned within a single refresh window can still be missed, which
+/// leaves the same state as before this watcher existed for that one narrow case.
+fn start_child_watcher(
+    state: AppState,
+    pane_id: String,
+    child: SharedChild,
+    root_pid: Option<u32>,
+) {
+    let Some(root_pid) = root_pid else {
+        return;
+    };
+    thread::spawn(move || {
+        let mut descendants = descendant_process_ids(root_pid);
+        let mut tick: u32 = 0;
+        loop {
+            thread::sleep(CHILD_WATCH_INTERVAL);
+            // The pane's child Arc is the liveness handle: once `kill_pane` or the
+            // reader's EOF cleanup removes the pane — or a respawn replaces it with
+            // a fresh child under a reused id — this watcher has nothing left to do.
+            match state.pane_child(&pane_id) {
+                Ok(Some(current)) if Arc::ptr_eq(&current, &child) => {}
+                _ => break,
+            }
+            let exited = {
+                let Ok(mut guard) = child.lock() else {
+                    break;
+                };
+                match guard.try_wait() {
+                    Ok(status) => status.is_some(),
+                    Err(_) => break,
+                }
+            };
+            if !exited {
+                tick = tick.wrapping_add(1);
+                if tick % DESCENDANT_REFRESH_TICKS == 0 {
+                    descendants = descendant_process_ids(root_pid);
+                }
+                continue;
+            }
+            // Direct child gone but the pane is still present: a descendant is
+            // holding the PTY slave open and the reader is blocked on read(). Force
+            // the tree down (best-effort) so the slave closes, the reader hits EOF,
+            // and the normal cleanup runs.
+            let group = format!("-{root_pid}");
+            let _ = Command::new("/bin/kill").arg("-TERM").arg(&group).status();
+            for pid in &descendants {
+                let _ = Command::new("/bin/kill")
+                    .arg("-TERM")
+                    .arg(pid.to_string())
+                    .status();
+            }
+            break;
+        }
     });
 }
 
