@@ -12,6 +12,14 @@ import {
 import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
 import type { AgentInfo, GroupInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, Turn } from "../types";
 
+// Upper bound on the per-agent hook-event history. This feed accumulates for an
+// agent's whole lifetime (it backs the "copy transcript as JSON" export), so
+// without a cap a long-running, tool-heavy agent grows the array without limit
+// and pays an O(n) copy on every single hook event. Keeping the most recent N
+// bounds both memory and the per-event copy; N is generous enough that the copy
+// export stays complete for any realistic session.
+const MAX_HOOK_EVENTS_PER_AGENT = 2000;
+
 // The backend event stream drives most of the app's live state. This hook owns
 // the single global subscription: it is intentionally set up once (empty deps),
 // so every callback it touches is passed in and captured at first render,
@@ -113,10 +121,18 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       }
       const hookEvent = transcriptHookEvent(event);
       if (hookEvent) {
-        setHookEventsByAgent((current) => ({
-          ...current,
-          [hookEvent.agentId]: [...(current[hookEvent.agentId] ?? []), hookEvent],
-        }));
+        setHookEventsByAgent((current) => {
+          const existing = current[hookEvent.agentId] ?? [];
+          const appended = [...existing, hookEvent];
+          // Bound the history so a busy agent can't grow it without limit (and so
+          // each append copies at most MAX_HOOK_EVENTS_PER_AGENT elements, not the
+          // whole session's worth). Drop the oldest events past the cap.
+          const next =
+            appended.length > MAX_HOOK_EVENTS_PER_AGENT
+              ? appended.slice(appended.length - MAX_HOOK_EVENTS_PER_AGENT)
+              : appended;
+          return { ...current, [hookEvent.agentId]: next };
+        });
       }
       if (event.type === "pty.exit" && event.paneId) {
         const exitedPaneId = event.paneId;
