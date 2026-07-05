@@ -1,8 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, reusable_session_agent,
-    shell_quote_arg, shell_quote_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
+    reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -512,7 +512,19 @@ impl CodexAdapter {
                         .or_else(|| string_field(&notification.payload, "resource_id"))
                         .or_else(|| string_field(&notification.payload, "resourceId"));
                     let transcript_path = string_field(&notification.payload, "transcript_path")
-                        .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                        .or_else(|| string_field(&notification.payload, "transcriptPath"))
+                        // This payload arrives over the control socket under the pane's
+                        // token, so a prompt-injected agent can forge a SessionStart.
+                        // Reject a path that isn't a sibling of the already-bound
+                        // transcript (or isn't a .jsonl) before tailing it; a rejected
+                        // path falls back to session-id directory discovery, which is
+                        // confined to $CODEX_HOME/sessions and matched on session_meta id.
+                        .filter(|candidate| {
+                            hook_transcript_path_acceptable(
+                                current.transcript_path.as_deref(),
+                                candidate,
+                            )
+                        });
                     let session_id_for_tail = session_id.clone();
                     let transcript_path_for_tail = transcript_path.clone();
                     // Field-scoped mutation, not a full-struct `update_agent`: this
@@ -779,6 +791,11 @@ fn build_codex_fork_args(
 ) -> Vec<String> {
     let mut tail_args = vec!["fork".to_string(), session_id.trim().to_string()];
     if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        // Delimit the prompt with `--` so a fork prompt that happens to start with
+        // `-` (e.g. a forged `agent.fork` payload of "--dangerously-bypass-...") is
+        // parsed as the positional prompt, not as a Codex flag that could weaken the
+        // sandbox/approval posture. Mirrors the initial-launch path (`prompt_tail_args`).
+        tail_args.push("--".to_string());
         tail_args.push(prompt.to_string());
     }
     build_codex_args(cwd, additional_workspace_root, model, options, tail_args)
@@ -1697,6 +1714,7 @@ mod tests {
                 "--search",
                 "fork",
                 "session-123",
+                "--",
                 "continue here"
             ]
         );

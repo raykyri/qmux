@@ -4,8 +4,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -133,6 +134,8 @@ pub fn save_preferences(workspace_root: &Path, preferences: &AppPreferences) -> 
                 parent.display()
             )
         })?;
+        // Owner-only state dir, consistent with config.rs. Best-effort on an existing dir.
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
 
     let raw = serde_json::to_string_pretty(preferences)
@@ -538,6 +541,9 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create state dir {}: {err}", parent.display()))?;
+        // Owner-only state dir (drafts, queued-turn prompts), consistent with the
+        // startup hardening in config.rs. Best-effort on an existing directory.
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
 
     let raw = serde_json::to_string_pretty(state)
@@ -567,7 +573,15 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
 /// are on disk before the caller renames it into place.
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut file = fs::File::create(path)?;
+    // Owner-only: this temp is renamed over state.json / preferences.json, which hold
+    // composer drafts and queued-turn prompt text, so keep it 0600 rather than the umask
+    // default — matching the socket / scrollback hardening.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())

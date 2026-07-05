@@ -358,6 +358,11 @@ impl ClaudeAdapter {
         let prompt = prompt.map(str::trim).unwrap_or_default();
         let has_prompt = !prompt.is_empty();
         if has_prompt {
+            // Delimit the prompt with `--` so a fork prompt that starts with `-`
+            // (e.g. a forged `agent.fork` payload of "--dangerously-skip-permissions")
+            // is parsed as the positional prompt rather than as a Claude flag that
+            // would disable the forked agent's permission prompts.
+            args.push("--".to_string());
             args.push(prompt.to_string());
         }
 

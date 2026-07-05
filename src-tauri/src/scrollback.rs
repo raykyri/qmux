@@ -1,6 +1,7 @@
 use crate::events::base64_encode;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -54,12 +55,19 @@ pub fn append_pane_scrollback(
                 parent.display()
             )
         })?;
+        // Scrollback captures raw terminal output — any secret echoed to a pane, plus
+        // the pane's own QMUX_TOKEN — so keep its directory owner-only, matching the
+        // socket / shell-integration hardening. Best-effort on an existing dir.
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
 
     {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
+            // Owner-only: the log is as sensitive as the socket the same codebase
+            // locks to 0600.
+            .mode(0o600)
             .open(&path)
             .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?;
         file.write_all(chunk)
@@ -129,7 +137,14 @@ fn trim_scrollback_file(path: &Path) -> Result<(), String> {
 /// durable before the caller renames it into place.
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut file = fs::File::create(path)?;
+    // Owner-only: this temp is renamed over the scrollback log, so it must carry the
+    // same 0600 the log itself gets rather than reverting to the umask default.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())

@@ -136,6 +136,21 @@ impl QmuxConfig {
             )
         })?;
 
+        // Keep qmux's private state tree owner-only, matching the 0700/0600 treatment
+        // the control socket and shell-integration files already get. `.qmux` holds the
+        // persisted state (composer drafts, queued-turn prompts), preferences, hook
+        // settings, and per-pane terminal scrollback logs — which can capture any secret
+        // echoed to a terminal and the pane's own QMUX_TOKEN. Runs on every startup so a
+        // tree created by an older, unhardened build is tightened on the next launch.
+        // Best-effort: the individual writers below also create their files 0600.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let state_dir = config.workspace_root.join(".qmux");
+            if fs::create_dir_all(&state_dir).is_ok() {
+                let _ = fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700));
+            }
+        }
+
         if let Some(parent) = config.socket_path.parent() {
             fs::create_dir_all(parent).map_err(|err| {
                 format!(

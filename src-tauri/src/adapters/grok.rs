@@ -1,8 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, reusable_session_agent,
-    shell_quote_arg, shell_quote_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
+    reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -406,7 +406,18 @@ impl GrokAdapter {
                     // Grok's own transcript.
                     let hook_transcript_path =
                         string_field(&notification.payload, "transcript_path")
-                            .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                            .or_else(|| string_field(&notification.payload, "transcriptPath"))
+                            // The hook arrives over the control socket under the pane's
+                            // token, so a prompt-injected agent can forge this path.
+                            // Reject a non-.jsonl or non-sibling path before tailing it;
+                            // a rejected path falls back to the qMux-managed transcript
+                            // path under workspace_root.
+                            .filter(|candidate| {
+                                hook_transcript_path_acceptable(
+                                    current.transcript_path.as_deref(),
+                                    candidate,
+                                )
+                            });
                     let fallback_transcript_path = Self::transcript_path_for(state, &current.id)
                         .display()
                         .to_string();

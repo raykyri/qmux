@@ -33,6 +33,30 @@ pub(crate) fn shell_quote_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Whether a `transcript_path` reported by an adapter's hook notification may be
+/// bound and tailed.
+///
+/// A hook arrives over the control socket carrying the pane's token, so a
+/// prompt-injected agent can forge a `SessionStart` and point `transcript_path`
+/// at any file. We can't fully validate the *first* path (SessionStart is how
+/// qmux discovers it, and the agent may not have written the file yet), but we
+/// require a `.jsonl` extension, and once a transcript is bound we require any
+/// later path to be a sibling in the same session directory. Adapters keep a
+/// session's rollouts in one flat directory, so a legitimate rotation stays a
+/// sibling while a forged mid-session hook can no longer relocate the tail to an
+/// unrelated file (another agent's transcript, a device/FIFO, an arbitrary log).
+/// Mirrors the guard the Claude adapter applies inline.
+pub(crate) fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bool {
+    let candidate = Path::new(candidate);
+    if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return false;
+    }
+    match current {
+        Some(current) => Path::new(current).parent() == candidate.parent(),
+        None => true,
+    }
+}
+
 /// Finds the existing unbound agent for `session_id` running in `cwd`, so a shell
 /// resume (`claude --resume <id>` / `codex resume <id>`) rebinds the original agent
 /// instead of minting a duplicate every restart. Scoped to the same adapter, the
