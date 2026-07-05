@@ -2990,6 +2990,22 @@ fn upsert_recent_session_for_agent_locked(
             .and_then(|session| session.preview.clone())
     });
 
+    // Prefer the line count cached on the previous recent-session entry before
+    // considering a disk read. read_transcript_meta reads and JSON-parses the whole
+    // transcript file, and this runs under the model lock — so re-upserting a
+    // session we've already measured (a status flip, a restore, any mutate_agent)
+    // would otherwise stall every other thread on that IO on every call, since
+    // line_count resets to the in-memory turn count (0 for a cold session) each
+    // time. An actively-growing session keeps its turns in memory (line_count
+    // above), so the on-disk fallback below only serves cold sessions whose files
+    // aren't changing — making the cached count a faithful substitute.
+    if line_count == 0 {
+        line_count = existing
+            .as_ref()
+            .map(|session| session.line_count)
+            .unwrap_or(0);
+    }
+
     if (preview.is_none() || line_count == 0)
         && let Some(transcript_path) = agent.transcript_path.as_deref()
     {
@@ -3001,13 +3017,6 @@ fn upsert_recent_session_for_agent_locked(
         if line_count == 0 {
             line_count = disk_line_count;
         }
-    }
-
-    if line_count == 0 {
-        line_count = existing
-            .as_ref()
-            .map(|session| session.line_count)
-            .unwrap_or(0);
     }
 
     let created_at = existing
