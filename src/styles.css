@@ -3866,6 +3866,102 @@ header + .turn-blocks {
   vertical-align: top;
 }
 
+.turn-diagram {
+  margin: 0 0 8px;
+  border: 1px solid #30383b;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #111416;
+}
+
+.turn-diagram-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  border-bottom: 1px solid #262d30;
+  background: #0d1012;
+}
+
+.turn-diagram-lang {
+  font-family: var(--font-mono);
+  font-size: calc(10.5px + var(--transcript-font-delta, 0px));
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7f8b88;
+}
+
+.turn-diagram-toggle {
+  border: 0;
+  background: transparent;
+  padding: 1px 4px;
+  color: #9aa5a1;
+  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.turn-diagram-toggle:hover {
+  color: var(--accent-color);
+}
+
+.turn-diagram-svg {
+  overflow: auto;
+  padding: 10px;
+  text-align: center;
+}
+
+.turn-diagram-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Graphviz draws black-on-transparent, unreadable on the dark pane, so give it a light
+   canvas and let wide graphs scroll at their natural size. */
+.turn-diagram-svg[data-lang="dot"] {
+  background: #f6f6f2;
+  border-radius: 4px;
+  margin: 6px;
+  padding: 12px;
+}
+
+.turn-diagram-svg[data-lang="dot"] svg {
+  max-width: none;
+}
+
+.turn-diagram-loading {
+  padding: 12px;
+  color: #7f8b88;
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+}
+
+.turn-diagram-error {
+  padding: 8px;
+}
+
+.turn-diagram-error-msg {
+  margin-bottom: 6px;
+  color: #d8a657;
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+}
+
+.turn-diagram-source {
+  margin: 0;
+  overflow: auto;
+  border: 1px solid #30383b;
+  border-radius: 6px;
+  background: #0d1012;
+  padding: 8px;
+}
+
+.turn-diagram-source code {
+  display: block;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
 .turn-markdown th {
   background: #15191b;
   color: #f4f3ec;

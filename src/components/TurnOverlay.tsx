@@ -1,5 +1,6 @@
 import {
   createContext,
+  isValidElement,
   memo,
   useCallback,
   useContext,
@@ -14,6 +15,7 @@ import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
+  ReactElement,
   ReactNode,
 } from "react";
 import { ChevronRight, Ellipsis } from "lucide-react";
@@ -26,6 +28,7 @@ import type { SelectionAnchor } from "../appTypes";
 import { safeHref } from "../lib/links";
 import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
 import TranscriptPickerLink from "./TranscriptPickerLink";
+import DiagramBlock, { diagramLangFromClassName, nodeText } from "./DiagramBlock";
 
 // Link actions for rendered markdown, supplied by App through TurnOverlay. Markdown is
 // rendered deep in the timeline tree, so a context avoids threading these everywhere.
@@ -209,6 +212,18 @@ const markdownComponents: Components = {
       <table {...props} />
     </div>
   ),
+  pre: ({ node: _node, children, ...props }) => {
+    // Fenced blocks arrive as <pre><code class="language-x">. Intercept mermaid/dot/graphviz
+    // and render them as diagrams; everything else falls through to the normal <pre>.
+    const codeEl = isValidElement(children)
+      ? (children as ReactElement<{ className?: string; children?: ReactNode }>)
+      : null;
+    const lang = diagramLangFromClassName(codeEl?.props?.className);
+    if (codeEl && lang) {
+      return <DiagramBlock lang={lang} code={nodeText(codeEl.props.children)} />;
+    }
+    return <pre {...props}>{children}</pre>;
+  },
 };
 
 export function formatTurnsTranscript(turns: Turn[], assistantLabel: string) {
