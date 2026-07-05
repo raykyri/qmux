@@ -208,7 +208,20 @@ pub fn submit_agent_turn(
             // send straight through — otherwise the pause is silently bypassed (and any
             // already-queued turns are jumped). It drains when the user unpauses.
             if agent.paused || policy.should_queue(agent.status) || has_pending_queue {
-                return queue_agent_turn(state, &agent, data);
+                let result = queue_agent_turn(state, &agent, data)?;
+                // Rescue only a *newly* stranded turn. When the queue was already
+                // non-empty we preserve strict append order and let the normal drain
+                // triggers (idle hook, typing-clear, unpause) send it. But when the
+                // queue was empty, this turn was queued solely on `agent.status`, which
+                // was read without the model lock and separately from `has_pending_queue`
+                // — so the agent may have gone idle in between (its Stop hook marking it
+                // Done with the queue momentarily empty), leaving this lone turn with
+                // nothing to drain it. Attempt the same guarded drain the other enqueue
+                // sites use; it is a no-op unless the agent is genuinely idle-and-ready.
+                if has_pending_queue {
+                    return Ok(result);
+                }
+                return drain_after_enqueue(state, &request.agent_id, result);
             }
             if !policy.can_send(agent.status) {
                 return Err(format!(
@@ -637,6 +650,41 @@ fn queue_agent_turn(
     Ok(SubmitAgentTurnResult {
         queued: true,
         pending_turns,
+        queued_turns,
+    })
+}
+
+/// After a turn was enqueued, attempt the guarded drain the enqueue may have raced
+/// against: if the agent has since gone idle-and-ready (not paused, not mid-typing),
+/// send the head of the queue now rather than leaving it stranded until the next
+/// trigger. Mirrors the post-enqueue drain in `queue_wait_agent_turn`.
+///
+/// `drain_agent_turn_queue` claims under the model lock and only sends a genuinely
+/// ready turn, so this is a safe no-op when the agent is really still busy. Returns
+/// `queued_result` unchanged when nothing was sent, or a sent result otherwise.
+fn drain_after_enqueue(
+    state: &AppState,
+    agent_id: &str,
+    queued_result: SubmitAgentTurnResult,
+) -> Result<SubmitAgentTurnResult, String> {
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(queued_result);
+    };
+    let policy = agent_composer_policy(state, &agent)?;
+    // Send only if the agent is genuinely idle-and-ready now (not paused, not
+    // mid-typing, in a can-send status). drain_agent_turn_queue claims under the
+    // model lock, so this is a safe no-op if it is really still busy.
+    let sent = !agent.paused
+        && !state.agent_is_typing(agent_id)?
+        && policy.can_send(agent.status)
+        && drain_agent_turn_queue(state, agent_id)?;
+    if !sent {
+        return Ok(queued_result);
+    }
+    let queued_turns = state.agent_queued_turns(agent_id)?;
+    Ok(SubmitAgentTurnResult {
+        queued: false,
+        pending_turns: queued_turns.len(),
         queued_turns,
     })
 }
