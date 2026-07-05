@@ -11,6 +11,7 @@ use crate::workspace::{
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -784,16 +785,34 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
     Ok(())
 }
 
+/// Removes embedded bracketed-paste markers from paste-mode payload data.
+///
+/// The paste boundary must be unforgeable: an embedded `ESC[201~` in the data
+/// would terminate the bracketed paste early, so the receiving program (shell,
+/// agent TUI) treats everything after it as *typed* input rather than pasted
+/// text — turning attacker-controlled paste/turn content into command
+/// injection. We strip the end marker (the standard terminal defense) and the
+/// start marker too so the framing stays well-formed. Borrows unchanged in the
+/// common case where no markers are present.
+fn strip_bracketed_paste_markers(data: &str) -> Cow<'_, str> {
+    if data.contains("\x1b[200~") || data.contains("\x1b[201~") {
+        Cow::Owned(data.replace("\x1b[200~", "").replace("\x1b[201~", ""))
+    } else {
+        Cow::Borrowed(data)
+    }
+}
+
 fn write_pane_data<W: Write + ?Sized>(
     writer: &mut W,
     options: &PaneWriteOptions,
 ) -> Result<(), String> {
     if options.paste {
+        let data = strip_bracketed_paste_markers(&options.data);
         writer
             .write_all(b"\x1b[200~")
             .map_err(|err| format!("failed to write paste start: {err}"))?;
         writer
-            .write_all(options.data.as_bytes())
+            .write_all(data.as_bytes())
             .map_err(|err| format!("failed to write paste data: {err}"))?;
         writer
             .write_all(b"\x1b[201~")
@@ -1598,6 +1617,29 @@ mod tests {
         let pasted = b"\x1b[200~turn text\x1b[201~";
         assert_eq!(writer.bytes, b"\x1b[200~turn text\x1b[201~\r");
         assert_eq!(writer.flush_offsets, vec![pasted.len(), pasted.len() + 1]);
+    }
+
+    #[test]
+    fn bracketed_paste_strips_embedded_end_marker() {
+        let mut writer = RecordingWriter::default();
+        // Payload carries a forged paste terminator followed by a command.
+        let options = write_options("safe\x1b[201~\nrm -rf ~\n", true, false);
+
+        write_pane_input(&mut writer, &options, Duration::ZERO).unwrap();
+
+        // The embedded ESC[201~ is removed, so the paste stays framed as a
+        // single inert block and the trailing bytes cannot escape to be typed.
+        assert_eq!(writer.bytes, b"\x1b[200~safe\nrm -rf ~\n\x1b[201~");
+    }
+
+    #[test]
+    fn bracketed_paste_leaves_marker_free_data_untouched() {
+        let mut writer = RecordingWriter::default();
+        let options = write_options("ordinary multi\nline text", true, false);
+
+        write_pane_input(&mut writer, &options, Duration::ZERO).unwrap();
+
+        assert_eq!(writer.bytes, b"\x1b[200~ordinary multi\nline text\x1b[201~");
     }
 
     #[test]
