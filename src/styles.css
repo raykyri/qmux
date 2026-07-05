@@ -3540,24 +3540,27 @@ button.home-cascade-wait-pill:focus-visible {
   min-width: 0;
 }
 
+.turn-title-menu {
+  position: relative;
+  margin-left: auto;
+  display: inline-flex;
+}
+
 .turn-title-regenerate-button {
   appearance: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   width: auto;
   min-height: 0;
   height: auto;
-  margin-left: auto;
-  padding: 0;
+  padding: 2px;
   border: 0;
-  border-radius: 0;
+  border-radius: 4px;
   background: transparent;
   color: rgba(217, 221, 217, 0.42);
   font: inherit;
   line-height: 1;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
   cursor: pointer;
 }
 
@@ -3578,11 +3581,53 @@ button.home-cascade-wait-pill:focus-visible {
   opacity: 0.45;
 }
 
-.turn-title-regenerate-glyph {
-  font-size: calc(10.5px + var(--transcript-font-delta, 0px));
-  line-height: inherit;
-  text-transform: none;
-  letter-spacing: 0;
+.turn-title-menu-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 160px;
+  padding: 4px;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #1c1f22;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+}
+
+.turn-title-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--control-h-md);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.turn-title-menu-item:hover:not(:disabled) {
+  background: #283032;
+}
+
+.turn-title-menu-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.turn-title-menu-item:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .turn-card.role-system header,

@@ -16,7 +16,7 @@ import type {
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Ellipsis } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -810,9 +810,6 @@ function MessageItemView({
   const titleSourceText =
     item.role === "user" && titleGenerationEnabled ? messageItemText(item) : null;
   const showTitleAction = Boolean(showName && !taggedInstructionMessage && titleSourceText);
-  const titleActionLabel = titleGenerationBusy
-    ? "Generating tab title"
-    : "Regenerate tab title from this message";
   return (
     <article
       className={`turn-card role-${item.role}${
@@ -823,22 +820,11 @@ function MessageItemView({
         <header>
           <span className="turn-card-role-label">{turnRoleLabel(item.role, assistantLabel)}</span>
           {showTitleAction && titleSourceText ? (
-            <button
-              type="button"
-              className="turn-title-regenerate-button"
-              title={titleActionLabel}
-              aria-label={titleActionLabel}
-              disabled={titleGenerationBusy}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                onRegenerateTitleFromUserMessage?.(titleSourceText);
-              }}
-            >
-              <span className="turn-title-regenerate-glyph" aria-hidden="true">
-                Tt
-              </span>
-            </button>
+            <MessageTitleMenu
+              titleSourceText={titleSourceText}
+              titleGenerationBusy={titleGenerationBusy}
+              onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
+            />
           ) : null}
         </header>
       ) : null}
@@ -848,6 +834,81 @@ function MessageItemView({
         ))}
       </div>
     </article>
+  );
+}
+
+// The "..." menu shown at the right of a user message header. Opens a small popover
+// whose sole entry regenerates the tab title from this message.
+function MessageTitleMenu({
+  titleSourceText,
+  titleGenerationBusy,
+  onRegenerateTitleFromUserMessage,
+}: {
+  titleSourceText: string;
+  titleGenerationBusy: boolean;
+  onRegenerateTitleFromUserMessage: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <span ref={containerRef} className="turn-title-menu">
+      <button
+        type="button"
+        className="turn-title-regenerate-button"
+        title="Title options"
+        aria-label="Title options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
+      >
+        <Ellipsis size={14} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="turn-title-menu-popover" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            className="turn-title-menu-item"
+            disabled={titleGenerationBusy}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpen(false);
+              onRegenerateTitleFromUserMessage?.(titleSourceText);
+            }}
+          >
+            {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
+          </button>
+        </div>
+      ) : null}
+    </span>
   );
 }
 
