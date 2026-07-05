@@ -4328,7 +4328,6 @@ header + .turn-blocks {
   border-radius: 999px;
   background: rgba(109, 167, 236, 0.08);
   color: #6da7ec;
-  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   line-height: 17px;
   white-space: nowrap;

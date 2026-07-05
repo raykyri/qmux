@@ -378,11 +378,11 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
                 onActivatePane(target.paneId);
               }}
             >
-              {waitLabel}
+              Waiting on
             </button>
           ) : (
             <span className="home-cascade-wait-pill" title={`Waiting on ${waitLabel}`}>
-              {waitLabel}
+              Waiting on
             </span>
           )
         ) : null}
