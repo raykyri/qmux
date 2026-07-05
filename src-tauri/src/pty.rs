@@ -794,12 +794,19 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
 /// injection. We strip the end marker (the standard terminal defense) and the
 /// start marker too so the framing stays well-formed. Borrows unchanged in the
 /// common case where no markers are present.
+///
+/// Stripping runs to a fixed point: a single non-overlapping `replace` pass can
+/// leave a fresh marker behind when the input nests them (e.g. `\x1b[201\x1b[201~~`
+/// collapses to a live `\x1b[201~`), so we repeat until no marker remains.
 fn strip_bracketed_paste_markers(data: &str) -> Cow<'_, str> {
-    if data.contains("\x1b[200~") || data.contains("\x1b[201~") {
-        Cow::Owned(data.replace("\x1b[200~", "").replace("\x1b[201~", ""))
-    } else {
-        Cow::Borrowed(data)
+    if !data.contains("\x1b[200~") && !data.contains("\x1b[201~") {
+        return Cow::Borrowed(data);
     }
+    let mut cleaned = data.replace("\x1b[200~", "").replace("\x1b[201~", "");
+    while cleaned.contains("\x1b[200~") || cleaned.contains("\x1b[201~") {
+        cleaned = cleaned.replace("\x1b[200~", "").replace("\x1b[201~", "");
+    }
+    Cow::Owned(cleaned)
 }
 
 fn write_pane_data<W: Write + ?Sized>(
@@ -1629,6 +1636,18 @@ mod tests {
 
         // The embedded ESC[201~ is removed, so the paste stays framed as a
         // single inert block and the trailing bytes cannot escape to be typed.
+        assert_eq!(writer.bytes, b"\x1b[200~safe\nrm -rf ~\n\x1b[201~");
+    }
+
+    #[test]
+    fn bracketed_paste_strips_nested_end_marker() {
+        let mut writer = RecordingWriter::default();
+        // A nested marker that a single non-overlapping pass would leave a live
+        // ESC[201~ behind — the strip must run to a fixed point.
+        let options = write_options("safe\x1b[201\x1b[201~~\nrm -rf ~\n", true, false);
+
+        write_pane_input(&mut writer, &options, Duration::ZERO).unwrap();
+
         assert_eq!(writer.bytes, b"\x1b[200~safe\nrm -rf ~\n\x1b[201~");
     }
 
