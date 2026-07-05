@@ -621,7 +621,18 @@ impl ClaudeAdapter {
                     let session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"));
                     let transcript_path = string_field(&notification.payload, "transcript_path")
-                        .or_else(|| string_field(&notification.payload, "transcriptPath"));
+                        .or_else(|| string_field(&notification.payload, "transcriptPath"))
+                        // This payload arrives over the control socket under the pane's
+                        // token, so a prompt-injected agent can forge a SessionStart.
+                        // Validate the path before binding and tailing it — otherwise it
+                        // could point the reader at an unrelated file (forging the
+                        // timeline the UI shows as an audit surface) or at a device/FIFO.
+                        .filter(|candidate| {
+                            hook_transcript_path_acceptable(
+                                current.transcript_path.as_deref(),
+                                candidate,
+                            )
+                        });
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
@@ -1228,6 +1239,27 @@ fn is_subagent_payload(value: &Value) -> bool {
     value.get("agent_id").is_some() || value.get("agentId").is_some()
 }
 
+/// Whether a transcript path reported by a Claude hook notification may be bound.
+///
+/// A hook arrives over the control socket carrying the pane's token, so a
+/// prompt-injected agent can forge one. We can't fully validate the *first* path —
+/// SessionStart is how qmux discovers it, and Claude may not have written the file
+/// to disk yet — but we require a `.jsonl` extension, and once the agent is bound
+/// we require any later path to be a sibling in the same session directory. Claude
+/// keeps a project's sessions in one flat directory, so a legitimate rotation
+/// (compact, resume) stays a sibling, while a forged mid-session hook can no longer
+/// relocate the tail to an unrelated file.
+fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bool {
+    let candidate = Path::new(candidate);
+    if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return false;
+    }
+    match current {
+        Some(current) => Path::new(current).parent() == candidate.parent(),
+        None => true,
+    }
+}
+
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
     let value = serde_json::from_str::<Value>(line).ok()?;
     let message = value.get("message").unwrap_or(&value);
@@ -1358,6 +1390,27 @@ mod tests {
 
     fn svec(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn hook_transcript_path_confines_forged_session_start_paths() {
+        let dir = "/home/u/.claude/projects/proj";
+        let bound = format!("{dir}/sess-a.jsonl");
+
+        // First discovery (no current path): accept any .jsonl, reject non-.jsonl.
+        assert!(hook_transcript_path_acceptable(None, &format!("{dir}/sess-a.jsonl")));
+        assert!(!hook_transcript_path_acceptable(None, "/home/u/.ssh/id_rsa"));
+        assert!(!hook_transcript_path_acceptable(None, "/tmp/evil"));
+
+        // Once bound, a later hook may only rotate to a sibling (compact/resume),
+        // never relocate the tail to another directory or an unrelated file.
+        assert!(hook_transcript_path_acceptable(Some(&bound), &format!("{dir}/sess-b.jsonl")));
+        assert!(!hook_transcript_path_acceptable(
+            Some(&bound),
+            "/home/u/.claude/projects/other/sess-x.jsonl"
+        ));
+        assert!(!hook_transcript_path_acceptable(Some(&bound), "/tmp/evil.jsonl"));
+        assert!(!hook_transcript_path_acceptable(Some(&bound), &format!("{dir}/id_rsa")));
     }
 
     #[test]
