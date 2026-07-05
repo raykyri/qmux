@@ -228,7 +228,7 @@ export default function TurnPaneHeader({
                         <span className="session-menu-title">{sessionMenuTitle(option)}</span>
                         <span className="session-menu-meta">
                           {formatRelativeTime(option.modifiedMs)}
-                          {option.boundToOtherAgent ? " · in use by another agent" : ""}
+                          {option.boundToOtherAgent ? " · In use" : ""}
                         </span>
                       </button>
                     );
