@@ -1154,6 +1154,10 @@ export default function App() {
   // Guards `submitAsk` against re-entry (held Cmd+Enter, a double-click) so a single
   // ask never sends twice or — worse, in "new thread" mode — forks twice.
   const askSubmittingRef = useRef(false);
+  // Same guard for the new-agent launcher: addAgentPane awaits spawnAgent before it
+  // closes the launcher, so a held Enter or double submit would otherwise spawn
+  // several agents (and worktrees) from one intended launch.
+  const launchingAgentRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [appToast, setAppToast] = useState<{
     message: string;
@@ -4857,6 +4861,13 @@ export default function App() {
   }
 
   async function addAgentPane() {
+    // Re-entry guard: spawnAgent is awaited below before the launcher closes, so a
+    // held Enter or a rapid double submit would otherwise spawn several agents (and
+    // worktrees) from one launch. Reset in `finally` so a failed launch can retry.
+    if (launchingAgentRef.current) {
+      return;
+    }
+    launchingAgentRef.current = true;
     // End any in-flight dictation so it can't keep writing into the prompt after
     // the agent launches and the field clears.
     launcherDictation.stop();
@@ -4898,6 +4909,8 @@ export default function App() {
       setAgents(latestAgents);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      launchingAgentRef.current = false;
     }
   }
 
