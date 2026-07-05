@@ -1565,6 +1565,19 @@ impl AppState {
                     model.turns.remove(&agent_id);
                     model.agent_drafts.remove(&agent_id);
                     model.agent_turn_queues.remove(&agent_id);
+                } else if let Some(agent) = model.agents.get_mut(&agent_id) {
+                    // Kept for restart recovery via the orphaned-queue panel. Park it
+                    // the same way `detach_pane_agent` and
+                    // `restore_closed_agent_snapshot_locked` do: detach from the
+                    // now-removed pane, remember that pane for the panel, and mark
+                    // idle. Leaving `pane_id` pointing at the dead pane (and status
+                    // Running) both misrepresents the agent to the panel/recovery and
+                    // keeps its transcript tail polling the now-static/deleted file
+                    // for the rest of the process — the tail stops once the agent is
+                    // gone, rotates its transcript, or (now) is parked like this.
+                    agent.pane_id = None;
+                    agent.orphaned_queue_pane_id = Some(pane_id.to_string());
+                    agent.status = AgentStatus::Idle;
                 }
             }
 

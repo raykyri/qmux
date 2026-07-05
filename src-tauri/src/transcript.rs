@@ -115,7 +115,15 @@ pub fn start_transcript_tail(
             // tearing the tail down on a momentary failure.
             if let Ok(found) = state.agent(&agent_id) {
                 let current = found.as_ref().map(|agent| agent.transcript_path.as_deref());
-                if !tail_should_continue(current, &transcript_path) {
+                // Also stop once the agent has been parked off its pane — its owning
+                // pane was closed (or it was detached) but a queued turn keeps it around
+                // for restart recovery. The session process is dead, so this file will
+                // never grow again; a resume respawns a fresh tail. Without this the
+                // tail polls the now-static/deleted file for the rest of the process.
+                let parked = found
+                    .as_ref()
+                    .is_some_and(|agent| agent.orphaned_queue_pane_id.is_some());
+                if parked || !tail_should_continue(current, &transcript_path) {
                     if notice_active {
                         state.emit(transcript_notice(&agent_id, &transcript_path, None));
                     }
