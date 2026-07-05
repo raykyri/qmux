@@ -698,37 +698,49 @@ pub fn set_agent_transcript(
     if !candidate.is_file() {
         return Err(format!("transcript {path} does not exist"));
     }
-    if let Some(current) = agent.transcript_path.as_deref() {
-        let current = Path::new(current);
-        if agent.adapter == "codex" {
-            let Some(root) = codex_sessions_root(current) else {
-                return Err("transcript is outside the agent's session directory".to_string());
-            };
-            let root = root.canonicalize().map_err(|err| {
-                format!(
-                    "failed to resolve transcript session directory {}: {err}",
-                    root.display()
-                )
-            })?;
-            let candidate_root = candidate
-                .canonicalize()
-                .map_err(|err| format!("failed to resolve transcript {path}: {err}"))?;
-            if !candidate_root.starts_with(root) {
-                return Err("transcript is outside the agent's session directory".to_string());
-            }
-            // Mirror the picker's project scoping: a Codex rollout from a different
-            // project (a different `session_meta` cwd) must not be bound here, even
-            // though it shares the global sessions root. Lenient when either cwd can't
-            // be read, so an unparseable rollout still binds rather than hard-failing.
-            if let Some(project_cwd) = codex_transcript_cwd(current)
-                && let Some(candidate_cwd) = codex_transcript_cwd(candidate)
-                && project_cwd != candidate_cwd
-            {
-                return Err("transcript belongs to a different project".to_string());
-            }
-        } else if current.parent() != candidate.parent() {
+    // Confinement needs a reference directory. A repoint is only ever offered by
+    // the session picker, which scans the directory of the agent's *current*
+    // transcript (`transcript_listing_root`) — so with no current transcript
+    // there is no legitimate source directory. Refuse instead of binding an
+    // arbitrary `.jsonl`: otherwise a caller (e.g. a compromised webview) could
+    // `set_agent_transcript(id, null)` to clear the binding and then bind any
+    // `.jsonl` on disk, turning this into an unconfined transcript-read
+    // primitive over sessions from unrelated projects. qmux discovers the
+    // initial transcript itself via the adapter's SessionStart hook.
+    let Some(current) = agent.transcript_path.as_deref() else {
+        return Err(
+            "cannot repoint a transcript before this agent has an active one".to_string(),
+        );
+    };
+    let current = Path::new(current);
+    if agent.adapter == "codex" {
+        let Some(root) = codex_sessions_root(current) else {
+            return Err("transcript is outside the agent's session directory".to_string());
+        };
+        let root = root.canonicalize().map_err(|err| {
+            format!(
+                "failed to resolve transcript session directory {}: {err}",
+                root.display()
+            )
+        })?;
+        let candidate_root = candidate
+            .canonicalize()
+            .map_err(|err| format!("failed to resolve transcript {path}: {err}"))?;
+        if !candidate_root.starts_with(root) {
             return Err("transcript is outside the agent's session directory".to_string());
         }
+        // Mirror the picker's project scoping: a Codex rollout from a different
+        // project (a different `session_meta` cwd) must not be bound here, even
+        // though it shares the global sessions root. Lenient when either cwd can't
+        // be read, so an unparseable rollout still binds rather than hard-failing.
+        if let Some(project_cwd) = codex_transcript_cwd(current)
+            && let Some(candidate_cwd) = codex_transcript_cwd(candidate)
+            && project_cwd != candidate_cwd
+        {
+            return Err("transcript belongs to a different project".to_string());
+        }
+    } else if current.parent() != candidate.parent() {
+        return Err("transcript is outside the agent's session directory".to_string());
     }
 
     let already_bound = agent.transcript_path.as_deref() == Some(path);
