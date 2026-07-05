@@ -2921,6 +2921,14 @@ button.home-cascade-wait-pill:focus-visible {
   background: #181d1f;
 }
 
+/* A queued card dragged from another split hovers this cell: read as the drop
+   target with an inset accent ring (kept inset so cell layout never shifts). */
+.turn-pane-split-cell.is-queue-drop-target {
+  box-shadow:
+    inset 0 0 0 2px var(--accent-color),
+    inset 1px 0 0 #2a2d2f;
+}
+
 .turn-pane-stack .turn-pane-resizer {
   z-index: 8;
 }

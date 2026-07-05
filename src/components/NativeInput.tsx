@@ -52,6 +52,9 @@ const WAIT_TITLE_PROGRESS_PREFIX_RE =
 type QueuePointerDrag = {
   pointerId: number;
   from: number;
+  // The grabbed card's text, so the drop can re-derive its index if the queue
+  // shifts mid-drag (e.g. the agent drains its top turn while the pointer is down).
+  text: string;
   startY: number;
   active: boolean;
 };
@@ -169,6 +172,10 @@ interface NativeInputProps {
   composerPolicy: ComposerPolicy;
   shortcutLabelForPane: (paneId?: string | null) => string | null;
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
+  // Cross-split queue-card drag: reports which other agent's split cell the drag
+  // currently hovers (null when none), and moves the card there on drop.
+  onQueueDropTargetChange: (agentId: string | null) => void;
+  onMoveQueuedTurn: (targetAgentId: string, index: number, turn: string) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onWaitTargetHover: (agentId: string | null) => void;
@@ -196,6 +203,8 @@ export default function NativeInput({
   composerPolicy,
   shortcutLabelForPane,
   onQueueChange,
+  onQueueDropTargetChange,
+  onMoveQueuedTurn,
   onDraftChange,
   onQueuedTurnCollapseToggle,
   onWaitTargetHover,
@@ -218,6 +227,8 @@ export default function NativeInput({
   const draggingIndexRef = useRef<number | null>(null);
   const dropIndexRef = useRef<number | null>(null);
   const queuePointerDragRef = useRef<QueuePointerDrag | null>(null);
+  // The other agent's split cell a queued-card drag currently hovers, if any.
+  const crossDropAgentIdRef = useRef<string | null>(null);
   const suppressQueuedTurnClickRef = useRef(false);
   const queuedTurnClickTimer = useRef<number | null>(null);
   // Recently sent or removed messages, per agent, so the menu can offer them for
@@ -505,6 +516,19 @@ export default function NativeInput({
     };
   }, []);
 
+  // If this composer unmounts mid-drag, drop the cross-split highlight it set.
+  // Guarded on the ref so unmounting an idle instance never clears a highlight
+  // another split's in-flight drag owns.
+  useEffect(
+    () => () => {
+      if (crossDropAgentIdRef.current !== null) {
+        crossDropAgentIdRef.current = null;
+        onQueueDropTargetChange(null);
+      }
+    },
+    [onQueueDropTargetChange],
+  );
+
   async function submitTurn(text: string, mode: SubmitAgentTurnMode) {
     if (submitting) {
       return;
@@ -727,6 +751,7 @@ export default function NativeInput({
     queuePointerDragRef.current = {
       pointerId: event.pointerId,
       from: index,
+      text: queuedTurns[index]?.text ?? "",
       startY: event.clientY,
       active: false,
     };
@@ -761,6 +786,18 @@ export default function NativeInput({
     }
 
     event.preventDefault();
+    // The pointer is captured by the source row, so other splits never see these
+    // events; hit-test the point instead to find a foreign split cell under it.
+    const under = document.elementFromPoint(event.clientX, event.clientY);
+    const targetAgentId = under
+      ?.closest("[data-queue-drop-agent-id]")
+      ?.getAttribute("data-queue-drop-agent-id");
+    if (targetAgentId && targetAgentId !== agent.id) {
+      setCrossDropAgent(targetAgentId);
+      setQueueDropIndex(null);
+      return;
+    }
+    setCrossDropAgent(null);
     const stack = queueStackRef.current;
     if (!stack) {
       return;
@@ -791,6 +828,15 @@ export default function NativeInput({
       suppressQueuedTurnClickRef.current = false;
     }, QUEUE_DRAG_CLICK_SUPPRESS_MS);
 
+    const crossTargetAgentId = crossDropAgentIdRef.current;
+    if (crossTargetAgentId) {
+      clearQueueDrag();
+      const from = currentDragIndex(drag);
+      if (from !== null) {
+        onMoveQueuedTurn(crossTargetAgentId, from, drag.text);
+      }
+      return;
+    }
     const stack = queueStackRef.current;
     const gap =
       dropIndexRef.current ?? (stack ? queueDropIndexFromPoint(stack, event.clientY) : null);
@@ -798,7 +844,21 @@ export default function NativeInput({
     if (gap === null) {
       return;
     }
-    reorderQueuedTurn(drag.from, gap);
+    const from = currentDragIndex(drag);
+    if (from !== null) {
+      reorderQueuedTurn(from, gap);
+    }
+  }
+
+  // The queue can shift under a drag (the agent draining its top turn, another
+  // window removing an item), so resolve the grabbed card's index at drop time by
+  // its text instead of trusting the position captured at pointerdown.
+  function currentDragIndex(drag: QueuePointerDrag): number | null {
+    if (queuedTurns[drag.from]?.text === drag.text) {
+      return drag.from;
+    }
+    const index = queuedTurns.findIndex((turn) => turn.text === drag.text);
+    return index === -1 ? null : index;
   }
 
   function handleQueuePointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
@@ -873,11 +933,20 @@ export default function NativeInput({
     setDropIndex(index);
   }
 
+  function setCrossDropAgent(agentId: string | null) {
+    if (crossDropAgentIdRef.current === agentId) {
+      return;
+    }
+    crossDropAgentIdRef.current = agentId;
+    onQueueDropTargetChange(agentId);
+  }
+
   function clearQueueDrag() {
     draggingIndexRef.current = null;
     dropIndexRef.current = null;
     setDraggingIndex(null);
     setDropIndex(null);
+    setCrossDropAgent(null);
   }
 
   function queueDropIndexFromPoint(container: HTMLDivElement, clientY: number) {

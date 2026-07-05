@@ -1087,6 +1087,9 @@ export default function App() {
     Record<string, boolean[]>
   >({});
   const [waitTargetHoverAgentId, setWaitTargetHoverAgentId] = useState<string | null>(null);
+  // The agent whose split cell a queued-card drag is currently hovering, so that
+  // cell can render as the drop target while dragging a card between splits.
+  const [queueDropTargetAgentId, setQueueDropTargetAgentId] = useState<string | null>(null);
   const [draftsByAgent, setDraftsByAgentState] = useState<Record<string, string>>({});
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [shortcutHintsVisible, setShortcutHintsVisible] = useState(false);
@@ -2962,7 +2965,9 @@ export default function App() {
     }
   }
 
-  async function moveRecoveredQueuedTurn(
+  // Moves one queued turn from an agent's queue to another agent. Used both by the
+  // recovered-queue panel and by dragging a queued card onto another split's cell.
+  async function moveQueuedTurnToAgent(
     agentId: string,
     targetAgentId: string | null | undefined,
     index: number,
@@ -6603,7 +6608,7 @@ export default function App() {
                 hasTargetAgent={Boolean(agent)}
                 agentLabel={launchAdapter.label}
                 onMoveTurn={(agentId, index, turn) =>
-                  void moveRecoveredQueuedTurn(agentId, agent?.id, index, turn)
+                  void moveQueuedTurnToAgent(agentId, agent?.id, index, turn)
                 }
                 onDiscardTurn={(agentId, index, turn) =>
                   void discardRecoveredQueuedTurn(agentId, index, turn)
@@ -6634,6 +6639,10 @@ export default function App() {
                 composerPolicy={getAgentUiAdapter(agent.adapter).composerPolicy(agent)}
                 shortcutLabelForPane={shortcutLabelForPaneId}
                 onQueueChange={setAgentQueuedTurns}
+                onQueueDropTargetChange={setQueueDropTargetAgentId}
+                onMoveQueuedTurn={(targetAgentId, index, turn) =>
+                  void moveQueuedTurnToAgent(agent.id, targetAgentId, index, turn)
+                }
                 onDraftChange={setAgentDraft}
                 onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                 onWaitTargetHover={setWaitTargetHoverAgentId}
@@ -8199,7 +8208,12 @@ export default function App() {
                   key={surface.pane.id}
                   className={`turn-pane turn-pane-split-cell${
                     surface.pane.id === activePane?.id ? " is-active" : ""
+                  }${
+                    surface.agent && surface.agent.id === queueDropTargetAgentId
+                      ? " is-queue-drop-target"
+                      : ""
                   }`}
+                  data-queue-drop-agent-id={surface.agent?.id}
                   style={turnPaneSplitCellStyle(surface)}
                   onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
                   onFocusCapture={() => activateTerminalPane(surface.pane.id)}
