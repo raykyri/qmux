@@ -351,16 +351,30 @@ fn recover_missing_transcript(
         return Ok(None);
     }
 
-    let Some(mut agent) = state.agent(agent_id)? else {
+    // Apply the rebind as a field-scoped mutation under the model lock rather than
+    // a whole-struct `update_agent` from a snapshot read outside it. Between such a
+    // read and the write, another thread can set this agent's status or session_id
+    // (an idle Stop hook, or a SessionStart on the control-socket thread) — and
+    // writing the stale snapshot back would revert those fields, losing the real
+    // session id (breaking fork/resume) or leaving the agent stuck Running with its
+    // queue undrained. Re-check the binding inside the closure so recovery only
+    // fires while the agent is still pointing at the now-missing path.
+    let applied = std::cell::Cell::new(false);
+    let Some(agent) = state.mutate_agent(agent_id, |agent| {
+        if agent.transcript_path.as_deref() == Some(bound_path) {
+            agent.session_id = candidate.session_id.clone();
+            agent.transcript_path = Some(recovered_path.clone());
+            applied.set(true);
+        }
+    })?
+    else {
         return Ok(None);
     };
-    if agent.transcript_path.as_deref() != Some(bound_path) {
+    if !applied.get() {
+        // The binding changed under us between deciding to recover and taking the
+        // lock; leave whoever rebound it in charge.
         return Ok(None);
     }
-
-    agent.session_id = candidate.session_id.clone();
-    agent.transcript_path = Some(recovered_path.clone());
-    state.update_agent(agent.clone())?;
     state.emit(QmuxEvent::new(
         "agent.transcript_recovered",
         agent.pane_id.clone(),
