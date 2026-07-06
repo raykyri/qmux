@@ -8,7 +8,10 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
-use crate::transcript::{Turn, TurnBlock, start_transcript_tail};
+use crate::transcript::{Turn, start_transcript_tail};
+
+#[cfg(test)]
+use crate::transcript::TurnBlock;
 use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
@@ -623,21 +626,24 @@ impl ClaudeAdapter {
         let event_type = match notification.event.as_str() {
             "SessionStart" => {
                 if let Some(current) = agent.as_ref() {
-                    let session_id = string_field(&notification.payload, "session_id")
-                        .or_else(|| string_field(&notification.payload, "sessionId"));
-                    let transcript_path = string_field(&notification.payload, "transcript_path")
-                        .or_else(|| string_field(&notification.payload, "transcriptPath"))
-                        // This payload arrives over the control socket under the pane's
-                        // token, so a prompt-injected agent can forge a SessionStart.
-                        // Validate the path before binding and tailing it — otherwise it
-                        // could point the reader at an unrelated file (forging the
-                        // timeline the UI shows as an audit surface) or at a device/FIFO.
-                        .filter(|candidate| {
-                            hook_transcript_path_acceptable(
-                                current.transcript_path.as_deref(),
-                                candidate,
-                            )
-                        });
+                    let session_id = super::string_field(&notification.payload, "session_id")
+                        .or_else(|| super::string_field(&notification.payload, "sessionId"));
+                    let transcript_path =
+                        super::string_field(&notification.payload, "transcript_path")
+                            .or_else(|| {
+                                super::string_field(&notification.payload, "transcriptPath")
+                            })
+                            // This payload arrives over the control socket under the pane's
+                            // token, so a prompt-injected agent can forge a SessionStart.
+                            // Validate the path before binding and tailing it — otherwise it
+                            // could point the reader at an unrelated file (forging the
+                            // timeline the UI shows as an audit surface) or at a device/FIFO.
+                            .filter(|candidate| {
+                                hook_transcript_path_acceptable(
+                                    current.transcript_path.as_deref(),
+                                    candidate,
+                                )
+                            });
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
@@ -676,7 +682,7 @@ impl ClaudeAdapter {
                 if let Some(agent) = agent.as_mut() {
                     let is_subagent = is_subagent_payload(&notification.payload);
                     let prompt = (!is_subagent)
-                        .then(|| string_field(&notification.payload, "prompt"))
+                        .then(|| super::string_field(&notification.payload, "prompt"))
                         .flatten();
                     if !prompt.as_deref().is_some_and(is_shell_escape_turn) {
                         agent.status = AgentStatus::Running;
@@ -1069,7 +1075,7 @@ fn plugin_namespace(plugin_dir: &Path) -> String {
     fs::read_to_string(&manifest)
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|value| string_field(&value, "name"))
+        .and_then(|value| super::string_field(&value, "name"))
         .filter(|name| !name.trim().is_empty())
         .or_else(|| {
             plugin_dir
@@ -1266,118 +1272,37 @@ fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bo
 }
 
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
-    let value = serde_json::from_str::<Value>(line).ok()?;
-    let message = value.get("message").unwrap_or(&value);
-    let role = message
-        .get("role")
-        .or_else(|| value.get("type"))
-        .and_then(Value::as_str)
-        .unwrap_or("event")
-        .to_string();
-    let session_id =
-        string_field(&value, "session_id").or_else(|| string_field(&value, "sessionId"));
-    let content = message.get("content").or_else(|| value.get("content"))?;
-    let blocks = parse_blocks(content);
-
-    if blocks.is_empty() {
-        return None;
-    }
-
-    Some(Turn {
-        id: format!("{agent_id}-{source_index}"),
-        agent_id: agent_id.to_string(),
-        session_id,
-        role,
-        blocks,
-        source_index,
-    })
+    super::parse_claude_native_transcript_line(agent_id, source_index, line)
 }
 
 fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
-    let value = serde_json::from_str::<Value>(line).ok()?;
-    if value.get("interruptedMessageId").is_some() || value.get("interrupted_message_id").is_some()
-    {
-        return Some(TranscriptLifecycleEvent::Interrupted);
-    }
-
-    let message = value.get("message").unwrap_or(&value);
-    let content = message.get("content").or_else(|| value.get("content"))?;
-    claude_content_has_interruption_marker(content).then_some(TranscriptLifecycleEvent::Interrupted)
+    super::parse_claude_native_lifecycle_event(line)
 }
 
+// Thin wrappers so existing tests inside this module continue to call by the original names.
+// These are test-only because the main Claude transcript parsing logic now delegates directly.
+#[cfg(test)]
+#[allow(dead_code)]
 fn claude_content_has_interruption_marker(content: &Value) -> bool {
-    match content {
-        Value::String(text) => is_claude_interruption_marker(text),
-        Value::Array(items) => items.iter().any(|item| {
-            item.get("type").and_then(Value::as_str) == Some("text")
-                && item
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .is_some_and(is_claude_interruption_marker)
-        }),
-        _ => false,
-    }
+    super::claude_native_content_has_interruption_marker(content)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn is_claude_interruption_marker(text: &str) -> bool {
-    matches!(
-        text.trim(),
-        "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
-    )
+    super::is_claude_interruption_marker(text)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn parse_blocks(content: &Value) -> Vec<TurnBlock> {
-    match content {
-        Value::String(text) => vec![TurnBlock::Text { text: text.clone() }],
-        Value::Array(items) => items.iter().filter_map(parse_block).collect(),
-        other => vec![TurnBlock::Raw {
-            value: other.clone(),
-        }],
-    }
+    super::parse_claude_native_blocks(content)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn parse_block(value: &Value) -> Option<TurnBlock> {
-    let block_type = value.get("type").and_then(Value::as_str);
-    match block_type {
-        Some("text") => value
-            .get("text")
-            .and_then(Value::as_str)
-            .map(|text| TurnBlock::Text {
-                text: text.to_string(),
-            }),
-        Some("tool_use") => Some(TurnBlock::ToolUse {
-            id: string_field(value, "id"),
-            name: value
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("tool")
-                .to_string(),
-            input: value.get("input").cloned().unwrap_or(Value::Null),
-        }),
-        Some("tool_result") => Some(TurnBlock::ToolResult {
-            tool_use_id: string_field(value, "tool_use_id")
-                .or_else(|| string_field(value, "toolUseId")),
-            content: value.get("content").cloned().unwrap_or(Value::Null),
-            is_error: value
-                .get("is_error")
-                .or_else(|| value.get("isError"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        }),
-        Some(_) => Some(TurnBlock::Raw {
-            value: value.clone(),
-        }),
-        None => value.as_str().map(|text| TurnBlock::Text {
-            text: text.to_string(),
-        }),
-    }
-}
-
-fn string_field(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
+    super::parse_claude_native_block(value)
 }
 
 #[cfg(test)]
@@ -1388,6 +1313,7 @@ mod tests {
         OpencodeAdapterConfig,
     };
     use crate::state::{AgentSendSource, PaneInfo, PaneRuntime, PaneStatus};
+    use crate::transcript::TurnBlock;
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
@@ -1403,19 +1329,34 @@ mod tests {
         let bound = format!("{dir}/sess-a.jsonl");
 
         // First discovery (no current path): accept any .jsonl, reject non-.jsonl.
-        assert!(hook_transcript_path_acceptable(None, &format!("{dir}/sess-a.jsonl")));
-        assert!(!hook_transcript_path_acceptable(None, "/home/u/.ssh/id_rsa"));
+        assert!(hook_transcript_path_acceptable(
+            None,
+            &format!("{dir}/sess-a.jsonl")
+        ));
+        assert!(!hook_transcript_path_acceptable(
+            None,
+            "/home/u/.ssh/id_rsa"
+        ));
         assert!(!hook_transcript_path_acceptable(None, "/tmp/evil"));
 
         // Once bound, a later hook may only rotate to a sibling (compact/resume),
         // never relocate the tail to another directory or an unrelated file.
-        assert!(hook_transcript_path_acceptable(Some(&bound), &format!("{dir}/sess-b.jsonl")));
+        assert!(hook_transcript_path_acceptable(
+            Some(&bound),
+            &format!("{dir}/sess-b.jsonl")
+        ));
         assert!(!hook_transcript_path_acceptable(
             Some(&bound),
             "/home/u/.claude/projects/other/sess-x.jsonl"
         ));
-        assert!(!hook_transcript_path_acceptable(Some(&bound), "/tmp/evil.jsonl"));
-        assert!(!hook_transcript_path_acceptable(Some(&bound), &format!("{dir}/id_rsa")));
+        assert!(!hook_transcript_path_acceptable(
+            Some(&bound),
+            "/tmp/evil.jsonl"
+        ));
+        assert!(!hook_transcript_path_acceptable(
+            Some(&bound),
+            &format!("{dir}/id_rsa")
+        ));
     }
 
     #[test]

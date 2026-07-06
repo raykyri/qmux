@@ -338,8 +338,7 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.panes = take_vec(&mut map, "panes", "pane", &mut dropped);
     state.groups = take_vec(&mut map, "groups", "group", &mut dropped);
     state.agents = take_vec(&mut map, "agents", "agent", &mut dropped);
-    state.recent_sessions =
-        take_vec(&mut map, "recentSessions", "recent session", &mut dropped);
+    state.recent_sessions = take_vec(&mut map, "recentSessions", "recent session", &mut dropped);
     state.pane_splits = take_vec(&mut map, "paneSplits", "pane split", &mut dropped);
     state.group_order = take_string_vec(&mut map, "groupOrder");
     state.queues = take_map_of_vecs(&mut map, "queues", "queued turn", &mut dropped);
@@ -395,7 +394,9 @@ fn take_map_of_vecs<T: DeserializeOwned>(
     let mut out = HashMap::new();
     for (entry_key, value) in entries {
         let Value::Array(items) = value else {
-            dropped.push(format!("{label}s for '{entry_key}' were not an array; ignored"));
+            dropped.push(format!(
+                "{label}s for '{entry_key}' were not an array; ignored"
+            ));
             continue;
         };
         let mut parsed_items = Vec::with_capacity(items.len());

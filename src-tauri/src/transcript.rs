@@ -730,9 +730,7 @@ pub fn set_agent_transcript(
     // primitive over sessions from unrelated projects. qmux discovers the
     // initial transcript itself via the adapter's SessionStart hook.
     let Some(current) = agent.transcript_path.as_deref() else {
-        return Err(
-            "cannot repoint a transcript before this agent has an active one".to_string(),
-        );
+        return Err("cannot repoint a transcript before this agent has an active one".to_string());
     };
     let current = Path::new(current);
     if agent.adapter == "codex" {
@@ -1094,7 +1092,10 @@ fn read_complete_lines_utf8(file: &mut fs::File) -> std::io::Result<(String, u64
         .iter()
         .rposition(|&byte| byte == b'\n')
         .map_or(0, |idx| idx + 1);
-    Ok((String::from_utf8_lossy(&bytes[..cut]).into_owned(), cut as u64))
+    Ok((
+        String::from_utf8_lossy(&bytes[..cut]).into_owned(),
+        cut as u64,
+    ))
 }
 
 /// Whether a tail bound to `bound_path` should keep running. `current` is the

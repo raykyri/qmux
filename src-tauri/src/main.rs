@@ -957,8 +957,7 @@ fn main() {
         .expect("error while building qmux")
         .run(move |_app_handle, event| match event {
             tauri::RunEvent::ExitRequested { api, code, .. }
-                if code != Some(tauri::RESTART_EXIT_CODE)
-                    && exit_state.should_confirm_exit() =>
+                if code != Some(tauri::RESTART_EXIT_CODE) && exit_state.should_confirm_exit() =>
             {
                 api.prevent_exit();
                 exit_state.request_exit_confirmation();

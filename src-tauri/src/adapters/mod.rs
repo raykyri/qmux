@@ -7,7 +7,7 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::pty::InitialPaneSize;
 use crate::state::{AppState, PaneInfo};
-use crate::transcript::Turn;
+use crate::transcript::{Turn, TurnBlock};
 use crate::workspace::{AgentInfo, AgentStatus};
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
@@ -91,6 +91,132 @@ fn same_dir(a: &str, b: &str) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
+    }
+}
+
+/// Shared helper to extract a trimmed non-empty string field from JSON.
+pub(crate) fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Parse a single line from a Claude-style or Grok-native rollout transcript (the
+/// JSONL format used by Claude Code and by Grok Build's Claude-compatible sessions).
+/// This is used for the `transcript_path` that Grok reports via its SessionStart hook.
+pub(crate) fn parse_claude_native_transcript_line(
+    agent_id: &str,
+    source_index: usize,
+    line: &str,
+) -> Option<Turn> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let message = value.get("message").unwrap_or(&value);
+    let role = message
+        .get("role")
+        .or_else(|| value.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("event")
+        .to_string();
+    let session_id =
+        string_field(&value, "session_id").or_else(|| string_field(&value, "sessionId"));
+    let content = message.get("content").or_else(|| value.get("content"))?;
+    let blocks = parse_claude_native_blocks(content);
+
+    if blocks.is_empty() {
+        return None;
+    }
+
+    Some(Turn {
+        id: format!("{agent_id}-{source_index}"),
+        agent_id: agent_id.to_string(),
+        session_id,
+        role,
+        blocks,
+        source_index,
+    })
+}
+
+pub(crate) fn parse_claude_native_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("interruptedMessageId").is_some() || value.get("interrupted_message_id").is_some()
+    {
+        return Some(TranscriptLifecycleEvent::Interrupted);
+    }
+
+    let message = value.get("message").unwrap_or(&value);
+    let content = message.get("content").or_else(|| value.get("content"))?;
+    claude_native_content_has_interruption_marker(content)
+        .then_some(TranscriptLifecycleEvent::Interrupted)
+}
+
+fn claude_native_content_has_interruption_marker(content: &Value) -> bool {
+    match content {
+        Value::String(text) => is_claude_interruption_marker(text),
+        Value::Array(items) => items.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("text")
+                && item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_claude_interruption_marker)
+        }),
+        _ => false,
+    }
+}
+
+fn is_claude_interruption_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+    )
+}
+
+fn parse_claude_native_blocks(content: &Value) -> Vec<TurnBlock> {
+    match content {
+        Value::String(text) => vec![TurnBlock::Text { text: text.clone() }],
+        Value::Array(items) => items.iter().filter_map(parse_claude_native_block).collect(),
+        other => vec![TurnBlock::Raw {
+            value: other.clone(),
+        }],
+    }
+}
+
+fn parse_claude_native_block(value: &Value) -> Option<TurnBlock> {
+    let block_type = value.get("type").and_then(Value::as_str);
+    match block_type {
+        Some("text") => value
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| TurnBlock::Text {
+                text: text.to_string(),
+            }),
+        Some("tool_use") => Some(TurnBlock::ToolUse {
+            id: string_field(value, "id"),
+            name: value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string(),
+            input: value.get("input").cloned().unwrap_or(Value::Null),
+        }),
+        Some("tool_result") => Some(TurnBlock::ToolResult {
+            tool_use_id: string_field(value, "tool_use_id")
+                .or_else(|| string_field(value, "toolUseId")),
+            content: value.get("content").cloned().unwrap_or(Value::Null),
+            is_error: value
+                .get("is_error")
+                .or_else(|| value.get("isError"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }),
+        Some(_) => Some(TurnBlock::Raw {
+            value: value.clone(),
+        }),
+        None => value.as_str().map(|text| TurnBlock::Text {
+            text: text.to_string(),
+        }),
     }
 }
 

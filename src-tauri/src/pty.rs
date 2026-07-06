@@ -757,7 +757,9 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
     // serialize against each other; keystrokes (submit=false) skip it and stay
     // unblocked. Recover from poisoning — the lock guards ordering only. `send_lock`
     // is bound first so it outlives the guard that borrows it.
-    let send_lock = options.submit.then(|| state.pane_send_lock(&options.pane_id));
+    let send_lock = options
+        .submit
+        .then(|| state.pane_send_lock(&options.pane_id));
     let _send_guard = send_lock
         .as_deref()
         .map(|lock| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
@@ -951,7 +953,9 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
             state.clear_last_closed_pane_for_pane(&pane_id);
             return Err(err);
         }
-        eprintln!("qmux: kill for pane {pane_id} errored but the child has exited; reclaiming: {err}");
+        eprintln!(
+            "qmux: kill for pane {pane_id} errored but the child has exited; reclaiming: {err}"
+        );
     }
     state.remove_pane(&pane_id)?;
     if let Some(agent_id) = pane_agent_id
