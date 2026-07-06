@@ -1,6 +1,7 @@
 mod adapters;
 mod cli;
 mod config;
+mod connection_limit;
 mod control_socket;
 mod dictation_cache;
 mod events;

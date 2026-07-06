@@ -2,6 +2,7 @@ use crate::adapters::{
     AdapterNotification, PrepareShellAgentLaunchRequest, PrepareShellClaudeLaunchRequest,
     agent_fork, agent_prepare_shell_launch, ingest_adapter_notification,
 };
+use crate::connection_limit::ConnectionLimiter;
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
@@ -15,6 +16,17 @@ use std::thread;
 use std::time::Duration;
 
 const CONTROL_SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Cap on concurrent client-handler threads. Connections are mostly one-shot
+/// (hook notifies, CLI invocations) with a 5s idle timeout, so this needs to
+/// cover simultaneous in-flight requests, not panes; 64 is far above any real
+/// burst while keeping a connection-spamming local process from exhausting
+/// threads/FDs. At the cap the accept loop blocks and excess connections wait
+/// in the kernel listen backlog.
+const MAX_CONCURRENT_CLIENTS: usize = 64;
+/// Backoff after a failed accept. Persistent accept errors (e.g. EMFILE under
+/// FD exhaustion) would otherwise spin this loop hot and flood socket.error
+/// events.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,11 +87,16 @@ pub fn start_control_socket(state: AppState) -> Result<(), String> {
     })?;
 
     thread::spawn(move || {
+        let limiter = ConnectionLimiter::new(MAX_CONCURRENT_CLIENTS);
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    let slot = limiter.acquire();
                     let state = state.clone();
-                    thread::spawn(move || handle_client(state, stream));
+                    thread::spawn(move || {
+                        let _slot = slot;
+                        handle_client(state, stream);
+                    });
                 }
                 Err(err) => {
                     state.emit(QmuxEvent::new(
@@ -88,6 +105,7 @@ pub fn start_control_socket(state: AppState) -> Result<(), String> {
                         None,
                         json!({ "error": err.to_string() }),
                     ));
+                    thread::sleep(ACCEPT_ERROR_BACKOFF);
                 }
             }
         }

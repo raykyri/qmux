@@ -13,6 +13,7 @@
 //! the rest of the backend (cf. the hand-rolled base64 in events.rs). Each connection
 //! serves one request then closes (`Connection: close`).
 
+use crate::connection_limit::ConnectionLimiter;
 use crate::state::AppState;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -29,6 +30,15 @@ const MAX_REQUEST_HEAD_BYTES: u64 = 64 * 1024;
 /// Cap on a single full-file (non-range) response so a giant file can't balloon
 /// memory; browsers fetch large media via Range anyway.
 const MAX_INLINE_BYTES: u64 = 64 * 1024 * 1024;
+/// Cap on concurrent connection-handler threads. Each connection serves one
+/// request then closes, so this bounds in-flight requests; 64 comfortably covers
+/// a browser overlay fetching a page full of assets in parallel while keeping a
+/// connection-spamming local process from exhausting threads/FDs. At the cap the
+/// accept loop blocks and excess connections wait in the kernel listen backlog.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+/// Backoff after a failed accept, so persistent accept errors (e.g. EMFILE under
+/// FD exhaustion) can't spin the accept loop hot.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 pub struct FileServerInfo {
     pub port: u16,
@@ -48,10 +58,18 @@ pub fn start_file_server(state: AppState) -> Result<FileServerInfo, String> {
         .port();
 
     thread::spawn(move || {
+        let limiter = ConnectionLimiter::new(MAX_CONCURRENT_CONNECTIONS);
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
+            let Ok(stream) = stream else {
+                thread::sleep(ACCEPT_ERROR_BACKOFF);
+                continue;
+            };
+            let slot = limiter.acquire();
             let state = state.clone();
-            thread::spawn(move || handle_connection(&state, stream));
+            thread::spawn(move || {
+                let _slot = slot;
+                handle_connection(&state, stream);
+            });
         }
     });
 
