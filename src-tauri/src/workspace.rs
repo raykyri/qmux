@@ -457,6 +457,70 @@ pub fn clear_agent_working_status(state: &AppState, agent_id: &str) -> Result<Ag
     Ok(agent)
 }
 
+/// How long after a lone Esc keystroke into a working agent's pane qmux waits for
+/// counter-evidence before concluding the user interrupted the turn.
+const ESC_INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Handles a lone Esc typed into a working agent's pane. In the agent TUIs qmux
+/// hosts, Esc while a turn is running means "interrupt" — and a turn canceled during
+/// its thinking phase produces no Stop hook, no transcript line, and no idle
+/// notification (verified against Claude Code 2.1.x), so nothing would ever demote
+/// the agent from Running and the transcript pane would show "Working…" forever.
+///
+/// Watch the agent for a short grace window; if no hook or transcript activity
+/// lands, mark it AwaitingInput. The queue is deliberately NOT drained (unlike the
+/// hard idle signals routed through advance_after_idle): if the Esc didn't actually
+/// interrupt — it dismissed a menu mid-run, say — auto-sending a queued turn would
+/// steer a busy agent. A wrong demotion is self-correcting: the next hook or
+/// transcript event re-promotes the agent to Running.
+pub fn watch_agent_after_escape(state: &AppState, pane_id: &str) {
+    let Ok(Some(agent)) = state.agent_by_pane(pane_id) else {
+        return;
+    };
+    if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+        return;
+    }
+    let Ok(baseline) = state.agent_activity_seq(&agent.id) else {
+        return;
+    };
+    let state = state.clone();
+    let agent_id = agent.id;
+    std::thread::spawn(move || {
+        std::thread::sleep(ESC_INTERRUPT_GRACE);
+        if let Some(agent) = resolve_agent_escape_watch(&state, &agent_id, baseline) {
+            state.emit(crate::events::QmuxEvent::new(
+                "agent.interrupted",
+                agent.pane_id.clone(),
+                Some(agent.id.clone()),
+                serde_json::json!({ "agent": agent }),
+            ));
+        }
+    });
+}
+
+/// The post-grace half of [`watch_agent_after_escape`]: demotes the agent to
+/// AwaitingInput and returns it if it is still in a working status with no activity
+/// recorded since `baseline`; returns `None` when the watch should stand down.
+fn resolve_agent_escape_watch(
+    state: &AppState,
+    agent_id: &str,
+    baseline: u64,
+) -> Option<AgentInfo> {
+    let agent = state.agent(agent_id).ok().flatten()?;
+    if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+        return None;
+    }
+    // Any agent mutation or transcript write during the grace window means the
+    // turn is still alive (or something else already resolved the status).
+    if state.agent_activity_seq(agent_id).ok() != Some(baseline) {
+        return None;
+    }
+    state
+        .set_agent_status(agent_id, AgentStatus::AwaitingInput)
+        .ok()
+        .flatten()
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeStatus {
@@ -1078,6 +1142,65 @@ mod tests {
         assert!(matches!(
             state.agent("agent-waiting").unwrap().unwrap().status,
             AgentStatus::AwaitingInput
+        ));
+    }
+
+    #[test]
+    fn escape_watch_demotes_quiet_working_agent_without_draining_queue() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Running))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued turn".to_string())
+            .unwrap();
+        let baseline = state.agent_activity_seq("agent-1").unwrap();
+
+        let demoted = resolve_agent_escape_watch(&state, "agent-1", baseline)
+            .expect("quiet working agent is demoted");
+        assert!(matches!(demoted.status, AgentStatus::AwaitingInput));
+        // Unlike the hard idle signals, the demotion must not auto-drain the queue:
+        // if the Esc didn't actually interrupt, a drained turn would steer a busy
+        // agent.
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued turn".to_string()]
+        );
+    }
+
+    #[test]
+    fn escape_watch_stands_down_when_activity_arrives_during_grace() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Running))
+            .unwrap();
+        let baseline = state.agent_activity_seq("agent-1").unwrap();
+
+        // A hook event landing during the grace window (e.g. a PostToolUse
+        // re-marking Running) bumps the activity counter: the watch stands down.
+        state
+            .set_agent_status("agent-1", AgentStatus::Running)
+            .unwrap();
+
+        assert!(resolve_agent_escape_watch(&state, "agent-1", baseline).is_none());
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+    }
+
+    #[test]
+    fn escape_watch_ignores_non_working_agents() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Done))
+            .unwrap();
+        let baseline = state.agent_activity_seq("agent-1").unwrap();
+
+        assert!(resolve_agent_escape_watch(&state, "agent-1", baseline).is_none());
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
         ));
     }
 

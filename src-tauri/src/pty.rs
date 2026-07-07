@@ -784,6 +784,14 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
         write_pane_submit(&mut *writer)?;
     }
 
+    // A lone Esc keystroke (exactly ESC — arrow keys and other sequences arrive as
+    // longer chunks) typed into a working agent's pane is the TUI's interrupt key,
+    // and an interrupt during the thinking phase emits no hook and no transcript
+    // line. Watch the agent so its Running status can't stick forever.
+    if !options.paste && !options.submit && options.data == "\x1b" {
+        crate::workspace::watch_agent_after_escape(state, &options.pane_id);
+    }
+
     Ok(())
 }
 

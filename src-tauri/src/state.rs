@@ -115,6 +115,11 @@ struct Model {
     /// instead of losing it; cleared once the write lands. At-most-one per agent.
     agent_inflight: HashMap<String, QueuedTurn>,
     agent_send_tracking: HashMap<String, AgentSendTracking>,
+    /// Monotonic per-agent counter bumped on every agent mutation and transcript
+    /// write. Lets a watcher ask "did anything happen to this agent since I looked?"
+    /// — the Esc-interrupt grace window uses it to stand down when hook or transcript
+    /// activity proves the agent is still working. Transient (not persisted).
+    agent_activity: HashMap<String, u64>,
     agent_drafts: HashMap<String, String>,
     recent_sessions: HashMap<String, RecentSessionInfo>,
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
@@ -1563,6 +1568,7 @@ impl AppState {
                 model.agent_pending_pause.remove(&agent_id);
                 model.agent_draining.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
+                model.agent_activity.remove(&agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
                 // the has_queue check below keeps the agent for restart recovery).
@@ -1920,6 +1926,7 @@ impl AppState {
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
             let now = now_millis();
+            bump_agent_activity_locked(&mut model, &agent.id);
             upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
             prune_recent_sessions_locked(&mut model);
             model.agents.insert(agent.id.clone(), agent);
@@ -1950,6 +1957,7 @@ impl AppState {
                     f(agent);
                     let updated = agent.clone();
                     let now = now_millis();
+                    bump_agent_activity_locked(&mut model, agent_id);
                     upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
                     prune_recent_sessions_locked(&mut model);
                     Some(updated)
@@ -1983,6 +1991,7 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             let agent_id = turn.agent_id.clone();
             let is_user_turn = turn.role == "user";
+            bump_agent_activity_locked(&mut model, &agent_id);
             let turns = model.turns.entry(agent_id.clone()).or_default();
             turns.push(turn);
             if turns.len() > MAX_TURNS_PER_AGENT {
@@ -2014,6 +2023,7 @@ impl AppState {
                 let overflow = turns.len() - MAX_TURNS_PER_AGENT;
                 turns.drain(..overflow);
             }
+            bump_agent_activity_locked(&mut model, agent_id);
             model.turns.insert(agent_id.to_string(), turns);
             model.agents.get(agent_id).cloned().is_some_and(|agent| {
                 upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
@@ -2702,6 +2712,17 @@ impl AppState {
         Ok(cleared)
     }
 
+    /// Current value of the agent's activity counter (see `Model::agent_activity`).
+    /// An agent with no recorded activity reads as 0.
+    pub fn agent_activity_seq(&self, agent_id: &str) -> Result<u64, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.agent_activity.get(agent_id).copied().unwrap_or(0))
+    }
+
     pub fn agent_has_outstanding_send_source(
         &self,
         agent_id: &str,
@@ -3354,7 +3375,14 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agent_pending_pause.remove(agent_id);
     model.agent_draining.remove(agent_id);
     model.agent_send_tracking.remove(agent_id);
+    model.agent_activity.remove(agent_id);
     clear_recent_session_binding_locked(model, Some(agent_id), None);
+}
+
+/// Bumps the per-agent activity counter; see `Model::agent_activity`.
+fn bump_agent_activity_locked(model: &mut Model, agent_id: &str) {
+    let seq = model.agent_activity.entry(agent_id.to_string()).or_insert(0);
+    *seq = seq.wrapping_add(1);
 }
 
 fn remove_group_without_open_panes_locked(model: &mut Model, group_id: &str) -> bool {
