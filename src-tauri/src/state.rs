@@ -212,6 +212,21 @@ struct AgentSendTracking {
     ups_seq: u64,
 }
 
+/// How long an outstanding send may wait for its UserPromptSubmit echo before it is
+/// considered dead. The echo normally lands well under a second after the PTY write;
+/// a send that never echoes (the user cleared the pasted text with Esc, a slash
+/// command the TUI ran without hooks, …) must not linger — a stale front entry
+/// poisons prompt matching for every later turn, and a stale QueuedTurn entry
+/// suppresses the transcript-interruption fallback that clears a stuck Running.
+const OUTSTANDING_SEND_TTL_MS: u128 = 15_000;
+
+impl AgentSendTracking {
+    fn prune_expired(&mut self, now_ms: u128) {
+        self.outstanding_sends
+            .retain(|send| now_ms.saturating_sub(send.sent_at_ms) <= OUTSTANDING_SEND_TTL_MS);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentSendSource {
@@ -225,6 +240,8 @@ pub enum AgentSendSource {
 pub struct AgentOutstandingSend {
     pub text: String,
     pub sent_at_seq: u64,
+    #[serde(default)]
+    pub sent_at_ms: u128,
     pub source: AgentSendSource,
 }
 
@@ -2575,9 +2592,11 @@ impl AppState {
             .agent_send_tracking
             .entry(agent_id.to_string())
             .or_default();
+        tracking.prune_expired(now_millis());
         tracking.outstanding_sends.push_back(AgentOutstandingSend {
             text,
             sent_at_seq: tracking.ups_seq,
+            sent_at_ms: now_millis(),
             source,
         });
         Ok(())
@@ -2597,6 +2616,7 @@ impl AppState {
             .agent_send_tracking
             .entry(agent_id.to_string())
             .or_default();
+        tracking.prune_expired(now_millis());
         tracking.ups_seq = tracking.ups_seq.saturating_add(1);
         let outstanding_count = tracking.outstanding_sends.len();
 
@@ -2651,6 +2671,23 @@ impl AppState {
             .unwrap_or_default())
     }
 
+    // Rewinds recorded send times so tests can cross OUTSTANDING_SEND_TTL_MS without
+    // sleeping through it.
+    #[cfg(test)]
+    pub fn age_agent_outstanding_sends(&self, agent_id: &str, by_ms: u128) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        if let Some(tracking) = model.agent_send_tracking.get_mut(agent_id) {
+            for send in &mut tracking.outstanding_sends {
+                send.sent_at_ms = send.sent_at_ms.saturating_sub(by_ms);
+            }
+        }
+        Ok(())
+    }
+
     pub fn clear_agent_outstanding_sends(&self, agent_id: &str) -> Result<usize, String> {
         let mut model = self
             .inner
@@ -2670,15 +2707,16 @@ impl AppState {
         agent_id: &str,
         source: AgentSendSource,
     ) -> Result<bool, String> {
-        let model = self
+        let mut model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model
             .agent_send_tracking
-            .get(agent_id)
+            .get_mut(agent_id)
             .is_some_and(|tracking| {
+                tracking.prune_expired(now_millis());
                 tracking
                     .outstanding_sends
                     .iter()
@@ -5331,6 +5369,64 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn expired_outstanding_sends_are_pruned() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        state
+            .record_agent_send(
+                "agent-1",
+                "queued turn".to_string(),
+                AgentSendSource::QueuedTurn,
+            )
+            .unwrap();
+        assert!(
+            state
+                .agent_has_outstanding_send_source("agent-1", AgentSendSource::QueuedTurn)
+                .unwrap()
+        );
+
+        // A send that never echoes a UserPromptSubmit (e.g. the user cleared the
+        // pasted text with Esc) must expire rather than suppress the
+        // transcript-interruption fallback until the next hard idle.
+        state
+            .age_agent_outstanding_sends("agent-1", OUTSTANDING_SEND_TTL_MS + 1)
+            .unwrap();
+        assert!(
+            !state
+                .agent_has_outstanding_send_source("agent-1", AgentSendSource::QueuedTurn)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn stale_front_send_does_not_poison_prompt_matching() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        // A dead send at the front of the queue (never echoed) used to make every
+        // later prompt report Mismatched; once expired, the next real send matches.
+        state
+            .record_agent_send("agent-1", "/model".to_string(), AgentSendSource::DirectSend)
+            .unwrap();
+        state
+            .age_agent_outstanding_sends("agent-1", OUTSTANDING_SEND_TTL_MS + 1)
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "real prompt".to_string(),
+                AgentSendSource::DirectSend,
+            )
+            .unwrap();
+
+        let matched = state
+            .match_agent_prompt_submit("agent-1", Some("real prompt"))
+            .unwrap();
+        assert!(matches!(matched, AgentPromptSubmitMatch::Matched { .. }));
     }
 
     #[test]

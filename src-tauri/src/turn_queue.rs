@@ -24,6 +24,18 @@ pub(crate) fn is_shell_escape_turn(text: &str) -> bool {
     text.trim_start().starts_with('!')
 }
 
+/// Turns the agent TUI intercepts as commands rather than plain prompts: `!` shell
+/// escapes and `/` slash commands. Built-in slash commands (e.g. Claude's `/model`)
+/// fire no hooks at all — no UserPromptSubmit and no Stop/idle — so a send must not
+/// optimistically mark the agent Running on their behalf; nothing would ever mark it
+/// idle again. Slash commands that do start a real turn (skills) still promote the
+/// agent to Running through their own UserPromptSubmit/PreToolUse hooks moments
+/// later.
+pub(crate) fn is_tui_command_turn(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with('!') || trimmed.starts_with('/')
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitAgentTurnRequest {
@@ -717,7 +729,7 @@ fn send_agent_turn(
     // between read and write and could clobber a concurrent SessionStart hook's
     // session_id/transcript_path (leaving the session unresumable/unforkable). Only
     // the status changes, so write only the status.
-    if !is_shell_escape_turn(&text) {
+    if !is_tui_command_turn(&text) {
         state.set_agent_status(&agent.id, AgentStatus::Running)?;
     }
     // Send tracking is advisory (it feeds de-dup/echo suppression), so a failure
@@ -970,6 +982,59 @@ mod tests {
         assert!(is_shell_escape_turn("  \n\t!git status"));
         assert!(!is_shell_escape_turn("please run !git status"));
         assert!(!is_shell_escape_turn(""));
+    }
+
+    #[test]
+    fn tui_command_turns_cover_shell_escapes_and_slash_commands() {
+        assert!(is_tui_command_turn("!git status"));
+        assert!(is_tui_command_turn("/model"));
+        assert!(is_tui_command_turn("  /compact keep the plan"));
+        assert!(!is_tui_command_turn("fix the bug in /src/main.rs"));
+        assert!(!is_tui_command_turn(""));
+    }
+
+    #[test]
+    fn slash_command_send_does_not_mark_agent_running() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::AwaitingInput,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+
+        // A slash command may run a hookless TUI built-in (e.g. /model), so the send
+        // must not promote the agent to Running — nothing would ever demote it.
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "/model".to_string(),
+                mode: Some(SubmitAgentTurnMode::Send),
+            },
+        )
+        .unwrap();
+        assert!(!result.queued);
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+
+        // A plain prompt still lights up immediately.
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "hello".to_string(),
+                mode: Some(SubmitAgentTurnMode::Send),
+            },
+        )
+        .unwrap();
+        assert!(!result.queued);
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(matches!(agent.status, AgentStatus::Running));
     }
 
     #[test]
