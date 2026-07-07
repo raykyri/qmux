@@ -6548,6 +6548,7 @@ export default function App() {
         }
         showActivityDetail={settings.showToolCalls}
         agentId={agent?.id ?? surface.pane.id}
+        searchHotkeyActive={surface.pane.id === activePane?.id}
         assistantLabel={surface.assistantLabel}
         notice={agent ? surface.transcriptNotice : null}
         transcriptOptions={agent ? surface.transcriptOptions : []}

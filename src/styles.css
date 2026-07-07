@@ -2784,7 +2784,8 @@ button.home-cascade-wait-pill:focus-visible {
   height: 100%;
 }
 
-.terminal-search {
+/* The find bar shared by the terminal and the right-pane transcript. */
+.pane-search {
   position: absolute;
   top: 10px;
   right: 22px;
@@ -2799,7 +2800,20 @@ button.home-cascade-wait-pill:focus-visible {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 
-.terminal-search-input {
+/* In the transcript, drop below the pinned session header (40px tall). */
+.turn-sidebar.has-header .pane-search {
+  top: 50px;
+  right: 16px;
+}
+
+/* Headerless overlays (split cells) keep their floating expand/collapse controls
+   at the top-right corner, so the bar starts to their left. */
+.turn-sidebar:not(.has-header) .pane-search {
+  top: 8px;
+  right: 84px;
+}
+
+.pane-search-input {
   width: 200px;
   border: 1px solid #3a3d3f;
   border-radius: 6px;
@@ -2809,12 +2823,12 @@ button.home-cascade-wait-pill:focus-visible {
   font-size: 13px;
 }
 
-.terminal-search-input:focus {
+.pane-search-input:focus {
   outline: none;
   border-color: #6cae9d;
 }
 
-.terminal-search-count {
+.pane-search-count {
   min-width: 56px;
   color: #9aa0a3;
   font-size: 12px;
@@ -2823,15 +2837,15 @@ button.home-cascade-wait-pill:focus-visible {
   white-space: nowrap;
 }
 
-.terminal-search-toggles,
-.terminal-search-nav {
+.pane-search-toggles,
+.pane-search-nav {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.terminal-search-toggle,
-.terminal-search-button {
+.pane-search-toggle,
+.pane-search-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2849,20 +2863,33 @@ button.home-cascade-wait-pill:focus-visible {
   cursor: pointer;
 }
 
-.terminal-search-toggle:hover,
-.terminal-search-button:hover:not(:disabled) {
+.pane-search-toggle:hover,
+.pane-search-button:hover:not(:disabled) {
   background: #2a2f31;
 }
 
-.terminal-search-toggle.is-active {
+.pane-search-toggle.is-active {
   border-color: #6cae9d;
   background: #243430;
   color: #e7e7e2;
 }
 
-.terminal-search-button:disabled {
+.pane-search-button:disabled {
   color: #5a5f62;
   cursor: default;
+}
+
+/* Transcript search matches, painted via the CSS Custom Highlight API (names
+   registered in lib/transcriptSearch.ts). Colors mirror the terminal's
+   SEARCH_DECORATIONS so find reads the same on both sides of the split. */
+::highlight(transcript-search-match) {
+  background-color: #665a2b;
+  color: #f4f4ef;
+}
+
+::highlight(transcript-search-active-match) {
+  background-color: #a8842f;
+  color: #111315;
 }
 
 .turn-pane {

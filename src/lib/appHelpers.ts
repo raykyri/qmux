@@ -230,6 +230,11 @@ export function reconcileQueuedTurnCollapse(
   });
 }
 
+// On macOS the find shortcut is Cmd-F; on other platforms it is Ctrl-F. (Ctrl-F
+// is readline's forward-char, so on the Mac we leave it for the terminal.)
+export const IS_MAC =
+  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
+
 export function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;

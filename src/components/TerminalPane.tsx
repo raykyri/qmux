@@ -17,7 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { CSSProperties } from "react";
 import { getPaneScrollback, pastePaneInput, resizePane, writePane } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
@@ -26,7 +26,8 @@ import { useConfirm } from "../hooks/useConfirm";
 import { loadTerminalFont } from "../lib/terminalFont";
 import type { PaneInfo } from "../types";
 import type { SelectionAnchor } from "../appTypes";
-import { bytesFromBase64 } from "../lib/appHelpers";
+import { bytesFromBase64, IS_MAC } from "../lib/appHelpers";
+import PaneSearchBar from "./PaneSearchBar";
 import { safeHref } from "../lib/links";
 import {
   RESTORED_SCROLLBACK_TERMINAL_RESET,
@@ -502,11 +503,6 @@ export interface TerminalPaneHandle {
   // cold-start output is never dropped. Called by the app's central event dispatch.
   write: (data: string | Uint8Array) => void;
 }
-
-// On macOS the find shortcut is Cmd-F; on other platforms it is Ctrl-F. (Ctrl-F
-// is readline's forward-char, so on the Mac we leave it for the terminal.)
-const IS_MAC =
-  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 
 // A recovered pane keeps snapping to the bottom while restore output (scrollback
 // replay, then the attach backlog, then live PTY writes) is still flowing. The
@@ -1016,20 +1012,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
   const closeSearch = () => {
     setSearchOpen(false);
-  };
-
-  const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (event.shiftKey) {
-        findPrevious();
-      } else {
-        findNext();
-      }
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      closeSearch();
-    }
   };
 
   // Re-run the search whenever the term or options change while the bar is open.
@@ -1953,14 +1935,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     scrollDurationMs,
   ]);
 
-  const matchLabel =
-    searchTerm === ""
-      ? ""
-      : searchResults.count === 0
-        ? "No results"
-        : `${searchResults.index + 1}/${searchResults.count}`;
-  const hasMatches = searchResults.count > 0;
-
   return (
     <div
       className={`terminal-pane ${visible ? "is-visible" : ""} ${active ? "is-focused" : ""}`}
@@ -1973,74 +1947,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       </div>
       {confirmDialog}
       {searchOpen ? (
-        <div className="terminal-search" role="search">
-          <input
-            ref={searchInputRef}
-            type="text"
-            className="terminal-search-input"
-            value={searchTerm}
-            placeholder="Find in terminal"
-            spellCheck={false}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            aria-label="Find in terminal"
-            onChange={(event) => setSearchTerm(event.currentTarget.value)}
-            onKeyDown={handleSearchKeyDown}
-          />
-          <span className="terminal-search-count">{matchLabel}</span>
-          <div className="terminal-search-toggles">
-            <button
-              type="button"
-              className={`terminal-search-toggle ${caseSensitive ? "is-active" : ""}`}
-              title="Match case"
-              aria-pressed={caseSensitive}
-              onClick={() => setCaseSensitive((value) => !value)}
-            >
-              Aa
-            </button>
-            <button
-              type="button"
-              className={`terminal-search-toggle ${useRegex ? "is-active" : ""}`}
-              title="Use regular expression"
-              aria-pressed={useRegex}
-              onClick={() => setUseRegex((value) => !value)}
-            >
-              .*
-            </button>
-          </div>
-          <div className="terminal-search-nav">
-            <button
-              type="button"
-              className="terminal-search-button"
-              title="Previous match (Shift+Enter)"
-              aria-label="Previous match"
-              disabled={!hasMatches}
-              onClick={findPrevious}
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              className="terminal-search-button"
-              title="Next match (Enter)"
-              aria-label="Next match"
-              disabled={!hasMatches}
-              onClick={findNext}
-            >
-              ↓
-            </button>
-            <button
-              type="button"
-              className="terminal-search-button"
-              title="Close (Esc)"
-              aria-label="Close search"
-              onClick={closeSearch}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
+        <PaneSearchBar
+          inputRef={searchInputRef}
+          placeholder="Find in terminal"
+          term={searchTerm}
+          onTermChange={setSearchTerm}
+          matchIndex={searchResults.index}
+          matchCount={searchResults.count}
+          caseSensitive={caseSensitive}
+          onCaseSensitiveChange={setCaseSensitive}
+          useRegex={useRegex}
+          onUseRegexChange={setUseRegex}
+          onFindNext={findNext}
+          onFindPrevious={findPrevious}
+          onClose={closeSearch}
+        />
       ) : null}
     </div>
   );
