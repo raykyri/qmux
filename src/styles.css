@@ -3637,6 +3637,7 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-title-menu-item {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   width: 100%;
   min-height: var(--control-h-md);
   padding: 6px 10px;
@@ -3646,6 +3647,10 @@ button.home-cascade-wait-pill:focus-visible {
   color: #e7e7e2;
   font-family: var(--font-ui);
   font-size: var(--fs-base);
+  /* Reset the bold uppercase inherited from the turn-card header — these
+     should read as normal menu items. */
+  font-weight: 400;
+  text-transform: none;
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
@@ -3878,6 +3883,56 @@ header + .turn-blocks {
   background: transparent;
   padding: 0;
   white-space: pre;
+}
+
+/* Fenced-code wrapper: anchors the wrap toggle to the block's top-right corner
+   so it stays put while the <pre> underneath scrolls. Block margin moves here
+   from the <pre> so :last-child margin trimming still works. */
+.turn-markdown-code-block {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.turn-markdown-code-block pre {
+  margin: 0;
+}
+
+.turn-markdown-code-block.is-wrapped pre code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.turn-markdown-code-wrap-toggle {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #323a3d;
+  border-radius: 4px;
+  background: #191e21;
+  color: #8d968f;
+  cursor: pointer;
+}
+
+.turn-markdown-code-wrap-toggle svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.turn-markdown-code-wrap-toggle:hover {
+  background: #232a2d;
+  color: #f1f0e8;
+}
+
+.turn-markdown-code-wrap-toggle.is-active {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: #f1f0e8;
 }
 
 .turn-markdown-table-wrap {

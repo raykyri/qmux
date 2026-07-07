@@ -18,7 +18,7 @@ import type {
   ReactElement,
   ReactNode,
 } from "react";
-import { ChevronRight, Ellipsis } from "lucide-react";
+import { ChevronRight, Ellipsis, WrapText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import type { Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
 import { IS_MAC, isEditableTarget } from "../lib/appHelpers";
+import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
 import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
 import {
@@ -217,6 +218,28 @@ function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<"a">) {
   );
 }
 
+function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
+  const [wrap, setWrap] = useState(false);
+  const label = wrap ? "Turn off line wrap" : "Turn on line wrap";
+  // The button anchors to the wrapper, not the scrolling <pre>, so it stays
+  // pinned to the block's top-right corner while the code scrolls under it.
+  return (
+    <div className={`turn-markdown-code-block${wrap ? " is-wrapped" : ""}`}>
+      <button
+        type="button"
+        className={`turn-markdown-code-wrap-toggle${wrap ? " is-active" : ""}`}
+        title={label}
+        aria-label={label}
+        aria-pressed={wrap}
+        onClick={() => setWrap((value) => !value)}
+      >
+        <WrapText aria-hidden="true" />
+      </button>
+      <pre {...props}>{children}</pre>
+    </div>
+  );
+}
+
 const markdownComponents: Components = {
   a: ({ node: _node, href, ...props }) => <MarkdownLink href={href} {...props} />,
   table: ({ node: _node, ...props }) => (
@@ -234,7 +257,7 @@ const markdownComponents: Components = {
     if (codeEl && lang) {
       return <DiagramBlock lang={lang} code={nodeText(codeEl.props.children)} />;
     }
-    return <pre {...props}>{children}</pre>;
+    return <MarkdownCodeBlock {...props}>{children}</MarkdownCodeBlock>;
   },
 };
 
@@ -1020,7 +1043,7 @@ function MessageItemView({
 }
 
 // The "..." menu shown at the right of a user message header. Opens a small popover
-// whose sole entry regenerates the tab title from this message.
+// with actions for this message: regenerate the tab title from it, or copy its text.
 function MessageTitleMenu({
   titleSourceText,
   titleGenerationBusy,
@@ -1087,6 +1110,19 @@ function MessageTitleMenu({
             }}
           >
             {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="turn-title-menu-item"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpen(false);
+              void writeClipboardText(titleSourceText);
+            }}
+          >
+            Copy message
           </button>
         </div>
       ) : null}
