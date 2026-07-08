@@ -317,8 +317,9 @@ impl ClaudeAdapter {
         )?;
 
         // Record fork lineage and the no-prompt idle status before the process starts,
-        // so the fork's own SessionStart hook (which overwrites session_id) can't race
-        // ahead of the lineage write.
+        // so the fork's own hooks (SessionStart, or the first turn's hooks via
+        // adopt_forked_session_identity, which record the new session_id) can't race
+        // ahead of the lineage write — the stale-payload guards key off fork_point.
         agent.parent_id = Some(source.id.clone());
         agent.fork_point = Some(session_id.clone());
         agent.root_session_id = source
@@ -623,6 +624,16 @@ impl ClaudeAdapter {
                     .as_deref()
                     .and_then(|pane_id| state.agent_by_pane(pane_id).ok().flatten())
             });
+        // Heal a forked agent whose SessionStart carried the source session's stale
+        // metadata (rejected above in the SessionStart arm): every later hook carries
+        // the current session's id/transcript, so the fork's first turn binds the real
+        // identity. Runs before the event match so even this event's own side effects
+        // (e.g. a Stop drain) act on the corrected binding.
+        if notification.event != "SessionStart"
+            && let Some(current) = agent.as_ref()
+        {
+            adopt_forked_session_identity(state, self.id(), current, &notification.payload)?;
+        }
         let event_type = match notification.event.as_str() {
             "SessionStart" => {
                 if let Some(current) = agent.as_ref() {
@@ -644,36 +655,56 @@ impl ClaudeAdapter {
                                     candidate,
                                 )
                             });
-                    // Field-scoped mutation, not a full-struct `update_agent`: this
-                    // freshly spawned process's pane is being bound by attach_agent_pane
-                    // on another thread, and a stale-snapshot write here would race it —
-                    // wiping either the pane_id it set or the session_id we set.
-                    let updated = state.mutate_agent(&current.id, |agent| {
-                        // Same guard as transcript_path below: only overwrite when this
-                        // event carries a session id. A late/duplicate SessionStart that
-                        // omits it must not blank a recorded one, which fork + recovery
-                        // key off.
-                        if let Some(session_id) = session_id {
-                            agent.session_id = Some(session_id);
+                    // A fork (`--resume <src> --fork-session`) can deliver a SessionStart
+                    // still carrying the *source* session's id/transcript (stale hook
+                    // metadata; the forked session's id can never legitimately equal
+                    // fork_point). Adopting it would pin this pane to the source session
+                    // — another live tab — and tail the source's transcript, duplicating
+                    // its timeline here and letting its abort markers drain this pane's
+                    // queue. Drop the payload instead; the fork's first turn binds the
+                    // real identity via adopt_forked_session_identity.
+                    let stale_fork_payload = current.fork_point.as_deref().is_some_and(
+                        |fork_point| {
+                            session_id.as_deref() == Some(fork_point)
+                                || transcript_path.as_deref().is_some_and(|path| {
+                                    transcript_file_session_id(path) == Some(fork_point)
+                                })
+                        },
+                    );
+                    if !stale_fork_payload {
+                        // Field-scoped mutation, not a full-struct `update_agent`: this
+                        // freshly spawned process's pane is being bound by attach_agent_pane
+                        // on another thread, and a stale-snapshot write here would race it —
+                        // wiping either the pane_id it set or the session_id we set.
+                        let updated = state.mutate_agent(&current.id, |agent| {
+                            // Same guard as transcript_path below: only overwrite when this
+                            // event carries a session id. A late/duplicate SessionStart that
+                            // omits it must not blank a recorded one, which fork + recovery
+                            // key off.
+                            if let Some(session_id) = session_id {
+                                agent.session_id = Some(session_id);
+                            }
+                            // Only overwrite a known-good transcript path when this event
+                            // actually carries one. A SessionStart whose payload omits the
+                            // field must not blank the path out from under a running tail,
+                            // which would silently freeze the timeline while the agent runs.
+                            if let Some(transcript_path) = transcript_path {
+                                agent.transcript_path = Some(transcript_path);
+                            }
+                            // A session starting doesn't mean a turn is running. Keep
+                            // status unchanged here; the first real prompt/tool hook
+                            // promotes the agent to Running.
+                        })?;
+                        if let Some(transcript_path) =
+                            updated.and_then(|agent| agent.transcript_path)
+                        {
+                            start_transcript_tail(
+                                state.clone(),
+                                current.id.clone(),
+                                transcript_path,
+                                self.id().to_string(),
+                            );
                         }
-                        // Only overwrite a known-good transcript path when this event
-                        // actually carries one. A SessionStart whose payload omits the
-                        // field must not blank the path out from under a running tail,
-                        // which would silently freeze the timeline while the agent runs.
-                        if let Some(transcript_path) = transcript_path {
-                            agent.transcript_path = Some(transcript_path);
-                        }
-                        // A session starting doesn't mean a turn is running. Keep
-                        // status unchanged here; the first real prompt/tool hook
-                        // promotes the agent to Running.
-                    })?;
-                    if let Some(transcript_path) = updated.and_then(|agent| agent.transcript_path) {
-                        start_transcript_tail(
-                            state.clone(),
-                            current.id.clone(),
-                            transcript_path,
-                            self.id().to_string(),
-                        );
                     }
                 }
                 "agent.session_start"
@@ -1260,6 +1291,88 @@ fn is_subagent_payload(value: &Value) -> bool {
 /// keeps a project's sessions in one flat directory, so a legitimate rotation
 /// (compact, resume) stays a sibling, while a forged mid-session hook can no longer
 /// relocate the tail to an unrelated file.
+/// The session id a Claude transcript path encodes: transcripts are stored as
+/// `<project dir>/<session-id>.jsonl` (the same convention the session picker's
+/// `session_id_from_transcript_path` relies on).
+fn transcript_file_session_id(path: &str) -> Option<&str> {
+    Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty() && !stem.starts_with('.'))
+}
+
+/// One-shot correction for a forked agent whose SessionStart delivered the source
+/// session's metadata (or was rejected as stale, leaving the fork unbound): adopt the
+/// current session's id and transcript from a later hook payload.
+///
+/// Deliberately narrow, so inconsistent hook metadata can never flap the binding:
+/// - Applies only while the recorded session id is missing or still equals
+///   `fork_point` — after the first adoption of a distinct id the condition is false
+///   forever, and no later hook (subagent or otherwise) can move the binding again.
+/// - All-or-nothing: adopts only a consistent (session id, transcript path) pair —
+///   the path must pass the same forgery guard as SessionStart and must encode the
+///   adopted session id, so the header can never point at one session while the tail
+///   follows another.
+/// - Never adopts the source's own id (`fork_point`): with `--fork-session` the new
+///   session can't legitimately equal it, so such a payload is stale by definition.
+/// - Subagent payloads are skipped; their metadata describes a sidechain, not the pane.
+fn adopt_forked_session_identity(
+    state: &AppState,
+    adapter_id: &str,
+    current: &AgentInfo,
+    payload: &Value,
+) -> Result<(), String> {
+    let Some(fork_point) = current.fork_point.clone() else {
+        return Ok(());
+    };
+    let unbound_or_stale = |session_id: Option<&str>| {
+        session_id.is_none() || session_id == Some(fork_point.as_str())
+    };
+    if !unbound_or_stale(current.session_id.as_deref()) || is_subagent_payload(payload) {
+        return Ok(());
+    }
+    let Some(session_id) = super::string_field(payload, "session_id")
+        .or_else(|| super::string_field(payload, "sessionId"))
+        .map(|session_id| session_id.trim().to_string())
+        .filter(|session_id| !session_id.is_empty() && *session_id != fork_point)
+    else {
+        return Ok(());
+    };
+    let Some(transcript_path) = super::string_field(payload, "transcript_path")
+        .or_else(|| super::string_field(payload, "transcriptPath"))
+        .filter(|candidate| {
+            hook_transcript_path_acceptable(current.transcript_path.as_deref(), candidate)
+                && transcript_file_session_id(candidate) == Some(session_id.as_str())
+        })
+    else {
+        return Ok(());
+    };
+    // Field-scoped mutation with the staleness re-checked under the model lock, so a
+    // concurrent adopter (another hook mid-flight) that already bound a distinct id
+    // is never overwritten.
+    let updated = state.mutate_agent(&current.id, |agent| {
+        if unbound_or_stale(agent.session_id.as_deref()) {
+            agent.session_id = Some(session_id.clone());
+            agent.transcript_path = Some(transcript_path.clone());
+        }
+    })?;
+    // Tail only if our pair actually landed (ours, or an identical concurrent
+    // adoption — start_transcript_tail dedupes per path either way).
+    if updated
+        .as_ref()
+        .and_then(|agent| agent.transcript_path.as_deref())
+        == Some(transcript_path.as_str())
+    {
+        start_transcript_tail(
+            state.clone(),
+            current.id.clone(),
+            transcript_path,
+            adapter_id.to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bool {
     let candidate = Path::new(candidate);
     if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
@@ -1721,6 +1834,135 @@ mod tests {
                 .as_deref(),
             Some("sess-abc")
         );
+    }
+
+    #[test]
+    fn forked_agent_rejects_session_start_carrying_the_source_session() {
+        let state = test_state();
+        install_agent_pane(&state);
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.fork_point = Some("sess-src".to_string());
+            })
+            .unwrap();
+
+        // Stale fork payload: the source's id and transcript. Neither may bind —
+        // adopting them would tail the source's live transcript from this pane.
+        ingest(
+            &state,
+            hook(
+                "SessionStart",
+                json!({
+                    "session_id": "sess-src",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-src.jsonl",
+                }),
+            ),
+        );
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id, None);
+        assert_eq!(agent.transcript_path, None);
+
+        // Same rejection when only the transcript betrays the source session.
+        ingest(
+            &state,
+            hook(
+                "SessionStart",
+                json!({ "transcript_path": "/home/u/.claude/projects/proj/sess-src.jsonl" }),
+            ),
+        );
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.transcript_path, None);
+
+        // A SessionStart that does carry the fork's own id binds normally.
+        ingest(
+            &state,
+            hook(
+                "SessionStart",
+                json!({
+                    "session_id": "sess-fork",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-fork.jsonl",
+                }),
+            ),
+        );
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id.as_deref(), Some("sess-fork"));
+        assert_eq!(
+            agent.transcript_path.as_deref(),
+            Some("/home/u/.claude/projects/proj/sess-fork.jsonl")
+        );
+    }
+
+    #[test]
+    fn forked_agent_adopts_session_identity_from_first_turn_hook() {
+        let state = test_state();
+        install_agent_pane(&state);
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.fork_point = Some("sess-src".to_string());
+            })
+            .unwrap();
+
+        // The source's own id is never adopted, even from a later hook.
+        ingest(&state, hook("PreToolUse", json!({
+            "session_id": "sess-src",
+            "transcript_path": "/home/u/.claude/projects/proj/sess-src.jsonl",
+        })));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id, None);
+
+        // Adoption is all-or-nothing: an id whose transcript doesn't encode it
+        // (mismatched pair) must not bind either half.
+        ingest(&state, hook("PreToolUse", json!({
+            "session_id": "sess-fork",
+            "transcript_path": "/home/u/.claude/projects/proj/sess-other.jsonl",
+        })));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id, None);
+        assert_eq!(agent.transcript_path, None);
+
+        // Subagent payloads describe a sidechain, not the pane; skipped.
+        ingest(&state, hook("PreToolUse", json!({
+            "agent_id": "task-subagent",
+            "session_id": "sess-side",
+            "transcript_path": "/home/u/.claude/projects/proj/sess-side.jsonl",
+        })));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id, None);
+
+        // The first consistent (id, transcript) pair from a real hook binds both.
+        ingest(&state, hook("PreToolUse", json!({
+            "session_id": "sess-fork",
+            "transcript_path": "/home/u/.claude/projects/proj/sess-fork.jsonl",
+        })));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id.as_deref(), Some("sess-fork"));
+        assert_eq!(
+            agent.transcript_path.as_deref(),
+            Some("/home/u/.claude/projects/proj/sess-fork.jsonl")
+        );
+
+        // One-shot: once a distinct id is bound, later hooks can't move it.
+        ingest(&state, hook("PostToolUse", json!({
+            "session_id": "sess-late",
+            "transcript_path": "/home/u/.claude/projects/proj/sess-late.jsonl",
+        })));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id.as_deref(), Some("sess-fork"));
+    }
+
+    #[test]
+    fn non_forked_agent_never_adopts_session_identity_from_turn_hooks() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        // No fork lineage: only SessionStart may bind, exactly as before.
+        ingest(&state, hook("PreToolUse", json!({
+            "session_id": "sess-abc",
+            "transcript_path": "/home/u/.claude/projects/proj/sess-abc.jsonl",
+        })));
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert_eq!(agent.session_id, None);
+        assert_eq!(agent.transcript_path, None);
     }
 
     #[test]
