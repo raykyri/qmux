@@ -144,7 +144,12 @@ cargo test --manifest-path src-tauri/Cargo.toml
   `SessionStart`, Codex via an explicit `SessionStart` path or session-id lookup,
   and OpenCode via qmux-managed JSONL.
 - Persisted state is written under `<workspaceRoot>/.qmux/state.json`.
-- `qmux.config.json` keeps spawned qmux state inside this checkout:
+- `qmux.config.json` keeps spawned qmux state inside this checkout. Only dev
+  (debug) builds discover it in the process cwd; release builds always use the
+  platform data dir (`~/Library/Application Support/qmux` on macOS) so the
+  session doesn't depend on how the app is launched. Set `QMUX_CONFIG=<file>`
+  to point any build at an explicit config (relative paths inside it resolve
+  against the config file's directory):
 
 ```json
 {

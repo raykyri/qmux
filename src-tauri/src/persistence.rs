@@ -190,45 +190,91 @@ fn reset_state_requested() -> bool {
 /// user-facing message and the caller aborts startup, leaving the file untouched
 /// so a relaunch (after fixing the transient cause) restores the session.
 ///
-/// A missing file (first run) or a readable file returns `Ok`. With
-/// `QMUX_RESET_STATE` set, an unreadable file is renamed aside to a `.bak` and
-/// `Ok` is returned so the user can deliberately start fresh without losing the
-/// original bytes.
+/// The same refusal applies to a state file written by a *newer* qmux: this
+/// build cannot load it (there are no forward migrations), and moving it aside
+/// to start empty would destroy the newer install's session every time a stale
+/// copy of the app is launched. The fix is to run the newer app, so abort and
+/// say so rather than eat the session.
+///
+/// A missing file (first run) or a readable, loadable file returns `Ok`. With
+/// `QMUX_RESET_STATE` set, an unreadable or newer-versioned file is renamed
+/// aside to a `.bak` and `Ok` is returned so the user can deliberately start
+/// fresh without losing the original bytes.
 pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
     let path = state_path(workspace_root);
-    // A plain open surfaces the same EACCES/EMFILE/EIO the later read would hit,
-    // without loading or holding the contents.
-    match fs::File::open(&path) {
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) if reset_state_requested() => match preserve_rejected_state(&path, "unreadable") {
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) if reset_state_requested() => {
+            return match preserve_rejected_state(&path, "unreadable") {
+                Ok(backup_path) => {
+                    eprintln!(
+                        "qmux: QMUX_RESET_STATE set; moved unreadable state {} aside to {} and starting fresh",
+                        path.display(),
+                        backup_path.display()
+                    );
+                    Ok(())
+                }
+                Err(rename_err) => Err(format!(
+                    "could not read persisted state {} ({err}) and could not move it aside to reset: {rename_err}",
+                    path.display()
+                )),
+            };
+        }
+        Err(err) => {
+            return Err(format!(
+                "Could not read your saved qmux session at {path}:\n  {err}\n\n\
+                 Your panes and agents are still saved on disk, so qmux is refusing to start with an \
+                 empty session and overwrite them. This is almost always temporary — fix the cause \
+                 below and relaunch to get your session back:\n\
+                 \x20 • Permission denied: check the file's ownership and permissions.\n\
+                 \x20 • Too many open files: quit other apps (or raise the open-file limit), then relaunch.\n\
+                 \x20 • File on iCloud/a network volume: wait for the volume to come back online.\n\n\
+                 To start fresh on purpose instead — your current session file is moved aside to a \
+                 .bak first, so nothing is lost — relaunch with:\n\
+                 \x20 QMUX_RESET_STATE=1 open -a qmux",
+                path = path.display()
+            ));
+        }
+    };
+
+    // Unparseable JSON or a missing/older version is left for `load_with_diagnostics`,
+    // which preserves the file as a `.bak` before starting fresh.
+    let newer_version = serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.get("version").and_then(Value::as_u64))
+        .filter(|&version| version > u64::from(STATE_VERSION));
+    let Some(version) = newer_version else {
+        return Ok(());
+    };
+
+    if reset_state_requested() {
+        return match preserve_rejected_state(&path, "newer-version") {
             Ok(backup_path) => {
                 eprintln!(
-                    "qmux: QMUX_RESET_STATE set; moved unreadable state {} aside to {} and starting fresh",
+                    "qmux: QMUX_RESET_STATE set; moved newer-versioned state {} aside to {} and starting fresh",
                     path.display(),
                     backup_path.display()
                 );
                 Ok(())
             }
             Err(rename_err) => Err(format!(
-                "could not read persisted state {} ({err}) and could not move it aside to reset: {rename_err}",
+                "persisted state {} was written by a newer qmux (state version {version}) and could not be moved aside to reset: {rename_err}",
                 path.display()
             )),
-        },
-        Err(err) => Err(format!(
-            "Could not read your saved qmux session at {path}:\n  {err}\n\n\
-             Your panes and agents are still saved on disk, so qmux is refusing to start with an \
-             empty session and overwrite them. This is almost always temporary — fix the cause \
-             below and relaunch to get your session back:\n\
-             \x20 • Permission denied: check the file's ownership and permissions.\n\
-             \x20 • Too many open files: quit other apps (or raise the open-file limit), then relaunch.\n\
-             \x20 • File on iCloud/a network volume: wait for the volume to come back online.\n\n\
-             To start fresh on purpose instead — your current session file is moved aside to a \
-             .bak first, so nothing is lost — relaunch with:\n\
-             \x20 QMUX_RESET_STATE=1 open -a qmux",
-            path = path.display()
-        )),
+        };
     }
+
+    Err(format!(
+        "Your saved qmux session at {path} was written by a newer version of qmux \
+         (state version {version}; this build supports up to {STATE_VERSION}).\n\n\
+         Loading it here would discard that session, so this copy of qmux is refusing to \
+         start. Launch the newer qmux instead, or update this copy.\n\n\
+         To start fresh on purpose — your current session file is moved aside to a .bak \
+         first, so nothing is lost — relaunch with:\n\
+         \x20 QMUX_RESET_STATE=1 open -a qmux",
+        path = path.display()
+    ))
 }
 
 /// Reads persisted state and reports why recovery had to fall back to an empty
@@ -822,6 +868,40 @@ mod tests {
         assert_eq!(pane.cols, 120);
         assert_eq!(pane.rows, 40);
         assert!(matches!(pane.kind, PaneKind::Shell));
+    }
+
+    #[test]
+    fn preflight_refuses_state_written_by_a_newer_version() {
+        let root = temp_root();
+        let path = state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let newer = format!(r#"{{"version":{},"panes":[]}}"#, STATE_VERSION + 1);
+        fs::write(&path, &newer).unwrap();
+
+        let err = preflight_state(&root).expect_err("newer-version state must refuse startup");
+        assert!(err.contains("newer version"));
+        // The file is left untouched so the newer install keeps its session.
+        assert_eq!(fs::read_to_string(&path).unwrap(), newer);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preflight_accepts_missing_current_older_and_corrupt_state() {
+        let root = temp_root();
+        assert!(preflight_state(&root).is_ok(), "missing state is a first run");
+
+        let path = state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!(r#"{{"version":{STATE_VERSION}}}"#)).unwrap();
+        assert!(preflight_state(&root).is_ok());
+
+        // Older and corrupt state are preflight-clean: load preserves them as a
+        // .bak before starting fresh, so nothing is silently overwritten.
+        fs::write(&path, r#"{"version":1}"#).unwrap();
+        assert!(preflight_state(&root).is_ok());
+        fs::write(&path, "{ not json").unwrap();
+        assert!(preflight_state(&root).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

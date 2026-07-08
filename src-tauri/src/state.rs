@@ -84,6 +84,10 @@ struct AppStateInner {
     // rename can land after a newer one and clobber it, losing the last change
     // (or re-sending an already-drained queued turn) across a restart.
     persist_lock: Mutex<()>,
+    // Why restore_session had to fall back or drop entries, held until startup
+    // surfaces it in a GUI dialog — a Finder launch never shows stderr, and a
+    // silently discarded session looks like the app ate the user's tabs.
+    recovery_warning: Mutex<Option<String>>,
     exit_confirmed: AtomicBool,
     // Loopback file-server port, set once at startup. The control socket pairs it with
     // a per-pane file token to build browser-overlay URLs.
@@ -597,6 +601,7 @@ impl AppState {
                 app_handle: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
                 persist_lock: Mutex::new(()),
+                recovery_warning: Mutex::new(None),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
                 control_socket_identity: Mutex::new(None),
@@ -764,10 +769,23 @@ impl AppState {
         persistence::preflight_state(&self.inner.config.workspace_root)
     }
 
+    /// The warning produced while loading persisted state, if any, taken once so
+    /// startup can show it in a GUI dialog.
+    pub fn take_recovery_warning(&self) -> Option<String> {
+        self.inner
+            .recovery_warning
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+    }
+
     pub fn restore_session(&self) -> Vec<PaneInfo> {
         let outcome = persistence::load_with_diagnostics(&self.inner.config.workspace_root);
         if let Some(warning) = outcome.warning.as_ref() {
             eprintln!("qmux: {}", warning.message);
+            if let Ok(mut slot) = self.inner.recovery_warning.lock() {
+                *slot = Some(warning.message.clone());
+            }
         }
         let persisted = outcome.state;
         let active_tab_id = sanitize_active_tab_id(persisted.active_tab_id.clone());

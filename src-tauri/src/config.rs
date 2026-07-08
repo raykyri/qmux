@@ -94,34 +94,47 @@ pub struct TabTitleGenerationRuntimeConfig {
 impl QmuxConfig {
     pub fn load() -> Result<Self, String> {
         let cwd = env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
-        let config_path = cwd.join("qmux.config.json");
 
-        let mut config = if config_path.exists() {
-            let raw = fs::read_to_string(&config_path)
-                .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
-            serde_json::from_str::<QmuxConfig>(&raw)
-                .map_err(|err| format!("failed to parse {}: {err}", config_path.display()))?
+        // Which config applies:
+        // - `QMUX_CONFIG=<file>` is explicit intent, honored in every build; a
+        //   missing or malformed file is an error rather than a silent fallback.
+        // - Otherwise dev builds discover `<cwd>/qmux.config.json`, so a checkout
+        //   keeps its state in `<repo>/.qmux` when run from the repo.
+        // - Release builds never read a config from the cwd: the persisted session
+        //   must live in the same place no matter how the app is launched (Finder
+        //   gives cwd `/`, a terminal gives the project directory), otherwise each
+        //   launch style reads and writes its own divergent session history.
+        let explicit = env::var_os("QMUX_CONFIG").filter(|value| !value.is_empty());
+        let (mut config, config_dir) = if let Some(explicit) = explicit {
+            let path = absolutize(&cwd, Path::new(&explicit));
+            let dir = path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| cwd.clone());
+            (Self::read_config_file(&path)?, dir)
+        } else if let Some(discovered) = Self::discover_dev_config(&cwd)? {
+            (discovered, cwd.clone())
         } else {
-            Self::default_config()?
+            (Self::default_config()?, cwd.clone())
         };
 
-        // Relative workspace/socket paths are resolved against the process cwd only
-        // when that cwd is inside the user's home; otherwise they fall back to the
-        // home-based data dir. This keeps a launch whose cwd is the filesystem root
-        // or a system directory (Finder/Dock gives `/`, or a binary run from
-        // `/usr/local/bin`) from materializing a `.qmux` outside userspace. Absolute
+        // Relative workspace/socket paths are resolved against the directory of
+        // the config file that declared them, and only when that directory is
+        // inside the user's home; otherwise they fall back to the home-based data
+        // dir. This keeps a config sitting at the filesystem root or in a system
+        // directory from materializing a `.qmux` outside userspace. Absolute
         // configured paths are explicit intent and always honored.
         let home = env::var_os("HOME").map(PathBuf::from);
         let default_workspace_root = qmux_data_root().map(|root| root.join("workspaces"));
         let default_socket_path = qmux_runtime_root().map(|root| root.join("qmux.sock"));
         config.workspace_root = resolve_root(
-            &cwd,
+            &config_dir,
             home.as_deref(),
             &config.workspace_root,
             default_workspace_root.as_deref(),
         );
         config.socket_path = resolve_root(
-            &cwd,
+            &config_dir,
             home.as_deref(),
             &config.socket_path,
             default_socket_path.as_deref(),
@@ -210,6 +223,28 @@ impl QmuxConfig {
             .binary
             .clone()
             .unwrap_or_else(|| "grok".to_string())
+    }
+
+    fn read_config_file(path: &Path) -> Result<Self, String> {
+        let raw = fs::read_to_string(path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        serde_json::from_str::<QmuxConfig>(&raw)
+            .map_err(|err| format!("failed to parse {}: {err}", path.display()))
+    }
+
+    /// Debug builds pick up a `qmux.config.json` from the process cwd so a dev
+    /// checkout keeps its own state; release builds never do (see `load`).
+    fn discover_dev_config(cwd: &Path) -> Result<Option<Self>, String> {
+        #[cfg(debug_assertions)]
+        {
+            let path = cwd.join("qmux.config.json");
+            if path.exists() {
+                return Self::read_config_file(&path).map(Some);
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = cwd;
+        Ok(None)
     }
 
     fn default_config() -> Result<Self, String> {

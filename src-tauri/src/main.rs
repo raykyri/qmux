@@ -189,6 +189,24 @@ fn notify_fatal_startup(message: &str) {
 #[cfg(not(target_os = "macos"))]
 fn notify_fatal_startup(_message: &str) {}
 
+/// Surfaces a non-fatal startup warning (persisted state moved aside, entries
+/// dropped during recovery) in a native dialog without blocking startup.
+/// Best-effort: the message is already on stderr for terminal launches.
+#[cfg(target_os = "macos")]
+fn notify_startup_warning(message: &str) {
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display dialog \"{escaped}\" with title \"qmux\" buttons {{\"OK\"}} default button \"OK\" with icon caution"
+    );
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .spawn();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn notify_startup_warning(_message: &str) {}
+
 /// Shows the native folder chooser in-process and returns the selected path, or
 /// `None` when the user cancels. Blocks the calling thread, so callers must be
 /// `#[tauri::command(async)]` (the panel itself is dispatched to the main thread
@@ -843,6 +861,12 @@ fn main() {
                 // panes into fresh PTYs before the command handlers go live so the
                 // webview's first list_panes() already sees the recovered session.
                 let recovered_panes = state.restore_session();
+                // Recovery fell back to an empty session (state discarded to a .bak)
+                // or dropped entries: say so in a dialog, since a Finder launch never
+                // shows stderr and silent session loss looks like qmux ate the tabs.
+                if let Some(warning) = state.take_recovery_warning() {
+                    notify_startup_warning(&warning);
+                }
                 recovery::respawn_session(&state, recovered_panes);
                 // Re-level persisted nesting now that we know which panes actually
                 // came back (exited panes are not respawned).
