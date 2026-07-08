@@ -570,6 +570,52 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
     Ok(())
 }
 
+/// Removes scratch files stranded by earlier processes. A `save` interrupted
+/// between writing its temp file and renaming it into place (process killed
+/// mid-quit, crash, …) leaves `state.json.<pid>.<seq>.tmp` behind forever. A
+/// scratch file whose writer pid is no longer alive can never be renamed into
+/// place, so it is deleted. Best-effort: the files are only clutter, and a pid
+/// recycled onto an unrelated live process just postpones that file's cleanup.
+pub fn remove_stale_tmp_files(workspace_root: &Path) {
+    let dir = workspace_root.join(STATE_DIR);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(pid) = scratch_writer_pid(name) else {
+            continue;
+        };
+        if pid != std::process::id() && !process_is_alive(pid) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Parses the writer pid out of a `<state or preferences file>.<pid>.<seq>.tmp`
+/// scratch name. Returns `None` for anything else (the live files themselves,
+/// `.bak` preserves, foreign files), which the cleanup then leaves alone.
+fn scratch_writer_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_suffix(".tmp")?;
+    let (rest, seq) = rest.rsplit_once('.')?;
+    seq.parse::<u64>().ok()?;
+    let (base, pid) = rest.rsplit_once('.')?;
+    if base != STATE_FILE && base != PREFERENCES_FILE {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Probes pid liveness with `kill(pid, 0)`, which signals nothing. EPERM still
+/// means the pid exists (it belongs to another user), so only ESRCH counts as dead.
+fn process_is_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 /// Writes `bytes` to `path` and fsyncs the file before returning, so the contents
 /// are on disk before the caller renames it into place.
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -776,6 +822,36 @@ mod tests {
         assert_eq!(pane.cols, 120);
         assert_eq!(pane.rows, 40);
         assert!(matches!(pane.kind, PaneKind::Shell));
+    }
+
+    #[test]
+    fn stale_tmp_cleanup_removes_dead_writers_and_keeps_everything_else() {
+        let root = temp_root();
+        let dir = root.join(STATE_DIR);
+        fs::create_dir_all(&dir).unwrap();
+
+        // A pid that is certainly dead: a reaped child's pid is gone until recycled.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
+        let dead = dir.join(format!("state.json.{dead_pid}.7.tmp"));
+        let dead_prefs = dir.join(format!("preferences.json.{dead_pid}.9.tmp"));
+        let live = dir.join(format!("state.json.{}.8.tmp", std::process::id()));
+        let state_file = dir.join(STATE_FILE);
+        let preserved = dir.join(format!("state.json.corrupt.123.{dead_pid}.0.bak"));
+        for path in [&dead, &dead_prefs, &live, &state_file, &preserved] {
+            fs::write(path, b"x").unwrap();
+        }
+
+        remove_stale_tmp_files(&root);
+
+        assert!(!dead.exists());
+        assert!(!dead_prefs.exists());
+        assert!(live.exists(), "a live writer's scratch file must survive");
+        assert!(state_file.exists());
+        assert!(preserved.exists(), ".bak preserves must survive");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

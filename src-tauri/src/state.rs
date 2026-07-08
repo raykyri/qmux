@@ -944,6 +944,18 @@ impl AppState {
         }
     }
 
+    /// Called once when the process is really exiting, before exit-time pane
+    /// teardown. Commits a final snapshot (serialized behind any in-flight persist
+    /// by the persist lock), then disables persistence for good: `kill_all_panes`
+    /// is about to take down every pane's PTY, and each reader thread reacts to
+    /// that EOF with the natural-exit `remove_pane` path. Left enabled, those
+    /// removals race the dying process and rewrite state.json with the panes
+    /// stripped out — quitting would erase the very tabs a relaunch should restore.
+    pub fn finalize_persistence_for_exit(&self) {
+        self.persist();
+        self.inner.persist_enabled.store(false, Ordering::Relaxed);
+    }
+
     /// Returns the control-socket token scoped to a single pane, minting one on first
     /// use. Each pane gets its own unguessable token so a process running in one pane
     /// cannot drive another pane (or the control plane) through the socket.

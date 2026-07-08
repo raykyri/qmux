@@ -836,6 +836,9 @@ fn main() {
                     notify_fatal_startup(&err);
                     std::process::exit(1);
                 }
+                // Sweep scratch files stranded by earlier processes that were killed
+                // mid-save (most commonly the final persist racing process exit).
+                persistence::remove_stale_tmp_files(&state.config().workspace_root);
                 // Restore persisted groups/agents/queues, then respawn recoverable
                 // panes into fresh PTYs before the command handlers go live so the
                 // webview's first list_panes() already sees the recovered session.
@@ -928,6 +931,11 @@ fn main() {
             // confirm). Take down every pane's process tree so agent-spawned
             // descendants don't survive as orphans past quit.
             tauri::RunEvent::Exit => {
+                // Freeze the on-disk session before touching the panes: killing them
+                // makes every reader thread see PTY EOF and run the natural-exit
+                // remove_pane path, and any of those persists that win the race with
+                // process death would save the session with its tabs deleted.
+                exit_state.finalize_persistence_for_exit();
                 pty::kill_all_panes(&exit_state);
                 // Reclaim the control socket on a clean exit rather than leaving the
                 // file for the next launch's stale-socket cleanup — but only while the
