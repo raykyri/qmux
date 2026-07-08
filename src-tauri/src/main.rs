@@ -129,7 +129,11 @@ fn handle_app_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) 
 
 #[tauri::command]
 fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
-    state.config().runtime()
+    let mut runtime = state.config().runtime();
+    // Surface the live file-server port so the frontend can identify token-bearing
+    // file-server URLs and always sandbox them (see `isFileServerUrl`).
+    runtime.file_server_port = state.file_server_port();
+    runtime
 }
 
 #[tauri::command]
@@ -235,11 +239,32 @@ fn pick_folder_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> 
 /// http(s)/mailto are accepted; the URL is passed as a single argv to the OS opener
 /// (no shell), so it can't trigger arbitrary scheme handlers or shell injection.
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(state: tauri::State<'_, AppState>, url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")) {
         return Err("refusing to open a non-http(s)/mailto URL externally".to_string());
     }
+    // Never hand a token-bearing file-server URL to the OS opener: the default browser
+    // would load it as a normal same-origin document (leaking the token into history and
+    // to any local process) and could then read every sibling file under the pane's
+    // roots. Legit loopback dev-server URLs on any *other* port still open externally.
+    if let Some(port) = state.file_server_port()
+        && is_file_server_url(&url, port)
+    {
+        return Err(
+            "refusing to open a file-server URL externally (would leak the access token)"
+                .to_string(),
+        );
+    }
     open_in_os_browser(&url)
+}
+
+/// Whether `url` is a loopback URL on the file server's port — i.e. a token-bearing
+/// URL that must never leave the sandboxed overlay. Matches the frontend's
+/// `isFileServerUrl` port check; done with prefix comparison to avoid a URL-parsing
+/// dependency, mirroring the hand-rolled parsing in file_server.rs.
+fn is_file_server_url(url: &str, port: u16) -> bool {
+    url.starts_with(&format!("http://127.0.0.1:{port}/"))
+        || url.starts_with(&format!("http://localhost:{port}/"))
 }
 
 #[cfg(target_os = "macos")]

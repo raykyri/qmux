@@ -267,6 +267,13 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     }
     let total = meta.len();
     let content_type = mime_type(&canonical);
+    // CSP for served content: the overlay already sandboxes it into an opaque origin
+    // (so scripts can't read sibling responses cross-origin), and `connect-src 'none'`
+    // closes the remaining channel — a hostile HTML file phoning the token home via
+    // fetch/XHR/WebSocket/beacon. Passive subresources (a report's own CSS/JS/images)
+    // still load, but only from this same file-server origin; nothing may talk to the
+    // network. `state.file_server_port()` is always set once the server is serving.
+    let csp = state.file_server_port().map(file_content_csp);
 
     if let Some(range_raw) = &head.range {
         let Some((start, requested_end)) = parse_range(range_raw, total) else {
@@ -293,6 +300,9 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         response.header("Content-Length", &len.to_string());
         response.header("Accept-Ranges", "bytes");
         response.header("Content-Range", &format!("bytes {start}-{end}/{total}"));
+        if let Some(csp) = &csp {
+            response.header("Content-Security-Policy", csp);
+        }
         response.body = body;
         return response;
     }
@@ -315,8 +325,35 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     response.header("Content-Type", &content_type);
     response.header("Content-Length", &total.to_string());
     response.header("Accept-Ranges", "bytes");
+    if let Some(csp) = &csp {
+        response.header("Content-Security-Policy", csp);
+    }
     response.body = body;
     response
+}
+
+/// CSP applied to every served file. Served files always come back from
+/// `http://127.0.0.1:<port>` (see `file_url`), so passive subresources are pinned to
+/// that exact origin — a report's sibling CSS/JS/images/fonts render, but the document
+/// cannot reach any other host. `connect-src 'none'` blocks all scripted network egress
+/// (the token-exfiltration channel), and `object-src`/`base-uri`/`form-action` are
+/// locked down for good measure. Inline scripts/styles are permitted because a served
+/// report legitimately carries its own, and the sandbox opaque origin already contains
+/// what they can read.
+fn file_content_csp(port: u16) -> String {
+    let origin = format!("http://127.0.0.1:{port}");
+    format!(
+        "default-src 'none'; \
+         script-src 'unsafe-inline' {origin}; \
+         style-src 'unsafe-inline' {origin}; \
+         img-src data: blob: {origin}; \
+         font-src data: {origin}; \
+         media-src blob: {origin}; \
+         connect-src 'none'; \
+         object-src 'none'; \
+         base-uri 'none'; \
+         form-action 'none'"
+    )
 }
 
 fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result<()> {

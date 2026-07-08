@@ -201,10 +201,17 @@ export default function BrowserOverlay({
           <button
             type="button"
             className="browser-overlay-button"
-            title="Open in external browser"
+            title={
+              sandbox
+                ? "Can't open file content externally (would leak the access token)"
+                : "Open in external browser"
+            }
             aria-label="Open in external browser"
             onClick={onOpenExternal}
-            disabled={!url}
+            // File-server content carries a capability token in its URL; opening it in the
+            // OS browser would leak that token. The backend refuses it too, but disable the
+            // affordance so the action isn't offered in the first place.
+            disabled={!url || sandbox}
           >
             <ExternalLink size={14} aria-hidden="true" />
           </button>

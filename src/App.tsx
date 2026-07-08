@@ -132,7 +132,7 @@ import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
-import { canRenderInInternalBrowser } from "./lib/links";
+import { canRenderInInternalBrowser, isFileServerUrl } from "./lib/links";
 import { stripTaggedUserInstructionBlocks } from "./lib/taggedInstructions";
 import {
   clampConfirmPasteOverChars,
@@ -1968,13 +1968,19 @@ export default function App() {
   // `sandbox` is set for token-bearing file-server URLs so the iframe loads them in an
   // opaque origin (see BrowserOverlay); plain http(s) URLs are not sandboxed.
   const openBrowserOverlay = useCallback((paneId: string, url: string, sandbox = false) => {
+    // Force the sandbox on for any token-bearing file-server URL regardless of the
+    // caller's flag: only the backend browser.open event passes sandbox=true, so typed
+    // navigation and link opens would otherwise load a file-server URL as a trusted
+    // same-origin document and defeat the token protection. Dev-server URLs are excluded
+    // by isFileServerUrl and keep their real same-origin context.
+    const effectiveSandbox = sandbox || isFileServerUrl(url, configRef.current?.fileServerPort ?? null);
     setBrowserOverlayByPane((current) => ({
       ...current,
       [paneId]: {
         url,
         open: true,
         reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1,
-        sandbox,
+        sandbox: effectiveSandbox,
         size: current[paneId]?.size ?? null,
       },
     }));
@@ -8199,7 +8205,12 @@ export default function App() {
           onNavigate={navigateActiveBrowserOverlay}
           onRefresh={refreshActiveBrowserOverlay}
           onOpenExternal={() => {
-            if (activeBrowserOverlay.url) {
+            // Never leak a token-bearing file-server URL to the OS browser (the button is
+            // also disabled for these, and the backend refuses them as the real boundary).
+            if (
+              activeBrowserOverlay.url &&
+              !isFileServerUrl(activeBrowserOverlay.url, configRef.current?.fileServerPort ?? null)
+            ) {
               void openExternalUrl(activeBrowserOverlay.url);
             }
           }}

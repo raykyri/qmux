@@ -39,3 +39,34 @@ export function canRenderInInternalBrowser(url: string): boolean {
     (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
   );
 }
+
+// A token-bearing file-server URL (see file_server.rs): its path is
+// `/<64-hex-token>/<file path>` on the loopback file-server port. Such URLs must always
+// load sandboxed (opaque origin) and must never be handed to the OS browser — an
+// unsandboxed same-origin load would let served content read the token and fetch every
+// sibling file under the pane's roots. Detection: loopback http on the known file-server
+// port, OR (as a fallback before the port is known) a loopback http URL whose first path
+// segment is exactly a 64-char hex token. A local dev server is intentionally excluded so
+// it keeps its real same-origin context.
+export function isFileServerUrl(url: string, fileServerPort: number | null): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:") {
+    return false;
+  }
+  if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+    return false;
+  }
+  if (fileServerPort != null) {
+    const port = parsed.port ? Number.parseInt(parsed.port, 10) : 80;
+    if (port === fileServerPort) {
+      return true;
+    }
+  }
+  const firstSegment = parsed.pathname.replace(/^\/+/, "").split("/")[0] ?? "";
+  return /^[0-9a-f]{64}$/.test(firstSegment);
+}
