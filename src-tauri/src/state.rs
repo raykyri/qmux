@@ -438,7 +438,15 @@ fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait)
         return false;
     }
     let Some(pane_id) = target.pane_id.as_deref() else {
-        return true;
+        // The target has no pane (it was closed and parked). If it still carries an
+        // orphaned queue, those turns are unfinished work: "run after X finishes its
+        // queue" must stay blocked until that queue actually drains, not fire the moment
+        // the pane closes. Only a parked target with an empty queue has nothing left to
+        // finish, so it releases the waiter.
+        return !model
+            .agent_turn_queues
+            .get(&target.id)
+            .is_some_and(|queue| !queue.is_empty());
     };
     if !model.panes.contains_key(pane_id) {
         return true;
@@ -1727,19 +1735,37 @@ impl AppState {
                     model.turns.remove(&agent_id);
                     model.agent_drafts.remove(&agent_id);
                     model.agent_turn_queues.remove(&agent_id);
-                } else if let Some(agent) = model.agents.get_mut(&agent_id) {
+                } else {
                     // Kept for restart recovery via the orphaned-queue panel. Park it
                     // the same way `detach_pane_agent` and
                     // `restore_closed_agent_snapshot_locked` do: detach from the
-                    // now-removed pane, remember that pane for the panel, and mark
-                    // idle. Leaving `pane_id` pointing at the dead pane (and status
-                    // Running) both misrepresents the agent to the panel/recovery and
-                    // keeps its transcript tail polling the now-static/deleted file
-                    // for the rest of the process — the tail stops once the agent is
-                    // gone, rotates its transcript, or (now) is parked like this.
-                    agent.pane_id = None;
-                    agent.orphaned_queue_pane_id = Some(pane_id.to_string());
-                    agent.status = AgentStatus::Idle;
+                    // now-removed pane and mark idle. Leaving `pane_id` pointing at the
+                    // dead pane (and status Running) both misrepresents the agent to the
+                    // panel/recovery and keeps its transcript tail polling the
+                    // now-static/deleted file for the rest of the process — the tail
+                    // stops once the agent is gone, rotates its transcript, or (now) is
+                    // parked like this.
+                    //
+                    // Bind the orphaned queue to a still-open pane in the same group when
+                    // one exists, so it stays visible in that group's recovered-queue
+                    // panel. Binding it to the just-closed (dead) pane id — as before —
+                    // left it matching no live surface while siblings stayed open, so it
+                    // silently vanished from the UI. When this was the group's last pane,
+                    // keep the dead id: the queue is then captured into the closed-pane
+                    // undo snapshot and re-homed on restore/restart.
+                    let surviving_sibling = removed_group_id.as_deref().and_then(|group_id| {
+                        model
+                            .panes
+                            .values()
+                            .find(|pane| pane.info.group_id == group_id)
+                            .map(|pane| pane.info.id.clone())
+                    });
+                    if let Some(agent) = model.agents.get_mut(&agent_id) {
+                        agent.pane_id = None;
+                        agent.orphaned_queue_pane_id =
+                            Some(surviving_sibling.unwrap_or_else(|| pane_id.to_string()));
+                        agent.status = AgentStatus::Idle;
+                    }
                 }
             }
 

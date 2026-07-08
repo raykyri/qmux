@@ -1402,6 +1402,79 @@ mod tests {
     }
 
     #[test]
+    fn parked_wait_target_with_queue_keeps_waiting_front_turn_blocked() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        // Target is parked (pane closed, no pane binding) but still owns queued work —
+        // exactly the state remove_pane leaves an agent in when its pane is closed with a
+        // live queue.
+        state
+            .insert_agent(sample_agent_with_id("target", AgentStatus::Idle, None))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_turn("target", "unfinished".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after target's queue".to_string(),
+                "target",
+                None,
+                None,
+            )
+            .unwrap();
+
+        // The parked target still has unfinished queued work, so "run after X finishes its
+        // queue" must stay blocked rather than firing the moment the pane closed.
+        assert!(!drain_agent_turn_queue(&state, "source").unwrap());
+        assert_eq!(
+            state.list_agent_turn_queue("source").unwrap(),
+            vec!["after target's queue".to_string()]
+        );
+    }
+
+    #[test]
+    fn parked_wait_target_with_empty_queue_resolves_waiter() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        // Parked target with nothing left in its queue: there is no more work to finish,
+        // so the waiter is released and its turn drains.
+        state
+            .insert_agent(sample_agent_with_id("target", AgentStatus::Idle, None))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after target's queue".to_string(),
+                "target",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(drain_agent_turn_queue(&state, "source").unwrap());
+        assert!(state.list_agent_turn_queue("source").unwrap().is_empty());
+    }
+
+    #[test]
     fn queue_wait_result_reports_new_turn_still_queued_when_front_turn_drains() {
         let state = test_state();
         state

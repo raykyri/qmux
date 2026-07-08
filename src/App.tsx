@@ -998,6 +998,11 @@ export default function App() {
   const groupReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
   const titleRegenerationSeqByPaneRef = useRef<Record<string, number>>({});
+  // Per-agent write generation for the queued-turns list. Bumped on every write (a
+  // refresh starting, or a direct/event-driven update) so an in-flight refresh whose
+  // generation was superseded drops its stale response instead of clobbering newer
+  // state. Mirrors the pane/group reorder seq guards.
+  const agentTurnQueueSeqRef = useRef<Record<string, number>>({});
   const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
   const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
@@ -2461,6 +2466,9 @@ export default function App() {
   }
 
   function setAgentQueuedTurns(agentId: string, queuedTurns: QueuedTurn[]) {
+    // Any write advances the agent's queue generation so a slower in-flight
+    // refreshAgentTurnQueue() sees it was superseded and drops its stale list.
+    agentTurnQueueSeqRef.current[agentId] = (agentTurnQueueSeqRef.current[agentId] ?? 0) + 1;
     const previousQueues = queuedTurnsByAgentRef.current;
     const nextQueues = {
       ...previousQueues,
@@ -2876,7 +2884,14 @@ export default function App() {
   }
 
   async function refreshAgentTurnQueue(agentId: string) {
+    const requestSeq = (agentTurnQueueSeqRef.current[agentId] ?? 0) + 1;
+    agentTurnQueueSeqRef.current[agentId] = requestSeq;
     const queuedTurns = await listAgentTurnQueue(agentId);
+    // A newer write (another refresh, or an event-driven queue update) landed while we
+    // awaited, so our list is stale — drop it rather than overwrite fresher state.
+    if (agentTurnQueueSeqRef.current[agentId] !== requestSeq) {
+      return;
+    }
     setAgentQueuedTurns(agentId, queuedTurns);
   }
 
@@ -4624,8 +4639,13 @@ export default function App() {
             ? "is still working"
             : null;
 
-    // Recovered (orphaned) queued turns parked in this pane would be discarded on
-    // close — surface that through the same stop dialog rather than a second prompt.
+    // Pending queued turns that would be parked (and easy to lose track of) on close —
+    // surface them through the same stop dialog rather than closing silently. This
+    // covers both the closing pane's own live agent, whose own queue is otherwise not
+    // counted once it goes idle, and any recovered (orphaned) queues already parked here.
+    const ownQueuedCount = agent
+      ? (queuedTurnsByAgentRef.current[agent.id]?.length ?? 0)
+      : 0;
     const recoveredTurnCount = agents
       .filter((candidate) => candidate.orphanedQueuePaneId === paneToClose.id)
       .reduce(
@@ -4633,12 +4653,13 @@ export default function App() {
           total + (queuedTurnsByAgentRef.current[candidate.id]?.length ?? 0),
         0,
       );
+    const pendingQueuedCount = ownQueuedCount + recoveredTurnCount;
 
     const reason =
       liveReason ??
-      (recoveredTurnCount > 0
-        ? `has ${recoveredTurnCount} recovered queued ${
-            recoveredTurnCount === 1 ? "turn" : "turns"
+      (pendingQueuedCount > 0
+        ? `has ${pendingQueuedCount} queued ${
+            pendingQueuedCount === 1 ? "turn" : "turns"
           }`
         : null);
     if (reason) {
