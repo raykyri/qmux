@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qmux — The queueing terminal multiplexer</title>
+<meta name="description" content="qmux is a macOS desktop terminal with a native control plane for AI coding agents. Launch Claude Code, Codex, OpenCode, or Grok in real PTYs, organize them with vertical tabs, and queue follow-up work. Free and open source.">
+<link rel="icon" type="image/png" href="logo.png">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b6b6b;
+    --line: #e4e4e4;
+    --accent: #1a1a1a;
+    --accent-fg: #ffffff;
+    --code-bg: #f4f4f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111111;
+      --fg: #e8e8e8;
+      --muted: #999999;
+      --line: #2a2a2a;
+      --accent: #e8e8e8;
+      --accent-fg: #111111;
+      --code-bg: #1d1d1d;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+  a { color: inherit; }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Monaco, monospace;
+    font-size: 0.875em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  h2 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 0 0 1.25rem;
+    letter-spacing: -0.01em;
+  }
+  section { padding: 3.5rem 0 0; }
+
+  /* Nav */
+  nav {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 1.25rem 0;
+    font-size: 0.9rem;
+  }
+  nav .brand {
+    position: relative;
+    top: 1px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    text-decoration: none;
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  nav .brand img { width: 20px; height: 20px; border-radius: 4px; }
+  nav .links { display: flex; align-items: center; gap: 1.25rem; margin-left: auto; }
+  nav .links a { color: var(--muted); text-decoration: none; }
+  nav .links a:hover { color: var(--fg); }
+  nav .cta {
+    color: var(--fg) !important;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.3rem 0.75rem;
+  }
+  nav .cta:hover { border-color: var(--muted); }
+
+  /* Hero */
+  .hero { padding: 4rem 0 0; }
+  .hero h1 {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .hero .tagline {
+    font-size: 1.35rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0.75rem 0 1rem;
+    line-height: 1.35;
+  }
+  .hero .subhead { color: var(--muted); max-width: 640px; margin-bottom: 0.6rem; }
+  .hero .subhead a { color: var(--muted); }
+  .ctas { display: flex; gap: 0.75rem; margin: 1.75rem 0 0.75rem; flex-wrap: wrap; }
+  .btn {
+    display: inline-block;
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 500;
+    padding: 0.5rem 1.1rem;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .btn.primary:hover { opacity: 0.85; }
+  .btn.secondary:hover { border-color: var(--muted); }
+  .platform-note { font-size: 0.85rem; color: var(--muted); }
+  .hero img.shot {
+    display: block;
+    width: 100%;
+    margin-top: 2.5rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  /* Features */
+  .features ul { list-style: none; }
+  .features li {
+    padding-left: 1.2rem;
+    position: relative;
+    margin-bottom: 0.9rem;
+    color: var(--muted);
+  }
+  .features li::before {
+    content: "–";
+    position: absolute;
+    left: 0;
+    color: var(--muted);
+  }
+  .features li strong { color: var(--fg); font-weight: 600; }
+  .features .exp {
+    font-size: 0.75rem;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 0.3rem;
+    margin-left: 0.3rem;
+    white-space: nowrap;
+  }
+
+  /* FAQ */
+  .faq details {
+    border-bottom: 1px solid var(--line);
+    padding: 0.9rem 0;
+  }
+  .faq details:first-of-type { border-top: 1px solid var(--line); }
+  .faq summary {
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+  }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; color: var(--muted); flex-shrink: 0; }
+  .faq details[open] summary::after { content: "–"; }
+  .faq details p { color: var(--muted); margin-top: 0.6rem; max-width: 640px; }
+  .faq details p + p { margin-top: 0.5rem; }
+
+  /* Bottom CTA */
+  .bottom-cta { text-align: center; padding: 5rem 0 4rem; }
+  .bottom-cta p { font-size: 1.25rem; font-weight: 600; margin-bottom: 1.25rem; letter-spacing: -0.01em; }
+  .bottom-cta .ctas { justify-content: center; margin: 0; }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 1.5rem 0 2.5rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  footer .row { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--fg); }
+  footer .copy { margin-left: auto; }
+
+  @media (max-width: 600px) {
+    .hero h1 { font-size: 1.6rem; }
+    .hero .tagline { font-size: 1.15rem; }
+    nav .links { gap: 0.9rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <nav>
+    <a class="brand" href="./"><img src="logo.png" alt="">qmux</a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/raykyri/qmux">GitHub</a>
+      <a class="cta" href="https://github.com/raykyri/qmux/releases">Get qmux &rarr;</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <h1>qmux</h1>
+    <p class="tagline">A powerful, native interface for coding agents.</p>
+    <p class="subhead">
+      Launch Claude Code, Codex, OpenCode, or Grok in real PTYs, organize
+      them with vertical tabs and groups, and read their transcripts in
+      a native sidebar.
+    </p>
+    <p class="subhead">
+      Queue up work that runs automatically as agents go idle. Create
+      tasks that wait on other terminals, so you can plan your work in
+      parallel, and let agents implement in sequence. Never deal with
+      a merge conflict or worktree error again.
+    </p>
+    <div class="ctas">
+      <a class="btn primary" href="https://github.com/raykyri/qmux/releases">Get qmux &rarr;</a>
+      <a class="btn secondary" href="https://github.com/raykyri/qmux">View on GitHub</a>
+    </div>
+    <p class="platform-note">macOS supported, Linux soon.</p>
+    <img class="shot" src="qmux.png" alt="qmux running multiple coding agents with vertical tabs, a transcript sidebar, and a terminal pane">
+  </header>
+
+  <section class="features" id="features">
+    <h2>Features</h2>
+    <ul>
+      <li><strong>Agent panes</strong> — agents run as real terminal processes, with a native layer on top: transcript rendering, status tracking, a follow-up composer, and a multiplexed turn queue. Just type <code>codex</code> or <code>claude</code> in a shell pane to get started.</li>
+      <li><strong>Vertical tabs</strong> — The sidebar shows every terminal and agent, grouped by the project that you’re working on. Drag to reorder. Collapse groups you’re not using with one click.</li>
+      <li><strong>Native transcript</strong> — qmux tails the agent&rsquo;s transcript and renders it as a rich timeline: Markdown, tables, code blocks, Mermaid and Graphviz, tool calls (optionally collapsed). Search your transcript with native &#8984;F while you keep working.</li>
+      <li><strong>Turn queue</strong> — Queue up follow-ups while an agent works; edit, reorder, and drag queued work between panes. Wait on other terminals or agents to finish their work.</li>
+      <li><strong>Session forking</strong> — fork a running Claude or Codex session to a new tab with <code>qmux fork</code>. The fork inherits the transcript and continues in the same folder, or in a new <code>--worktree</code>.</li>
+      <li><strong>Git worktrees</strong> — launch each agent into its own worktree, with dirty-state checks and a keep-or-delete prompt on close.</li>
+      <li><strong>Terminal, done properly</strong> — xterm.js with WebGL rendering, vertical splits (<code>&#8984;D</code>), find in scrollback, copy-on-select, paste confirmation, &#8984;-click links, and scroll position that survives layout changes.</li>
+      <li><strong>Generated tab titles</strong> — tabs name themselves from your first message, via Apple Foundation Models on-device by default (OpenRouter optional, or off).</li>
+      <li><strong>Extensible</strong> — Claude Code, Codex, OpenCode, and Grok ship built in. New agents are one Rust trait + UI adapter away.</li>
+    </ul>
+  </section>
+
+  <section class="faq" id="faq">
+    <h2>FAQ</h2>
+
+    <details>
+      <summary>What is qmux?</summary>
+      <p>A macOS desktop app, terminal multiplexer, and agent control plane in one window. Agents run in real terminals, and qmux gives you a native UI on top: a transcript sidebar, a follow-up composer, status tracking, and different ways to queue and sequence work.</p>
+    </details>
+
+    <details>
+      <summary>How is it different from tmux?</summary>
+      <p>tmux runs in your terminal and multiplexes terminals; qmux is a terminal and multiplexes agents. It adds a native GUI, transcript rendering, agent status tracking, and follow-up queueing, which a terminal-only multiplexer can&rsquo;t see into.</p>
+    </details>
+
+    <details>
+      <summary>How is it different from cmux?</summary>
+      <p>Both are agent-friendly terminals with vertical tabs. qmux is built around the agent transcript: a native sidebar timeline, a follow-up composer, a turn queue, and session forking, rather than terminal programmability.</p>
+    </details>
+
+    <details>
+      <summary>How is it different from Conductor and other parallel-agent apps?</summary>
+      <p>Those hide the terminal behind a dashboard. In qmux the agent&rsquo;s real TUI is always there, and the native layer augments it. You can drop to the raw terminal at any moment.</p>
+    </details>
+
+    <details>
+      <summary>Which agents does it support?</summary>
+      <p>Claude Code and Codex are fully supported; OpenCode and Grok have limited support. Agents are integrated through a pluggable adapter layer, so new ones can be added. Contributions are welcome.</p>
+    </details>
+
+    <details>
+      <summary>Do I have to launch agents from qmux?</summary>
+      <p>No. Run <code>claude</code> or <code>codex</code> in any shell pane and qmux routes it through the same machinery — status, transcript, and queue included.</p>
+    </details>
+
+    <details>
+      <summary>How does qmux know what an agent is doing?</summary>
+      <p>We install wrapper commands for `claude`, `codex`, and other agents, that add hooks at launch. They report session start, prompts, tool use, permission requests, and idle state over a token-gated Unix socket. Hooks are only added when launching agents through our application, not globally.</p>
+    </details>
+
+    <details>
+      <summary>What platforms does it run on?</summary>
+      <p>macOS today. Linux support is planned.</p>
+    </details>
+
+    <details>
+      <summary>Is my data sent anywhere?</summary>
+      <p>No. The application is entirely local. Tab title generation uses Apple Foundation Models on your local device by default. Dictation is local Whisper.</p>
+    </details>
+
+    <details>
+      <summary>What happens if it crashes?</summary>
+      <p>Recoverable panes and agents respawn on restart, along with groups, queued turns, and unsent drafts. State lives in <code>.qmux/state.json</code> in your workspace.</p>
+    </details>
+
+    <details>
+      <summary>How much does it cost?</summary>
+      <p>Nothing. The application is free and open source under AGPL-3.0.</p>
+    </details>
+  </section>
+
+  <div class="bottom-cta">
+    <div class="ctas">
+      <a class="btn primary" href="https://github.com/raykyri/qmux/releases">Get qmux &rarr;</a>
+      <a class="btn secondary" href="https://github.com/raykyri/qmux">View on GitHub</a>
+    </div>
+  </div>
+
+  <footer>
+    <div class="row">
+      <a href="https://github.com/raykyri/qmux">GitHub</a>
+      <a href="https://github.com/raykyri/qmux/issues">Issues</a>
+      <a href="https://github.com/raykyri/qmux/commits/main">Changelog</a>
+      <a href="https://www.gnu.org/licenses/agpl-3.0.html">License (AGPL-3.0)</a>
+      <span class="copy">&copy; 2026 qmux</span>
+    </div>
+  </footer>
+</div>
+
+</body>
+</html>
