@@ -2766,7 +2766,10 @@ button.home-cascade-wait-pill:focus-visible {
 .pane-search {
   position: absolute;
   top: 10px;
-  right: 22px;
+  --pane-search-right: 22px;
+  right: var(--pane-search-right);
+  /* Stay within the pane: grow leftward but never past its left edge. */
+  max-width: calc(100% - var(--pane-search-right) - 8px);
   z-index: 4;
   display: flex;
   align-items: center;
@@ -2781,18 +2784,20 @@ button.home-cascade-wait-pill:focus-visible {
 /* In the transcript, drop below the pinned session header (40px tall). */
 .turn-sidebar.has-header .pane-search {
   top: 50px;
-  right: 16px;
+  --pane-search-right: 16px;
 }
 
 /* Headerless overlays (split cells) keep their floating expand/collapse controls
    at the top-right corner, so the bar starts to their left. */
 .turn-sidebar:not(.has-header) .pane-search {
   top: 8px;
-  right: 84px;
+  --pane-search-right: 84px;
 }
 
 .pane-search-input {
-  width: 200px;
+  /* Prefer 200px but shrink so the whole bar fits a narrow pane. */
+  flex: 0 1 200px;
+  min-width: 0;
   border: 1px solid #3a3d3f;
   border-radius: 6px;
   background: #111315;
@@ -2807,6 +2812,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .pane-search-count {
+  flex: 0 0 auto;
   min-width: 56px;
   color: #9aa0a3;
   font-size: 12px;
@@ -2817,6 +2823,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .pane-search-toggles,
 .pane-search-nav {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 4px;
