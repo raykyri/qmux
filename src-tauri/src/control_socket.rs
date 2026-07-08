@@ -86,6 +86,20 @@ pub fn start_control_socket(state: AppState) -> Result<(), String> {
         )
     })?;
 
+    // Remember which file we bound, so exit cleanup removes the socket only if the
+    // path still points at it — not at a socket a later instance bound after
+    // unlinking ours (the stale-socket removal above is exactly that action).
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::symlink_metadata(&socket_path).map_err(|err| {
+            format!(
+                "failed to stat bound socket {}: {err}",
+                socket_path.display()
+            )
+        })?;
+        state.set_control_socket_identity(meta.dev(), meta.ino());
+    }
+
     thread::spawn(move || {
         let limiter = ConnectionLimiter::new(MAX_CONCURRENT_CLIENTS);
         for stream in listener.incoming() {

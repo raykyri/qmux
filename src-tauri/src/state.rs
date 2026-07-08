@@ -88,6 +88,10 @@ struct AppStateInner {
     // Loopback file-server port, set once at startup. The control socket pairs it with
     // a per-pane file token to build browser-overlay URLs.
     file_server: Mutex<Option<u16>>,
+    // (device, inode) of the control socket this process bound, recorded at bind time
+    // so exit cleanup can tell its own socket apart from one a later instance bound
+    // at the same path (see `owns_control_socket`).
+    control_socket_identity: Mutex<Option<(u64, u64)>>,
     // Per-pane "send" locks. `write_pane` holds one across a whole paste+submit
     // sequence so two concurrent submits to the same pane can't interleave into one
     // merged turn across the inter-write delay. Kept separate from the raw writer
@@ -595,6 +599,7 @@ impl AppState {
                 persist_lock: Mutex::new(()),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
+                control_socket_identity: Mutex::new(None),
                 pane_send_locks: Mutex::new(HashMap::new()),
             }),
         }
@@ -609,6 +614,32 @@ impl AppState {
 
     pub fn file_server_port(&self) -> Option<u16> {
         self.inner.file_server.lock().ok().and_then(|slot| *slot)
+    }
+
+    /// Records the (device, inode) of the control socket this process bound (set once
+    /// at startup, right after the bind).
+    pub fn set_control_socket_identity(&self, device: u64, inode: u64) {
+        if let Ok(mut slot) = self.inner.control_socket_identity.lock() {
+            *slot = Some((device, inode));
+        }
+    }
+
+    /// Whether the file currently at the control socket path is still the one this
+    /// process bound. False when another instance has since unlinked and re-bound the
+    /// path (its socket must not be deleted out from under it on our exit), and false
+    /// when the path is gone or was never recorded — there is nothing of ours to
+    /// reclaim either way.
+    pub fn owns_control_socket(&self) -> bool {
+        let Ok(slot) = self.inner.control_socket_identity.lock() else {
+            return false;
+        };
+        let Some((device, inode)) = *slot else {
+            return false;
+        };
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(&self.inner.config.socket_path)
+            .map(|meta| meta.dev() == device && meta.ino() == inode)
+            .unwrap_or(false)
     }
 
     /// The directory a newly-created group opens in when the caller doesn't give an
@@ -3816,6 +3847,37 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn owns_control_socket_tracks_the_bound_inode() {
+        use std::os::unix::fs::MetadataExt;
+
+        let workspace = temp_workspace();
+        let mut config = test_config(workspace.clone());
+        config.socket_path = workspace.join("qmux-test.sock");
+        let state = AppState::new(config.clone());
+
+        // Nothing recorded yet: never claim ownership.
+        assert!(!state.owns_control_socket());
+
+        // Simulate the bind: create the file at the socket path and record it.
+        std::fs::write(&config.socket_path, b"").unwrap();
+        let meta = std::fs::symlink_metadata(&config.socket_path).unwrap();
+        state.set_control_socket_identity(meta.dev(), meta.ino());
+        assert!(state.owns_control_socket());
+
+        // Another instance replaces the socket (created elsewhere then renamed over
+        // the path, so its inode is guaranteed to differ from the recorded one):
+        // this process no longer owns what lives at the path.
+        let replacement = workspace.join("replacement.sock");
+        std::fs::write(&replacement, b"").unwrap();
+        std::fs::rename(&replacement, &config.socket_path).unwrap();
+        assert!(!state.owns_control_socket());
+
+        // A missing path is not ours to reclaim either.
+        std::fs::remove_file(&config.socket_path).unwrap();
+        assert!(!state.owns_control_socket());
     }
 
     #[test]

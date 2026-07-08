@@ -756,6 +756,19 @@ fn main() {
     let exit_state = state.clone();
 
     tauri::Builder::default()
+        // Registered first so a duplicate launch exits before setup() can steal the
+        // control socket and respawn the persisted session alongside the running
+        // instance. Instances are deduped per app identifier and user session; the
+        // second launch hands off to this callback in the surviving process, which
+        // just surfaces the existing window. (CLI subcommands returned above and
+        // never get here, so `qmux open` etc. are unaffected.)
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -915,8 +928,14 @@ fn main() {
             tauri::RunEvent::Exit => {
                 pty::kill_all_panes(&exit_state);
                 // Reclaim the control socket on a clean exit rather than leaving the
-                // file for the next launch's stale-socket cleanup.
-                let _ = std::fs::remove_file(&exit_state.config().socket_path);
+                // file for the next launch's stale-socket cleanup — but only while the
+                // path still points at the socket this process bound. If another
+                // instance (e.g. a differently-configured build sharing the socket
+                // path) has re-bound it since, deleting the file would sever every
+                // `qmux` CLI caller from that live instance.
+                if exit_state.owns_control_socket() {
+                    let _ = std::fs::remove_file(&exit_state.config().socket_path);
+                }
             }
             _ => {}
         });
