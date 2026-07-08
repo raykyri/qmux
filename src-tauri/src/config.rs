@@ -118,12 +118,12 @@ impl QmuxConfig {
             (Self::default_config()?, cwd.clone())
         };
 
-        // Relative workspace/socket paths are resolved against the directory of
-        // the config file that declared them, and only when that directory is
-        // inside the user's home; otherwise they fall back to the home-based data
-        // dir. This keeps a config sitting at the filesystem root or in a system
-        // directory from materializing a `.qmux` outside userspace. Absolute
-        // configured paths are explicit intent and always honored.
+        // `~/…` workspace/socket paths expand against the user's home and absolute
+        // paths are honored verbatim. Relative paths are resolved against the
+        // directory of the config file that declared them, and only when that
+        // directory is inside the user's home; otherwise they fall back to the
+        // home-based data dir. This keeps a config sitting at the filesystem root
+        // or in a system directory from materializing a `.qmux` outside userspace.
         let home = env::var_os("HOME").map(PathBuf::from);
         let default_workspace_root = qmux_data_root().map(|root| root.join("workspaces"));
         let default_socket_path = qmux_runtime_root().map(|root| root.join("qmux.sock"));
@@ -375,18 +375,23 @@ fn cwd_is_within_home(cwd: &Path, home: Option<&Path>) -> bool {
     home.is_some_and(|home| !home.as_os_str().is_empty() && cwd.starts_with(home))
 }
 
-/// Resolves a configured workspace/socket root to an absolute path. Absolute
-/// configured paths are honored verbatim. A relative path resolves against `cwd`
-/// only when `cwd` is inside the user's home; otherwise it falls back to
-/// `default_root` (the home-based data dir) so a relative `.qmux` is never written
-/// into a system directory or at the filesystem root. With no home to fall back to,
-/// the relative path is resolved against `cwd` as a last resort.
+/// Resolves a configured workspace/socket root to an absolute path. `~`/`~/…`
+/// paths expand against the user's home (JSON can't otherwise express a
+/// home-relative path portably) and absolute paths are honored verbatim — both
+/// are explicit intent. A relative path resolves against `cwd` only when `cwd`
+/// is inside the user's home; otherwise it falls back to `default_root` (the
+/// home-based data dir) so a relative `.qmux` is never written into a system
+/// directory or at the filesystem root. With no home to fall back to, the
+/// relative path is resolved against `cwd` as a last resort.
 fn resolve_root(
     cwd: &Path,
     home: Option<&Path>,
     configured: &Path,
     default_root: Option<&Path>,
 ) -> PathBuf {
+    if let Some(expanded) = expand_home(configured, home) {
+        return expanded;
+    }
     if configured.is_absolute() {
         return configured.to_path_buf();
     }
@@ -396,6 +401,16 @@ fn resolve_root(
     default_root
         .map(Path::to_path_buf)
         .unwrap_or_else(|| cwd.join(configured))
+}
+
+/// Expands a leading `~` or `~/…` against the user's home directory. `~user`
+/// forms are not supported (`strip_prefix` matches whole components, so a
+/// `~user/…` path does not strip). Returns `None` — falling through to relative
+/// resolution — when the path doesn't start with `~` or no home is known.
+fn expand_home(path: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home.filter(|home| !home.as_os_str().is_empty())?;
+    let stripped = path.strip_prefix("~").ok()?;
+    Some(home.join(stripped))
 }
 
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
@@ -538,6 +553,41 @@ mod tests {
             .join("qmux.sock");
         assert_eq!(config.socket_path, expected_socket);
         assert_ne!(config.socket_path.parent(), Some(env::temp_dir().as_path()));
+    }
+
+    #[test]
+    fn tilde_root_expands_against_home_from_any_cwd() {
+        let home = Path::new("/Users/tester");
+        let default = Path::new("/Users/tester/qmux/workspaces");
+        // Expansion is cwd-independent: a Finder launch (cwd `/`) and a repo
+        // launch resolve to the same place.
+        for cwd in [Path::new("/"), Path::new("/Users/tester/Code/project")] {
+            assert_eq!(
+                resolve_root(
+                    cwd,
+                    Some(home),
+                    Path::new("~/.qmux/workspaces"),
+                    Some(default)
+                ),
+                PathBuf::from("/Users/tester/.qmux/workspaces")
+            );
+        }
+        // `~user` is not expansion syntax; it stays a relative path and falls
+        // back to the default outside home.
+        assert_eq!(
+            resolve_root(
+                Path::new("/"),
+                Some(home),
+                Path::new("~other/.qmux"),
+                Some(default)
+            ),
+            default.to_path_buf()
+        );
+        // With no home there is nothing to expand against; the default applies.
+        assert_eq!(
+            resolve_root(Path::new("/"), None, Path::new("~/.qmux"), Some(default)),
+            default.to_path_buf()
+        );
     }
 
     #[test]

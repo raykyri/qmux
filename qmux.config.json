@@ -1,6 +1,6 @@
 {
-  "workspaceRoot": ".qmux/workspaces",
-  "socketPath": ".qmux/run/qmux.sock",
+  "workspaceRoot": "~/.qmux/workspaces",
+  "socketPath": "~/.qmux/run/qmux.sock",
   "adapters": {
     "claude": { "binary": "claude" },
     "codex": { "binary": "codex" },

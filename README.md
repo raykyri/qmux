@@ -144,17 +144,16 @@ cargo test --manifest-path src-tauri/Cargo.toml
   `SessionStart`, Codex via an explicit `SessionStart` path or session-id lookup,
   and OpenCode via qmux-managed JSONL.
 - Persisted state is written under `<workspaceRoot>/.qmux/state.json`.
-- `qmux.config.json` keeps spawned qmux state inside this checkout. Only dev
-  (debug) builds discover it in the process cwd; release builds always use the
-  platform data dir (`~/Library/Application Support/qmux` on macOS) so the
-  session doesn't depend on how the app is launched. Set `QMUX_CONFIG=<file>`
-  to point any build at an explicit config (relative paths inside it resolve
-  against the config file's directory):
+- `qmux.config.json` keeps dev-build state in a fixed, shared `~/.qmux` dir.
+  Only dev (debug) builds discover it in the process cwd; release builds always
+  use the platform data dir (`~/Library/Application Support/qmux` on macOS) so
+  the session doesn't depend on how the app is launched. Set `QMUX_CONFIG=<file>`
+  to point any build at an explicit config:
 
 ```json
 {
-  "workspaceRoot": ".qmux/workspaces",
-  "socketPath": ".qmux/run/qmux.sock",
+  "workspaceRoot": "~/.qmux/workspaces",
+  "socketPath": "~/.qmux/run/qmux.sock",
   "adapters": {
     "claude": { "binary": "claude" },
     "codex": { "binary": "codex" },
@@ -164,7 +163,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 }
 ```
 
-Relative paths are resolved from the process working directory when that
+`~/…` paths expand against `$HOME` and absolute paths are honored verbatim.
+Relative paths are resolved from the config file's directory when that
 directory is under `$HOME`; otherwise they fall back to the platform data/runtime
 locations. Each adapter's `binary` is optional and defaults to the command name
 (`claude`, `codex`, `opencode`, `grok`); a top-level `claudeBinary` is still honored
