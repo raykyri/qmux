@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, EllipsisVertical, LoaderCircle, Mic, X } from "lucide-react";
+import { ChevronDown, EllipsisVertical, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   queueWaitAgentTurn,
@@ -24,8 +24,6 @@ import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
-import { useDictation } from "../useDictation";
-import DictationMicButton from "./DictationMicButton";
 import { useConfirm } from "../hooks/useConfirm";
 import type { AgentInfo, PaneInfo, QueuedTurn, SubmitAgentTurnMode, WaitTarget } from "../types";
 import { agentStatusTone } from "../lib/appHelpers";
@@ -259,36 +257,6 @@ export default function NativeInput({
     maxHeight: number;
   } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Live voice dictation streamed into the composer at the caret. The mic is
-  // hidden where the environment can't run local speech recognition (see
-  // useDictation). Reads/writes go through the live textarea element so each
-  // re-transcription pass overwrites the previous one in place.
-  const dictation = useDictation({
-    getText: () => textareaRef.current?.value ?? value,
-    getCaret: () => {
-      const ta = textareaRef.current;
-      if (!ta) {
-        return value.length;
-      }
-      // If the composer isn't focused, append at the end rather than wherever
-      // selectionStart happens to sit (0 for a never-focused field).
-      return document.activeElement === ta ? ta.selectionStart : ta.value.length;
-    },
-    setText: (text, caret) => {
-      setValue(text);
-      onUserInput(agent.id);
-      requestAnimationFrame(() => {
-        const ta = textareaRef.current;
-        if (!ta) {
-          return;
-        }
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-      });
-    },
-    focus: () => textareaRef.current?.focus(),
-  });
 
   const awaitingPermission = agent.status === "awaitingPermission";
   const paused = agent.paused ?? false;
@@ -539,9 +507,6 @@ export default function NativeInput({
       return;
     }
 
-    // End any in-flight dictation so it can't keep writing into the cleared
-    // composer after the turn is sent.
-    dictation.stop();
     setSubmitting(true);
     try {
       const result = await submitAgentTurn(agent.id, trimmed, mode);
@@ -570,7 +535,6 @@ export default function NativeInput({
       return;
     }
 
-    dictation.stop();
     setWaitOpen(false);
     onWaitTargetHover(null);
     setSubmitting(true);
@@ -1122,25 +1086,6 @@ export default function NativeInput({
             setValue(event.currentTarget.value);
             onUserInput(agent.id);
           }}
-          // While dictation is live, the first real keystroke hands control back to
-          // the keyboard: stop transcribing so it stops overwriting the caret, then
-          // let the key do its normal thing. Bare modifiers don't count — holding
-          // Shift to capitalize the next spoken word shouldn't end dictation.
-          onKeyDownCapture={(event) => {
-            if (!dictation.listening) {
-              return;
-            }
-            if (
-              event.key === "Shift" ||
-              event.key === "Control" ||
-              event.key === "Alt" ||
-              event.key === "Meta" ||
-              event.key === "CapsLock"
-            ) {
-              return;
-            }
-            dictation.stop();
-          }}
           onPaste={(event) => {
             const text = event.clipboardData.getData("text");
             const verdict = inspectPaste(text, pasteProtection);
@@ -1205,7 +1150,6 @@ export default function NativeInput({
           rows={1}
         />
         <div className="native-input-submit-actions">
-          <DictationMicButton dictation={dictation} className="native-input-mic" />
           {paused ? <span className="composer-paused-label">Paused</span> : null}
           <div className="composer-menu" ref={menuRef}>
             <button

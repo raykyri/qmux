@@ -3,7 +3,6 @@ mod cli;
 mod config;
 mod connection_limit;
 mod control_socket;
-mod dictation_cache;
 mod events;
 mod file_server;
 mod launch_path;
@@ -223,52 +222,6 @@ fn open_external_url(url: String) -> Result<(), String> {
         return Err("refusing to open a non-http(s)/mailto URL externally".to_string());
     }
     open_in_os_browser(&url)
-}
-
-#[tauri::command]
-fn dictation_cache_metadata(
-    app: tauri::AppHandle,
-    request: String,
-) -> Result<Option<dictation_cache::DictationCacheMetadata>, String> {
-    dictation_cache::metadata(app, request)
-}
-
-#[tauri::command]
-fn dictation_cache_read(
-    app: tauri::AppHandle,
-    request: String,
-    offset: u64,
-    length: u64,
-) -> Result<String, String> {
-    dictation_cache::read_chunk(app, request, offset, length)
-}
-
-#[tauri::command]
-fn dictation_cache_put_start(
-    app: tauri::AppHandle,
-    request: String,
-    headers: Vec<dictation_cache::DictationCacheHeader>,
-) -> Result<(), String> {
-    dictation_cache::put_start(app, request, headers)
-}
-
-#[tauri::command]
-fn dictation_cache_put_chunk(
-    app: tauri::AppHandle,
-    request: String,
-    data_base64: String,
-) -> Result<(), String> {
-    dictation_cache::put_chunk(app, request, data_base64)
-}
-
-#[tauri::command]
-fn dictation_cache_put_finish(app: tauri::AppHandle, request: String) -> Result<(), String> {
-    dictation_cache::put_finish(app, request)
-}
-
-#[tauri::command]
-fn dictation_cache_delete(app: tauri::AppHandle, request: String) -> Result<bool, String> {
-    dictation_cache::delete(app, request)
 }
 
 #[cfg(target_os = "macos")]
@@ -888,12 +841,6 @@ fn main() {
             active_tab_get,
             active_tab_set,
             open_external_url,
-            dictation_cache_metadata,
-            dictation_cache_read,
-            dictation_cache_put_start,
-            dictation_cache_put_chunk,
-            dictation_cache_put_finish,
-            dictation_cache_delete,
             list_claude_skills,
             list_panes,
             list_groups,

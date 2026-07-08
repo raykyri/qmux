@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import type {
   CSSProperties,
@@ -56,9 +55,6 @@ import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
 } from "./components/ComposerSubmitShortcut";
-import DictationMicButton from "./components/DictationMicButton";
-import { useDictation } from "./useDictation";
-import { getDictationDownload, subscribeDictationDownload } from "./dictationStatus";
 import { LauncherSelect } from "./components/LauncherSelect";
 import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
@@ -1933,63 +1929,9 @@ export default function App() {
     }
     focusLauncherInput();
   }
-  // Live voice dictation for the launcher prompt, mirroring the composer's mic.
-  // Reads/writes go through the live textarea so each re-transcription pass
-  // overwrites the previous one in place.
-  const launcherDictation = useDictation({
-    getText: () => launcherInputRef.current?.value ?? prompt,
-    getCaret: () => {
-      const ta = launcherInputRef.current;
-      if (!ta) {
-        return prompt.length;
-      }
-      // If the prompt isn't focused, append at the end rather than wherever
-      // selectionStart happens to sit (0 for a never-focused field).
-      return document.activeElement === ta ? ta.selectionStart : ta.value.length;
-    },
-    setText: (text, caret) => {
-      setPrompt(text);
-      requestAnimationFrame(() => {
-        const ta = launcherInputRef.current;
-        if (!ta) {
-          return;
-        }
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-      });
-    },
-    focus: () => launcherInputRef.current?.focus(),
-  });
   function focusAskInput() {
     requestAnimationFrame(() => askInputRef.current?.focus());
   }
-  // Voice dictation for the ask launcher's question field, mirroring the launcher
-  // and composer mics so its recording/loading/error states stay identical.
-  const askDictation = useDictation({
-    getText: () => askInputRef.current?.value ?? askPrompt,
-    getCaret: () => {
-      const ta = askInputRef.current;
-      if (!ta) {
-        return askPrompt.length;
-      }
-      return document.activeElement === ta ? ta.selectionStart : ta.value.length;
-    },
-    setText: (text, caret) => {
-      setAskPrompt(text);
-      requestAnimationFrame(() => {
-        const ta = askInputRef.current;
-        if (!ta) {
-          return;
-        }
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-      });
-    },
-    focus: () => askInputRef.current?.focus(),
-  });
-  // The Whisper voice model is loaded once and cached; surface its progress as
-  // an app-level toast since it's shared across every composer's mic.
-  const dictationDownload = useSyncExternalStore(subscribeDictationDownload, getDictationDownload);
   // The launcher renders in two places: the modal (Cmd-; / sidebar button) and,
   // when there are no panes, inline as the content-pane placeholder. Only one is
   // ever mounted at a time (the inline one yields to the modal), so they can share
@@ -4873,9 +4815,6 @@ export default function App() {
       return;
     }
     launchingAgentRef.current = true;
-    // End any in-flight dictation so it can't keep writing into the prompt after
-    // the agent launches and the field clears.
-    launcherDictation.stop();
     const trimmed = prompt.trim();
     // A selected skill is sent as a leading slash command so the launched agent
     // invokes it before the user's prompt (e.g. `/qmux:deep-research <prompt>`).
@@ -5045,7 +4984,6 @@ export default function App() {
     focusAskInput();
   }
   function closeAskLauncher(focusPaneId?: string) {
-    askDictation.stop();
     setAskLauncher(null);
     setAskPrompt("");
     setAskCreateInWorktree(false);
@@ -5067,7 +5005,6 @@ export default function App() {
     if (!question) {
       return;
     }
-    askDictation.stop();
     const target = askLauncher;
     const targetAgent = agents.find((agent) => agent.id === target.sourceAgentId) ?? null;
     const skill =
@@ -5938,29 +5875,10 @@ export default function App() {
         className="command-launcher-input"
         value={prompt}
         onChange={(event) => setPrompt(event.currentTarget.value)}
-        // While dictation is live, the first real keystroke hands control back to
-        // the keyboard: stop transcribing so it stops overwriting the caret. Bare
-        // modifiers don't count.
-        onKeyDownCapture={(event) => {
-          if (!launcherDictation.listening) {
-            return;
-          }
-          if (
-            event.key === "Shift" ||
-            event.key === "Control" ||
-            event.key === "Alt" ||
-            event.key === "Meta" ||
-            event.key === "CapsLock"
-          ) {
-            return;
-          }
-          launcherDictation.stop();
-        }}
         rows={2}
         placeholder="What should we investigate next?"
         style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
       />
-      <DictationMicButton dictation={launcherDictation} className="command-launcher-mic" />
       <div className="command-launcher-overlay">
         <div className="command-launcher-overlay-group">
           {settings.codeMode ? (
@@ -6050,7 +5968,7 @@ export default function App() {
     askLauncher?.mode === "newThread" && askLauncherSourceAgent?.adapter === CLAUDE_ADAPTER_ID;
 
   // The ask launcher: a launcher-style modal seeded with a quoted selection. In
-  // "ask" mode only the question field, mic, and submit show; in "newThread" mode
+  // "ask" mode only the question field and submit show; in "newThread" mode
   // (fork-with-prompt) the worktree checkbox is shown, with Claude skill toggles
   // when the source adapter supports them. The adapter select is intentionally
   // omitted — a fork inherits the source's adapter.
@@ -6091,21 +6009,6 @@ export default function App() {
         className="command-launcher-input command-launcher-input--ask"
         value={askPrompt}
         onChange={(event) => setAskPrompt(event.currentTarget.value)}
-        onKeyDownCapture={(event) => {
-          if (!askDictation.listening) {
-            return;
-          }
-          if (
-            event.key === "Shift" ||
-            event.key === "Control" ||
-            event.key === "Alt" ||
-            event.key === "Meta" ||
-            event.key === "CapsLock"
-          ) {
-            return;
-          }
-          askDictation.stop();
-        }}
         rows={2}
         placeholder="Ask about this quote"
         autoFocus
@@ -6154,7 +6057,6 @@ export default function App() {
           ) : null}
         </div>
         <div className="command-launcher-controls">
-          <DictationMicButton dictation={askDictation} className="command-launcher-ask-mic" />
           <button
             type="submit"
             className="command-launcher-send"
@@ -8314,14 +8216,6 @@ export default function App() {
         />
       ) : null}
 
-      {dictationDownload ? (
-        <div className="dictation-download-toast" role="status" aria-live="polite">
-          Loading voice model…
-          {dictationDownload.total
-            ? ` ${Math.round((dictationDownload.loaded / dictationDownload.total) * 100)}%`
-            : ""}
-        </div>
-      ) : null}
       {appToast ? (
         <div
           className={`composer-toast app-toast${appToast.tone === "warning" ? " is-warning" : ""}`}

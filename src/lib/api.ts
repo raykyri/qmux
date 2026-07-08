@@ -308,40 +308,6 @@ export function openExternalUrl(url: string) {
   return invoke<void>("open_external_url", { url });
 }
 
-export interface DictationCacheHeader {
-  name: string;
-  value: string;
-}
-
-export interface DictationCacheMetadata {
-  size: number;
-  headers: DictationCacheHeader[];
-}
-
-export function dictationCacheMetadata(request: string) {
-  return invoke<DictationCacheMetadata | null>("dictation_cache_metadata", { request });
-}
-
-export function dictationCacheRead(request: string, offset: number, length: number) {
-  return invoke<string>("dictation_cache_read", { request, offset, length });
-}
-
-export function dictationCachePutStart(request: string, headers: DictationCacheHeader[]) {
-  return invoke<void>("dictation_cache_put_start", { request, headers });
-}
-
-export function dictationCachePutChunk(request: string, dataBase64: string) {
-  return invoke<void>("dictation_cache_put_chunk", { request, dataBase64 });
-}
-
-export function dictationCachePutFinish(request: string) {
-  return invoke<void>("dictation_cache_put_finish", { request });
-}
-
-export function dictationCacheDelete(request: string) {
-  return invoke<boolean>("dictation_cache_delete", { request });
-}
-
 // Atomically moves a queued turn from one agent to another. The backend removes
 // from the source and hands it to the target in one call, rolling back on failure,
 // so the turn can never end up in both queues or be lost.

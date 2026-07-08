@@ -31,8 +31,6 @@ adapter trait in Rust and adding a matching UI adapter on the frontend.
   machine awake while agents are running (skipped on battery below 10%).
 - (Experimental) git worktree creation for launched agents, with dirty
   worktree checks and a delete-or-keep prompt when closing worktree-backed panes.
-- (Experimental) Local Whisper-backed dictation in the launcher and
-  follow-up composer, with the model cached after first use.
 - (Experimental) A tab-bound, resizable browser that renders a local file or a
   `http://localhost` dev server in a panel over the terminal.
 - macOS-only at this time. Linux support is planned for the future.

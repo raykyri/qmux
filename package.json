@@ -13,7 +13,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@viz-js/viz": "^3.28.0",

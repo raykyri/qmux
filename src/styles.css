@@ -775,11 +775,6 @@ button:disabled {
   transform: translateY(var(--status-dot-y, 0));
 }
 
-.app-shell.reduce-motion .dictation-mic-btn.is-listening,
-.app-shell.reduce-motion .dictation-mic-btn.is-listening:hover {
-  animation: none;
-}
-
 .pane-tab small,
 .pane-tab-path,
 .pane-tab-gitmeta {
@@ -1487,7 +1482,7 @@ button:disabled {
 }
 
 .settings-test-spinner {
-  animation: dictation-mic-spin 0.9s linear infinite;
+  animation: spinner-spin 0.9s linear infinite;
 }
 
 .settings-title-test-message {
@@ -1734,18 +1729,8 @@ button:disabled {
   font-size: var(--fs-input);
   line-height: 1.5;
   /* Extra bottom padding reserves room for the overlaid controls so typed text
-     never slides underneath them; the wider right padding reserves the top-right
-     corner for the dictation mic (see .command-launcher-mic). */
-  padding: 16px 54px 52px 18px;
-}
-
-/* Dictation mic, pinned to the launcher's top-right corner near the first line of
-   typed text. The textarea's right padding above keeps text clear. */
-.command-launcher-mic {
-  position: absolute;
-  top: 8px;
-  right: 12px;
-  z-index: 2;
+     never slides underneath them. */
+  padding: 16px 18px 52px 18px;
 }
 
 .command-launcher-input::placeholder {
@@ -1989,18 +1974,11 @@ button:disabled {
 }
 
 /* The ask question field drops the launcher's tall min-height (the quote already
-   gives the panel presence) and its right mic gutter (the mic lives in the bottom
-   controls here), but keeps the bottom padding that clears the overlaid controls. */
+   gives the panel presence), but keeps the bottom padding that clears the
+   overlaid controls. */
 .command-launcher-input--ask {
   min-height: 64px;
   padding: 12px 18px 52px 18px;
-}
-
-/* The ask mic sits inline in the bottom controls row next to submit, rather than
-   pinned over the field like the launcher's, so it never overlaps the quote. */
-.command-launcher-ask-mic {
-  position: static;
-  pointer-events: auto;
 }
 
 /* Floating Ask / Ask-in-new-thread button group over a text selection (terminal or
@@ -4566,79 +4544,10 @@ header + .turn-blocks {
   color: var(--placeholder-color);
 }
 
-/* Voice dictation mic toggle, shared by the composer and the launcher (see
-   DictationMicButton). A flat icon button by default; it takes on a recording
-   tint while listening and spins while the model loads. */
-.dictation-mic-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: var(--control-h-lg);
-  height: var(--control-h-lg);
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--control-fg-muted);
-  cursor: pointer;
-  transition:
-    color 120ms ease,
-    background 120ms ease;
-}
-
-.dictation-mic-btn:hover {
-  color: #f4f3ec;
-}
-
-.dictation-mic-btn:focus-visible {
-  outline: none;
-  color: #f4f3ec;
-  box-shadow: 0 0 0 2px var(--accent-shadow);
-}
-
-/* Recording: a warm red, gently pulsing so it reads as live capture. */
-.dictation-mic-btn.is-listening,
-.dictation-mic-btn.is-listening:hover {
-  color: #ff6f5e;
-  background: rgba(255, 111, 94, 0.12);
-  animation: dictation-mic-pulse 1.4s ease-in-out infinite;
-}
-
-.dictation-mic-btn.is-errored {
-  color: #ff8a73;
-}
-
-.dictation-mic-btn.is-loading svg {
-  animation: dictation-mic-spin 0.9s linear infinite;
-}
-
-@keyframes dictation-mic-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
-@keyframes dictation-mic-spin {
+@keyframes spinner-spin {
   to {
     transform: rotate(360deg);
   }
-}
-
-/* In the composer's submit row the mic sits flush left (the ⋮ menu's
-   margin-left:auto pushes everything else right). Center it against the submit
-   buttons. */
-.native-input-mic {
-  align-self: center;
-  /* Match the ⋮ menu trigger's footprint here (the launcher mic keeps the fixed
-     square): a tall hit area sized to the icon width, not a 34px square. */
-  width: auto;
-  height: auto;
-  min-height: var(--control-h-lg);
 }
 
 .composer-menu {
@@ -4806,25 +4715,6 @@ header + .turn-blocks {
   color: #ffdca8;
 }
 
-/* First-use load of the shared Whisper voice model — pinned to the bottom
-   center above everything, like the composer toast it borrows its skin from. */
-.dictation-download-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 24px;
-  z-index: 40;
-  transform: translateX(-50%);
-  padding: 7px 14px;
-  border: 1px solid #2a2d2f;
-  border-radius: 999px;
-  background: #1d2224;
-  color: #e7e7e2;
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-}
-
 .folder-picker-status {
   position: fixed;
   left: 50%;
@@ -4847,7 +4737,7 @@ header + .turn-blocks {
 
 .folder-picker-status svg {
   flex: none;
-  animation: dictation-mic-spin 0.9s linear infinite;
+  animation: spinner-spin 0.9s linear infinite;
 }
 
 .native-input-submit-actions {

@@ -12,8 +12,4 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 2048,
   },
-  // The dictation Whisper model runs in a module worker (src/whisperWorker.ts)
-  // via transformers.js. Keep it out of esbuild's dev pre-bundle: it ships its
-  // own ESM worker/wasm assets that the optimizer mangles.
-  optimizeDeps: { exclude: ["@huggingface/transformers"] },
 });
