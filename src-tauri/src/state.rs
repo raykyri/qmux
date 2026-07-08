@@ -32,6 +32,12 @@ const MAX_PANE_CWD_LEN: usize = 8192;
 /// turn to the frontend as it arrives).
 const MAX_TURNS_PER_AGENT: usize = 200;
 
+/// Depth of the closed-pane undo stack. Each entry can carry a full pane snapshot
+/// (agent, turns, queued prompts, scrollback), so this bounds transient memory while
+/// still letting a run of accidental closes be reopened one at a time. Oldest entries
+/// are dropped past the cap. Transient — the stack is never persisted across restart.
+const MAX_CLOSED_PANE_UNDO: usize = 25;
+
 /// Upper bound on pending turns queued for a single agent. This is a safety
 /// ceiling against unbounded growth (memory plus a larger `state.json` rewritten
 /// on every persist), not an expected limit — enqueue past it returns an error the
@@ -151,9 +157,11 @@ struct Model {
     /// The selected frontend tab, persisted so restarts return to the same place.
     /// The value is either a pane id or the frontend's Home tab sentinel.
     active_tab_id: Option<String>,
-    /// One-entry undo stack for an explicitly closed tab. Transient: a closed tab can
-    /// be restored during the current app run, but it is not resurrected after restart.
-    last_closed_pane: Option<ClosedPaneSnapshot>,
+    /// Undo stack for explicitly closed tabs, most-recent last. Transient: closed tabs
+    /// can be restored during the current app run (repeated undo reopens successive
+    /// closes), but they are not resurrected after restart. Bounded by
+    /// `MAX_CLOSED_PANE_UNDO`.
+    closed_pane_stack: Vec<ClosedPaneSnapshot>,
 }
 
 /// A pending request to resume an agent session inside a recovered shell pane.
@@ -1534,49 +1542,61 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        model.last_closed_pane = Some(snapshot);
+        model.closed_pane_stack.push(snapshot);
+        // Drop the oldest closes once past the cap so the stack can't grow unbounded.
+        let overflow = model
+            .closed_pane_stack
+            .len()
+            .saturating_sub(MAX_CLOSED_PANE_UNDO);
+        if overflow > 0 {
+            model.closed_pane_stack.drain(0..overflow);
+        }
         Ok(())
     }
 
+    /// Pops the most recently closed pane for undo, or `None` when the stack is empty.
     pub fn take_last_closed_pane(&self) -> Result<Option<ClosedPaneSnapshot>, String> {
         let mut model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.last_closed_pane.take())
+        Ok(model.closed_pane_stack.pop())
     }
 
+    /// Pushes a snapshot back onto the undo stack (used when a restore attempt fails, so
+    /// the just-popped close remains reopenable).
     pub fn remember_last_closed_pane(&self, snapshot: ClosedPaneSnapshot) -> Result<(), String> {
         let mut model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        model.last_closed_pane = Some(snapshot);
+        model.closed_pane_stack.push(snapshot);
         Ok(())
     }
 
+    /// Drops any undo entry for `pane_id` — used when a close is aborted, so a stale
+    /// snapshot can't be reopened. Pane ids are unique per run, so this matches at most
+    /// one entry.
     pub fn clear_last_closed_pane_for_pane(&self, pane_id: &str) {
-        if let Ok(mut model) = self.inner.model.lock()
-            && model
-                .last_closed_pane
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.pane.id == pane_id)
-        {
-            model.last_closed_pane = None;
+        if let Ok(mut model) = self.inner.model.lock() {
+            model
+                .closed_pane_stack
+                .retain(|snapshot| snapshot.pane.id != pane_id);
         }
     }
 
+    /// Drops any undo entry whose captured agent is `agent_id` — used when the agent is
+    /// permanently gone, so its snapshot isn't offered for reopen.
     pub fn clear_last_closed_pane_for_agent(&self, agent_id: &str) {
-        if let Ok(mut model) = self.inner.model.lock()
-            && model
-                .last_closed_pane
-                .as_ref()
-                .and_then(|snapshot| snapshot.agent.as_ref())
-                .is_some_and(|agent_snapshot| agent_snapshot.agent.id == agent_id)
-        {
-            model.last_closed_pane = None;
+        if let Ok(mut model) = self.inner.model.lock() {
+            model.closed_pane_stack.retain(|snapshot| {
+                snapshot
+                    .agent
+                    .as_ref()
+                    .is_none_or(|agent_snapshot| agent_snapshot.agent.id != agent_id)
+            });
         }
     }
 
@@ -5146,6 +5166,62 @@ mod tests {
             id_depths(&state.list_panes().unwrap()),
             vec![("pane-2".to_string(), 0), ("pane-3".to_string(), 1)]
         );
+    }
+
+    #[test]
+    fn closed_pane_undo_stack_pops_most_recent_first_and_survives_extra_closes() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-3")).unwrap();
+
+        // Three successive closes stack up (unlike the old single slot, the earlier ones
+        // aren't discarded by the next close).
+        state.capture_last_closed_pane("pane-1").unwrap();
+        state.capture_last_closed_pane("pane-2").unwrap();
+        state.capture_last_closed_pane("pane-3").unwrap();
+
+        // Undo reopens them most-recent first.
+        assert_eq!(
+            state.take_last_closed_pane().unwrap().unwrap().pane.id,
+            "pane-3"
+        );
+        assert_eq!(
+            state.take_last_closed_pane().unwrap().unwrap().pane.id,
+            "pane-2"
+        );
+        assert_eq!(
+            state.take_last_closed_pane().unwrap().unwrap().pane.id,
+            "pane-1"
+        );
+        assert!(state.take_last_closed_pane().unwrap().is_none());
+    }
+
+    #[test]
+    fn closed_pane_undo_stack_is_bounded() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        // Capture more closes than the cap; the oldest are dropped and only the most
+        // recent MAX_CLOSED_PANE_UNDO remain reopenable.
+        for index in 0..(MAX_CLOSED_PANE_UNDO + 5) {
+            let pane_id = format!("pane-{index}");
+            state.insert_pane(sample_pane_runtime(&pane_id)).unwrap();
+            state.capture_last_closed_pane(&pane_id).unwrap();
+        }
+        let mut popped = 0;
+        let mut newest_first = Vec::new();
+        while let Some(snapshot) = state.take_last_closed_pane().unwrap() {
+            newest_first.push(snapshot.pane.id);
+            popped += 1;
+        }
+        assert_eq!(popped, MAX_CLOSED_PANE_UNDO);
+        // The newest close is still first out; the oldest five were evicted.
+        assert_eq!(
+            newest_first.first().map(String::as_str),
+            Some(format!("pane-{}", MAX_CLOSED_PANE_UNDO + 4).as_str())
+        );
+        assert!(!newest_first.contains(&"pane-0".to_string()));
     }
 
     #[test]
