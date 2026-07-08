@@ -6,11 +6,9 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
-bundle_root="$repo_root/src-tauri/target/release/bundle"
-
-if [[ ! -d "$bundle_root" ]]; then
-  exit 0
-fi
+# Host-arch builds bundle under target/release; --target builds (including the
+# universal-apple-darwin release target) bundle under target/<triple>/release.
+bundle_roots=("$repo_root"/src-tauri/target/release/bundle "$repo_root"/src-tauri/target/*/release/bundle)
 
 detach_image_if_mounted() {
   local image="$1"
@@ -44,8 +42,11 @@ detach_image_if_mounted() {
   done <<<"$mount_points"
 }
 
-while IFS= read -r -d '' image; do
-  detach_image_if_mounted "$image"
-  echo "Removing stale Tauri DMG temp image: $image"
-  rm -f "$image"
-done < <(find "$bundle_root" -type f -name 'rw.*.dmg' -print0)
+for bundle_root in "${bundle_roots[@]}"; do
+  [[ -d "$bundle_root" ]] || continue
+  while IFS= read -r -d '' image; do
+    detach_image_if_mounted "$image"
+    echo "Removing stale Tauri DMG temp image: $image"
+    rm -f "$image"
+  done < <(find "$bundle_root" -type f -name 'rw.*.dmg' -print0)
+done

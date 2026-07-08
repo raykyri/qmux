@@ -7,6 +7,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 # this the bridge is optional and a missing Swift toolchain only warns.
 export QMUX_REQUIRE_FOUNDATION_MODELS=1
 
+# Release DMGs must run on both Apple Silicon and Intel Macs, so default to a
+# universal binary. Override with e.g. QMUX_BUILD_TARGET=aarch64-apple-darwin
+# for a faster single-arch build.
+build_target="${QMUX_BUILD_TARGET:-universal-apple-darwin}"
+
+if [[ "$build_target" == "universal-apple-darwin" ]] && command -v rustup >/dev/null; then
+  rustup target add aarch64-apple-darwin x86_64-apple-darwin
+fi
+
 "$script_dir/cleanup-tauri-dmg.sh"
 
 finder_layout_failed=0
@@ -21,7 +30,7 @@ case "${QMUX_DMG_FINDER_LAYOUT:-}" in
   1 | true | yes | try)
     echo "Trying Tauri DMG build with Finder window layout enabled..."
     set +e
-    TAURI_BUNDLER_DMG_IGNORE_CI=true tauri build
+    TAURI_BUNDLER_DMG_IGNORE_CI=true tauri build --target "$build_target"
     status=$?
     set -e
 
@@ -44,8 +53,8 @@ esac
 # value if one is already set, except after a failed Finder attempt where the
 # fallback must force the non-interactive path.
 if [[ "$finder_layout_failed" -eq 1 ]]; then
-  env -u TAURI_BUNDLER_DMG_IGNORE_CI CI=true tauri build
+  env -u TAURI_BUNDLER_DMG_IGNORE_CI CI=true tauri build --target "$build_target"
 else
   export CI="${CI:-true}"
-  tauri build
+  tauri build --target "$build_target"
 fi
