@@ -12,6 +12,7 @@ import type {
   PaneSplitInfo,
   QmuxEvent,
   QueuedTurn,
+  QueuedTurnDelivery,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   SendNextQueuedAgentTurnResult,
@@ -273,6 +274,19 @@ export function queueWaitAgentTurn(
       waitForPaneId: waitForPaneId ?? null,
       waitForLabel: waitForLabel ?? null,
     },
+  });
+}
+
+// Queues a turn that, when reached, is delivered to a new pane (a fork of this
+// session or a fresh session in the same directory) instead of this agent's own
+// composer.
+export function queueDeliveryAgentTurn(
+  agentId: string,
+  data: string,
+  delivery: QueuedTurnDelivery,
+) {
+  return invoke<SubmitAgentTurnResult>("agent_queue_delivery_turn", {
+    request: { agentId, data, delivery },
   });
 }
 

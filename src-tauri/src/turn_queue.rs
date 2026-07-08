@@ -1,7 +1,12 @@
-use crate::adapters::agent_composer_policy;
+use crate::adapters::{
+    FORK_UNSUPPORTED_ERROR, adapter_supports_fork, agent_composer_policy, fork_agent_source,
+    spawn_sibling_agent_session,
+};
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
-use crate::state::{AgentSendSource, AgentTurnClaim, AppState, IdleAdvance, QueuedTurn};
+use crate::state::{
+    AgentSendSource, AgentTurnClaim, AppState, IdleAdvance, QueuedTurn, QueuedTurnDelivery,
+};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -54,6 +59,14 @@ pub struct QueueWaitAgentTurnRequest {
     pub wait_for_pane_id: Option<String>,
     #[serde(default)]
     pub wait_for_label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueDeliveryAgentTurnRequest {
+    pub agent_id: String,
+    pub data: String,
+    pub delivery: QueuedTurnDelivery,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,8 +175,8 @@ pub fn move_queued_agent_turn(
         SubmitAgentTurnRequest {
             agent_id: request.to_agent_id.clone(),
             // Moving to another agent intentionally resets queue directives
-            // (pause-after and wait targets are contextual to the source queue), so
-            // hand over just the text.
+            // (pause-after, wait targets, and fork/new-session delivery are
+            // contextual to the source queue), so hand over just the text.
             data: removed_turn.text.clone(),
             mode: Some(SubmitAgentTurnMode::Auto),
         },
@@ -220,7 +233,8 @@ pub fn submit_agent_turn(
             // send straight through — otherwise the pause is silently bypassed (and any
             // already-queued turns are jumped). It drains when the user unpauses.
             if agent.paused || policy.should_queue(agent.status) || has_pending_queue {
-                let result = queue_agent_turn(state, &agent, data)?;
+                let turn = QueuedTurn::new(data);
+                let result = queue_agent_turn(state, &agent, turn.clone())?;
                 // Rescue only a *newly* stranded turn. When the queue was already
                 // non-empty we preserve strict append order and let the normal drain
                 // triggers (idle hook, typing-clear, unpause) send it. But when the
@@ -233,7 +247,7 @@ pub fn submit_agent_turn(
                 if has_pending_queue {
                     return Ok(result);
                 }
-                return drain_after_enqueue(state, &request.agent_id, result);
+                return drain_after_enqueue(state, &request.agent_id, result, &turn);
             }
             if !policy.can_send(agent.status) {
                 return Err(format!(
@@ -248,7 +262,7 @@ pub fn submit_agent_turn(
             // it straight through, so a paused agent never receives an out-of-band turn
             // ahead of its held queue. Unpausing drains it in order.
             if agent.paused {
-                return queue_agent_turn(state, &agent, data);
+                return queue_agent_turn(state, &agent, QueuedTurn::new(data));
             }
             if !policy.can_send(agent.status) {
                 return Err("agent is not ready for input; queue the turn instead".to_string());
@@ -261,7 +275,7 @@ pub fn submit_agent_turn(
             if !agent.paused && !policy.should_queue(agent.status) && !has_pending_queue {
                 return Err("agent is ready for input; send the turn instead".to_string());
             }
-            queue_agent_turn(state, &agent, data)
+            queue_agent_turn(state, &agent, QueuedTurn::new(data))
         }
         SubmitAgentTurnMode::Steer => {
             if !policy.can_steer(agent.status) {
@@ -308,19 +322,74 @@ pub fn queue_wait_agent_turn(
         Some(agent.id.clone()),
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
     ));
+    let enqueued_turn = queued_turns.last().cloned();
 
     let agent = state.agent(&agent.id)?.unwrap_or(agent);
     let policy = agent_composer_policy(state, &agent)?;
-    let sent = !agent.paused
+    let _source_ran = !agent.paused
         && !state.agent_is_typing(&agent.id)?
         && policy.can_send(agent.status)
         && drain_agent_turn_queue(state, &agent.id)?;
     let queued_turns = state.agent_queued_turns(&agent.id)?;
+    let queued = enqueued_turn
+        .as_ref()
+        .is_some_and(|enqueued| queued_turns.iter().any(|turn| turn == enqueued));
     Ok(SubmitAgentTurnResult {
-        queued: !sent,
+        queued,
         pending_turns: queued_turns.len(),
         queued_turns,
     })
+}
+
+/// Queues a turn that, when reached, is delivered to a new pane instead of this
+/// agent's own composer: a fork of the session (optionally in a fresh worktree) or
+/// a brand-new session of the same adapter in the same directory. Fork preconditions
+/// that can already be checked (adapter support) fail fast here; ones that can only
+/// be known at dispatch time (a recorded session id) surface as `agent.queue_error`.
+pub fn queue_delivery_agent_turn(
+    state: &AppState,
+    request: QueueDeliveryAgentTurnRequest,
+) -> Result<SubmitAgentTurnResult, String> {
+    let data = request.data.trim().to_string();
+    if data.is_empty() {
+        return Err("turn text cannot be empty".to_string());
+    }
+
+    let agent = state
+        .agent(&request.agent_id)?
+        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+    if matches!(agent.status, AgentStatus::Failed) {
+        return Err(format!("agent {} has failed", agent.id));
+    }
+    if matches!(request.delivery, QueuedTurnDelivery::Fork { .. })
+        && !adapter_supports_fork(&agent.adapter)
+    {
+        return Err(FORK_UNSUPPORTED_ERROR.to_string());
+    }
+
+    let turn = QueuedTurn::delivering(data, request.delivery);
+    let queued_result = queue_agent_turn(state, &agent, turn.clone())?;
+    // If the agent is already idle, dispatch now. A dispatch failure (e.g. the
+    // session has no recorded id to fork yet) re-queues the turn at the front, so
+    // report it as a queue error rather than failing the enqueue the user already
+    // sees in the queue list.
+    match drain_after_enqueue(state, &agent.id, queued_result, &turn) {
+        Ok(result) => Ok(result),
+        Err(err) => {
+            let queued_turns = state.agent_queued_turns(&agent.id)?;
+            state.emit(QmuxEvent::new(
+                "agent.queue_error",
+                agent.pane_id.clone(),
+                Some(agent.id.clone()),
+                json!({ "error": err, "queuedTurns": queued_turns.clone() }),
+            ));
+            Ok(SubmitAgentTurnResult {
+                queued: true,
+                pending_turns: queued_turns.len(),
+                queued_turns,
+            })
+        }
+    }
 }
 
 pub fn remove_queued_agent_turn(
@@ -409,29 +478,59 @@ pub fn reorder_queued_agent_turn(
     })
 }
 
+/// Drains the agent's queue: dispatches ready turns until one runs on the agent
+/// itself, the queue empties/blocks, or a pause lands. Returns whether the agent is
+/// now running a turn of its own — delivery turns dispatched along the way go to
+/// new panes and leave it idle, so they don't count, keeping callers'
+/// `agent.running` emissions and `sent` flags truthful.
 pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, String> {
-    // Claim under the model lock so two concurrent triggers can't each pop a ready turn
-    // and double-send (the agent isn't marked Running until the send below).
-    match state.claim_ready_agent_turn(agent_id)? {
-        AgentTurnClaim::Ready { turn, pending } => {
-            send_claimed_turn(state, agent_id, turn, pending)?;
-            Ok(true)
+    loop {
+        // Claim under the model lock so two concurrent triggers can't each pop a ready
+        // turn and double-send (the agent isn't marked Running until the send below).
+        match state.claim_ready_agent_turn(agent_id)? {
+            AgentTurnClaim::Ready { turn, pending } => {
+                match send_claimed_turn(state, agent_id, turn, pending)? {
+                    DispatchOutcome::Ran => return Ok(true),
+                    DispatchOutcome::StayedIdle => {
+                        // The turn went to a new pane, not into this agent — it is
+                        // still idle, so keep draining (a pause-after delivery turn
+                        // pauses it instead; see send_claimed_turn).
+                        if state.agent_is_paused(agent_id)? {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            AgentTurnClaim::Draining | AgentTurnClaim::Idle => return Ok(false),
         }
-        AgentTurnClaim::Draining | AgentTurnClaim::Idle => Ok(false),
     }
+}
+
+/// How a claimed turn was dispatched — the single source of truth for whether the
+/// owning agent is now busy, derived from the turn's delivery directive in exactly
+/// one place (`send_claimed_turn`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchOutcome {
+    /// The turn was pasted into the agent's own pane; the agent is running it.
+    Ran,
+    /// The turn was delivered to a new pane (fork / new session); the agent
+    /// stays idle.
+    StayedIdle,
 }
 
 /// Sends a turn already claimed via [`AppState::claim_ready_agent_turn`] /
 /// [`AppState::claim_next_turn_or_mark_idle`], then clears the draining guard. On any
 /// failure the turn is requeued and the guard cleared before returning the error, so a
 /// failed send neither loses the turn nor wedges the queue (a still-set guard would
-/// block every future drain).
+/// block every future drain). A turn carrying a `delivery` directive goes to a new
+/// pane (fork / new session) instead of this agent's PTY and leaves its status
+/// untouched — the caller is expected to keep draining.
 fn send_claimed_turn(
     state: &AppState,
     agent_id: &str,
     turn: QueuedTurn,
     pending_turns: usize,
-) -> Result<(), String> {
+) -> Result<DispatchOutcome, String> {
     let agent = match state.agent(agent_id)? {
         Some(agent) => agent,
         None => {
@@ -440,22 +539,46 @@ fn send_claimed_turn(
             return Err(format!("agent {agent_id} was not found"));
         }
     };
-    if let Err(err) = send_agent_turn(
-        state,
-        &agent,
-        turn.text.clone(),
-        AgentSendSource::QueuedTurn,
-    ) {
-        state.requeue_inflight_after_failed_drain(agent_id, turn);
-        state.finish_agent_drain(agent_id);
-        return Err(err);
-    }
-    // Delivered: clear the in-flight record so it isn't re-queued on the next restart.
+    let send_result = match turn.delivery.as_ref() {
+        Some(delivery) => {
+            // Delivery turns dispatch at-most-once across a crash: drop the durable
+            // in-flight copy before spawning, so a crash mid-spawn loses the turn
+            // instead of re-running it on restart and minting a duplicate
+            // pane/agent/worktree. (Plain turns keep at-least-once semantics —
+            // re-pasting text is benign; re-forking is not.)
+            state.clear_agent_inflight(agent_id);
+            deliver_queued_turn_to_new_pane(state, &agent, &turn.text, delivery)
+                .map(|_| DispatchOutcome::StayedIdle)
+        }
+        None => send_agent_turn(
+            state,
+            &agent,
+            turn.text.clone(),
+            AgentSendSource::QueuedTurn,
+        )
+        .map(|_| DispatchOutcome::Ran),
+    };
+    let outcome = match send_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            state.requeue_inflight_after_failed_drain(agent_id, turn);
+            state.finish_agent_drain(agent_id);
+            return Err(err);
+        }
+    };
+    // Delivered: clear the in-flight record so it isn't re-queued on the next restart
+    // (a no-op for delivery turns, which cleared it before dispatch).
     state.clear_agent_inflight(agent_id);
-    // A pause-after turn arms the pause; it takes effect when this turn finishes
-    // (see `advance_after_idle`), not now.
     if turn.pause_after {
-        state.mark_agent_pending_pause(agent_id)?;
+        if turn.delivery.is_some() {
+            // A delivery turn never runs on this agent, so its "pause after" takes
+            // effect now rather than arming a pending pause for the next idle.
+            state.set_agent_paused(agent_id, true)?;
+        } else {
+            // A pause-after turn arms the pause; it takes effect when this turn
+            // finishes (see `advance_after_idle`), not now.
+            state.mark_agent_pending_pause(agent_id)?;
+        }
     }
     state.finish_agent_drain(agent_id);
     let queued_turns = state.agent_queued_turns(agent_id)?;
@@ -465,10 +588,11 @@ fn send_claimed_turn(
         Some(agent.id),
         json!({ "pendingTurns": pending_turns, "queuedTurns": queued_turns }),
     ));
-    Ok(())
+    Ok(outcome)
 }
 
 /// What an agent going idle should do next.
+#[derive(Debug)]
 pub enum IdleResolution {
     /// A queued turn was sent; the agent is running again.
     Drained,
@@ -486,36 +610,58 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
     // Outstanding-send tracking is advisory; clear it best-effort on every idle.
     let _ = state.clear_agent_outstanding_sends(agent_id);
 
-    if state.take_agent_pending_pause(agent_id)? {
-        state.set_agent_paused(agent_id, true)?;
-        state.set_agent_status(agent_id, AgentStatus::Done)?;
-        release_waiters_for_agent(state, agent_id)?;
-        return Ok(IdleResolution::Paused);
-    }
-    if state.agent_is_paused(agent_id)? {
-        // Paused: leave the queue intact and don't auto-send.
-        state.set_agent_status(agent_id, AgentStatus::Done)?;
-        release_waiters_for_agent(state, agent_id)?;
-        return Ok(IdleResolution::Idle);
-    }
-    // Atomically claim a ready turn, observe that another drain owns the agent, or
-    // settle to Done — all under one model lock. This both serializes draining (so a
-    // racing trigger can't double-send) and folds the typing check into the same lock as
-    // the Done write, closing the typing/idle lost-wakeup. The user-is-typing case is
-    // handled inside as an idle settle (the queue is held; it resumes when the frontend
-    // clears the typing flag).
-    match state.claim_next_turn_or_mark_idle(agent_id)? {
-        IdleAdvance::Sent { turn, pending } => {
-            send_claimed_turn(state, agent_id, turn, pending)?;
-            Ok(IdleResolution::Drained)
-        }
-        IdleAdvance::Busy => {
-            // Another drain is mid-send and owns the status transition; leave it be.
-            Ok(IdleResolution::Idle)
-        }
-        IdleAdvance::Idle => {
+    // Looped so a delivery turn — which goes to a new pane and leaves this agent
+    // idle — falls through to the next queued turn (or settles the agent to Done)
+    // in the same idle event, instead of stranding the rest of the queue in a
+    // status that never fires another idle hook. Each iteration re-checks the
+    // pause state, so a pause-after delivery turn still halts the queue.
+    loop {
+        if state.take_agent_pending_pause(agent_id)? {
+            state.set_agent_paused(agent_id, true)?;
+            state.set_agent_status(agent_id, AgentStatus::Done)?;
             release_waiters_for_agent(state, agent_id)?;
-            Ok(IdleResolution::Idle)
+            return Ok(IdleResolution::Paused);
+        }
+        if state.agent_is_paused(agent_id)? {
+            // Paused: leave the queue intact and don't auto-send.
+            state.set_agent_status(agent_id, AgentStatus::Done)?;
+            release_waiters_for_agent(state, agent_id)?;
+            return Ok(IdleResolution::Idle);
+        }
+        // Atomically claim a ready turn, observe that another drain owns the agent, or
+        // settle to Done — all under one model lock. This both serializes draining (so a
+        // racing trigger can't double-send) and folds the typing check into the same lock as
+        // the Done write, closing the typing/idle lost-wakeup. The user-is-typing case is
+        // handled inside as an idle settle (the queue is held; it resumes when the frontend
+        // clears the typing flag).
+        match state.claim_next_turn_or_mark_idle(agent_id)? {
+            IdleAdvance::Sent { turn, pending } => {
+                let is_delivery = turn.delivery.is_some();
+                match send_claimed_turn(state, agent_id, turn, pending) {
+                    Ok(DispatchOutcome::Ran) => return Ok(IdleResolution::Drained),
+                    Ok(DispatchOutcome::StayedIdle) => continue,
+                    Err(err) => {
+                        if is_delivery {
+                            // A failed delivery leaves this agent genuinely idle;
+                            // settle it and release its waiters so the error
+                            // (surfaced as a queue error by the caller) doesn't
+                            // strand the tab in a stale Running status that no
+                            // future idle hook will ever clear.
+                            state.set_agent_status(agent_id, AgentStatus::Done)?;
+                            release_waiters_for_agent(state, agent_id)?;
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+            IdleAdvance::Busy => {
+                // Another drain is mid-send and owns the status transition; leave it be.
+                return Ok(IdleResolution::Idle);
+            }
+            IdleAdvance::Idle => {
+                release_waiters_for_agent(state, agent_id)?;
+                return Ok(IdleResolution::Idle);
+            }
         }
     }
 }
@@ -637,7 +783,17 @@ pub fn send_next_queued_agent_turn(
     state: &AppState,
     agent_id: &str,
 ) -> Result<SendNextQueuedAgentTurnResult, String> {
-    let sent = drain_agent_turn_queue(state, agent_id)?;
+    // The explicit "send top item now" action dispatches exactly one turn — a
+    // front delivery turn spawns its pane without cascading into the rest of the
+    // queue, unlike the automatic drains, which keep going while the agent stays
+    // idle. `sent` reports whether the top item was dispatched, whatever its kind.
+    let sent = match state.claim_ready_agent_turn(agent_id)? {
+        AgentTurnClaim::Ready { turn, pending } => {
+            send_claimed_turn(state, agent_id, turn, pending)?;
+            true
+        }
+        AgentTurnClaim::Draining | AgentTurnClaim::Idle => false,
+    };
     let queued_turns = state.agent_queued_turns(agent_id)?;
     Ok(SendNextQueuedAgentTurnResult {
         sent,
@@ -649,9 +805,9 @@ pub fn send_next_queued_agent_turn(
 fn queue_agent_turn(
     state: &AppState,
     agent: &AgentInfo,
-    data: String,
+    turn: QueuedTurn,
 ) -> Result<SubmitAgentTurnResult, String> {
-    let pending_turns = state.enqueue_agent_turn(&agent.id, data)?;
+    let pending_turns = state.enqueue_agent_queued_turn(&agent.id, turn)?;
     let queued_turns = state.agent_queued_turns(&agent.id)?;
     state.emit(QmuxEvent::new(
         "agent.turn_queued",
@@ -672,12 +828,12 @@ fn queue_agent_turn(
 /// trigger. Mirrors the post-enqueue drain in `queue_wait_agent_turn`.
 ///
 /// `drain_agent_turn_queue` claims under the model lock and only sends a genuinely
-/// ready turn, so this is a safe no-op when the agent is really still busy. Returns
-/// `queued_result` unchanged when nothing was sent, or a sent result otherwise.
+/// ready turn, so this is a safe no-op when the agent is really still busy.
 fn drain_after_enqueue(
     state: &AppState,
     agent_id: &str,
     queued_result: SubmitAgentTurnResult,
+    enqueued_turn: &QueuedTurn,
 ) -> Result<SubmitAgentTurnResult, String> {
     let Some(agent) = state.agent(agent_id)? else {
         return Ok(queued_result);
@@ -686,19 +842,43 @@ fn drain_after_enqueue(
     // Send only if the agent is genuinely idle-and-ready now (not paused, not
     // mid-typing, in a can-send status). drain_agent_turn_queue claims under the
     // model lock, so this is a safe no-op if it is really still busy.
-    let sent = !agent.paused
+    let _source_ran = !agent.paused
         && !state.agent_is_typing(agent_id)?
         && policy.can_send(agent.status)
         && drain_agent_turn_queue(state, agent_id)?;
-    if !sent {
-        return Ok(queued_result);
-    }
+    // Rebuild the snapshot after the drain either way: the drain result says only
+    // whether the source agent is running now, while the command result should say
+    // whether this submitted turn is still queued. Delivery turns can dispatch to a
+    // new pane without making the source run, and an existing front item can drain
+    // while the newly appended item remains queued.
     let queued_turns = state.agent_queued_turns(agent_id)?;
     Ok(SubmitAgentTurnResult {
-        queued: false,
+        queued: queued_turns.iter().any(|turn| turn == enqueued_turn),
         pending_turns: queued_turns.len(),
         queued_turns,
     })
+}
+
+/// Delivers a queued turn that targets a new pane instead of the source agent's own
+/// PTY: fork the source session (optionally into a fresh worktree) or start a fresh
+/// sibling session, launched with the turn text as its first message. The source
+/// agent's status is deliberately left untouched — it stays idle and the caller
+/// continues draining its queue.
+fn deliver_queued_turn_to_new_pane(
+    state: &AppState,
+    source: &AgentInfo,
+    text: &str,
+    delivery: &QueuedTurnDelivery,
+) -> Result<(), String> {
+    match delivery {
+        QueuedTurnDelivery::Fork { use_worktree } => {
+            fork_agent_source(state, source, *use_worktree, true, Some(text))?;
+        }
+        QueuedTurnDelivery::NewSession => {
+            spawn_sibling_agent_session(state, source, text)?;
+        }
+    }
+    Ok(())
 }
 
 /// Restores a just-popped turn to the front of the queue after a drain fails to
@@ -751,7 +931,7 @@ fn send_direct_or_queue(
     data: String,
 ) -> Result<SubmitAgentTurnResult, String> {
     if !state.begin_direct_send(&agent.id)? {
-        return queue_agent_turn(state, agent, data);
+        return queue_agent_turn(state, agent, QueuedTurn::new(data));
     }
     let result = send_agent_turn(state, agent, data, AgentSendSource::DirectSend);
     state.finish_agent_drain(&agent.id);
@@ -1222,6 +1402,56 @@ mod tests {
     }
 
     #[test]
+    fn queue_wait_result_reports_new_turn_still_queued_when_front_turn_drains() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Running,
+                Some("target-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_turn("source", "send first".to_string())
+            .unwrap();
+
+        let result = queue_wait_agent_turn(
+            &state,
+            QueueWaitAgentTurnRequest {
+                agent_id: "source".to_string(),
+                data: "after target".to_string(),
+                wait_for_agent_id: "target".to_string(),
+                wait_for_pane_id: None,
+                wait_for_label: None,
+            },
+        )
+        .unwrap();
+
+        assert!(result.queued);
+        assert_eq!(result.pending_turns, 1);
+        assert_eq!(result.queued_turns[0].text, "after target");
+        assert!(result.queued_turns[0].wait_for.is_some());
+        assert_eq!(
+            state.list_agent_turn_queue("source").unwrap(),
+            vec!["after target".to_string()]
+        );
+        assert!(matches!(
+            state.agent("source").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+    }
+
+    #[test]
     fn detached_wait_target_releases_waiting_front_turn() {
         let state = test_state();
         state
@@ -1397,6 +1627,167 @@ mod tests {
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Done
         ));
+    }
+
+    #[test]
+    fn queued_turn_delivery_serde_round_trips_and_accepts_legacy_shapes() {
+        let turn = QueuedTurn::delivering(
+            "do it".to_string(),
+            QueuedTurnDelivery::Fork { use_worktree: true },
+        );
+        let json = serde_json::to_string(&turn).unwrap();
+        assert!(json.contains(r#""kind":"fork""#), "unexpected json: {json}");
+        assert!(json.contains(r#""useWorktree":true"#), "unexpected json: {json}");
+        let back: QueuedTurn = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.delivery,
+            Some(QueuedTurnDelivery::Fork { use_worktree: true })
+        );
+        assert_eq!(back.text, "do it");
+
+        let new_session: QueuedTurn =
+            serde_json::from_str(r#"{"text":"t","delivery":{"kind":"newSession"}}"#).unwrap();
+        assert_eq!(new_session.delivery, Some(QueuedTurnDelivery::NewSession));
+
+        // The legacy persisted shapes (a bare string; an object without the new
+        // field) still load, with no delivery directive.
+        let legacy: QueuedTurn = serde_json::from_str(r#""plain text""#).unwrap();
+        assert!(legacy.delivery.is_none());
+        let object: QueuedTurn =
+            serde_json::from_str(r#"{"text":"t","pauseAfter":true}"#).unwrap();
+        assert!(object.delivery.is_none());
+        assert!(object.pause_after);
+    }
+
+    #[test]
+    fn queue_delivery_turn_rejects_fork_for_unsupported_adapter() {
+        let state = test_state();
+        let mut agent = sample_agent(AgentStatus::Running);
+        agent.adapter = "grok".to_string();
+        state.insert_agent(agent).unwrap();
+
+        let err = queue_delivery_agent_turn(
+            &state,
+            QueueDeliveryAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "fork me".to_string(),
+                delivery: QueuedTurnDelivery::Fork { use_worktree: false },
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("only supported for Claude and Codex"),
+            "unexpected error: {err}"
+        );
+        assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn queue_delivery_new_session_queues_behind_a_busy_agent_for_any_adapter() {
+        let state = test_state();
+        let mut agent = sample_agent(AgentStatus::Running);
+        agent.adapter = "opencode".to_string();
+        state.insert_agent(agent).unwrap();
+
+        let result = queue_delivery_agent_turn(
+            &state,
+            QueueDeliveryAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "fresh start".to_string(),
+                delivery: QueuedTurnDelivery::NewSession,
+            },
+        )
+        .unwrap();
+
+        assert!(result.queued);
+        let queued = state.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "fresh start");
+        assert_eq!(queued[0].delivery, Some(QueuedTurnDelivery::NewSession));
+    }
+
+    #[test]
+    fn failed_delivery_dispatch_requeues_the_turn_with_its_directive() {
+        let state = test_state();
+        // A ready Claude agent with a live pane but no recorded session id: the
+        // immediate dispatch attempts the fork, which fails before any spawn.
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Done,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+
+        // The enqueue itself succeeds; the dispatch failure is reported as a queue
+        // error event rather than failing the command.
+        let result = queue_delivery_agent_turn(
+            &state,
+            QueueDeliveryAgentTurnRequest {
+                agent_id: "agent-1".to_string(),
+                data: "fork me".to_string(),
+                delivery: QueuedTurnDelivery::Fork { use_worktree: false },
+            },
+        )
+        .unwrap();
+        assert!(result.queued);
+
+        // The turn is back at the front with its delivery directive intact, the
+        // agent is still idle (never marked Running), and the drain guard is clear
+        // (a later explicit drain reaches the fork attempt again).
+        let queued = state.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "fork me");
+        assert_eq!(
+            queued[0].delivery,
+            Some(QueuedTurnDelivery::Fork { use_worktree: false })
+        );
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(matches!(agent.status, AgentStatus::Done));
+
+        let err = drain_agent_turn_queue(&state, "agent-1").unwrap_err();
+        assert!(!err.is_empty());
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_delivery_at_idle_settles_the_agent_instead_of_stranding_it() {
+        let state = test_state();
+        // The agent just finished a turn (still Running when its Stop hook fires)
+        // with a fork-delivery turn queued; the fork fails (no recorded session id).
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+        state
+            .enqueue_agent_queued_turn(
+                "agent-1",
+                QueuedTurn::delivering(
+                    "fork me".to_string(),
+                    QueuedTurnDelivery::Fork { use_worktree: false },
+                ),
+            )
+            .unwrap();
+
+        let err = advance_after_idle(&state, "agent-1").unwrap_err();
+        assert!(!err.is_empty());
+
+        // The failure must not strand the tab in a stale Running status (no future
+        // idle hook would ever clear it); the turn stays requeued for the user to
+        // retry or remove.
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(matches!(agent.status, AgentStatus::Done));
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
     }
 
     #[test]

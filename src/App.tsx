@@ -72,6 +72,7 @@ import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
   agentStatusLabel,
+  agentCanFork,
   agentStatusTone,
   buildQuotedMessage,
   clamp,
@@ -4943,11 +4944,8 @@ export default function App() {
       anchor,
       sourceAgentId: agent.id,
       sourcePaneId: pane.id,
-      // "Ask in new thread" forks, which needs an adapter with native fork support
-      // and a recorded session id — gate the button so it's never a dead end.
-      canFork:
-        Boolean(agent.sessionId) &&
-        (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
+      // "Ask in new thread" forks — gate the button so it's never a dead end.
+      canFork: agentCanFork(agent),
     });
   }
   function handleTerminalAskSelection(paneId: string, quote: string, anchor: SelectionAnchor) {
@@ -6510,10 +6508,7 @@ export default function App() {
                   void handleSelectTranscript(agent.id, path);
                 }
               }}
-              canFork={Boolean(
-                agent?.sessionId &&
-                  (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
-              )}
+              canFork={agentCanFork(agent)}
               onFork={(options) => void forkActivePane(options)}
               showQueueSplit={Boolean(agent)}
               queueSplit={surface.queueSplit}

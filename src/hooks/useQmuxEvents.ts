@@ -244,9 +244,14 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           })
           .catch(() => undefined);
       }
-      if (event.type === "agent.forked") {
-        // The fork created a new pane backend-side; refetch the ordered list so the
-        // nested tab appears (with its depth) without stealing focus from the source.
+      if (
+        event.type === "agent.forked" ||
+        (event.type === "agent.spawned" && event.payload.source === "queue")
+      ) {
+        // The fork — or a queue-dispatched new-session spawn — created a new pane
+        // backend-side with no frontend caller holding it; refetch the ordered list
+        // so the nested tab appears (with its depth) without stealing focus from
+        // the source.
         const seq = (panesRefreshSeq += 1);
         void listPanes()
           .then((latest) => {

@@ -232,6 +232,10 @@ impl ClaudeAdapter {
         let prompt = request.prompt.trim();
         let has_prompt = !prompt.is_empty();
         if has_prompt {
+            // Delimit the prompt with `--` so a prompt that starts with `-` (e.g.
+            // queued text delivered to a new session) is parsed as the positional
+            // prompt rather than as a Claude flag. Mirrors `fork_pane`.
+            args.push("--".to_string());
             args.push(prompt.to_string());
         }
 

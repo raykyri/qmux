@@ -268,16 +268,34 @@ pub struct QueuedTurnWait {
     pub label: Option<String>,
 }
 
-/// A queued turn: the text to send plus optional directives controlling when it
-/// should send. Deserializes from either a bare string (the legacy persisted format)
-/// or a `{ text, pauseAfter, waitFor }` object, so old state still loads.
-#[derive(Clone, Debug, Serialize)]
+/// Where a queued turn is delivered when it is reached. Absent on a turn means the
+/// default: paste it into the owning agent's own pane. `Fork` resumes the source
+/// session into a new forked pane launched with the turn text; `NewSession` starts
+/// a fresh session of the same adapter in the source's directory. Either way the
+/// source agent never runs the turn itself and stays idle.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+pub enum QueuedTurnDelivery {
+    Fork {
+        #[serde(default)]
+        use_worktree: bool,
+    },
+    NewSession,
+}
+
+/// A queued turn: the text to send plus optional directives controlling when and
+/// where it should send. Deserializes from either a bare string (the legacy
+/// persisted format) or a `{ text, pauseAfter, waitFor, delivery }` object, so old
+/// state still loads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
     pub text: String,
     pub pause_after: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_for: Option<QueuedTurnWait>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<QueuedTurnDelivery>,
 }
 
 impl QueuedTurn {
@@ -286,6 +304,7 @@ impl QueuedTurn {
             text,
             pause_after: false,
             wait_for: None,
+            delivery: None,
         }
     }
 
@@ -294,6 +313,16 @@ impl QueuedTurn {
             text,
             pause_after: false,
             wait_for: Some(wait_for),
+            delivery: None,
+        }
+    }
+
+    pub fn delivering(text: String, delivery: QueuedTurnDelivery) -> Self {
+        Self {
+            text,
+            pause_after: false,
+            wait_for: None,
+            delivery: Some(delivery),
         }
     }
 }
@@ -313,6 +342,8 @@ impl<'de> Deserialize<'de> for QueuedTurn {
                 pause_after: bool,
                 #[serde(default, rename = "waitFor")]
                 wait_for: Option<QueuedTurnWait>,
+                #[serde(default)]
+                delivery: Option<QueuedTurnDelivery>,
             },
         }
         Ok(match Repr::deserialize(deserializer)? {
@@ -320,15 +351,18 @@ impl<'de> Deserialize<'de> for QueuedTurn {
                 text,
                 pause_after: false,
                 wait_for: None,
+                delivery: None,
             },
             Repr::Full {
                 text,
                 pause_after,
                 wait_for,
+                delivery,
             } => QueuedTurn {
                 text,
                 pause_after,
                 wait_for,
+                delivery,
             },
         })
     }
@@ -2140,6 +2174,9 @@ impl AppState {
         Ok(())
     }
 
+    /// Test convenience: queues a plain text turn with no directives. Production
+    /// callers build a [`QueuedTurn`] and use [`Self::enqueue_agent_queued_turn`].
+    #[cfg(test)]
     pub fn enqueue_agent_turn(&self, agent_id: &str, data: String) -> Result<usize, String> {
         self.enqueue_agent_queued_turn(agent_id, QueuedTurn::new(data))
     }
@@ -2195,7 +2232,12 @@ impl AppState {
         Ok(len)
     }
 
-    fn enqueue_agent_queued_turn(&self, agent_id: &str, turn: QueuedTurn) -> Result<usize, String> {
+    /// Queues a fully-formed turn (text plus any pause/wait/delivery directives).
+    pub fn enqueue_agent_queued_turn(
+        &self,
+        agent_id: &str,
+        turn: QueuedTurn,
+    ) -> Result<usize, String> {
         let len = {
             let mut model = self
                 .inner

@@ -4498,7 +4498,10 @@ header + .turn-blocks {
   border-color: rgba(109, 167, 236, 0.5);
 }
 
-.queued-turn-wait-label {
+/* Shared pill shape for the badges under a queued turn's text: the hourglass wait
+   pill and the branch delivery pill differ only in tint and glyph. */
+.queued-turn-wait-label,
+.queued-turn-delivery-label {
   grid-column: 1 / -1;
   justify-self: start;
   max-width: 100%;
@@ -4518,6 +4521,17 @@ header + .turn-blocks {
 
 .queued-turn-wait-label::before {
   content: "⧗ ";
+}
+
+/* A queued turn delivered elsewhere (fork / new session). */
+.queued-turn-delivery-label {
+  border-color: rgba(129, 199, 132, 0.25);
+  background: rgba(129, 199, 132, 0.08);
+  color: #81c784;
+}
+
+.queued-turn-delivery-label::before {
+  content: "⑂ ";
 }
 
 /* "Paused" status sits at the far left of the composer's submit row (the

@@ -590,9 +590,12 @@ fn build_grok_args(cwd: &Path, model: Option<&str>, prompt: &str) -> Vec<String>
     }
 
     // The interactive initial prompt is a trailing positional, so it must come after
-    // all flags.
+    // all flags. Delimit it with `--` so a prompt that starts with `-` (e.g. queued
+    // text delivered to a new session) is parsed as the positional prompt rather
+    // than as a Grok flag; mirrors the Claude and Codex launch paths.
     let prompt = prompt.trim();
     if !prompt.is_empty() {
+        args.push("--".to_string());
         args.push(prompt.to_string());
     }
 
@@ -1199,10 +1202,11 @@ mod tests {
     fn build_args_adds_cwd_model_and_positional_prompt() {
         let args = build_grok_args(Path::new("/tmp/qmux"), Some("grok-code"), "fix the bug");
 
-        // The prompt is a trailing positional, after --cwd and --model.
+        // The prompt is a trailing positional, after --cwd and --model, delimited
+        // with `--` so leading-dash text can't be parsed as a flag.
         assert_eq!(
             args,
-            vec!["--cwd", "/tmp/qmux", "--model", "grok-code", "fix the bug"]
+            vec!["--cwd", "/tmp/qmux", "--model", "grok-code", "--", "fix the bug"]
         );
     }
 

@@ -472,26 +472,92 @@ pub fn agent_fork(
     let source = state
         .agent_by_pane(authed_pane)?
         .ok_or_else(|| "no agent is running in this pane to fork".to_string())?;
-    let prompt = prompt.as_deref();
+    fork_agent_source(state, &source, use_worktree, nest, prompt.as_deref())
+}
+
+/// Adapters with a native fork command. Owns the fork-eligibility check (and its
+/// error message) for both the dispatch below and the queue engine's fail-fast
+/// validation, so a new forkable adapter is added in one place.
+pub fn adapter_supports_fork(adapter_id: &str) -> bool {
+    matches!(adapter_id, "claude" | "codex")
+}
+
+pub const FORK_UNSUPPORTED_ERROR: &str = "fork is only supported for Claude and Codex sessions";
+
+/// The agent-scoped core of [`agent_fork`], also used by the queue engine to
+/// dispatch fork-delivery turns (where there is no calling pane to authenticate —
+/// the source is the agent that owns the queue). Places the new pane relative to
+/// the source's current pane and emits `agent.forked` so the frontend picks up the
+/// new tab without stealing focus.
+pub fn fork_agent_source(
+    state: &AppState,
+    source: &AgentInfo,
+    use_worktree: bool,
+    nest: bool,
+    prompt: Option<&str>,
+) -> Result<PaneInfo, String> {
     let (pane, agent) = match source.adapter.as_str() {
         "claude" => {
-            ClaudeAdapter::new(state.config()).fork_pane(state, &source, use_worktree, prompt)?
+            ClaudeAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
         }
         "codex" => {
-            CodexAdapter::new(state.config()).fork_pane(state, &source, use_worktree, prompt)?
+            CodexAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
         }
-        _ => return Err("fork is only supported for Claude and Codex sessions".to_string()),
+        _ => return Err(FORK_UNSUPPORTED_ERROR.to_string()),
     };
-    if nest {
-        state.nest_pane_under(&pane.id, authed_pane)?;
-    } else {
-        state.place_pane_after(&pane.id, authed_pane)?;
+    if let Some(source_pane) = source.pane_id.as_deref() {
+        if nest {
+            state.nest_pane_under(&pane.id, source_pane)?;
+        } else {
+            state.place_pane_after(&pane.id, source_pane)?;
+        }
     }
     state.emit(QmuxEvent::new(
         "agent.forked",
         Some(pane.id.clone()),
         Some(agent.id.clone()),
         json!({ "agent": agent, "pane": pane, "sourceAgentId": source.id }),
+    ));
+    Ok(pane)
+}
+
+/// Starts a fresh session of `source`'s adapter in the source's own directory,
+/// launched with `prompt` as its first message, and nests the new pane under the
+/// source's. Used by the queue engine for new-session-delivery turns. Emits
+/// `agent.spawned` with source "queue" so the frontend refreshes its pane list
+/// (unlike launcher spawns, no frontend caller holds the returned pane).
+pub fn spawn_sibling_agent_session(
+    state: &AppState,
+    source: &AgentInfo,
+    prompt: &str,
+) -> Result<PaneInfo, String> {
+    let pane = adapter_registry(state.config())
+        .get(&source.adapter)?
+        .launch(
+            state,
+            SpawnAgentRequest {
+                adapter_id: source.adapter.clone(),
+                prompt: prompt.to_string(),
+                group_id: Some(source.group_id.clone()),
+                // Run in the source's directory (no worktree), like an in-place fork.
+                base_repo: Some(source.worktree_dir.clone()),
+                base_ref: Some("HEAD".to_string()),
+                cwd: None,
+                model: source.model.clone(),
+                initial_size: None,
+                use_worktree: Some(false),
+                options: Value::Null,
+            },
+        )?;
+    if let Some(source_pane) = source.pane_id.as_deref() {
+        state.nest_pane_under(&pane.id, source_pane)?;
+    }
+    let agent = state.agent_by_pane(&pane.id)?;
+    state.emit(QmuxEvent::new(
+        "agent.spawned",
+        Some(pane.id.clone()),
+        agent.as_ref().map(|agent| agent.id.clone()),
+        json!({ "agent": agent, "pane": pane, "source": "queue" }),
     ));
     Ok(pane)
 }

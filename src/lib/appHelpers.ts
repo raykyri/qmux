@@ -3,6 +3,8 @@ import {
   TERMINAL_FONT_SIZE,
 } from "./terminalFont";
 import { FONT_OPTIONS } from "./settings";
+import { CLAUDE_ADAPTER_ID } from "../adapters/claude";
+import { CODEX_ADAPTER_ID } from "../adapters/codex";
 import type {
   AgentInfo,
   PaneInfo,
@@ -194,6 +196,16 @@ export function isQueuedTurn(value: unknown): value is QueuedTurn {
     typeof value === "object" &&
     value !== null &&
     typeof (value as Record<string, unknown>).text === "string"
+  );
+}
+
+// Forking needs an adapter with a native fork command and a recorded session id to
+// resume. Single owner of the gate used by the pane header's fork menu, the
+// selection "Ask in new thread" button, and the composer's queue-and-fork options.
+export function agentCanFork(agent: AgentInfo | null | undefined): boolean {
+  return Boolean(
+    agent?.sessionId &&
+      (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
   );
 }
 

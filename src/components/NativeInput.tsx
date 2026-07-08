@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, EllipsisVertical, X } from "lucide-react";
 import {
   listAgentTurnQueue,
+  queueDeliveryAgentTurn,
   queueWaitAgentTurn,
   removeQueuedAgentTurn,
   reorderQueuedAgentTurn,
@@ -25,8 +26,16 @@ import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
-import type { AgentInfo, PaneInfo, QueuedTurn, SubmitAgentTurnMode, WaitTarget } from "../types";
-import { agentStatusTone } from "../lib/appHelpers";
+import type {
+  AgentInfo,
+  PaneInfo,
+  QueuedTurn,
+  QueuedTurnDelivery,
+  SubmitAgentTurnMode,
+  SubmitAgentTurnResult,
+  WaitTarget,
+} from "../types";
+import { agentCanFork, agentStatusTone } from "../lib/appHelpers";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -86,6 +95,43 @@ function waitTargetStatusDotClass(target: WaitTarget) {
 function waitFooterTitle(label: string) {
   return label.replace(WAIT_TITLE_PROGRESS_PREFIX_RE, "").trim() || label.trim();
 }
+
+function queuedTurnDeliveryLabel(delivery: QueuedTurnDelivery) {
+  if (delivery.kind === "newSession") {
+    return "To new session";
+  }
+  return delivery.useWorktree ? "Fork in worktree" : "Fork session";
+}
+
+const FORK_REQUIREMENT_TITLE = "Forking needs a Claude or Codex session that has run a turn";
+
+// The delivery choices offered by the queue dropdown, above the wait targets.
+const QUEUE_DELIVERY_OPTIONS: Array<{
+  label: string;
+  title: string;
+  needsFork: boolean;
+  delivery: QueuedTurnDelivery;
+}> = [
+  {
+    label: "Queue and fork",
+    title: "When reached, fork this session and send the message to the fork",
+    needsFork: true,
+    delivery: { kind: "fork" },
+  },
+  {
+    label: "Queue and fork in worktree",
+    title:
+      "When reached, fork this session into a fresh git worktree and send the message to the fork",
+    needsFork: true,
+    delivery: { kind: "fork", useWorktree: true },
+  },
+  {
+    label: "Queue in new session",
+    title: "When reached, start a fresh session in the same directory with this message",
+    needsFork: false,
+    delivery: { kind: "newSession" },
+  },
+];
 
 function waitFooterLabelWithShortcut(label: string, shortcutLabel?: string | null) {
   const quotedTitle = `"${waitFooterTitle(label)}"`;
@@ -268,8 +314,10 @@ export default function NativeInput({
   const hasTranscript = transcriptText.trim().length > 0;
   const hasSubmitValue = value.trim().length > 0;
   const sendDisabled = submitting || !canSend || !hasSubmitValue;
-  const waitDisabled =
-    submitting || agent.status === "failed" || !hasSubmitValue || waitTargets.length === 0;
+  // Delivery to a brand-new session only needs an adapter, which every agent has,
+  // so the queue dropdown no longer requires wait targets to exist.
+  const canQueueFork = agentCanFork(agent);
+  const waitDisabled = submitting || agent.status === "failed" || !hasSubmitValue;
   const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueuedTurns;
   const submitShortcutWouldTargetQueue =
     !submitShortcutWouldTargetSend && !submitting && canAppendQueue;
@@ -525,7 +573,12 @@ export default function NativeInput({
     }
   }
 
-  async function submitWaitTurn(target: WaitTarget) {
+  // Shared scaffolding for the queue-dropdown submits (wait targets and delivery
+  // options): close the popover, run the queue call with the trimmed composer
+  // text, and reflect the result in the composer.
+  async function submitQueuedFromPopover(
+    queue: (text: string) => Promise<SubmitAgentTurnResult>,
+  ) {
     if (submitting) {
       return;
     }
@@ -539,13 +592,7 @@ export default function NativeInput({
     onWaitTargetHover(null);
     setSubmitting(true);
     try {
-      const result = await queueWaitAgentTurn(
-        agent.id,
-        trimmed,
-        target.agentId,
-        target.paneId,
-        target.label,
-      );
+      const result = await queue(trimmed);
       onQueueChange(agent.id, result.queuedTurns);
       onTurnSubmitted(agent.id, trimmed, "queue");
       recordRecentMessage(trimmed);
@@ -556,6 +603,16 @@ export default function NativeInput({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function submitWaitTurn(target: WaitTarget) {
+    return submitQueuedFromPopover((text) =>
+      queueWaitAgentTurn(agent.id, text, target.agentId, target.paneId, target.label),
+    );
+  }
+
+  function submitDeliveryTurn(delivery: QueuedTurnDelivery) {
+    return submitQueuedFromPopover((text) => queueDeliveryAgentTurn(agent.id, text, delivery));
   }
 
   async function submitPermissionResponse(response: string) {
@@ -1055,6 +1112,11 @@ export default function NativeInput({
                     Pause after send
                   </div>
                 ) : null}
+                {turn.delivery ? (
+                  <div className="queued-turn-delivery-label" aria-hidden="true">
+                    {queuedTurnDeliveryLabel(turn.delivery)}
+                  </div>
+                ) : null}
                 {turn.waitFor ? (
                   <div
                     className="queued-turn-wait-label"
@@ -1331,12 +1393,8 @@ export default function NativeInput({
                 disabled={waitDisabled}
                 aria-haspopup="menu"
                 aria-expanded={waitOpen}
-                aria-label="Queue after"
-                title={
-                  waitTargets.length > 0
-                    ? "Queue this turn after another terminal is done"
-                    : "No other terminals are working"
-                }
+                aria-label="Queue options"
+                title="Queue this turn to a fork, a new session, or after another terminal"
                 onClick={() => {
                   setMenuOpen(false);
                   setWaitOpen((open) => !open);
@@ -1360,9 +1418,31 @@ export default function NativeInput({
                           : { left: -9999, top: -9999 }
                       }
                     >
-                      <div className="composer-menu-label wait-target-placeholder">
-                        Queue after existing session...
-                      </div>
+                      {QUEUE_DELIVERY_OPTIONS.map((option) => (
+                        <button
+                          key={option.label}
+                          type="button"
+                          role="menuitem"
+                          className="composer-menu-item"
+                          disabled={option.needsFork && !canQueueFork}
+                          title={
+                            option.needsFork && !canQueueFork
+                              ? FORK_REQUIREMENT_TITLE
+                              : option.title
+                          }
+                          onClick={() => void submitDeliveryTurn(option.delivery)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                      {waitTargets.length > 0 ? (
+                        <>
+                          <div className="composer-menu-divider" role="separator" />
+                          <div className="composer-menu-label wait-target-placeholder">
+                            Queue after existing session...
+                          </div>
+                        </>
+                      ) : null}
                       {waitTargets.map((target) => (
                         <button
                           key={target.agentId}
