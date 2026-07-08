@@ -168,7 +168,6 @@ import {
   clearAgentWorkingStatus,
   closeWorktreePane,
   confirmAppExit,
-  createGroup,
   createGroupWithFolder,
   forkAgent,
   getActiveTab,
@@ -2668,21 +2667,6 @@ export default function App() {
     }
   }
 
-  async function createGroupWithInitialShell(anchorGroup: GroupInfo | null) {
-    setError(null);
-    try {
-      const newGroup = await createGroup({
-        dir: anchorGroup?.dir ?? null,
-        afterGroupId: anchorGroup?.id ?? null,
-      });
-      setLauncherOpen(false);
-      await createInitialShellForGroup(newGroup.id);
-      await refreshGroups();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   async function createInitialShellForGroup(groupId: string) {
     const pane = await spawnShell(estimateInitialPaneSize(false), null, groupId);
     const orderedPanes = await panesWithNewTabInLaunchPosition(pane, groupId);
@@ -2716,7 +2700,21 @@ export default function App() {
     const anchorGroup = anchorGroupId
       ? (groupById.get(anchorGroupId) ?? fallbackGroup)
       : fallbackGroup;
-    await createGroupWithInitialShell(anchorGroup);
+    setError(null);
+    setFolderPickerStatus("Opening folder picker…");
+    try {
+      await waitForPaintedFrame();
+      const newGroup = await createGroupWithFolder(anchorGroup?.id ?? null);
+      if (!newGroup) {
+        return;
+      }
+      await createInitialShellForGroup(newGroup.id);
+      await refreshGroups();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFolderPickerStatus(null);
+    }
   }
 
   async function addShellPaneInGroup(groupId: string | null) {
@@ -6836,12 +6834,13 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
+              disabled={folderPickerStatus !== null}
               onClick={() => {
                 void createGroupFromSettingsMenu();
               }}
             >
               <Plus size={13} aria-hidden="true" />
-              <span>New Group</span>
+              <span>New group...</span>
             </button>
             <button
               type="button"
