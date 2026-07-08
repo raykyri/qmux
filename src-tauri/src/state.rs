@@ -417,6 +417,15 @@ fn wait_target_label_locked(model: &Model, target: &AgentInfo) -> Option<String>
         .or_else(|| target.model.clone())
 }
 
+/// Whether `ancestor` is `descendant` itself or one of its parent directories.
+/// Canonicalizes both best-effort (falling back to the literal path when a side can't be
+/// resolved, e.g. it doesn't exist) so symlinks and `.`/`..` can't defeat the check.
+fn path_is_ancestor_or_equal(ancestor: &std::path::Path, descendant: &std::path::Path) -> bool {
+    let ancestor = std::fs::canonicalize(ancestor).unwrap_or_else(|_| ancestor.to_path_buf());
+    let descendant = std::fs::canonicalize(descendant).unwrap_or_else(|_| descendant.to_path_buf());
+    descendant.starts_with(&ancestor)
+}
+
 fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait) -> bool {
     let Some(target) = model.agents.get(&wait_for.agent_id) else {
         // The target agent is gone entirely (e.g. its pane closed and the agent was
@@ -825,7 +834,17 @@ impl AppState {
             if let Some(group) = model.groups.get(&pane.info.group_id) {
                 roots.push(std::path::PathBuf::from(&group.dir));
             }
-            roots.push(std::path::PathBuf::from(&pane.info.cwd));
+            // Serve the pane's cwd so `qmux open ./file` resolves — but never when the cwd
+            // is the workspace root or an ancestor of it. `pane.set_cwd` accepts any
+            // existing absolute directory (a pane legitimately runs in arbitrary project
+            // dirs), so a pane that cd'd to `/`, `~`, or the workspace itself would
+            // otherwise widen its own file token to serve every other group's directory,
+            // all transcripts, and .qmux/state.json. The group dir and worktree (both
+            // inside a single group's area) stay served regardless.
+            let cwd = std::path::PathBuf::from(&pane.info.cwd);
+            if !path_is_ancestor_or_equal(&cwd, &self.inner.config.workspace_root) {
+                roots.push(cwd);
+            }
             for agent in model.agents.values() {
                 if agent.pane_id.as_deref() == Some(pane_id) {
                     roots.push(std::path::PathBuf::from(&agent.worktree_dir));
@@ -5534,6 +5553,37 @@ mod tests {
         let roots = state.pane_file_roots("pane-1");
         assert!(roots.iter().any(|r| r == proj_a.as_path()));
         assert!(!roots.iter().any(|r| r == proj_b.as_path()));
+    }
+
+    #[test]
+    fn pane_file_roots_exclude_a_cwd_at_or_above_the_workspace_root() {
+        let workspace = temp_workspace();
+        let workspace_parent = workspace.parent().unwrap().to_path_buf();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        // A pane that cd'd to an ancestor of the workspace (here its parent) must not turn
+        // its file token into a servable root over the whole workspace tree — that would
+        // expose every other group's directory and .qmux/state.json.
+        state
+            .update_pane_cwd("pane-1", workspace_parent.display().to_string())
+            .unwrap();
+        let roots = state.pane_file_roots("pane-1");
+        assert!(
+            !roots
+                .iter()
+                .any(|r| path_is_ancestor_or_equal(r, &workspace)),
+            "no served root should sit at or above the workspace root: {roots:?}"
+        );
+
+        // Setting it to the workspace root itself is likewise excluded.
+        state
+            .update_pane_cwd("pane-1", workspace.display().to_string())
+            .unwrap();
+        let roots = state.pane_file_roots("pane-1");
+        assert!(!roots.iter().any(|r| {
+            std::fs::canonicalize(r).ok() == std::fs::canonicalize(&workspace).ok()
+        }));
     }
 
     #[test]

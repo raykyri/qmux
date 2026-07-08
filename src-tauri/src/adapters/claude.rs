@@ -1378,14 +1378,9 @@ fn adopt_forked_session_identity(
 }
 
 fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bool {
-    let candidate = Path::new(candidate);
-    if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-        return false;
-    }
-    match current {
-        Some(current) => Path::new(current).parent() == candidate.parent(),
-        None => true,
-    }
+    // Single-sourced in the adapters module so the Claude inline callsite and the shared
+    // hook handling can never drift apart.
+    super::hook_transcript_path_acceptable(current, candidate)
 }
 
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {

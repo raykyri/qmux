@@ -40,15 +40,30 @@ pub(crate) fn shell_quote_arg(value: &str) -> String {
 /// prompt-injected agent can forge a `SessionStart` and point `transcript_path`
 /// at any file. We can't fully validate the *first* path (SessionStart is how
 /// qmux discovers it, and the agent may not have written the file yet), but we
-/// require a `.jsonl` extension, and once a transcript is bound we require any
-/// later path to be a sibling in the same session directory. Adapters keep a
-/// session's rollouts in one flat directory, so a legitimate rotation stays a
-/// sibling while a forged mid-session hook can no longer relocate the tail to an
-/// unrelated file (another agent's transcript, a device/FIFO, an arbitrary log).
-/// Mirrors the guard the Claude adapter applies inline.
+/// constrain it several ways: a `.jsonl` extension, an absolute path (a relative
+/// one would resolve against an unknown cwd), and — when the target already
+/// exists — a regular file, so a forged hook can't aim the tailer at a directory,
+/// a symlink, or a FIFO/device (which could block the tail thread). Once a
+/// transcript is bound we additionally require any later path to be a sibling in
+/// the same session directory. Adapters keep a session's rollouts in one flat
+/// directory, so a legitimate rotation stays a sibling while a forged mid-session
+/// hook can no longer relocate the tail to an unrelated file (another agent's
+/// transcript, a device/FIFO, an arbitrary log). The Claude adapter delegates
+/// here so the guard stays single-sourced.
 pub(crate) fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bool {
     let candidate = Path::new(candidate);
     if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return false;
+    }
+    if !candidate.is_absolute() {
+        return false;
+    }
+    // `symlink_metadata` does not follow the final component, so a symlink is seen as a
+    // symlink (not a regular file) and rejected. A path that doesn't exist yet is allowed
+    // through — the agent may not have written its transcript at SessionStart time.
+    if let Ok(meta) = std::fs::symlink_metadata(candidate)
+        && !meta.file_type().is_file()
+    {
         return false;
     }
     match current {
