@@ -322,12 +322,21 @@ button:disabled {
   border-left-width: var(--pane-tab-left-rail-width);
 }
 
-.pane-tab:hover,
-.pane-tab-row.is-wait-target-preview .pane-tab {
+.pane-tab:hover {
   /* A touch lighter than the sidebar rather than darker, so hover lifts off the
      panel — but kept below the selected fill so the two stay distinct. */
   --pane-tab-status-bg: rgba(27, 31, 33, 0.7);
   background: #1b1f21;
+}
+
+/* Hovering a queue-menu item previews its target tab: brighten close to the
+   selected fill and ring it with the same blue dotted border used on a queued
+   turn that waits on another tab, so the correspondence reads at a glance. */
+.pane-tab-row.is-wait-target-preview .pane-tab {
+  --pane-tab-status-bg: rgba(44, 49, 52, 0.7);
+  background: var(--control-bg-hover);
+  outline: 1px dotted rgba(109, 167, 236, 0.7);
+  outline-offset: -1px;
 }
 
 .pane-tab-row.is-selected .pane-tab {
