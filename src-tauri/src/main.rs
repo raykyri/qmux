@@ -533,6 +533,14 @@ fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), S
     kill_pane(&state, pane_id)
 }
 
+/// Records that `pane_id` is now the focused pane. Fired by the frontend whenever
+/// the active pane changes; feeds the recency signal that `group_spawn_cwd` uses to
+/// pick a spawn directory. Best-effort and cheap (in-memory stamp, no persist).
+#[tauri::command]
+fn pane_activate(state: tauri::State<'_, AppState>, pane_id: String) {
+    state.touch_pane_active(&pane_id);
+}
+
 #[tauri::command]
 fn pane_restore_last_closed(state: tauri::State<'_, AppState>) -> Result<Option<PaneInfo>, String> {
     recovery::restore_last_closed_pane(&state)
@@ -911,6 +919,7 @@ fn main() {
             pane_resize,
             pane_activity,
             pane_kill,
+            pane_activate,
             pane_restore_last_closed,
             pane_rename,
             pane_reorder,

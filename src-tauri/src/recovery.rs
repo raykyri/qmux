@@ -160,6 +160,7 @@ pub fn resume_recent_session(
         cols: size.cols,
         rows: size.rows,
         status: PaneStatus::Starting,
+        last_active_at: crate::state::now_millis(),
         recovered: false,
         depth: 0,
     };

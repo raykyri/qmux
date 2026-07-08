@@ -139,9 +139,25 @@ pub fn spawn_shell_pane(
             },
         )?,
     };
+    // Inherit the focused shell's cwd only when it belongs to the group we are
+    // spawning into ("new tab here"). When opening into a group from *outside* it,
+    // derive the cwd from that group's own most-recently-active shell pane instead
+    // of the foreign pane the user happened to be in. A brand-new group has no shell
+    // panes yet, so fall back to its creation-time seed dir (`group.dir`) — the
+    // directory the group was opened for — before the default home dir; otherwise the
+    // first terminal would land in ~ and every sibling would copy that.
     let cwd = source_pane_id
+        .filter(|&id| {
+            state
+                .pane_group_id(id)
+                .ok()
+                .flatten()
+                .is_some_and(|gid| gid == group.id)
+        })
         .and_then(|id| state.inheritable_shell_cwd(id))
-        .unwrap_or_else(|| PathBuf::from(&group.dir));
+        .or_else(|| state.group_spawn_cwd(&group.id))
+        .or_else(|| recoverable_dir(&group.dir))
+        .unwrap_or_else(|| state.default_open_dir());
     let pane_id = state.next_id("pane");
     spawn_pty(
         state,
@@ -166,7 +182,13 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     let resume_dir = resume
         .as_ref()
         .and_then(|resume| recoverable_dir(&resume.cwd));
-    let group_dir = state
+    // A recovered shell whose last dir was deleted between sessions reopens near the
+    // group's other work (its most-recently-active shell pane), else the group's
+    // creation-time seed dir, else the default dir / home rather than the bare `/` a
+    // Finder/Dock launch inherits. During startup recovery siblings may not be
+    // respawned yet, in which case group_spawn_cwd yields None and the seed/default
+    // apply.
+    let group_seed_dir = state
         .group(&pane.group_id)
         .ok()
         .flatten()
@@ -174,9 +196,8 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     let cwd = resume_dir
         .clone()
         .or_else(|| recoverable_dir(&pane.cwd))
-        .or(group_dir)
-        // A recovered shell whose last dir was deleted between sessions reopens in the
-        // group directory / home rather than the bare `/` a Finder/Dock launch inherits.
+        .or_else(|| state.group_spawn_cwd(&pane.group_id))
+        .or(group_seed_dir)
         .unwrap_or_else(|| state.default_open_dir());
     let resume_command = resume
         .filter(|_| resume_dir.is_some())
@@ -740,6 +761,10 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
         cols: initial_size.cols,
         rows: initial_size.rows,
         status: PaneStatus::Running,
+        // A freshly spawned pane is immediately the group's most-recent, so the next
+        // spawn into the group inherits its cwd even before the frontend's activation
+        // stamp round-trips. Every real pane (shell and agent) flows through here.
+        last_active_at: crate::state::now_millis(),
         recovered: spec.recovered,
         // Real depth is stamped from Model.pane_depth by ordered_panes; the runtime
         // copy is never consulted for it.

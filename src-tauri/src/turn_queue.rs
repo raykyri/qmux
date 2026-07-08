@@ -913,6 +913,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 status: PaneStatus::Running,
+                last_active_at: 0,
                 recovered: false,
                 depth: 0,
             },

@@ -363,6 +363,12 @@ export function killPane(paneId: string) {
   return invoke<void>("pane_kill", { paneId });
 }
 
+// Records the focused pane so the backend can pick a group's most-recently-active
+// shell pane when resolving a spawn cwd. Best-effort; failures are ignored.
+export function activatePane(paneId: string) {
+  return invoke<void>("pane_activate", { paneId });
+}
+
 export function restoreLastClosedPane() {
   return invoke<PaneInfo | null>("pane_restore_last_closed");
 }

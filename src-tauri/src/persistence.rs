@@ -755,6 +755,7 @@ mod tests {
             cols: 120,
             rows: 40,
             status: PaneStatus::Running,
+            last_active_at: 0,
             recovered: false,
             depth: 0,
         }

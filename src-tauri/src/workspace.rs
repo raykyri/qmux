@@ -222,9 +222,18 @@ pub fn prepare_agent_workspace(
 
     let agent_id = state.next_id("agent");
     let agent_name = format!("agent-{}", group.agents.len() + 1);
+    // An agent roots at its explicit base_repo, else the group's base_repo hint, else
+    // the group's advisory cwd (its most-recently-active shell pane), else the group's
+    // creation-time seed dir, else the default dir. Groups are not directory-scoped,
+    // so the seed is only a fallback for a group with no shell panes yet.
     let base_repo = request
         .base_repo
         .or_else(|| group.base_repo.clone())
+        .or_else(|| {
+            state
+                .group_spawn_cwd(&group.id)
+                .map(|dir| dir.display().to_string())
+        })
         .or_else(|| Some(group.dir.clone()));
     let base_ref = request
         .base_ref
@@ -252,7 +261,8 @@ pub fn prepare_agent_workspace(
         dir.display().to_string()
     } else {
         // Default: no worktree — the agent runs directly in the base repo / cwd.
-        base_repo.unwrap_or_else(|| group.dir.clone())
+        // base_repo is always Some by construction above; the tail is belt-and-braces.
+        base_repo.unwrap_or_else(|| state.default_open_dir().display().to_string())
     };
 
     let agent = AgentInfo {

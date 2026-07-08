@@ -175,6 +175,7 @@ import {
   getLauncherAdapterPreference,
   getAgentDraft,
   getShowHideShortcut,
+  activatePane,
   getRuntimeConfig,
   generateFoundationTabTitle,
   killPane,
@@ -2402,7 +2403,7 @@ export default function App() {
 
     const snapshotGroups = groups.map((group) => ({
       id: group.id,
-      label: group.nameOverride?.trim() || middleTruncatePath(formatPaneDir(group.dir)),
+      label: group.nameOverride?.trim() || middleTruncatePath(formatPaneDir(groupRootDir(group))),
       tabs: panes.filter((pane) => pane.groupId === group.id).map(tabForPane),
     }));
     const orphanTabs = panes.filter((pane) => !groupedPaneIds.has(pane.id)).map(tabForPane);
@@ -2587,9 +2588,24 @@ export default function App() {
     return `…${tail.slice(-Math.max(4, maxChars - 1))}`;
   }
 
+  // The directory a group's default title reflects: its root terminal (the first,
+  // oldest shell pane in the group), falling back to the group's creation-time seed
+  // dir when the group has no shell pane yet (empty, or agent-only — whose worktree
+  // dirs shouldn't name the group). Groups are advisory, so the title tracks where
+  // the group's work is rooted rather than a fixed stored directory, and is stable
+  // against focus changes. Reactive: a cd in the root terminal patches panes[].cwd
+  // (pane.cwd_changed), and closing it promotes the next shell — both re-derive here.
+  function groupRootDir(group: GroupInfo): string {
+    const rootShell = panes.find(
+      (pane) => pane.groupId === group.id && pane.kind === "shell",
+    );
+    return rootShell?.cwd || group.dir;
+  }
+
   function defaultGroupName(group: GroupInfo): string {
-    const base = group.dir.split("/").filter(Boolean).pop();
-    return base && base.length > 0 ? base : formatPaneDir(group.dir);
+    const dir = groupRootDir(group);
+    const base = dir.split("/").filter(Boolean).pop();
+    return base && base.length > 0 ? base : formatPaneDir(dir);
   }
 
   function displayGroupName(group: GroupInfo): string {
@@ -3463,6 +3479,16 @@ export default function App() {
     if (selectedRow) {
       scrollChildIntoViewVertically(paneList, selectedRow);
     }
+  }, [activePaneId]);
+
+  // Report the focused pane to the backend so it can stamp `last_active_at`, which
+  // feeds the group's spawn-cwd heuristic (most-recently-active shell pane). One
+  // effect for every setActivePaneId call site; the Home tab is not a real pane.
+  useEffect(() => {
+    if (!activePaneId || activePaneId === HOME_TAB_ID) {
+      return;
+    }
+    void activatePane(activePaneId).catch(() => {});
   }, [activePaneId]);
 
   useEffect(() => {
@@ -6647,6 +6673,7 @@ export default function App() {
             const isActiveGroup = activePane?.groupId === group.id;
             const isCollapsedGroup = group.collapsed;
             const groupDisplayName = displayGroupName(group);
+            const groupRootPath = groupRootDir(group);
             const groupDropGap = groupDropTarget?.index ?? null;
             const collapsedStatusAgents = isCollapsedGroup
               ? collapsedGroupStatusAgents(groupPanes)
@@ -6668,7 +6695,7 @@ export default function App() {
               >
                 <div
                   className="pane-group-header"
-                  title={group.dir}
+                  title={groupRootPath}
                   onPointerDown={(event) => handleGroupHeaderPointerDown(event, group.id)}
                   onPointerMove={handleGroupHeaderPointerMove}
                   onPointerUp={handleGroupHeaderPointerUp}

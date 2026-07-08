@@ -36,6 +36,9 @@ export interface PaneInfo {
   cols: number;
   rows: number;
   status: "starting" | "running" | "exited" | "killed" | "failed";
+  // Wall-clock millis when the pane was last focused. Stamped by the backend at
+  // spawn and on activation; feeds the group spawn-cwd heuristic.
+  lastActiveAt?: number;
   // True for panes recreated from persisted state after a qmux restart.
   recovered?: boolean;
   // Sidebar nesting depth (0 = root). Stamped by the backend.

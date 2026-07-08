@@ -526,6 +526,12 @@ pub struct PaneInfo {
     pub cols: u16,
     pub rows: u16,
     pub status: PaneStatus,
+    /// Wall-clock millis when this pane was last focused. Stamped at spawn and on
+    /// every activation (`touch_pane_active`); consulted to pick a group's
+    /// most-recently-active shell pane when resolving a spawn cwd. `#[serde(default)]`
+    /// so pre-existing persisted state loads as 0 ("least recent until first focus").
+    #[serde(default)]
+    pub last_active_at: u128,
     /// True for panes recreated from persisted state on restart. Set at respawn
     /// time only; the persisted value is never consulted when reloading.
     #[serde(default)]
@@ -672,6 +678,44 @@ impl AppState {
         }
         let cwd = std::path::PathBuf::from(&pane.info.cwd);
         cwd.is_dir().then_some(cwd)
+    }
+
+    /// The advisory cwd for spawning into `group_id`: the live cwd of the group's
+    /// most-recently-active shell pane. Groups are not directory-scoped, so this
+    /// derives a sensible spawn directory from where work in the group actually is,
+    /// rather than a stored group directory. Only shell panes with a still-existing
+    /// cwd count (agent panes are rooted in worktrees; a stale dir is unusable), so
+    /// an empty group — or one holding only agent panes — yields `None` and the
+    /// caller falls back to `default_open_dir`. Ties on `last_active_at` (e.g. two
+    /// panes stamped in the same millisecond) resolve arbitrarily; the recency
+    /// signal is advisory.
+    pub fn group_spawn_cwd(&self, group_id: &str) -> Option<std::path::PathBuf> {
+        let model = self.inner.model.lock().ok()?;
+        model
+            .panes
+            .values()
+            .filter(|pane| pane.info.group_id == group_id)
+            .filter(|pane| matches!(pane.info.kind, PaneKind::Shell))
+            .filter_map(|pane| {
+                let cwd = std::path::PathBuf::from(&pane.info.cwd);
+                cwd.is_dir().then_some((pane.info.last_active_at, cwd))
+            })
+            .max_by_key(|(last_active_at, _)| *last_active_at)
+            .map(|(_, cwd)| cwd)
+    }
+
+    /// Stamps `pane_id` as the most-recently-focused pane. Called on every
+    /// activation from the frontend, so it must stay cheap: it mutates in memory
+    /// only and deliberately does not `persist()` (a disk write per focus would be a
+    /// write storm) nor emit an event (nothing renders off this yet). The fresh
+    /// timestamp rides along on the next persist triggered by other activity; losing
+    /// the last few stamps to a crash only nudges the spawn-cwd heuristic.
+    pub fn touch_pane_active(&self, pane_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock() {
+            if let Some(pane) = model.panes.get_mut(pane_id) {
+                pane.info.last_active_at = now_millis();
+            }
+        }
     }
 
     /// Whether shells should run as login shells (sourcing the user's login
@@ -3049,7 +3093,7 @@ fn shell_agent_resume(agent: &AgentInfo) -> Option<ShellAgentResume> {
     })
 }
 
-fn now_millis() -> u128 {
+pub(crate) fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -3798,6 +3842,7 @@ mod tests {
             cols: 132,
             rows: 43,
             status: PaneStatus::Running,
+            last_active_at: 0,
             recovered: false,
             depth: 0,
         }
@@ -4685,6 +4730,52 @@ mod tests {
                 .is_err()
         );
         assert_eq!(state.list_panes().unwrap()[0].cwd, real_dir);
+    }
+
+    #[test]
+    fn group_spawn_cwd_prefers_most_recent_shell_pane() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+
+        let base = std::env::temp_dir().join(format!("qmux-gsc-{}", std::process::id()));
+        let dir_old = base.join("old");
+        let dir_new = base.join("new");
+        let dir_agent = base.join("agent");
+        for dir in [&dir_old, &dir_new, &dir_agent] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        let mut older = sample_pane_runtime("pane-old");
+        older.info.group_id = "group-1".to_string();
+        older.info.cwd = dir_old.display().to_string();
+        older.info.last_active_at = 100;
+        state.insert_pane(older).unwrap();
+
+        let mut newer = sample_pane_runtime("pane-new");
+        newer.info.group_id = "group-1".to_string();
+        newer.info.cwd = dir_new.display().to_string();
+        newer.info.last_active_at = 200;
+        state.insert_pane(newer).unwrap();
+
+        // A more-recently-active agent pane is ignored: it is worktree-rooted, not a
+        // shell, so it must never steer a new spawn's cwd.
+        let mut agent = sample_pane_runtime("pane-agent");
+        agent.info.group_id = "group-1".to_string();
+        agent.info.kind = PaneKind::Agent;
+        agent.info.agent_id = Some("agent-1".to_string());
+        agent.info.cwd = dir_agent.display().to_string();
+        agent.info.last_active_at = 300;
+        state.insert_pane(agent).unwrap();
+
+        // The most-recently-active shell pane wins.
+        assert_eq!(state.group_spawn_cwd("group-1"), Some(dir_new));
+
+        // touch_pane_active re-stamps the older pane as most recent → it now wins.
+        state.touch_pane_active("pane-old");
+        assert_eq!(state.group_spawn_cwd("group-1"), Some(dir_old));
+
+        // A group with no shell panes (or no panes at all) yields None.
+        assert_eq!(state.group_spawn_cwd("group-empty"), None);
     }
 
     #[test]
