@@ -3,6 +3,5 @@ dist/
 target/
 src-tauri/target/
 src-tauri/gen/
-.qmux/
 .claude/
 .DS_Store
