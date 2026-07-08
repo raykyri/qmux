@@ -20,6 +20,12 @@ import type { AgentInfo, GroupInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, T
 // export stays complete for any realistic session.
 const MAX_HOOK_EVENTS_PER_AGENT = 2000;
 
+// Mirror the backend's per-agent turn cap (MAX_TURNS_PER_AGENT in state.rs). The
+// backend only ever holds the most recent N turns per agent, but the frontend
+// appended to its global turns array forever — a long-lived session grew memory and
+// per-render cost without bound. Keep the newest N per agent to match.
+const MAX_TURNS_PER_AGENT = 200;
+
 // The backend event stream drives most of the app's live state. This hook owns
 // the single global subscription: it is intentionally set up once (empty deps),
 // so every callback it touches is passed in and captured at first render,
@@ -282,9 +288,29 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (event.type === "turn.appended") {
         const turn = event.payload.turn;
         if (isTurn(turn)) {
-          setTurns((current) =>
-            current.some((existing) => existing.id === turn.id) ? current : [...current, turn],
-          );
+          setTurns((current) => {
+            if (current.some((existing) => existing.id === turn.id)) {
+              return current;
+            }
+            const next = [...current, turn];
+            const agentTurnCount = next.reduce(
+              (count, existing) => (existing.agentId === turn.agentId ? count + 1 : count),
+              0,
+            );
+            if (agentTurnCount <= MAX_TURNS_PER_AGENT) {
+              return next;
+            }
+            // Over the cap: drop the oldest turns for this agent (the earliest matches in
+            // arrival order) so the global array can't grow without bound.
+            let toDrop = agentTurnCount - MAX_TURNS_PER_AGENT;
+            return next.filter((existing) => {
+              if (toDrop > 0 && existing.agentId === turn.agentId) {
+                toDrop -= 1;
+                return false;
+              }
+              return true;
+            });
+          });
         }
       }
       if (event.type === "turn.updated" && event.payload.reset) {
