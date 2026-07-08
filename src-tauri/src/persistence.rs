@@ -102,6 +102,12 @@ pub struct AppPreferences {
     /// shortcut is registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_hide_shortcut: Option<String>,
+    /// OpenRouter API key used for tab-title generation. Kept here — in the
+    /// owner-only (0600) preferences file — rather than in webview localStorage,
+    /// so the secret isn't sitting in a store any injected script could read at
+    /// rest. Absent means no key is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_router_key: Option<String>,
 }
 
 pub fn preferences_path(workspace_root: &Path) -> PathBuf {
@@ -718,6 +724,37 @@ mod tests {
             load_preferences(&root).unwrap().launcher_adapter_id,
             Some("codex".to_string())
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preferences_round_trip_open_router_key() {
+        let root = temp_root();
+        // Absent in a fresh preferences file (no key configured).
+        assert_eq!(load_preferences(&root).unwrap().open_router_key, None);
+
+        save_preferences(
+            &root,
+            &AppPreferences {
+                open_router_key: Some("sk-or-secret".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_preferences(&root).unwrap().open_router_key,
+            Some("sk-or-secret".to_string())
+        );
+
+        // The preferences file that holds the key is written owner-only (0600), so the
+        // secret at rest isn't world/group readable.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(preferences_path(&root))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "preferences file must not be group/other readable");
         fs::remove_dir_all(root).unwrap();
     }
 

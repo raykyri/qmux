@@ -37,6 +37,16 @@ export function setLauncherAdapterPreference(adapterId: string) {
   return invoke<void>("launcher_adapter_preference_set", { adapterId });
 }
 
+// The OpenRouter API key lives in the backend's owner-only preferences file, not in
+// webview localStorage, so the secret isn't readable at rest by injected scripts.
+export function getOpenRouterKey() {
+  return invoke<string>("openrouter_key_get");
+}
+
+export function setOpenRouterKey(key: string) {
+  return invoke<void>("openrouter_key_set", { key });
+}
+
 export function getActiveTab() {
   return invoke<string | null>("active_tab_get");
 }

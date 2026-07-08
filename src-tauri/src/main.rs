@@ -143,6 +143,29 @@ fn launcher_adapter_preference_get(
     Ok(persistence::load_preferences(&state.config().workspace_root)?.launcher_adapter_id)
 }
 
+/// Returns the stored OpenRouter API key (empty string when none is set). Kept in the
+/// owner-only preferences file rather than webview localStorage — see AppPreferences.
+#[tauri::command]
+fn openrouter_key_get(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    Ok(persistence::load_preferences(&state.config().workspace_root)?
+        .open_router_key
+        .unwrap_or_default())
+}
+
+/// Persists the OpenRouter API key. An empty/whitespace key clears it.
+#[tauri::command]
+fn openrouter_key_set(state: tauri::State<'_, AppState>, key: String) -> Result<(), String> {
+    let workspace_root = &state.config().workspace_root;
+    let mut preferences = persistence::load_preferences(workspace_root).unwrap_or_default();
+    let trimmed = key.trim();
+    preferences.open_router_key = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+    persistence::save_preferences(workspace_root, &preferences)
+}
+
 #[tauri::command]
 fn launcher_adapter_preference_set(
     state: tauri::State<'_, AppState>,
@@ -922,6 +945,8 @@ fn main() {
             get_runtime_config,
             launcher_adapter_preference_get,
             launcher_adapter_preference_set,
+            openrouter_key_get,
+            openrouter_key_set,
             active_tab_get,
             active_tab_set,
             open_external_url,

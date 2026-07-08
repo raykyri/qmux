@@ -125,7 +125,13 @@ export interface AppSettings {
   reduceMotion: boolean;
   /** provider used to summarize first user messages into tab titles */
   tabTitleProvider: TabTitleProvider;
-  /** OpenRouter API key */
+  /**
+   * OpenRouter API key. Held in memory for the session but NOT persisted to
+   * localStorage (saveSettings strips it) — the durable copy lives in the
+   * backend's owner-only preferences file, loaded/saved via the openrouter_key_*
+   * commands. A key found in a pre-existing localStorage blob is still read here
+   * once so it can be migrated to the backend.
+   */
   openRouterKey: string;
   /** OpenRouter model id */
   openRouterModel: string;
@@ -411,7 +417,11 @@ export function loadSettings(): AppSettings {
  */
 export function saveSettings(settings: AppSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    // Never persist the OpenRouter key to localStorage: it lives in the backend's
+    // owner-only preferences file instead, so an injected script can't read the secret
+    // out of webview storage at rest.
+    const { openRouterKey: _omitted, ...persistable } = settings;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
   } catch {
     // Storage unavailable; preferences remain in-memory for this session only.
   }

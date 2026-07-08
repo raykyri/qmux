@@ -174,6 +174,8 @@ import {
   getActiveTab,
   getPaneSplits,
   getLauncherAdapterPreference,
+  getOpenRouterKey,
+  setOpenRouterKey,
   getAgentDraft,
   getShowHideShortcut,
   activatePane,
@@ -1003,6 +1005,9 @@ export default function App() {
   // generation was superseded drops its stale response instead of clobbering newer
   // state. Mirrors the pane/group reorder seq guards.
   const agentTurnQueueSeqRef = useRef<Record<string, number>>({});
+  // Set once the OpenRouter key has been loaded from the backend, so the
+  // persist-on-change effect doesn't push the pre-hydration in-memory value back.
+  const openRouterKeyHydratedRef = useRef(false);
   const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
   const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
@@ -3361,6 +3366,7 @@ export default function App() {
           existingPaneSplits,
           existingAgents,
           existingTurns,
+          storedOpenRouterKey,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
@@ -3370,10 +3376,27 @@ export default function App() {
           getPaneSplits().catch((): PaneSplitInfo[] => []),
           listAgents(),
           listTurns(),
+          getOpenRouterKey().catch(() => ""),
         ]);
         if (cancelled) {
           return;
         }
+
+        // Hydrate the OpenRouter key from the backend (its durable home). If the backend
+        // has none but a key survives in an old localStorage settings blob, migrate that
+        // value into the backend once; either way the in-memory settings track the key.
+        setSettings((current) => {
+          const backendKey = storedOpenRouterKey.trim();
+          const migratedKey = current.openRouterKey.trim();
+          const effectiveKey = backendKey || migratedKey;
+          if (!backendKey && migratedKey) {
+            void setOpenRouterKey(migratedKey).catch(() => undefined);
+          }
+          openRouterKeyHydratedRef.current = true;
+          return current.openRouterKey === effectiveKey
+            ? current
+            : { ...current, openRouterKey: effectiveKey };
+        });
 
         setConfig(runtimeConfig);
         setGroups(existingGroups);
@@ -5214,6 +5237,16 @@ export default function App() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  // Persist the OpenRouter key to the backend (its durable, owner-only home) whenever it
+  // changes — but only after it has been hydrated from the backend, so the initial
+  // in-memory value doesn't clobber the stored key before boot loads it.
+  useEffect(() => {
+    if (!openRouterKeyHydratedRef.current) {
+      return;
+    }
+    void setOpenRouterKey(settings.openRouterKey).catch(() => undefined);
+  }, [settings.openRouterKey]);
 
   useEffect(() => {
     titleGenerationTestSeqRef.current += 1;
