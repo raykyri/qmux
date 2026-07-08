@@ -251,6 +251,13 @@ const HOME_TAB_ID = "__home__";
 // How long after the user's last keystroke we keep holding the queue before letting a
 // finished turn auto-send the next queued message.
 const INPUT_DEQUEUE_HOLD_MS = 1500;
+
+// Bounded retry for releasing a pane's output backlog (attachPane). A failure would
+// otherwise leave the terminal blank forever, so retry with backoff to ride out a
+// transient race (e.g. the pane not yet visible to the backend) before giving up.
+const ATTACH_MAX_RETRIES = 4;
+const ATTACH_INITIAL_RETRY_MS = 150;
+const ATTACH_MAX_RETRY_MS = 2000;
 // Short grace period for selection popup closes: rapid re-selection should move the
 // popup instead of flashing it out and back in.
 const SELECTION_ASK_HIDE_DEBOUNCE_MS = 150;
@@ -3548,25 +3555,57 @@ export default function App() {
     terminalPaneRefs.current.get(paneId)?.write(data);
   }, []);
 
+  // Flushes a pane's pre-attach output backlog, retrying on failure. attachPane is
+  // idempotent (a repeat call is a no-op once the pane is already flushed), so retrying
+  // can't double-deliver output. A silently-swallowed failure here used to leave the
+  // terminal blank with no backlog and no recovery; instead we retry with backoff to
+  // ride out a transient race, and surface a persistent failure — but only when the pane
+  // is still open, since a pane that closed in the meantime failing to attach is expected.
+  const attachPaneWithRetry = useCallback((paneId: string) => {
+    const attempt = (remaining: number, delayMs: number) => {
+      void attachPane(paneId).catch((err) => {
+        if (remaining <= 0) {
+          const stillOpen = panesRef.current.some((pane) => pane.id === paneId);
+          console.error(
+            `qmux: failed to attach pane ${paneId}${stillOpen ? "" : " (pane already closed)"}:`,
+            err,
+          );
+          if (stillOpen) {
+            setError("A terminal couldn't finish loading its output — reselect the tab to retry.");
+          }
+          return;
+        }
+        window.setTimeout(
+          () => attempt(remaining - 1, Math.min(delayMs * 2, ATTACH_MAX_RETRY_MS)),
+          delayMs,
+        );
+      });
+    };
+    attempt(ATTACH_MAX_RETRIES, ATTACH_INITIAL_RETRY_MS);
+  }, []);
+
   // Releases a pane's pre-attach output backlog. While the backend subscription is
   // still being set up, the request is parked and flushed by handleEventsReady, so
   // no cold-start output is delivered before a listener exists to receive it.
-  const requestPaneAttach = useCallback((paneId: string) => {
-    if (eventsReadyRef.current) {
-      void attachPane(paneId).catch(() => undefined);
-    } else {
-      pendingAttachRef.current.add(paneId);
-    }
-  }, []);
+  const requestPaneAttach = useCallback(
+    (paneId: string) => {
+      if (eventsReadyRef.current) {
+        attachPaneWithRetry(paneId);
+      } else {
+        pendingAttachRef.current.add(paneId);
+      }
+    },
+    [attachPaneWithRetry],
+  );
 
   const handleEventsReady = useCallback(() => {
     eventsReadyRef.current = true;
     const pending = pendingAttachRef.current;
     pendingAttachRef.current = new Set();
     for (const paneId of pending) {
-      void attachPane(paneId).catch(() => undefined);
+      attachPaneWithRetry(paneId);
     }
-  }, []);
+  }, [attachPaneWithRetry]);
 
   function savePaneSplits(nextSplits: PaneSplitInfo[], paneSnapshot = panes) {
     const normalized = normalizePaneSplitsForPanes(nextSplits, paneSnapshot);
