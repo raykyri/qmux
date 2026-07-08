@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(qmux_foundation_models)");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+    println!("cargo:rerun-if-env-changed=QMUX_REQUIRE_FOUNDATION_MODELS");
     build_foundation_title_bridge();
     tauri_build::build();
 }
@@ -94,14 +95,18 @@ fn build_foundation_title_bridge() {
         failures.join("; ")
     };
     let message = format!("Apple Foundation Models tab-title bridge disabled: {details}");
-    if is_release_build() {
+    if foundation_models_required() {
         panic!("{message}");
     }
     println!("cargo:warning={message}");
 }
 
-fn is_release_build() -> bool {
-    env::var("PROFILE").ok().as_deref() == Some("release")
+/// The bridge is optional by default so builds work without a Swift toolchain.
+/// Official release builds (scripts/build.sh) set QMUX_REQUIRE_FOUNDATION_MODELS=1
+/// so a shipped bundle can't silently lose tab-title generation.
+fn foundation_models_required() -> bool {
+    env::var("QMUX_REQUIRE_FOUNDATION_MODELS")
+        .is_ok_and(|value| !value.trim().is_empty() && value.trim() != "0")
 }
 
 fn swift_target_triple(deployment_target: &str) -> String {

@@ -209,6 +209,51 @@ fn shell_resume_command(state: &AppState, resume: &ShellAgentResume) -> Option<S
         .shell_resume_command(&resume.session_id)
 }
 
+/// The shell for new panes: `$SHELL` when set (terminal launches), else the
+/// user's login shell from the password database (GUI launches don't inherit
+/// `SHELL`), else a platform default.
+fn pane_shell() -> String {
+    if let Ok(shell) = env::var("SHELL")
+        && !shell.trim().is_empty()
+    {
+        return shell;
+    }
+    if let Some(shell) = passwd_login_shell() {
+        return shell;
+    }
+    let fallback = if cfg!(target_os = "macos") {
+        "/bin/zsh"
+    } else {
+        "/bin/sh"
+    };
+    fallback.to_string()
+}
+
+/// Reads the current user's login shell from the password database via the
+/// reentrant `getpwuid_r` (pane spawns can run concurrently on command threads).
+fn passwd_login_shell() -> Option<String> {
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = [0 as libc::c_char; 1024];
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() || pwd.pw_shell.is_null() {
+        return None;
+    }
+    let shell = unsafe { std::ffi::CStr::from_ptr(pwd.pw_shell) }
+        .to_str()
+        .ok()?
+        .trim();
+    (!shell.is_empty()).then(|| shell.to_string())
+}
+
 /// Builds the spawn spec for a shell pane, including adapter wrapper-function
 /// injection. Shared by fresh spawns and recovery respawns so both stay in sync.
 fn shell_spawn_spec(
@@ -220,7 +265,7 @@ fn shell_spawn_spec(
     recovered: bool,
     resume_command: Option<String>,
 ) -> Result<PtySpawnSpec, String> {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let shell = pane_shell();
     let mut envs = shell_pane_envs(state, &pane_id)?;
     let mut args = Vec::new();
     let mut skip_scrollback_restore = false;
@@ -1363,6 +1408,17 @@ mod tests {
     use std::io;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn passwd_login_shell_resolves_for_current_user() {
+        let shell = passwd_login_shell().expect("current user should have a passwd entry");
+        assert!(shell.starts_with('/'), "expected an absolute path: {shell}");
+    }
+
+    #[test]
+    fn pane_shell_is_never_empty() {
+        assert!(!pane_shell().is_empty());
+    }
 
     #[derive(Default)]
     struct RecordingWriter {

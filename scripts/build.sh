@@ -3,6 +3,10 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 
+# Shipped bundles must include the Foundation Models tab-title bridge; without
+# this the bridge is optional and a missing Swift toolchain only warns.
+export QMUX_REQUIRE_FOUNDATION_MODELS=1
+
 "$script_dir/cleanup-tauri-dmg.sh"
 
 finder_layout_failed=0
