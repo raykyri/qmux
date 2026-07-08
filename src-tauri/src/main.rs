@@ -189,28 +189,27 @@ fn notify_fatal_startup(message: &str) {
 #[cfg(not(target_os = "macos"))]
 fn notify_fatal_startup(_message: &str) {}
 
-/// Shows the native macOS folder chooser via `osascript` and returns the selected
-/// POSIX path, or `None` when the user cancels. Hand-rolled (cf. the login-shell PATH
-/// probe in launch_path.rs) to avoid pulling in a dialog plugin; macOS-only, matching
-/// the app's target.
-fn pick_folder_dialog() -> Result<Option<String>, String> {
-    // `tell me to activate` pulls the chooser to the foreground; `choose folder`
-    // returns an alias whose POSIX path we print. Cancelling raises error -128, which
-    // surfaces as a non-zero exit with empty stdout — reported as `None` (no error) so
-    // a cancel is silent.
-    let script = "tell me to activate\n\
-        set chosenFolder to choose folder with prompt \"Select the group directory\"\n\
-        POSIX path of chosenFolder";
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|err| format!("failed to launch folder chooser: {err}"))?;
-    if !output.status.success() {
-        return Ok(None);
+/// Shows the native folder chooser in-process and returns the selected path, or
+/// `None` when the user cancels. Blocks the calling thread, so callers must be
+/// `#[tauri::command(async)]` (the panel itself is dispatched to the main thread
+/// by the plugin).
+fn pick_folder_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Select the group directory");
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!path.is_empty()).then_some(path))
+    match dialog.blocking_pick_folder() {
+        Some(path) => path
+            .into_path()
+            .map(|p| Some(p.to_string_lossy().into_owned()))
+            .map_err(|err| format!("folder chooser returned an unusable path: {err}")),
+        None => Ok(None),
+    }
 }
 
 /// Opens a URL in the user's default external browser (or mail client). Only
@@ -366,10 +365,11 @@ fn group_set_collapsed(
 
 #[tauri::command(async)]
 fn group_create_pick(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     after_group_id: Option<String>,
 ) -> Result<Option<GroupInfo>, String> {
-    match pick_folder_dialog()? {
+    match pick_folder_dialog(&app)? {
         Some(path) => create_group(
             &state,
             CreateGroupRequest {
@@ -387,10 +387,11 @@ fn group_create_pick(
 
 #[tauri::command(async)]
 fn group_pick_dir(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     group_id: String,
 ) -> Result<Option<GroupInfo>, String> {
-    match pick_folder_dialog()? {
+    match pick_folder_dialog(&app)? {
         Some(path) => set_group_dir(&state, &group_id, path).map(Some),
         None => Ok(None),
     }
@@ -770,6 +771,7 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(show_hide_shortcut::handle_global_shortcut)
