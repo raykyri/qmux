@@ -174,4 +174,4 @@ subdirectory of the data directory, for the control socket.
 
 ## License
 
-AGPL-V3 (C) 2026
+MIT (C) 2026
