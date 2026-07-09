@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     println!("cargo:rerun-if-env-changed=QMUX_REQUIRE_FOUNDATION_MODELS");
+    println!("cargo:rerun-if-env-changed=QMUX_ALLOW_MISSING_FOUNDATION_MODELS");
     build_foundation_title_bridge();
     tauri_build::build();
 }
@@ -101,12 +102,33 @@ fn build_foundation_title_bridge() {
     println!("cargo:warning={message}");
 }
 
-/// The bridge is optional by default so builds work without a Swift toolchain.
-/// Official release builds (scripts/build.sh) set QMUX_REQUIRE_FOUNDATION_MODELS=1
-/// so a shipped bundle can't silently lose tab-title generation.
+/// Whether a missing Swift bridge should fail the build rather than just warn.
+///
+/// Fail-closed on release by default: any release build (not only `scripts/build.sh`)
+/// must ship the bridge, so a bundle produced by a plain `cargo tauri build` or a new
+/// CI job can't silently lose tab-title generation. Debug builds stay optional so a
+/// checkout without a Swift toolchain still compiles.
+///
+/// `QMUX_REQUIRE_FOUNDATION_MODELS=1` forces it on for any profile (belt-and-suspenders
+/// for the release script); `QMUX_ALLOW_MISSING_FOUNDATION_MODELS=1` is the opt-out for
+/// a contributor who needs a local release build without a Swift toolchain.
 fn foundation_models_required() -> bool {
-    env::var("QMUX_REQUIRE_FOUNDATION_MODELS")
-        .is_ok_and(|value| !value.trim().is_empty() && value.trim() != "0")
+    if env_flag_enabled("QMUX_REQUIRE_FOUNDATION_MODELS") {
+        return true;
+    }
+    if env_flag_enabled("QMUX_ALLOW_MISSING_FOUNDATION_MODELS") {
+        return false;
+    }
+    is_release_build()
+}
+
+fn is_release_build() -> bool {
+    env::var("PROFILE").ok().as_deref() == Some("release")
+}
+
+/// True when an env var is set to a non-empty value other than `0`.
+fn env_flag_enabled(name: &str) -> bool {
+    env::var(name).is_ok_and(|value| !value.trim().is_empty() && value.trim() != "0")
 }
 
 fn swift_target_triple(deployment_target: &str) -> String {
