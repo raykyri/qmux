@@ -1044,10 +1044,6 @@ impl AppState {
     /// Snapshots the model to disk when persistence is enabled. Best-effort: a
     /// failed write is logged but never propagated, so it cannot break a mutation.
     fn persist(&self) {
-        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
-            return;
-        }
-
         // Hold the persist lock across snapshot + write + rename so concurrent
         // persists commit in snapshot order. The snapshot must be taken *inside*
         // the lock: otherwise two threads could snapshot as S1,S2 but acquire the
@@ -1060,6 +1056,24 @@ impl AppState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
+        // Check the enabled flag *under the lock*, not before it. A persist that read
+        // the flag before locking could pass the check, block on the lock while
+        // `finalize_persistence_for_exit` writes the final snapshot and clears the
+        // flag, then wake and snapshot a model that `kill_all_panes` has since
+        // stripped — overwriting the final state with the tabs deleted. Reading the
+        // flag here means such a persist observes the cleared flag and bails.
+        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        self.persist_snapshot_locked();
+    }
+
+    /// Snapshots the model and writes it to disk. Assumes the caller holds
+    /// `persist_lock`; does not consult `persist_enabled`. Shared by `persist` (which
+    /// gates on the flag) and `finalize_persistence_for_exit` (which writes the final
+    /// snapshot before clearing the flag, both under the lock).
+    fn persist_snapshot_locked(&self) {
         let snapshot = {
             let Ok(model) = self.inner.model.lock() else {
                 return;
@@ -1091,14 +1105,23 @@ impl AppState {
     }
 
     /// Called once when the process is really exiting, before exit-time pane
-    /// teardown. Commits a final snapshot (serialized behind any in-flight persist
-    /// by the persist lock), then disables persistence for good: `kill_all_panes`
-    /// is about to take down every pane's PTY, and each reader thread reacts to
-    /// that EOF with the natural-exit `remove_pane` path. Left enabled, those
-    /// removals race the dying process and rewrite state.json with the panes
-    /// stripped out — quitting would erase the very tabs a relaunch should restore.
+    /// teardown. Commits a final snapshot, then disables persistence for good:
+    /// `kill_all_panes` is about to take down every pane's PTY, and each reader thread
+    /// reacts to that EOF with the natural-exit `remove_pane` path. Left enabled, those
+    /// removals race the dying process and rewrite state.json with the panes stripped
+    /// out — quitting would erase the very tabs a relaunch should restore.
+    ///
+    /// The final snapshot and the flag clear happen together under `persist_lock`, so
+    /// any other persist either ran fully before this (its snapshot superseded here) or
+    /// blocks on the lock and, on waking, sees the cleared flag and bails — it can
+    /// never commit a post-`kill_all_panes` snapshot over this one.
     pub fn finalize_persistence_for_exit(&self) {
-        self.persist();
+        let _persist_guard = self
+            .inner
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.persist_snapshot_locked();
         self.inner.persist_enabled.store(false, Ordering::Relaxed);
     }
 
