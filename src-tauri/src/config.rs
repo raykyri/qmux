@@ -200,36 +200,44 @@ impl QmuxConfig {
     }
 
     pub fn claude_binary(&self) -> String {
-        self.adapters
-            .claude
-            .binary
-            .clone()
-            .or_else(|| self.legacy_claude_binary.clone())
-            .unwrap_or_else(|| "claude".to_string())
+        expand_binary(
+            self.adapters
+                .claude
+                .binary
+                .clone()
+                .or_else(|| self.legacy_claude_binary.clone())
+                .unwrap_or_else(|| "claude".to_string()),
+        )
     }
 
     pub fn codex_binary(&self) -> String {
-        self.adapters
-            .codex
-            .binary
-            .clone()
-            .unwrap_or_else(|| "codex".to_string())
+        expand_binary(
+            self.adapters
+                .codex
+                .binary
+                .clone()
+                .unwrap_or_else(|| "codex".to_string()),
+        )
     }
 
     pub fn opencode_binary(&self) -> String {
-        self.adapters
-            .opencode
-            .binary
-            .clone()
-            .unwrap_or_else(|| "opencode".to_string())
+        expand_binary(
+            self.adapters
+                .opencode
+                .binary
+                .clone()
+                .unwrap_or_else(|| "opencode".to_string()),
+        )
     }
 
     pub fn grok_binary(&self) -> String {
-        self.adapters
-            .grok
-            .binary
-            .clone()
-            .unwrap_or_else(|| "grok".to_string())
+        expand_binary(
+            self.adapters
+                .grok
+                .binary
+                .clone()
+                .unwrap_or_else(|| "grok".to_string()),
+        )
     }
 
     fn read_config_file(path: &Path) -> Result<Self, String> {
@@ -420,6 +428,21 @@ fn expand_home(path: &Path, home: Option<&Path>) -> Option<PathBuf> {
     Some(home.join(stripped))
 }
 
+/// Expands a leading `~`/`~/…` in a configured adapter binary against `$HOME`, so a
+/// `"binary": "~/bin/claude"` behaves like the tilde expansion documented for the
+/// workspace/socket roots (the spawn is exec, not a shell, so it can't expand `~`
+/// itself). A bare command name (`claude`) or an absolute path is returned unchanged
+/// — a command name for a normal PATH lookup, an absolute path verbatim.
+fn expand_binary(binary: String) -> String {
+    if !binary.starts_with('~') {
+        return binary;
+    }
+    let home = env::var_os("HOME").map(PathBuf::from);
+    expand_home(Path::new(&binary), home.as_deref())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(binary)
+}
+
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -489,6 +512,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(configured.codex_binary(), "/opt/bin/codex");
+    }
+
+    #[test]
+    fn tilde_binary_expands_against_home() {
+        let configured: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "adapters": { "claude": { "binary": "~/bin/claude" } }
+            }"#,
+        )
+        .unwrap();
+        if let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) {
+            let expected = Path::new(&home)
+                .join("bin/claude")
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(configured.claude_binary(), expected);
+        }
+
+        // Bare command names (PATH lookup) and absolute paths are never rewritten.
+        let plain: QmuxConfig = serde_json::from_str(
+            r#"{
+              "workspaceRoot": ".qmux/workspaces",
+              "socketPath": ".qmux/run/qmux.sock",
+              "adapters": { "codex": { "binary": "/opt/bin/codex" } }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(plain.codex_binary(), "/opt/bin/codex");
+        assert_eq!(plain.claude_binary(), "claude");
     }
 
     #[test]

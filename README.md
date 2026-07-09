@@ -164,11 +164,13 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 `~/…` paths expand against `$HOME` and absolute paths are honored verbatim.
-Relative paths are resolved from the config file's directory when that
-directory is under `$HOME`; otherwise they fall back to the platform data/runtime
-locations. Each adapter's `binary` is optional and defaults to the command name
-(`claude`, `codex`, `opencode`, `grok`); a top-level `claudeBinary` is still honored
-for backward compatibility. If the config file is absent, qmux uses the platform data
+Relative paths (for `workspaceRoot`/`socketPath`) are resolved from the config
+file's directory when that directory is under `$HOME`; otherwise they fall back to
+the platform data/runtime locations. Each adapter's `binary` is optional and
+defaults to the command name (`claude`, `codex`, `opencode`, `grok`), which is
+looked up on `PATH`; an absolute path or a `~/…` path (expanded against `$HOME`) is
+used as given. A top-level `claudeBinary` is still honored for backward
+compatibility. If the config file is absent, qmux uses the platform data
 directory for workspace state and the platform runtime directory, or a `run/`
 subdirectory of the data directory, for the control socket.
 
