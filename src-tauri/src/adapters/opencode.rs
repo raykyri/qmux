@@ -7,7 +7,7 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
-use crate::transcript::{Turn, TurnBlock, start_transcript_tail};
+use crate::transcript::{Turn, TurnBlock, start_transcript_tail, string_field};
 use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
@@ -778,15 +778,6 @@ fn parse_opencode_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBloc
         }
         _ => None,
     }
-}
-
-fn string_field(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]

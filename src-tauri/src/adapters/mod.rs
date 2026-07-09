@@ -8,6 +8,9 @@ use crate::events::QmuxEvent;
 use crate::pty::InitialPaneSize;
 use crate::state::{AppState, PaneInfo};
 use crate::transcript::{Turn, TurnBlock};
+// The canonical JSON string-field extractor. Re-exported so the adapters can reach it
+// as `super::string_field` and share the one definition (see `transcript::string_field`).
+pub(crate) use crate::transcript::string_field;
 use crate::workspace::{AgentInfo, AgentStatus};
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
@@ -107,16 +110,6 @@ fn same_dir(a: &str, b: &str) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
-}
-
-/// Shared helper to extract a trimmed non-empty string field from JSON.
-pub(crate) fn string_field(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 /// Parse a single line from a Claude-style or Grok-native rollout transcript (the
