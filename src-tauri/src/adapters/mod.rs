@@ -128,7 +128,18 @@ pub(crate) fn parse_claude_native_transcript_line(
     line: &str,
 ) -> Option<Turn> {
     let value = serde_json::from_str::<Value>(line).ok()?;
-    let message = value.get("message").unwrap_or(&value);
+    parse_claude_native_transcript_value(agent_id, source_index, &value)
+}
+
+/// As [`parse_claude_native_transcript_line`], but over an already-parsed value.
+/// Lets a caller that also inspects the same line for other shapes (the Grok
+/// adapter's synthetic-format fallback) parse the JSON once instead of per attempt.
+pub(crate) fn parse_claude_native_transcript_value(
+    agent_id: &str,
+    source_index: usize,
+    value: &Value,
+) -> Option<Turn> {
+    let message = value.get("message").unwrap_or(value);
     let role = message
         .get("role")
         .or_else(|| value.get("type"))
@@ -136,7 +147,7 @@ pub(crate) fn parse_claude_native_transcript_line(
         .unwrap_or("event")
         .to_string();
     let session_id =
-        string_field(&value, "session_id").or_else(|| string_field(&value, "sessionId"));
+        string_field(value, "session_id").or_else(|| string_field(value, "sessionId"));
     let content = message.get("content").or_else(|| value.get("content"))?;
     let blocks = parse_claude_native_blocks(content);
 
@@ -156,12 +167,20 @@ pub(crate) fn parse_claude_native_transcript_line(
 
 pub(crate) fn parse_claude_native_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
     let value = serde_json::from_str::<Value>(line).ok()?;
+    parse_claude_native_lifecycle_value(&value)
+}
+
+/// As [`parse_claude_native_lifecycle_event`], but over an already-parsed value (see
+/// [`parse_claude_native_transcript_value`]).
+pub(crate) fn parse_claude_native_lifecycle_value(
+    value: &Value,
+) -> Option<TranscriptLifecycleEvent> {
     if value.get("interruptedMessageId").is_some() || value.get("interrupted_message_id").is_some()
     {
         return Some(TranscriptLifecycleEvent::Interrupted);
     }
 
-    let message = value.get("message").unwrap_or(&value);
+    let message = value.get("message").unwrap_or(value);
     let content = message.get("content").or_else(|| value.get("content"))?;
     claude_native_content_has_interruption_marker(content)
         .then_some(TranscriptLifecycleEvent::Interrupted)

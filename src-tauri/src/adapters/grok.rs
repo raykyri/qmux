@@ -973,15 +973,18 @@ fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, 
 /// {"type":"response_item","payload":{"type":"message","role":"user","content":[...]},"session_id":"..."}
 /// ```
 fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Option<Turn> {
+    // Parse once, then try each shape against the same value — the tail calls this per
+    // line, so re-parsing per attempt doubled the JSON work on hot streaming output.
+    let value = serde_json::from_str::<Value>(line).ok()?;
+
     // Primary: native Claude-compatible rollout format. This is what Grok reports
     // via its SessionStart hook for real sessions (under ~/.grok/sessions/...).
-    if let Some(turn) = super::parse_claude_native_transcript_line(agent_id, source_index, line) {
+    if let Some(turn) = super::parse_claude_native_transcript_value(agent_id, source_index, &value) {
         return Some(turn);
     }
 
     // Fallback: synthetic response_item format (for the .qmux/grok fallback path
     // or if a future plugin emits it).
-    let value = serde_json::from_str::<Value>(line).ok()?;
     if value.get("type").and_then(Value::as_str) != Some("response_item") {
         return None;
     }
@@ -1045,13 +1048,15 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
 }
 
 fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
+    // Parse once and check both shapes against the same value (see parse_transcript_line).
+    let value = serde_json::from_str::<Value>(line).ok()?;
+
     // Support Claude-style interruption markers (native rollouts).
-    if let Some(ev) = super::parse_claude_native_lifecycle_event(line) {
+    if let Some(ev) = super::parse_claude_native_lifecycle_value(&value) {
         return Some(ev);
     }
 
     // Support synthetic event_msg for the qmux fallback path.
-    let value = serde_json::from_str::<Value>(line).ok()?;
     if value.get("type").and_then(Value::as_str) != Some("event_msg") {
         return None;
     }
