@@ -75,13 +75,17 @@ export function buildSingleAgentThreadGraph(agent: AgentInfo, turns: Turn[]): Th
 }
 
 export function focusedBranchTurns(graph: ThreadGraph, agent: AgentInfo): Turn[] {
-  const branchId = graph.focusedBranchId;
+  const branchId = agent.branchId?.trim() || graph.focusedBranchId;
+  const branchSelection = focusedBranchSelection(graph, branchId);
   return Object.values(graph.nodes)
-    .filter((node): node is TurnNode => node.branchId === branchId && node.kind === "turn")
-    .sort((left, right) => left.createdOrder - right.createdOrder)
+    .filter(
+      (node): node is TurnNode =>
+        node.kind === "turn" && nodeMatchesBranchSelection(node, branchSelection),
+    )
+    .sort(compareThreadNodes)
     .map((node) => ({
       id: node.id,
-      agentId: agent.id,
+      agentId: node.native?.agentId ?? node.participant.agentId ?? agent.id,
       sessionId: node.native?.sessionId ?? agent.sessionId ?? null,
       role: node.turn.role,
       blocks: node.turn.blocks,
@@ -96,10 +100,44 @@ export function focusedBranchTurns(graph: ThreadGraph, agent: AgentInfo): Turn[]
 }
 
 export function focusedBranchGraphNodes(graph: ThreadGraph): ThreadNode[] {
-  const branchId = graph.focusedBranchId;
+  const branchSelection = focusedBranchSelection(graph, graph.focusedBranchId);
   return Object.values(graph.nodes)
-    .filter((node) => node.branchId === branchId)
-    .sort((left, right) => left.createdOrder - right.createdOrder);
+    .filter((node) => nodeMatchesBranchSelection(node, branchSelection))
+    .sort(compareThreadNodes);
+}
+
+function focusedBranchSelection(graph: ThreadGraph, branchId: string) {
+  const selection = new Map<string, number | null>();
+  let currentBranchId: string | null = branchId;
+  let maxCreatedOrder: number | null = null;
+  const visited = new Set<string>();
+
+  while (currentBranchId && !visited.has(currentBranchId)) {
+    visited.add(currentBranchId);
+    selection.set(currentBranchId, maxCreatedOrder);
+    const branch: ThreadBranch | undefined = graph.branches[currentBranchId];
+    if (!branch) {
+      break;
+    }
+    const baseTurnId = branch.baseTurnId ?? branch.createdFromTurnId ?? null;
+    maxCreatedOrder =
+      baseTurnId && graph.nodes[baseTurnId] ? graph.nodes[baseTurnId].createdOrder : null;
+    currentBranchId = branch.parentBranchId ?? null;
+  }
+
+  return selection;
+}
+
+function nodeMatchesBranchSelection(node: ThreadNode, selection: Map<string, number | null>) {
+  if (!selection.has(node.branchId)) {
+    return false;
+  }
+  const maxCreatedOrder = selection.get(node.branchId);
+  return maxCreatedOrder == null || node.createdOrder <= maxCreatedOrder;
+}
+
+function compareThreadNodes(left: ThreadNode, right: ThreadNode) {
+  return left.createdOrder - right.createdOrder || left.id.localeCompare(right.id);
 }
 
 function participantForTurn(agent: AgentInfo, turn: Turn): ThreadParticipant {

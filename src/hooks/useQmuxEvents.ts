@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { listAgents, listGroups, listPanes, listenToEvents } from "../lib/api";
+import { listAgents, listGroups, listPanes, listThreadGraphs, listenToEvents } from "../lib/api";
 import {
   isAgentInfo,
   isQueuedTurn,
@@ -10,7 +10,15 @@ import {
   upsertAgent,
 } from "../lib/appHelpers";
 import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
-import type { AgentInfo, GroupInfo, PaneInfo, QueuedTurn, TranscriptHookEvent, Turn } from "../types";
+import type {
+  AgentInfo,
+  GroupInfo,
+  PaneInfo,
+  QueuedTurn,
+  ThreadGraph,
+  TranscriptHookEvent,
+  Turn,
+} from "../types";
 
 // Upper bound on the per-agent hook-event history. This feed accumulates for an
 // agent's whole lifetime (it backs the "copy transcript as JSON" export), so
@@ -45,6 +53,7 @@ export interface UseQmuxEventsHandlers {
   // agent restored into a working status never falsely shows it (see below).
   setThinkingAgentIds: Dispatch<SetStateAction<Set<string>>>;
   setTurns: Dispatch<SetStateAction<Turn[]>>;
+  setThreadGraphs: Dispatch<SetStateAction<ThreadGraph[]>>;
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   refreshAgentTurnQueue: (agentId: string) => Promise<void>;
@@ -90,6 +99,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setGroups,
     setThinkingAgentIds,
     setTurns,
+    setThreadGraphs,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
     refreshAgentTurnQueue,
@@ -111,6 +121,17 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     // Same idea for pane-list refetches (a fork adds a pane backend-side).
     let panesRefreshSeq = 0;
     let groupsRefreshSeq = 0;
+    let threadGraphRefreshSeq = 0;
+    const refreshThreadGraphs = () => {
+      const seq = (threadGraphRefreshSeq += 1);
+      void listThreadGraphs()
+        .then((graphs) => {
+          if (!disposed && seq === threadGraphRefreshSeq) {
+            setThreadGraphs(graphs);
+          }
+        })
+        .catch(() => undefined);
+    };
 
     void listenToEvents((event) => {
       if (disposed) {
@@ -311,6 +332,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
               return true;
             });
           });
+          refreshThreadGraphs();
         }
       }
       if (event.type === "turn.updated" && event.payload.reset) {
@@ -322,6 +344,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           ...current.filter((turn) => turn.agentId !== agentId),
           ...replacementTurns,
         ]);
+        refreshThreadGraphs();
       }
       if (
         event.agentId &&

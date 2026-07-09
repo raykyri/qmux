@@ -21,6 +21,7 @@ import type {
   SubmitAgentTurnMode,
   SubmitAgentTurnResult,
   TranscriptOption,
+  ThreadGraph,
   Turn,
   WorktreeStatus,
 } from "../types";
@@ -179,6 +180,10 @@ export function listAgents() {
 
 export function listTurns(agentId?: string | null) {
   return invoke<Turn[]>("list_turns", { agentId: agentId ?? null });
+}
+
+export function listThreadGraphs() {
+  return invoke<ThreadGraph[]>("list_thread_graphs");
 }
 
 export function listAgentTurnQueue(agentId: string) {

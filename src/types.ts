@@ -185,6 +185,14 @@ export interface ThreadGraph {
   nodes: Record<string, ThreadNode>;
 }
 
+export interface ThreadRecord {
+  id: string;
+  storageRoot: string;
+  snapshotPath: string;
+  defaultFocusedBranchId: string;
+  createdAt: number;
+}
+
 export interface ThreadBranch {
   id: string;
   threadId: string;

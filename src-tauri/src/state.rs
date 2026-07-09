@@ -123,6 +123,7 @@ struct Model {
     group_order: Vec<String>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
+    threads: HashMap<String, thread_graph::ThreadRecord>,
     thread_focus: HashMap<String, String>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
     /// A queued turn claimed for delivery but not yet confirmed on the PTY, per agent
@@ -555,11 +556,40 @@ fn ensure_agent_thread_metadata(state: &AppState, model: &mut Model, agent: &mut
         agent.branch_id = Some(state.next_id("branch"));
     }
     if let (Some(thread_id), Some(branch_id)) = (&agent.thread_id, &agent.branch_id) {
+        let default_focused_branch_id = model
+            .thread_focus
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_else(|| branch_id.clone());
+        model.threads.entry(thread_id.clone()).or_insert_with(|| {
+            thread_graph::thread_record_for_agent(agent, &default_focused_branch_id)
+        });
         model
             .thread_focus
             .entry(thread_id.clone())
             .or_insert_with(|| branch_id.clone());
     }
+}
+
+fn thread_store_for_agent_locked(
+    model: &mut Model,
+    agent: &AgentInfo,
+) -> (thread_graph::ThreadStore, bool) {
+    let thread_id = thread_graph::agent_thread_id(agent);
+    let branch_id = thread_graph::agent_branch_id(agent);
+    let default_focused_branch_id = model
+        .thread_focus
+        .get(&thread_id)
+        .cloned()
+        .unwrap_or(branch_id);
+    let existed = model.threads.contains_key(&thread_id);
+    let record = model.threads.entry(thread_id).or_insert_with(|| {
+        thread_graph::thread_record_for_agent(agent, &default_focused_branch_id)
+    });
+    (
+        thread_graph::ThreadStore::new(record.storage_root.clone()),
+        !existed,
+    )
 }
 
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
@@ -990,6 +1020,7 @@ impl AppState {
                 missing.sort();
                 model.group_order.extend(missing);
             }
+            model.threads = persisted.threads;
             model.thread_focus = persisted.thread_focus;
             for mut agent in persisted.agents {
                 ensure_agent_thread_metadata(self, &mut model, &mut agent);
@@ -1132,6 +1163,7 @@ impl AppState {
                 pane_splits: normalized_pane_splits(&model, model.pane_splits.clone(), false)
                     .unwrap_or_default(),
                 active_tab_id: model.active_tab_id.clone(),
+                threads: model.threads.clone(),
                 thread_focus: model.thread_focus.clone(),
             }
         };
@@ -1434,6 +1466,26 @@ impl AppState {
                 .flat_map(|turns| turns.iter().cloned())
                 .collect())
         }
+    }
+
+    pub fn list_thread_graphs(&self) -> Result<Vec<thread_graph::ThreadGraph>, String> {
+        let records = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.threads.values().cloned().collect::<Vec<_>>()
+        };
+
+        let mut graphs = Vec::new();
+        for record in records {
+            let store = thread_graph::ThreadStore::new(record.storage_root);
+            if let Some(graph) = store.read_thread(&record.id)? {
+                graphs.push(graph);
+            }
+        }
+        Ok(graphs)
     }
 
     pub fn group(&self, group_id: &str) -> Result<Option<GroupInfo>, String> {
@@ -2309,7 +2361,7 @@ impl AppState {
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
-        let (should_persist_recent, agent_for_graph) = {
+        let (should_persist_state, agent_for_graph, graph_store) = {
             let mut model = self
                 .inner
                 .model
@@ -2332,17 +2384,28 @@ impl AppState {
             } else {
                 false
             };
-            (should_persist_recent, agent_for_graph)
+            let mut graph_store = None;
+            let mut created_thread_record = false;
+            if let Some(agent) = agent_for_graph.as_ref() {
+                let (store, created) = thread_store_for_agent_locked(&mut model, agent);
+                graph_store = Some(store);
+                created_thread_record = created;
+            }
+            (
+                should_persist_recent || created_thread_record,
+                agent_for_graph,
+                graph_store,
+            )
         };
-        if let Some(agent) = agent_for_graph
-            && let Err(err) = thread_graph::append_agent_turn_snapshot(&agent, &turn)
-        {
-            eprintln!(
-                "qmux: failed to append thread graph for agent {}: {err}",
-                agent.id
-            );
+        if let (Some(agent), Some(store)) = (agent_for_graph, graph_store) {
+            if let Err(err) = store.append_turn_node(&agent, &turn) {
+                eprintln!(
+                    "qmux: failed to append thread graph for agent {}: {err}",
+                    agent.id
+                );
+            }
         }
-        if should_persist_recent {
+        if should_persist_state {
             self.persist();
         }
         Ok(())
@@ -2350,7 +2413,7 @@ impl AppState {
 
     pub fn replace_turns(&self, agent_id: &str, mut turns: Vec<Turn>) -> Result<(), String> {
         let turns_for_graph = turns.clone();
-        let (should_persist_recent, agent_for_graph) = {
+        let (should_persist_state, agent_for_graph, graph_store) = {
             let mut model = self
                 .inner
                 .model
@@ -2366,17 +2429,28 @@ impl AppState {
             let should_persist_recent = agent_for_graph.clone().is_some_and(|agent| {
                 upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
             });
-            (should_persist_recent, agent_for_graph)
+            let mut graph_store = None;
+            let mut created_thread_record = false;
+            if let Some(agent) = agent_for_graph.as_ref() {
+                let (store, created) = thread_store_for_agent_locked(&mut model, agent);
+                graph_store = Some(store);
+                created_thread_record = created;
+            }
+            (
+                should_persist_recent || created_thread_record,
+                agent_for_graph,
+                graph_store,
+            )
         };
-        if let Some(agent) = agent_for_graph
-            && let Err(err) = thread_graph::replace_agent_turns_snapshot(&agent, &turns_for_graph)
-        {
-            eprintln!(
-                "qmux: failed to write thread graph for agent {}: {err}",
-                agent.id
-            );
+        if let (Some(agent), Some(store)) = (agent_for_graph, graph_store) {
+            if let Err(err) = store.replace_agent_branch_turns(&agent, &turns_for_graph) {
+                eprintln!(
+                    "qmux: failed to write thread graph for agent {}: {err}",
+                    agent.id
+                );
+            }
         }
-        if should_persist_recent {
+        if should_persist_state {
             self.persist();
         }
         Ok(())
@@ -4193,6 +4267,49 @@ mod tests {
             parent_native_id: None,
             native_message_id: None,
         }
+    }
+
+    #[test]
+    fn shared_thread_turn_writes_use_thread_record_storage_root() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        let source_root = workspace.join("source-worktree");
+        let target_root = workspace.join("target-worktree");
+        let source_root_string = source_root.display().to_string();
+        let target_root_string = target_root.display().to_string();
+
+        let mut source = sample_agent("source");
+        source.worktree_dir = source_root_string.clone();
+        source.thread_id = Some("thread-shared".to_string());
+        source.branch_id = Some("branch-source".to_string());
+        let mut target = sample_agent("target");
+        target.worktree_dir = target_root_string.clone();
+        target.thread_id = Some("thread-shared".to_string());
+        target.branch_id = Some("branch-target".to_string());
+
+        state.insert_agent(source).unwrap();
+        state.insert_agent(target).unwrap();
+        state
+            .append_turn(sample_user_turn("source", "source turn"))
+            .unwrap();
+        state
+            .append_turn(sample_user_turn("target", "target turn"))
+            .unwrap();
+
+        let shared_graph = thread_graph::read_snapshot(&source_root_string, "thread-shared")
+            .unwrap()
+            .expect("shared graph exists at thread record root");
+        assert!(shared_graph.nodes.contains_key("source-0"));
+        assert!(shared_graph.nodes.contains_key("target-0"));
+        assert!(shared_graph.branches.contains_key("branch-source"));
+        assert!(shared_graph.branches.contains_key("branch-target"));
+        assert!(
+            thread_graph::read_snapshot(&target_root_string, "thread-shared")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     fn enqueue_wait_turn(

@@ -189,6 +189,7 @@ import {
   listClaudeSkills,
   listAgentTranscripts,
   listAgentTurnQueue,
+  listThreadGraphs,
   listTurns,
   listPanes,
   moveQueuedAgentTurn,
@@ -229,6 +230,7 @@ import type {
   PaneSplitInfo,
   QueuedTurn,
   RuntimeConfig,
+  ThreadGraph,
   TranscriptHookEvent,
   TranscriptOption,
   Turn,
@@ -936,6 +938,11 @@ function cascadeLatestUserTurn(turns: Turn[]): string | null {
   return stripped.length > 0 ? stripped : null;
 }
 
+function graphHasAgentBranch(graph: ThreadGraph, agent: AgentInfo) {
+  const branchId = agent.branchId?.trim() || graph.focusedBranchId;
+  return Boolean(branchId && graph.branches[branchId]);
+}
+
 function defaultPaneTitle(
   pane: PaneInfo,
   agent: AgentInfo | undefined,
@@ -1083,6 +1090,7 @@ export default function App() {
     Record<string, string | null>
   >({});
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [threadGraphs, setThreadGraphs] = useState<ThreadGraph[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   const [hookEventsByAgent, setHookEventsByAgent] = useState<
     Record<string, TranscriptHookEvent[]>
@@ -1247,6 +1255,7 @@ export default function App() {
     return result;
   }, [agents]);
   const agentTurnInfoById = useMemo(() => {
+    const threadGraphById = new Map(threadGraphs.map((graph) => [graph.threadId, graph]));
     const turnsByAgent = new Map<string, Turn[]>();
     for (const turn of turns) {
       const agentTurns = turnsByAgent.get(turn.agentId);
@@ -1261,7 +1270,14 @@ export default function App() {
       const agentTurns = turnsByAgent.get(agent.id) ?? [];
       const adapter = getAgentUiAdapter(agent.adapter);
       const normalizedTurns = adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
-      const threadGraph = buildSingleAgentThreadGraph(agent, normalizedTurns);
+      const storedGraph =
+        agent.threadId && agent.threadId.trim()
+          ? threadGraphById.get(agent.threadId)
+          : undefined;
+      const threadGraph =
+        storedGraph && graphHasAgentBranch(storedGraph, agent)
+          ? storedGraph
+          : buildSingleAgentThreadGraph(agent, normalizedTurns);
       const graphTurns = focusedBranchTurns(threadGraph, agent);
       const assistantLabel = adapter.label;
       result.set(agent.id, {
@@ -1271,7 +1287,7 @@ export default function App() {
       });
     }
     return result;
-  }, [agents, turns]);
+  }, [agents, threadGraphs, turns]);
   const activeAgent = activePane ? agentByPaneId.get(activePane.id) : undefined;
   const activePaneSplit = useMemo(
     () => paneSplitForPane(paneSplits, activePane?.id),
@@ -3376,6 +3392,7 @@ export default function App() {
           existingPaneSplits,
           existingAgents,
           existingTurns,
+          existingThreadGraphs,
           storedOpenRouterKey,
         ] = await Promise.all([
           getRuntimeConfig(),
@@ -3386,6 +3403,7 @@ export default function App() {
           getPaneSplits().catch((): PaneSplitInfo[] => []),
           listAgents(),
           listTurns(),
+          listThreadGraphs().catch((): ThreadGraph[] => []),
           getOpenRouterKey().catch(() => ""),
         ]);
         if (cancelled) {
@@ -3419,6 +3437,7 @@ export default function App() {
         );
         setAgents(existingAgents);
         setTurns(existingTurns);
+        setThreadGraphs(existingThreadGraphs);
         // Per-agent fetches are individually guarded so one failed draft/queue read
         // can't reject the whole boot and leave the app stuck on a fatal error with
         // no panes rendered. A failed read just falls back to empty for that agent.
@@ -3669,6 +3688,7 @@ export default function App() {
     setGroups,
     setThinkingAgentIds,
     setTurns,
+    setThreadGraphs,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
     refreshAgentTurnQueue,
@@ -3693,15 +3713,18 @@ export default function App() {
         return;
       }
 
-      const [latestPanes, latestAgents, latestTurns, latestGroups] = await Promise.all([
-        listPanes(),
-        listAgents(),
-        listTurns(),
-        listGroups(),
-      ]);
+      const [latestPanes, latestAgents, latestTurns, latestThreadGraphs, latestGroups] =
+        await Promise.all([
+          listPanes(),
+          listAgents(),
+          listTurns(),
+          listThreadGraphs().catch((): ThreadGraph[] => []),
+          listGroups(),
+        ]);
       setPanesPreservingRecoveredDismissals(latestPanes);
       setAgents(latestAgents);
       setTurns(latestTurns);
+      setThreadGraphs(latestThreadGraphs);
       setGroups(latestGroups);
       setActivePaneId(pane.id);
 

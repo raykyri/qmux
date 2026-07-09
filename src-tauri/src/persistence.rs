@@ -1,4 +1,5 @@
 use crate::state::{PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
+use crate::thread_graph::ThreadRecord;
 use crate::workspace::{AgentInfo, GroupInfo};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,11 @@ pub struct PersistedState {
     /// sentinel; the frontend validates it against the recovered panes on boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tab_id: Option<String>,
+    /// Per-thread routing and storage metadata. The thread snapshot itself remains
+    /// in `.qmux/threads/<thread-id>.json`; this only tells qmux where to find it
+    /// and what branch a default view should focus.
+    #[serde(default)]
+    pub threads: HashMap<String, ThreadRecord>,
     /// Focused branch per qmux transcript thread. The full graph lives in
     /// `.qmux/threads/<thread-id>.json`; state.json keeps only the routing metadata
     /// needed to recover pane/agent views.
@@ -85,6 +91,7 @@ impl Default for PersistedState {
             inflight: HashMap::new(),
             pane_splits: Vec::new(),
             active_tab_id: None,
+            threads: HashMap::new(),
             thread_focus: HashMap::new(),
         }
     }
@@ -410,6 +417,7 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.queues = take_map_of_vecs(&mut map, "queues", "queued turn", &mut dropped);
     state.inflight = take_typed_map(&mut map, "inflight", "in-flight turn", &mut dropped);
     state.drafts = take_string_map(&mut map, "drafts");
+    state.threads = take_typed_map(&mut map, "threads", "thread", &mut dropped);
     state.thread_focus = take_string_map(&mut map, "threadFocus");
     state.active_tab_id = map
         .get("activeTabId")

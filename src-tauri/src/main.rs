@@ -368,6 +368,13 @@ fn list_turns(
 }
 
 #[tauri::command]
+fn list_thread_graphs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<thread_graph::ThreadGraph>, String> {
+    state.list_thread_graphs()
+}
+
+#[tauri::command]
 fn list_agent_turn_queue(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -960,6 +967,7 @@ fn main() {
             list_recent_sessions,
             recent_session_resume,
             list_turns,
+            list_thread_graphs,
             list_agent_turn_queue,
             list_agent_transcripts,
             set_agent_transcript,
