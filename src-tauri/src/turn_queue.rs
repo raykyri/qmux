@@ -909,7 +909,26 @@ fn send_agent_turn(
     // between read and write and could clobber a concurrent SessionStart hook's
     // session_id/transcript_path (leaving the session unresumable/unforkable). Only
     // the status changes, so write only the status.
-    if !is_tui_command_turn(&text) {
+    if is_tui_command_turn(&text) {
+        // A built-in TUI command (a `/` slash command or a `!` shell escape) can run
+        // hooklessly — no UserPromptSubmit, no Stop/idle — so it never represents a
+        // running turn. Marking it Running would stick forever (nothing demotes it).
+        // A direct send only reaches here from a can-send (already-ready) status, so
+        // there is nothing to clear; but when the same command is *drained from the
+        // queue*, the agent is still Running from the just-finished turn, and the
+        // drain path (claim_next_turn_or_mark_idle's Sent branch) leaves that Running
+        // in place — wedging the pane at "Working…" and freezing the queue behind it.
+        // Demote that stale working status so the queue can't deadlock. Skills that do
+        // start a real turn re-promote via their own UserPromptSubmit/PreToolUse hooks.
+        if let Some(current) = state.agent(&agent.id)?
+            && matches!(
+                current.status,
+                AgentStatus::Running | AgentStatus::Starting
+            )
+        {
+            state.set_agent_status(&agent.id, AgentStatus::AwaitingInput)?;
+        }
+    } else {
         state.set_agent_status(&agent.id, AgentStatus::Running)?;
     }
     // Send tracking is advisory (it feeds de-dup/echo suppression), so a failure
@@ -1216,6 +1235,36 @@ mod tests {
         assert!(!result.queued);
         let agent = state.agent("agent-1").unwrap().unwrap();
         assert!(matches!(agent.status, AgentStatus::Running));
+    }
+
+    #[test]
+    fn draining_a_queued_slash_command_clears_a_stale_running() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+
+        // A slash command queued behind a running turn. When it drains, the agent is
+        // still Running from the just-finished turn and the drain path leaves that in
+        // place; because /model runs hooklessly, nothing would ever demote it and the
+        // pane would wedge at "Working…" with the rest of the queue stuck behind it.
+        state
+            .enqueue_agent_turn("agent-1", "/model".to_string())
+            .unwrap();
+        assert!(drain_agent_turn_queue(&state, "agent-1").unwrap());
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert!(
+            matches!(agent.status, AgentStatus::AwaitingInput),
+            "a drained hookless command must not leave the agent stuck at Running: {:?}",
+            agent.status
+        );
     }
 
     #[test]
