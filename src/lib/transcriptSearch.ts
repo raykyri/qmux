@@ -11,11 +11,23 @@ export interface TranscriptSearchOptions {
 export const TRANSCRIPT_SEARCH_HIGHLIGHT = "transcript-search-match";
 export const TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT = "transcript-search-active-match";
 
+// Upper bound on collected matches. A one-character term over a long transcript can
+// match tens of thousands of times; keeping every one as a live DOM Range (and
+// painting it) burns memory and main-thread time for no navigational benefit. Beyond
+// this cap, collection stops — the label shows the cap and the user refines the term.
+export const MAX_SEARCH_MATCHES = 2000;
+
 // The Custom Highlight API may be missing from older TS DOM libs/webviews, so it
 // is reached through narrow structural types and feature-checked at runtime.
 interface HighlightRegistryLike {
   set(name: string, highlight: unknown): void;
   delete(name: string): void;
+}
+
+// A Highlight is a Set-like of ranges; add() lets us fill it without spreading the
+// range list as constructor arguments.
+interface HighlightLike {
+  add(range: Range): void;
 }
 
 function highlightRegistry(): HighlightRegistryLike | null {
@@ -25,9 +37,21 @@ function highlightRegistry(): HighlightRegistryLike | null {
   return (CSS as unknown as { highlights: HighlightRegistryLike }).highlights;
 }
 
-function highlightConstructor(): (new (...ranges: Range[]) => unknown) | null {
+function highlightConstructor(): (new () => HighlightLike) | null {
   const ctor = (globalThis as Record<string, unknown>).Highlight;
-  return typeof ctor === "function" ? (ctor as new (...ranges: Range[]) => unknown) : null;
+  return typeof ctor === "function" ? (ctor as new () => HighlightLike) : null;
+}
+
+// Builds a Highlight from ranges via add() in a loop. `new Highlight(...ranges)`
+// spreads every range as a call argument, which throws RangeError once the count
+// exceeds the engine's max-argument limit (~65k in WebKit) — an uncaught throw inside
+// the caller's effect that blanks the app. add() has no such limit.
+function buildHighlight(Highlight: new () => HighlightLike, ranges: Range[]): HighlightLike {
+  const highlight = new Highlight();
+  for (const range of ranges) {
+    highlight.add(range);
+  }
+  return highlight;
 }
 
 // Paints all matches plus the active match. On webviews without the Highlight
@@ -43,10 +67,10 @@ export function applySearchHighlights(ranges: Range[], activeIndex: number) {
     registry.delete(TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT);
     return;
   }
-  registry.set(TRANSCRIPT_SEARCH_HIGHLIGHT, new Highlight(...ranges));
+  registry.set(TRANSCRIPT_SEARCH_HIGHLIGHT, buildHighlight(Highlight, ranges));
   const active = ranges[activeIndex];
   if (active) {
-    registry.set(TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT, new Highlight(active));
+    registry.set(TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT, buildHighlight(Highlight, [active]));
   } else {
     registry.delete(TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT);
   }
@@ -86,7 +110,7 @@ export function collectSearchRanges(
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const ranges: Range[] = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+  collect: for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = node.nodeValue;
     if (!text) {
       continue;
@@ -101,6 +125,11 @@ export function collectSearchRanges(
       range.setStart(node, start);
       range.setEnd(node, start + match[0].length);
       ranges.push(range);
+      // Stop once capped: a broad term can match far more than is useful, and every
+      // extra Range costs memory and (below) a forced layout read.
+      if (ranges.length >= MAX_SEARCH_MATCHES) {
+        break collect;
+      }
     }
   }
   return ranges.filter((range) => range.getClientRects().length > 0);
