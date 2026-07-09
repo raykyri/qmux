@@ -27,9 +27,18 @@
       "csp": "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https://openrouter.ai; object-src 'none'; base-uri 'self'; frame-src http://127.0.0.1:* http://localhost:*"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJDMDU4MUU0RkY0QTMwMDEKUldRQk1Fci81SUVGdkE1SjJiVDZ2YVJLdmVIT3JsMzRpSFJSVG4vU2gzVm14Wkp1ditLREtXeEoK",
+      "endpoints": [
+        "https://github.com/raykyri/qmux/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "resources": {
       "../qmux-plugin/": "qmux-plugin"
     },

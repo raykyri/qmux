@@ -3,6 +3,7 @@ name = "qmux"
 version = "0.1.0"
 description = "A PTY-owned terminal for agent panes."
 authors = ["Raymond"]
+license = "MIT"
 edition = "2024"
 
 [[bin]]
@@ -25,4 +26,5 @@ tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
 window-vibrancy = "0.7.1"

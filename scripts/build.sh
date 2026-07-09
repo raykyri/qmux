@@ -7,6 +7,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 # this the bridge is optional and a missing Swift toolchain only warns.
 export QMUX_REQUIRE_FOUNDATION_MODELS=1
 
+# createUpdaterArtifacts makes the bundler sign the updater .tar.gz, which fails
+# without the private half of the updater keypair. Pick up the local key when the
+# caller didn't provide one (CI should set TAURI_SIGNING_PRIVATE_KEY instead; the
+# variable accepts either the key contents or a path to the key file).
+default_updater_key="$HOME/.tauri/qmux-updater.key"
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "$default_updater_key" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$default_updater_key"
+fi
+
 # Release DMGs must run on both Apple Silicon and Intel Macs, so default to a
 # universal binary. Override with e.g. QMUX_BUILD_TARGET=aarch64-apple-darwin
 # for a faster single-arch build.

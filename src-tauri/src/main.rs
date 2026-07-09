@@ -17,6 +17,7 @@ mod state;
 mod title_generation;
 mod transcript;
 mod turn_queue;
+mod updater;
 mod workspace;
 
 use adapters::{
@@ -854,6 +855,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(show_hide_shortcut::handle_global_shortcut)
@@ -937,6 +939,7 @@ fn main() {
                 state.normalize_pane_layout();
                 app.manage(state.clone());
                 app.manage(SleepGuard::default());
+                updater::check_on_startup(app.handle());
                 Ok(())
             }
         })
