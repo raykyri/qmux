@@ -54,14 +54,23 @@ function buildHighlight(Highlight: new () => HighlightLike, ranges: Range[]): Hi
   return highlight;
 }
 
-// Paints all matches plus the active match. On webviews without the Highlight
-// API this is a no-op: search still navigates by scrolling, just unpainted.
-export function applySearchHighlights(ranges: Range[], activeIndex: number) {
+// The registry keys are global and there is one painted slot per name, so only one
+// transcript can own the highlights at a time. Multiple TurnOverlays mount at once in
+// split view; without an owner, one pane's paint or cleanup would silently wipe
+// another's. Callers pass an opaque per-instance token; only the current owner may
+// repaint or clear, so a background overlay can't clobber the active one.
+let highlightOwner: object | null = null;
+
+// Paints all matches plus the active match for `owner`, taking ownership of the
+// registry slots. On webviews without the Highlight API this is a no-op: search still
+// navigates by scrolling, just unpainted.
+export function applySearchHighlights(owner: object, ranges: Range[], activeIndex: number) {
   const registry = highlightRegistry();
   const Highlight = highlightConstructor();
   if (!registry || !Highlight) {
     return;
   }
+  highlightOwner = owner;
   if (ranges.length === 0) {
     registry.delete(TRANSCRIPT_SEARCH_HIGHLIGHT);
     registry.delete(TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT);
@@ -76,7 +85,13 @@ export function applySearchHighlights(ranges: Range[], activeIndex: number) {
   }
 }
 
-export function clearSearchHighlights() {
+// Clears the highlights, but only when `owner` still holds them — so a background
+// overlay's effect cleanup can't erase the highlights the active overlay just painted.
+export function clearSearchHighlights(owner: object) {
+  if (highlightOwner !== null && highlightOwner !== owner) {
+    return;
+  }
+  highlightOwner = null;
   const registry = highlightRegistry();
   registry?.delete(TRANSCRIPT_SEARCH_HIGHLIGHT);
   registry?.delete(TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT);

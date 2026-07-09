@@ -368,6 +368,9 @@ export default function TurnOverlay({
   // which changes the set of searchable (rendered) matches.
   const [searchDomNonce, setSearchDomNonce] = useState(0);
   const searchRangesRef = useRef<Range[]>([]);
+  // A stable per-instance token identifying this overlay's ownership of the (global)
+  // search highlight registry. See lib/transcriptSearch.ts.
+  const searchOwnerRef = useRef<object>({});
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const scrollToBottom = () => {
@@ -636,21 +639,26 @@ export default function TurnOverlay({
     setSearchResults({ index: nearestSearchRangeIndex(timeline, ranges), count: ranges.length });
   }, [searchOpen, searchTerm, searchCaseSensitive, searchUseRegex, timelineItems, searchDomNonce]);
 
-  // Repaint highlights and bring the active match into view on every result
-  // change. Closing the bar (or unmounting) clears the global highlight registry.
+  // Repaint highlights and bring the active match into view on every result change.
+  // Only the active pane paints: the highlight registry has one slot per name, so in
+  // split view two open find bars would otherwise overwrite and clear each other's
+  // highlights. An inactive (or closed) bar releases its paint but still navigates by
+  // scrolling. Closing the bar or unmounting clears our own highlights.
   useEffect(() => {
-    if (!searchOpen) {
+    const owner = searchOwnerRef.current;
+    if (!searchOpen || !searchHotkeyActive) {
+      clearSearchHighlights(owner);
       return;
     }
     const ranges = searchRangesRef.current;
-    applySearchHighlights(ranges, searchResults.index);
+    applySearchHighlights(owner, ranges, searchResults.index);
     const active = ranges[searchResults.index];
     const timeline = timelineRef.current;
     if (active && timeline) {
       scrollSearchRangeIntoView(timeline, active);
     }
-    return () => clearSearchHighlights();
-  }, [searchOpen, searchResults]);
+    return () => clearSearchHighlights(owner);
+  }, [searchOpen, searchHotkeyActive, searchResults]);
 
   const stepSearch = (delta: 1 | -1) => {
     setSearchResults((current) => {
