@@ -3,6 +3,10 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 
+# `tauri` lives in node_modules/.bin; put it on PATH so this script also works
+# when invoked directly (e.g. from release.sh) rather than through `npm run`.
+export PATH="$script_dir/../node_modules/.bin:$PATH"
+
 # Shipped bundles must include the Foundation Models tab-title bridge; without
 # this the bridge is optional and a missing Swift toolchain only warns.
 export QMUX_REQUIRE_FOUNDATION_MODELS=1
