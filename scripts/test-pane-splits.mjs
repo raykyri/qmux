@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 
-const outDir = "/tmp/qmux-pane-split-tests";
+// Compiled output stays inside the repo so Node can resolve react/jsx-runtime
+// (the appHelpers import chain reaches the .tsx adapters) from node_modules.
+const outDir = join(process.cwd(), "node_modules/.cache/qmux-pane-split-tests");
 rmSync(outDir, { recursive: true, force: true });
 
 execFileSync(
@@ -20,6 +22,8 @@ execFileSync(
     "node",
     "--skipLibCheck",
     "--strict",
+    "--jsx",
+    "react-jsx",
     "--esModuleInterop",
     "--allowSyntheticDefaultImports",
     "--outDir",
