@@ -21,6 +21,33 @@ pub struct Turn {
     pub role: String,
     pub blocks: Vec<TurnBlock>,
     pub source_index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<TurnStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<TurnStatusReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_native_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_message_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnStatus {
+    Superseded,
+    Interrupted,
+    Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnStatusReason {
+    CodexRollback,
+    Interrupted,
+    ClaudePromptBranch,
+    UnknownBranch,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -89,6 +116,7 @@ pub fn start_transcript_tail(
         // up, and jumping to the newest existing JSONL would bind us to an unrelated
         // old session instead of the new one whose SessionStart just set this path.
         let mut have_read_bound_file = false;
+        let mut raw_lines: Vec<String> = Vec::new();
         let registry = adapter_registry(state.config());
         let adapter = match registry.get(&adapter_id) {
             Ok(adapter) => adapter,
@@ -186,13 +214,8 @@ pub fn start_transcript_tail(
                 // the file is now shorter than what we'd already consumed (a truncation
                 // or in-place rewrite) so our timeline no longer prefixes it.
                 let lines = complete_lines(&snapshot.data);
-                let turns = lines
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, line)| {
-                        adapter.parse_transcript_line(&agent_id, index, line)
-                    })
-                    .collect::<Vec<_>>();
+                raw_lines = lines.iter().map(|line| (*line).to_string()).collect();
+                let turns = adapter.resolve_transcript_turns(&agent_id, &raw_lines);
                 if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
                     state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
                 } else {
@@ -209,9 +232,29 @@ pub fn start_transcript_tail(
                 // Steady state: parse only the complete lines that arrived since the
                 // last tick. line_index advances for every complete line (parsed or
                 // not) so source indices stay aligned with the file's line numbers.
-                for line in complete_lines(&snapshot.data) {
+                let lines = complete_lines(&snapshot.data);
+                let should_refresh_turns = lines
+                    .iter()
+                    .any(|line| adapter.transcript_line_can_update_turn_status(line));
+                if should_refresh_turns {
+                    raw_lines.extend(lines.iter().map(|line| (*line).to_string()));
+                    let turns = adapter.resolve_transcript_turns(&agent_id, &raw_lines);
+                    if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
+                        state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                    } else {
+                        state.emit(QmuxEvent::new(
+                            "turn.updated",
+                            None,
+                            Some(agent_id.clone()),
+                            json!({ "reset": true, "turns": turns }),
+                        ));
+                    }
+                }
+                for line in lines {
                     let lifecycle_event = adapter.parse_transcript_lifecycle_event(&line);
-                    if let Some(turn) = adapter.parse_transcript_line(&agent_id, line_index, &line)
+                    if !should_refresh_turns
+                        && let Some(turn) =
+                            adapter.parse_transcript_line(&agent_id, line_index, &line)
                     {
                         // Surface a persistence failure rather than silently emitting a
                         // turn the store never recorded, which would drift the UI
@@ -226,6 +269,9 @@ pub fn start_transcript_tail(
                                 json!({ "turn": turn }),
                             ));
                         }
+                    }
+                    if !should_refresh_turns {
+                        raw_lines.push(line.to_string());
                     }
                     if let Some(lifecycle_event) = lifecycle_event {
                         match transcript_lifecycle_agent_event(

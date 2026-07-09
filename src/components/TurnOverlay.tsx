@@ -156,6 +156,7 @@ type ToolResultBlock = Extract<TurnBlock, { type: "toolResult" }>;
 type RawBlock = Extract<TurnBlock, { type: "raw" }>;
 
 type MessageBlock = TextBlock | RawBlock;
+type TurnTimelineStatus = NonNullable<Turn["status"]>;
 
 interface MessageItem {
   type: "message";
@@ -163,6 +164,7 @@ interface MessageItem {
   role: string;
   blocks: MessageBlock[];
   activities: ActivityItem[];
+  status?: TurnTimelineStatus;
 }
 
 interface ToolEntry {
@@ -173,6 +175,7 @@ interface ToolEntry {
   input?: unknown;
   result?: unknown;
   isError: boolean;
+  status?: TurnTimelineStatus;
 }
 
 type ToolActionKind = keyof typeof TOOL_ACTION_NAMES;
@@ -181,6 +184,7 @@ interface ThinkingItem {
   type: "thinking";
   key: string;
   values: unknown[];
+  status?: TurnTimelineStatus;
 }
 
 interface ActivityGroupItem {
@@ -188,6 +192,7 @@ interface ActivityGroupItem {
   key: string;
   children: ActivityLeafItem[];
   toolCallCount: number;
+  status?: TurnTimelineStatus;
 }
 
 type ActivityLeafItem = ToolEntry | ThinkingItem;
@@ -815,38 +820,43 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
 
   const nextKey = (prefix: string) => `${prefix}-${sequence++}`;
 
-  const createMessageItem = (role: string, block?: MessageBlock): MessageItem => ({
+  const createMessageItem = (
+    role: string,
+    block?: MessageBlock,
+    status?: TurnTimelineStatus,
+  ): MessageItem => ({
     type: "message",
     key: nextKey(`message-${role}`),
     role,
     blocks: block ? [block] : [],
     activities: [],
+    status,
   });
 
-  const pushMessageBlock = (role: string, block: MessageBlock) => {
+  const pushMessageBlock = (role: string, block: MessageBlock, status?: TurnTimelineStatus) => {
     const previous = items[items.length - 1];
-    if (previous?.role === role && previous.activities.length === 0) {
+    if (previous?.role === role && previous.status === status && previous.activities.length === 0) {
       previous.blocks.push(block);
       return;
     }
-    items.push(createMessageItem(role, block));
+    items.push(createMessageItem(role, block, status));
   };
 
-  const assistantActivityOwner = () => {
+  const assistantActivityOwner = (status?: TurnTimelineStatus) => {
     for (let index = items.length - 1; index >= 0; index -= 1) {
-      if (items[index].role === "assistant") {
+      if (items[index].role === "assistant" && items[index].status === status) {
         return items[index];
       }
     }
-    const fallback = createMessageItem("assistant");
+    const fallback = createMessageItem("assistant", undefined, status);
     items.push(fallback);
     return fallback;
   };
 
-  const pushThinkingValue = (value: unknown) => {
-    const owner = assistantActivityOwner();
+  const pushThinkingValue = (value: unknown, status?: TurnTimelineStatus) => {
+    const owner = assistantActivityOwner(status);
     const previousActivity = owner.activities[owner.activities.length - 1];
-    if (previousActivity?.type === "thinking") {
+    if (previousActivity?.type === "thinking" && previousActivity.status === status) {
       previousActivity.values.push(value);
       return;
     }
@@ -854,14 +864,15 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
       type: "thinking",
       key: nextKey("thinking"),
       values: [value],
+      status,
     });
   };
 
-  const pushToolEntry = (entry: ToolEntry) => {
-    assistantActivityOwner().activities.push(entry);
+  const pushToolEntry = (entry: ToolEntry, status?: TurnTimelineStatus) => {
+    assistantActivityOwner(status).activities.push(entry);
   };
 
-  const registerToolUse = (block: ToolUseBlock) => {
+  const registerToolUse = (block: ToolUseBlock, status?: TurnTimelineStatus) => {
     const entry: ToolEntry = {
       type: "tool",
       key: nextKey("tool"),
@@ -869,19 +880,22 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
       name: block.name,
       input: block.input,
       isError: false,
+      status,
     };
-    pushToolEntry(entry);
+    pushToolEntry(entry, status);
     pending.push(entry);
   };
 
-  const attachToolResult = (block: ToolResultBlock) => {
+  const attachToolResult = (block: ToolResultBlock, status?: TurnTimelineStatus) => {
     const toolUseId = block.toolUseId ?? null;
 
     // Prefer an exact tool-use id match; otherwise fall back to the oldest pending
     // call so mismatched or absent ids still collapse the result into its call.
-    let index = toolUseId ? pending.findIndex((entry) => entry.id === toolUseId) : -1;
+    let index = toolUseId
+      ? pending.findIndex((entry) => entry.id === toolUseId && entry.status === status)
+      : -1;
     if (index === -1 && pending.length > 0) {
-      index = 0;
+      index = pending.findIndex((entry) => entry.status === status);
     }
 
     if (index !== -1) {
@@ -899,32 +913,34 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
       name: block.isError ? "Tool error" : "Tool result",
       result: block.content,
       isError: block.isError,
-    });
+      status,
+    }, status);
   };
 
   for (const turn of turns) {
+    const status = timelineStatus(turn.status);
     for (const block of turn.blocks) {
       switch (block.type) {
         case "text":
-          pushMessageBlock(turn.role, block);
+          pushMessageBlock(turn.role, block, status);
           break;
         case "toolUse":
           if (showActivityDetail) {
-            registerToolUse(block);
+            registerToolUse(block, status);
           }
           break;
         case "toolResult":
           if (showActivityDetail) {
-            attachToolResult(block);
+            attachToolResult(block, status);
           }
           break;
         case "raw":
           if (turn.role === "assistant") {
             if (showActivityDetail) {
-              pushThinkingValue(block.value);
+              pushThinkingValue(block.value, status);
             }
           } else {
-            pushMessageBlock(turn.role, block);
+            pushMessageBlock(turn.role, block, status);
           }
           break;
       }
@@ -953,6 +969,7 @@ function groupActivityItems(activities: ActivityItem[]): ActivityItem[] {
       key: `activity-group-${children[0].key}`,
       children,
       toolCallCount: countUniqueToolCalls(children),
+      status: commonActivityStatus(children),
     },
   ];
 }
@@ -970,6 +987,24 @@ function countUniqueToolCalls(items: ActivityLeafItem[]) {
     counted.add(item.id ? `id:${item.id}` : `entry:${item.key}`);
   }
   return counted.size;
+}
+
+function commonActivityStatus(items: ActivityLeafItem[]): TurnTimelineStatus | undefined {
+  const [first] = items;
+  if (!first?.status) {
+    return undefined;
+  }
+  return items.every((item) => item.status === first.status) ? first.status : undefined;
+}
+
+function timelineStatus(status: Turn["status"]): TurnTimelineStatus | undefined {
+  return status === "superseded" || status === "interrupted" || status === "uncertain"
+    ? status
+    : undefined;
+}
+
+function turnStatusClass(status: TurnTimelineStatus | undefined) {
+  return status ? ` is-status-${status}` : "";
 }
 
 function uniqueToolEntries(items: ActivityLeafItem[]) {
@@ -1050,7 +1085,7 @@ function MessageItemView({
     <article
       className={`turn-card role-${item.role}${
         taggedInstructionMessage ? " is-tagged-instruction-message" : ""
-      }`}
+      }${turnStatusClass(item.status)}`}
     >
       {showName && !taggedInstructionMessage ? (
         <header>
@@ -1222,7 +1257,11 @@ function ActivityGroupView({
   showChevron: boolean;
 }) {
   return (
-    <details className={`activity-group-block${showChevron ? "" : " is-root-activity"}`}>
+    <details
+      className={`activity-group-block${showChevron ? "" : " is-root-activity"}${turnStatusClass(
+        group.status,
+      )}`}
+    >
       <summary>
         {showChevron ? <DisclosureChevron /> : null}
         <span
@@ -1433,7 +1472,9 @@ function ToolEntryView({
   const summaryLabel = summaryArgument ? `${toolNameLabel} ${summaryArgument}` : toolNameLabel;
   return (
     <details
-      className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${showChevron ? "" : " is-root-activity"}`}
+      className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${
+        showChevron ? "" : " is-root-activity"
+      }${turnStatusClass(entry.status)}`}
     >
       <summary>
         {showChevron ? <DisclosureChevron /> : null}
@@ -1499,7 +1540,11 @@ function ThinkingView({
   showChevron: boolean;
 }) {
   return (
-    <details className={`thinking-block${showChevron ? "" : " is-root-activity"}`}>
+    <details
+      className={`thinking-block${showChevron ? "" : " is-root-activity"}${turnStatusClass(
+        item.status,
+      )}`}
+    >
       <summary>
         {showChevron ? <DisclosureChevron /> : null}
         <span>Thought for a while</span>

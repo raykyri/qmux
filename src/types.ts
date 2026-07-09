@@ -165,6 +165,11 @@ export interface Turn {
   role: string;
   blocks: TurnBlock[];
   sourceIndex: number;
+  status?: "superseded" | "interrupted" | "uncertain" | null;
+  statusReason?: "codexRollback" | "interrupted" | "claudePromptBranch" | "unknownBranch" | null;
+  nativeId?: string | null;
+  parentNativeId?: string | null;
+  nativeMessageId?: string | null;
 }
 
 // A selectable past/parallel session for the right pane's transcript picker, used

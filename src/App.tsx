@@ -880,7 +880,7 @@ function createPendingFirstMessageTitle(
 }
 
 function firstUserTurnText(turn: Turn): string | null {
-  if (turn.role !== "user") {
+  if (turn.role !== "user" || turn.status === "superseded") {
     return null;
   }
 

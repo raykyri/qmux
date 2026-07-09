@@ -4073,6 +4073,11 @@ mod tests {
                 text: text.to_string(),
             }],
             source_index: 0,
+            status: None,
+            status_reason: None,
+            native_id: None,
+            parent_native_id: None,
+            native_message_id: None,
         }
     }
 

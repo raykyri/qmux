@@ -149,7 +149,30 @@ export function isTurn(value: unknown): value is Turn {
     typeof turn.id === "string" &&
     typeof turn.agentId === "string" &&
     typeof turn.role === "string" &&
-    Array.isArray(turn.blocks)
+    Array.isArray(turn.blocks) &&
+    optionalTurnStatus(turn.status) &&
+    optionalTurnStatusReason(turn.statusReason)
+  );
+}
+
+function optionalTurnStatus(value: unknown) {
+  return (
+    value === undefined ||
+    value === null ||
+    value === "superseded" ||
+    value === "interrupted" ||
+    value === "uncertain"
+  );
+}
+
+function optionalTurnStatusReason(value: unknown) {
+  return (
+    value === undefined ||
+    value === null ||
+    value === "codexRollback" ||
+    value === "interrupted" ||
+    value === "claudePromptBranch" ||
+    value === "unknownBranch"
   );
 }
 

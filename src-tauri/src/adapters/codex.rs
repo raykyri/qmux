@@ -9,8 +9,9 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::{
-    Turn, TurnBlock, codex_transcript_session_id, gather_transcript_candidates_recursive,
-    read_codex_transcript_session_id, start_transcript_tail, string_field,
+    Turn, TurnBlock, TurnStatus, TurnStatusReason, codex_transcript_session_id,
+    gather_transcript_candidates_recursive, read_codex_transcript_session_id,
+    start_transcript_tail, string_field,
 };
 use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
@@ -19,6 +20,7 @@ use crate::workspace::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -119,6 +121,14 @@ impl AgentAdapter for CodexAdapter {
 
     fn parse_transcript_lifecycle_event(&self, line: &str) -> Option<TranscriptLifecycleEvent> {
         parse_transcript_lifecycle_event(line)
+    }
+
+    fn resolve_transcript_turns(&self, agent_id: &str, lines: &[String]) -> Vec<Turn> {
+        resolve_transcript_turns(agent_id, lines)
+    }
+
+    fn transcript_line_can_update_turn_status(&self, line: &str) -> bool {
+        is_codex_status_event(line)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -1414,7 +1424,115 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
         role,
         blocks,
         source_index,
+        status: None,
+        status_reason: None,
+        native_id: codex_payload_turn_id(payload),
+        parent_native_id: None,
+        native_message_id: string_field(payload, "id"),
     })
+}
+
+fn resolve_transcript_turns(agent_id: &str, lines: &[String]) -> Vec<Turn> {
+    let mut turns = Vec::new();
+    let mut active_turn_ids: Vec<String> = Vec::new();
+    let mut interrupted_turn_ids = HashSet::new();
+    let mut superseded_turn_ids = HashSet::new();
+
+    for (source_index, line) in lines.iter().enumerate() {
+        let value = match serde_json::from_str::<Value>(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if value.get("type").and_then(Value::as_str) == Some("response_item") {
+            if let Some(payload) = value.get("payload") {
+                if let Some(turn_id) = codex_payload_turn_id(payload) {
+                    push_unique_turn_id(&mut active_turn_ids, turn_id);
+                }
+            }
+            if let Some(turn) = parse_transcript_line(agent_id, source_index, line) {
+                turns.push(turn);
+            }
+            continue;
+        }
+
+        let Some(payload) = value
+            .get("payload")
+            .filter(|_| value.get("type").and_then(Value::as_str) == Some("event_msg"))
+        else {
+            continue;
+        };
+        match payload.get("type").and_then(Value::as_str) {
+            Some("task_started") => {
+                if let Some(turn_id) = string_field(payload, "turn_id") {
+                    push_unique_turn_id(&mut active_turn_ids, turn_id);
+                }
+            }
+            Some("turn_aborted") => {
+                if let Some(turn_id) = string_field(payload, "turn_id") {
+                    interrupted_turn_ids.insert(turn_id);
+                }
+            }
+            Some("thread_rolled_back") => {
+                let num_turns = payload
+                    .get("num_turns")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                for _ in 0..num_turns {
+                    if let Some(turn_id) = active_turn_ids.pop() {
+                        superseded_turn_ids.insert(turn_id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for turn in &mut turns {
+        let Some(turn_id) = turn.native_id.as_deref() else {
+            continue;
+        };
+        if superseded_turn_ids.contains(turn_id) {
+            turn.status = Some(TurnStatus::Superseded);
+            turn.status_reason = Some(TurnStatusReason::CodexRollback);
+        } else if interrupted_turn_ids.contains(turn_id) {
+            turn.status = Some(TurnStatus::Interrupted);
+            turn.status_reason = Some(TurnStatusReason::Interrupted);
+        }
+    }
+
+    turns
+}
+
+fn push_unique_turn_id(turn_ids: &mut Vec<String>, turn_id: String) {
+    if turn_ids.last() == Some(&turn_id) || turn_ids.iter().any(|existing| existing == &turn_id) {
+        return;
+    }
+    turn_ids.push(turn_id);
+}
+
+fn codex_payload_turn_id(payload: &Value) -> Option<String> {
+    payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| string_field(metadata, "turn_id"))
+        .or_else(|| string_field(payload, "turn_id"))
+}
+
+fn is_codex_status_event(line: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return false;
+    }
+    let Some(event_type) = value
+        .get("payload")
+        .and_then(|payload| payload.get("type"))
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    matches!(event_type, "turn_aborted" | "thread_rolled_back")
 }
 
 fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {
@@ -2351,6 +2469,51 @@ trusted_hash = "sha256:trusted"
     }
 
     #[test]
+    fn resolve_codex_transcript_marks_rolled_back_turn_superseded() {
+        let lines = vec![
+            codex_task_started_line("turn-1"),
+            codex_user_message_line("turn-1", "typo"),
+            codex_assistant_message_line("turn-1", "partial"),
+            codex_turn_aborted_line("turn-1"),
+            json!({
+                "type": "event_msg",
+                "payload": { "type": "thread_rolled_back", "num_turns": 1 }
+            })
+            .to_string(),
+            codex_task_started_line("turn-2"),
+            codex_user_message_line("turn-2", "corrected"),
+            codex_assistant_message_line("turn-2", "final"),
+        ];
+
+        let turns = resolve_transcript_turns("agent-1", &lines);
+
+        assert_eq!(turns.len(), 4);
+        assert!(turns[0..2].iter().all(|turn| {
+            turn.status == Some(TurnStatus::Superseded)
+                && turn.status_reason == Some(TurnStatusReason::CodexRollback)
+        }));
+        assert!(turns[2..].iter().all(|turn| turn.status.is_none()));
+    }
+
+    #[test]
+    fn resolve_codex_transcript_marks_abort_without_rollback_interrupted() {
+        let lines = vec![
+            codex_task_started_line("turn-1"),
+            codex_user_message_line("turn-1", "prompt"),
+            codex_assistant_message_line("turn-1", "partial"),
+            codex_turn_aborted_line("turn-1"),
+        ];
+
+        let turns = resolve_transcript_turns("agent-1", &lines);
+
+        assert_eq!(turns.len(), 2);
+        assert!(turns.iter().all(|turn| {
+            turn.status == Some(TurnStatus::Interrupted)
+                && turn.status_reason == Some(TurnStatusReason::Interrupted)
+        }));
+    }
+
+    #[test]
     fn parse_codex_transcript_skips_duplicates_and_private_context() {
         let event_line = json!({
             "type": "event_msg",
@@ -2593,6 +2756,43 @@ trusted_hash = "sha256:trusted"
             Ok(AdapterNotificationOutcome::Events(mut events)) => events.remove(0),
             Err(err) => panic!("{err}"),
         }
+    }
+
+    fn codex_task_started_line(turn_id: &str) -> String {
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "task_started", "turn_id": turn_id }
+        })
+        .to_string()
+    }
+
+    fn codex_user_message_line(turn_id: &str, text: &str) -> String {
+        codex_message_line(turn_id, "user", "input_text", text)
+    }
+
+    fn codex_assistant_message_line(turn_id: &str, text: &str) -> String {
+        codex_message_line(turn_id, "assistant", "output_text", text)
+    }
+
+    fn codex_message_line(turn_id: &str, role: &str, block_type: &str, text: &str) -> String {
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": role,
+                "content": [{ "type": block_type, "text": text }],
+                "internal_chat_message_metadata_passthrough": { "turn_id": turn_id }
+            }
+        })
+        .to_string()
+    }
+
+    fn codex_turn_aborted_line(turn_id: &str) -> String {
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "turn_aborted", "turn_id": turn_id }
+        })
+        .to_string()
     }
 
     fn assert_text_block(block: &TurnBlock, expected: &str) {

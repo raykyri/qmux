@@ -139,8 +139,7 @@ pub(crate) fn parse_claude_native_transcript_value(
         .and_then(Value::as_str)
         .unwrap_or("event")
         .to_string();
-    let session_id =
-        string_field(value, "session_id").or_else(|| string_field(value, "sessionId"));
+    let session_id = string_field(value, "session_id").or_else(|| string_field(value, "sessionId"));
     let content = message.get("content").or_else(|| value.get("content"))?;
     let blocks = parse_claude_native_blocks(content);
 
@@ -155,6 +154,12 @@ pub(crate) fn parse_claude_native_transcript_value(
         role,
         blocks,
         source_index,
+        status: None,
+        status_reason: None,
+        native_id: string_field(value, "uuid"),
+        parent_native_id: string_field(value, "parentUuid")
+            .or_else(|| string_field(value, "parent_uuid")),
+        native_message_id: string_field(message, "id"),
     })
 }
 
@@ -408,6 +413,18 @@ pub trait AgentAdapter: Send + Sync {
         source_index: usize,
         line: &str,
     ) -> Option<Turn>;
+
+    fn resolve_transcript_turns(&self, agent_id: &str, lines: &[String]) -> Vec<Turn> {
+        lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| self.parse_transcript_line(agent_id, index, line))
+            .collect()
+    }
+
+    fn transcript_line_can_update_turn_status(&self, _line: &str) -> bool {
+        false
+    }
 
     fn parse_transcript_lifecycle_event(&self, _line: &str) -> Option<TranscriptLifecycleEvent> {
         None

@@ -715,6 +715,11 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
         role,
         blocks,
         source_index,
+        status: None,
+        status_reason: None,
+        native_id: string_field(payload, "id"),
+        parent_native_id: None,
+        native_message_id: string_field(payload, "id"),
     })
 }
 
