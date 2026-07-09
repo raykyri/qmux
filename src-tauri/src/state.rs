@@ -233,13 +233,23 @@ struct AgentSendTracking {
     ups_seq: u64,
 }
 
-/// How long an outstanding send may wait for its UserPromptSubmit echo before it is
-/// considered dead. The echo normally lands well under a second after the PTY write;
-/// a send that never echoes (the user cleared the pasted text with Esc, a slash
-/// command the TUI ran without hooks, …) must not linger — a stale front entry
-/// poisons prompt matching for every later turn, and a stale QueuedTurn entry
-/// suppresses the transcript-interruption fallback that clears a stuck Running.
-const OUTSTANDING_SEND_TTL_MS: u128 = 15_000;
+/// Backstop lifetime for an outstanding send that never echoes a UserPromptSubmit.
+///
+/// The primary cleanup is the per-idle `clear_agent_outstanding_sends` in
+/// `advance_after_idle`: every turn boundary wipes the tracking, so an abandoned or
+/// hookless send (the user cleared the pasted text with Esc, a slash command the TUI
+/// ran without hooks, …) is gone by the next idle. This TTL only bounds the window
+/// *between* idles, for an agent that stays busy without ever going idle.
+///
+/// It must be generous. A steer or queued send can legitimately sit un-echoed for
+/// minutes — the TUI buffers it until the current turn boundary (a long tool call),
+/// or is momentarily unresponsive (large paste replay, an open modal) when a queued
+/// turn is drained into it. Pruning such a live send too early disarms the
+/// double-drain guard at `transcript.rs` (`agent_has_outstanding_send_source`),
+/// letting a late transcript abort marker drain a second turn on top of the first.
+/// Five minutes comfortably clears any realistic single-turn delay while still
+/// reaping a truly dead entry.
+const OUTSTANDING_SEND_TTL_MS: u128 = 5 * 60 * 1_000;
 
 impl AgentSendTracking {
     fn prune_expired(&mut self, now_ms: u128) {
