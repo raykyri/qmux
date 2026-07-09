@@ -8,7 +8,7 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, PtySpawnSpec, qmux_pane_envs, recoverable_dir, spawn_pty};
 use crate::state::{AppState, PaneInfo, PaneKind};
-use crate::transcript::{Turn, start_transcript_tail};
+use crate::transcript::{Turn, session_id_from_transcript_path, start_transcript_tail};
 
 #[cfg(test)]
 use crate::transcript::TurnBlock;
@@ -671,7 +671,8 @@ impl ClaudeAdapter {
                         |fork_point| {
                             session_id.as_deref() == Some(fork_point)
                                 || transcript_path.as_deref().is_some_and(|path| {
-                                    transcript_file_session_id(path) == Some(fork_point)
+                                    session_id_from_transcript_path(Path::new(path)).as_deref()
+                                        == Some(fork_point)
                                 })
                         },
                     );
@@ -1285,26 +1286,6 @@ fn is_subagent_payload(value: &Value) -> bool {
     value.get("agent_id").is_some() || value.get("agentId").is_some()
 }
 
-/// Whether a transcript path reported by a Claude hook notification may be bound.
-///
-/// A hook arrives over the control socket carrying the pane's token, so a
-/// prompt-injected agent can forge one. We can't fully validate the *first* path —
-/// SessionStart is how qmux discovers it, and Claude may not have written the file
-/// to disk yet — but we require a `.jsonl` extension, and once the agent is bound
-/// we require any later path to be a sibling in the same session directory. Claude
-/// keeps a project's sessions in one flat directory, so a legitimate rotation
-/// (compact, resume) stays a sibling, while a forged mid-session hook can no longer
-/// relocate the tail to an unrelated file.
-/// The session id a Claude transcript path encodes: transcripts are stored as
-/// `<project dir>/<session-id>.jsonl` (the same convention the session picker's
-/// `session_id_from_transcript_path` relies on).
-fn transcript_file_session_id(path: &str) -> Option<&str> {
-    Path::new(path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty() && !stem.starts_with('.'))
-}
-
 /// One-shot correction for a forked agent whose SessionStart delivered the source
 /// session's metadata (or was rejected as stale, leaving the fork unbound): adopt the
 /// current session's id and transcript from a later hook payload.
@@ -1346,7 +1327,8 @@ fn adopt_forked_session_identity(
         .or_else(|| super::string_field(payload, "transcriptPath"))
         .filter(|candidate| {
             hook_transcript_path_acceptable(current.transcript_path.as_deref(), candidate)
-                && transcript_file_session_id(candidate) == Some(session_id.as_str())
+                && session_id_from_transcript_path(Path::new(candidate)).as_deref()
+                    == Some(session_id.as_str())
         })
     else {
         return Ok(());
@@ -1377,6 +1359,16 @@ fn adopt_forked_session_identity(
     Ok(())
 }
 
+/// Whether a transcript path reported by a Claude hook notification may be bound.
+///
+/// A hook arrives over the control socket carrying the pane's token, so a
+/// prompt-injected agent can forge one. We can't fully validate the *first* path —
+/// SessionStart is how qmux discovers it, and Claude may not have written the file
+/// to disk yet — but we require a `.jsonl` extension, and once the agent is bound
+/// we require any later path to be a sibling in the same session directory. Claude
+/// keeps a project's sessions in one flat directory, so a legitimate rotation
+/// (compact, resume) stays a sibling, while a forged mid-session hook can no longer
+/// relocate the tail to an unrelated file.
 fn hook_transcript_path_acceptable(current: Option<&str>, candidate: &str) -> bool {
     // Single-sourced in the adapters module so the Claude inline callsite and the shared
     // hook handling can never drift apart.

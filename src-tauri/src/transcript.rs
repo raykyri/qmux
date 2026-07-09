@@ -972,7 +972,10 @@ fn is_instruction_tag_name(tag: &str) -> bool {
             .all(|char| char.is_ascii_alphanumeric() || char == '_' || char == '-')
 }
 
-fn session_id_from_transcript_path(path: &Path) -> Option<String> {
+/// The session id a Claude/Grok transcript path encodes: transcripts are stored as
+/// `<project dir>/<session-id>.jsonl`. Shared by the session picker and the Claude
+/// adapter's fork stale-payload guard so the naming convention has one owner.
+pub(crate) fn session_id_from_transcript_path(path: &Path) -> Option<String> {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .filter(|stem| !stem.is_empty() && !stem.starts_with('.'))
