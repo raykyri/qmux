@@ -227,8 +227,14 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     }
     let is_head = head.method == "HEAD";
 
-    // Drop any query string / fragment before routing.
-    let path = head.target.split(['?', '#']).next().unwrap_or("");
+    // Split the query string off the target (dropping any fragment) before routing.
+    // `?raw=1` opts a Markdown file out of the HTML rendering below.
+    let without_fragment = head.target.split('#').next().unwrap_or("");
+    let (path, query) = match without_fragment.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (without_fragment, None),
+    };
+    let raw_requested = query.is_some_and(|q| q.split('&').any(|p| p == "raw" || p == "raw=1"));
     // The path is "/<token>/<abs path>": the first segment is the per-pane token, and
     // everything from the next '/' onward is the percent-encoded absolute path (with
     // its leading slash preserved). Tokens are hex, so they never contain a slash.
@@ -274,6 +280,28 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     // still load, but only from this same file-server origin; nothing may talk to the
     // network. `state.file_server_port()` is always set once the server is serving.
     let csp = state.file_server_port().map(file_content_csp);
+
+    // Markdown is rendered into a styled HTML page at serve time (unless `?raw=1` opts
+    // out), so the overlay shows a document instead of plain source. Rendering
+    // transforms the entity, so byte offsets into the source are meaningless: Range is
+    // ignored and the full page is served. A file over the inline cap falls through to
+    // the plain-text path and its existing 413/Range flow.
+    if !raw_requested && is_markdown(&canonical) && total <= MAX_INLINE_BYTES {
+        let Ok(source) = read_slice(file, 0, total) else {
+            return Response::error(500, "Internal Server Error");
+        };
+        let page = render_markdown_page(&canonical, &String::from_utf8_lossy(&source));
+        let mut response = Response::new(200, "OK");
+        response.header("Content-Type", "text/html; charset=utf-8");
+        response.header("Content-Length", &page.len().to_string());
+        if let Some(csp) = &csp {
+            response.header("Content-Security-Policy", csp);
+        }
+        if !is_head {
+            response.body = page.into_bytes();
+        }
+        return response;
+    }
 
     if let Some(range_raw) = &head.range {
         let Some((start, requested_end)) = parse_range(range_raw, total) else {
@@ -418,6 +446,78 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
         return None;
     }
     Some((start, end))
+}
+
+fn is_markdown(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("md" | "markdown")
+    )
+}
+
+/// Inline stylesheet for rendered Markdown. Background and text colors are set
+/// explicitly per scheme (not left to UA defaults): the overlay loads this page in a
+/// sandboxed iframe whose canvas is transparent, so UA-default dark-scheme text would
+/// float over whatever backdrop the app has — white-on-white in practice. Translucent
+/// grays handle the accents in both themes, and the file CSP already allows inline
+/// styles.
+const MARKDOWN_PAGE_CSS: &str = "\
+:root { color-scheme: light dark; }\
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; background: #ffffff; color: #1f2328; }\
+@media (prefers-color-scheme: dark) { body { background: #1e2227; color: #e2e6ea; } }\
+main { max-width: 48rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }\
+h1, h2 { border-bottom: 1px solid rgba(127, 127, 127, 0.3); padding-bottom: 0.3em; }\
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: rgba(127, 127, 127, 0.15); padding: 0.1em 0.3em; border-radius: 4px; }\
+pre { background: rgba(127, 127, 127, 0.12); padding: 0.75rem 1rem; border-radius: 6px; overflow-x: auto; }\
+pre code { background: none; padding: 0; font-size: 0.85em; }\
+blockquote { margin-left: 0; padding-left: 1em; border-left: 3px solid rgba(127, 127, 127, 0.4); opacity: 0.85; }\
+table { border-collapse: collapse; display: block; overflow-x: auto; }\
+th, td { border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.35em 0.7em; }\
+img { max-width: 100%; }\
+hr { border: none; border-top: 1px solid rgba(127, 127, 127, 0.3); }";
+
+/// Renders Markdown source into a complete standalone HTML page. Raw HTML embedded in
+/// the Markdown passes through untouched: the overlay's sandbox + CSP were designed to
+/// contain fully hostile served HTML files, so rendered Markdown gets the same
+/// containment rather than a sanitizer.
+fn render_markdown_page(path: &Path, source: &str) -> String {
+    use pulldown_cmark::{Options, Parser, html};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
+
+    let mut body = String::with_capacity(source.len() * 2);
+    html::push_html(&mut body, Parser::new_ext(source, options));
+
+    let title = escape_html(path.file_name().and_then(|name| name.to_str()).unwrap_or("Markdown"));
+    format!(
+        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{title}</title>\n<style>{MARKDOWN_PAGE_CSS}</style>\n</head>\n\
+         <body>\n<main>\n{body}</main>\n</body>\n</html>\n"
+    )
+}
+
+/// Escapes text for interpolation into HTML (the page `<title>`).
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn mime_type(path: &Path) -> String {
@@ -565,7 +665,8 @@ mod tests {
         assert_eq!(cap_range_end(u64::MAX - 1, u64::MAX, 100), u64::MAX);
     }
 
-    fn http_get(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
+    /// Issues a GET and returns the full response head (status line + headers) and body.
+    fn http_get_full(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
         use std::io::{Read, Write};
         use std::net::TcpStream;
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -587,8 +688,13 @@ mod tests {
             .map(|i| i + 4)
             .unwrap_or(raw.len());
         let head = String::from_utf8_lossy(&raw[..split]).to_string();
+        (head, raw[split..].to_vec())
+    }
+
+    fn http_get(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
+        let (head, body) = http_get_full(port, path, range);
         let status = head.lines().next().unwrap_or("").to_string();
-        (status, raw[split..].to_vec())
+        (status, body)
     }
 
     fn url_path(port: u16, token: &str, abs: &Path) -> String {
@@ -598,22 +704,14 @@ mod tests {
             .to_string()
     }
 
-    #[test]
-    fn serves_files_under_root_with_range_and_blocks_the_rest() {
+    /// Builds an `AppState` whose workspace root is `root`, for serving tests.
+    fn test_state(root: &Path, base: &Path) -> AppState {
         use crate::config::{
             AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
             OpencodeAdapterConfig, QmuxConfig,
         };
-        let base = std::env::temp_dir().join(format!("qmux-fs-serve-{}", std::process::id()));
-        let root = base.join("ws");
-        let outside = base.join("outside");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(root.join("hello.txt"), b"hello world").unwrap();
-        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
-
         let config = QmuxConfig {
-            workspace_root: root.clone(),
+            workspace_root: root.to_path_buf(),
             socket_path: base.join("x.sock"),
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
@@ -633,7 +731,20 @@ mod tests {
             claude_plugin_dir: PathBuf::new(),
             opencode_plugin_dir: PathBuf::new(),
         };
-        let state = AppState::new(config);
+        AppState::new(config)
+    }
+
+    #[test]
+    fn serves_files_under_root_with_range_and_blocks_the_rest() {
+        let base = std::env::temp_dir().join(format!("qmux-fs-serve-{}", std::process::id()));
+        let root = base.join("ws");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("hello.txt"), b"hello world").unwrap();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+
+        let state = test_state(&root, &base);
         let info = start_file_server(state.clone()).unwrap();
         // The URL token is a per-pane file token; mint one for a pane whose only root is
         // the workspace root (it isn't in the model, so `pane_file_roots` falls back to
@@ -672,6 +783,45 @@ mod tests {
         );
         let (status, _) = http_get(info.port, &wrong, None);
         assert!(status.contains("404"), "status: {status}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn renders_markdown_as_html_unless_raw_is_requested() {
+        let base = std::env::temp_dir().join(format!("qmux-fs-md-{}", std::process::id()));
+        let root = base.join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = "# Hello\n\nSome *text* in a table:\n\n| a | b |\n| - | - |\n| 1 | 2 |\n";
+        std::fs::write(root.join("doc.md"), source).unwrap();
+
+        let state = test_state(&root, &base);
+        let info = start_file_server(state.clone()).unwrap();
+        let token = state.pane_file_token("pane-md").unwrap();
+        let doc = std::fs::canonicalize(root.join("doc.md")).unwrap();
+        let path = url_path(info.port, &token, &doc);
+
+        // A plain GET returns a rendered HTML page.
+        let (head, body) = http_get_full(info.port, &path, None);
+        let body_text = String::from_utf8(body).unwrap();
+        assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+        assert!(head.contains("Content-Type: text/html"), "head: {head}");
+        assert!(body_text.contains("<h1>Hello</h1>"), "body: {body_text}");
+        assert!(body_text.contains("<table>"), "body: {body_text}");
+
+        // `?raw=1` opts out and serves the source as plain text.
+        let (head, body) = http_get_full(info.port, &format!("{path}?raw=1"), None);
+        assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+        assert!(head.contains("Content-Type: text/plain"), "head: {head}");
+        assert_eq!(body, source.as_bytes());
+
+        // Range on Markdown is ignored: the full rendered page comes back as a 200.
+        let (head, body) = http_get_full(info.port, &path, Some("bytes=0-4"));
+        assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+        assert!(
+            String::from_utf8(body).unwrap().contains("<h1>Hello</h1>"),
+            "range response should carry the full rendered page"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
