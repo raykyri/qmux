@@ -208,7 +208,14 @@ fn reset_state_requested() -> bool {
 /// fresh without losing the original bytes.
 pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
     let path = state_path(workspace_root);
-    let raw = match fs::read_to_string(&path) {
+    // Read raw bytes, not a UTF-8 string: a state file with invalid UTF-8 is
+    // *corrupt content*, not an I/O failure, and must fall through to the
+    // version check below (where it fails to parse and is left for
+    // `load_with_diagnostics` to preserve as a `.bak`). `read_to_string` would
+    // instead surface it as `ErrorKind::InvalidData` and hit the fatal arm,
+    // refusing startup forever with misleading "this is almost always temporary"
+    // guidance.
+    let raw = match fs::read(&path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
         Err(err) if reset_state_requested() => {
@@ -244,9 +251,10 @@ pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
         }
     };
 
-    // Unparseable JSON or a missing/older version is left for `load_with_diagnostics`,
-    // which preserves the file as a `.bak` before starting fresh.
-    let newer_version = serde_json::from_str::<Value>(&raw)
+    // Non-UTF-8, unparseable JSON, or a missing/older version is left for
+    // `load_with_diagnostics`, which preserves the file as a `.bak` before starting
+    // fresh. `from_slice` rejects non-UTF-8 as a parse error, so it lands here too.
+    let newer_version = serde_json::from_slice::<Value>(&raw)
         .ok()
         .and_then(|value| value.get("version").and_then(Value::as_u64))
         .filter(|&version| version > u64::from(STATE_VERSION));
@@ -939,6 +947,13 @@ mod tests {
         assert!(preflight_state(&root).is_ok());
         fs::write(&path, "{ not json").unwrap();
         assert!(preflight_state(&root).is_ok());
+        // Invalid UTF-8 is corrupt content, not an I/O failure: it must be
+        // preflight-clean too (read as bytes), not a permanent startup refusal.
+        fs::write(&path, [0x7b, 0xff, 0xfe, 0x00, 0x80]).unwrap();
+        assert!(
+            preflight_state(&root).is_ok(),
+            "non-UTF-8 state is corrupt content, recoverable via load's .bak path"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
