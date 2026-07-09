@@ -364,6 +364,10 @@ export default function TurnOverlay({
     index: -1,
     count: 0,
   });
+  // The term actually fed to the (expensive) rescan, debounced behind searchTerm so
+  // typing doesn't walk the whole timeline DOM and read per-match geometry on every
+  // keystroke. The input shows searchTerm immediately; only the scan waits.
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   // Bumped when a <details> in the timeline toggles: that reveals or hides text,
   // which changes the set of searchable (rendered) matches.
   const [searchDomNonce, setSearchDomNonce] = useState(0);
@@ -616,10 +620,22 @@ export default function TurnOverlay({
     return () => timeline.removeEventListener("toggle", handleToggle, true);
   }, [searchOpen]);
 
-  // Rescan whenever the term/options change or the rendered timeline does (new
-  // turns, toggled details). Runs after the DOM commit, so ranges are built over
-  // current text nodes. The active match snaps to the one nearest the viewport,
-  // so typing refines the term without yanking the view to the top.
+  // Debounce the term into debouncedSearchTerm so the rescan below fires once typing
+  // settles, not per keystroke. Clearing the term takes effect immediately (no scan
+  // cost, and the user expects the highlights gone at once).
+  useEffect(() => {
+    if (searchTerm === "") {
+      setDebouncedSearchTerm("");
+      return;
+    }
+    const handle = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 120);
+    return () => window.clearTimeout(handle);
+  }, [searchTerm]);
+
+  // Rescan whenever the debounced term/options change or the rendered timeline does
+  // (new turns, toggled details). Runs after the DOM commit, so ranges are built over
+  // current text nodes. The active match snaps to the one nearest the viewport, so
+  // typing refines the term without yanking the view to the top.
   useEffect(() => {
     if (!searchOpen) {
       return;
@@ -629,15 +645,22 @@ export default function TurnOverlay({
       return;
     }
     const ranges =
-      searchTerm === ""
+      debouncedSearchTerm === ""
         ? []
-        : collectSearchRanges(timeline, searchTerm, {
+        : collectSearchRanges(timeline, debouncedSearchTerm, {
             caseSensitive: searchCaseSensitive,
             regex: searchUseRegex,
           });
     searchRangesRef.current = ranges;
     setSearchResults({ index: nearestSearchRangeIndex(timeline, ranges), count: ranges.length });
-  }, [searchOpen, searchTerm, searchCaseSensitive, searchUseRegex, timelineItems, searchDomNonce]);
+  }, [
+    searchOpen,
+    debouncedSearchTerm,
+    searchCaseSensitive,
+    searchUseRegex,
+    timelineItems,
+    searchDomNonce,
+  ]);
 
   // Repaint highlights and bring the active match into view on every result change.
   // Only the active pane paints: the highlight registry has one slot per name, so in
