@@ -134,6 +134,11 @@ struct Model {
     /// — the Esc-interrupt grace window uses it to stand down when hook or transcript
     /// activity proves the agent is still working. Transient (not persisted).
     agent_activity: HashMap<String, u64>,
+    /// Agents with an Esc-interrupt grace watch already in flight. Holding Esc (key
+    /// repeat) fires `watch_agent_after_escape` per keystroke; this dedupes so a burst
+    /// spawns one watcher thread, not dozens. Cleared when that thread resolves.
+    /// Transient (not persisted).
+    agent_escape_watch: HashSet<String>,
     agent_drafts: HashMap<String, String>,
     recent_sessions: HashMap<String, RecentSessionInfo>,
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
@@ -1765,6 +1770,7 @@ impl AppState {
                 model.agent_draining.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
                 model.agent_activity.remove(&agent_id);
+                model.agent_escape_watch.remove(&agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
                 // the has_queue check below keeps the agent for restart recovery).
@@ -2183,6 +2189,26 @@ impl AppState {
             self.persist();
         }
         Ok(updated)
+    }
+
+    /// Reserves the Esc-interrupt grace watch for an agent, returning `true` when the
+    /// caller should spawn the watcher and `false` when one is already in flight (so a
+    /// held-Esc burst spawns a single thread). Best-effort: a poisoned lock returns
+    /// `false`, skipping the watch rather than racing.
+    pub fn begin_agent_escape_watch(&self, agent_id: &str) -> bool {
+        let Ok(mut model) = self.inner.model.lock() else {
+            return false;
+        };
+        model.agent_escape_watch.insert(agent_id.to_string())
+    }
+
+    /// Clears the Esc-interrupt grace watch reservation once the watcher thread
+    /// resolves. Best-effort: a poisoned lock just leaves the entry, which only costs
+    /// the next Esc burst its watch until the agent is next removed.
+    pub fn end_agent_escape_watch(&self, agent_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock() {
+            model.agent_escape_watch.remove(agent_id);
+        }
     }
 
     /// Field-scoped status write — a thin wrapper over [`AppState::mutate_agent`] that
@@ -3598,6 +3624,7 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agent_draining.remove(agent_id);
     model.agent_send_tracking.remove(agent_id);
     model.agent_activity.remove(agent_id);
+    model.agent_escape_watch.remove(agent_id);
     clear_recent_session_binding_locked(model, Some(agent_id), None);
 }
 

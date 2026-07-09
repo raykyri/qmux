@@ -471,33 +471,54 @@ pub fn clear_agent_working_status(state: &AppState, agent_id: &str) -> Result<Ag
 /// counter-evidence before concluding the user interrupted the turn.
 const ESC_INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Adapters whose TUI interrupts the running turn on a *lone* Esc, verified to emit
+/// no Stop hook / transcript line / idle notification when interrupted mid-thinking.
+/// Only these get the escape watch below. Codex, for instance, requires Esc twice —
+/// running the watch there would demote a still-working agent on every single Esc.
+/// Others can opt in once their Esc semantics are confirmed.
+fn adapter_interrupts_on_lone_escape(adapter: &str) -> bool {
+    adapter == "claude"
+}
+
 /// Handles a lone Esc typed into a working agent's pane. In the agent TUIs qmux
-/// hosts, Esc while a turn is running means "interrupt" — and a turn canceled during
-/// its thinking phase produces no Stop hook, no transcript line, and no idle
-/// notification (verified against Claude Code 2.1.x), so nothing would ever demote
-/// the agent from Running and the transcript pane would show "Working…" forever.
+/// hosts (see `adapter_interrupts_on_lone_escape`), Esc while a turn is running means
+/// "interrupt" — and a turn canceled during its thinking phase produces no Stop hook,
+/// no transcript line, and no idle notification (verified against Claude Code 2.1.x),
+/// so nothing would ever demote the agent from Running and the transcript pane would
+/// show "Working…" forever.
 ///
-/// Watch the agent for a short grace window; if no hook or transcript activity
-/// lands, mark it AwaitingInput. The queue is deliberately NOT drained (unlike the
-/// hard idle signals routed through advance_after_idle): if the Esc didn't actually
-/// interrupt — it dismissed a menu mid-run, say — auto-sending a queued turn would
-/// steer a busy agent. A wrong demotion is self-correcting: the next hook or
-/// transcript event re-promotes the agent to Running.
+/// Watch the agent for a short grace window; if no hook or transcript activity lands,
+/// mark it AwaitingInput. The watch itself does not drain the queue (unlike the hard
+/// idle signals routed through advance_after_idle) — but AwaitingInput is a ready
+/// status, so a later drain trigger can still send a queued turn. That is correct
+/// after a real interrupt; the residual risk is a *wrong* demotion (an Esc that
+/// dismissed a menu mid-run), which the activity-counter guard makes rare and which
+/// the next hook/transcript event self-corrects by re-promoting to Running.
 pub fn watch_agent_after_escape(state: &AppState, pane_id: &str) {
     let Ok(Some(agent)) = state.agent_by_pane(pane_id) else {
         return;
     };
+    if !adapter_interrupts_on_lone_escape(&agent.adapter) {
+        return;
+    }
     if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
         return;
     }
     let Ok(baseline) = state.agent_activity_seq(&agent.id) else {
         return;
     };
+    // Dedupe: a held Esc (key repeat) calls this per keystroke. Spawn one watcher per
+    // burst rather than a thread each, all racing to demote the same agent.
+    if !state.begin_agent_escape_watch(&agent.id) {
+        return;
+    }
     let state = state.clone();
     let agent_id = agent.id;
     std::thread::spawn(move || {
         std::thread::sleep(ESC_INTERRUPT_GRACE);
-        if let Some(agent) = resolve_agent_escape_watch(&state, &agent_id, baseline) {
+        let resolved = resolve_agent_escape_watch(&state, &agent_id, baseline);
+        state.end_agent_escape_watch(&agent_id);
+        if let Some(agent) = resolved {
             state.emit(crate::events::QmuxEvent::new(
                 "agent.interrupted",
                 agent.pane_id.clone(),
@@ -1212,6 +1233,31 @@ mod tests {
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Done
         ));
+    }
+
+    #[test]
+    fn escape_watch_only_runs_for_lone_escape_adapters() {
+        // Claude interrupts on a lone Esc (no hook), so it is watched; Codex needs Esc
+        // twice, so watching it would demote a still-working agent on every Esc.
+        assert!(adapter_interrupts_on_lone_escape("claude"));
+        assert!(!adapter_interrupts_on_lone_escape("codex"));
+        assert!(!adapter_interrupts_on_lone_escape("grok"));
+        assert!(!adapter_interrupts_on_lone_escape("opencode"));
+    }
+
+    #[test]
+    fn escape_watch_dedupes_a_held_escape_burst() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Running))
+            .unwrap();
+
+        // The first Esc reserves the watch; a repeat while it is in flight does not.
+        assert!(state.begin_agent_escape_watch("agent-1"));
+        assert!(!state.begin_agent_escape_watch("agent-1"));
+        // Once the watcher resolves, the next burst may reserve again.
+        state.end_agent_escape_watch("agent-1");
+        assert!(state.begin_agent_escape_watch("agent-1"));
     }
 
     #[test]
