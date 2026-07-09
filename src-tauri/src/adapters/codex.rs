@@ -596,13 +596,13 @@ impl CodexAdapter {
                 "agent.awaiting_permission"
             }
             "Stop" => {
-                let drained = if let Some(agent) = agent.as_mut() {
-                    finish_agent_after_stop(state, agent)?
+                let deferred = if let Some(agent) = agent.as_ref() {
+                    schedule_finish_agent_after_stop(state, agent)?
                 } else {
                     false
                 };
-                if drained {
-                    "agent.running"
+                if deferred {
+                    "agent.stop_observed"
                 } else {
                     "agent.done"
                 }
@@ -1067,6 +1067,71 @@ fn validate_shell_tail_args(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Codex can carry its own internal queue: a user may submit into the TUI while a
+/// turn is running, then Codex emits `Stop` for the current turn and immediately
+/// starts the queued prompt. If qmux treats `Stop` as a hard idle boundary
+/// synchronously, it can drain qmux waiters/queues into other panes in the small
+/// gap before Codex's `UserPromptSubmit` for that internal prompt arrives. Defer
+/// Codex idle settlement briefly and stand down if another lifecycle hook lands.
+#[cfg(not(test))]
+const CODEX_STOP_SETTLE_GRACE: Duration = Duration::from_millis(350);
+
+fn schedule_finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, String> {
+    let baseline = state.agent_status_activity_seq(&agent.id)?;
+    let agent_id = agent.id.clone();
+
+    #[cfg(test)]
+    {
+        let _ = (state, baseline, agent_id);
+        Ok(true)
+    }
+
+    #[cfg(not(test))]
+    {
+        let state = state.clone();
+        thread::spawn(move || {
+            thread::sleep(CODEX_STOP_SETTLE_GRACE);
+            match resolve_agent_after_stop_grace(&state, &agent_id, baseline) {
+                Ok(Some(event)) => state.emit(event),
+                Ok(None) => {}
+                Err(err) => eprintln!("qmux: failed to settle Codex Stop for {agent_id}: {err}"),
+            }
+        });
+        Ok(true)
+    }
+}
+
+fn resolve_agent_after_stop_grace(
+    state: &AppState,
+    agent_id: &str,
+    baseline: u64,
+) -> Result<Option<QmuxEvent>, String> {
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(None);
+    };
+    if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+        return Ok(None);
+    }
+    if state.agent_status_activity_seq(agent_id)? != baseline {
+        return Ok(None);
+    }
+
+    let drained = finish_agent_after_stop(state, &agent)?;
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(None);
+    };
+    Ok(Some(QmuxEvent::new(
+        if drained {
+            "agent.running"
+        } else {
+            "agent.done"
+        },
+        agent.pane_id.clone(),
+        Some(agent.id.clone()),
+        json!({ "agent": agent, "deferredHookEvent": "Stop" }),
+    )))
 }
 
 /// Resolves an idle Codex agent: drains the next queued turn, or enters/stays paused.
@@ -2590,6 +2655,15 @@ trusted_hash = "sha256:trusted"
 
         let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
 
+        assert_eq!(event.event_type, "agent.stop_observed");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Running));
+
+        let baseline = state.agent_status_activity_seq("agent-1").unwrap();
+        let event = resolve_agent_after_stop_grace(&state, "agent-1", baseline)
+            .unwrap()
+            .expect("stop should settle after grace");
+
         assert_eq!(event.event_type, "agent.done");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::Done));
@@ -2608,6 +2682,17 @@ trusted_hash = "sha256:trusted"
 
         let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
 
+        assert_eq!(event.event_type, "agent.stop_observed");
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["first".to_string(), "second".to_string()]
+        );
+
+        let baseline = state.agent_status_activity_seq("agent-1").unwrap();
+        let event = resolve_agent_after_stop_grace(&state, "agent-1", baseline)
+            .unwrap()
+            .expect("stop should settle after grace");
+
         assert_eq!(event.event_type, "agent.running");
         assert_eq!(
             state.list_agent_turn_queue("agent-1").unwrap(),
@@ -2618,6 +2703,47 @@ trusted_hash = "sha256:trusted"
         let written = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(written.contains("first"));
         assert!(!written.contains("second"));
+    }
+
+    #[test]
+    fn stop_grace_stands_down_for_codex_internal_queued_prompt() {
+        let state = test_state();
+        install_agent_pane(&state);
+        let mut source = sample_agent();
+        source.id = "agent-2".to_string();
+        source.pane_id = Some("pane-2".to_string());
+        source.status = AgentStatus::Done;
+        state.insert_agent(source).unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "agent-2",
+                "after target".to_string(),
+                "agent-1",
+                Some("pane-1"),
+                Some("Codex"),
+            )
+            .unwrap();
+
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        assert_eq!(event.event_type, "agent.stop_observed");
+        let baseline = state.agent_status_activity_seq("agent-1").unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "UserPromptSubmit",
+                "agent-1",
+                json!({ "prompt": "internally queued turn" }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.prompt_submitted");
+
+        assert!(
+            resolve_agent_after_stop_grace(&state, "agent-1", baseline)
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.pop_ready_agent_turn("agent-2").unwrap().is_none());
     }
 
     #[test]

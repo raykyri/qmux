@@ -134,6 +134,11 @@ struct Model {
     /// — the Esc-interrupt grace window uses it to stand down when hook or transcript
     /// activity proves the agent is still working. Transient (not persisted).
     agent_activity: HashMap<String, u64>,
+    /// Monotonic per-agent counter bumped on every status hook/write, including writes
+    /// that keep the same status. Unlike `agent_activity`, transcript writes do not
+    /// touch this, so a delayed idle resolver can distinguish a new lifecycle hook from
+    /// late transcript tailing. Transient (not persisted).
+    agent_status_activity: HashMap<String, u64>,
     /// Agents with an Esc-interrupt grace watch already in flight. Holding Esc (key
     /// repeat) fires `watch_agent_after_escape` per keystroke; this dedupes so a burst
     /// spawns one watcher thread, not dozens. Cleared when that thread resolves.
@@ -1793,6 +1798,7 @@ impl AppState {
                 model.agent_draining.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
                 model.agent_activity.remove(&agent_id);
+                model.agent_status_activity.remove(&agent_id);
                 model.agent_escape_watch.remove(&agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
@@ -2242,7 +2248,30 @@ impl AppState {
         agent_id: &str,
         status: AgentStatus,
     ) -> Result<Option<AgentInfo>, String> {
-        self.mutate_agent(agent_id, |agent| agent.status = status)
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            match model.agents.get_mut(agent_id) {
+                Some(agent) => {
+                    agent.status = status;
+                    let updated = agent.clone();
+                    let now = now_millis();
+                    bump_agent_activity_locked(&mut model, agent_id);
+                    bump_agent_status_activity_locked(&mut model, agent_id);
+                    upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
+                    prune_recent_sessions_locked(&mut model);
+                    Some(updated)
+                }
+                None => None,
+            }
+        };
+        if updated.is_some() {
+            self.persist();
+        }
+        Ok(updated)
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
@@ -2994,6 +3023,21 @@ impl AppState {
         Ok(model.agent_activity.get(agent_id).copied().unwrap_or(0))
     }
 
+    /// Current value of the agent's status/lifecycle counter. This is intentionally
+    /// narrower than `agent_activity_seq`: transcript updates do not bump it.
+    pub fn agent_status_activity_seq(&self, agent_id: &str) -> Result<u64, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_status_activity
+            .get(agent_id)
+            .copied()
+            .unwrap_or(0))
+    }
+
     pub fn agent_has_outstanding_send_source(
         &self,
         agent_id: &str,
@@ -3647,6 +3691,7 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agent_draining.remove(agent_id);
     model.agent_send_tracking.remove(agent_id);
     model.agent_activity.remove(agent_id);
+    model.agent_status_activity.remove(agent_id);
     model.agent_escape_watch.remove(agent_id);
     clear_recent_session_binding_locked(model, Some(agent_id), None);
 }
@@ -3654,6 +3699,15 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
 /// Bumps the per-agent activity counter; see `Model::agent_activity`.
 fn bump_agent_activity_locked(model: &mut Model, agent_id: &str) {
     let seq = model.agent_activity.entry(agent_id.to_string()).or_insert(0);
+    *seq = seq.wrapping_add(1);
+}
+
+/// Bumps the per-agent status/lifecycle counter; see `Model::agent_status_activity`.
+fn bump_agent_status_activity_locked(model: &mut Model, agent_id: &str) {
+    let seq = model
+        .agent_status_activity
+        .entry(agent_id.to_string())
+        .or_insert(0);
     *seq = seq.wrapping_add(1);
 }
 
