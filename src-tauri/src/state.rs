@@ -2,6 +2,7 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
+use crate::thread_graph;
 use crate::transcript::{Turn, read_transcript_meta};
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
@@ -122,6 +123,7 @@ struct Model {
     group_order: Vec<String>,
     agents: HashMap<String, AgentInfo>,
     turns: HashMap<String, Vec<Turn>>,
+    thread_focus: HashMap<String, String>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
     /// A queued turn claimed for delivery but not yet confirmed on the PTY, per agent
     /// (at most one — `agent_draining` serializes drains). Popped out of the queue at
@@ -302,7 +304,11 @@ pub struct QueuedTurnWait {
 /// a fresh session of the same adapter in the source's directory. Either way the
 /// source agent never runs the turn itself and stays idle.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum QueuedTurnDelivery {
     Fork {
         #[serde(default)]
@@ -531,6 +537,29 @@ fn sanitize_active_tab_id(tab_id: Option<String>) -> Option<String> {
         let trimmed = id.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+fn ensure_agent_thread_metadata(state: &AppState, model: &mut Model, agent: &mut AgentInfo) {
+    if agent
+        .thread_id
+        .as_deref()
+        .is_none_or(|thread_id| thread_id.trim().is_empty())
+    {
+        agent.thread_id = Some(state.next_id("thread"));
+    }
+    if agent
+        .branch_id
+        .as_deref()
+        .is_none_or(|branch_id| branch_id.trim().is_empty())
+    {
+        agent.branch_id = Some(state.next_id("branch"));
+    }
+    if let (Some(thread_id), Some(branch_id)) = (&agent.thread_id, &agent.branch_id) {
+        model
+            .thread_focus
+            .entry(thread_id.clone())
+            .or_insert_with(|| branch_id.clone());
+    }
 }
 
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
@@ -961,7 +990,9 @@ impl AppState {
                 missing.sort();
                 model.group_order.extend(missing);
             }
+            model.thread_focus = persisted.thread_focus;
             for mut agent in persisted.agents {
+                ensure_agent_thread_metadata(self, &mut model, &mut agent);
                 if let Some(pane_id) = agent
                     .pane_id
                     .clone()
@@ -1101,6 +1132,7 @@ impl AppState {
                 pane_splits: normalized_pane_splits(&model, model.pane_splits.clone(), false)
                     .unwrap_or_default(),
                 active_tab_id: model.active_tab_id.clone(),
+                thread_focus: model.thread_focus.clone(),
             }
         };
 
@@ -2107,13 +2139,14 @@ impl AppState {
         Ok(())
     }
 
-    pub fn insert_agent(&self, agent: AgentInfo) -> Result<(), String> {
+    pub fn insert_agent(&self, mut agent: AgentInfo) -> Result<(), String> {
         {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            ensure_agent_thread_metadata(self, &mut model, &mut agent);
             let now = now_millis();
             upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
             prune_recent_sessions_locked(&mut model);
@@ -2167,13 +2200,14 @@ impl AppState {
         Ok(())
     }
 
-    pub fn update_agent(&self, agent: AgentInfo) -> Result<(), String> {
+    pub fn update_agent(&self, mut agent: AgentInfo) -> Result<(), String> {
         {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            ensure_agent_thread_metadata(self, &mut model, &mut agent);
             let now = now_millis();
             bump_agent_activity_locked(&mut model, &agent.id);
             upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
@@ -2275,7 +2309,7 @@ impl AppState {
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
-        let should_persist_recent = {
+        let (should_persist_recent, agent_for_graph) = {
             let mut model = self
                 .inner
                 .model
@@ -2285,19 +2319,29 @@ impl AppState {
             let is_user_turn = turn.role == "user";
             bump_agent_activity_locked(&mut model, &agent_id);
             let turns = model.turns.entry(agent_id.clone()).or_default();
-            turns.push(turn);
+            turns.push(turn.clone());
             if turns.len() > MAX_TURNS_PER_AGENT {
                 let overflow = turns.len() - MAX_TURNS_PER_AGENT;
                 turns.drain(..overflow);
             }
-            if is_user_turn {
-                model.agents.get(&agent_id).cloned().is_some_and(|agent| {
+            let agent_for_graph = model.agents.get(&agent_id).cloned();
+            let should_persist_recent = if is_user_turn {
+                agent_for_graph.clone().is_some_and(|agent| {
                     upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
                 })
             } else {
                 false
-            }
+            };
+            (should_persist_recent, agent_for_graph)
         };
+        if let Some(agent) = agent_for_graph
+            && let Err(err) = thread_graph::append_agent_turn_snapshot(&agent, &turn)
+        {
+            eprintln!(
+                "qmux: failed to append thread graph for agent {}: {err}",
+                agent.id
+            );
+        }
         if should_persist_recent {
             self.persist();
         }
@@ -2305,7 +2349,8 @@ impl AppState {
     }
 
     pub fn replace_turns(&self, agent_id: &str, mut turns: Vec<Turn>) -> Result<(), String> {
-        let should_persist_recent = {
+        let turns_for_graph = turns.clone();
+        let (should_persist_recent, agent_for_graph) = {
             let mut model = self
                 .inner
                 .model
@@ -2317,10 +2362,20 @@ impl AppState {
             }
             bump_agent_activity_locked(&mut model, agent_id);
             model.turns.insert(agent_id.to_string(), turns);
-            model.agents.get(agent_id).cloned().is_some_and(|agent| {
+            let agent_for_graph = model.agents.get(agent_id).cloned();
+            let should_persist_recent = agent_for_graph.clone().is_some_and(|agent| {
                 upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
-            })
+            });
+            (should_persist_recent, agent_for_graph)
         };
+        if let Some(agent) = agent_for_graph
+            && let Err(err) = thread_graph::replace_agent_turns_snapshot(&agent, &turns_for_graph)
+        {
+            eprintln!(
+                "qmux: failed to write thread graph for agent {}: {err}",
+                agent.id
+            );
+        }
         if should_persist_recent {
             self.persist();
         }
@@ -3698,7 +3753,10 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
 
 /// Bumps the per-agent activity counter; see `Model::agent_activity`.
 fn bump_agent_activity_locked(model: &mut Model, agent_id: &str) {
-    let seq = model.agent_activity.entry(agent_id.to_string()).or_insert(0);
+    let seq = model
+        .agent_activity
+        .entry(agent_id.to_string())
+        .or_insert(0);
     *seq = seq.wrapping_add(1);
 }
 
@@ -4022,6 +4080,8 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         }
@@ -5776,9 +5836,11 @@ mod tests {
             .update_pane_cwd("pane-1", workspace.display().to_string())
             .unwrap();
         let roots = state.pane_file_roots("pane-1");
-        assert!(!roots.iter().any(|r| {
-            std::fs::canonicalize(r).ok() == std::fs::canonicalize(&workspace).ok()
-        }));
+        assert!(
+            !roots.iter().any(|r| {
+                std::fs::canonicalize(r).ok() == std::fs::canonicalize(&workspace).ok()
+            })
+        );
     }
 
     #[test]
@@ -5865,6 +5927,8 @@ mod tests {
             parent_id: Some("agent-0".to_string()),
             fork_point: Some("sess-src".to_string()),
             root_session_id: Some("sess-src".to_string()),
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         };
@@ -5972,6 +6036,8 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         };

@@ -23,7 +23,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import type { Turn, TurnBlock, TranscriptOption } from "../types";
+import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
 import { IS_MAC, isEditableTarget } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
@@ -162,6 +162,7 @@ interface MessageItem {
   type: "message";
   key: string;
   role: string;
+  participant?: ThreadParticipant | null;
   blocks: MessageBlock[];
   activities: ActivityItem[];
   status?: TurnTimelineStatus;
@@ -824,37 +825,60 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
     role: string,
     block?: MessageBlock,
     status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
   ): MessageItem => ({
     type: "message",
     key: nextKey(`message-${role}`),
     role,
+    participant,
     blocks: block ? [block] : [],
     activities: [],
     status,
   });
 
-  const pushMessageBlock = (role: string, block: MessageBlock, status?: TurnTimelineStatus) => {
+  const pushMessageBlock = (
+    role: string,
+    block: MessageBlock,
+    status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
+  ) => {
     const previous = items[items.length - 1];
-    if (previous?.role === role && previous.status === status && previous.activities.length === 0) {
+    if (
+      previous?.role === role &&
+      previous.status === status &&
+      participantKey(previous.participant) === participantKey(participant) &&
+      previous.activities.length === 0
+    ) {
       previous.blocks.push(block);
       return;
     }
-    items.push(createMessageItem(role, block, status));
+    items.push(createMessageItem(role, block, status, participant));
   };
 
-  const assistantActivityOwner = (status?: TurnTimelineStatus) => {
+  const assistantActivityOwner = (
+    status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
+  ) => {
     for (let index = items.length - 1; index >= 0; index -= 1) {
-      if (items[index].role === "assistant" && items[index].status === status) {
+      if (
+        items[index].role === "assistant" &&
+        items[index].status === status &&
+        participantKey(items[index].participant) === participantKey(participant)
+      ) {
         return items[index];
       }
     }
-    const fallback = createMessageItem("assistant", undefined, status);
+    const fallback = createMessageItem("assistant", undefined, status, participant);
     items.push(fallback);
     return fallback;
   };
 
-  const pushThinkingValue = (value: unknown, status?: TurnTimelineStatus) => {
-    const owner = assistantActivityOwner(status);
+  const pushThinkingValue = (
+    value: unknown,
+    status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
+  ) => {
+    const owner = assistantActivityOwner(status, participant);
     const previousActivity = owner.activities[owner.activities.length - 1];
     if (previousActivity?.type === "thinking" && previousActivity.status === status) {
       previousActivity.values.push(value);
@@ -868,11 +892,19 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
     });
   };
 
-  const pushToolEntry = (entry: ToolEntry, status?: TurnTimelineStatus) => {
-    assistantActivityOwner(status).activities.push(entry);
+  const pushToolEntry = (
+    entry: ToolEntry,
+    status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
+  ) => {
+    assistantActivityOwner(status, participant).activities.push(entry);
   };
 
-  const registerToolUse = (block: ToolUseBlock, status?: TurnTimelineStatus) => {
+  const registerToolUse = (
+    block: ToolUseBlock,
+    status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
+  ) => {
     const entry: ToolEntry = {
       type: "tool",
       key: nextKey("tool"),
@@ -882,11 +914,15 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
       isError: false,
       status,
     };
-    pushToolEntry(entry, status);
+    pushToolEntry(entry, status, participant);
     pending.push(entry);
   };
 
-  const attachToolResult = (block: ToolResultBlock, status?: TurnTimelineStatus) => {
+  const attachToolResult = (
+    block: ToolResultBlock,
+    status?: TurnTimelineStatus,
+    participant?: ThreadParticipant | null,
+  ) => {
     const toolUseId = block.toolUseId ?? null;
 
     // Prefer an exact tool-use id match; otherwise fall back to the oldest pending
@@ -914,33 +950,34 @@ function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageIt
       result: block.content,
       isError: block.isError,
       status,
-    }, status);
+    }, status, participant);
   };
 
   for (const turn of turns) {
     const status = timelineStatus(turn.status);
+    const participant = turn.participant ?? null;
     for (const block of turn.blocks) {
       switch (block.type) {
         case "text":
-          pushMessageBlock(turn.role, block, status);
+          pushMessageBlock(turn.role, block, status, participant);
           break;
         case "toolUse":
           if (showActivityDetail) {
-            registerToolUse(block, status);
+            registerToolUse(block, status, participant);
           }
           break;
         case "toolResult":
           if (showActivityDetail) {
-            attachToolResult(block, status);
+            attachToolResult(block, status, participant);
           }
           break;
         case "raw":
           if (turn.role === "assistant") {
             if (showActivityDetail) {
-              pushThinkingValue(block.value, status);
+              pushThinkingValue(block.value, status, participant);
             }
           } else {
-            pushMessageBlock(turn.role, block, status);
+            pushMessageBlock(turn.role, block, status, participant);
           }
           break;
       }
@@ -1089,7 +1126,9 @@ function MessageItemView({
     >
       {showName && !taggedInstructionMessage ? (
         <header>
-          <span className="turn-card-role-label">{turnRoleLabel(item.role, assistantLabel)}</span>
+          <span className="turn-card-role-label">
+            {turnRoleLabel(item.role, assistantLabel, item.participant)}
+          </span>
           {showTitleAction && titleSourceText ? (
             <MessageTitleMenu
               titleSourceText={titleSourceText}
@@ -1222,7 +1261,21 @@ function hasToolCall(item: MessageItem): boolean {
   );
 }
 
-function turnRoleLabel(role: string, assistantLabel: string) {
+function participantKey(participant: ThreadParticipant | null | undefined) {
+  if (!participant) {
+    return "";
+  }
+  return `${participant.kind}:${participant.actorId}`;
+}
+
+function turnRoleLabel(
+  role: string,
+  assistantLabel: string,
+  participant?: ThreadParticipant | null,
+) {
+  if (participant?.label) {
+    return participant.label;
+  }
   if (role === "assistant") {
     return assistantLabel;
   }
@@ -1581,7 +1634,10 @@ function ToolEntryStatus({
 }
 
 function formatTurnTranscript(turn: Turn, assistantLabel: string) {
-  return [turnRoleLabel(turn.role, assistantLabel), ...turn.blocks.map(formatTurnBlockTranscript)]
+  return [
+    turnRoleLabel(turn.role, assistantLabel, turn.participant),
+    ...turn.blocks.map(formatTurnBlockTranscript),
+  ]
     .join("\n")
     .trimEnd();
 }

@@ -678,15 +678,14 @@ impl ClaudeAdapter {
                     // its timeline here and letting its abort markers drain this pane's
                     // queue. Drop the payload instead; the fork's first turn binds the
                     // real identity via adopt_forked_session_identity.
-                    let stale_fork_payload = current.fork_point.as_deref().is_some_and(
-                        |fork_point| {
+                    let stale_fork_payload =
+                        current.fork_point.as_deref().is_some_and(|fork_point| {
                             session_id.as_deref() == Some(fork_point)
                                 || transcript_path.as_deref().is_some_and(|path| {
                                     session_id_from_transcript_path(Path::new(path)).as_deref()
                                         == Some(fork_point)
                                 })
-                        },
-                    );
+                        });
                     if !stale_fork_payload {
                         // Field-scoped mutation, not a full-struct `update_agent`: this
                         // freshly spawned process's pane is being bound by attach_agent_pane
@@ -1321,9 +1320,8 @@ fn adopt_forked_session_identity(
     let Some(fork_point) = current.fork_point.clone() else {
         return Ok(());
     };
-    let unbound_or_stale = |session_id: Option<&str>| {
-        session_id.is_none() || session_id == Some(fork_point.as_str())
-    };
+    let unbound_or_stale =
+        |session_id: Option<&str>| session_id.is_none() || session_id == Some(fork_point.as_str());
     if !unbound_or_stale(current.session_id.as_deref()) || is_subagent_payload(payload) {
         return Ok(());
     }
@@ -1990,6 +1988,8 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         }
@@ -2323,37 +2323,61 @@ mod tests {
             .unwrap();
 
         // The source's own id is never adopted, even from a later hook.
-        ingest(&state, hook("PreToolUse", json!({
-            "session_id": "sess-src",
-            "transcript_path": "/home/u/.claude/projects/proj/sess-src.jsonl",
-        })));
+        ingest(
+            &state,
+            hook(
+                "PreToolUse",
+                json!({
+                    "session_id": "sess-src",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-src.jsonl",
+                }),
+            ),
+        );
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id, None);
 
         // Adoption is all-or-nothing: an id whose transcript doesn't encode it
         // (mismatched pair) must not bind either half.
-        ingest(&state, hook("PreToolUse", json!({
-            "session_id": "sess-fork",
-            "transcript_path": "/home/u/.claude/projects/proj/sess-other.jsonl",
-        })));
+        ingest(
+            &state,
+            hook(
+                "PreToolUse",
+                json!({
+                    "session_id": "sess-fork",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-other.jsonl",
+                }),
+            ),
+        );
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id, None);
         assert_eq!(agent.transcript_path, None);
 
         // Subagent payloads describe a sidechain, not the pane; skipped.
-        ingest(&state, hook("PreToolUse", json!({
-            "agent_id": "task-subagent",
-            "session_id": "sess-side",
-            "transcript_path": "/home/u/.claude/projects/proj/sess-side.jsonl",
-        })));
+        ingest(
+            &state,
+            hook(
+                "PreToolUse",
+                json!({
+                    "agent_id": "task-subagent",
+                    "session_id": "sess-side",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-side.jsonl",
+                }),
+            ),
+        );
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id, None);
 
         // The first consistent (id, transcript) pair from a real hook binds both.
-        ingest(&state, hook("PreToolUse", json!({
-            "session_id": "sess-fork",
-            "transcript_path": "/home/u/.claude/projects/proj/sess-fork.jsonl",
-        })));
+        ingest(
+            &state,
+            hook(
+                "PreToolUse",
+                json!({
+                    "session_id": "sess-fork",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-fork.jsonl",
+                }),
+            ),
+        );
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("sess-fork"));
         assert_eq!(
@@ -2362,10 +2386,16 @@ mod tests {
         );
 
         // One-shot: once a distinct id is bound, later hooks can't move it.
-        ingest(&state, hook("PostToolUse", json!({
-            "session_id": "sess-late",
-            "transcript_path": "/home/u/.claude/projects/proj/sess-late.jsonl",
-        })));
+        ingest(
+            &state,
+            hook(
+                "PostToolUse",
+                json!({
+                    "session_id": "sess-late",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-late.jsonl",
+                }),
+            ),
+        );
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("sess-fork"));
     }
@@ -2376,10 +2406,16 @@ mod tests {
         install_agent_pane(&state);
 
         // No fork lineage: only SessionStart may bind, exactly as before.
-        ingest(&state, hook("PreToolUse", json!({
-            "session_id": "sess-abc",
-            "transcript_path": "/home/u/.claude/projects/proj/sess-abc.jsonl",
-        })));
+        ingest(
+            &state,
+            hook(
+                "PreToolUse",
+                json!({
+                    "session_id": "sess-abc",
+                    "transcript_path": "/home/u/.claude/projects/proj/sess-abc.jsonl",
+                }),
+            ),
+        );
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id, None);
         assert_eq!(agent.transcript_path, None);

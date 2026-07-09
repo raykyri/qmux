@@ -43,6 +43,10 @@ pub struct AgentInfo {
     pub parent_id: Option<String>,
     pub fork_point: Option<String>,
     pub root_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
     /// True when the queue has paused after a pause-after turn finished; the backend
     /// stops auto-draining until the user unpauses.
     #[serde(default)]
@@ -280,6 +284,8 @@ pub fn prepare_agent_workspace(
         parent_id: None,
         fork_point: None,
         root_session_id: None,
+        thread_id: Some(state.next_id("thread")),
+        branch_id: Some(state.next_id("branch")),
         paused: false,
         created_at: now_millis(),
     };
@@ -920,6 +926,8 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         }
@@ -1180,7 +1188,11 @@ mod tests {
     fn escape_watch_demotes_quiet_working_agent_without_draining_queue() {
         let state = test_state();
         state
-            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Running))
+            .insert_agent(sample_agent(
+                "agent-1",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
             .unwrap();
         state
             .enqueue_agent_turn("agent-1", "queued turn".to_string())
@@ -1203,7 +1215,11 @@ mod tests {
     fn escape_watch_stands_down_when_activity_arrives_during_grace() {
         let state = test_state();
         state
-            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Running))
+            .insert_agent(sample_agent(
+                "agent-1",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
             .unwrap();
         let baseline = state.agent_activity_seq("agent-1").unwrap();
 
@@ -1249,7 +1265,11 @@ mod tests {
     fn escape_watch_dedupes_a_held_escape_burst() {
         let state = test_state();
         state
-            .insert_agent(sample_agent("agent-1", Some("pane-1"), AgentStatus::Running))
+            .insert_agent(sample_agent(
+                "agent-1",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
             .unwrap();
 
         // The first Esc reserves the watch; a repeat while it is in flight does not.

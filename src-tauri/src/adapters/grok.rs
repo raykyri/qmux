@@ -979,7 +979,8 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
 
     // Primary: native Claude-compatible rollout format. This is what Grok reports
     // via its SessionStart hook for real sessions (under ~/.grok/sessions/...).
-    if let Some(turn) = super::parse_claude_native_transcript_value(agent_id, source_index, &value) {
+    if let Some(turn) = super::parse_claude_native_transcript_value(agent_id, source_index, &value)
+    {
         return Some(turn);
     }
 
@@ -1177,6 +1178,8 @@ mod tests {
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         }
@@ -1216,7 +1219,14 @@ mod tests {
         // with `--` so leading-dash text can't be parsed as a flag.
         assert_eq!(
             args,
-            vec!["--cwd", "/tmp/qmux", "--model", "grok-code", "--", "fix the bug"]
+            vec![
+                "--cwd",
+                "/tmp/qmux",
+                "--model",
+                "grok-code",
+                "--",
+                "fix the bug"
+            ]
         );
     }
 

@@ -14,6 +14,7 @@ mod scrollback;
 mod show_hide_shortcut;
 mod sleep;
 mod state;
+mod thread_graph;
 mod title_generation;
 mod transcript;
 mod turn_queue;

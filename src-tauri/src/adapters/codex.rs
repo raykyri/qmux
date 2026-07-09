@@ -2816,6 +2816,8 @@ trusted_hash = "sha256:trusted"
             parent_id: None,
             fork_point: None,
             root_session_id: None,
+            thread_id: None,
+            branch_id: None,
             paused: false,
             created_at: 1,
         }

@@ -63,6 +63,11 @@ pub struct PersistedState {
     /// sentinel; the frontend validates it against the recovered panes on boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tab_id: Option<String>,
+    /// Focused branch per qmux transcript thread. The full graph lives in
+    /// `.qmux/threads/<thread-id>.json`; state.json keeps only the routing metadata
+    /// needed to recover pane/agent views.
+    #[serde(default)]
+    pub thread_focus: HashMap<String, String>,
 }
 
 impl Default for PersistedState {
@@ -80,6 +85,7 @@ impl Default for PersistedState {
             inflight: HashMap::new(),
             pane_splits: Vec::new(),
             active_tab_id: None,
+            thread_focus: HashMap::new(),
         }
     }
 }
@@ -404,6 +410,7 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.queues = take_map_of_vecs(&mut map, "queues", "queued turn", &mut dropped);
     state.inflight = take_typed_map(&mut map, "inflight", "in-flight turn", &mut dropped);
     state.drafts = take_string_map(&mut map, "drafts");
+    state.thread_focus = take_string_map(&mut map, "threadFocus");
     state.active_tab_id = map
         .get("activeTabId")
         .and_then(Value::as_str)
@@ -762,7 +769,11 @@ mod tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o077, 0, "preferences file must not be group/other readable");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "preferences file must not be group/other readable"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -934,7 +945,10 @@ mod tests {
     #[test]
     fn preflight_accepts_missing_current_older_and_corrupt_state() {
         let root = temp_root();
-        assert!(preflight_state(&root).is_ok(), "missing state is a first run");
+        assert!(
+            preflight_state(&root).is_ok(),
+            "missing state is a first run"
+        );
 
         let path = state_path(&root);
         fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -135,6 +135,8 @@ pub fn resume_recent_session(
         parent_id: session.parent_id.clone(),
         fork_point: session.fork_point.clone(),
         root_session_id: session.root_session_id.clone(),
+        thread_id: None,
+        branch_id: None,
         paused: false,
         created_at: session.created_at,
     });

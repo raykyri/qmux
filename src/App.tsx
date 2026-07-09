@@ -85,6 +85,7 @@ import {
   selectPaneAfterClose,
   statusLabel,
 } from "./lib/appHelpers";
+import { buildSingleAgentThreadGraph, focusedBranchTurns } from "./lib/threadGraph";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
   AskLauncherState,
@@ -1260,11 +1261,13 @@ export default function App() {
       const agentTurns = turnsByAgent.get(agent.id) ?? [];
       const adapter = getAgentUiAdapter(agent.adapter);
       const normalizedTurns = adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
+      const threadGraph = buildSingleAgentThreadGraph(agent, normalizedTurns);
+      const graphTurns = focusedBranchTurns(threadGraph, agent);
       const assistantLabel = adapter.label;
       result.set(agent.id, {
-        turns: normalizedTurns,
+        turns: graphTurns,
         assistantLabel,
-        transcript: formatTurnsTranscript(normalizedTurns, assistantLabel),
+        transcript: formatTurnsTranscript(graphTurns, assistantLabel),
       });
     }
     return result;

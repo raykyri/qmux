@@ -108,6 +108,8 @@ export interface AgentInfo {
   orphanedQueuePaneId?: string | null;
   sessionId?: string | null;
   transcriptPath?: string | null;
+  threadId?: string | null;
+  branchId?: string | null;
   status:
     | "starting"
     | "running"
@@ -165,11 +167,106 @@ export interface Turn {
   role: string;
   blocks: TurnBlock[];
   sourceIndex: number;
+  participant?: ThreadParticipant | null;
   status?: "superseded" | "interrupted" | "uncertain" | null;
   statusReason?: "codexRollback" | "interrupted" | "claudePromptBranch" | "unknownBranch" | null;
   nativeId?: string | null;
   parentNativeId?: string | null;
   nativeMessageId?: string | null;
+}
+
+export interface ThreadGraph {
+  version: 1;
+  threadId: string;
+  focusedBranchId: string;
+  nextCreatedOrder: number;
+  rootTurnIds: string[];
+  branches: Record<string, ThreadBranch>;
+  nodes: Record<string, ThreadNode>;
+}
+
+export interface ThreadBranch {
+  id: string;
+  threadId: string;
+  parentBranchId?: string | null;
+  baseTurnId?: string | null;
+  createdFromTurnId?: string | null;
+  headTurnIds: string[];
+  label?: string | null;
+  createdByAgentId?: string | null;
+  createdByActorId?: string | null;
+  createdAt: number;
+  status: "active" | "archived";
+}
+
+export type ThreadNode = TurnNode | HandoffNode | BranchStartNode;
+
+export interface BaseThreadNode {
+  id: string;
+  threadId: string;
+  branchId: string;
+  parentTurnIds: string[];
+  participant: ThreadParticipant;
+  createdAt: number;
+  createdOrder: number;
+  status?: "active" | "superseded" | "interrupted" | "uncertain" | null;
+  statusReason?: "codexRollback" | "interrupted" | "claudePromptBranch" | "unknownBranch" | null;
+}
+
+export interface TurnNode extends BaseThreadNode {
+  kind: "turn";
+  turn: {
+    role: string;
+    blocks: TurnBlock[];
+    sourceIndex?: number | null;
+  };
+  native?: NativeTurnRef | null;
+}
+
+export interface HandoffNode extends BaseThreadNode {
+  kind: "handoff";
+  participant: { kind: "qmux"; actorId: "qmux"; label: "qmux" };
+  handoff: HandoffPayload;
+}
+
+export interface BranchStartNode extends BaseThreadNode {
+  kind: "branchStart";
+  participant: { kind: "qmux"; actorId: "qmux"; label: "qmux" };
+  branchStart: {
+    parentBranchId?: string | null;
+    baseTurnId?: string | null;
+    targetBranchId: string;
+  };
+}
+
+export interface ThreadParticipant {
+  kind: "user" | "assistant" | "qmux";
+  actorId: string;
+  adapter?: string | null;
+  agentId?: string | null;
+  label?: string | null;
+}
+
+export interface HandoffPayload {
+  sourceAgentId: string;
+  sourceAdapter: "claude" | "codex";
+  sourceBranchId: string;
+  sourceTurnId: string;
+  targetAgentId: string;
+  targetAdapter: "claude" | "codex";
+  targetBranchId: string;
+  contextPath: string;
+}
+
+export interface NativeTurnRef {
+  adapter: string;
+  agentId: string;
+  sessionId?: string | null;
+  transcriptPath?: string | null;
+  nativeId?: string | null;
+  parentNativeId?: string | null;
+  nativeMessageId?: string | null;
+  sourceIndex: number;
 }
 
 // A selectable past/parallel session for the right pane's transcript picker, used
