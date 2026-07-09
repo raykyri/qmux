@@ -35,6 +35,27 @@ adapter trait in Rust and adding a matching UI adapter on the frontend.
   `http://localhost` dev server in a panel over the terminal.
 - macOS-only at this time. Linux support is planned for the future.
 
+## Install
+
+Requires macOS 13 (Ventura) or later. The DMG is a universal binary and runs
+natively on Apple Silicon and Intel Macs.
+
+1. Download the latest `.dmg` from the
+   [releases page](https://github.com/raykyri/qmux/releases).
+2. Open it and drag **qmux** into **Applications**.
+3. You'll want the agent CLIs you use on your `PATH`: `claude`, `codex`,
+   `opencode`, and/or `grok`.
+
+If macOS reports the app is damaged or can't be opened, clear the download
+quarantine flag and launch it again:
+
+```
+xattr -cr /Applications/qmux.app
+```
+
+qmux checks the releases page for updates on startup and offers to install
+them in place.
+
 ## Quickstart
 
 Prerequisites:
@@ -68,11 +89,11 @@ QMUX_DMG_FINDER_LAYOUT=1 npm run build
 Run a release build directly:
 
 ```
-src-tauri/target/release/qmux
+src-tauri/target/universal-apple-darwin/release/qmux
 ```
 
 ```
-open src-tauri/target/release/bundle/macos/qmux.app
+open src-tauri/target/universal-apple-darwin/release/bundle/macos/qmux.app
 ```
 
 Development:

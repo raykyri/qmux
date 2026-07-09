@@ -39,6 +39,9 @@
     "active": true,
     "targets": ["app", "dmg"],
     "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    },
     "resources": {
       "../qmux-plugin/": "qmux-plugin"
     },
