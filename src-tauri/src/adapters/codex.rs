@@ -29,6 +29,7 @@ use std::thread;
 use std::time::Duration;
 
 const CODEX_QMUX_PROFILE: &str = "qmux-codex";
+const CODEX_CODE_MODE_HOST: &str = "codex-code-mode-host";
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -57,8 +58,31 @@ impl CodexAdapter {
                 self.binary
             )
         })?;
+        let binary = codex_binary_with_code_mode_host(binary);
         Ok(binary.display().to_string())
     }
+}
+
+fn codex_binary_with_code_mode_host(binary: PathBuf) -> PathBuf {
+    if codex_code_mode_host_is_sibling(&binary) {
+        return binary;
+    }
+
+    let Ok(target) = fs::canonicalize(&binary) else {
+        return binary;
+    };
+
+    if target != binary && codex_code_mode_host_is_sibling(&target) {
+        return target;
+    }
+
+    binary
+}
+
+fn codex_code_mode_host_is_sibling(binary: &Path) -> bool {
+    binary
+        .parent()
+        .is_some_and(|dir| dir.join(CODEX_CODE_MODE_HOST).is_file())
 }
 
 impl AgentAdapter for CodexAdapter {
@@ -1703,6 +1727,36 @@ mod tests {
             CodexLaunchOptions::from_value(json!({ "approvalsReviewer": "robot" })).unwrap_err();
 
         assert!(err.contains("invalid Codex adapter option approvalsReviewer"));
+    }
+
+    #[test]
+    fn codex_binary_keeps_path_when_code_mode_host_is_sibling() {
+        let dir = temp_dir();
+        let binary = dir.join("codex");
+        let host = dir.join(CODEX_CODE_MODE_HOST);
+        fs::write(&binary, "").unwrap();
+        fs::write(&host, "").unwrap();
+
+        assert_eq!(codex_binary_with_code_mode_host(binary.clone()), binary);
+    }
+
+    #[test]
+    fn codex_binary_uses_symlink_target_when_host_alias_is_missing() {
+        let root = temp_dir();
+        let shim_dir = root.join("shim-bin");
+        let real_dir = root.join("real-bin");
+        fs::create_dir_all(&shim_dir).unwrap();
+        fs::create_dir_all(&real_dir).unwrap();
+        let real_binary = real_dir.join("codex");
+        let shim_binary = shim_dir.join("codex");
+        fs::write(&real_binary, "").unwrap();
+        fs::write(real_dir.join(CODEX_CODE_MODE_HOST), "").unwrap();
+        std::os::unix::fs::symlink(&real_binary, &shim_binary).unwrap();
+
+        let resolved = codex_binary_with_code_mode_host(shim_binary.clone());
+
+        assert_eq!(resolved, fs::canonicalize(&real_binary).unwrap());
+        assert!(!shim_dir.join(CODEX_CODE_MODE_HOST).exists());
     }
 
     #[test]
