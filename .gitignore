@@ -3,8 +3,13 @@ dist/
 target/
 src-tauri/target/
 src-tauri/gen/
-.claude/
+
+.env
 .DS_Store
+
+.codex/
+.claude/
+
 # Legacy in-repo session dir: older builds resolved the default config's
 # relative `.qmux/workspaces` into the checkout. State now lives in ~/.qmux, but
 # keep this ignored so a pre-existing .qmux/ (state.json, the control socket,
