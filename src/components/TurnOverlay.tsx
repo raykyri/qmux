@@ -118,6 +118,9 @@ const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
 const LONG_USER_MESSAGE_COLLAPSE_THRESHOLD = 12_000;
 const LONG_USER_MESSAGE_PREVIEW_CHARS = 1_200;
+// A pinned last-user-message taller than this share of the pane would blanket
+// the reply scrolling beneath it, so sticking is disabled for tall bubbles.
+const STICKY_USER_MAX_HEIGHT_RATIO = 0.4;
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
   "functions.exec_command": "cmd",
@@ -397,6 +400,7 @@ export default function TurnOverlay({
     }
     const distanceFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
     stickToBottomRef.current = distanceFromBottom <= STICK_TO_BOTTOM_THRESHOLD;
+    updateStickyUserStuck();
   };
 
   const splitBounds = () => {
@@ -553,6 +557,78 @@ export default function TurnOverlay({
     () => buildTimelineItems(turns, showActivityDetail),
     [turns, showActivityDetail],
   );
+
+  // The last real user message (a bubble — not a tagged instruction, not a
+  // dropped turn) is the sticky candidate: it pins to the top of the pane while
+  // the turn beneath it scrolls, and releases as the view scrolls back up to
+  // its original slot.
+  const stickyUserKey = useMemo(() => {
+    for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
+      const item = timelineItems[index];
+      if (
+        item.role === "user" &&
+        item.blocks.length > 0 &&
+        !item.status &&
+        !messageItemIsTaggedInstruction(item)
+      ) {
+        return item.key;
+      }
+    }
+    return null;
+  }, [timelineItems]);
+  const [stickyUserFits, setStickyUserFits] = useState(false);
+  const [stickyUserStuck, setStickyUserStuck] = useState(false);
+  const stickyUserEnabled = Boolean(stickyUserKey) && stickyUserFits;
+
+  // Whether the candidate is pinned right now. Drives the stuck-only styling
+  // (shadow + backfill mask) so the bubble renders exactly as before whenever
+  // it sits in its flow position. Sticky offsets resolve against the scroller's
+  // content edge, so the pinned card rests just below the timeline's top
+  // padding — the threshold must include it.
+  const updateStickyUserStuck = () => {
+    const timeline = timelineRef.current;
+    const card = timeline?.querySelector<HTMLElement>(".turn-card.is-sticky-user-message");
+    if (!timeline || !card || !stickyUserEnabled) {
+      setStickyUserStuck(false);
+      return;
+    }
+    const paddingTop = Number.parseFloat(window.getComputedStyle(timeline).paddingTop || "0");
+    setStickyUserStuck(
+      card.getBoundingClientRect().top <=
+        timeline.getBoundingClientRect().top + paddingTop + 1,
+    );
+  };
+
+  // Sticky is armed only while the candidate bubble is short relative to the
+  // pane; re-measured when the bubble or the pane resizes (font scale, queue
+  // split, expand, a collapsed long message being expanded).
+  useLayoutEffect(() => {
+    const timeline = timelineRef.current;
+    const card = timeline?.querySelector<HTMLElement>(".turn-card.is-sticky-user-message");
+    if (!timeline || !card) {
+      setStickyUserFits(false);
+      return;
+    }
+    const measure = () => {
+      setStickyUserFits(
+        card.offsetHeight <= timeline.clientHeight * STICKY_USER_MAX_HEIGHT_RATIO,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(timeline);
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [stickyUserKey, agentId]);
+
+  // Re-evaluate pinning outside scroll events too: content growing below the
+  // bubble or a transcript swap moves it without firing onScroll.
+  useLayoutEffect(() => {
+    updateStickyUserStuck();
+    // updateStickyUserStuck reads live geometry from refs; these deps are the
+    // renders after which that geometry can have changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stickyUserEnabled, timelineItems, composerHeight, effectiveQueueSplitHeight, agentId, thinking]);
 
   // Cmd-F (macOS) / Ctrl-F opens the find bar for the active pane's transcript.
   // Captured on window because clicking transcript text leaves focus on <body>,
@@ -747,7 +823,9 @@ export default function TurnOverlay({
       ) : null}
       <div
         ref={timelineRef}
-        className={`turn-timeline${timelineItems.length === 0 && !thinking ? " is-empty" : ""}`}
+        className={`turn-timeline${timelineItems.length === 0 && !thinking ? " is-empty" : ""}${
+          stickyUserEnabled ? " has-sticky-user" : ""
+        }`}
         style={timelineStyle}
         onScroll={handleTimelineScroll}
       >
@@ -777,12 +855,21 @@ export default function TurnOverlay({
               previous.blocks.length > 0 &&
               hasToolCall(previous)
             );
+            // The candidate keeps its marker class even while sticky is
+            // disarmed (the height measurement finds it by this class); the
+            // sticky styling only activates under the timeline's
+            // has-sticky-user class.
+            const stickyClassName =
+              item.key === stickyUserKey
+                ? ` is-sticky-user-message${stickyUserStuck ? " is-stuck" : ""}`
+                : "";
             return (
               <MessageTimelineItemView
                 key={item.key}
                 item={item}
                 assistantLabel={assistantLabel}
                 showName={showName}
+                stickyClassName={stickyClassName}
                 titleGenerationEnabled={titleGenerationEnabled}
                 onRegenerateTitleFromUserMessage={handleRegenerateTitleFromUserMessage}
                 titleGenerationBusy={titleGenerationBusy}
@@ -1069,6 +1156,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
   assistantLabel,
   showName,
+  stickyClassName = "",
   titleGenerationEnabled,
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy,
@@ -1076,6 +1164,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item: MessageItem;
   assistantLabel: string;
   showName: boolean;
+  stickyClassName?: string;
   titleGenerationEnabled: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
   titleGenerationBusy: boolean;
@@ -1087,6 +1176,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
           item={item}
           assistantLabel={assistantLabel}
           showName={showName}
+          stickyClassName={stickyClassName}
           titleGenerationEnabled={titleGenerationEnabled}
           onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
           titleGenerationBusy={titleGenerationBusy}
@@ -1103,6 +1193,7 @@ function MessageItemView({
   item,
   assistantLabel,
   showName,
+  stickyClassName = "",
   titleGenerationEnabled,
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy,
@@ -1110,6 +1201,7 @@ function MessageItemView({
   item: MessageItem;
   assistantLabel: string;
   showName: boolean;
+  stickyClassName?: string;
   titleGenerationEnabled: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
   titleGenerationBusy: boolean;
@@ -1122,7 +1214,7 @@ function MessageItemView({
     <article
       className={`turn-card role-${item.role}${
         taggedInstructionMessage ? " is-tagged-instruction-message" : ""
-      }${turnStatusClass(item.status)}`}
+      }${turnStatusClass(item.status)}${stickyClassName}`}
     >
       {showName && !taggedInstructionMessage ? (
         <header>

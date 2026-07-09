@@ -3309,11 +3309,12 @@ button.home-cascade-wait-pill:focus-visible {
   --transcript-line-height-delta: var(--transcript-expanded-line-height-delta, 0);
   position: absolute;
   inset: 0;
-  display: grid;
-  /* Pin the single column to the pane width so a long, unbreakable line wraps
-     instead of stretching the track and scrolling the whole transcript sideways. */
-  grid-template-columns: minmax(0, 1fr);
-  align-content: start;
+  /* A single flex column (not a grid): items stretch to the pane width without
+     growing sideways for long unbreakable lines, and the sticky last user
+     message can travel the whole scroll length — a grid row would trap it
+     inside its own track. */
+  display: flex;
+  flex-direction: column;
   gap: 5px;
   /* The transcript fills the whole pane and is the only scroll surface; the
      bottom padding keeps the latest turn clear of the floating composer. */
@@ -3324,7 +3325,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-timeline.is-empty {
-  align-content: center;
+  justify-content: center;
   padding: 24px;
 }
 
@@ -3492,10 +3493,15 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-pane.is-expanded .turn-timeline {
-  grid-template-columns: minmax(0, min(700px, 100%));
-  justify-content: center;
+  align-items: center;
   padding-right: 24px;
   padding-left: 24px;
+}
+
+/* The centered reading column: every timeline row caps at 700px, matching the
+   expanded composer rail below. */
+.turn-pane.is-expanded .turn-timeline > * {
+  width: min(700px, 100%);
 }
 
 .turn-pane.is-expanded .turn-sidebar-input-rail {
@@ -3524,6 +3530,41 @@ button.home-cascade-wait-pill:focus-visible {
 
 .turn-card.role-user {
   margin: 7px 0;
+}
+
+/* The last user message pins to the top of the pane while the turn beneath it
+   plays out, and releases as the view scrolls back up to its original slot.
+   TurnOverlay arms this (has-sticky-user) only while the bubble is short
+   relative to the pane, so a tall message never blankets the transcript.
+   z-index 1 keeps the pinned card above later transcript content but below the
+   queue resizer (2), pane header (3), find bar (4), and floating controls (5). */
+.turn-timeline.has-sticky-user .turn-card.is-sticky-user-message {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Only while actually pinned: lift the bubble off the content sliding beneath
+   it, and backfill the gap above it with the pane background so scrolled text
+   cannot peek over the card. Sticky offsets resolve against the scroller's
+   content edge, so the pinned card rests below the timeline's top padding —
+   the strip is tall enough to mask that gap in every mode (10px default, 44px
+   in split-cell/headerless panes) plus the card's rounded top corners.
+   Anything above the scrollport is clipped. Nothing here applies while the
+   message sits in its normal flow position. */
+.turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -48px;
+  right: -6px;
+  left: -6px;
+  height: 60px;
+  background: #171b1d;
 }
 
 .turn-card.is-status-superseded,
