@@ -600,8 +600,12 @@ export default function TurnOverlay({
   };
 
   // Sticky is armed only while the candidate bubble is short relative to the
-  // pane; re-measured when the bubble or the pane resizes (font scale, queue
-  // split, expand, a collapsed long message being expanded).
+  // visible transcript strip; re-measured when the bubble, the pane, or the
+  // floating queue/composer resizes (font scale, queue split, expand, a
+  // collapsed long message being expanded, messages queueing up). Unsplit, the
+  // queue/composer floats over the timeline's bottom, so subtract it — that
+  // also keeps a pinned card from ever reaching the queue, which would paint
+  // beneath it. In split mode the timeline already ends above the queue.
   useLayoutEffect(() => {
     const timeline = timelineRef.current;
     const card = timeline?.querySelector<HTMLElement>(".turn-card.is-sticky-user-message");
@@ -609,17 +613,20 @@ export default function TurnOverlay({
       setStickyUserFits(false);
       return;
     }
+    const inputWrap = queueSplit ? null : inputWrapRef.current;
     const measure = () => {
-      setStickyUserFits(
-        card.offsetHeight <= timeline.clientHeight * STICKY_USER_MAX_HEIGHT_RATIO,
-      );
+      const visibleHeight = timeline.clientHeight - (inputWrap?.offsetHeight ?? 0);
+      setStickyUserFits(card.offsetHeight <= visibleHeight * STICKY_USER_MAX_HEIGHT_RATIO);
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(timeline);
     observer.observe(card);
+    if (inputWrap) {
+      observer.observe(inputWrap);
+    }
     return () => observer.disconnect();
-  }, [stickyUserKey, agentId]);
+  }, [stickyUserKey, agentId, queueSplit]);
 
   // Re-evaluate pinning outside scroll events too: content growing below the
   // bubble or a transcript swap moves it without firing onScroll.

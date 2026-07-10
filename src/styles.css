@@ -3454,6 +3454,9 @@ button.home-cascade-wait-pill:focus-visible {
   right: 0;
   bottom: 0;
   left: 0;
+  /* No z-index: the composer renders its confirm dialog and toast inline
+     (position: fixed, z 20/30), and a stacking context here would trap them
+     below the pane header. DOM order alone keeps this above the transcript. */
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -3535,27 +3538,31 @@ button.home-cascade-wait-pill:focus-visible {
 /* The last user message pins to the top of the pane while the turn beneath it
    plays out, and releases as the view scrolls back up to its original slot.
    TurnOverlay arms this (has-sticky-user) only while the bubble is short
-   relative to the pane, so a tall message never blankets the transcript.
-   z-index 1 keeps the pinned card above later transcript content but below the
-   queue resizer (2), pane header (3), find bar (4), and floating controls (5). */
+   relative to the pane, so a tall message never blankets the transcript. */
 .turn-timeline.has-sticky-user .turn-card.is-sticky-user-message {
   position: sticky;
   top: 0;
-  z-index: 1;
 }
 
-/* Only while actually pinned: lift the bubble off the content sliding beneath
-   it, and backfill the gap above it with the pane background so scrolled text
-   cannot peek over the card. Sticky offsets resolve against the scroller's
-   content edge, so the pinned card rests below the timeline's top padding —
-   the strip is tall enough to mask that gap in every mode (10px default, 44px
-   in split-cell/headerless panes) plus the card's rounded top corners.
-   Anything above the scrollport is clipped. Nothing here applies while the
-   message sits in its normal flow position. */
+/* Only while actually pinned: raise the bubble over later transcript content
+   (only then can anything overlap it — in normal flow a z-index would also
+   lift it above the floating queue/composer), lift it off the content sliding
+   beneath with a shadow, and backfill the gap above it with the pane
+   background so scrolled text cannot peek over the card. It stays below the
+   pane header (3), find bar (4), and floating controls (5), and under the
+   queue/composer, which outranks it by DOM order at the same stack level.
+   Nothing here applies while the message sits in its normal flow position. */
 .turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck {
+  z-index: 1;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
+/* Sticky offsets resolve against the scroller's content edge, so the pinned
+   card rests below the timeline's top padding — the strip masks that gap in
+   every mode (10px default, 44px in split-cell/headerless panes). It must end
+   flush at the card's top edge: a negative-z-index pseudo paints over its own
+   element's background, so any overlap would erase the card's top border and
+   corners. Anything above the scrollport is clipped. */
 .turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck::before {
   content: "";
   position: absolute;
@@ -3563,7 +3570,7 @@ button.home-cascade-wait-pill:focus-visible {
   top: -48px;
   right: -6px;
   left: -6px;
-  height: 60px;
+  height: 44px;
   background: #171b1d;
 }
 
