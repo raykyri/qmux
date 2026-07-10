@@ -5,7 +5,9 @@ import type { Turn } from "../types";
 
 const CLAUDE_PERMISSION_OPTIONS: LauncherSelectOption[] = [
   { value: "auto", label: "Auto mode" },
+  { value: "manual", label: "Ask for approval" },
   { value: "acceptEdits", label: "Only accept edits" },
+  { value: "plan", label: "Plan mode" },
   { value: "dontAsk", label: "Block approval requests" },
   { value: "bypassPermissions", label: "Bypass permissions", tone: "danger" },
 ];

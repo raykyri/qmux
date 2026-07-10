@@ -31,9 +31,18 @@ const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
+    "PostToolUseFailure",
     "PermissionRequest",
+    "PermissionDenied",
     "Stop",
+    "StopFailure",
+    "SubagentStart",
     "SubagentStop",
+    "PreCompact",
+    "PostCompact",
+    "Elicitation",
+    "ElicitationResult",
+    "SessionEnd",
 ];
 
 const CLAUDE_NOTIFICATION_MATCHERS: &[(&str, &str)] = &[
@@ -46,8 +55,8 @@ const CLAUDE_PERMISSION_MODES: &[&str] = &[
     "acceptEdits",
     "auto",
     "bypassPermissions",
-    "default",
     "dontAsk",
+    "manual",
     "plan",
 ];
 
@@ -533,6 +542,7 @@ impl ClaudeAdapter {
         request: PrepareShellAgentLaunchRequest,
     ) -> Result<PreparedShellAgentLaunch, String> {
         let binary = self.ensure_binary()?;
+        validate_claude_shell_args(&request.args)?;
 
         if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
@@ -749,7 +759,7 @@ impl ClaudeAdapter {
                 }
                 "agent.tool_use"
             }
-            "PostToolUse" => {
+            "PostToolUse" | "PostToolUseFailure" => {
                 if let Some(agent) = agent.as_mut() {
                     agent.status = AgentStatus::Running;
                     state.set_agent_status(&agent.id, agent.status)?;
@@ -762,6 +772,44 @@ impl ClaudeAdapter {
                     state.set_agent_status(&agent.id, agent.status)?;
                 }
                 "agent.awaiting_permission"
+            }
+            "PermissionDenied" => {
+                if let Some(agent) = agent.as_mut() {
+                    // PermissionDenied is emitted after the decision. Claude may
+                    // continue reasoning or recover with another tool, so clear the
+                    // pre-decision AwaitingPermission state.
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.permission_denied"
+            }
+            "Elicitation" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::AwaitingInput;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.awaiting_input"
+            }
+            "ElicitationResult" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.input_resolved"
+            }
+            "PreCompact" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.compacting"
+            }
+            "PostCompact" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.compacted"
             }
             event if event.starts_with("Notification") => {
                 let notification_kind = notification_kind(&notification);
@@ -784,7 +832,7 @@ impl ClaudeAdapter {
                     notification_event_type(notification_kind)
                 }
             }
-            "Stop" => {
+            "Stop" | "StopFailure" => {
                 let drained = if let Some(agent) = agent.as_mut() {
                     finish_agent_after_idle(state, agent)?
                 } else {
@@ -796,7 +844,9 @@ impl ClaudeAdapter {
                     "agent.done"
                 }
             }
+            "SubagentStart" => "agent.subagent_started",
             "SubagentStop" => "agent.subagent_stopped",
+            "SessionEnd" => "agent.session_end",
             other => {
                 return Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
                     format!("agent.hook.{other}"),
@@ -858,46 +908,58 @@ impl ClaudeAdapter {
 /// Erring toward "no prompt" is safe: the agent just starts idle and the first real
 /// turn (UserPromptSubmit/PreToolUse) promotes it to running.
 fn args_contain_prompt(args: &[String]) -> bool {
-    // Claude CLI flags that take a separate value argument; the token after one of
-    // these is the flag's value, not a prompt. Boolean flags (e.g. -c/--continue,
-    // -p/--print) are intentionally absent so a prompt following them is detected.
-    const VALUE_FLAGS: &[&str] = &[
-        "--model",
-        "--fallback-model",
-        "--settings",
-        "--setting-sources",
-        "--add-dir",
-        "--allowedTools",
-        "--allowed-tools",
-        "--disallowedTools",
-        "--disallowed-tools",
-        "--mcp-config",
-        "--append-system-prompt",
-        "--permission-mode",
-        "--permission-prompt-tool",
-        "--resume",
-        "-r",
-        "--session-id",
-        "--input-format",
-        "--output-format",
-        "--max-turns",
-        "--agents",
-        "--plugin-dir",
-        "--plugin-url",
-    ];
-
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
         if arg == "--" {
             // Everything after the `--` separator is positional.
-            return iter.next().is_some();
+            return index + 1 < args.len();
         }
         if arg.starts_with('-') {
             // `--flag=value` is self-contained and never consumes the next token.
-            if !arg.contains('=') && VALUE_FLAGS.contains(&arg.as_str()) {
-                iter.next();
+            if arg.contains('=') {
+                index += 1;
+                continue;
+            }
+
+            if claude_variadic_value_flag(arg) {
+                // Commander-style variadic options own every following positional
+                // token until the next option. None of those tokens can be a prompt.
+                index += 1;
+                while index < args.len() && !args[index].starts_with('-') {
+                    index += 1;
+                }
+                continue;
+            }
+
+            if claude_value_flag(arg) || claude_optional_value_flag(arg) {
+                index += 1;
+                if index < args.len() && !args[index].starts_with('-') {
+                    index += 1;
+                }
+                continue;
+            }
+
+            if claude_boolean_flag(arg) {
+                index += 1;
+                continue;
+            }
+
+            // A future Claude option is more likely to own its following token than
+            // that token is to be an inline prompt. Classify conservatively; a real
+            // prompt immediately promotes the agent via UserPromptSubmit anyway.
+            index += 1;
+            if index < args.len() && !args[index].starts_with('-') {
+                index += 1;
             }
             continue;
+        }
+
+        // These are administrative subcommands, not interactive prompt text. The
+        // wrapper still executes them, but the transient pane binding should not be
+        // presented as an agent actively working.
+        if claude_utility_command(arg) {
+            return false;
         }
         // A bare, non-flag token is an inline prompt.
         return true;
@@ -905,17 +967,184 @@ fn args_contain_prompt(args: &[String]) -> bool {
     false
 }
 
+fn claude_value_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--agent"
+            | "--agents"
+            | "--append-system-prompt"
+            | "--append-system-prompt-file"
+            | "--debug-file"
+            | "--effort"
+            | "--fallback-model"
+            | "--input-format"
+            | "--json-schema"
+            | "--max-budget-usd"
+            | "--max-turns"
+            | "--model"
+            | "-n"
+            | "--name"
+            | "--output-format"
+            | "--permission-mode"
+            | "--permission-prompt-tool"
+            | "--plugin-dir"
+            | "--plugin-url"
+            | "--remote-control-session-name-prefix"
+            | "--session-id"
+            | "--setting-sources"
+            | "--settings"
+            | "--system-prompt"
+            | "--system-prompt-file"
+    )
+}
+
+fn claude_variadic_value_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--add-dir"
+            | "--allowedTools"
+            | "--allowed-tools"
+            | "--betas"
+            | "--disallowedTools"
+            | "--disallowed-tools"
+            | "--file"
+            | "--mcp-config"
+            | "--tools"
+    )
+}
+
+fn claude_optional_value_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-d" | "--debug"
+            | "--from-pr"
+            | "--prompt-suggestions"
+            | "--remote-control"
+            | "-r"
+            | "--resume"
+            | "-w"
+            | "--worktree"
+    )
+}
+
+fn claude_boolean_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--allow-dangerously-skip-permissions"
+            | "--ax-screen-reader"
+            | "--background"
+            | "--bare"
+            | "--bg"
+            | "--brief"
+            | "-c"
+            | "--continue"
+            | "--chrome"
+            | "--dangerously-skip-permissions"
+            | "--disable-slash-commands"
+            | "--exclude-dynamic-system-prompt-sections"
+            | "--fork-session"
+            | "-h"
+            | "--help"
+            | "--ide"
+            | "--include-hook-events"
+            | "--include-partial-messages"
+            | "--no-chrome"
+            | "--no-session-persistence"
+            | "-p"
+            | "--print"
+            | "--replay-user-messages"
+            | "--safe-mode"
+            | "--strict-mcp-config"
+            | "--tmux"
+            | "-v"
+            | "--verbose"
+            | "--version"
+    )
+}
+
+fn validate_claude_shell_args(args: &[String]) -> Result<(), String> {
+    for arg in args.iter().take_while(|arg| arg.as_str() != "--") {
+        let reason = match arg.as_str() {
+            "--bare" | "--safe-mode" => Some("it disables the lifecycle hooks qMux requires"),
+            "--background" | "--bg" => Some(
+                "it detaches Claude from the pane that owns the qMux agent integration",
+            ),
+            "--worktree" | "-w" => Some(
+                "Claude-created worktrees are not represented in qMux agent workspace state; use qMux's worktree fork instead",
+            ),
+            "--tmux" => Some(
+                "it moves Claude out of the pane that owns the qMux agent integration",
+            ),
+            "--settings" => Some(
+                "it can replace the qMux settings file that installs lifecycle hooks; use normal user or project settings instead",
+            ),
+            _ if arg.starts_with("--worktree=") => Some(
+                "Claude-created worktrees are not represented in qMux agent workspace state; use qMux's worktree fork instead",
+            ),
+            _ if arg.starts_with("--tmux=") => Some(
+                "it moves Claude out of the pane that owns the qMux agent integration",
+            ),
+            _ if arg.starts_with("--settings=") => Some(
+                "it can replace the qMux settings file that installs lifecycle hooks; use normal user or project settings instead",
+            ),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Err(format!(
+                "qMux Claude integration does not support {arg} because {reason}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn claude_utility_command(arg: &str) -> bool {
+    matches!(
+        arg,
+        "agents"
+            | "auth"
+            | "auto-mode"
+            | "doctor"
+            | "gateway"
+            | "install"
+            | "mcp"
+            | "plugin"
+            | "plugins"
+            | "project"
+            | "setup-token"
+            | "update"
+            | "upgrade"
+    )
+}
+
 /// Extracts the session id from a `--resume <id>` / `-r <id>` / `--resume=<id>` shell
 /// argument list, so a resume launch can rebind the original agent. `None` when the
 /// invocation isn't resuming a specific session.
 fn claude_resume_session_id(args: &[String]) -> Option<&str> {
+    // A native Claude fork resumes the source transcript but deliberately creates a
+    // different session. Reusing the source qmux record would let the fork's hooks
+    // overwrite the source tab's session/transcript identity.
+    if args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--fork-session")
+    {
+        return None;
+    }
+
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
         if let Some(id) = arg.strip_prefix("--resume=") {
-            return Some(id);
+            return (!id.is_empty()).then_some(id);
         }
         if arg == "--resume" || arg == "-r" {
-            return iter.next().map(String::as_str);
+            return iter
+                .next()
+                .map(String::as_str)
+                .filter(|id| !id.starts_with('-'));
         }
     }
     None
@@ -1784,6 +2013,19 @@ mod tests {
         assert!(!args_contain_prompt(&svec(&["--resume", "abc123"])));
         assert!(!args_contain_prompt(&svec(&["-r"])));
         assert!(!args_contain_prompt(&svec(&["--model=sonnet"])));
+        assert!(!args_contain_prompt(&svec(&["--agent", "reviewer"])));
+        assert!(!args_contain_prompt(&svec(&["--debug-file", "/tmp/debug"])));
+        assert!(!args_contain_prompt(&svec(&["--from-pr", "123"])));
+        assert!(!args_contain_prompt(&svec(&["--worktree", "feature"])));
+        assert!(!args_contain_prompt(&svec(&[
+            "--add-dir",
+            "/tmp/a",
+            "/tmp/b"
+        ])));
+        assert!(!args_contain_prompt(&svec(&["doctor"])));
+        assert!(!args_contain_prompt(&svec(&["update"])));
+        assert!(!args_contain_prompt(&svec(&["upgrade"])));
+        assert!(!args_contain_prompt(&svec(&["--verbose", "doctor"])));
         // Plugin flags take a value, so their argument is not a prompt.
         assert!(!args_contain_prompt(&svec(&["--plugin-dir", "/tmp/p"])));
         assert!(!args_contain_prompt(&svec(&[
@@ -1804,7 +2046,36 @@ mod tests {
             "fix the bug"
         ])));
         assert!(args_contain_prompt(&svec(&["--continue", "keep going"])));
+        assert!(args_contain_prompt(&svec(&["--print", "summarize this"])));
+        assert!(args_contain_prompt(&svec(&["ultrareview", "main"])));
+        assert!(args_contain_prompt(&svec(&[
+            "--resume",
+            "sess-1",
+            "keep going"
+        ])));
         assert!(args_contain_prompt(&svec(&["--", "after separator"])));
+    }
+
+    #[test]
+    fn shell_args_reject_modes_that_bypass_qmux_lifecycle_tracking() {
+        for args in [
+            svec(&["--bare"]),
+            svec(&["--safe-mode"]),
+            svec(&["--background"]),
+            svec(&["--bg"]),
+            svec(&["--worktree"]),
+            svec(&["-w", "feature"]),
+            svec(&["--worktree=feature"]),
+            svec(&["--tmux"]),
+            svec(&["--tmux=classic"]),
+            svec(&["--settings", "/tmp/custom-settings.json"]),
+            svec(&["--settings={}"]),
+        ] {
+            assert!(validate_claude_shell_args(&args).is_err(), "accepted {args:?}");
+        }
+
+        assert!(validate_claude_shell_args(&svec(&["--model", "sonnet"])).is_ok());
+        assert!(validate_claude_shell_args(&svec(&["--", "--safe-mode"])).is_ok());
     }
 
     #[test]
@@ -1829,6 +2100,23 @@ mod tests {
         assert_eq!(claude_resume_session_id(&svec(&[])), None);
         assert_eq!(claude_resume_session_id(&svec(&["--continue"])), None);
         assert_eq!(claude_resume_session_id(&svec(&["--resume"])), None);
+        assert_eq!(claude_resume_session_id(&svec(&["--resume="])), None);
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--resume", "--model", "sonnet"])),
+            None
+        );
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--resume", "sess-source", "--fork-session"])),
+            None
+        );
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--fork-session", "--resume=sess-source"])),
+            None
+        );
+        assert_eq!(
+            claude_resume_session_id(&svec(&["--", "--resume", "prompt-session"])),
+            None
+        );
     }
 
     #[derive(Debug)]
@@ -1954,7 +2242,12 @@ mod tests {
         assert!(!project_dir.join(".qmux/qmux-hooks.json").exists());
         let raw = fs::read_to_string(settings_path).unwrap();
         assert!(raw.contains("\"hooks\""));
-        assert!(raw.contains(" notify SessionStart"));
+        for event in CLAUDE_HOOK_EVENTS {
+            assert!(
+                raw.contains(&format!(" notify {event}")),
+                "missing hook for {event}"
+            );
+        }
 
         let _ = fs::remove_dir_all(workspace_root);
         let _ = fs::remove_dir_all(project_dir);
@@ -2500,6 +2793,61 @@ mod tests {
     }
 
     #[test]
+    fn failure_and_input_hooks_keep_status_current() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        state
+            .set_agent_status("agent-1", AgentStatus::AwaitingPermission)
+            .unwrap();
+        let event = ingest(&state, hook("PermissionDenied", json!({})));
+        assert_eq!(event.event_type, "agent.permission_denied");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(&state, hook("PostToolUseFailure", json!({})));
+        assert_eq!(event.event_type, "agent.tool_result");
+
+        let event = ingest(&state, hook("Elicitation", json!({})));
+        assert_eq!(event.event_type, "agent.awaiting_input");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::AwaitingInput
+        ));
+
+        let event = ingest(&state, hook("ElicitationResult", json!({})));
+        assert_eq!(event.event_type, "agent.input_resolved");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(&state, hook("StopFailure", json!({})));
+        assert_eq!(event.event_type, "agent.done");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
+    }
+
+    #[test]
+    fn subagent_and_session_boundary_hooks_are_forwarded() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        for (hook_event, expected_event) in [
+            ("SubagentStart", "agent.subagent_started"),
+            ("SubagentStop", "agent.subagent_stopped"),
+            ("SessionEnd", "agent.session_end"),
+        ] {
+            let event = ingest(&state, hook(hook_event, json!({})));
+            assert_eq!(event.event_type, expected_event);
+        }
+    }
+
+    #[test]
     fn pause_after_turn_pauses_the_queue_then_unpause_resumes() {
         let state = test_state();
         let bytes = install_agent_pane(&state);
@@ -2518,6 +2866,11 @@ mod tests {
         let event = ingest(&state, hook("Stop", json!({})));
         assert_eq!(event.event_type, "agent.running");
         assert!(written_text(&bytes).contains("first"));
+
+        // Claude echoes the submitted prompt before this newly sent turn can finish.
+        // A completion arriving before that echo is intentionally deduplicated as a
+        // second completion for the previous turn.
+        ingest(&state, hook("UserPromptSubmit", json!({ "prompt": "first" })));
 
         // When that turn finishes, the queue pauses instead of sending "second".
         let event = ingest(&state, hook("Stop", json!({})));
@@ -2986,10 +3339,17 @@ mod tests {
 
     #[test]
     fn launch_options_validate_permission_mode() {
+        for mode in CLAUDE_PERMISSION_MODES {
+            let options = ClaudeLaunchOptions::from_value(json!({ "permissionMode": mode }))
+                .expect("current Claude permission mode should be accepted");
+            assert_eq!(options.permission_mode.as_deref(), Some(*mode));
+        }
+
         let err =
             ClaudeLaunchOptions::from_value(json!({ "permissionMode": "always" })).unwrap_err();
 
         assert!(err.contains("invalid Claude adapter option permissionMode"));
+        assert!(ClaudeLaunchOptions::from_value(json!({ "permissionMode": "default" })).is_err());
     }
 
     #[test]
