@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useLayoutEffect,
   useMemo,
@@ -8,6 +9,11 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { AgentStatusTone } from "../lib/appHelpers";
+import {
+  COLLAPSED_IMAGE_LABEL,
+  collapseImageMarkers,
+  splitImageMarkers,
+} from "../lib/imageMarkers";
 
 export interface HomeCascadeQueuedTurn {
   text: string;
@@ -84,6 +90,24 @@ function statusLabel(workstream: HomeCascadeWorkstream) {
 
 function stopButtonPropagation(event: ReactMouseEvent<HTMLElement>) {
   event.stopPropagation();
+}
+
+// Image paste markers render as a muted "[Image]" chip (matching the right pane's
+// collapsed tag blocks) instead of the raw image-cache path.
+function renderCardText(text: string) {
+  return (
+    <span className="home-cascade-card-text">
+      {splitImageMarkers(text).map((segment, index) =>
+        segment.kind === "image" ? (
+          <span key={index} className="home-cascade-image-chip">
+            {COLLAPSED_IMAGE_LABEL}
+          </span>
+        ) : (
+          <Fragment key={index}>{segment.text}</Fragment>
+        ),
+      )}
+    </span>
+  );
 }
 
 function currentTurnText(workstream: HomeCascadeWorkstream) {
@@ -315,8 +339,10 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
   const renderCurrentCard = (workstream: HomeCascadeWorkstream) => {
     const key = currentTurnKey(workstream);
     const open = openCards.has(key);
+    const displayText = collapseImageMarkers(currentTurnText(workstream));
     const expandable =
-      workstream.latestUserTurn !== null && shouldOfferExpand(workstream.latestUserTurn);
+      workstream.latestUserTurn !== null &&
+      shouldOfferExpand(collapseImageMarkers(workstream.latestUserTurn));
     return (
       <div
         className={[
@@ -329,9 +355,9 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
         ]
           .filter(Boolean)
           .join(" ")}
-        title={currentTurnText(workstream)}
+        title={displayText}
       >
-        <span className="home-cascade-card-text">{currentTurnText(workstream)}</span>
+        {renderCardText(currentTurnText(workstream))}
         {expandable ? renderExpandToggle(key, open) : null}
       </div>
     );
@@ -346,7 +372,8 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
     const target = turn.waitForAgentId ? workstreamByAgentId.get(turn.waitForAgentId) : null;
     const waitLabel = turn.waitForLabel ?? target?.title ?? "selected terminal";
     const open = openCards.has(key);
-    const expandable = shouldOfferExpand(turn.text);
+    const displayText = collapseImageMarkers(turn.text);
+    const expandable = shouldOfferExpand(displayText);
     return (
       <div
         key={key}
@@ -360,13 +387,13 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
         ]
           .filter(Boolean)
           .join(" ")}
-        title={turn.text}
+        title={displayText}
         role="button"
         tabIndex={0}
         onClick={() => onActivatePane(workstream.paneId)}
         onKeyDown={(event) => activatePaneFromCard(workstream, event)}
       >
-        <span className="home-cascade-card-text">{turn.text}</span>
+        {renderCardText(turn.text)}
         {turn.waitForAgentId ? (
           target ? (
             <button

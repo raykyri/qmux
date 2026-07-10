@@ -2435,6 +2435,11 @@ button:disabled {
   -webkit-line-clamp: 3;
 }
 
+/* Collapsed image paste marker — muted like the right pane's collapsed tag blocks. */
+.home-cascade-image-chip {
+  color: #8f9994;
+}
+
 .home-cascade-card--current.is-empty .home-cascade-card-text {
   color: inherit;
 }

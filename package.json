@@ -10,6 +10,7 @@
     "build": "scripts/build.sh",
     "build:web": "tsc && vite build",
     "test:pane-splits": "node scripts/test-pane-splits.mjs",
+    "test:image-markers": "node scripts/test-image-markers.mjs",
     "check:scrollback": "node scripts/check-terminal-scrollback.mjs",
     "tauri": "tauri"
   },
