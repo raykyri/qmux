@@ -969,9 +969,13 @@ function cascadeLatestUserTurn(turns: Turn[]): string | null {
   return stripped.length > 0 ? stripped : null;
 }
 
-function graphHasAgentBranch(graph: ThreadGraph, agent: AgentInfo) {
+function graphHasCompleteAgentBranch(graph: ThreadGraph, agent: AgentInfo, turns: Turn[]) {
   const branchId = agent.branchId?.trim() || graph.focusedBranchId;
-  return Boolean(branchId && graph.branches[branchId]);
+  return Boolean(
+    branchId &&
+      graph.branches[branchId] &&
+      turns.every((turn) => graph.nodes[turn.id]?.kind === "turn"),
+  );
 }
 
 function defaultPaneTitle(
@@ -1332,7 +1336,7 @@ export default function App() {
           ? threadGraphById.get(agent.threadId)
           : undefined;
       const threadGraph =
-        storedGraph && graphHasAgentBranch(storedGraph, agent)
+        storedGraph && graphHasCompleteAgentBranch(storedGraph, agent, normalizedTurns)
           ? storedGraph
           : buildSingleAgentThreadGraph(agent, normalizedTurns);
       const graphTurns = focusedBranchTurns(threadGraph, agent);
@@ -4862,14 +4866,14 @@ export default function App() {
   ): Promise<CloseDialogState | null> {
     const agent = agentsRef.current.find((candidate) => candidate.paneId === paneToClose.id);
     if (agent && agent.branch) {
-      let hasChanges = false;
+      let hasChanges: boolean | null = null;
       if (options?.checkWorktreeStatus !== false) {
         try {
           hasChanges = (await worktreeStatus(agent.id)).hasChanges;
         } catch {
-          // If the status check fails, still offer the choice rather than blocking
-          // the close; treat the change state as unknown (assume none).
-          hasChanges = false;
+          // Still offer the choice, but preserve the unknown state so the dialog
+          // cannot falsely assure the user that deleting the worktree is safe.
+          hasChanges = null;
         }
       }
       return {
@@ -5070,7 +5074,26 @@ export default function App() {
         await continueGroupClose(groupClose);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      // Worktree deletion runs after the pane is killed. If cleanup fails, the
+      // command reports an error even though the backend no longer has the pane;
+      // reconcile that partial success so the UI cannot retain a dead tab/agent.
+      try {
+        const [latestPanes, latestAgents, latestGroups] = await Promise.all([
+          listPanes(),
+          listAgents(),
+          listGroups(),
+        ]);
+        if (!latestPanes.some((pane) => pane.id === dialog.pane.id)) {
+          setPanesPreservingRecoveredDismissals(latestPanes);
+          setAgents(latestAgents);
+          setGroups(latestGroups);
+        }
+      } catch {
+        // Preserve the cleanup error; a later backend event/resync can reconcile
+        // state if this best-effort read also fails.
+      }
+      setError(message);
       setCloseDialog(null);
     } finally {
       setResolvingClose(null);
@@ -8274,16 +8297,21 @@ export default function App() {
                     : "Closing this tab will stop the agent."}
                 </p>
                 <p>
-                  {closeDialog.hasChanges ? (
+                  {closeDialog.hasChanges === true ? (
                     <span className="confirm-dialog-changes">
                       The worktree {formatPaneDir(closeDialog.worktreeDir)} has uncommitted changes
                       that will be lost if deleted.
                     </span>
-                  ) : (
+                  ) : closeDialog.hasChanges === false ? (
                     <>
                       The worktree {formatPaneDir(closeDialog.worktreeDir)} has no uncommitted
                       changes.
                     </>
+                  ) : (
+                    <span className="confirm-dialog-changes">
+                      Qmux could not check the worktree {formatPaneDir(closeDialog.worktreeDir)} for
+                      uncommitted changes. Deleting it may discard work.
+                    </span>
                   )}{" "}
                   Delete the worktree?
                 </p>

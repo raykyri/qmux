@@ -22,7 +22,8 @@ export type CloseDialogState =
       pane: PaneInfo;
       agentId: string;
       worktreeDir: string;
-      hasChanges: boolean;
+      // null means the git status probe failed or was intentionally skipped.
+      hasChanges: boolean | null;
       busy: boolean;
     } & CloseDialogGroupContext)
   | ({ kind: "stop"; pane: PaneInfo; reason: string } & CloseDialogGroupContext)
