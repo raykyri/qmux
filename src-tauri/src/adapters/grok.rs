@@ -210,7 +210,6 @@ impl GrokAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
-                skip_scrollback_restore: false,
             },
         );
 
@@ -268,9 +267,6 @@ impl GrokAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
-                // A resumed session replays its own scrollback, so skip qMux's restore
-                // to avoid double output; a fresh relaunch keeps it.
-                skip_scrollback_restore: resumed,
             },
         )?;
 
@@ -308,7 +304,7 @@ impl GrokAdapter {
         let binary = self.ensure_binary()?;
         ensure_grok_integration()?;
 
-        if state.pane_writer(&request.pane_id)?.is_none() {
+        if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 

@@ -1,4 +1,18 @@
-import { writeText as writeTauriClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  readText as readTauriClipboardText,
+  writeText as writeTauriClipboardText,
+} from "@tauri-apps/plugin-clipboard-manager";
+
+export async function readClipboardText() {
+  if ("__TAURI_INTERNALS__" in window) {
+    try {
+      return (await readTauriClipboardText()) ?? "";
+    } catch {
+      // Fall through to the web clipboard path.
+    }
+  }
+  return (await navigator.clipboard?.readText?.()) ?? "";
+}
 
 // Copy text to the clipboard. The native Tauri path comes first: WKWebView's
 // async Clipboard API is focus- and permission-sensitive, and the final

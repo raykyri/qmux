@@ -176,29 +176,6 @@ function optionalTurnStatusReason(value: unknown) {
   );
 }
 
-// Decodes a `pty.data` event payload (base64-encoded raw PTY bytes) into the
-// Uint8Array xterm writes. The backend sends base64 rather than a JSON integer
-// array to keep this hottest-path payload compact and the decode a single step.
-export function ptyDataFromPayload(payload: Record<string, unknown>): Uint8Array | null {
-  return bytesFromBase64(payload.dataBase64);
-}
-
-export function bytesFromBase64(encoded: unknown): Uint8Array | null {
-  if (typeof encoded !== "string") {
-    return null;
-  }
-  try {
-    const binary = atob(encoded);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
 // Validates an agent payload arriving on an event before it is applied to local
 // state, mirroring isTurn. Status events now carry the updated agent so the UI can
 // apply changes surgically instead of refetching the whole list every time.

@@ -9,11 +9,6 @@ const MAX_PASTE_BYTES = 50 * 1024 * 1024;
 export interface PasteProtectionSettings {
   confirmMultiLinePaste: boolean;
   confirmPasteOverChars: number;
-  bracketedPasteSafe: boolean;
-}
-
-export interface PasteInspectionOptions extends PasteProtectionSettings {
-  bracketedPasteActive?: boolean;
 }
 
 function formatPasteSize(bytes: number): string {
@@ -43,13 +38,11 @@ function formatPasteCharacters(chars: number): string {
 
 export function inspectPaste(
   text: string,
-  options: Partial<PasteInspectionOptions> = {},
+  options: Partial<PasteProtectionSettings> = {},
 ): PasteVerdict {
   const {
     confirmMultiLinePaste = false,
     confirmPasteOverChars = DEFAULT_CONFIRM_PASTE_OVER_CHARS,
-    bracketedPasteSafe = false,
-    bracketedPasteActive = false,
   } = options;
   const bytes = new TextEncoder().encode(text).length;
   if (bytes > MAX_PASTE_BYTES) {
@@ -59,9 +52,6 @@ export function inspectPaste(
         MAX_PASTE_BYTES,
       )} limit, so it was not pasted.`,
     };
-  }
-  if (bracketedPasteSafe && bracketedPasteActive) {
-    return { action: "accept" };
   }
   const chars = Array.from(text).length;
   if (chars > confirmPasteOverChars) {

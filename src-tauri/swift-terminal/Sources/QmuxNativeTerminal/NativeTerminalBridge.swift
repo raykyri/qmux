@@ -1,0 +1,247 @@
+import AppKit
+import Foundation
+import GhosttyTerminal
+
+private func terminalString(_ pointer: UnsafePointer<CChar>?) -> String? {
+    guard let pointer else { return nil }
+    return String(cString: pointer)
+}
+
+private func onTerminalMain<T: Sendable>(
+    _ operation: @escaping @MainActor () -> T
+) -> T {
+    if Thread.isMainThread {
+        return MainActor.assumeIsolated {
+            operation()
+        }
+    }
+    return DispatchQueue.main.sync {
+        MainActor.assumeIsolated {
+            operation()
+        }
+    }
+}
+
+@_cdecl("qmux_native_terminal_initialize")
+public func qmuxNativeTerminalInitialize(
+    _ nativeView: UnsafeMutableRawPointer?
+) -> Int32 {
+    guard let nativeView else { return 0 }
+    let nativeViewAddress = UInt(bitPattern: nativeView)
+    return onTerminalMain {
+        if ProcessInfo.processInfo.environment["QMUX_NATIVE_DEBUG"] != nil {
+            TerminalDebugLog.isEnabled = true
+        }
+        guard let nativeView = UnsafeMutableRawPointer(
+            bitPattern: nativeViewAddress
+        ) else {
+            return 0
+        }
+        let view = Unmanaged<NSView>.fromOpaque(nativeView).takeUnretainedValue()
+        return NativeTerminalHost.shared.attach(to: view) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_create")
+public func qmuxNativeTerminalCreate(
+    _ paneID: UnsafePointer<CChar>?,
+    _ launcherPath: UnsafePointer<CChar>?,
+    _ workingDirectory: UnsafePointer<CChar>?,
+    _ canAskSelection: Int32
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          let launcherPath = terminalString(launcherPath)
+    else {
+        return 0
+    }
+    let cwd = terminalString(workingDirectory)
+    return onTerminalMain {
+        NativeTerminalHost.shared.createPane(
+            id: paneID,
+            launcherPath: launcherPath,
+            workingDirectory: cwd,
+            canAskSelection: canAskSelection == 1
+        )
+            ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_remove")
+public func qmuxNativeTerminalRemove(_ paneID: UnsafePointer<CChar>?) {
+    guard let paneID = terminalString(paneID) else { return }
+    onTerminalMain {
+        NativeTerminalHost.shared.removePane(id: paneID)
+    }
+}
+
+@_cdecl("qmux_native_terminal_terminate")
+public func qmuxNativeTerminalTerminate(
+    _ paneID: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let paneID = terminalString(paneID) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.terminatePane(id: paneID) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_set_stage_backstop")
+public func qmuxNativeTerminalSetStageBackstop(
+    _ x: Double,
+    _ y: Double,
+    _ width: Double,
+    _ height: Double
+) -> Int32 {
+    onTerminalMain {
+        NativeTerminalHost.shared.setStageBackstop(
+            frame: CGRect(x: x, y: y, width: width, height: height)
+        ) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_set_layout")
+public func qmuxNativeTerminalSetLayout(
+    _ paneID: UnsafePointer<CChar>?,
+    _ x: Double,
+    _ y: Double,
+    _ width: Double,
+    _ height: Double,
+    _ visible: Int32,
+    _ focused: Int32,
+    _ acceptsPointerInput: Int32,
+    _ acceptsKeyboardInput: Int32,
+    _ deferGeometry: Int32
+) -> Int32 {
+    guard let paneID = terminalString(paneID) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.setLayout(
+            id: paneID,
+            frame: CGRect(x: x, y: y, width: width, height: height),
+            visible: visible == 1,
+            focused: focused == 1,
+            acceptsPointerInput: acceptsPointerInput == 1,
+            acceptsKeyboardInput: acceptsKeyboardInput == 1,
+            deferGeometry: deferGeometry == 1
+        ) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_set_web_pointer_claimed")
+public func qmuxNativeTerminalSetWebPointerClaimed(_ claimed: Int32) -> Int32 {
+    onTerminalMain {
+        NativeTerminalHost.shared.setWebPointerRoutingClaimed(claimed == 1) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_focus")
+public func qmuxNativeTerminalFocus(_ paneID: UnsafePointer<CChar>?) -> Int32 {
+    guard let paneID = terminalString(paneID) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.focusPane(id: paneID) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_send_text")
+public func qmuxNativeTerminalSendText(
+    _ paneID: UnsafePointer<CChar>?,
+    _ text: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          let text = terminalString(text)
+    else {
+        return 0
+    }
+    return onTerminalMain {
+        NativeTerminalHost.shared.sendText(id: paneID, text: text) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_submit")
+public func qmuxNativeTerminalSubmit(_ paneID: UnsafePointer<CChar>?) -> Int32 {
+    guard let paneID = terminalString(paneID) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.submit(id: paneID) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_action")
+public func qmuxNativeTerminalAction(
+    _ paneID: UnsafePointer<CChar>?,
+    _ action: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          let action = terminalString(action)
+    else {
+        return 0
+    }
+    return onTerminalMain {
+        NativeTerminalHost.shared.performAction(id: paneID, action: action) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_paste_approved_text")
+public func qmuxNativeTerminalPasteApprovedText(
+    _ paneID: UnsafePointer<CChar>?,
+    _ text: UnsafePointer<UInt8>?,
+    _ textLength: Int
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          textLength >= 0,
+          text != nil || textLength == 0
+    else {
+        return 0
+    }
+    let text = text.map {
+        String(decoding: UnsafeBufferPointer(start: $0, count: textLength), as: UTF8.self)
+    } ?? ""
+    return onTerminalMain {
+        NativeTerminalHost.shared.pasteApprovedText(id: paneID, text: text) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_update_settings")
+public func qmuxNativeTerminalUpdateSettings(
+    _ paneID: UnsafePointer<CChar>?,
+    _ fontSize: Double,
+    _ fontFamily: UnsafePointer<CChar>?,
+    _ letterSpacing: Double,
+    _ lineHeight: Double,
+    _ cursorBlink: Int32,
+    _ cursorStyle: UnsafePointer<CChar>?,
+    _ scrollbackRows: UInt32,
+    _ scrollOnUserInput: Int32,
+    _ canAskSelection: Int32,
+    _ scrollSensitivity: Double,
+    _ copyOnSelect: Int32,
+    _ selectionClearOnCopy: Int32
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          let fontFamily = terminalString(fontFamily),
+          let cursorStyle = terminalString(cursorStyle)
+    else {
+        return 0
+    }
+    return onTerminalMain {
+        NativeTerminalHost.shared.updateSettings(
+            id: paneID,
+            fontSize: fontSize,
+            fontFamily: fontFamily,
+            letterSpacing: letterSpacing,
+            lineHeight: lineHeight,
+            cursorBlink: cursorBlink == 1,
+            cursorStyle: cursorStyle,
+            scrollbackRows: scrollbackRows,
+            scrollOnUserInput: scrollOnUserInput == 1,
+            canAskSelection: canAskSelection == 1,
+            scrollSensitivity: scrollSensitivity,
+            copyOnSelect: copyOnSelect == 1,
+            selectionClearOnCopy: selectionClearOnCopy == 1
+        ) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_shutdown")
+public func qmuxNativeTerminalShutdown() {
+    onTerminalMain {
+        NativeTerminalHost.shared.shutdown()
+    }
+}

@@ -7,6 +7,7 @@ mod events;
 mod file_server;
 mod launch_path;
 mod menu_bar;
+mod native_terminal;
 mod persistence;
 mod pty;
 mod recovery;
@@ -28,6 +29,11 @@ use adapters::{
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use menu_bar::menu_bar_update;
+use native_terminal::{
+    native_terminal_action, native_terminal_focus, native_terminal_paste_approved_text,
+    native_terminal_set_layout, native_terminal_set_stage_backstop,
+    native_terminal_set_web_pointer_claimed, native_terminal_update_settings,
+};
 use pty::{
     InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
@@ -551,22 +557,6 @@ fn pane_attach(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(),
     attach_pane(&state, pane_id)
 }
 
-/// Returns the durable terminal output captured before this pane's current
-/// frontend attach. The frontend replays it into xterm before `pane_attach`, so
-/// recovered panes show their prior scrollback followed by fresh process output.
-/// Recovered agent resumes opt out because their pre-attach backlog is a fresh TUI
-/// repaint, and replaying old raw TUI bytes first can leave the active prompt with
-/// stale cell attributes.
-#[tauri::command]
-fn pane_scrollback(state: tauri::State<'_, AppState>, pane_id: String) -> Result<String, String> {
-    match state.pane_skips_scrollback_restore(&pane_id)? {
-        Some(true) => return Ok(String::new()),
-        Some(false) => {}
-        None => return Err(format!("pane {pane_id} was not found")),
-    }
-    scrollback::pane_scrollback_base64(&state.config().workspace_root, &pane_id)
-}
-
 #[tauri::command]
 fn pane_resize(
     state: tauri::State<'_, AppState>,
@@ -887,6 +877,18 @@ fn main() {
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
+                #[cfg(target_os = "macos")]
+                if !native_terminal::available() {
+                    return Err(std::io::Error::other(
+                        "the native Ghostty terminal bridge failed to initialize",
+                    )
+                    .into());
+                }
+                #[cfg(target_os = "macos")]
+                if let Some(window) = app.get_webview_window("main") {
+                    native_terminal::initialize(window.ns_view()?, state.clone())
+                        .map_err(std::io::Error::other)?;
+                }
                 // Best-effort: if the menu tweak fails, ⌘W keeps its default
                 // (window-closing) behavior and ⌘Q its instant-quit behavior rather
                 // than aborting startup.
@@ -985,7 +987,6 @@ fn main() {
             agent_fork,
             pane_write,
             pane_attach,
-            pane_scrollback,
             pane_resize,
             pane_activity,
             pane_kill,
@@ -997,6 +998,13 @@ fn main() {
             pane_place_after,
             pane_splits_get,
             pane_splits_set,
+            native_terminal_set_layout,
+            native_terminal_set_stage_backstop,
+            native_terminal_set_web_pointer_claimed,
+            native_terminal_focus,
+            native_terminal_action,
+            native_terminal_paste_approved_text,
+            native_terminal_update_settings,
             agent_submit_turn,
             agent_queue_wait_turn,
             agent_queue_delivery_turn,
@@ -1041,6 +1049,7 @@ fn main() {
                 // process death would save the session with its tabs deleted.
                 exit_state.finalize_persistence_for_exit();
                 pty::kill_all_panes(&exit_state);
+                native_terminal::shutdown();
                 // Reclaim the control socket on a clean exit rather than leaving the
                 // file for the next launch's stale-socket cleanup — but only while the
                 // path still points at the socket this process bound. If another

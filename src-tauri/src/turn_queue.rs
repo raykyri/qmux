@@ -1117,11 +1117,12 @@ mod tests {
                 recovered: false,
                 depth: 0,
             },
-            child: Arc::new(Mutex::new(Box::new(FakeChild))),
-            master: Arc::new(Mutex::new(pair.master)),
-            writer: Arc::new(Mutex::new(Box::new(io::sink()))),
-            backlog: Arc::new(Mutex::new(PaneBacklog::default())),
-            skip_scrollback_restore: false,
+            backend: crate::state::PaneBackend::Portable {
+                child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                master: Arc::new(Mutex::new(pair.master)),
+                writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+                backlog: Arc::new(Mutex::new(PaneBacklog::default())),
+            },
         }
     }
 

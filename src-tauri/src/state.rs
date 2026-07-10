@@ -20,6 +20,18 @@ pub type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub type SharedBacklog = Arc<Mutex<PaneBacklog>>;
 
+pub enum PaneBackend {
+    #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+    Portable {
+        child: SharedChild,
+        master: SharedMaster,
+        writer: SharedWriter,
+        backlog: SharedBacklog,
+    },
+    #[cfg_attr(test, allow(dead_code))]
+    Native { root_pid: Option<u32> },
+}
+
 /// Upper bound on a pane's reported working directory. Comfortably above any
 /// real filesystem path (PATH_MAX is typically 1024–4096) while bounding what an
 /// in-pane process can push into persisted state via the control socket.
@@ -690,11 +702,7 @@ pub enum AgentPromptSubmitMatch {
 
 pub struct PaneRuntime {
     pub info: PaneInfo,
-    pub child: SharedChild,
-    pub master: SharedMaster,
-    pub writer: SharedWriter,
-    pub backlog: SharedBacklog,
-    pub skip_scrollback_restore: bool,
+    pub backend: PaneBackend,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1310,6 +1318,47 @@ impl AppState {
         }
     }
 
+    /// Runs `task` on the app's main thread, blocking the caller until it
+    /// finishes and returning its result. Callers already on the main thread
+    /// run the task inline — dispatching through the event-loop proxy and then
+    /// blocking on the reply would park the very thread that has to run the
+    /// task. When no app handle is attached (startup, tests) the task also
+    /// runs inline on the calling thread.
+    ///
+    /// Safe-wait contract: a background caller parks until the main thread
+    /// gets to the task, so it must not hold any lock that main-thread work
+    /// can contend.
+    pub fn run_on_main_thread_blocking<T, F>(&self, task: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        #[cfg(target_os = "macos")]
+        {
+            let on_main_thread = unsafe { libc::pthread_main_np() != 0 };
+            if !on_main_thread {
+                let app_handle = self
+                    .inner
+                    .app_handle
+                    .lock()
+                    .ok()
+                    .and_then(|handle| handle.as_ref().cloned());
+                if let Some(app_handle) = app_handle {
+                    let (result_tx, result_rx) = std::sync::mpsc::channel();
+                    app_handle
+                        .run_on_main_thread(move || {
+                            let _ = result_tx.send(task());
+                        })
+                        .map_err(|err| format!("failed to reach the main thread: {err}"))?;
+                    return result_rx.recv().map_err(|_| {
+                        "main-thread task was dropped before it completed".to_string()
+                    });
+                }
+            }
+        }
+        Ok(task())
+    }
+
     pub fn mark_exit_confirmed(&self) {
         self.inner.exit_confirmed.store(true, Ordering::Relaxed);
     }
@@ -1605,18 +1654,6 @@ impl AppState {
         }
         self.persist();
         Ok(())
-    }
-
-    pub fn pane_skips_scrollback_restore(&self, pane_id: &str) -> Result<Option<bool>, String> {
-        let model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .get(pane_id)
-            .map(|runtime| runtime.skip_scrollback_restore))
     }
 
     pub fn capture_last_closed_pane(&self, pane_id: &str) -> Result<(), String> {
@@ -3276,13 +3313,31 @@ impl AppState {
         }
     }
 
+    /// Whether a pane is currently registered, regardless of backend. Use this
+    /// for existence checks: `pane_writer` is `None` for every native pane, so
+    /// it cannot double as one.
+    pub fn pane_exists(&self, pane_id: &str) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.panes.contains_key(pane_id))
+    }
+
     pub fn pane_writer(&self, pane_id: &str) -> Result<Option<SharedWriter>, String> {
         let model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.panes.get(pane_id).map(|pane| pane.writer.clone()))
+        Ok(model
+            .panes
+            .get(pane_id)
+            .and_then(|pane| match &pane.backend {
+                PaneBackend::Portable { writer, .. } => Some(writer.clone()),
+                PaneBackend::Native { .. } => None,
+            }))
     }
 
     pub fn pane_master(&self, pane_id: &str) -> Result<Option<SharedMaster>, String> {
@@ -3291,7 +3346,13 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.panes.get(pane_id).map(|pane| pane.master.clone()))
+        Ok(model
+            .panes
+            .get(pane_id)
+            .and_then(|pane| match &pane.backend {
+                PaneBackend::Portable { master, .. } => Some(master.clone()),
+                PaneBackend::Native { .. } => None,
+            }))
     }
 
     pub fn pane_child(&self, pane_id: &str) -> Result<Option<SharedChild>, String> {
@@ -3300,7 +3361,13 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.panes.get(pane_id).map(|pane| pane.child.clone()))
+        Ok(model
+            .panes
+            .get(pane_id)
+            .and_then(|pane| match &pane.backend {
+                PaneBackend::Portable { child, .. } => Some(child.clone()),
+                PaneBackend::Native { .. } => None,
+            }))
     }
 
     /// Snapshots every live pane's id and child handle. Used by the app-exit
@@ -3315,7 +3382,10 @@ impl AppState {
         Ok(model
             .panes
             .iter()
-            .map(|(pane_id, pane)| (pane_id.clone(), pane.child.clone()))
+            .filter_map(|(pane_id, pane)| match &pane.backend {
+                PaneBackend::Portable { child, .. } => Some((pane_id.clone(), child.clone())),
+                PaneBackend::Native { .. } => None,
+            })
             .collect())
     }
 
@@ -3337,7 +3407,82 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.panes.get(pane_id).map(|pane| pane.backlog.clone()))
+        Ok(model
+            .panes
+            .get(pane_id)
+            .and_then(|pane| match &pane.backend {
+                PaneBackend::Portable { backlog, .. } => Some(backlog.clone()),
+                PaneBackend::Native { .. } => None,
+            }))
+    }
+
+    pub fn pane_is_native(&self, pane_id: &str) -> Result<Option<bool>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .panes
+            .get(pane_id)
+            .map(|pane| matches!(pane.backend, PaneBackend::Native { .. })))
+    }
+
+    pub fn native_pane_pid(&self, pane_id: &str) -> Result<Option<u32>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .panes
+            .get(pane_id)
+            .and_then(|pane| match &pane.backend {
+                PaneBackend::Native { root_pid } => *root_pid,
+                PaneBackend::Portable { .. } => None,
+            }))
+    }
+
+    pub fn native_pane_ids(&self) -> Result<Vec<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .panes
+            .iter()
+            .filter(|(_, pane)| matches!(pane.backend, PaneBackend::Native { .. }))
+            .map(|(pane_id, _)| pane_id.clone())
+            .collect())
+    }
+
+    pub fn set_native_pane_pid(&self, pane_id: &str, pid: u32) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let pane = model
+            .panes
+            .get_mut(pane_id)
+            .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+        match &mut pane.backend {
+            PaneBackend::Native { root_pid } => {
+                if let Some(existing) = *root_pid
+                    && existing != pid
+                {
+                    return Err(format!(
+                        "pane {pane_id} already reported native pid {existing}"
+                    ));
+                }
+                *root_pid = Some(pid);
+                Ok(())
+            }
+            PaneBackend::Portable { .. } => {
+                Err(format!("pane {pane_id} does not use the native backend"))
+            }
+        }
     }
 
     pub fn update_pane_size(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -4309,11 +4454,12 @@ mod tests {
 
         PaneRuntime {
             info: sample_pane(id, None),
-            child: Arc::new(Mutex::new(Box::new(FakeChild))),
-            master: Arc::new(Mutex::new(pair.master)),
-            writer: Arc::new(Mutex::new(Box::new(io::sink()))),
-            backlog: Default::default(),
-            skip_scrollback_restore: false,
+            backend: PaneBackend::Portable {
+                child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                master: Arc::new(Mutex::new(pair.master)),
+                writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+                backlog: Default::default(),
+            },
         }
     }
 

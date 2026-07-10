@@ -68,8 +68,13 @@ Prerequisites:
 Install dependencies:
 
 ```
+git submodule update --init
 npm install
 ```
+
+The submodule pins the native GhosttyKit wrapper used by terminal surfaces. Its
+checksum-pinned prebuilt framework is downloaded and cached automatically by
+SwiftPM on the first Rust/Tauri build; rebuilding Ghostty itself is not required.
 
 Run the app in development:
 

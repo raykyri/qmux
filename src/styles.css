@@ -187,6 +187,14 @@ button:disabled {
   );
 }
 
+/* Native Ghostty surfaces composite from *behind* the webview, so no ancestor
+   of the terminal panes may paint: any opaque pixel here would cover them.
+   Content chrome (turn panes, terminal empty state, split gutters) paints its
+   own opaque background instead. */
+.app-shell.is-native-terminals {
+  background: transparent;
+}
+
 .app-shell.has-turn-sidebar {
   grid-template-columns:
     var(--sidebar-width, 268px) minmax(380px, 1fr)
@@ -220,7 +228,7 @@ button:disabled {
 }
 
 /* Draggable strip over the cleared area at the top of the sidebar so the
-   frameless window can still be moved. Sits below the resizer (z-index 2) so
+   frameless window can still be moved. Sits below the resizer's stacking layer so
    the top-right resize grab keeps working, and below the native traffic-light
    buttons, which the OS keeps clickable on top of the webview. */
 .titlebar-drag {
@@ -235,9 +243,12 @@ button:disabled {
 .sidebar-resizer {
   position: absolute;
   top: 0;
-  right: -5px;
   bottom: 0;
-  z-index: 2;
+  /* Live at app-shell level rather than inside .sidebar: the sidebar must clip
+     overflowing tab content, which otherwise also clips this terminal-side
+     half of the drag target. */
+  left: calc(var(--sidebar-width, 268px) - 5px);
+  z-index: 10;
   width: 10px;
   cursor: col-resize;
 }
@@ -245,8 +256,10 @@ button:disabled {
 .sidebar-resizer::before {
   position: absolute;
   top: 0;
-  right: 5px;
   bottom: 0;
+  /* Paint one crisp pixel immediately inside the terminal while keeping the
+     wider, invisible drag target centered across the column boundary. */
+  left: 5px;
   width: 1px;
   background: #2a2d2f;
   content: "";
@@ -2231,6 +2244,22 @@ button:disabled {
   background: #111315;
 }
 
+.terminal-stage.is-native {
+  background: transparent;
+}
+
+/* Home shows web content (launcher, cascades) instead of a native surface, so
+   restore the opaque terminal backdrop — it must also cover the case where the
+   launcher dialog replaces the inline empty state, which would otherwise expose
+   the window's vibrancy material. */
+.terminal-stage.is-native.is-home {
+  background: #111315;
+}
+
+.terminal-stage.is-native .terminal-empty-state {
+  background: #111315;
+}
+
 .terminal-empty-state {
   position: absolute;
   inset: 0;
@@ -2726,8 +2755,6 @@ button.home-cascade-wait-pill:focus-visible {
   position: absolute;
   left: 0;
   right: 0;
-  height: 9px;
-  transform: translateY(-4px);
   z-index: 4;
 }
 
@@ -2742,9 +2769,17 @@ button.home-cascade-wait-pill:focus-visible {
   position: absolute;
   left: 0;
   right: 0;
-  top: 4px;
+  top: 50%;
   height: 1px;
+  transform: translateY(-0.5px);
   background: rgba(244, 244, 239, 0.12);
+}
+
+/* With native terminals the stage is a transparent hole in the webview, so the
+   reserved gutter between splits must paint itself or the window vibrancy
+   material shows through it. */
+.terminal-stage.is-native .terminal-split-resizer {
+  background: #111315;
 }
 
 .terminal-split-resizer:hover::before,
@@ -2764,16 +2799,6 @@ button.home-cascade-wait-pill:focus-visible {
   height: 100%;
   overflow: hidden;
   padding: 10px 0 10px 10px;
-}
-
-.terminal-mount {
-  width: 100%;
-  height: 100%;
-}
-
-.terminal-mount .xterm {
-  width: 100%;
-  height: 100%;
 }
 
 /* The find bar shared by the terminal and the right-pane transcript. */
@@ -2919,9 +2944,11 @@ button.home-cascade-wait-pill:focus-visible {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -1px;
+  /* Keep the indicator a single pixel inside the cell so it never bleeds onto
+     the terminal to its left. */
+  left: 0;
   z-index: 9;
-  width: 2px;
+  width: 1px;
   background: var(--split-active-indicator);
   pointer-events: none;
 }
@@ -2967,6 +2994,11 @@ button.home-cascade-wait-pill:focus-visible {
   right: 0;
   left: auto;
   width: var(--inline-turn-pane-width, var(--turn-pane-width, 420px));
+  /* Cover the native terminal-colored split gutter under the inline right
+     pane. This divider is pointer-transparent via .turn-pane-split-divider,
+     so the full-width terminal resize handle remains draggable underneath. */
+  background: #171b1d;
+  box-shadow: inset 1px 0 0 #2a2d2f;
 }
 
 .turn-pane.is-expanded {
@@ -3554,8 +3586,10 @@ button.home-cascade-wait-pill:focus-visible {
    lift it above the floating queue/composer), lift it off the content sliding
    beneath with a shadow, and backfill the gap above it with the pane
    background so scrolled text cannot peek over the card. It stays below the
-   pane header (3), find bar (4), and floating controls (5), and under the
-   queue/composer, which outranks it by DOM order at the same stack level.
+   pane header (3), find bar (4), and floating controls (5). It would paint
+   over the queue/composer on overlap (z-index 1 beats their auto), but
+   TurnOverlay's STICKY_USER_MAX_HEIGHT_RATIO cap keeps a pinned card short
+   enough that they can never meet.
    Nothing here applies while the message sits in its normal flow position. */
 .turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck {
   z-index: 1;
@@ -3575,7 +3609,11 @@ button.home-cascade-wait-pill:focus-visible {
   top: -48px;
   right: -6px;
   left: -6px;
-  height: 44px;
+  /* Offsets resolve against the card's padding box, whose top sits 1px inside
+     the border, so ending flush with the card's outer edge means stopping at
+     -1px: 48px - 1px. A 44px strip stopped at -4px, leaving a 3px unmasked
+     band where scrolled text stayed visible above the pinned card. */
+  height: 47px;
   background: #171b1d;
 }
 
@@ -5159,18 +5197,6 @@ header + .turn-blocks {
 .browser-overlay-resize-handle:hover::before {
   border-color: var(--accent-color);
   opacity: 1;
-}
-
-/* Toggle (+ refresh) pinned to the top-right of the terminal / browser. */
-.browser-overlay-controls {
-  position: absolute;
-  top: 8px;
-  right: calc(
-    var(--turn-pane-width, 0px) + var(--right-bar-restore-control-offset, 0px) + 12px
-  );
-  z-index: 9;
-  display: flex;
-  gap: 6px;
 }
 
 .browser-overlay-button {

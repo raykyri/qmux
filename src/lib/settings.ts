@@ -14,9 +14,11 @@ export interface FontOption {
   label: string;
   /** Full CSS font-family stack applied to the terminal. */
   stack: string;
+  /** A single font family name understood by Ghostty's native font matcher. */
+  nativeFamily: string;
   /**
-   * Extra inter-character spacing in px passed to xterm's `letterSpacing`.
-   * Defaults to 0 when omitted. Monaco's glyphs sit a touch tight in xterm, so
+   * Extra inter-character spacing in px mapped to Ghostty's cell-width adjustment.
+   * Defaults to 0 when omitted. Monaco's glyphs sit a touch tight, so
    * a hairline 0.01px nudge keeps the cells from looking cramped.
    */
   letterSpacing?: number;
@@ -31,16 +33,36 @@ const MONO_FALLBACK =
 // only bundled face; the rest are common system monospace fonts. Adding an entry
 // here is all it takes to grow the menu.
 export const FONT_OPTIONS: FontOption[] = [
-  { id: "jetbrains-mono", label: "JetBrains Mono", stack: TERMINAL_FONT_FAMILY },
-  { id: "sf-mono", label: "SF Mono", stack: `"SF Mono", ${MONO_FALLBACK}` },
-  { id: "menlo", label: "Menlo", stack: `"Menlo", ${MONO_FALLBACK}` },
-  { id: "monaco", label: "Monaco", stack: `"Monaco", ${MONO_FALLBACK}`, letterSpacing: 0.01 },
+  {
+    id: "jetbrains-mono",
+    label: "JetBrains Mono",
+    stack: TERMINAL_FONT_FAMILY,
+    nativeFamily: "JetBrains Mono",
+  },
+  {
+    id: "sf-mono",
+    label: "SF Mono",
+    stack: `"SF Mono", ${MONO_FALLBACK}`,
+    nativeFamily: "SF Mono",
+  },
+  {
+    id: "menlo",
+    label: "Menlo",
+    stack: `"Menlo", ${MONO_FALLBACK}`,
+    nativeFamily: "Menlo",
+  },
+  {
+    id: "monaco",
+    label: "Monaco",
+    stack: `"Monaco", ${MONO_FALLBACK}`,
+    nativeFamily: "Monaco",
+    letterSpacing: 0.01,
+  },
 ];
 
 export const DEFAULT_FONT_ID = FONT_OPTIONS[0].id;
 
 export type CursorStyle = "block" | "underline" | "bar";
-export type CursorInactiveStyle = "outline" | "block" | "bar" | "underline" | "none";
 export type MouseWheelSensitivity = "low" | "normal" | "high";
 export type TabTitleProvider = "appleFoundationModels" | "openRouter" | "disabled";
 
@@ -48,14 +70,6 @@ export const CURSOR_STYLE_OPTIONS: { id: CursorStyle; label: string }[] = [
   { id: "block", label: "Block" },
   { id: "bar", label: "Bar" },
   { id: "underline", label: "Underline" },
-];
-
-export const CURSOR_INACTIVE_STYLE_OPTIONS: { id: CursorInactiveStyle; label: string }[] = [
-  { id: "outline", label: "Outline" },
-  { id: "block", label: "Block" },
-  { id: "bar", label: "Bar" },
-  { id: "underline", label: "Underline" },
-  { id: "none", label: "Hidden" },
 ];
 
 export const MOUSE_WHEEL_SENSITIVITY_OPTIONS: {
@@ -77,10 +91,6 @@ export const TAB_TITLE_PROVIDER_OPTIONS: { id: TabTitleProvider; label: string }
 export const DEFAULT_SCROLLBACK_ROWS = 10000;
 export const SCROLLBACK_ROWS_MIN = 1000;
 export const SCROLLBACK_ROWS_MAX = 200000;
-export const DEFAULT_SCROLL_DURATION_MS = 0;
-export const SCROLL_DURATION_MS_MIN = 0;
-export const SCROLL_DURATION_MS_MAX = 500;
-export const SCROLL_DURATION_MS_STEP = 25;
 export const DEFAULT_LINE_HEIGHT = 1;
 export const LINE_HEIGHT_MIN = 0.7;
 export const LINE_HEIGHT_MAX = 1.3;
@@ -97,16 +107,12 @@ export interface AppSettings {
   cursorBlink: boolean;
   /** focused terminal cursor shape */
   cursorStyle: CursorStyle;
-  /** unfocused terminal cursor shape */
-  cursorInactiveStyle: CursorInactiveStyle;
-  /** terminal scrollback rows retained by xterm */
+  /** approximate terminal scrollback rows retained by each native surface */
   scrollbackRows: number;
   /** scroll to bottom when the user types into the terminal */
   scrollOnUserInput: boolean;
   /** mouse wheel scrolling speed preset */
   mouseWheelSensitivity: MouseWheelSensitivity;
-  /** smooth scroll duration in milliseconds */
-  scrollDurationMs: number;
   /** terminal line-height multiplier */
   lineHeight: number;
   /** copy terminal selections as soon as text is selected */
@@ -117,8 +123,6 @@ export interface AppSettings {
   confirmMultiLinePaste: boolean;
   /** confirm pasted text above this many characters */
   confirmPasteOverChars: number;
-  /** skip paste confirmation when bracketed paste mode is active */
-  bracketedPasteSafe: boolean;
   /** show Cmd-held shortcut badges in the sidebar */
   showShortcutHints: boolean;
   /** disable decorative/status pulse animations */
@@ -164,17 +168,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: TERMINAL_FONT_SIZE,
   cursorBlink: false,
   cursorStyle: "block",
-  cursorInactiveStyle: "outline",
   scrollbackRows: DEFAULT_SCROLLBACK_ROWS,
   scrollOnUserInput: true,
   mouseWheelSensitivity: "normal",
-  scrollDurationMs: DEFAULT_SCROLL_DURATION_MS,
   lineHeight: DEFAULT_LINE_HEIGHT,
   copyOnSelect: false,
   selectionClearOnCopy: false,
   confirmMultiLinePaste: false,
   confirmPasteOverChars: DEFAULT_CONFIRM_PASTE_OVER_CHARS,
-  bracketedPasteSafe: false,
   showShortcutHints: true,
   reduceMotion: false,
   tabTitleProvider: "appleFoundationModels",
@@ -201,6 +202,10 @@ export function letterSpacingFor(fontId: string): number {
   return (FONT_OPTIONS.find((option) => option.id === fontId) ?? FONT_OPTIONS[0]).letterSpacing ?? 0;
 }
 
+export function nativeFontFamilyFor(fontId: string): string {
+  return (FONT_OPTIONS.find((option) => option.id === fontId) ?? FONT_OPTIONS[0]).nativeFamily;
+}
+
 export function clampFontSize(size: number): number {
   if (!Number.isFinite(size)) {
     return TERMINAL_FONT_SIZE;
@@ -213,16 +218,6 @@ export function clampScrollbackRows(rows: number): number {
     return DEFAULT_SCROLLBACK_ROWS;
   }
   return Math.min(SCROLLBACK_ROWS_MAX, Math.max(SCROLLBACK_ROWS_MIN, Math.round(rows)));
-}
-
-export function clampScrollDurationMs(duration: number): number {
-  if (!Number.isFinite(duration)) {
-    return DEFAULT_SCROLL_DURATION_MS;
-  }
-  return Math.min(
-    SCROLL_DURATION_MS_MAX,
-    Math.max(SCROLL_DURATION_MS_MIN, Math.round(duration / SCROLL_DURATION_MS_STEP) * SCROLL_DURATION_MS_STEP),
-  );
 }
 
 export function clampLineHeight(lineHeight: number): number {
@@ -254,7 +249,6 @@ export function pasteProtectionFor(settings: AppSettings): PasteProtectionSettin
   return {
     confirmMultiLinePaste: settings.confirmMultiLinePaste,
     confirmPasteOverChars: settings.confirmPasteOverChars,
-    bracketedPasteSafe: settings.bracketedPasteSafe,
   };
 }
 
@@ -291,11 +285,6 @@ export function loadSettings(): AppSettings {
       CURSOR_STYLE_OPTIONS.some((option) => option.id === parsed.cursorStyle)
         ? parsed.cursorStyle
         : DEFAULT_SETTINGS.cursorStyle;
-    const cursorInactiveStyle =
-      typeof parsed.cursorInactiveStyle === "string" &&
-      CURSOR_INACTIVE_STYLE_OPTIONS.some((option) => option.id === parsed.cursorInactiveStyle)
-        ? parsed.cursorInactiveStyle
-        : DEFAULT_SETTINGS.cursorInactiveStyle;
     const scrollbackRows =
       typeof parsed.scrollbackRows === "number"
         ? clampScrollbackRows(parsed.scrollbackRows)
@@ -309,10 +298,6 @@ export function loadSettings(): AppSettings {
       MOUSE_WHEEL_SENSITIVITY_OPTIONS.some((option) => option.id === parsed.mouseWheelSensitivity)
         ? parsed.mouseWheelSensitivity
         : DEFAULT_SETTINGS.mouseWheelSensitivity;
-    const scrollDurationMs =
-      typeof parsed.scrollDurationMs === "number"
-        ? clampScrollDurationMs(parsed.scrollDurationMs)
-        : DEFAULT_SETTINGS.scrollDurationMs;
     const lineHeight =
       typeof parsed.lineHeight === "number"
         ? clampLineHeight(parsed.lineHeight)
@@ -333,10 +318,6 @@ export function loadSettings(): AppSettings {
       typeof parsed.confirmPasteOverChars === "number"
         ? clampConfirmPasteOverChars(parsed.confirmPasteOverChars)
         : DEFAULT_SETTINGS.confirmPasteOverChars;
-    const bracketedPasteSafe =
-      typeof parsed.bracketedPasteSafe === "boolean"
-        ? parsed.bracketedPasteSafe
-        : DEFAULT_SETTINGS.bracketedPasteSafe;
     const preventSleep =
       typeof parsed.preventSleep === "boolean"
         ? parsed.preventSleep
@@ -383,17 +364,14 @@ export function loadSettings(): AppSettings {
       fontSize,
       cursorBlink,
       cursorStyle,
-      cursorInactiveStyle,
       scrollbackRows,
       scrollOnUserInput,
       mouseWheelSensitivity,
-      scrollDurationMs,
       lineHeight,
       copyOnSelect,
       selectionClearOnCopy,
       confirmMultiLinePaste,
       confirmPasteOverChars,
-      bracketedPasteSafe,
       showShortcutHints,
       reduceMotion,
       tabTitleProvider,

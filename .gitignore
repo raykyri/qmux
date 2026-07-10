@@ -15,3 +15,4 @@ src-tauri/gen/
 # this ignored so legacy data and retained thread recovery copies are never
 # accidentally committed.
 .qmux/
+src-tauri/swift-terminal/.build/

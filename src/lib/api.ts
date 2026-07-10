@@ -60,6 +60,7 @@ export interface ShowHideShortcutSetting {
   accelerator: string | null;
   registered: boolean;
   error?: string | null;
+  captureActive: boolean;
 }
 
 export type MenuBarStatusTone =
@@ -104,7 +105,7 @@ export function setShowHideShortcut(accelerator: string | null) {
 }
 
 export function setShowHideShortcutCaptureActive(active: boolean) {
-  return invoke<void>("show_hide_shortcut_capture_set", { active });
+  return invoke<ShowHideShortcutSetting>("show_hide_shortcut_capture_set", { active });
 }
 
 export function updateMenuBar(snapshot: MenuBarSnapshot) {
@@ -261,13 +262,6 @@ export function submitPaneInput(paneId: string, data: string) {
   return invoke<void>("pane_write", { paneId, data, paste: true, submit: true });
 }
 
-// Writes pasted text to a pane's PTY, wrapping it in bracketed-paste markers when
-// the program has that mode on. Used to re-inject a large paste the user confirmed
-// in an in-app dialog, since that path bypasses xterm's own paste handling.
-export function pastePaneInput(paneId: string, data: string, bracketed: boolean) {
-  return invoke<void>("pane_write", { paneId, data, paste: bracketed, submit: false });
-}
-
 export function submitAgentTurn(agentId: string, data: string, mode: SubmitAgentTurnMode = "auto") {
   return invoke<SubmitAgentTurnResult>("agent_submit_turn", {
     request: { agentId, data, mode },
@@ -376,12 +370,106 @@ export function attachPane(paneId: string) {
   return invoke<void>("pane_attach", { paneId });
 }
 
-export function getPaneScrollback(paneId: string) {
-  return invoke<string>("pane_scrollback", { paneId });
-}
-
 export function resizePane(paneId: string, cols: number, rows: number) {
   return invoke<void>("pane_resize", { paneId, cols, rows });
+}
+
+export interface NativeTerminalLayout {
+  paneId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visible: boolean;
+  focused: boolean;
+  acceptsPointerInput: boolean;
+  acceptsKeyboardInput: boolean;
+  deferGeometry: boolean;
+}
+
+export function setNativeTerminalLayout(layout: NativeTerminalLayout) {
+  return invoke<void>("native_terminal_set_layout", { layout });
+}
+
+let nativeTerminalWebPointerClaims = 0;
+let nativeTerminalWebPointerUpdate: Promise<void> = Promise.resolve();
+
+function queueNativeTerminalWebPointerClaim(claimed: boolean) {
+  // Preserve start/end order even when a very short drag releases before the
+  // first invoke has completed. Errors are intentionally absorbed so a failed
+  // native bridge call cannot poison later drag ownership updates.
+  nativeTerminalWebPointerUpdate = nativeTerminalWebPointerUpdate
+    .catch(() => undefined)
+    .then(() => invoke<void>("native_terminal_set_web_pointer_claimed", { claimed }))
+    .catch(() => undefined);
+}
+
+/**
+ * Temporarily gives WKWebView every pointer event, including events whose
+ * coordinates overlap a native terminal surface. Claims are reference-counted
+ * so independently mounted drag controls cannot release each other's capture.
+ */
+export function claimNativeTerminalPointerForWebDrag(): () => void {
+  nativeTerminalWebPointerClaims += 1;
+  if (nativeTerminalWebPointerClaims === 1) {
+    queueNativeTerminalWebPointerClaim(true);
+  }
+
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    nativeTerminalWebPointerClaims = Math.max(0, nativeTerminalWebPointerClaims - 1);
+    if (nativeTerminalWebPointerClaims === 0) {
+      queueNativeTerminalWebPointerClaim(false);
+    }
+  };
+}
+
+/** Positions the opaque native backstop under the terminal stage, so transient
+ * gaps while pane surfaces chase their DOM rects show terminal-colored pixels
+ * instead of the window's vibrancy material. */
+export function setNativeTerminalStageBackstop(rect: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) {
+  return invoke<void>("native_terminal_set_stage_backstop", rect);
+}
+
+export function focusNativeTerminal(paneId: string) {
+  return invoke<void>("native_terminal_focus", { paneId });
+}
+
+export interface NativeTerminalSettings {
+  paneId: string;
+  fontSize: number;
+  fontFamily: string;
+  letterSpacing: number;
+  lineHeight: number;
+  cursorBlink: boolean;
+  cursorStyle: "block" | "underline" | "bar";
+  scrollbackRows: number;
+  scrollOnUserInput: boolean;
+  canAskSelection: boolean;
+  scrollSensitivity: number;
+  copyOnSelect: boolean;
+  selectionClearOnCopy: boolean;
+}
+
+export function performNativeTerminalAction(paneId: string, action: string) {
+  return invoke<void>("native_terminal_action", { paneId, action });
+}
+
+export function pasteApprovedNativeTerminalText(paneId: string, text: string) {
+  return invoke<void>("native_terminal_paste_approved_text", { paneId, text });
+}
+
+export function updateNativeTerminalSettings(settings: NativeTerminalSettings) {
+  return invoke<void>("native_terminal_update_settings", { settings });
 }
 
 export function paneActivity(paneId: string) {

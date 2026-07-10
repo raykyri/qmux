@@ -73,6 +73,21 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             )?;
             Ok(true)
         }
+        "pane-pid" => {
+            let pid = args
+                .next()
+                .ok_or_else(|| "usage: qmux pane-pid <pid>".to_string())?
+                .parse::<u32>()
+                .map_err(|err| format!("invalid pane pid: {err}"))?;
+            request_silent(
+                "pane.set_pid",
+                json!({
+                    "paneId": env::var("QMUX_PANE_ID").ok(),
+                    "pid": pid,
+                }),
+            )?;
+            Ok(true)
+        }
         "pane-write" => {
             let pane_id = args
                 .next()

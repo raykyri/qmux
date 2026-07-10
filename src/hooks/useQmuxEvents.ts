@@ -5,10 +5,10 @@ import {
   isAgentInfo,
   isQueuedTurn,
   isTurn,
-  ptyDataFromPayload,
   transcriptHookEvent,
   upsertAgent,
 } from "../lib/appHelpers";
+import { parseAppShortcutCommand, type AppShortcutCommand } from "../lib/appShortcuts";
 import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
 import type {
   AgentInfo,
@@ -58,9 +58,6 @@ export interface UseQmuxEventsHandlers {
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   refreshAgentTurnQueue: (agentId: string) => Promise<void>;
   refreshTranscriptOptions: (agentId: string) => Promise<void>;
-  // Routes a decoded PTY chunk to the pane that owns it. Replaces the previous
-  // one-listener-per-pane model where every pane filtered the whole pty.data stream.
-  dispatchPtyData: (paneId: string, data: Uint8Array) => void;
   // Binds a browser-overlay URL to a pane (the backend emits the fully-formed URL).
   // `sandbox` marks token-bearing file-server URLs so the iframe is sandboxed.
   openBrowserOverlay: (paneId: string, url: string, sandbox?: boolean) => void;
@@ -73,6 +70,19 @@ export interface UseQmuxEventsHandlers {
   onEventsReady: () => void;
   onAgentSpawned?: (agent: AgentInfo, paneId: string | null, source: string | null) => void;
   onAgentPromptSubmitted?: (agentId: string, prompt: string) => void;
+  onTerminalSearchRequested?: (paneId: string) => void;
+  onTerminalPasteRequested?: (paneId: string, text: string | null) => void;
+  onTerminalUserInput?: (paneId: string) => void;
+  onTerminalActivated?: (paneId: string) => void;
+  onTerminalShortcut?: (
+    paneId: string,
+    command: AppShortcutCommand,
+    repeat: boolean,
+  ) => void;
+  onTerminalCommandModifier?: (paneId: string, active: boolean) => void;
+  onTerminalOpenUrl?: (paneId: string, url: string) => void;
+  onTerminalTitleChanged?: (paneId: string, title: string) => void;
+  onTerminalSelection?: (paneId: string, text: string) => void;
 }
 
 function stringField(value: unknown, field: string): string | null {
@@ -104,12 +114,20 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setAgentQueuedTurns,
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
-    dispatchPtyData,
     openBrowserOverlay,
     selectPaneAfterClose: selectPaneAfterCloseWithContext,
     onEventsReady,
     onAgentSpawned,
     onAgentPromptSubmitted,
+    onTerminalSearchRequested,
+    onTerminalPasteRequested,
+    onTerminalUserInput,
+    onTerminalActivated,
+    onTerminalShortcut,
+    onTerminalCommandModifier,
+    onTerminalOpenUrl,
+    onTerminalTitleChanged,
+    onTerminalSelection,
   } = handlers;
 
   useEffect(() => {
@@ -135,15 +153,6 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
 
     void listenToEvents((event) => {
       if (disposed) {
-        return;
-      }
-      // pty.data is by far the highest-frequency event; handle and return early so
-      // it never runs the slower per-type matching below.
-      if (event.type === "pty.data" && event.paneId) {
-        const data = ptyDataFromPayload(event.payload);
-        if (data) {
-          dispatchPtyData(event.paneId, data);
-        }
         return;
       }
       const hookEvent = transcriptHookEvent(event);
@@ -188,6 +197,48 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
               pane.id === cwdPaneId ? { ...pane, cwd: nextCwd } : pane,
             ),
           );
+        }
+      }
+      if (event.type === "terminal.title_changed" && event.paneId) {
+        const title = stringField(event.payload, "title");
+        if (title !== null) {
+          onTerminalTitleChanged?.(event.paneId, title);
+        }
+      }
+      if (event.type === "terminal.search_requested" && event.paneId) {
+        onTerminalSearchRequested?.(event.paneId);
+      }
+      if (event.type === "terminal.paste_requested" && event.paneId) {
+        onTerminalPasteRequested?.(event.paneId, stringField(event.payload, "text"));
+      }
+      if (event.type === "terminal.user_input" && event.paneId) {
+        onTerminalUserInput?.(event.paneId);
+      }
+      if (event.type === "terminal.activated" && event.paneId) {
+        onTerminalActivated?.(event.paneId);
+      }
+      if (event.type === "terminal.shortcut" && event.paneId) {
+        const command = parseAppShortcutCommand(
+          event.payload.command,
+          event.payload.tabIndex,
+        );
+        if (command !== null) {
+          onTerminalShortcut?.(event.paneId, command, event.payload.repeat === true);
+        }
+      }
+      if (event.type === "terminal.command_modifier_changed" && event.paneId) {
+        onTerminalCommandModifier?.(event.paneId, event.payload.active === true);
+      }
+      if (event.type === "terminal.open_url" && event.paneId) {
+        const url = stringField(event.payload, "url");
+        if (url !== null) {
+          onTerminalOpenUrl?.(event.paneId, url);
+        }
+      }
+      if (event.type === "terminal.selection" && event.paneId) {
+        const text = stringField(event.payload, "text");
+        if (text !== null) {
+          onTerminalSelection?.(event.paneId, text);
         }
       }
       if (event.type === "app.exit_confirmation_requested") {

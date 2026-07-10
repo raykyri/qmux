@@ -269,7 +269,6 @@ impl ClaudeAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
-                skip_scrollback_restore: false,
             },
         );
 
@@ -404,7 +403,6 @@ impl ClaudeAdapter {
                 envs,
                 initial_size: None,
                 recovered: false,
-                skip_scrollback_restore: false,
             },
         );
 
@@ -461,17 +459,16 @@ impl ClaudeAdapter {
             args.push(model);
         }
 
-        let resumed = match agent
+        let resumed = if let Some(session_id) = agent
             .session_id
             .clone()
             .filter(|session_id| !session_id.trim().is_empty())
         {
-            Some(session_id) => {
-                args.push("--resume".to_string());
-                args.push(session_id);
-                true
-            }
-            None => false,
+            args.push("--resume".to_string());
+            args.push(session_id);
+            true
+        } else {
+            false
         };
 
         let mut envs = qmux_pane_envs(state, &pane.id)?;
@@ -494,7 +491,6 @@ impl ClaudeAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
-                skip_scrollback_restore: resumed,
             },
         )?;
 
@@ -533,7 +529,7 @@ impl ClaudeAdapter {
     ) -> Result<PreparedShellAgentLaunch, String> {
         let binary = self.ensure_binary()?;
 
-        if state.pane_writer(&request.pane_id)?.is_none() {
+        if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 
@@ -2024,13 +2020,14 @@ mod tests {
                     recovered: false,
                     depth: 0,
                 },
-                child: Arc::new(Mutex::new(Box::new(FakeChild))),
-                master: Arc::new(Mutex::new(pair.master)),
-                writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
-                    bytes: bytes.clone(),
-                }))),
-                backlog: Default::default(),
-                skip_scrollback_restore: false,
+                backend: crate::state::PaneBackend::Portable {
+                    child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                    master: Arc::new(Mutex::new(pair.master)),
+                    writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
+                        bytes: bytes.clone(),
+                    }))),
+                    backlog: Default::default(),
+                },
             })
             .unwrap();
         bytes

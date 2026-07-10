@@ -196,7 +196,6 @@ impl OpencodeAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
-                skip_scrollback_restore: false,
             },
         );
 
@@ -252,7 +251,6 @@ impl OpencodeAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
-                skip_scrollback_restore: resumed,
             },
         )?;
 
@@ -290,7 +288,7 @@ impl OpencodeAdapter {
     ) -> Result<PreparedShellAgentLaunch, String> {
         let binary = self.ensure_binary()?;
 
-        if state.pane_writer(&request.pane_id)?.is_none() {
+        if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 

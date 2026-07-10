@@ -2,24 +2,26 @@ use crate::adapters::{ShellCommandIntegration, adapter_registry};
 use crate::events::QmuxEvent;
 use crate::scrollback::append_pane_scrollback;
 use crate::state::{
-    AppState, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
+    AppState, PaneBackend, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
     ShellAgentResume,
 };
 use crate::turn_queue::release_waiters_for_agent;
 use crate::workspace::{
     CreateGroupRequest, capture_agent_worktree_removal, create_group, remove_captured_worktree,
 };
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::PtySize;
+#[cfg(any(not(target_os = "macos"), test))]
+use portable_pty::{CommandBuilder, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -35,19 +37,40 @@ const MAX_INITIAL_ROWS: u16 = 200;
 /// can repaint a large transcript before the webview replays durable scrollback
 /// and calls `pane_attach`; keeping the full repaint preserves SGR/background
 /// state that later bytes in the same draw rely on.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 const BACKLOG_CAP: usize = 8 * 1024 * 1024;
 
 /// How often the per-pane child watcher checks whether the direct child (shell or
 /// agent) has exited. Cheap — a non-blocking `try_wait` under the child lock — so
 /// a couple of seconds keeps a stuck pane's "Running" state from lingering long
 /// without meaningful cost.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 const CHILD_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
-/// How many watch intervals between refreshes of the descendant-pid snapshot the
-/// watcher falls back on when the direct child exits. Descendants that outlive
-/// their shell (dev servers, `sleep &`) are long-lived, so a coarse ~16s refresh
-/// catches them while keeping the `pgrep` walk off the steady-state path.
+/// How many watch intervals between refreshes of a pane's descendant-pid
+/// snapshot (both the portable watcher's fallback list and the native process
+/// tree). Descendants that outlive their shell (dev servers, `sleep &`) are
+/// long-lived, so a coarse ~16s refresh catches them while keeping the
+/// `pgrep` walk off the steady-state path.
 const DESCENDANT_REFRESH_TICKS: u32 = 8;
+
+const NATIVE_PROCESS_TERM_GRACE: Duration = Duration::from_millis(400);
+
+#[derive(Clone, Debug)]
+struct TrackedProcess {
+    pid: u32,
+    start_signature: String,
+}
+
+#[derive(Clone, Debug)]
+struct NativeProcessTree {
+    root: TrackedProcess,
+    descendants: HashMap<u32, TrackedProcess>,
+}
+
+static NATIVE_PROCESS_TREES: OnceLock<Mutex<HashMap<String, NativeProcessTree>>> = OnceLock::new();
+
+static CLOSING_NATIVE_PANES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -101,7 +124,6 @@ pub struct PtySpawnSpec {
     pub envs: Vec<(String, String)>,
     pub initial_size: Option<InitialPaneSize>,
     pub recovered: bool,
-    pub skip_scrollback_restore: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,7 +311,6 @@ fn shell_spawn_spec(
     let shell = pane_shell();
     let mut envs = shell_pane_envs(state, &pane_id)?;
     let mut args = Vec::new();
-    let mut skip_scrollback_restore = false;
 
     let shell_commands = adapter_registry(state.config()).shell_commands();
     let login_shell = state.use_login_shell();
@@ -304,7 +325,6 @@ fn shell_spawn_spec(
             args = injection.args;
             envs.extend(injection.envs);
             envs.push(("QMUX_AGENT_FUNCTIONS".to_string(), "1".to_string()));
-            skip_scrollback_restore = resume_command.is_some();
         }
         Ok(None) => {
             envs.push((
@@ -330,7 +350,6 @@ fn shell_spawn_spec(
         envs,
         initial_size,
         recovered,
-        skip_scrollback_restore,
     })
 }
 
@@ -686,8 +705,11 @@ fn original_bashrc() -> Option<String> {
 }
 
 fn shell_quote(path: &Path) -> String {
-    let raw = path.display().to_string();
-    format!("'{}'", raw.replace('\'', "'\\''"))
+    shell_quote_str(&path.display().to_string())
+}
+
+fn shell_quote_str(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn resolved_initial_size(initial_size: Option<InitialPaneSize>) -> InitialPaneSize {
@@ -703,6 +725,136 @@ fn resolved_initial_size(initial_size: Option<InitialPaneSize>) -> InitialPaneSi
 }
 
 pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        spawn_native_pty(state, spec)
+    }
+    #[cfg(any(not(target_os = "macos"), test))]
+    {
+        spawn_portable_pty(state, spec)
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn spawn_native_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
+    let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
+    let initial_size = resolved_initial_size(spec.initial_size);
+    let launcher = create_native_launcher(&pane_id, &spec.program, &spec.args, &spec.envs)?;
+    let pane = PaneInfo {
+        id: pane_id.clone(),
+        title: spec.title,
+        kind: spec.kind,
+        agent_id: spec.agent_id,
+        group_id: spec.group_id,
+        cwd: spec.cwd.display().to_string(),
+        cols: initial_size.cols,
+        rows: initial_size.rows,
+        status: PaneStatus::Running,
+        last_active_at: crate::state::now_millis(),
+        recovered: spec.recovered,
+        depth: 0,
+    };
+    state.insert_pane(PaneRuntime {
+        info: pane.clone(),
+        backend: PaneBackend::Native { root_pid: None },
+    })?;
+
+    if let Err(err) = crate::native_terminal::create(
+        &pane_id,
+        &launcher.display().to_string(),
+        Some(&pane.cwd),
+        pane.agent_id.is_some(),
+    ) {
+        let _ = state.remove_pane(&pane_id);
+        remove_shell_integration_dir(&pane_id);
+        return Err(err);
+    }
+    Ok(pane)
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn create_native_launcher(
+    pane_id: &str,
+    program: &str,
+    args: &[String],
+    envs: &[(String, String)],
+) -> Result<PathBuf, String> {
+    let root = create_shell_integration_dir(pane_id)?;
+    let launcher = root.join("launch");
+    let qmux_cli = env::current_exe()
+        .map_err(|err| format!("failed to resolve qmux executable for native launcher: {err}"))?;
+    let mut script = String::from("#!/bin/sh\n");
+
+    let mut launch_envs = base_child_envs();
+    launch_envs.extend(envs.iter().cloned());
+    for (key, value) in launch_envs {
+        if key.is_empty()
+            || !key.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_'
+                    || byte.is_ascii_alphanumeric() && (index > 0 || !byte.is_ascii_digit())
+            })
+        {
+            return Err(format!(
+                "invalid environment variable name for pane {pane_id}: {key}"
+            ));
+        }
+        script.push_str("export ");
+        script.push_str(&key);
+        script.push('=');
+        script.push_str(&shell_quote_str(&value));
+        script.push('\n');
+    }
+    // Report the shell's PID over the control socket; without it, descendant
+    // teardown and close-time activity detection are silently disabled for the
+    // pane's entire lifetime. A single attempt can race app startup before the
+    // socket listens, so retry briefly — the shell still launches if every
+    // attempt fails.
+    script.push_str("for _ in 1 2 3 4 5; do\n  if ");
+    script.push_str(&shell_quote(&qmux_cli));
+    script.push_str(" pane-pid \"$$\" >/dev/null 2>&1; then break; fi\n  sleep 0.2\ndone\nexec ");
+    script.push_str(&shell_quote_str(program));
+    for arg in args {
+        script.push(' ');
+        script.push_str(&shell_quote_str(arg));
+    }
+    script.push('\n');
+
+    fs::write(&launcher, script).map_err(|err| {
+        format!(
+            "failed to write native terminal launcher {}: {err}",
+            launcher.display()
+        )
+    })?;
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).map_err(|err| {
+        format!(
+            "failed to make native terminal launcher executable {}: {err}",
+            launcher.display()
+        )
+    })?;
+    Ok(launcher)
+}
+
+/// The base environment shared by both pane backends: the resolved child PATH,
+/// 24-bit color capability, and a UTF-8 locale backfill. TERM is deliberately
+/// not set here — Ghostty names its own terminal for native panes, while the
+/// portable backend injects one itself (below).
+fn base_child_envs() -> Vec<(String, String)> {
+    let mut envs = Vec::new();
+    if let Some(path) = crate::launch_path::child_path() {
+        envs.push(("PATH".to_string(), path));
+    }
+    envs.push(("COLORTERM".to_string(), "truecolor".to_string()));
+    // Backfill a UTF-8 locale only when one wasn't inherited — a GUI launch
+    // gets no LANG, defaulting programs to the C locale and breaking Unicode,
+    // while a deliberately-set locale from a dev shell is left untouched.
+    if env::var_os("LANG").is_none() {
+        envs.push(("LANG".to_string(), "en_US.UTF-8".to_string()));
+    }
+    envs
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn spawn_portable_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
     let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
     let initial_size = resolved_initial_size(spec.initial_size);
     let pty_system = native_pty_system();
@@ -718,23 +870,16 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     let mut command = CommandBuilder::new(spec.program);
     command.args(spec.args);
     command.cwd(spec.cwd.clone());
-    if let Some(path) = crate::launch_path::child_path() {
-        command.env("PATH", path);
+    for (key, value) in base_child_envs() {
+        command.env(key, value);
     }
     // Describe the renderer to the child rather than inheriting the outer
     // terminal's TERM. A Finder/Dock-launched app inherits launchd's bare
     // environment with no TERM at all (breaking color), and even when launched
-    // from a terminal the inherited TERM names *that* emulator, not xterm.js.
-    // Every real terminal emulator sets these itself for the same reason; the
-    // webview is xterm-256color-compatible and supports 24-bit color.
+    // from a terminal the inherited TERM names *that* emulator, not this
+    // backend. Every real terminal emulator sets this itself for the same
+    // reason; the portable renderer is xterm-256color-compatible.
     command.env("TERM", "xterm-256color");
-    command.env("COLORTERM", "truecolor");
-    // Backfill a UTF-8 locale only when one wasn't inherited — a GUI launch
-    // gets no LANG, defaulting programs to the C locale and breaking Unicode,
-    // while a deliberately-set locale from a dev shell is left untouched.
-    if env::var_os("LANG").is_none() {
-        command.env("LANG", "en_US.UTF-8");
-    }
     for (key, value) in spec.envs {
         command.env(key, value);
     }
@@ -781,11 +926,12 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
 
     let runtime = PaneRuntime {
         info: pane.clone(),
-        child: child.clone(),
-        master,
-        writer,
-        backlog: backlog.clone(),
-        skip_scrollback_restore: spec.skip_scrollback_restore,
+        backend: PaneBackend::Portable {
+            child: child.clone(),
+            master,
+            writer,
+            backlog: backlog.clone(),
+        },
     };
 
     state.insert_pane(runtime)?;
@@ -805,6 +951,9 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
 /// race. The buffered bytes are emitted before `ready` releases the reader to
 /// emit live, preserving output order.
 pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
+    if state.pane_is_native(&pane_id)? == Some(true) {
+        return Ok(());
+    }
     let backlog = state
         .pane_backlog(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -823,18 +972,112 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 }
 
 pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), String> {
+    if state.pane_is_native(&options.pane_id)? == Some(true) {
+        if !options.submit {
+            // Lock-free single call; the bridge hops to the main thread itself.
+            return dispatch_native_pane_input(state, &options);
+        }
+        // Submit sequences hold the per-pane send lock across bridge calls that
+        // each need the main thread (`DispatchQueue.main.sync`), plus the
+        // submit-key delay. Running that on a background thread deadlocks: a
+        // synchronous Tauri command contending for the same pane's lock parks
+        // the main thread, and the background holder's main-thread hop then
+        // never runs. Execute the whole locked sequence on the main thread
+        // instead — the main thread only ever runs the sequence inline (never
+        // waits on another holder, since no other thread takes a native pane's
+        // send lock anymore), and background callers park on the reply channel
+        // while holding no locks at all.
+        let state_on_main = state.clone();
+        return state.run_on_main_thread_blocking(move || {
+            dispatch_native_pane_input(&state_on_main, &options)
+        })?;
+    }
     let writer = state
         .pane_writer(&options.pane_id)?
         .ok_or_else(|| format!("pane {} was not found", options.pane_id))?;
 
+    // Write the data (and paste markers) under the writer lock, then release it before
+    // the submit-key delay. The bracketed-paste body stays atomic within this first
+    // locked section; only the trailing Return is sent in a second short section, so
+    // live keystrokes aren't stalled behind the delay.
+    write_pane_sequenced(
+        state,
+        &options,
+        |options| {
+            let mut writer = writer
+                .lock()
+                .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
+            write_pane_data(&mut *writer, options)
+        },
+        || {
+            let mut writer = writer
+                .lock()
+                .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
+            write_pane_submit(&mut *writer)
+        },
+    )
+}
+
+/// Binds the shared native sequencing to the concrete bridge calls for
+/// `options.pane_id`.
+fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> Result<(), String> {
+    write_native_pane_input(
+        state,
+        options,
+        |data| crate::native_terminal::send_text(&options.pane_id, data),
+        |data| crate::native_terminal::paste_approved_text(&options.pane_id, data),
+        || crate::native_terminal::submit(&options.pane_id),
+    )
+}
+
+fn write_native_pane_input(
+    state: &AppState,
+    options: &PaneWriteOptions,
+    send_text: impl FnOnce(&str) -> Result<(), String>,
+    paste_approved_text: impl FnOnce(&str) -> Result<(), String>,
+    submit: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    write_pane_sequenced(
+        state,
+        options,
+        |options| write_native_pane_data(options, send_text, paste_approved_text),
+        submit,
+    )
+}
+
+/// Routes native-pane payloads through Ghostty's matching input API. Paste
+/// framing is terminal state, not ordinary text: Ghostty must generate it via
+/// its approved clipboard action so TUIs interpret the boundary instead of
+/// receiving a literal `[200~... [201~` string.
+fn write_native_pane_data(
+    options: &PaneWriteOptions,
+    send_text: impl FnOnce(&str) -> Result<(), String>,
+    paste_approved_text: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if options.paste {
+        let data = strip_bracketed_paste_markers(&options.data);
+        paste_approved_text(&data)
+    } else {
+        send_text(&options.data)
+    }
+}
+
+/// The submit sequencing shared by both pane backends, parameterized over how
+/// bytes reach the terminal: emit the payload, then after a short delay the
+/// trailing Return, then arm the escape watch.
+fn write_pane_sequenced(
+    state: &AppState,
+    options: &PaneWriteOptions,
+    emit_data: impl FnOnce(&PaneWriteOptions) -> Result<(), String>,
+    emit_submit: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     // A submit is a multi-write sequence — paste body, a short delay, then Return —
-    // and the writer lock is released across the delay (below) so live keystrokes
-    // aren't stalled behind it. But two submits racing to the same pane could then
-    // interleave as `…A……B…\r\r`, merging both turns onto one line and dropping a
-    // Return. Hold the per-pane *send* lock across the whole sequence so submits
-    // serialize against each other; keystrokes (submit=false) skip it and stay
-    // unblocked. Recover from poisoning — the lock guards ordering only. `send_lock`
-    // is bound first so it outlives the guard that borrows it.
+    // so two submits racing to the same pane could interleave as `…A……B…\r\r`,
+    // merging both turns onto one line and dropping a Return. Hold the per-pane
+    // *send* lock across the whole sequence so submits serialize against each
+    // other; keystrokes (submit=false) skip it and stay unblocked. Recover from
+    // poisoning — the lock guards ordering only. `send_lock` is bound first so it
+    // outlives the guard that borrows it.
     let send_lock = options
         .submit
         .then(|| state.pane_send_lock(&options.pane_id));
@@ -842,24 +1085,13 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
         .as_deref()
         .map(|lock| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
 
-    // Write the data (and paste markers) under the writer lock, then release it before
-    // the submit-key delay. The bracketed-paste body stays atomic within this first
-    // locked section; only the trailing Return is sent in a second short section.
-    {
-        let mut writer = writer
-            .lock()
-            .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
-        write_pane_data(&mut *writer, &options)?;
-    }
+    emit_data(options)?;
 
     if options.submit {
         if !SUBMIT_KEY_DELAY.is_zero() {
             thread::sleep(SUBMIT_KEY_DELAY);
         }
-        let mut writer = writer
-            .lock()
-            .map_err(|_| format!("pane {} writer lock poisoned", options.pane_id))?;
-        write_pane_submit(&mut *writer)?;
+        emit_submit()?;
     }
 
     // A lone Esc keystroke (exactly ESC — arrow keys and other sequences arrive as
@@ -886,7 +1118,7 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
 /// Stripping runs to a fixed point: a single non-overlapping `replace` pass can
 /// leave a fresh marker behind when the input nests them (e.g. `\x1b[201\x1b[201~~`
 /// collapses to a live `\x1b[201~`), so we repeat until no marker remains.
-fn strip_bracketed_paste_markers(data: &str) -> Cow<'_, str> {
+pub(crate) fn strip_bracketed_paste_markers(data: &str) -> Cow<'_, str> {
     if !data.contains("\x1b[200~") && !data.contains("\x1b[201~") {
         return Cow::Borrowed(data);
     }
@@ -952,6 +1184,9 @@ fn write_pane_input<W: Write + ?Sized>(
 }
 
 pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    if state.pane_is_native(&pane_id)? == Some(true) {
+        return state.update_pane_size(&pane_id, cols, rows);
+    }
     let master = state
         .pane_master(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -974,6 +1209,21 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
     // inspection below is best-effort, but a genuinely missing pane is still a caller error.
     if !state.list_panes()?.iter().any(|pane| pane.id == pane_id) {
         return Err(format!("pane {pane_id} was not found"));
+    }
+
+    if state.pane_is_native(&pane_id)? == Some(true) {
+        let Some(root_pid) = state.native_pane_pid(&pane_id)? else {
+            return Ok(PaneActivity::idle());
+        };
+        let processes = running_descendant_processes(root_pid);
+        return if processes.is_empty() {
+            Ok(PaneActivity::idle())
+        } else {
+            Ok(PaneActivity::running_process(
+                processes.len(),
+                processes.first().map(|process| process.name.clone()),
+            ))
+        };
     }
 
     let child = state
@@ -1009,7 +1259,61 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
     }
 }
 
+/// Starts a lightweight descendant snapshotter once the native launcher reports
+/// the PID that Ghostty owns. The snapshot retains processes that later detach or
+/// become reparented, while the start signature prevents a recycled PID from being
+/// signalled during a much later pane close.
+pub fn track_native_pane_process(state: AppState, pane_id: String, root_pid: u32) {
+    let Some(root) = tracked_process(root_pid) else {
+        return;
+    };
+    let mut tree = NativeProcessTree {
+        root,
+        descendants: HashMap::new(),
+    };
+    merge_live_descendants(&mut tree);
+    if let Ok(mut trees) = native_process_trees().lock() {
+        trees.insert(pane_id.clone(), tree);
+    }
+
+    thread::spawn(move || {
+        let mut tick: u32 = 0;
+        loop {
+            thread::sleep(CHILD_WATCH_INTERVAL);
+            tick = tick.wrapping_add(1);
+            if state.native_pane_pid(&pane_id).ok().flatten() != Some(root_pid) {
+                break;
+            }
+            let root_alive = process_matches(
+                native_process_trees()
+                    .lock()
+                    .ok()
+                    .and_then(|trees| trees.get(&pane_id).map(|tree| tree.root.clone()))
+                    .as_ref(),
+            );
+            // The root-liveness probe above is a proc_pidinfo syscall, so it can
+            // run every tick; the descendant walk spawns a `pgrep` per tree node
+            // and is gated to the coarse refresh, matching the portable watcher.
+            // Teardown accuracy doesn't depend on this cadence: the close path
+            // re-merges via take_native_process_tree before signalling.
+            if tick.is_multiple_of(DESCENDANT_REFRESH_TICKS)
+                && let Ok(mut trees) = native_process_trees().lock()
+                && let Some(tree) = trees.get_mut(&pane_id)
+                && tree.root.pid == root_pid
+            {
+                merge_live_descendants(tree);
+            }
+            if !root_alive {
+                break;
+            }
+        }
+    });
+}
+
 pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
+    if state.pane_is_native(&pane_id)? == Some(true) {
+        return kill_native_pane(state, pane_id);
+    }
     let child = state
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -1052,6 +1356,112 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     Ok(())
 }
 
+fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
+    let pane_agent_id = state.agent_by_pane(&pane_id)?.map(|agent| agent.id);
+    if let Err(err) = state.capture_last_closed_pane(&pane_id) {
+        eprintln!("qmux: failed to capture closed native pane {pane_id}: {err}");
+    }
+    let process_tree = take_native_process_tree(state, &pane_id);
+    if let Some(tree) = process_tree.as_ref() {
+        signal_native_process_tree(tree, libc::SIGTERM);
+    }
+    // Own this close before touching the surface: `close_surface` can fire the
+    // close delegate re-entrantly, and `native_pane_did_close` must not run its
+    // own capture/remove/emit sequence for a close this function handles.
+    if let Ok(mut closing) = closing_native_panes().lock() {
+        closing.insert(pane_id.clone());
+    }
+    let terminate_result = crate::native_terminal::terminate(&pane_id);
+    let had_process_tree = process_tree.is_some();
+    if let Some(tree) = process_tree {
+        // Escalate to SIGKILL after the grace window on a background thread,
+        // like the natural-exit path in `native_pane_did_close`: `pane_kill`
+        // is a synchronous command on the main thread, and sleeping the grace
+        // period inline stalled the UI for every pane close.
+        thread::spawn(move || {
+            finish_native_process_tree_termination(&tree, NATIVE_PROCESS_TERM_GRACE);
+        });
+    }
+    if let Err(err) = terminate_result
+        && state.pane_is_native(&pane_id).ok().flatten() == Some(true)
+    {
+        // Only leave the pane in place for a retry when nothing destructive has
+        // happened yet (no tracked tree meant nothing was signalled). Once the
+        // process tree has been SIGTERM/SIGKILLed, keeping a "Running" pane
+        // whose processes are dead would desync state — fall through and
+        // remove it despite the surface-close error.
+        if !had_process_tree {
+            state.clear_last_closed_pane_for_pane(&pane_id);
+            if let Ok(mut closing) = closing_native_panes().lock() {
+                closing.remove(&pane_id);
+            }
+            return Err(err);
+        }
+        eprintln!(
+            "qmux: native surface close failed for pane {pane_id}; removing the pane anyway: {err}"
+        );
+    }
+    let _ = state.remove_pane(&pane_id);
+    let _ = crate::native_terminal::remove(&pane_id);
+    if let Some(agent_id) = pane_agent_id
+        && let Err(err) = release_waiters_for_agent(state, &agent_id)
+    {
+        eprintln!("qmux: failed to release waiters for closed agent {agent_id}: {err}");
+    }
+    remove_shell_integration_dir(&pane_id);
+    if let Ok(mut closing) = closing_native_panes().lock() {
+        closing.remove(&pane_id);
+    }
+    Ok(())
+}
+
+pub fn native_pane_did_close(state: &AppState, pane_id: &str, _process_alive: bool) {
+    // A close initiated by `kill_native_pane` is fully handled there; this
+    // delegate may fire re-entrantly from its `terminate` call while the pane
+    // is still registered, and running the sequence below too would duplicate
+    // the undo snapshot and double-release waiters. (A late delivery after
+    // `kill_native_pane` finishes is caught by the pane check below instead.)
+    if closing_native_panes()
+        .lock()
+        .map(|closing| closing.contains(pane_id))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if state.pane_is_native(pane_id).ok().flatten() != Some(true) {
+        return;
+    }
+    let process_tree = take_native_process_tree(state, pane_id);
+    if let Some(tree) = process_tree {
+        signal_native_process_tree(&tree, libc::SIGTERM);
+        thread::spawn(move || {
+            finish_native_process_tree_termination(&tree, NATIVE_PROCESS_TERM_GRACE);
+        });
+    }
+    let pane_agent_id = state
+        .agent_by_pane(pane_id)
+        .ok()
+        .flatten()
+        .map(|agent| agent.id);
+    if state
+        .closing_pane_would_strand_queued_work(pane_id)
+        .unwrap_or(false)
+        && let Err(err) = state.capture_last_closed_pane(pane_id)
+    {
+        eprintln!("qmux: failed to capture exited native pane {pane_id}: {err}");
+    }
+    if let Err(err) = state.remove_pane(pane_id) {
+        eprintln!("qmux: failed to remove exited native pane {pane_id}: {err}");
+    }
+    if let Some(agent_id) = pane_agent_id
+        && let Err(err) = release_waiters_for_agent(state, &agent_id)
+    {
+        eprintln!("qmux: failed to release waiters for exited agent {agent_id}: {err}");
+    }
+    remove_shell_integration_dir(pane_id);
+    state.emit(QmuxEvent::pty_exit(pane_id.to_string(), None));
+}
+
 /// Best-effort teardown of every pane's process tree on app exit.
 ///
 /// Quitting the app just calls `app.exit`, which bypasses the per-pane
@@ -1063,6 +1473,28 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 /// the process is about to exit anyway. It cannot help a hard SIGKILL/force-quit,
 /// which no in-process handler can intercept.
 pub fn kill_all_panes(state: &AppState) {
+    let mut native_process_trees = Vec::new();
+    match state.native_pane_ids() {
+        Ok(panes) => {
+            for pane_id in panes {
+                if let Some(tree) = take_native_process_tree(state, &pane_id) {
+                    signal_native_process_tree(&tree, libc::SIGTERM);
+                    native_process_trees.push(tree);
+                }
+                if let Err(err) = crate::native_terminal::terminate(&pane_id) {
+                    eprintln!("qmux: failed to close native pane {pane_id} on exit: {err}");
+                }
+                remove_shell_integration_dir(&pane_id);
+            }
+        }
+        Err(err) => eprintln!("qmux: failed to enumerate native panes for exit cleanup: {err}"),
+    }
+    if !native_process_trees.is_empty() {
+        thread::sleep(NATIVE_PROCESS_TERM_GRACE);
+        for tree in &native_process_trees {
+            signal_native_process_tree(tree, libc::SIGKILL);
+        }
+    }
     let children = match state.all_pane_children() {
         Ok(children) => children,
         Err(err) => {
@@ -1109,6 +1541,7 @@ pub fn close_worktree_pane(
     Ok(())
 }
 
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn start_reader_thread(
     state: AppState,
     pane_id: String,
@@ -1207,6 +1640,7 @@ fn start_reader_thread(
 /// snapshot — plus the process group, for anything still in it — on exit. A job
 /// spawned and orphaned within a single refresh window can still be missed, which
 /// leaves the same state as before this watcher existed for that one narrow case.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn start_child_watcher(
     state: AppState,
     pane_id: String,
@@ -1264,6 +1698,7 @@ fn start_child_watcher(
 /// Waits on a pane's child so the exited process is reaped (no zombie) and returns
 /// its exit code. Best-effort: a pane already removed (e.g. by `kill_pane`) or a
 /// poisoned child lock yields `None`.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn reap_pane_child(state: &AppState, pane_id: &str) -> Option<i32> {
     let child = state.pane_child(pane_id).ok().flatten()?;
     let mut child = child.lock().ok()?;
@@ -1272,6 +1707,7 @@ fn reap_pane_child(state: &AppState, pane_id: &str) -> Option<i32> {
 
 /// Appends to the pre-attach backlog, dropping the oldest bytes once it exceeds
 /// the cap so a runaway pre-attach burst can't grow unbounded.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn append_capped(buffer: &mut Vec<u8>, chunk: &[u8]) {
     buffer.extend_from_slice(chunk);
     if buffer.len() > BACKLOG_CAP {
@@ -1284,6 +1720,159 @@ fn record_scrollback(state: &AppState, pane_id: &str, chunk: &[u8]) {
     if let Err(err) = append_pane_scrollback(&state.config().workspace_root, pane_id, chunk) {
         eprintln!("qmux: failed to record scrollback for pane {pane_id}: {err}");
     }
+}
+
+fn native_process_trees() -> &'static Mutex<HashMap<String, NativeProcessTree>> {
+    NATIVE_PROCESS_TREES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Panes whose close is currently owned by `kill_native_pane`. Ghostty's
+/// `close_surface` can invoke the close delegate before `terminate` returns,
+/// which would re-enter `native_pane_did_close` while the pane is still
+/// registered and capture/remove/emit a second time for the same close.
+fn closing_native_panes() -> &'static Mutex<HashSet<String>> {
+    CLOSING_NATIVE_PANES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct ProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [libc::c_char; 16],
+    pbi_name: [libc::c_char; 32],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_pidinfo(
+        pid: libc::c_int,
+        flavor: libc::c_int,
+        arg: u64,
+        buffer: *mut libc::c_void,
+        buffer_size: libc::c_int,
+    ) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn process_start_signature(pid: u32) -> Option<String> {
+    const PROC_PIDTBSDINFO: libc::c_int = 3;
+    let mut info = std::mem::MaybeUninit::<ProcBsdInfo>::zeroed();
+    let size = std::mem::size_of::<ProcBsdInfo>();
+    let read = unsafe {
+        proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as libc::c_int,
+        )
+    };
+    if read != size as libc::c_int {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    Some(format!(
+        "{}:{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_start_signature(pid: u32) -> Option<String> {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("lstart=")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let signature = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!signature.is_empty()).then_some(signature)
+}
+
+fn tracked_process(pid: u32) -> Option<TrackedProcess> {
+    Some(TrackedProcess {
+        pid,
+        start_signature: process_start_signature(pid)?,
+    })
+}
+
+fn process_matches(process: Option<&TrackedProcess>) -> bool {
+    let Some(process) = process else { return false };
+    process_start_signature(process.pid).as_deref() == Some(process.start_signature.as_str())
+}
+
+fn merge_live_descendants(tree: &mut NativeProcessTree) {
+    for pid in descendant_process_ids(tree.root.pid) {
+        let Some(process) = tracked_process(pid) else {
+            continue;
+        };
+        match tree.descendants.get(&pid) {
+            Some(existing) if process_matches(Some(existing)) => {}
+            _ => {
+                tree.descendants.insert(pid, process);
+            }
+        }
+    }
+}
+
+fn take_native_process_tree(state: &AppState, pane_id: &str) -> Option<NativeProcessTree> {
+    let root_pid = state.native_pane_pid(pane_id).ok().flatten()?;
+    let mut tree = native_process_trees()
+        .lock()
+        .ok()
+        .and_then(|mut trees| trees.remove(pane_id))
+        .filter(|tree| tree.root.pid == root_pid)?;
+    merge_live_descendants(&mut tree);
+    Some(tree)
+}
+
+fn signal_native_process_tree(tree: &NativeProcessTree, signal: libc::c_int) {
+    if process_matches(Some(&tree.root)) {
+        // Ghostty launches the command as a session/process-group leader. Verify
+        // that invariant before using a negative pid so a malformed report can
+        // never target qmux's own group.
+        let group_id = unsafe { libc::getpgid(tree.root.pid as libc::pid_t) };
+        if group_id == tree.root.pid as libc::pid_t {
+            let _ = unsafe { libc::kill(-group_id, signal) };
+        }
+        let _ = unsafe { libc::kill(tree.root.pid as libc::pid_t, signal) };
+    }
+    for process in tree.descendants.values() {
+        if process.pid != tree.root.pid && process_matches(Some(process)) {
+            let _ = unsafe { libc::kill(process.pid as libc::pid_t, signal) };
+        }
+    }
+}
+
+fn finish_native_process_tree_termination(tree: &NativeProcessTree, grace: Duration) {
+    if !grace.is_zero() {
+        thread::sleep(grace);
+    }
+    signal_native_process_tree(tree, libc::SIGKILL);
 }
 
 fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
@@ -1352,9 +1941,37 @@ struct RunningProcess {
 }
 
 fn running_descendant_processes(pid: u32) -> Vec<RunningProcess> {
-    descendant_process_ids(pid)
-        .into_iter()
-        .filter_map(running_process)
+    running_processes(&descendant_process_ids(pid))
+}
+
+/// Filters `pids` down to live, non-zombie processes with a single `ps`
+/// invocation — one subprocess total instead of one per pid — returning each
+/// one's executable basename. When a requested pid is already gone, `ps`
+/// still prints rows for the live ones but its exit status is
+/// platform-dependent, so stdout is parsed regardless of exit status.
+fn running_processes(pids: &[u32]) -> Vec<RunningProcess> {
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(output) = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid_list)
+        .arg("-o")
+        .arg("stat=")
+        .arg("-o")
+        .arg("comm=")
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(running_process_from_line)
         .collect()
 }
 
@@ -1390,26 +2007,8 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
     }
 }
 
-fn running_process(pid: u32) -> Option<RunningProcess> {
-    let output = Command::new("/bin/ps")
-        .arg("-p")
-        .arg(pid.to_string())
-        .arg("-o")
-        .arg("stat=")
-        .arg("-o")
-        .arg("comm=")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let line = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()?
-        .trim()
-        .to_string();
-    let mut parts = line.split_whitespace();
+fn running_process_from_line(line: &str) -> Option<RunningProcess> {
+    let mut parts = line.trim().split_whitespace();
     let status = parts.next()?;
     if status.starts_with('Z') {
         return None;
@@ -1438,9 +2037,21 @@ mod tests {
     };
     use crate::scrollback::read_pane_scrollback;
     use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
+    use std::cell::RefCell;
     use std::io;
+    use std::os::unix::process::CommandExt;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn wait_for_test_child(child: &mut std::process::Child) -> bool {
+        for _ in 0..50 {
+            if child.try_wait().ok().flatten().is_some() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
 
     #[test]
     fn passwd_login_shell_resolves_for_current_user() {
@@ -1790,16 +2401,57 @@ mod tests {
         assert_eq!(writer.flush_offsets, vec![1, 2]);
     }
 
-    fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
-        spawn_test_pty_with_restore_skip(state, pane_id, args, false)
+    #[test]
+    fn native_paste_uses_ghostty_paste_action_without_manual_markers() {
+        let options = write_options("test", true, true);
+        let mut raw_text = None;
+        let mut approved_paste = None;
+
+        write_native_pane_data(
+            &options,
+            |data| {
+                raw_text = Some(data.to_string());
+                Ok(())
+            },
+            |data| {
+                approved_paste = Some(data.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(raw_text, None);
+        assert_eq!(approved_paste.as_deref(), Some("test"));
     }
 
-    fn spawn_test_pty_with_restore_skip(
-        state: &AppState,
-        pane_id: &str,
-        args: Vec<String>,
-        skip_scrollback_restore: bool,
-    ) -> PaneInfo {
+    #[test]
+    fn native_submission_uses_approved_paste_then_submit_key() {
+        let state = test_state();
+        let options = write_options("test", true, true);
+        let calls = RefCell::new(Vec::new());
+
+        write_native_pane_input(
+            &state,
+            &options,
+            |data| {
+                calls.borrow_mut().push(format!("text:{data:?}"));
+                Ok(())
+            },
+            |data| {
+                calls.borrow_mut().push(format!("paste:{data:?}"));
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("submit-key".to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(calls.into_inner(), ["paste:\"test\"", "submit-key"]);
+    }
+
+    fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
         spawn_pty(
             state,
             PtySpawnSpec {
@@ -1814,7 +2466,6 @@ mod tests {
                 envs: Vec::new(),
                 initial_size: None,
                 recovered: false,
-                skip_scrollback_restore,
             },
         )
         .expect("spawning a test PTY")
@@ -1909,28 +2560,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_pty_tracks_scrollback_restore_skip_flag() {
-        let state = test_state();
-        let pane = spawn_test_pty_with_restore_skip(
-            &state,
-            "pane-skip-scrollback",
-            vec!["-c".to_string(), "sleep 5".to_string()],
-            true,
-        );
-
-        assert_eq!(
-            state.pane_skips_scrollback_restore(&pane.id).unwrap(),
-            Some(true)
-        );
-        assert_eq!(
-            state.pane_skips_scrollback_restore("missing").unwrap(),
-            None
-        );
-
-        kill_pane(&state, pane.id).expect("cleanup test pane");
-    }
-
-    #[test]
     fn reader_thread_reaps_and_removes_pane_after_child_exits() {
         let state = test_state();
         let pane = spawn_test_pty(
@@ -2006,6 +2635,60 @@ mod tests {
         }
 
         kill_pane(&state, pane.id).expect("cleanup test pane");
+    }
+
+    #[test]
+    fn native_process_tree_terminates_group_and_tracked_escapee() {
+        let mut root = Command::new("/bin/sh");
+        root.arg("-c")
+            .arg("trap '' TERM; exec /bin/sleep 30")
+            .process_group(0);
+        let mut root = root.spawn().expect("spawn isolated native root");
+        let mut escaped = Command::new("/bin/sh");
+        escaped
+            .arg("-c")
+            .arg("trap '' TERM; exec /bin/sleep 30")
+            .process_group(0);
+        let mut escaped = escaped.spawn().expect("spawn simulated escaped descendant");
+
+        let root_process = tracked_process(root.id()).expect("track root identity");
+        let escaped_process = tracked_process(escaped.id()).expect("track escaped identity");
+        let tree = NativeProcessTree {
+            root: root_process,
+            descendants: HashMap::from([(escaped_process.pid, escaped_process)]),
+        };
+
+        signal_native_process_tree(&tree, libc::SIGTERM);
+        finish_native_process_tree_termination(&tree, Duration::from_millis(50));
+        assert!(
+            wait_for_test_child(&mut root),
+            "native root survived teardown"
+        );
+        assert!(
+            wait_for_test_child(&mut escaped),
+            "tracked escaped descendant survived teardown"
+        );
+    }
+
+    #[test]
+    fn native_process_tree_does_not_signal_reused_identity() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn identity test child");
+        let mut stale = tracked_process(child.id()).expect("track child identity");
+        stale.start_signature.push_str(" stale");
+        let tree = NativeProcessTree {
+            root: stale,
+            descendants: HashMap::new(),
+        };
+
+        signal_native_process_tree(&tree, libc::SIGKILL);
+        thread::sleep(Duration::from_millis(30));
+        assert!(child.try_wait().expect("inspect child").is_none());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

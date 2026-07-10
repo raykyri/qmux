@@ -231,7 +231,6 @@ impl CodexAdapter {
                 envs,
                 initial_size: request.initial_size,
                 recovered: false,
-                skip_scrollback_restore: false,
             },
         );
 
@@ -292,7 +291,6 @@ impl CodexAdapter {
                     rows: pane.rows,
                 }),
                 recovered: true,
-                skip_scrollback_restore: resumed,
             },
         )?;
 
@@ -415,7 +413,6 @@ impl CodexAdapter {
                 envs,
                 initial_size: None,
                 recovered: false,
-                skip_scrollback_restore: false,
             },
         );
 
@@ -441,7 +438,7 @@ impl CodexAdapter {
         let binary = self.ensure_binary()?;
         validate_shell_tail_args(&request.args)?;
 
-        if state.pane_writer(&request.pane_id)?.is_none() {
+        if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 
@@ -2906,13 +2903,14 @@ trusted_hash = "sha256:trusted"
                     recovered: false,
                     depth: 0,
                 },
-                child: Arc::new(Mutex::new(Box::new(FakeChild))),
-                master: Arc::new(Mutex::new(pair.master)),
-                writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
-                    bytes: bytes.clone(),
-                }))),
-                backlog: Default::default(),
-                skip_scrollback_restore: false,
+                backend: crate::state::PaneBackend::Portable {
+                    child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                    master: Arc::new(Mutex::new(pair.master)),
+                    writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
+                        bytes: bytes.clone(),
+                    }))),
+                    backlog: Default::default(),
+                },
             })
             .unwrap();
         bytes

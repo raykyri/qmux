@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
 import { IS_MAC, isEditableTarget } from "../lib/appHelpers";
+import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
 import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
@@ -356,6 +357,21 @@ export default function TurnOverlay({
     });
   };
   const queueSplitDragRef = useRef<QueueSplitDrag | null>(null);
+  const queueSplitPointerReleaseRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!queueSplit) {
+      queueSplitDragRef.current = null;
+      queueSplitPointerReleaseRef.current?.();
+      queueSplitPointerReleaseRef.current = null;
+    }
+  }, [queueSplit]);
+  useEffect(
+    () => () => {
+      queueSplitPointerReleaseRef.current?.();
+      queueSplitPointerReleaseRef.current = null;
+    },
+    [],
+  );
   // Whether the view is parked near the bottom, so incoming content can keep it
   // pinned there. Starts true (we load at the bottom) and tracks user scrolling.
   const stickToBottomRef = useRef(true);
@@ -435,7 +451,9 @@ export default function TurnOverlay({
       return;
     }
     event.preventDefault();
+    queueSplitPointerReleaseRef.current?.();
     event.currentTarget.setPointerCapture(event.pointerId);
+    queueSplitPointerReleaseRef.current = claimNativeTerminalPointerForWebDrag();
     queueSplitDragRef.current = {
       pointerId: event.pointerId,
       startY: event.clientY,
@@ -458,6 +476,8 @@ export default function TurnOverlay({
       return;
     }
     queueSplitDragRef.current = null;
+    queueSplitPointerReleaseRef.current?.();
+    queueSplitPointerReleaseRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -658,7 +678,7 @@ export default function TurnOverlay({
       }
       const target = event.target;
       if (target instanceof HTMLElement) {
-        // The terminal owns find while focused (xterm's handler opens its bar),
+        // The terminal owns find while focused (its native handler opens its bar),
         // and editable fields outside this pane (ask modal, settings, Home)
         // keep the combo for themselves.
         if (target.closest(".terminal-mount")) {

@@ -2,6 +2,7 @@ import { ExternalLink, RotateCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { BrowserOverlaySize } from "../appTypes";
+import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
 const MIN_BROWSER_OVERLAY_HEIGHT = 240;
@@ -82,6 +83,7 @@ export default function BrowserOverlay({
 
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    const releaseNativePointer = claimNativeTerminalPointerForWebDrag();
 
     const overlayRect = overlay.getBoundingClientRect();
     const parentRect = parent.getBoundingClientRect();
@@ -119,6 +121,7 @@ export default function BrowserOverlay({
       if (handle.hasPointerCapture(event.pointerId)) {
         handle.releasePointerCapture(event.pointerId);
       }
+      releaseNativePointer();
       setResizing(false);
       cleanupResizeRef.current = null;
     };

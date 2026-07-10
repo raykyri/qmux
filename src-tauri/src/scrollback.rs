@@ -1,4 +1,3 @@
-use crate::events::base64_encode;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -9,16 +8,12 @@ const SCROLLBACK_DIR: &str = "terminal";
 const STATE_DIR: &str = ".qmux";
 const LOG_EXTENSION: &str = "pty";
 /// Per-pane cap for durable terminal output. This is intentionally byte-based:
-/// xterm does the terminal parsing on replay, and retaining the latest bytes gives
+/// The legacy portable renderer parses these bytes on replay, and retaining the latest bytes gives
 /// the same practical behavior as a bounded scrollback window without storing a
 /// frontend-specific buffer shape.
 const SCROLLBACK_LOG_CAP: u64 = 8 * 1024 * 1024;
 
 static SCROLLBACK_IO_LOCK: Mutex<()> = Mutex::new(());
-
-pub fn pane_scrollback_base64(workspace_root: &Path, pane_id: &str) -> Result<String, String> {
-    read_pane_scrollback(workspace_root, pane_id).map(|bytes| base64_encode(&bytes))
-}
 
 pub fn read_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<Vec<u8>, String> {
     let _guard = SCROLLBACK_IO_LOCK
@@ -184,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_round_trips_and_encodes_as_base64() {
+    fn scrollback_round_trips() {
         let workspace = temp_workspace();
 
         append_pane_scrollback(&workspace, "pane-1", b"hello ").unwrap();
@@ -193,10 +188,6 @@ mod tests {
         assert_eq!(
             read_pane_scrollback(&workspace, "pane-1").unwrap(),
             b"hello world"
-        );
-        assert_eq!(
-            pane_scrollback_base64(&workspace, "pane-1").unwrap(),
-            "aGVsbG8gd29ybGQ="
         );
     }
 

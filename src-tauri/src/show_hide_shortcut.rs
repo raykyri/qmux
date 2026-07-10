@@ -6,15 +6,34 @@ use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutEvent, ShortcutState,
 };
 
-#[derive(Default)]
 pub struct ShowHideShortcutState {
     inner: Mutex<ShowHideShortcutInner>,
+    operation: Mutex<()>,
+}
+
+impl Default for ShowHideShortcutState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(ShowHideShortcutInner::default()),
+            operation: Mutex::new(()),
+        }
+    }
 }
 
 #[derive(Default)]
 struct ShowHideShortcutInner {
+    configured_accelerator: Option<String>,
     registered_accelerator: Option<String>,
+    capture_fallback_accelerator: Option<String>,
     last_error: Option<String>,
+    capture_active: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ShowHideShortcutSnapshot {
+    configured_accelerator: Option<String>,
+    registered_accelerator: Option<String>,
+    capture_fallback_accelerator: Option<String>,
     capture_active: bool,
 }
 
@@ -24,6 +43,7 @@ pub struct ShowHideShortcutSetting {
     pub accelerator: Option<String>,
     pub registered: bool,
     pub error: Option<String>,
+    pub capture_active: bool,
 }
 
 pub fn init<R: Runtime>(app: &AppHandle<R>, workspace_root: &Path) {
@@ -35,34 +55,45 @@ pub fn init<R: Runtime>(app: &AppHandle<R>, workspace_root: &Path) {
         }
     };
 
-    if accelerator.is_some() {
-        let state = app.state::<ShowHideShortcutState>();
-        match normalize_accelerator(accelerator) {
-            Ok(accelerator) => {
-                let setting = replace_registered_shortcut(app, state.inner(), accelerator);
-                if let Some(error) = setting.error {
-                    eprintln!("qmux: failed to register show/hide shortcut: {error}");
+    let state = app.state::<ShowHideShortcutState>();
+    let _operation = state.operation.lock().unwrap();
+    match normalize_accelerator(accelerator.clone()) {
+        Ok(configured_accelerator) => {
+            let registry = TauriShortcutRegistry { app };
+            let registration = configured_accelerator
+                .as_deref()
+                .map(|accelerator| registry.register(accelerator));
+            let mut inner = state.inner.lock().unwrap();
+            inner.configured_accelerator = configured_accelerator.clone();
+            match registration {
+                Some(Ok(())) => inner.registered_accelerator = configured_accelerator,
+                Some(Err(err)) => {
+                    inner.last_error = Some(err.clone());
+                    eprintln!("qmux: failed to register show/hide shortcut: {err}");
                 }
+                None => {}
             }
-            Err(err) => {
-                state.set_error(err.clone());
-                eprintln!("qmux: invalid show/hide shortcut preference: {err}");
-            }
+        }
+        Err(err) => {
+            let mut inner = state.inner.lock().unwrap();
+            inner.configured_accelerator = accelerator;
+            inner.last_error = Some(err.clone());
+            eprintln!("qmux: invalid show/hide shortcut preference: {err}");
         }
     }
 }
 
 pub fn handle_global_shortcut<R: Runtime>(
     app: &AppHandle<R>,
-    _shortcut: &Shortcut,
+    shortcut: &Shortcut,
     event: ShortcutEvent,
 ) {
     if event.state != ShortcutState::Pressed {
         return;
     }
-    if app
+    if !app
         .try_state::<ShowHideShortcutState>()
-        .is_some_and(|state| state.inner().capture_active())
+        .is_some_and(|state| state.handles(shortcut))
     {
         return;
     }
@@ -73,12 +104,9 @@ pub fn handle_global_shortcut<R: Runtime>(
 
 #[tauri::command]
 pub fn show_hide_shortcut_get(
-    app_state: tauri::State<'_, AppState>,
     shortcut_state: tauri::State<'_, ShowHideShortcutState>,
 ) -> Result<ShowHideShortcutSetting, String> {
-    let accelerator =
-        persistence::load_preferences(&app_state.config().workspace_root)?.show_hide_shortcut;
-    Ok(shortcut_state.status(accelerator))
+    Ok(shortcut_state.status())
 }
 
 #[tauri::command]
@@ -89,53 +117,132 @@ pub fn show_hide_shortcut_set<R: Runtime>(
     accelerator: Option<String>,
 ) -> Result<ShowHideShortcutSetting, String> {
     let accelerator = normalize_accelerator(accelerator)?;
-
-    let mut preferences =
-        persistence::load_preferences(&app_state.config().workspace_root).unwrap_or_default();
+    let _operation = shortcut_state.operation.lock().unwrap();
+    let snapshot = shortcut_state.snapshot();
+    let mut preferences = persistence::load_preferences(&app_state.config().workspace_root)?;
     preferences.show_hide_shortcut = accelerator.clone();
-    persistence::save_preferences(&app_state.config().workspace_root, &preferences)?;
+    let registry = TauriShortcutRegistry { app: &app };
 
-    Ok(replace_registered_shortcut(
-        &app,
-        shortcut_state.inner(),
-        accelerator,
-    ))
+    let result = if snapshot.capture_active {
+        probe_registration(&registry, accelerator.as_deref()).and_then(|()| {
+            persistence::save_preferences(&app_state.config().workspace_root, &preferences)
+        })
+    } else {
+        replace_active_registration(
+            &registry,
+            snapshot.registered_accelerator.as_deref(),
+            accelerator.as_deref(),
+            || persistence::save_preferences(&app_state.config().workspace_root, &preferences),
+        )
+    };
+
+    let mut inner = shortcut_state.inner.lock().unwrap();
+    match result {
+        Ok(()) => {
+            inner.configured_accelerator = accelerator.clone();
+            inner.registered_accelerator = if snapshot.capture_active {
+                None
+            } else {
+                accelerator
+            };
+            inner.last_error = None;
+        }
+        Err(err) => {
+            inner.configured_accelerator = snapshot.configured_accelerator;
+            inner.registered_accelerator = registered_candidate(
+                &registry,
+                [
+                    snapshot.registered_accelerator.as_deref(),
+                    accelerator.as_deref(),
+                ],
+            );
+            inner.last_error = Some(err);
+        }
+    }
+    drop(inner);
+    Ok(shortcut_state.status())
 }
 
 #[tauri::command]
-pub fn show_hide_shortcut_capture_set(
+pub fn show_hide_shortcut_capture_set<R: Runtime>(
+    app: AppHandle<R>,
+    app_state: tauri::State<'_, AppState>,
     shortcut_state: tauri::State<'_, ShowHideShortcutState>,
     active: bool,
-) {
-    shortcut_state.set_capture_active(active);
+) -> Result<ShowHideShortcutSetting, String> {
+    let _operation = shortcut_state.operation.lock().unwrap();
+    let snapshot = shortcut_state.snapshot();
+    if snapshot.capture_active == active {
+        return Ok(shortcut_state.status());
+    }
+    let registry = TauriShortcutRegistry { app: &app };
+
+    if active {
+        if let Some(registered) = snapshot.registered_accelerator.as_deref()
+            && let Err(err) = registry.unregister(registered)
+        {
+            shortcut_state.set_error(err);
+            return Ok(shortcut_state.status());
+        }
+        let mut inner = shortcut_state.inner.lock().unwrap();
+        inner.capture_active = true;
+        inner.capture_fallback_accelerator = snapshot.configured_accelerator;
+        inner.registered_accelerator = None;
+        inner.last_error = None;
+        drop(inner);
+        return Ok(shortcut_state.status());
+    }
+
+    finish_shortcut_capture(
+        &registry,
+        &app_state.config().workspace_root,
+        shortcut_state.inner(),
+        snapshot,
+    );
+    Ok(shortcut_state.status())
 }
 
 impl ShowHideShortcutState {
-    fn set_capture_active(&self, active: bool) {
-        self.inner.lock().unwrap().capture_active = active;
-    }
-
-    fn capture_active(&self) -> bool {
-        self.inner.lock().unwrap().capture_active
-    }
-
     fn set_error(&self, error: String) {
         self.inner.lock().unwrap().last_error = Some(error);
     }
 
-    fn status(&self, configured_accelerator: Option<String>) -> ShowHideShortcutSetting {
+    fn snapshot(&self) -> ShowHideShortcutSnapshot {
+        let inner = self.inner.lock().unwrap();
+        ShowHideShortcutSnapshot {
+            configured_accelerator: inner.configured_accelerator.clone(),
+            registered_accelerator: inner.registered_accelerator.clone(),
+            capture_fallback_accelerator: inner.capture_fallback_accelerator.clone(),
+            capture_active: inner.capture_active,
+        }
+    }
+
+    fn handles(&self, shortcut: &Shortcut) -> bool {
+        let inner = self.inner.lock().unwrap();
+        if inner.capture_active {
+            return false;
+        }
+        inner
+            .registered_accelerator
+            .as_deref()
+            .and_then(|accelerator| Shortcut::from_str(accelerator).ok())
+            .is_some_and(|registered| registered == *shortcut)
+    }
+
+    fn status(&self) -> ShowHideShortcutSetting {
         let inner = self.inner.lock().unwrap();
         let registered = match (
-            configured_accelerator.as_deref(),
+            inner.configured_accelerator.as_deref(),
             inner.registered_accelerator.as_deref(),
         ) {
             (Some(configured), Some(registered)) => configured == registered,
             _ => false,
         };
         ShowHideShortcutSetting {
-            accelerator: configured_accelerator,
+            accelerator: inner.configured_accelerator.clone(),
             registered,
             error: inner.last_error.clone(),
+            capture_active: inner.capture_active,
         }
     }
 }
@@ -164,39 +271,188 @@ fn normalize_accelerator(accelerator: Option<String>) -> Result<Option<String>, 
     Ok(Some(display_accelerator(shortcut)))
 }
 
-fn replace_registered_shortcut<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &ShowHideShortcutState,
-    accelerator: Option<String>,
-) -> ShowHideShortcutSetting {
-    let previously_registered = {
-        let mut inner = state.inner.lock().unwrap();
-        inner.last_error = None;
-        inner.registered_accelerator.take()
-    };
+trait ShortcutRegistry {
+    fn register(&self, accelerator: &str) -> Result<(), String>;
+    fn unregister(&self, accelerator: &str) -> Result<(), String>;
+    fn is_registered(&self, accelerator: &str) -> bool;
+}
 
-    if let Some(previously_registered) = previously_registered
-        && let Err(err) = app
+struct TauriShortcutRegistry<'a, R: Runtime> {
+    app: &'a AppHandle<R>,
+}
+
+impl<R: Runtime> ShortcutRegistry for TauriShortcutRegistry<'_, R> {
+    fn register(&self, accelerator: &str) -> Result<(), String> {
+        self.app
             .global_shortcut()
-            .unregister(previously_registered.as_str())
-    {
-        eprintln!("qmux: failed to unregister previous show/hide shortcut: {err}");
+            .register(accelerator)
+            .map_err(|err| format!("{err}"))
     }
 
+    fn unregister(&self, accelerator: &str) -> Result<(), String> {
+        self.app
+            .global_shortcut()
+            .unregister(accelerator)
+            .map_err(|err| format!("{err}"))
+    }
+
+    fn is_registered(&self, accelerator: &str) -> bool {
+        self.app.global_shortcut().is_registered(accelerator)
+    }
+}
+
+/// Registers the replacement before releasing the current shortcut. Persistence
+/// happens only after the OS transition succeeds; a persistence failure restores
+/// the previous registration before returning.
+fn replace_active_registration(
+    registry: &impl ShortcutRegistry,
+    previous: Option<&str>,
+    next: Option<&str>,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if previous == next {
+        return persist();
+    }
+
+    if let Some(next) = next {
+        registry
+            .register(next)
+            .map_err(|err| format!("Couldn't register {next}: {err}"))?;
+    }
+
+    if let Some(previous) = previous
+        && let Err(err) = registry.unregister(previous)
+    {
+        let rollback = next
+            .and_then(|next| registry.unregister(next).err())
+            .map(|rollback| format!(" The replacement also couldn't be released: {rollback}."))
+            .unwrap_or_default();
+        return Err(format!(
+            "Couldn't release the previous shortcut {previous}: {err}.{rollback}"
+        ));
+    }
+
+    if let Err(err) = persist() {
+        let mut rollback_errors = Vec::new();
+        if let Some(previous) = previous
+            && let Err(rollback) = registry.register(previous)
+        {
+            rollback_errors.push(format!("restore {previous}: {rollback}"));
+        }
+        if let Some(next) = next
+            && let Err(rollback) = registry.unregister(next)
+        {
+            rollback_errors.push(format!("release {next}: {rollback}"));
+        }
+        if rollback_errors.is_empty() {
+            return Err(err);
+        }
+        return Err(format!(
+            "{err}. Registration rollback also failed ({}).",
+            rollback_errors.join(", ")
+        ));
+    }
+
+    Ok(())
+}
+
+/// While the capture input is focused no qmux shortcut may stay registered or
+/// macOS will consume that chord before the webview can record it. Probe a new
+/// chord synchronously, then release it until capture ends.
+fn probe_registration(
+    registry: &impl ShortcutRegistry,
+    accelerator: Option<&str>,
+) -> Result<(), String> {
     let Some(accelerator) = accelerator else {
-        return state.status(None);
+        return Ok(());
+    };
+    registry
+        .register(accelerator)
+        .map_err(|err| format!("Couldn't register {accelerator}: {err}"))?;
+    registry.unregister(accelerator).map_err(|err| {
+        format!("Registered {accelerator}, but couldn't suspend it during capture: {err}")
+    })
+}
+
+fn registered_candidate<'a>(
+    registry: &impl ShortcutRegistry,
+    candidates: impl IntoIterator<Item = Option<&'a str>>,
+) -> Option<String> {
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|accelerator| registry.is_registered(accelerator))
+        .map(str::to_string)
+}
+
+fn finish_shortcut_capture(
+    registry: &impl ShortcutRegistry,
+    workspace_root: &Path,
+    state: &ShowHideShortcutState,
+    snapshot: ShowHideShortcutSnapshot,
+) {
+    let Some(configured) = snapshot.configured_accelerator.as_deref() else {
+        let mut inner = state.inner.lock().unwrap();
+        inner.capture_active = false;
+        inner.capture_fallback_accelerator = None;
+        inner.registered_accelerator = None;
+        inner.last_error = None;
+        return;
     };
 
-    match app.global_shortcut().register(accelerator.as_str()) {
-        Ok(()) => {
-            state.inner.lock().unwrap().registered_accelerator = Some(accelerator.clone());
-        }
-        Err(err) => {
-            state.inner.lock().unwrap().last_error = Some(format!("{err}"));
-        }
+    let registration = if registry.is_registered(configured) {
+        Ok(())
+    } else {
+        registry.register(configured)
+    };
+    if registration.is_ok() {
+        let mut inner = state.inner.lock().unwrap();
+        inner.capture_active = false;
+        inner.capture_fallback_accelerator = None;
+        inner.registered_accelerator = Some(configured.to_string());
+        inner.last_error = None;
+        return;
     }
 
-    state.status(Some(accelerator))
+    let registration_error = registration.unwrap_err();
+    let fallback = snapshot.capture_fallback_accelerator;
+    if fallback.as_deref() == Some(configured) {
+        let mut inner = state.inner.lock().unwrap();
+        inner.capture_active = false;
+        inner.capture_fallback_accelerator = None;
+        inner.registered_accelerator =
+            registered_candidate(registry, [Some(configured), fallback.as_deref()]);
+        inner.last_error = Some(format!(
+            "Couldn't reactivate {configured} after capture: {registration_error}"
+        ));
+        return;
+    }
+
+    let restore = persistence::load_preferences(workspace_root).and_then(|mut preferences| {
+        preferences.show_hide_shortcut = fallback.clone();
+        replace_active_registration(registry, None, fallback.as_deref(), || {
+            persistence::save_preferences(workspace_root, &preferences)
+        })
+    });
+    let mut inner = state.inner.lock().unwrap();
+    inner.capture_active = false;
+    inner.capture_fallback_accelerator = None;
+    match restore {
+        Ok(()) => {
+            inner.configured_accelerator = fallback.clone();
+            inner.registered_accelerator = fallback;
+            inner.last_error = Some(format!(
+                "Couldn't activate {configured}: {registration_error}. Restored the previous setting."
+            ));
+        }
+        Err(restore_error) => {
+            inner.registered_accelerator =
+                registered_candidate(registry, [Some(configured), fallback.as_deref()]);
+            inner.last_error = Some(format!(
+                "Couldn't activate {configured}: {registration_error}. Restoring the previous shortcut also failed: {restore_error}"
+            ));
+        }
+    }
 }
 
 pub fn toggle_qmux_visibility<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -379,6 +635,70 @@ fn display_key(key: Code) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        cell::RefCell,
+        collections::HashSet,
+        fs,
+        rc::Rc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[derive(Default)]
+    struct MockRegistry {
+        registered: RefCell<HashSet<String>>,
+        fail_register: RefCell<HashSet<String>>,
+        fail_unregister: RefCell<HashSet<String>>,
+        operations: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl ShortcutRegistry for MockRegistry {
+        fn register(&self, accelerator: &str) -> Result<(), String> {
+            self.operations
+                .borrow_mut()
+                .push(format!("register:{accelerator}"));
+            if self.fail_register.borrow().contains(accelerator) {
+                return Err("registration refused".to_string());
+            }
+            if !self.registered.borrow_mut().insert(accelerator.to_string()) {
+                return Err("already registered".to_string());
+            }
+            Ok(())
+        }
+
+        fn unregister(&self, accelerator: &str) -> Result<(), String> {
+            self.operations
+                .borrow_mut()
+                .push(format!("unregister:{accelerator}"));
+            if self.fail_unregister.borrow().contains(accelerator) {
+                return Err("unregistration refused".to_string());
+            }
+            if !self.registered.borrow_mut().remove(accelerator) {
+                return Err("not registered".to_string());
+            }
+            Ok(())
+        }
+
+        fn is_registered(&self, accelerator: &str) -> bool {
+            self.registered.borrow().contains(accelerator)
+        }
+    }
+
+    fn registry_with(accelerator: &str) -> MockRegistry {
+        let registry = MockRegistry::default();
+        registry
+            .registered
+            .borrow_mut()
+            .insert(accelerator.to_string());
+        registry
+    }
+
+    fn temp_root() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("qmux-shortcut-{nanos}"))
+    }
 
     #[test]
     fn blank_shortcut_is_none() {
@@ -401,5 +721,157 @@ mod tests {
     #[test]
     fn shortcut_requires_modifier() {
         assert!(normalize_accelerator(Some("Space".to_string())).is_err());
+    }
+
+    #[test]
+    fn handler_claims_only_the_registered_shortcut_outside_capture() {
+        let state = ShowHideShortcutState::default();
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.configured_accelerator = Some("Option+Space".to_string());
+            inner.registered_accelerator = Some("Option+Space".to_string());
+        }
+        let registered = Shortcut::from_str("Option+Space").unwrap();
+        let other = Shortcut::from_str("Shift+Command+A").unwrap();
+
+        assert!(state.handles(&registered));
+        assert!(!state.handles(&other));
+
+        state.inner.lock().unwrap().capture_active = true;
+        assert!(!state.handles(&registered));
+    }
+
+    #[test]
+    fn replacement_registers_new_before_releasing_old_and_persisting() {
+        let registry = registry_with("Option+Space");
+        let operations = Rc::clone(&registry.operations);
+
+        replace_active_registration(
+            &registry,
+            Some("Option+Space"),
+            Some("Shift+Command+A"),
+            || {
+                operations.borrow_mut().push("persist".to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            registry.operations.borrow().as_slice(),
+            [
+                "register:Shift+Command+A",
+                "unregister:Option+Space",
+                "persist",
+            ]
+        );
+        assert!(registry.is_registered("Shift+Command+A"));
+        assert!(!registry.is_registered("Option+Space"));
+    }
+
+    #[test]
+    fn rejected_replacement_keeps_previous_registration_and_skips_persistence() {
+        let registry = registry_with("Option+Space");
+        registry
+            .fail_register
+            .borrow_mut()
+            .insert("Shift+Command+A".to_string());
+        let persisted = Rc::new(RefCell::new(false));
+        let persisted_for_call = Rc::clone(&persisted);
+
+        let result = replace_active_registration(
+            &registry,
+            Some("Option+Space"),
+            Some("Shift+Command+A"),
+            || {
+                *persisted_for_call.borrow_mut() = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!*persisted.borrow());
+        assert!(registry.is_registered("Option+Space"));
+        assert!(!registry.is_registered("Shift+Command+A"));
+    }
+
+    #[test]
+    fn persistence_failure_restores_previous_registration() {
+        let registry = registry_with("Option+Space");
+        let operations = Rc::clone(&registry.operations);
+
+        let result = replace_active_registration(
+            &registry,
+            Some("Option+Space"),
+            Some("Shift+Command+A"),
+            || {
+                operations.borrow_mut().push("persist".to_string());
+                Err("disk full".to_string())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            registry.operations.borrow().as_slice(),
+            [
+                "register:Shift+Command+A",
+                "unregister:Option+Space",
+                "persist",
+                "register:Option+Space",
+                "unregister:Shift+Command+A",
+            ]
+        );
+        assert!(registry.is_registered("Option+Space"));
+        assert!(!registry.is_registered("Shift+Command+A"));
+    }
+
+    #[test]
+    fn capture_probe_releases_the_candidate_immediately() {
+        let registry = MockRegistry::default();
+
+        probe_registration(&registry, Some("Option+Space")).unwrap();
+
+        assert_eq!(
+            registry.operations.borrow().as_slice(),
+            ["register:Option+Space", "unregister:Option+Space"]
+        );
+        assert!(!registry.is_registered("Option+Space"));
+    }
+
+    #[test]
+    fn failed_capture_replacement_restores_the_previous_setting() {
+        let root = temp_root();
+        let mut preferences = persistence::AppPreferences {
+            show_hide_shortcut: Some("Shift+Command+A".to_string()),
+            ..Default::default()
+        };
+        persistence::save_preferences(&root, &preferences).unwrap();
+
+        let state = ShowHideShortcutState::default();
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.configured_accelerator = Some("Shift+Command+A".to_string());
+            inner.capture_fallback_accelerator = Some("Option+Space".to_string());
+            inner.capture_active = true;
+        }
+        let registry = MockRegistry::default();
+        registry
+            .fail_register
+            .borrow_mut()
+            .insert("Shift+Command+A".to_string());
+
+        finish_shortcut_capture(&registry, &root, &state, state.snapshot());
+
+        let status = state.status();
+        assert_eq!(status.accelerator.as_deref(), Some("Option+Space"));
+        assert!(status.registered);
+        assert!(!status.capture_active);
+        assert!(status.error.is_some());
+        preferences = persistence::load_preferences(&root).unwrap();
+        assert_eq!(
+            preferences.show_hide_shortcut.as_deref(),
+            Some("Option+Space")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
