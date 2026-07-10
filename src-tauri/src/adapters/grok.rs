@@ -2,7 +2,7 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
     SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
-    reusable_session_agent, shell_quote_arg, shell_quote_path,
+    record_shell_fork_lineage, reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -433,6 +433,7 @@ impl GrokAdapter {
         let pane_group_id = state
             .pane_group_id(&request.pane_id)?
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let fork_point = grok_fork_source_session_id(&request.args).map(str::to_string);
         let agent = match reusable_session_agent(
             state,
             self.id(),
@@ -444,7 +445,7 @@ impl GrokAdapter {
                 state,
                 PrepareAgentWorkspaceRequest {
                     group_id: Some(pane_group_id),
-                    base_repo: Some(cwd_str),
+                    base_repo: Some(cwd_str.clone()),
                     base_ref: Some("HEAD".to_string()),
                     adapter: self.id().to_string(),
                     model: None,
@@ -453,6 +454,8 @@ impl GrokAdapter {
                 },
             )?,
         };
+        let agent =
+            record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
         let agent = attach_grok_agent_pane(
             state,
             &agent.id,
@@ -1283,6 +1286,18 @@ fn grok_resume_session_id(args: &[String]) -> Option<&str> {
     {
         return None;
     }
+    grok_resume_argument_id(args)
+}
+
+fn grok_fork_source_session_id(args: &[String]) -> Option<&str> {
+    args.iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--fork-session")
+        .then(|| grok_resume_argument_id(args))
+        .flatten()
+}
+
+fn grok_resume_argument_id(args: &[String]) -> Option<&str> {
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
@@ -2562,6 +2577,14 @@ mod tests {
                 "--resume=source-session"
             ])),
             None
+        );
+        assert_eq!(
+            grok_fork_source_session_id(&args(&[
+                "--resume",
+                "source-session",
+                "--fork-session"
+            ])),
+            Some("source-session")
         );
     }
 

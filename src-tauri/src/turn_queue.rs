@@ -607,6 +607,15 @@ pub enum IdleResolution {
 /// queued turn. Writes status/paused with field-scoped setters so a concurrent hook
 /// update can't clobber them. Shared by the Claude and Codex idle handlers.
 pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolution, String> {
+    // A different completion signal (for example a transcript abort marker racing a
+    // Stop hook) may already have drained a queued turn. Until that send receives its
+    // prompt-submit echo, another idle signal belongs to the previous turn and must
+    // not consume the next queue entry. Report `Drained` because the agent is already
+    // running the newly sent turn. Expired advisory records are pruned by the query,
+    // so a genuinely missing echo cannot block the queue indefinitely.
+    if state.agent_has_outstanding_send_source(agent_id, AgentSendSource::QueuedTurn)? {
+        return Ok(IdleResolution::Drained);
+    }
     // Outstanding-send tracking is advisory; clear it best-effort on every idle.
     let _ = state.clear_agent_outstanding_sends(agent_id);
 
@@ -1789,7 +1798,7 @@ mod tests {
     fn queue_delivery_turn_rejects_fork_for_unsupported_adapter() {
         let state = test_state();
         let mut agent = sample_agent(AgentStatus::Running);
-        agent.adapter = "grok".to_string();
+        agent.adapter = "custom".to_string();
         state.insert_agent(agent).unwrap();
 
         let err = queue_delivery_agent_turn(
@@ -1805,7 +1814,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            err.contains("only supported for Claude and Codex"),
+            err.contains("not supported for this agent adapter"),
             "unexpected error: {err}"
         );
         assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
@@ -1884,6 +1893,36 @@ mod tests {
         let err = drain_agent_turn_queue(&state, "agent-1").unwrap_err();
         assert!(!err.is_empty());
         assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn duplicate_idle_does_not_drain_past_an_outstanding_queued_send() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "already drained".to_string(),
+                AgentSendSource::QueuedTurn,
+            )
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "still queued".to_string())
+            .unwrap();
+
+        let resolution = advance_after_idle(&state, "agent-1").unwrap();
+
+        assert!(matches!(resolution, IdleResolution::Drained));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["still queued".to_string()]
+        );
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
     }
 
     #[test]

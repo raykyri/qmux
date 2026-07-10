@@ -97,6 +97,43 @@ pub(crate) fn reusable_session_agent(
     }))
 }
 
+/// Records native lineage on a fresh agent created by a shell-level fork command.
+/// The CLI resumes `fork_point` but creates a new native session, so the source qmux
+/// record must remain separate. Preserve qmux parent/root lineage when its source is
+/// known in the same workspace.
+pub(crate) fn record_shell_fork_lineage(
+    state: &AppState,
+    agent: AgentInfo,
+    adapter_id: &str,
+    fork_point: Option<&str>,
+    cwd: &str,
+) -> Result<AgentInfo, String> {
+    let Some(fork_point) = fork_point.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(agent);
+    };
+    let source = state.list_agents()?.into_iter().find(|candidate| {
+        candidate.id != agent.id
+            && candidate.adapter == adapter_id
+            && candidate.session_id.as_deref() == Some(fork_point)
+            && same_dir(&candidate.worktree_dir, cwd)
+    });
+    state
+        .mutate_agent(&agent.id, |agent| {
+            agent.fork_point = Some(fork_point.to_string());
+            agent.root_session_id = source
+                .as_ref()
+                .and_then(|source| source.root_session_id.clone())
+                .or_else(|| Some(fork_point.to_string()));
+            agent.parent_id = source.as_ref().map(|source| source.id.clone());
+        })?
+        .ok_or_else(|| {
+            format!(
+                "agent {} disappeared while recording fork lineage",
+                agent.id
+            )
+        })
+}
+
 /// True when both paths name the same directory. Canonicalization resolves symlinks,
 /// `.`/`..`, trailing slashes, and (on case-insensitive volumes) the on-disk case, so a
 /// shell's reported `$PWD` rebinds the original agent even when its spelling differs from
@@ -874,6 +911,39 @@ mod tests {
             reusable_session_agent(&state, "claude", Some("sess-1"), "/work")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn shell_fork_lineage_links_a_fresh_agent_without_reusing_the_source() {
+        let state = AppState::new(test_config());
+        state
+            .insert_agent(session_agent(
+                "source-agent",
+                Some("pane-source"),
+                "/work",
+                "source-session",
+            ))
+            .unwrap();
+        let mut fork = session_agent("fork-agent", None, "/work", "placeholder");
+        fork.session_id = None;
+        state.insert_agent(fork.clone()).unwrap();
+
+        let fork =
+            record_shell_fork_lineage(&state, fork, "claude", Some("source-session"), "/work")
+                .unwrap();
+
+        assert_eq!(fork.parent_id.as_deref(), Some("source-agent"));
+        assert_eq!(fork.fork_point.as_deref(), Some("source-session"));
+        assert_eq!(fork.root_session_id.as_deref(), Some("source-session"));
+        assert_eq!(
+            state
+                .agent("source-agent")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("source-session")
         );
     }
 }

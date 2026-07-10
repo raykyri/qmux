@@ -1,8 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, reusable_session_agent,
-    shell_quote_arg,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, record_shell_fork_lineage,
+    reusable_session_agent, shell_quote_arg,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -428,6 +428,7 @@ impl OpencodeAdapter {
             .pane_group_id(&request.pane_id)?
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
         let resume_session_id = opencode_resume_session_id(&request.args).map(str::to_string);
+        let fork_point = opencode_fork_source_session_id(&request.args).map(str::to_string);
         let agent = match reusable_session_agent(
             state,
             self.id(),
@@ -439,7 +440,7 @@ impl OpencodeAdapter {
                 state,
                 PrepareAgentWorkspaceRequest {
                     group_id: Some(pane_group_id),
-                    base_repo: Some(cwd_str),
+                    base_repo: Some(cwd_str.clone()),
                     base_ref: Some("HEAD".to_string()),
                     adapter: self.id().to_string(),
                     model: None,
@@ -448,6 +449,8 @@ impl OpencodeAdapter {
                 },
             )?,
         };
+        let agent =
+            record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
         let agent = attach_opencode_agent_pane(
             state,
             &agent.id,
@@ -460,6 +463,9 @@ impl OpencodeAdapter {
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
         if let Some(session_id) = resume_session_id {
             envs.push(("QMUX_ROOT_SESSION_ID".to_string(), session_id));
+        }
+        if let Some(fork_point) = fork_point {
+            envs.push(("QMUX_FORK_POINT".to_string(), fork_point));
         }
         envs.push(config_dir_env);
         let agent_id = agent.id.clone();
@@ -929,6 +935,18 @@ fn opencode_resume_session_id(args: &[String]) -> Option<&str> {
     if args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| arg == "--fork") {
         return None;
     }
+    opencode_session_argument_id(args)
+}
+
+fn opencode_fork_source_session_id(args: &[String]) -> Option<&str> {
+    args.iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--fork")
+        .then(|| opencode_session_argument_id(args))
+        .flatten()
+}
+
+fn opencode_session_argument_id(args: &[String]) -> Option<&str> {
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
@@ -1422,6 +1440,7 @@ mod tests {
             "--fork".to_string(),
         ];
         assert_eq!(opencode_resume_session_id(&args), None);
+        assert_eq!(opencode_fork_source_session_id(&args), Some("session-123"));
     }
 
     #[test]

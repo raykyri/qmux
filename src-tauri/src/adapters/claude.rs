@@ -2,7 +2,7 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
     ShellCommandIntegration, SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
-    reusable_session_agent, shell_quote_arg, shell_quote_path,
+    record_shell_fork_lineage, reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -563,6 +563,7 @@ impl ClaudeAdapter {
         let pane_group_id = state
             .pane_group_id(&request.pane_id)?
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let fork_point = claude_fork_source_session_id(&request.args).map(str::to_string);
         let agent = match reusable_session_agent(
             state,
             self.id(),
@@ -583,6 +584,8 @@ impl ClaudeAdapter {
                 },
             )?,
         };
+        let agent =
+            record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
         let settings_path = match write_hook_settings(state.config()) {
             Ok(settings_path) => settings_path,
             Err(err) => {
@@ -1132,6 +1135,18 @@ fn claude_resume_session_id(args: &[String]) -> Option<&str> {
         return None;
     }
 
+    claude_resume_argument_id(args)
+}
+
+fn claude_fork_source_session_id(args: &[String]) -> Option<&str> {
+    args.iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--fork-session")
+        .then(|| claude_resume_argument_id(args))
+        .flatten()
+}
+
+fn claude_resume_argument_id(args: &[String]) -> Option<&str> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
@@ -2116,6 +2131,10 @@ mod tests {
         assert_eq!(
             claude_resume_session_id(&svec(&["--", "--resume", "prompt-session"])),
             None
+        );
+        assert_eq!(
+            claude_fork_source_session_id(&svec(&["--resume", "sess-source", "--fork-session"])),
+            Some("sess-source")
         );
     }
 
