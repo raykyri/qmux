@@ -526,7 +526,7 @@ pub fn adapter_supports_fork(adapter_id: &str) -> bool {
     matches!(adapter_id, "claude" | "codex")
 }
 
-pub const FORK_UNSUPPORTED_ERROR: &str = "fork is only supported for Claude and Codex sessions";
+pub const FORK_UNSUPPORTED_ERROR: &str = "Fork is only supported for Claude and Codex sessions";
 
 /// The agent-scoped core of [`agent_fork`], also used by the queue engine to
 /// dispatch fork-delivery turns (where there is no calling pane to authenticate —

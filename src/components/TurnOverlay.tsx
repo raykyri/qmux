@@ -229,6 +229,13 @@ function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<"a">) {
   );
 }
 
+function MarkdownDiagramBlock({ lang, code }: { lang: "mermaid" | "dot"; code: string }) {
+  const { openLink, openLinkMenu } = useContext(LinkActionsContext);
+  return (
+    <DiagramBlock lang={lang} code={code} openLink={openLink} openLinkMenu={openLinkMenu} />
+  );
+}
+
 function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const [wrap, setWrap] = useState(false);
   const label = wrap ? "Turn off line wrap" : "Turn on line wrap";
@@ -266,7 +273,7 @@ const markdownComponents: Components = {
       : null;
     const lang = diagramLangFromClassName(codeEl?.props?.className);
     if (codeEl && lang) {
-      return <DiagramBlock lang={lang} code={nodeText(codeEl.props.children)} />;
+      return <MarkdownDiagramBlock lang={lang} code={nodeText(codeEl.props.children)} />;
     }
     return <MarkdownCodeBlock {...props}>{children}</MarkdownCodeBlock>;
   },

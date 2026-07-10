@@ -146,12 +146,12 @@ pub fn move_queued_agent_turn(
     request: MoveQueuedAgentTurnRequest,
 ) -> Result<MoveQueuedAgentTurnResult, String> {
     if request.from_agent_id == request.to_agent_id {
-        return Err("cannot move a queued turn onto the same agent".to_string());
+        return Err("Cannot move a queued turn onto the same agent".to_string());
     }
 
     let source = state
         .agent(&request.from_agent_id)?
-        .ok_or_else(|| format!("agent {} was not found", request.from_agent_id))?;
+        .ok_or_else(|| format!("Agent {} was not found", request.from_agent_id))?;
     let source_id = source.id.clone();
     let source_pane_id = source.pane_id.clone();
 
@@ -214,15 +214,15 @@ pub fn submit_agent_turn(
 ) -> Result<SubmitAgentTurnResult, String> {
     let data = request.data.trim().to_string();
     if data.is_empty() {
-        return Err("turn text cannot be empty".to_string());
+        return Err("Turn text cannot be empty".to_string());
     }
 
     let agent = state
         .agent(&request.agent_id)?
-        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+        .ok_or_else(|| format!("Agent {} was not found", request.agent_id))?;
 
     if matches!(agent.status, AgentStatus::Failed) {
-        return Err(format!("agent {} has failed", agent.id));
+        return Err(format!("Agent {} has failed", agent.id));
     }
     let policy = agent_composer_policy(state, &agent)?;
     let has_pending_queue = !state.agent_queued_turns(&agent.id)?.is_empty();
@@ -251,7 +251,7 @@ pub fn submit_agent_turn(
             }
             if !policy.can_send(agent.status) {
                 return Err(format!(
-                    "agent {} is not accepting turns in its current state",
+                    "Agent {} is not accepting turns in its current state",
                     agent.id
                 ));
             }
@@ -265,7 +265,7 @@ pub fn submit_agent_turn(
                 return queue_agent_turn(state, &agent, QueuedTurn::new(data));
             }
             if !policy.can_send(agent.status) {
-                return Err("agent is not ready for input; queue the turn instead".to_string());
+                return Err("Agent is not ready for input; queue the turn instead".to_string());
             }
             send_direct_or_queue(state, &agent, data)
         }
@@ -273,13 +273,13 @@ pub fn submit_agent_turn(
             // A paused agent may be idle with an empty queue; still allow queueing (the
             // turn is held behind the pause) instead of rejecting it as "ready to send".
             if !agent.paused && !policy.should_queue(agent.status) && !has_pending_queue {
-                return Err("agent is ready for input; send the turn instead".to_string());
+                return Err("Agent is ready for input; send the turn instead".to_string());
             }
             queue_agent_turn(state, &agent, QueuedTurn::new(data))
         }
         SubmitAgentTurnMode::Steer => {
             if !policy.can_steer(agent.status) {
-                return Err("agent does not support steering in its current state".to_string());
+                return Err("Agent does not support steering in its current state".to_string());
             }
             send_agent_turn(state, &agent, data, AgentSendSource::Steer)?;
             let queued_turns = state.agent_queued_turns(&agent.id)?;
@@ -298,14 +298,14 @@ pub fn queue_wait_agent_turn(
 ) -> Result<SubmitAgentTurnResult, String> {
     let data = request.data.trim().to_string();
     if data.is_empty() {
-        return Err("turn text cannot be empty".to_string());
+        return Err("Turn text cannot be empty".to_string());
     }
 
     let agent = state
         .agent(&request.agent_id)?
-        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+        .ok_or_else(|| format!("Agent {} was not found", request.agent_id))?;
     if matches!(agent.status, AgentStatus::Failed) {
-        return Err(format!("agent {} has failed", agent.id));
+        return Err(format!("Agent {} has failed", agent.id));
     }
 
     let pending_turns = state.enqueue_agent_wait_turn_with_target_label(
@@ -352,14 +352,14 @@ pub fn queue_delivery_agent_turn(
 ) -> Result<SubmitAgentTurnResult, String> {
     let data = request.data.trim().to_string();
     if data.is_empty() {
-        return Err("turn text cannot be empty".to_string());
+        return Err("Turn text cannot be empty".to_string());
     }
 
     let agent = state
         .agent(&request.agent_id)?
-        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+        .ok_or_else(|| format!("Agent {} was not found", request.agent_id))?;
     if matches!(agent.status, AgentStatus::Failed) {
-        return Err(format!("agent {} has failed", agent.id));
+        return Err(format!("Agent {} has failed", agent.id));
     }
     if matches!(request.delivery, QueuedTurnDelivery::Fork { .. })
         && !adapter_supports_fork(&agent.adapter)
@@ -398,7 +398,7 @@ pub fn remove_queued_agent_turn(
 ) -> Result<RemoveQueuedAgentTurnResult, String> {
     let agent = state
         .agent(&request.agent_id)?
-        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+        .ok_or_else(|| format!("Agent {} was not found", request.agent_id))?;
     let agent_id = agent.id.clone();
     let (removed_turn, queued_turns) = state.remove_agent_turn_queue_item(
         &agent_id,
@@ -426,7 +426,7 @@ pub fn reorder_queued_agent_turn(
 ) -> Result<ReorderQueuedAgentTurnResult, String> {
     let agent = state
         .agent(&request.agent_id)?
-        .ok_or_else(|| format!("agent {} was not found", request.agent_id))?;
+        .ok_or_else(|| format!("Agent {} was not found", request.agent_id))?;
     let agent_id = agent.id.clone();
     let pane_id = agent.pane_id.clone();
     let mut queued_turns = state.reorder_agent_turn_queue_item(
@@ -536,7 +536,7 @@ fn send_claimed_turn(
         None => {
             state.requeue_inflight_after_failed_drain(agent_id, turn);
             state.finish_agent_drain(agent_id);
-            return Err(format!("agent {agent_id} was not found"));
+            return Err(format!("Agent {agent_id} was not found"));
         }
     };
     let send_result = match turn.delivery.as_ref() {
@@ -720,7 +720,7 @@ pub fn unpause_agent(
 ) -> Result<SendNextQueuedAgentTurnResult, String> {
     let agent = state
         .agent(agent_id)?
-        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+        .ok_or_else(|| format!("Agent {agent_id} was not found"))?;
     let agent = state.set_agent_paused(agent_id, false)?.unwrap_or(agent);
 
     let policy = agent_composer_policy(state, &agent)?;

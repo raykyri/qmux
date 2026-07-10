@@ -3498,6 +3498,7 @@ export default function App() {
         !contextMenuAdjacentBelowSplit ||
         contextMenuPaneSplit.id !== contextMenuAdjacentBelowSplit.id),
   );
+  const canForkContextMenuPane = agentCanFork(contextMenuAgent);
 
   useEffect(() => {
     let cancelled = false;
@@ -5166,21 +5167,28 @@ export default function App() {
   // after the current tab, or nested under it when `nest` is set — and focuses the
   // fork. The backend also emits agent.forked, which refetches the ordered pane
   // list, so the optimistic append below is just to avoid a flicker.
+  async function forkPane(
+    pane: PaneInfo,
+    options: { nest: boolean; useWorktree: boolean },
+  ) {
+    setError(null);
+    try {
+      const fork = await forkAgent(pane.id, options);
+      setPanesPreservingRecoveredDismissals((current) =>
+        current.some((existing) => existing.id === fork.id) ? current : [...current, fork],
+      );
+      setActivePaneId(fork.id);
+      expandNewAgentTranscriptByDefault(fork);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function forkActivePane(options: { nest: boolean; useWorktree: boolean }) {
     if (!activePane || !activeAgent) {
       return;
     }
-    setError(null);
-    try {
-      const pane = await forkAgent(activePane.id, options);
-      setPanesPreservingRecoveredDismissals((current) =>
-        current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
-      );
-      setActivePaneId(pane.id);
-      expandNewAgentTranscriptByDefault(pane);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    await forkPane(activePane, options);
   }
 
   // Show the floating Ask popup for a selection. Both surfaces (terminal and
@@ -5515,6 +5523,58 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, []);
+
+  // The error banner sits over the terminal stage. While it is open, claim web
+  // pointer routing so clicks on the banner (and its dismiss control) hit
+  // WKWebView instead of being forwarded to Ghostty under the transparent hole.
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    return claimNativeTerminalPointerForWebDrag();
+  }, [error]);
+
+  // Escape dismisses the workspace error banner when no higher-priority overlay
+  // is already handling it (browser overlay has its own capture-phase handler).
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (
+        paneContextMenu ||
+        groupMenu ||
+        settingsMenu ||
+        closeDialog ||
+        exitDialog ||
+        renamePaneId ||
+        renameGroupId
+      ) {
+        return;
+      }
+      const pane = activePaneRef.current;
+      if (pane && browserOverlayByPaneRef.current[pane.id]?.open === true) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setError(null);
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [
+    error,
+    paneContextMenu,
+    groupMenu,
+    settingsMenu,
+    closeDialog,
+    exitDialog,
+    renamePaneId,
+    renameGroupId,
+  ]);
 
   useEffect(() => {
     if (!paneContextMenu && !groupMenu && !settingsMenu) {
@@ -7484,6 +7544,33 @@ export default function App() {
               <SquareChevronRight size={13} aria-hidden="true" />
               <span>Indent</span>
             </button>
+            {canForkContextMenuPane ? (
+              <>
+                <div className="context-menu-divider" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setPaneContextMenu(null);
+                    void forkPane(contextMenuPane, { nest: true, useWorktree: false });
+                  }}
+                >
+                  <GitBranch size={13} aria-hidden="true" />
+                  <span>Fork session</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setPaneContextMenu(null);
+                    void forkPane(contextMenuPane, { nest: true, useWorktree: true });
+                  }}
+                >
+                  <GitBranch size={13} aria-hidden="true" />
+                  <span>Fork session in worktree</span>
+                </button>
+              </>
+            ) : null}
             <div className="context-menu-divider" role="separator" />
             <button
               type="button"
@@ -8372,7 +8459,16 @@ export default function App() {
       <section className="workspace">
         {error ? (
           <div className="error-banner" role="alert" aria-live="assertive">
-            {error}
+            <span className="error-banner-message">{error}</span>
+            <button
+              type="button"
+              className="error-banner-dismiss"
+              title="Dismiss (Esc)"
+              aria-label="Dismiss error"
+              onClick={() => setError(null)}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
           </div>
         ) : null}
 

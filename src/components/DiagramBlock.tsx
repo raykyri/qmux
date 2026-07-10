@@ -1,5 +1,6 @@
 import { isValidElement, useEffect, useRef, useState } from "react";
-import type { ReactNode, RefObject } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
+import { safeHref } from "../lib/links";
 
 // Renders fenced ```mermaid and ```dot/```graphviz blocks from transcript markdown as SVG,
 // entirely in the webview (no server, no external fetch). Both libraries are dynamically
@@ -58,16 +59,64 @@ function getViz(): Promise<Viz> {
   return vizPromise;
 }
 
-// Both SVGs are injected via dangerouslySetInnerHTML, and the source is agent-authored, so
-// scrub the vectors that DOM injection opens up: <script> tags, inline on* event handlers, and
-// javascript: URLs (Graphviz turns DOT `URL="..."` into clickable <a xlink:href> links, which
-// would otherwise bypass the safeHref guard the rest of the app routes links through). Mermaid's
-// strict mode already sanitizes; running this over its output too is cheap defense in depth.
+// Both SVGs are injected via dangerouslySetInnerHTML, and the source is agent-authored. Parse the
+// SVG as a document rather than trying to sanitize XML with regular expressions: Graphviz can
+// emit links and external resource references, and SVG also has active elements/attributes that
+// do not exist in ordinary markdown. Safe anchor destinations are stored as inert data for the
+// delegated React handlers below; they never remain as directly navigable SVG hrefs.
 function sanitizeSvg(svg: string): string {
-  return svg
-    .replace(/<script[\s\S]*?<\/script\s*>/gi, "")
-    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/((?:xlink:)?href)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, "$1=$2#$2");
+  const document = new DOMParser().parseFromString(svg, "image/svg+xml");
+  if (document.querySelector("parsererror")) {
+    throw new Error("diagram renderer returned invalid SVG");
+  }
+
+  document
+    .querySelectorAll("script, foreignObject, iframe, object, embed, image, audio, video, animate, animateMotion, animateTransform, set")
+    .forEach((element) => element.remove());
+
+  for (const element of Array.from(document.querySelectorAll("*"))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.localName.toLowerCase();
+      if (
+        name.startsWith("on") ||
+        name === "src" ||
+        name === "action" ||
+        name === "formaction" ||
+        name === "data-qmux-href"
+      ) {
+        element.removeAttributeNode(attribute);
+        continue;
+      }
+      if (name === "style" && /url\s*\(/i.test(attribute.value)) {
+        element.removeAttributeNode(attribute);
+        continue;
+      }
+      if (name !== "href") {
+        continue;
+      }
+
+      if (element.localName.toLowerCase() === "a") {
+        const safe = safeHref(attribute.value);
+        element.removeAttributeNode(attribute);
+        if (safe) {
+          element.setAttribute("data-qmux-href", safe);
+          element.setAttribute("href", "#");
+        }
+      } else if (!attribute.value.trim().startsWith("#")) {
+        // Preserve local paint-server/use references, but never let an injected SVG
+        // element fetch a network, file, data, or custom-scheme resource.
+        element.removeAttributeNode(attribute);
+      }
+    }
+  }
+
+  for (const style of Array.from(document.querySelectorAll("style"))) {
+    if (/@import\b|url\s*\(/i.test(style.textContent ?? "")) {
+      style.remove();
+    }
+  }
+
+  return new XMLSerializer().serializeToString(document.documentElement);
 }
 
 let mermaidSeq = 0;
@@ -117,7 +166,25 @@ type RenderState =
   | { status: "done"; svg: string }
   | { status: "error"; error: string };
 
-export default function DiagramBlock({ lang, code }: { lang: DiagramLang; code: string }) {
+interface DiagramBlockProps {
+  lang: DiagramLang;
+  code: string;
+  openLink: (url: string) => void;
+  openLinkMenu: (url: string, x: number, y: number) => void;
+}
+
+function diagramLinkFromEvent(event: ReactMouseEvent<HTMLElement>): string | null {
+  const target = event.target instanceof Element ? event.target : null;
+  const href = target?.closest("a[data-qmux-href]")?.getAttribute("data-qmux-href");
+  return safeHref(href) ?? null;
+}
+
+export default function DiagramBlock({
+  lang,
+  code,
+  openLink,
+  openLinkMenu,
+}: DiagramBlockProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<RenderState>({ status: "loading" });
   const [showSource, setShowSource] = useState(false);
@@ -174,6 +241,24 @@ export default function DiagramBlock({ lang, code }: { lang: DiagramLang; code: 
         <div
           className="turn-diagram-svg"
           data-lang={lang}
+          onClick={(event) => {
+            const href = diagramLinkFromEvent(event);
+            if (!href) return;
+            event.preventDefault();
+            openLink(href);
+          }}
+          onAuxClick={(event) => {
+            if (!diagramLinkFromEvent(event)) return;
+            // Injected anchors use an inert href, but explicitly suppress auxiliary
+            // navigation too so a middle click cannot navigate the main webview.
+            event.preventDefault();
+          }}
+          onContextMenu={(event) => {
+            const href = diagramLinkFromEvent(event);
+            if (!href) return;
+            event.preventDefault();
+            openLinkMenu(href, event.clientX, event.clientY);
+          }}
           dangerouslySetInnerHTML={{ __html: state.svg }}
         />
       ) : (

@@ -2228,16 +2228,57 @@ button:disabled {
   left: 16px;
   right: 16px;
   z-index: 35;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   max-width: 720px;
   margin: 0 auto;
   border: 1px solid #755149;
   border-radius: 6px;
   background: #2a211f;
   color: #ffd3c7;
-  padding: 10px 12px;
+  padding: 10px 10px 10px 12px;
   font-size: 13px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
   pointer-events: auto;
+}
+
+.error-banner-message {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.error-banner-dismiss {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -2px 0 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #ffd3c7;
+  cursor: pointer;
+}
+
+.error-banner-dismiss:hover {
+  border-color: #8a5f55;
+  background: rgba(0, 0, 0, 0.22);
+  color: #ffe8e0;
+}
+
+.error-banner-dismiss:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(224, 138, 95, 0.55);
+}
+
+.error-banner-dismiss svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 
 .terminal-stage {
