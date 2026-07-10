@@ -59,6 +59,7 @@ import {
 import { LauncherSelect } from "./components/LauncherSelect";
 import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
+import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import HomeCascades from "./components/HomeCascades";
 import type { HomeCascadeWorkstream } from "./components/HomeCascades";
 import LinkContextMenu from "./components/LinkContextMenu";
@@ -498,6 +499,12 @@ function focusConfirmDialogButton(button: HTMLButtonElement | null, force = fals
   if (force || !dialog?.contains(activeElement)) {
     button.focus();
   }
+}
+
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
 }
 
 function scrollChildIntoViewVertically(container: HTMLElement, child: HTMLElement) {
@@ -1236,6 +1243,8 @@ export default function App() {
   // buttons disabled) until the close/delete actually finishes.
   const [resolvingClose, setResolvingClose] = useState<"keep" | "delete" | null>(null);
   const [exitDialog, setExitDialog] = useState<ExitDialogState | null>(null);
+  const [quitting, setQuitting] = useState(false);
+  const quittingRef = useRef(false);
   const exitConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const [exitPreflightRequest, setExitPreflightRequest] =
     useState<ExitPreflightRequest | null>(null);
@@ -5082,12 +5091,22 @@ export default function App() {
   }
 
   async function confirmExit() {
-    setExitDialog(null);
+    if (quittingRef.current) {
+      return;
+    }
+    quittingRef.current = true;
+    setQuitting(true);
     setError(null);
+    // Let React commit the pending button and give WebKit a full paint before
+    // AppKit begins the comparatively slow application teardown.
+    await waitForNextPaint();
     flushPendingDrafts();
     try {
       await confirmAppExit();
     } catch (err) {
+      quittingRef.current = false;
+      setQuitting(false);
+      setExitDialog(null);
       setError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -5677,12 +5696,14 @@ export default function App() {
         if (!resolvingClose) {
           setCloseDialog(null);
         }
-        setExitDialog(null);
+        if (!quitting) {
+          setExitDialog(null);
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [closeDialog, exitDialog, resolvingClose]);
+  }, [closeDialog, exitDialog, quitting, resolvingClose]);
 
   // Escape closes the settings panel. Separate from the dialog handler above so
   // it can run regardless of which other modals are open.
@@ -8165,23 +8186,27 @@ export default function App() {
                   >
                     Cancel
                   </button>
-                  <button
+                  <ConfirmDialogActionButton
                     type="button"
                     className="danger"
                     disabled={resolvingClose !== null}
+                    pending={resolvingClose === "delete"}
+                    pendingLabel="Deleting…"
                     onClick={() => void resolveCloseDialog("delete")}
                   >
-                    {resolvingClose === "delete" ? "Deleting…" : "Delete worktree"}
-                  </button>
-                  <button
+                    Delete worktree
+                  </ConfirmDialogActionButton>
+                  <ConfirmDialogActionButton
                     ref={closeConfirmButtonRef}
                     type="button"
                     autoFocus
                     disabled={resolvingClose !== null}
+                    pending={resolvingClose === "keep"}
+                    pendingLabel="Closing…"
                     onClick={() => void resolveCloseDialog("keep")}
                   >
-                    {resolvingClose === "keep" ? "Closing…" : "Keep worktree"}
-                  </button>
+                    Keep worktree
+                  </ConfirmDialogActionButton>
                 </div>
               </>
             ) : closeDialog.kind === "stop" ? (
@@ -8257,7 +8282,7 @@ export default function App() {
           className="confirm-dialog-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+            if (event.target === event.currentTarget && !quitting) {
               setExitDialog(null);
             }
           }}
@@ -8267,6 +8292,7 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="exit-dialog-title"
+            aria-busy={quitting}
           >
             <h2 id="exit-dialog-title">Quit qmux?</h2>
             <p>
@@ -8275,18 +8301,20 @@ export default function App() {
               and stop any running agents or processes.
             </p>
             <div className="confirm-dialog-actions">
-              <button type="button" onClick={() => setExitDialog(null)}>
+              <button type="button" disabled={quitting} onClick={() => setExitDialog(null)}>
                 Cancel
               </button>
-              <button
+              <ConfirmDialogActionButton
                 ref={exitConfirmButtonRef}
                 type="button"
                 className="danger"
                 autoFocus
+                pending={quitting}
+                pendingLabel="Quitting…"
                 onClick={() => void confirmExit()}
               >
                 Quit qmux
-              </button>
+              </ConfirmDialogActionButton>
             </div>
           </div>
         </div>

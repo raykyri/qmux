@@ -1345,6 +1345,10 @@ button:disabled {
   font-size: var(--fs-base);
 }
 
+.confirm-dialog-action-spinner {
+  animation: spinner-spin 0.9s linear infinite;
+}
+
 .confirm-dialog-actions button:not(.danger):hover {
   background: var(--control-bg-hover);
   border-color: var(--control-border-hover);
