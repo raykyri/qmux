@@ -147,8 +147,13 @@ impl AgentAdapter for CodexAdapter {
         parse_transcript_lifecycle_event(line)
     }
 
-    fn resolve_transcript_turns(&self, agent_id: &str, lines: &[String]) -> Vec<Turn> {
-        resolve_transcript_turns(agent_id, lines)
+    fn resolve_transcript_turns(
+        &self,
+        agent_id: &str,
+        source_index_offset: usize,
+        lines: &[String],
+    ) -> Vec<Turn> {
+        resolve_transcript_turns_from(agent_id, source_index_offset, lines)
     }
 
     fn transcript_line_can_update_turn_status(&self, line: &str) -> bool {
@@ -1519,12 +1524,21 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
 }
 
 fn resolve_transcript_turns(agent_id: &str, lines: &[String]) -> Vec<Turn> {
+    resolve_transcript_turns_from(agent_id, 0, lines)
+}
+
+fn resolve_transcript_turns_from(
+    agent_id: &str,
+    source_index_offset: usize,
+    lines: &[String],
+) -> Vec<Turn> {
     let mut turns = Vec::new();
     let mut active_turn_ids: Vec<String> = Vec::new();
     let mut interrupted_turn_ids = HashSet::new();
     let mut superseded_turn_ids = HashSet::new();
 
-    for (source_index, line) in lines.iter().enumerate() {
+    for (relative_index, line) in lines.iter().enumerate() {
+        let source_index = source_index_offset + relative_index;
         let value = match serde_json::from_str::<Value>(line) {
             Ok(value) => value,
             Err(_) => continue,
@@ -2627,6 +2641,20 @@ trusted_hash = "sha256:trusted"
             turn.status == Some(TurnStatus::Interrupted)
                 && turn.status_reason == Some(TurnStatusReason::Interrupted)
         }));
+    }
+
+    #[test]
+    fn bounded_codex_resolution_preserves_absolute_source_indices() {
+        let lines = vec![
+            codex_task_started_line("turn-1"),
+            codex_user_message_line("turn-1", "prompt"),
+        ];
+
+        let turns = resolve_transcript_turns_from("agent-1", 500, &lines);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].source_index, 501);
+        assert_eq!(turns[0].id, "agent-1-501");
     }
 
     #[test]

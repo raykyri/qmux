@@ -414,11 +414,18 @@ pub trait AgentAdapter: Send + Sync {
         line: &str,
     ) -> Option<Turn>;
 
-    fn resolve_transcript_turns(&self, agent_id: &str, lines: &[String]) -> Vec<Turn> {
+    fn resolve_transcript_turns(
+        &self,
+        agent_id: &str,
+        source_index_offset: usize,
+        lines: &[String],
+    ) -> Vec<Turn> {
         lines
             .iter()
             .enumerate()
-            .filter_map(|(index, line)| self.parse_transcript_line(agent_id, index, line))
+            .filter_map(|(index, line)| {
+                self.parse_transcript_line(agent_id, source_index_offset + index, line)
+            })
             .collect()
     }
 

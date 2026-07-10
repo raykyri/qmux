@@ -5,7 +5,7 @@ use crate::turn_queue::{IdleResolution, advance_after_idle};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -117,6 +117,7 @@ pub fn start_transcript_tail(
         // old session instead of the new one whose SessionStart just set this path.
         let mut have_read_bound_file = false;
         let mut raw_lines: Vec<String> = Vec::new();
+        let mut raw_line_offset: usize = 0;
         let registry = adapter_registry(state.config());
         let adapter = match registry.get(&adapter_id) {
             Ok(adapter) => adapter,
@@ -213,9 +214,10 @@ pub fn start_transcript_tail(
                 // a freshly bound transcript (which must replace any prior timeline), or
                 // the file is now shorter than what we'd already consumed (a truncation
                 // or in-place rewrite) so our timeline no longer prefixes it.
-                let lines = complete_lines(&snapshot.data);
-                raw_lines = lines.iter().map(|line| (*line).to_string()).collect();
-                let turns = adapter.resolve_transcript_turns(&agent_id, &raw_lines);
+                raw_lines = complete_lines(&snapshot.data);
+                raw_line_offset = snapshot.start_line_index;
+                let turns =
+                    adapter.resolve_transcript_turns(&agent_id, raw_line_offset, &raw_lines);
                 if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
                     state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
                 } else {
@@ -226,7 +228,7 @@ pub fn start_transcript_tail(
                         json!({ "reset": true, "turns": turns }),
                     ));
                 }
-                line_index = lines.len();
+                line_index = raw_line_offset + raw_lines.len();
                 consumed = snapshot.consumed_bytes;
             } else {
                 // Steady state: parse only the complete lines that arrived since the
@@ -237,8 +239,10 @@ pub fn start_transcript_tail(
                     .iter()
                     .any(|line| adapter.transcript_line_can_update_turn_status(line));
                 if should_refresh_turns {
-                    raw_lines.extend(lines.iter().map(|line| (*line).to_string()));
-                    let turns = adapter.resolve_transcript_turns(&agent_id, &raw_lines);
+                    raw_lines.extend(lines.iter().cloned());
+                    trim_transcript_window(&mut raw_lines, &mut raw_line_offset);
+                    let turns =
+                        adapter.resolve_transcript_turns(&agent_id, raw_line_offset, &raw_lines);
                     if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
                         state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
                     } else {
@@ -293,6 +297,9 @@ pub fn start_transcript_tail(
                     }
                     line_index += 1;
                 }
+                if !should_refresh_turns {
+                    trim_transcript_window(&mut raw_lines, &mut raw_line_offset);
+                }
                 consumed += snapshot.consumed_bytes;
             }
             first_read = false;
@@ -305,6 +312,18 @@ pub fn start_transcript_tail(
 /// Consecutive failed reads (at 500ms each, ~3s) before the bound transcript file
 /// being unreadable is surfaced as an unexpected state rather than a write race.
 const READ_FAILURE_NOTICE_THRESHOLD: u32 = 6;
+// The UI/state retain at most 200 parsed turns. Keep substantially more raw records
+// for branch/rollback resolution, but never retain or read an unbounded transcript.
+const TRANSCRIPT_TAIL_LINE_LIMIT: usize = 20_000;
+const TRANSCRIPT_TAIL_BYTE_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn trim_transcript_window(lines: &mut Vec<String>, source_index_offset: &mut usize) {
+    let overflow = lines.len().saturating_sub(TRANSCRIPT_TAIL_LINE_LIMIT);
+    if overflow > 0 {
+        lines.drain(..overflow);
+        *source_index_offset += overflow;
+    }
+}
 
 fn transcript_lifecycle_agent_event(
     state: &AppState,
@@ -484,20 +503,30 @@ fn gather_transcript_candidates_in(
             continue;
         };
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
+        // DirectoryEntry::metadata follows symlinks. Recursing on that result lets a
+        // link cycle overflow the stack and lets a link under the global Codex session
+        // root pull unrelated filesystem trees into the picker scan. Classify with
+        // lstat-style file_type instead and ignore links entirely.
+        let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if metadata.is_dir() {
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             if recursive {
                 candidates.extend(gather_transcript_candidates_in(&path, true)?);
             }
             continue;
         }
-        if !metadata.is_file()
+        if !file_type.is_file()
             || path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
         {
             continue;
         }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         let Ok(modified) = metadata.modified() else {
             continue;
         };
@@ -551,6 +580,9 @@ const MAX_TRANSCRIPT_OPTIONS: usize = 30;
 /// Characters of the first usable user message shown as a session preview.
 const PREVIEW_MAX_CHARS: usize = 90;
 const PREVIEW_USER_MESSAGE_LOOKAHEAD_LIMIT: usize = 5;
+// Session previews never need to parse an enormous tool-result record. Keep the
+// picker memory bounded even when a transcript contains a single pathological line.
+const TRANSCRIPT_META_LINE_LIMIT: u64 = 1024 * 1024;
 
 /// One selectable session for the right pane's transcript picker.
 #[derive(Clone, Debug, Serialize)]
@@ -831,21 +863,46 @@ pub fn set_agent_transcript(
     Ok(agent)
 }
 
-/// Reads a transcript's first usable user-message preview and total line count
-/// without holding the file open — best-effort, so an unreadable file yields
-/// `(None, 0)`.
+/// Reads a transcript's first usable user-message preview and total line count with
+/// bounded memory — best-effort, so an unreadable file yields `(None, 0)`. Oversized
+/// records still count as lines but are not parsed for previews.
 pub(crate) fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
-    let Ok(raw) = fs::read_to_string(path) else {
+    let Ok(file) = fs::File::open(path) else {
         return (None, 0);
     };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
     let mut line_count = 0;
     let mut preview = None;
     let mut user_messages_seen = 0;
-    for line in raw.lines() {
+    loop {
+        line.clear();
+        let read = match reader
+            .by_ref()
+            .take(TRANSCRIPT_META_LINE_LIMIT + 1)
+            .read_until(b'\n', &mut line)
+        {
+            Ok(read) => read,
+            Err(_) => break,
+        };
+        if read == 0 {
+            break;
+        }
+        let complete = line.last() == Some(&b'\n');
+        let oversized = !complete && line.len() as u64 > TRANSCRIPT_META_LINE_LIMIT;
+        if oversized && discard_through_newline(&mut reader).is_err() {
+            break;
+        }
         line_count += 1;
-        if preview.is_some() || user_messages_seen >= PREVIEW_USER_MESSAGE_LOOKAHEAD_LIMIT {
+        if oversized
+            || preview.is_some()
+            || user_messages_seen >= PREVIEW_USER_MESSAGE_LOOKAHEAD_LIMIT
+        {
             continue;
         }
+        let Ok(line) = std::str::from_utf8(&line) else {
+            continue;
+        };
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -869,6 +926,21 @@ pub(crate) fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
         }
     }
     (preview, line_count)
+}
+
+fn discard_through_newline(reader: &mut impl BufRead) -> std::io::Result<()> {
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        if let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
+            reader.consume(index + 1);
+            return Ok(());
+        }
+        let consumed = buffer.len();
+        reader.consume(consumed);
+    }
 }
 
 fn transcript_message_value(value: &Value) -> Option<&Value> {
@@ -1074,6 +1146,9 @@ struct TranscriptRead {
     /// and measuring the decoded string would overshoot the real file position and
     /// wedge the tail into a perpetual reset.
     consumed_bytes: u64,
+    /// Absolute line index of the first returned record. Nonzero when an initial
+    /// read/reset keeps only the bounded tail of a large file.
+    start_line_index: usize,
     /// The file is now shorter than the requested offset (truncated or rewritten),
     /// so `data` holds the whole file and the caller must rebuild rather than append.
     reset: bool,
@@ -1095,24 +1170,102 @@ fn read_transcript_from(path: &Path, offset: u64) -> std::io::Result<TranscriptR
     // that happens to keep a newline at exactly `offset - 1` still reads as an append.)
     let rewritten_in_place =
         offset > 0 && len >= offset && !byte_before_is_newline(&mut file, offset)?;
-    if len < offset || rewritten_in_place {
-        file.seek(SeekFrom::Start(0))?;
-        let (data, consumed_bytes) = read_complete_lines_utf8(&mut file)?;
+    if offset == 0
+        || len < offset
+        || rewritten_in_place
+        || len.saturating_sub(offset) > TRANSCRIPT_TAIL_BYTE_LIMIT
+    {
+        let (data, consumed_bytes, start_line_index) = read_complete_tail_utf8(&mut file)?;
         return Ok(TranscriptRead {
             data,
             consumed_bytes,
-            reset: true,
+            start_line_index,
+            reset: offset > 0,
         });
     }
     if offset > 0 {
         file.seek(SeekFrom::Start(offset))?;
     }
     let (data, consumed_bytes) = read_complete_lines_utf8(&mut file)?;
+    if data.bytes().filter(|byte| *byte == b'\n').count() > TRANSCRIPT_TAIL_LINE_LIMIT {
+        let (data, consumed_bytes, start_line_index) = read_complete_tail_utf8(&mut file)?;
+        return Ok(TranscriptRead {
+            data,
+            consumed_bytes,
+            start_line_index,
+            reset: true,
+        });
+    }
     Ok(TranscriptRead {
         data,
         consumed_bytes,
+        start_line_index: 0,
         reset: false,
     })
+}
+
+/// Scans with a fixed buffer, then reads only the newest complete records that fit
+/// both tail limits. The scan is O(file size) on first bind/reset but its memory is
+/// fixed; normal polling remains incremental through `read_complete_lines_utf8`.
+fn read_complete_tail_utf8(file: &mut fs::File) -> std::io::Result<(String, u64, usize)> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut newline_ends = VecDeque::with_capacity(TRANSCRIPT_TAIL_LINE_LIMIT + 1);
+    let mut total_lines = 0usize;
+    let mut complete_end = 0u64;
+    let mut absolute = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        for (index, byte) in buffer[..read].iter().enumerate() {
+            if *byte != b'\n' {
+                continue;
+            }
+            let end = absolute + index as u64 + 1;
+            complete_end = end;
+            total_lines += 1;
+            newline_ends.push_back(end);
+            if newline_ends.len() > TRANSCRIPT_TAIL_LINE_LIMIT + 1 {
+                newline_ends.pop_front();
+            }
+        }
+        absolute += read as u64;
+    }
+
+    if complete_end == 0 {
+        return Ok((String::new(), 0, 0));
+    }
+
+    let line_limited_start = if total_lines > TRANSCRIPT_TAIL_LINE_LIMIT {
+        newline_ends.front().copied().unwrap_or(complete_end)
+    } else {
+        0
+    };
+    let minimum_byte_start = complete_end.saturating_sub(TRANSCRIPT_TAIL_BYTE_LIMIT);
+    let byte_limited_start = if minimum_byte_start == 0 {
+        0
+    } else {
+        newline_ends
+            .iter()
+            .copied()
+            .find(|end| *end >= minimum_byte_start)
+            .unwrap_or(complete_end)
+    };
+    let start = line_limited_start.max(byte_limited_start);
+    let retained_lines = newline_ends.iter().filter(|end| **end > start).count();
+    let start_line_index = total_lines.saturating_sub(retained_lines);
+
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; (complete_end - start) as usize];
+    file.read_exact(&mut bytes)?;
+    Ok((
+        String::from_utf8_lossy(&bytes).into_owned(),
+        complete_end,
+        start_line_index,
+    ))
 }
 
 /// Reads the single byte at `offset - 1` to check the tail offset still lands just
@@ -1347,6 +1500,33 @@ mod tests {
     }
 
     #[test]
+    fn initial_read_keeps_a_bounded_tail_with_absolute_line_index() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-tail-window-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let total_lines = TRANSCRIPT_TAIL_LINE_LIMIT + 5;
+        let contents = (0..total_lines)
+            .map(|index| format!("{index}\n"))
+            .collect::<String>();
+        fs::write(&path, &contents).unwrap();
+
+        let read = read_transcript_from(&path, 0).unwrap();
+        assert!(!read.reset);
+        assert_eq!(read.start_line_index, 5);
+        assert_eq!(read.data.lines().count(), TRANSCRIPT_TAIL_LINE_LIMIT);
+        assert!(read.data.starts_with("5\n"));
+        assert_eq!(read.consumed_bytes, contents.len() as u64);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn incremental_read_holds_back_a_partial_multibyte_tail_without_erroring() {
         let dir = std::env::temp_dir().join(format!(
             "qmux-transcript-utf8-{}",
@@ -1477,6 +1657,32 @@ mod tests {
         assert_eq!(selected.path, PathBuf::from("/tmp/a.jsonl"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recursive_transcript_scan_ignores_symlink_cycles_and_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-symlinks-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let nested = dir.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        let transcript = nested.join("session.jsonl");
+        fs::write(&transcript, "{}\n").unwrap();
+        symlink(&dir, nested.join("cycle")).unwrap();
+        symlink(&transcript, dir.join("linked.jsonl")).unwrap();
+
+        let candidates = gather_transcript_candidates_recursive(&dir).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, transcript);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn truncate_preview_collapses_whitespace_and_caps_length() {
         assert_eq!(truncate_preview("  hello   world \n"), "hello world");
@@ -1597,6 +1803,30 @@ mod tests {
         let (preview, line_count) = read_transcript_meta(&path);
         assert_eq!(preview, None);
         assert_eq!(line_count, 6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_transcript_meta_skips_oversized_records_with_bounded_buffering() {
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-transcript-bounded-meta-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let mut contents = vec![b'x'; TRANSCRIPT_META_LINE_LIMIT as usize + 1];
+        contents.extend_from_slice(
+            b"\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"bounded prompt\"}}\n",
+        );
+        fs::write(&path, contents).unwrap();
+
+        let (preview, line_count) = read_transcript_meta(&path);
+        assert_eq!(preview.as_deref(), Some("bounded prompt"));
+        assert_eq!(line_count, 2);
 
         fs::remove_dir_all(&dir).ok();
     }

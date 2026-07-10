@@ -154,8 +154,13 @@ impl AgentAdapter for ClaudeAdapter {
         parse_transcript_lifecycle_event(line)
     }
 
-    fn resolve_transcript_turns(&self, agent_id: &str, lines: &[String]) -> Vec<Turn> {
-        resolve_transcript_turns(agent_id, lines)
+    fn resolve_transcript_turns(
+        &self,
+        agent_id: &str,
+        source_index_offset: usize,
+        lines: &[String],
+    ) -> Vec<Turn> {
+        resolve_transcript_turns_from(agent_id, source_index_offset, lines)
     }
 
     fn transcript_line_can_update_turn_status(&self, line: &str) -> bool {
@@ -1393,6 +1398,14 @@ struct ClaudeGraphNode {
 }
 
 fn resolve_transcript_turns(agent_id: &str, lines: &[String]) -> Vec<Turn> {
+    resolve_transcript_turns_from(agent_id, 0, lines)
+}
+
+fn resolve_transcript_turns_from(
+    agent_id: &str,
+    source_index_offset: usize,
+    lines: &[String],
+) -> Vec<Turn> {
     let mut turns = Vec::new();
     let mut nodes_by_uuid: HashMap<String, ClaudeGraphNode> = HashMap::new();
     let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
@@ -1400,7 +1413,8 @@ fn resolve_transcript_turns(agent_id: &str, lines: &[String]) -> Vec<Turn> {
     let mut interrupted_uuids = HashSet::new();
     let mut interrupted_message_ids = HashSet::new();
 
-    for (source_index, line) in lines.iter().enumerate() {
+    for (relative_index, line) in lines.iter().enumerate() {
+        let source_index = source_index_offset + relative_index;
         let value = match serde_json::from_str::<Value>(line) {
             Ok(value) => value,
             Err(_) => continue,
@@ -2798,6 +2812,21 @@ mod tests {
         );
         assert_eq!(old_assistant.status, Some(TurnStatus::Superseded));
         assert_eq!(new_user.status, None);
+    }
+
+    #[test]
+    fn bounded_claude_resolution_preserves_absolute_source_indices() {
+        let lines = vec![
+            claude_system_line("root", None),
+            claude_user_line("user-1", Some("root"), "prompt"),
+        ];
+
+        let turns = resolve_transcript_turns_from("agent-1", 500, &lines);
+
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].source_index, 500);
+        assert_eq!(turns[1].source_index, 501);
+        assert_eq!(turns[1].id, "agent-1-501");
     }
 
     #[test]
