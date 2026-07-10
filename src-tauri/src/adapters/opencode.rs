@@ -1,7 +1,8 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, reusable_session_agent,
+    shell_quote_arg,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -11,7 +12,7 @@ use crate::transcript::{Turn, TurnBlock, start_transcript_tail, string_field};
 use crate::turn_queue::{IdleResolution, advance_after_idle, is_shell_escape_turn};
 use crate::workspace::{
     AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane, mark_agent_failed,
-    prepare_agent_workspace,
+    mark_agent_spawn_failed, prepare_agent_workspace,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -44,27 +45,41 @@ impl OpencodeAdapter {
     /// The qmux-managed JSONL transcript path for an agent. The opencode plugin
     /// appends one JSON line per message part here; qmux tails it with the same
     /// transcript pipeline used for Claude and Codex.
-    fn transcript_path_for(state: &AppState, agent_id: &str) -> PathBuf {
+    fn transcript_path_for(state: &AppState, agent_id: &str, session_id: &str) -> PathBuf {
+        let session_id = if !session_id.is_empty()
+            && session_id.len() <= 128
+            && session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            session_id
+        } else {
+            "pending"
+        };
         state
             .config()
             .workspace_root
             .join(".qmux")
             .join("opencode")
-            .join(format!("{agent_id}.jsonl"))
+            .join(agent_id)
+            .join(format!("{session_id}.jsonl"))
     }
 
-    /// `OPENCODE_CONFIG_DIR` env value pointing at the qmux-managed plugin dir,
-    /// emitted only when the plugin directory actually exists so a checkout
-    /// without one launches cleanly.
-    fn config_dir_env(&self) -> Option<(String, String)> {
-        if self.plugin_dir.is_dir() {
-            Some((
-                "OPENCODE_CONFIG_DIR".to_string(),
-                self.plugin_dir.display().to_string(),
-            ))
-        } else {
-            None
+    /// `OPENCODE_CONFIG_DIR` pointing at the qmux-managed plugin. Without this
+    /// entrypoint the process still opens, but every integration surface silently
+    /// disappears, so fail clearly instead of presenting a permanently stale agent.
+    fn config_dir_env(&self) -> Result<(String, String), String> {
+        let entrypoint = self.plugin_dir.join("plugins").join("qmux-notify.js");
+        if !self.plugin_dir.is_dir() || !entrypoint.is_file() {
+            return Err(format!(
+                "OpenCode integration plugin was not found at {}. Reinstall qmux or set QMUX_OPENCODE_PLUGIN_DIR to the bundled qmux-opencode-plugin directory.",
+                entrypoint.display()
+            ));
         }
+        Ok((
+            "OPENCODE_CONFIG_DIR".to_string(),
+            self.plugin_dir.display().to_string(),
+        ))
     }
 }
 
@@ -103,6 +118,10 @@ impl AgentAdapter for OpencodeAdapter {
             command_name: "opencode",
             adapter_id: self.id(),
         }]
+    }
+
+    fn shell_resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("opencode --session {}", shell_quote_arg(session_id)))
     }
 
     fn ingest_notification(
@@ -147,6 +166,7 @@ impl AgentAdapter for OpencodeAdapter {
 impl OpencodeAdapter {
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
+        let config_dir_env = self.config_dir_env()?;
         let _options = OpencodeLaunchOptions::from_value(request.options)?;
 
         let agent = prepare_agent_workspace(
@@ -178,10 +198,11 @@ impl OpencodeAdapter {
         let pane_id = state.next_id("pane");
         let mut envs = qmux_pane_envs(state, &pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
-        if let Some(config_dir_env) = self.config_dir_env() {
-            envs.push(config_dir_env);
-        }
+        envs.push(config_dir_env);
 
+        // The plugin can emit session.created immediately after exec. Reserve the
+        // binding first so its authenticated hook passes pane/agent scope checks.
+        attach_opencode_agent_pane(state, &agent.id, pane_id.clone(), has_initial_prompt)?;
         let spawn_result = spawn_pty(
             state,
             PtySpawnSpec {
@@ -200,12 +221,9 @@ impl OpencodeAdapter {
         );
 
         match spawn_result {
-            Ok(pane) => {
-                attach_opencode_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
-                Ok(pane)
-            }
+            Ok(pane) => Ok(pane),
             Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
+                let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
                 Err(err)
             }
         }
@@ -218,6 +236,7 @@ impl OpencodeAdapter {
         agent: &AgentInfo,
     ) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
+        let config_dir_env = self.config_dir_env()?;
         let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
             format!(
                 "agent worktree {} no longer exists; relaunch manually",
@@ -230,9 +249,15 @@ impl OpencodeAdapter {
 
         let mut envs = qmux_pane_envs(state, &pane.id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
-        if let Some(config_dir_env) = self.config_dir_env() {
-            envs.push(config_dir_env);
+        if let Some(session_id) = agent
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+        {
+            envs.push(("QMUX_ROOT_SESSION_ID".to_string(), session_id.to_string()));
         }
+        envs.push(config_dir_env);
 
         let info = spawn_pty(
             state,
@@ -281,37 +306,148 @@ impl OpencodeAdapter {
         Ok(info)
     }
 
+    pub fn fork_pane(
+        &self,
+        state: &AppState,
+        source: &AgentInfo,
+        use_worktree: bool,
+        prompt: Option<&str>,
+    ) -> Result<(PaneInfo, AgentInfo), String> {
+        let binary = self.ensure_binary()?;
+        let config_dir_env = self.config_dir_env()?;
+        let session_id = source
+            .session_id
+            .clone()
+            .map(|session| session.trim().to_string())
+            .filter(|session| !session.is_empty())
+            .ok_or_else(|| {
+                "this OpenCode session isn't ready to fork yet (no session id); send a turn first"
+                    .to_string()
+            })?;
+
+        let mut agent = prepare_agent_workspace(
+            state,
+            PrepareAgentWorkspaceRequest {
+                group_id: Some(source.group_id.clone()),
+                base_repo: if use_worktree {
+                    None
+                } else {
+                    Some(source.worktree_dir.clone())
+                },
+                base_ref: Some("HEAD".to_string()),
+                adapter: self.id().to_string(),
+                model: source.model.clone(),
+                use_worktree,
+            },
+        )?;
+        agent.parent_id = Some(source.id.clone());
+        agent.fork_point = Some(session_id.clone());
+        agent.root_session_id = source
+            .root_session_id
+            .clone()
+            .or_else(|| Some(session_id.clone()));
+        agent.status = AgentStatus::Idle;
+        state.update_agent(agent.clone())?;
+
+        let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
+            format!(
+                "fork working directory {} does not exist",
+                agent.worktree_dir
+            )
+        })?;
+        let prompt = prompt.map(str::trim).unwrap_or_default();
+        let has_initial_prompt = !prompt.is_empty();
+        let args = build_opencode_fork_args(
+            &cwd,
+            agent.model.as_deref(),
+            &session_id,
+            has_initial_prompt.then_some(prompt),
+        );
+
+        let pane_id = state.next_id("pane");
+        let mut envs = qmux_pane_envs(state, &pane_id)?;
+        envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
+        envs.push(("QMUX_FORK_POINT".to_string(), session_id.clone()));
+        envs.push(config_dir_env);
+        attach_opencode_agent_pane(state, &agent.id, pane_id.clone(), has_initial_prompt)?;
+
+        let spawn_result = spawn_pty(
+            state,
+            PtySpawnSpec {
+                pane_id: Some(pane_id.clone()),
+                agent_id: Some(agent.id.clone()),
+                group_id: agent.group_id.clone(),
+                kind: PaneKind::Agent,
+                title: self.display_name().to_string(),
+                program: binary,
+                args,
+                cwd,
+                envs,
+                initial_size: None,
+                recovered: false,
+            },
+        );
+        match spawn_result {
+            Ok(pane) => {
+                let forked = state
+                    .agent(&agent.id)?
+                    .ok_or_else(|| format!("forked agent {} disappeared during spawn", agent.id))?;
+                Ok((pane, forked))
+            }
+            Err(err) => {
+                let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
+                Err(err)
+            }
+        }
+    }
+
     fn prepare_shell_launch(
         &self,
         state: &AppState,
         request: PrepareShellAgentLaunchRequest,
     ) -> Result<PreparedShellAgentLaunch, String> {
         let binary = self.ensure_binary()?;
+        let config_dir_env = self.config_dir_env()?;
+        validate_opencode_shell_args(&request.args)?;
 
         if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 
-        let cwd = PathBuf::from(&request.cwd);
-        if !cwd.is_dir() {
+        let shell_cwd = PathBuf::from(&request.cwd);
+        if !shell_cwd.is_dir() {
             return Err(format!(
                 "OpenCode working directory {} does not exist",
-                cwd.display()
+                shell_cwd.display()
             ));
         }
+        let agent_cwd = opencode_effective_project(&shell_cwd, &request.args)?;
 
-        let agent = prepare_agent_workspace(
+        let cwd_str = agent_cwd.display().to_string();
+        let pane_group_id = state
+            .pane_group_id(&request.pane_id)?
+            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let resume_session_id = opencode_resume_session_id(&request.args).map(str::to_string);
+        let agent = match reusable_session_agent(
             state,
-            PrepareAgentWorkspaceRequest {
-                group_id: state.pane_group_id(&request.pane_id)?,
-                base_repo: Some(cwd.display().to_string()),
-                base_ref: Some("HEAD".to_string()),
-                adapter: self.id().to_string(),
-                model: None,
-                // Typing `opencode` in a shell runs in the current directory; no worktree.
-                use_worktree: false,
-            },
-        )?;
+            self.id(),
+            resume_session_id.as_deref(),
+            &cwd_str,
+        )? {
+            Some(existing) => existing,
+            None => prepare_agent_workspace(
+                state,
+                PrepareAgentWorkspaceRequest {
+                    group_id: Some(pane_group_id),
+                    base_repo: Some(cwd_str),
+                    base_ref: Some("HEAD".to_string()),
+                    adapter: self.id().to_string(),
+                    model: None,
+                    // Typing `opencode` in a shell runs in the current directory.
+                    use_worktree: false,
+                },
+            )?,
+        };
         let agent = attach_opencode_agent_pane(
             state,
             &agent.id,
@@ -319,14 +455,15 @@ impl OpencodeAdapter {
             args_contain_prompt(&request.args),
         )?;
 
-        let args = build_opencode_args_from_shell(&cwd, None, &request.args);
+        let args = build_opencode_args_from_shell(None, &request.args);
         let mut envs = qmux_pane_envs(state, &request.pane_id)?;
         envs.push(("QMUX_AGENT_ID".to_string(), agent.id.clone()));
-        if let Some(config_dir_env) = self.config_dir_env() {
-            envs.push(config_dir_env);
+        if let Some(session_id) = resume_session_id {
+            envs.push(("QMUX_ROOT_SESSION_ID".to_string(), session_id));
         }
+        envs.push(config_dir_env);
         let agent_id = agent.id.clone();
-        let worktree_dir = agent.worktree_dir.clone();
+        let launch_cwd = shell_cwd.display().to_string();
 
         state.emit(QmuxEvent::new(
             "agent.spawned",
@@ -337,7 +474,7 @@ impl OpencodeAdapter {
 
         Ok(PreparedShellAgentLaunch {
             binary,
-            cwd: worktree_dir,
+            cwd: launch_cwd,
             args,
             envs: envs
                 .into_iter()
@@ -367,22 +504,29 @@ impl OpencodeAdapter {
             "SessionStart" => {
                 if let Some(current) = agent.as_ref() {
                     let session_id = string_field(&notification.payload, "session_id")
-                        .or_else(|| string_field(&notification.payload, "sessionId"));
+                        .or_else(|| string_field(&notification.payload, "sessionId"))
+                        .filter(|session_id| {
+                            current.fork_point.as_deref() != Some(session_id.as_str())
+                        });
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
                     // wiping either the pane_id it set or the session_id we set.
-                    state.mutate_agent(&current.id, |agent| {
-                        if let Some(session_id) = session_id {
+                    let transcript_path = session_id.as_deref().map(|session_id| {
+                        Self::transcript_path_for(state, &current.id, session_id)
+                            .display()
+                            .to_string()
+                    });
+                    let updated = state.mutate_agent(&current.id, |agent| {
+                        if let Some(session_id) = session_id.clone() {
                             agent.session_id = Some(session_id);
                         }
                         // Bind the qmux-managed transcript path. The opencode plugin
                         // writes JSONL here; qmux tails it with the same pipeline used
                         // for Claude and Codex.
-                        let transcript_path = Self::transcript_path_for(state, &current.id)
-                            .display()
-                            .to_string();
-                        agent.transcript_path = Some(transcript_path);
+                        if let Some(transcript_path) = transcript_path.clone() {
+                            agent.transcript_path = Some(transcript_path);
+                        }
                         // A session starting doesn't mean a turn is running. Keep
                         // status unchanged here; the first real prompt/tool hook
                         // promotes the agent to Running.
@@ -391,15 +535,16 @@ impl OpencodeAdapter {
                     // Start tailing the qmux-managed transcript file. The plugin may
                     // not have written anything yet, so the tail waits for the file
                     // to appear rather than erroring.
-                    let transcript_path = Self::transcript_path_for(state, &current.id)
-                        .display()
-                        .to_string();
-                    start_transcript_tail(
-                        state.clone(),
-                        current.id.clone(),
-                        transcript_path,
-                        self.id().to_string(),
-                    );
+                    if let Some(transcript_path) =
+                        updated.and_then(|agent| agent.transcript_path)
+                    {
+                        start_transcript_tail(
+                            state.clone(),
+                            current.id.clone(),
+                            transcript_path,
+                            self.id().to_string(),
+                        );
+                    }
                 }
                 "agent.session_start"
             }
@@ -437,7 +582,28 @@ impl OpencodeAdapter {
                 }
                 "agent.awaiting_permission"
             }
-            "Stop" => {
+            "PermissionResolved" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.running"
+            }
+            "InputRequest" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::AwaitingInput;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.awaiting_input"
+            }
+            "InputResolved" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.running"
+            }
+            "Stop" | "StopFailure" => {
                 let drained = if let Some(agent) = agent.as_mut() {
                     finish_agent_after_stop(state, agent)?
                 } else {
@@ -537,11 +703,7 @@ fn build_opencode_args(cwd: &Path, model: Option<&str>, prompt: &str) -> Vec<Str
     args
 }
 
-fn build_opencode_args_from_shell(
-    cwd: &Path,
-    model: Option<&str>,
-    tail_args: &[String],
-) -> Vec<String> {
+fn build_opencode_args_from_shell(model: Option<&str>, tail_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
 
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
@@ -550,14 +712,115 @@ fn build_opencode_args_from_shell(
     }
 
     args.extend(tail_args.iter().cloned());
-
-    // If no positional project arg was supplied via tail_args, pass the cwd.
-    let has_positional = tail_args.iter().any(|arg| !arg.starts_with('-'));
-    if !has_positional {
-        args.push(cwd.display().to_string());
-    }
-
     args
+}
+
+fn opencode_effective_project(shell_cwd: &Path, args: &[String]) -> Result<PathBuf, String> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            index += 1;
+            break;
+        }
+        if opencode_value_flag(arg) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        if opencode_subcommand(arg) {
+            return Ok(fs_canonical_dir(shell_cwd)?);
+        }
+        return resolve_opencode_project(shell_cwd, arg);
+    }
+    if let Some(project) = args.get(index) {
+        return resolve_opencode_project(shell_cwd, project);
+    }
+    fs_canonical_dir(shell_cwd)
+}
+
+fn validate_opencode_shell_args(args: &[String]) -> Result<(), String> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            break;
+        }
+        if arg == "--pure" || arg == "--pure=true" {
+            return Err(
+                "qMux OpenCode integration does not support --pure because it disables the required lifecycle plugin"
+                    .to_string(),
+            );
+        }
+        if opencode_value_flag(arg) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        if arg == "attach" {
+            return Err(
+                "qMux OpenCode integration does not support attach because the existing server does not inherit qMux lifecycle and transcript configuration"
+                    .to_string(),
+            );
+        }
+        break;
+    }
+    Ok(())
+}
+
+fn resolve_opencode_project(shell_cwd: &Path, value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        shell_cwd.join(path)
+    };
+    fs_canonical_dir(&path)
+}
+
+fn fs_canonical_dir(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_dir() {
+        return Err(format!(
+            "OpenCode working directory {} does not exist",
+            path.display()
+        ));
+    }
+    Ok(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+fn opencode_subcommand(arg: &str) -> bool {
+    matches!(
+        arg,
+        "completion"
+            | "acp"
+            | "mcp"
+            | "attach"
+            | "run"
+            | "debug"
+            | "providers"
+            | "auth"
+            | "agent"
+            | "upgrade"
+            | "uninstall"
+            | "serve"
+            | "web"
+            | "models"
+            | "stats"
+            | "export"
+            | "import"
+            | "github"
+            | "pr"
+            | "session"
+            | "plugin"
+            | "plug"
+            | "db"
+    )
 }
 
 fn build_opencode_resume_args(
@@ -582,6 +845,28 @@ fn build_opencode_resume_args(
     args.push(cwd.display().to_string());
 
     (args, true)
+}
+
+fn build_opencode_fork_args(
+    cwd: &Path,
+    model: Option<&str>,
+    session_id: &str,
+    prompt: Option<&str>,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.push("--session".to_string());
+    args.push(session_id.to_string());
+    args.push("--fork".to_string());
+    if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        args.push("--prompt".to_string());
+        args.push(prompt.to_string());
+    }
+    args.push(cwd.display().to_string());
+    args
 }
 
 fn prompt_has_initial_text(prompt: &str) -> bool {
@@ -610,19 +895,78 @@ fn attach_opencode_agent_pane(
 /// `--prompt <text>`. Erring toward "no prompt" is safe: the agent just starts
 /// idle and the first real turn (UserPromptSubmit/PreToolUse) promotes it.
 fn args_contain_prompt(args: &[String]) -> bool {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            return false;
+        }
         if arg == "--prompt" {
-            // --prompt takes a value; if there's a next arg, it's the prompt text.
-            return iter.next().is_some();
+            return args
+                .get(index + 1)
+                .is_some_and(|value| !value.is_empty() && !value.starts_with('-'));
         }
         if arg.starts_with("--prompt=") {
             return arg.len() > "--prompt=".len();
         }
-        // A positional arg (not a flag) is treated as a project path, not a prompt.
-        // opencode's TUI doesn't accept a positional prompt; only --prompt does.
+        if opencode_value_flag(arg) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        // `run` carries its message positionally (or via stdin), while `pr` starts
+        // agent work after fetching the requested branch. Other first positionals
+        // are a TUI project path or administrative subcommand, not prompt text.
+        return matches!(arg.as_str(), "run" | "pr");
     }
     false
+}
+
+fn opencode_resume_session_id(args: &[String]) -> Option<&str> {
+    if args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| arg == "--fork") {
+        return None;
+    }
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            break;
+        }
+        if arg == "--session" || arg == "-s" {
+            return args
+                .get(index + 1)
+                .map(String::as_str)
+                .filter(|value| !value.starts_with('-'));
+        }
+        if let Some(value) = arg.strip_prefix("--session=") {
+            return (!value.is_empty()).then_some(value);
+        }
+        if opencode_value_flag(arg) {
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+fn opencode_value_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--log-level"
+            | "--port"
+            | "--hostname"
+            | "--mdns-domain"
+            | "--cors"
+            | "--model"
+            | "-m"
+            | "--prompt"
+            | "--agent"
+            | "--replay-limit"
+    )
 }
 
 /// Resolves an idle opencode agent: drains the next queued turn, or enters/stays
@@ -791,6 +1135,7 @@ mod tests {
         OpencodeAdapterConfig,
     };
     use crate::state::AppState;
+    use std::fs;
     use std::path::PathBuf;
 
     fn test_config() -> QmuxConfig {
@@ -871,6 +1216,39 @@ mod tests {
     }
 
     #[test]
+    fn config_dir_requires_the_qmux_plugin_entrypoint() {
+        let missing = OpencodeAdapter {
+            binary: "opencode".to_string(),
+            plugin_dir: PathBuf::from("/definitely/missing/qmux-opencode-plugin"),
+        };
+        assert!(
+            missing
+                .config_dir_env()
+                .unwrap_err()
+                .contains("OpenCode integration plugin was not found")
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "qmux-opencode-plugin-entrypoint-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(dir.join("plugins")).unwrap();
+        fs::write(dir.join("plugins").join("qmux-notify.js"), "export {};\n").unwrap();
+        let adapter = OpencodeAdapter {
+            binary: "opencode".to_string(),
+            plugin_dir: dir.clone(),
+        };
+        assert_eq!(
+            adapter.config_dir_env().unwrap(),
+            (
+                "OPENCODE_CONFIG_DIR".to_string(),
+                dir.display().to_string()
+            )
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn build_args_adds_cwd_model_and_prompt() {
         let args = build_opencode_args(
             Path::new("/tmp/qmux"),
@@ -895,6 +1273,60 @@ mod tests {
         let args = build_opencode_args(Path::new("/tmp/qmux"), None, "  ");
 
         assert_eq!(args, vec!["/tmp/qmux"]);
+    }
+
+    #[test]
+    fn shell_project_override_drives_agent_workspace_without_rewriting_args() {
+        let values = |items: &[&str]| items.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let root = std::env::temp_dir().join(format!(
+            "qmux-opencode-shell-project-{}",
+            std::process::id()
+        ));
+        let shell = root.join("shell");
+        let project = root.join("project");
+        fs::create_dir_all(&shell).unwrap();
+        fs::create_dir_all(&project).unwrap();
+
+        let project_args = values(&["--model", "provider/model", "../project"]);
+        assert_eq!(
+            opencode_effective_project(&shell, &project_args).unwrap(),
+            fs::canonicalize(&project).unwrap()
+        );
+        assert_eq!(
+            build_opencode_args_from_shell(None, &project_args),
+            project_args
+        );
+
+        assert_eq!(
+            opencode_effective_project(&shell, &values(&["models", "provider"])).unwrap(),
+            fs::canonicalize(&shell).unwrap()
+        );
+        assert_eq!(
+            opencode_effective_project(&shell, &values(&["--", "../project"])).unwrap(),
+            fs::canonicalize(&project).unwrap()
+        );
+        assert!(opencode_effective_project(&shell, &values(&["missing"])).is_err());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn shell_args_reject_modes_without_the_qmux_plugin() {
+        let values = |items: &[&str]| items.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert!(validate_opencode_shell_args(&values(&["--pure"])).is_err());
+        assert!(validate_opencode_shell_args(&values(&["--pure=true"])).is_err());
+        assert!(
+            validate_opencode_shell_args(&values(&[
+                "--log-level",
+                "INFO",
+                "attach",
+                "http://localhost:4096"
+            ]))
+            .is_err()
+        );
+        assert!(validate_opencode_shell_args(&values(&["--", "attach"])).is_ok());
+        assert!(validate_opencode_shell_args(&values(&["run", "attach"])).is_ok());
     }
 
     #[test]
@@ -927,6 +1359,72 @@ mod tests {
     }
 
     #[test]
+    fn fork_args_resume_into_new_session_and_append_prompt() {
+        let args = build_opencode_fork_args(
+            Path::new("/tmp/qmux"),
+            Some("anthropic/claude-sonnet-4-5"),
+            "source-session",
+            Some(" continue here "),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--model",
+                "anthropic/claude-sonnet-4-5",
+                "--session",
+                "source-session",
+                "--fork",
+                "--prompt",
+                "continue here",
+                "/tmp/qmux",
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_resume_command_and_parser_reuse_specific_session() {
+        let command = OpencodeAdapter::new(&test_config())
+            .shell_resume_command("session-123")
+            .expect("OpenCode supports shell resume");
+        assert_eq!(command, "opencode --session 'session-123'");
+
+        let args = |values: &[&str]| values.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            opencode_resume_session_id(&args(&["--session", "session-123"])),
+            Some("session-123")
+        );
+        assert_eq!(
+            opencode_resume_session_id(&args(&["-s", "session-123"])),
+            Some("session-123")
+        );
+        assert_eq!(
+            opencode_resume_session_id(&args(&["--session=session-123"])),
+            Some("session-123")
+        );
+        assert_eq!(
+            opencode_resume_session_id(&args(&[
+                "--agent",
+                "--session",
+                "--",
+                "--session",
+                "prompt-value"
+            ])),
+            None
+        );
+    }
+
+    #[test]
+    fn forked_shell_session_does_not_reuse_source_agent() {
+        let args = [
+            "--session".to_string(),
+            "session-123".to_string(),
+            "--fork".to_string(),
+        ];
+        assert_eq!(opencode_resume_session_id(&args), None);
+    }
+
+    #[test]
     fn args_contain_prompt_detects_prompt_flag() {
         assert!(!args_contain_prompt(&[]));
         assert!(!args_contain_prompt(&[
@@ -940,6 +1438,21 @@ mod tests {
             "fix the bug".to_string()
         ]));
         assert!(args_contain_prompt(&["--prompt=fix the bug".to_string()]));
+        assert!(!args_contain_prompt(&[
+            "--prompt".to_string(),
+            "--model".to_string(),
+            "provider/model".to_string()
+        ]));
+        assert!(args_contain_prompt(&[
+            "run".to_string(),
+            "fix".to_string(),
+            "the bug".to_string()
+        ]));
+        assert!(args_contain_prompt(&["pr".to_string(), "123".to_string()]));
+        assert!(!args_contain_prompt(&[
+            "models".to_string(),
+            "anthropic".to_string()
+        ]));
     }
 
     #[test]
@@ -1012,7 +1525,7 @@ mod tests {
                 .transcript_path
                 .as_deref()
                 .unwrap()
-                .ends_with("/.qmux/opencode/agent-1.jsonl")
+                .ends_with("/.qmux/opencode/agent-1/opencode-session-1.jsonl")
         );
     }
 
@@ -1036,6 +1549,37 @@ mod tests {
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(agent.session_id.as_deref(), Some("opencode-session-1"));
         assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn forked_agent_rejects_source_session_identity() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.fork_point = Some("source-session".to_string());
+        state.insert_agent(agent).unwrap();
+
+        ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "sessionId": "source-session" }),
+            ),
+        );
+        assert_eq!(state.agent("agent-1").unwrap().unwrap().session_id, None);
+
+        ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "sessionId": "fork-session" }),
+            ),
+        );
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("fork-session")
+        );
     }
 
     #[test]
@@ -1096,6 +1640,56 @@ mod tests {
         assert_eq!(event.event_type, "agent.awaiting_permission");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::AwaitingPermission));
+    }
+
+    #[test]
+    fn permission_and_input_resolution_restore_running_status() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::AwaitingPermission;
+        state.insert_agent(agent).unwrap();
+
+        let event = ingest(
+            &state,
+            hook_for_agent("PermissionResolved", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.running");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(
+            &state,
+            hook_for_agent("InputRequest", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.awaiting_input");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::AwaitingInput
+        ));
+
+        let event = ingest(
+            &state,
+            hook_for_agent("InputResolved", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.running");
+    }
+
+    #[test]
+    fn stop_failure_settles_running_agent() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Running;
+        state.insert_agent(agent).unwrap();
+
+        let event = ingest(&state, hook_for_agent("StopFailure", "agent-1", json!({})));
+
+        assert_eq!(event.event_type, "agent.done");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
     }
 
     #[test]
@@ -1194,9 +1788,17 @@ mod tests {
     #[test]
     fn transcript_path_is_under_workspace_root() {
         let state = test_state();
-        let path = OpencodeAdapter::transcript_path_for(&state, "agent-42");
+        let path =
+            OpencodeAdapter::transcript_path_for(&state, "agent-42", "session-123");
 
-        assert!(path.ends_with(".qmux/opencode/agent-42.jsonl"));
+        assert!(path.ends_with(".qmux/opencode/agent-42/session-123.jsonl"));
         assert!(path.starts_with("/tmp/qmux-opencode-tests"));
+    }
+
+    #[test]
+    fn transcript_path_rejects_unsafe_session_components() {
+        let state = test_state();
+        let path = OpencodeAdapter::transcript_path_for(&state, "agent-42", "../outside");
+        assert!(path.ends_with(".qmux/opencode/agent-42/pending.jsonl"));
     }
 }

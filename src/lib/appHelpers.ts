@@ -6,6 +6,7 @@ import { FONT_OPTIONS } from "./settings";
 import { CLAUDE_ADAPTER_ID } from "../adapters/claude";
 import { CODEX_ADAPTER_ID } from "../adapters/codex";
 import { GROK_ADAPTER_ID } from "../adapters/grok";
+import { OPENCODE_ADAPTER_ID } from "../adapters/opencode";
 import type {
   AgentInfo,
   PaneInfo,
@@ -291,6 +292,7 @@ export function agentCanFork(agent: AgentInfo | null | undefined): boolean {
     agent?.sessionId &&
       (agent.adapter === CLAUDE_ADAPTER_ID ||
         agent.adapter === CODEX_ADAPTER_ID ||
+        agent.adapter === OPENCODE_ADAPTER_ID ||
         agent.adapter === GROK_ADAPTER_ID),
   );
 }

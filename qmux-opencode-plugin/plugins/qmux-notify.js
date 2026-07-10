@@ -5,7 +5,7 @@
 //      socket, so qmux can track agent status (running, idle, awaiting
 //      permission) exactly like its Claude and Codex adapters.
 //   2. Appends one JSON line per message part to a qmux-managed JSONL file at
-//      $QMUX_WORKSPACE_ROOT/.qmux/opencode/$QMUX_AGENT_ID.jsonl, shaped for
+//      $QMUX_WORKSPACE_ROOT/.qmux/opencode/$QMUX_AGENT_ID/<session>.jsonl, shaped for
 //      OpenCodeAdapter::parse_transcript_line. qmux tails this file with the
 //      same transcript pipeline it uses for Claude and Codex.
 //
@@ -20,6 +20,8 @@ const SOCK = process.env.QMUX_SOCK;
 const TOKEN = process.env.QMUX_TOKEN;
 const PANE_ID = process.env.QMUX_PANE_ID;
 const AGENT_ID = process.env.QMUX_AGENT_ID;
+const FORK_POINT = process.env.QMUX_FORK_POINT;
+const ROOT_SESSION_ID = process.env.QMUX_ROOT_SESSION_ID;
 const CLI = process.env.QMUX_CLI;
 const WORKSPACE_ROOT = process.env.QMUX_WORKSPACE_ROOT;
 
@@ -59,14 +61,14 @@ async function notify(event, payload) {
 async function writeTranscriptItem(sessionId, payload) {
   if (!IN_QMUX || !WORKSPACE_ROOT) return;
   try {
-    const dir = join(WORKSPACE_ROOT, ".qmux", "opencode");
+    const dir = join(WORKSPACE_ROOT, ".qmux", "opencode", AGENT_ID);
     await mkdir(dir, { recursive: true });
     const line = JSON.stringify({
       type: "response_item",
       payload,
       session_id: sessionId,
     });
-    await appendFile(join(dir, `${AGENT_ID}.jsonl`), `${line}\n`, "utf8");
+    await appendFile(join(dir, `${transcriptSessionName(sessionId)}.jsonl`), `${line}\n`, "utf8");
   } catch {
     // Swallow: transcript tailing is best-effort.
   }
@@ -75,17 +77,23 @@ async function writeTranscriptItem(sessionId, payload) {
 async function writeTranscriptEvent(sessionId, payload) {
   if (!IN_QMUX || !WORKSPACE_ROOT) return;
   try {
-    const dir = join(WORKSPACE_ROOT, ".qmux", "opencode");
+    const dir = join(WORKSPACE_ROOT, ".qmux", "opencode", AGENT_ID);
     await mkdir(dir, { recursive: true });
     const line = JSON.stringify({
       type: "event_msg",
       payload,
       session_id: sessionId,
     });
-    await appendFile(join(dir, `${AGENT_ID}.jsonl`), `${line}\n`, "utf8");
+    await appendFile(join(dir, `${transcriptSessionName(sessionId)}.jsonl`), `${line}\n`, "utf8");
   } catch {
     // Swallow: transcript tailing is best-effort.
   }
+}
+
+function transcriptSessionName(sessionId) {
+  return typeof sessionId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
+    ? sessionId
+    : "pending";
 }
 
 async function writeTranscriptMessage(sessionId, role, content) {
@@ -160,29 +168,53 @@ export const QmuxNotifyPlugin = async () => {
   const messageRoles = new Map();
   const writtenToolUses = new Set();
   const writtenToolResults = new Set();
-  const idleNotifiedAt = new Map();
-  const interruptNotifiedAt = new Map();
+  const writtenTextParts = new Set();
+  const stopNotifiedAt = new Map();
 
-  async function notifyIdle(sessionId) {
+  function reserveStopNotification(sessionId) {
     const key = sessionId ?? "__unknown__";
     const now = Date.now();
-    const previous = idleNotifiedAt.get(key) ?? 0;
-    if (now - previous < 1000) return;
-    idleNotifiedAt.set(key, now);
+    const previous = stopNotifiedAt.get(key) ?? 0;
+    if (now - previous < 1000) return false;
+    stopNotifiedAt.set(key, now);
+    return true;
+  }
+
+  async function notifyIdle(sessionId) {
+    if (!reserveStopNotification(sessionId)) return;
     await notify("Stop", { session_id: sessionId });
   }
 
   async function notifyInterrupted(sessionId, reason) {
-    const key = sessionId ?? "__unknown__";
-    const now = Date.now();
-    const previous = interruptNotifiedAt.get(key) ?? 0;
-    if (now - previous < 1000) return;
-    interruptNotifiedAt.set(key, now);
+    if (!reserveStopNotification(sessionId)) return;
     await writeTranscriptEvent(sessionId, {
       type: "turn_aborted",
       reason: reason ?? "interrupted",
     });
     await notify("Stop", { session_id: sessionId, reason: reason ?? "interrupted" });
+  }
+
+  async function notifyFailure(sessionId, reason) {
+    if (!reserveStopNotification(sessionId)) return;
+    await writeTranscriptEvent(sessionId, {
+      type: "turn_aborted",
+      reason,
+    });
+    await notify("StopFailure", { session_id: sessionId, reason });
+  }
+
+  function tracksSession(sessionId) {
+    if (ROOT_SESSION_ID) return !sessionId || sessionId === ROOT_SESSION_ID;
+    return !sessionId || !lastSessionId || sessionId === lastSessionId;
+  }
+
+  async function establishSession(sessionId) {
+    if (!sessionId) return;
+    if (ROOT_SESSION_ID && sessionId !== ROOT_SESSION_ID) return;
+    if (!lastSessionId) {
+      lastSessionId = sessionId;
+      await notify("SessionStart", { session_id: sessionId });
+    }
   }
 
   async function handleEvent(input) {
@@ -192,10 +224,24 @@ export const QmuxNotifyPlugin = async () => {
     const sid = sessionIdFrom(properties) ?? lastSessionId;
 
     if (type === "session.created") {
+      const parentID = properties?.info?.parentID ?? properties?.info?.parentId ?? null;
+      // A native `--fork` root is itself a child of the resumed source session.
+      // qMux passes that known source id so this one lineage edge becomes the pane
+      // root, while ordinary child/subagent sessions remain excluded.
+      if (ROOT_SESSION_ID) {
+        if (sid !== ROOT_SESSION_ID) return;
+      } else if (FORK_POINT) {
+        if (sid === FORK_POINT) return;
+        if (parentID !== FORK_POINT) return;
+      } else if (parentID) {
+        return;
+      }
       lastSessionId = sid;
       await notify("SessionStart", { session_id: sid });
       return;
     }
+
+    if (!tracksSession(sid)) return;
 
     if (type === "session.idle") {
       await notifyIdle(sid);
@@ -218,6 +264,31 @@ export const QmuxNotifyPlugin = async () => {
       type === "permission.v2.asked"
     ) {
       await notify("PermissionRequest", { session_id: sid });
+      return;
+    }
+
+    if (type === "permission.replied" || type === "permission.v2.replied") {
+      await notify("PermissionResolved", { session_id: sid });
+      return;
+    }
+
+    if (type === "question.asked" || type === "question.v2.asked") {
+      await notify("InputRequest", { session_id: sid });
+      return;
+    }
+
+    if (
+      type === "question.replied" ||
+      type === "question.rejected" ||
+      type === "question.v2.replied" ||
+      type === "question.v2.rejected"
+    ) {
+      await notify("InputResolved", { session_id: sid });
+      return;
+    }
+
+    if (type === "session.error") {
+      await notifyFailure(sid, "session.error");
       return;
     }
 
@@ -251,7 +322,8 @@ export const QmuxNotifyPlugin = async () => {
       if (role === "user") return;
 
       if (part.type === "text") {
-        if (!part.time?.end) return;
+        if (!part.time?.end || (part.id && writtenTextParts.has(part.id))) return;
+        if (part.id) writtenTextParts.add(part.id);
         const content = normalizeContent([part]);
         if (content.length) {
           await writeTranscriptMessage(partSessionId, role, content);
@@ -288,7 +360,10 @@ export const QmuxNotifyPlugin = async () => {
     event: handleEvent,
 
     // Permission: a tool needs approval.
-    "permission.ask": async (input) => {
+    "permission.ask": async (input, output) => {
+      if (!tracksSession(input?.sessionID)) return;
+      // Auto-allowed/denied decisions do not put the TUI into a waiting state.
+      if (output?.status && output.status !== "ask") return;
       await notify("PermissionRequest", {
         session_id: input?.sessionID ?? lastSessionId,
       });
@@ -298,7 +373,8 @@ export const QmuxNotifyPlugin = async () => {
     // prompt text against outstanding direct/queued sends.
     "chat.message": async (input, output) => {
       const sid = input?.sessionID ?? lastSessionId;
-      lastSessionId = sid;
+      await establishSession(sid);
+      if (!tracksSession(sid)) return;
       const content = normalizeContent(output?.parts ?? []);
       const prompt = promptTextFromContent(content);
       await notify("UserPromptSubmit", {
@@ -317,12 +393,14 @@ export const QmuxNotifyPlugin = async () => {
     // Slash/command execution starts work even though it is not a model tool call.
     "command.execute.before": async (input) => {
       const sid = input?.sessionID ?? lastSessionId;
+      if (!tracksSession(sid)) return;
       await notify("PreToolUse", { session_id: sid });
     },
 
     // Tool events: forward lifecycle notifications and write exact tool payloads.
     "tool.execute.before": async (input, output) => {
       const sid = input?.sessionID ?? lastSessionId;
+      if (!tracksSession(sid)) return;
       await notify("PreToolUse", { session_id: sid });
       const callID = input?.callID;
       if (callID && !writtenToolUses.has(callID)) {
@@ -337,6 +415,7 @@ export const QmuxNotifyPlugin = async () => {
     },
     "tool.execute.after": async (input, output) => {
       const sid = input?.sessionID ?? lastSessionId;
+      if (!tracksSession(sid)) return;
       await notify("PostToolUse", { session_id: sid });
       const callID = input?.callID;
       if (callID && !writtenToolResults.has(callID)) {

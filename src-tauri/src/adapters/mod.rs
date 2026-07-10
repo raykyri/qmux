@@ -530,11 +530,10 @@ pub fn agent_fork(
 /// error message) for both the dispatch below and the queue engine's fail-fast
 /// validation, so a new forkable adapter is added in one place.
 pub fn adapter_supports_fork(adapter_id: &str) -> bool {
-    matches!(adapter_id, "claude" | "codex" | "grok")
+    matches!(adapter_id, "claude" | "codex" | "opencode" | "grok")
 }
 
-pub const FORK_UNSUPPORTED_ERROR: &str =
-    "Fork is only supported for Claude, Codex, and Grok sessions";
+pub const FORK_UNSUPPORTED_ERROR: &str = "Fork is not supported for this agent adapter";
 
 /// The agent-scoped core of [`agent_fork`], also used by the queue engine to
 /// dispatch fork-delivery turns (where there is no calling pane to authenticate —
@@ -554,6 +553,9 @@ pub fn fork_agent_source(
         }
         "codex" => {
             CodexAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
+        }
+        "opencode" => {
+            OpencodeAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
         }
         "grok" => {
             GrokAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
@@ -735,7 +737,7 @@ mod tests {
         assert_eq!(metadata[3].id, "grok");
         assert!(!metadata[3].default);
         assert!(adapter_supports_fork("grok"));
-        assert!(!adapter_supports_fork("opencode"));
+        assert!(adapter_supports_fork("opencode"));
     }
 
     #[test]
@@ -751,7 +753,7 @@ mod tests {
             .insert_agent(AgentInfo {
                 id: "agent-1".to_string(),
                 group_id: "group-1".to_string(),
-                adapter: "opencode".to_string(),
+                adapter: "unsupported".to_string(),
                 worktree_dir: "/tmp/qmux-adapter-tests".to_string(),
                 branch: None,
                 pane_id: Some("pane-1".to_string()),
@@ -770,10 +772,7 @@ mod tests {
             })
             .unwrap();
         let err = agent_fork(&state, "pane-1", false, true, None).unwrap_err();
-        assert!(
-            err.contains("only supported for Claude and Codex"),
-            "unexpected error: {err}"
-        );
+        assert_eq!(err, FORK_UNSUPPORTED_ERROR);
     }
 
     fn session_agent(id: &str, pane_id: Option<&str>, dir: &str, session: &str) -> AgentInfo {

@@ -721,10 +721,18 @@ pub fn list_agent_transcripts(
     let Some(agent) = state.agent(agent_id)? else {
         return Ok(Vec::new());
     };
-    // The opencode adapter writes transcript JSONL to a qmux-managed file, not
-    // to a session directory with multiple selectable past sessions. Skip the
-    // picker for opencode agents (MVP).
-    if agent.adapter == "opencode" {
+    // Legacy OpenCode integration used one combined `<agent>.jsonl` file. It has
+    // no safe session boundaries, so keep the picker hidden until SessionStart
+    // rotates the binding into `<agent>/<session>.jsonl`.
+    if agent.adapter == "opencode"
+        && agent
+            .transcript_path
+            .as_deref()
+            .and_then(|path| Path::new(path).parent())
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some(agent.id.as_str())
+    {
         return Ok(Vec::new());
     }
     let Some(current_path) = agent.transcript_path.clone() else {
@@ -2008,6 +2016,63 @@ mod tests {
         assert!(validate_grok_transcript_candidate(&current, &sibling).is_ok());
         assert!(validate_grok_transcript_candidate(&current, &wrong_name).is_err());
         assert!(validate_grok_transcript_candidate(&current, &outside).is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opencode_picker_lists_rotated_agent_sessions_only() {
+        let dir = temp_dir();
+        let agent_dir = dir.join(".qmux").join("opencode").join("agent-1");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let first = agent_dir.join("session-1.jsonl");
+        let second = agent_dir.join("session-2.jsonl");
+        fs::write(
+            &first,
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"first prompt\"}]}}\n",
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"second prompt\"}]}}\n",
+        )
+        .unwrap();
+
+        let state = test_state();
+        let mut agent = sample_agent(AgentStatus::Idle);
+        agent.adapter = "opencode".to_string();
+        agent.session_id = Some("session-1".to_string());
+        agent.transcript_path = Some(first.display().to_string());
+        state.insert_agent(agent).unwrap();
+
+        let options = list_agent_transcripts(&state, "agent-1").unwrap();
+        assert_eq!(options.len(), 2);
+        assert!(options.iter().any(|option| {
+            option.session_id.as_deref() == Some("session-1")
+                && option.preview.as_deref() == Some("first prompt")
+        }));
+        assert!(options.iter().any(|option| {
+            option.session_id.as_deref() == Some("session-2")
+                && option.preview.as_deref() == Some("second prompt")
+        }));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opencode_picker_stays_hidden_for_legacy_combined_transcript() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("agent-1.jsonl");
+        fs::write(&legacy, "{}\n").unwrap();
+
+        let state = test_state();
+        let mut agent = sample_agent(AgentStatus::Idle);
+        agent.adapter = "opencode".to_string();
+        agent.transcript_path = Some(legacy.display().to_string());
+        state.insert_agent(agent).unwrap();
+
+        assert!(list_agent_transcripts(&state, "agent-1").unwrap().is_empty());
 
         fs::remove_dir_all(&dir).ok();
     }

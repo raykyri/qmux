@@ -12,6 +12,7 @@
     "test:app-shortcuts": "node scripts/test-app-shortcuts.mjs",
     "test:pane-splits": "node scripts/test-pane-splits.mjs",
     "test:image-markers": "node scripts/test-image-markers.mjs",
+    "test:opencode-plugin": "node --experimental-default-type=module --test qmux-opencode-plugin/tests/*.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
