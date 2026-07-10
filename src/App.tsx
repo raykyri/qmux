@@ -5520,6 +5520,10 @@ export default function App() {
     if (!paneContextMenu && !groupMenu && !settingsMenu) {
       return;
     }
+    // Sidebar menus are position:fixed and can extend over the native terminal.
+    // Claim web pointer routing so clicks on the overlapping portion hit the
+    // menu instead of Ghostty.
+    const releaseNativePointer = claimNativeTerminalPointerForWebDrag();
     const handleDismiss = () => {
       setPaneContextMenu(null);
       setGroupMenu(null);
@@ -5569,6 +5573,7 @@ export default function App() {
     window.addEventListener("resize", handleDismiss);
     window.addEventListener("keydown", handleKeyDown, true);
     return () => {
+      releaseNativePointer();
       window.removeEventListener("mousedown", handleDismiss);
       window.removeEventListener("resize", handleDismiss);
       window.removeEventListener("keydown", handleKeyDown, true);

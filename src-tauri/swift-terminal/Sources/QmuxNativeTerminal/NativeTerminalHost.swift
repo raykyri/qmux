@@ -13,6 +13,10 @@ final class NativeTerminalHost {
     private weak var keyboardOwnerPane: NativeTerminalPane?
     private weak var pointerCapturePane: NativeTerminalPane?
     private var webPointerRoutingClaimed = false
+    /// When true, the next pointer-up clears `webPointerRoutingClaimed`. Used for
+    /// mid-gesture drag claims (button already down when claimed). Sticky claims
+    /// such as open sidebar menus start with buttons up and stay until explicit release.
+    private var webPointerClaimClearsOnPointerUp = false
     private var windowLiveResizeActive = false
     private var clientDeferredGeometryPaneIDs: Set<String> = []
     private var pendingPaneFrames: [String: CGRect] = [:]
@@ -240,6 +244,12 @@ final class NativeTerminalHost {
             // native monitor and WKWebView. Relinquish any optimistic Ghostty
             // capture once React identifies that gesture as a web drag.
             pointerCapturePane = nil
+            // Drag claims arrive while a button is still down and should end with
+            // that gesture. Menu/overlay claims arrive between gestures and must
+            // survive subsequent clicks until the frontend releases them.
+            webPointerClaimClearsOnPointerUp = NSEvent.pressedMouseButtons != 0
+        } else {
+            webPointerClaimClearsOnPointerUp = false
         }
         return true
     }
@@ -327,6 +337,7 @@ final class NativeTerminalHost {
         setKeyboardOwner(nil)
         pointerCapturePane = nil
         webPointerRoutingClaimed = false
+        webPointerClaimClearsOnPointerUp = false
         for pane in panes.values {
             pane.view.removeFromSuperview()
         }
@@ -569,14 +580,17 @@ final class NativeTerminalHost {
 
     private func routePointerEvent(_ event: NSEvent) -> NSEvent? {
         guard event.window === window else { return event }
-        // WKWebView owns the complete gesture while a web resize control is
-        // dragging. Returning the event is essential: consuming it here would
-        // bypass DOM pointer capture as soon as the cursor crossed a terminal.
+        // WKWebView owns the complete gesture while a web control claims pointer
+        // routing (resize drags, open menus over the terminal, etc.). Returning
+        // the event is essential: consuming it here would bypass DOM hit-testing
+        // as soon as the cursor crossed a terminal surface.
         if webPointerRoutingClaimed {
-            if isPointerUp(event) {
-                // Safety net for a web control unmounting before its cleanup
+            if isPointerUp(event), webPointerClaimClearsOnPointerUp {
+                // Safety net for a drag control unmounting before its cleanup
                 // invoke: a mouse gesture cannot remain active after button-up.
+                // Sticky claims (menus) intentionally survive until released.
                 webPointerRoutingClaimed = false
+                webPointerClaimClearsOnPointerUp = false
             }
             return event
         }

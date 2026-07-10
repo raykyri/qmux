@@ -406,8 +406,10 @@ function queueNativeTerminalWebPointerClaim(claimed: boolean) {
 
 /**
  * Temporarily gives WKWebView every pointer event, including events whose
- * coordinates overlap a native terminal surface. Claims are reference-counted
- * so independently mounted drag controls cannot release each other's capture.
+ * coordinates overlap a native terminal surface. Used for mid-gesture drag
+ * controls and for sticky overlays (sidebar menus) that open over the terminal.
+ * Claims are reference-counted so independently mounted claimants cannot
+ * release each other's capture. Call the returned function to release.
  */
 export function claimNativeTerminalPointerForWebDrag(): () => void {
   nativeTerminalWebPointerClaims += 1;
