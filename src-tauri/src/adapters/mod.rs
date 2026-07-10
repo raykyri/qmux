@@ -530,10 +530,11 @@ pub fn agent_fork(
 /// error message) for both the dispatch below and the queue engine's fail-fast
 /// validation, so a new forkable adapter is added in one place.
 pub fn adapter_supports_fork(adapter_id: &str) -> bool {
-    matches!(adapter_id, "claude" | "codex")
+    matches!(adapter_id, "claude" | "codex" | "grok")
 }
 
-pub const FORK_UNSUPPORTED_ERROR: &str = "Fork is only supported for Claude and Codex sessions";
+pub const FORK_UNSUPPORTED_ERROR: &str =
+    "Fork is only supported for Claude, Codex, and Grok sessions";
 
 /// The agent-scoped core of [`agent_fork`], also used by the queue engine to
 /// dispatch fork-delivery turns (where there is no calling pane to authenticate —
@@ -553,6 +554,9 @@ pub fn fork_agent_source(
         }
         "codex" => {
             CodexAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
+        }
+        "grok" => {
+            GrokAdapter::new(state.config()).fork_pane(state, source, use_worktree, prompt)?
         }
         _ => return Err(FORK_UNSUPPORTED_ERROR.to_string()),
     };
@@ -730,6 +734,8 @@ mod tests {
         assert!(!metadata[2].default);
         assert_eq!(metadata[3].id, "grok");
         assert!(!metadata[3].default);
+        assert!(adapter_supports_fork("grok"));
+        assert!(!adapter_supports_fork("opencode"));
     }
 
     #[test]

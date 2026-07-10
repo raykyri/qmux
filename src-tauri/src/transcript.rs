@@ -602,9 +602,19 @@ pub struct TranscriptOption {
 fn transcript_listing_root(agent: &AgentInfo, current_path: &Path) -> Option<PathBuf> {
     if agent.adapter == "codex" {
         codex_sessions_root(current_path)
+    } else if agent.adapter == "grok" && is_grok_native_transcript(current_path) {
+        grok_session_group_root(current_path)
     } else {
         current_path.parent().map(Path::to_path_buf)
     }
+}
+
+fn is_grok_native_transcript(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("chat_history.jsonl")
+}
+
+fn grok_session_group_root(path: &Path) -> Option<PathBuf> {
+    path.parent()?.parent().map(Path::to_path_buf)
 }
 
 fn codex_sessions_root(path: &Path) -> Option<PathBuf> {
@@ -620,6 +630,14 @@ fn transcript_session_id(
 ) -> Option<String> {
     if agent.adapter == "codex" {
         return codex_transcript_session_id(path).or(fallback);
+    }
+    if agent.adapter == "grok" && is_grok_native_transcript(path) {
+        return path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .map(ToString::to_string)
+            .or(fallback);
     }
     fallback
 }
@@ -733,6 +751,10 @@ pub fn list_agent_transcripts(
             });
         }
         candidates
+    } else if agent.adapter == "grok" && is_grok_native_transcript(current) {
+        let mut candidates = gather_transcript_candidates_recursive(&dir)?;
+        candidates.retain(|candidate| is_grok_native_transcript(&candidate.path));
+        candidates
     } else {
         gather_transcript_candidates(&dir)?
     };
@@ -837,6 +859,8 @@ pub fn set_agent_transcript(
         {
             return Err("transcript belongs to a different project".to_string());
         }
+    } else if agent.adapter == "grok" && is_grok_native_transcript(current) {
+        validate_grok_transcript_candidate(current, candidate)?;
     } else if current.parent() != candidate.parent() {
         return Err("transcript is outside the agent's session directory".to_string());
     }
@@ -861,6 +885,27 @@ pub fn set_agent_transcript(
     }
 
     Ok(agent)
+}
+
+fn validate_grok_transcript_candidate(current: &Path, candidate: &Path) -> Result<(), String> {
+    if !is_grok_native_transcript(candidate) {
+        return Err("Grok transcript must be a chat_history.jsonl file".to_string());
+    }
+    let root = grok_session_group_root(current)
+        .ok_or_else(|| "transcript is outside the agent's session directory".to_string())?
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve Grok session directory: {err}"))?;
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve Grok transcript: {err}"))?;
+    let candidate_group = candidate
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "transcript is outside the agent's session directory".to_string())?;
+    if candidate_group != root {
+        return Err("transcript is outside the agent's session directory".to_string());
+    }
+    Ok(())
 }
 
 /// Reads a transcript's first usable user-message preview and total line count with
@@ -906,6 +951,9 @@ pub(crate) fn read_transcript_meta(path: &Path) -> (Option<String>, usize) {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if value.get("synthetic_reason").is_some() {
+            continue;
+        }
         let message = transcript_message_value(&value);
         let is_user = value.get("type").and_then(Value::as_str) == Some("user")
             || message
@@ -1897,6 +1945,71 @@ mod tests {
             session_id_from_transcript_path(Path::new("/tmp/.jsonl")),
             None
         );
+    }
+
+    #[test]
+    fn grok_picker_lists_chat_histories_from_sibling_sessions() {
+        let dir = temp_dir();
+        let group = dir.join("sessions").join("%2Fwork%2Fproject");
+        let first = group.join("session-1").join("chat_history.jsonl");
+        let second = group.join("session-2").join("chat_history.jsonl");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(
+            &first,
+            concat!(
+                "{\"type\":\"user\",\"synthetic_reason\":\"system_reminder\",\"content\":[{\"type\":\"text\",\"text\":\"private\"}]}\n",
+                "{\"type\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"first prompt\"}]}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            "{\"type\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"second prompt\"}]}\n",
+        )
+        .unwrap();
+        fs::write(group.join("session-2").join("updates.jsonl"), "{}\n").unwrap();
+
+        let state = test_state();
+        let mut agent = sample_agent(AgentStatus::Idle);
+        agent.adapter = "grok".to_string();
+        agent.session_id = Some("session-1".to_string());
+        agent.transcript_path = Some(first.display().to_string());
+        state.insert_agent(agent).unwrap();
+
+        let options = list_agent_transcripts(&state, "agent-1").unwrap();
+        assert_eq!(options.len(), 2);
+        assert!(options.iter().all(|option| option.path.ends_with("chat_history.jsonl")));
+        assert!(options.iter().any(|option| {
+            option.session_id.as_deref() == Some("session-1")
+                && option.preview.as_deref() == Some("first prompt")
+        }));
+        assert!(options.iter().any(|option| {
+            option.session_id.as_deref() == Some("session-2")
+                && option.preview.as_deref() == Some("second prompt")
+        }));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn grok_picker_repoint_is_confined_to_native_sibling_sessions() {
+        let dir = temp_dir();
+        let group = dir.join("sessions").join("%2Fwork%2Fproject");
+        let current = group.join("session-1").join("chat_history.jsonl");
+        let sibling = group.join("session-2").join("chat_history.jsonl");
+        let wrong_name = group.join("session-2").join("updates.jsonl");
+        let outside = dir.join("other").join("session-3").join("chat_history.jsonl");
+        for path in [&current, &sibling, &wrong_name, &outside] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "{}\n").unwrap();
+        }
+
+        assert!(validate_grok_transcript_candidate(&current, &sibling).is_ok());
+        assert!(validate_grok_transcript_candidate(&current, &wrong_name).is_err());
+        assert!(validate_grok_transcript_candidate(&current, &outside).is_err());
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn test_state() -> AppState {

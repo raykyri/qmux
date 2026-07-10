@@ -5,6 +5,7 @@ import {
 import { FONT_OPTIONS } from "./settings";
 import { CLAUDE_ADAPTER_ID } from "../adapters/claude";
 import { CODEX_ADAPTER_ID } from "../adapters/codex";
+import { GROK_ADAPTER_ID } from "../adapters/grok";
 import type {
   AgentInfo,
   PaneInfo,
@@ -288,7 +289,9 @@ export function isQueuedTurn(value: unknown): value is QueuedTurn {
 export function agentCanFork(agent: AgentInfo | null | undefined): boolean {
   return Boolean(
     agent?.sessionId &&
-      (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
+      (agent.adapter === CLAUDE_ADAPTER_ID ||
+        agent.adapter === CODEX_ADAPTER_ID ||
+        agent.adapter === GROK_ADAPTER_ID),
   );
 }
 
