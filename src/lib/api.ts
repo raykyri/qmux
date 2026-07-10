@@ -231,6 +231,10 @@ export function spawnShell(
   });
 }
 
+export function getUseLoginShell() {
+  return invoke<boolean>("use_login_shell_get");
+}
+
 export function setUseLoginShell(enabled: boolean) {
   return invoke<void>("use_login_shell_set", { enabled });
 }

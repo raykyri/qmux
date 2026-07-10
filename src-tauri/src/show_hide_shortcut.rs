@@ -119,20 +119,21 @@ pub fn show_hide_shortcut_set<R: Runtime>(
     let accelerator = normalize_accelerator(accelerator)?;
     let _operation = shortcut_state.operation.lock().unwrap();
     let snapshot = shortcut_state.snapshot();
-    let mut preferences = persistence::load_preferences(&app_state.config().workspace_root)?;
-    preferences.show_hide_shortcut = accelerator.clone();
     let registry = TauriShortcutRegistry { app: &app };
+    let persist = || {
+        persistence::update_preferences(&app_state.config().workspace_root, |preferences| {
+            preferences.show_hide_shortcut = accelerator.clone();
+        })
+    };
 
     let result = if snapshot.capture_active {
-        probe_registration(&registry, accelerator.as_deref()).and_then(|()| {
-            persistence::save_preferences(&app_state.config().workspace_root, &preferences)
-        })
+        probe_registration(&registry, accelerator.as_deref()).and_then(|()| persist())
     } else {
         replace_active_registration(
             &registry,
             snapshot.registered_accelerator.as_deref(),
             accelerator.as_deref(),
-            || persistence::save_preferences(&app_state.config().workspace_root, &preferences),
+            persist,
         )
     };
 
@@ -428,10 +429,9 @@ fn finish_shortcut_capture(
         return;
     }
 
-    let restore = persistence::load_preferences(workspace_root).and_then(|mut preferences| {
-        preferences.show_hide_shortcut = fallback.clone();
-        replace_active_registration(registry, None, fallback.as_deref(), || {
-            persistence::save_preferences(workspace_root, &preferences)
+    let restore = replace_active_registration(registry, None, fallback.as_deref(), || {
+        persistence::update_preferences(workspace_root, |preferences| {
+            preferences.show_hide_shortcut = fallback.clone();
         })
     });
     let mut inner = state.inner.lock().unwrap();

@@ -10,11 +10,17 @@ use std::io::ErrorKind;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Distinguishes the scratch file of each in-flight `save` so concurrent writers
 /// never share (and then race to rename) the same temp path.
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Preferences are one small document updated by several independent UI surfaces
+/// (launcher selection, login-shell toggle, OpenRouter key, global shortcut). Keep
+/// each read-modify-write transaction under one lock so concurrent setters cannot
+/// both read the same snapshot and then overwrite one another's field.
+static PREFERENCES_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Bumped whenever the on-disk shape changes incompatibly. A file written by a
 /// newer or unknown version is treated as empty rather than misinterpreted.
@@ -145,6 +151,32 @@ pub fn load_preferences(workspace_root: &Path) -> Result<AppPreferences, String>
 }
 
 pub fn save_preferences(workspace_root: &Path, preferences: &AppPreferences) -> Result<(), String> {
+    let _guard = PREFERENCES_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    save_preferences_unlocked(workspace_root, preferences)
+}
+
+/// Atomically updates selected preference fields while preserving every unrelated
+/// field from the latest on-disk snapshot. A read/parse failure is returned without
+/// writing anything, rather than treating a damaged preferences file as empty and
+/// erasing recoverable settings (including the stored API key).
+pub fn update_preferences(
+    workspace_root: &Path,
+    update: impl FnOnce(&mut AppPreferences),
+) -> Result<(), String> {
+    let _guard = PREFERENCES_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut preferences = load_preferences(workspace_root)?;
+    update(&mut preferences);
+    save_preferences_unlocked(workspace_root, &preferences)
+}
+
+fn save_preferences_unlocked(
+    workspace_root: &Path,
+    preferences: &AppPreferences,
+) -> Result<(), String> {
     let path = preferences_path(workspace_root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
@@ -805,6 +837,54 @@ mod tests {
             load_preferences(&root).unwrap().use_login_shell,
             Some(false)
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_preference_updates_preserve_unrelated_fields() {
+        let root = std::sync::Arc::new(temp_root());
+        let launcher_root = root.clone();
+        let key_root = root.clone();
+
+        let launcher = std::thread::spawn(move || {
+            for _ in 0..32 {
+                update_preferences(&launcher_root, |preferences| {
+                    preferences.launcher_adapter_id = Some("codex".to_string());
+                })
+                .unwrap();
+            }
+        });
+        let key = std::thread::spawn(move || {
+            for _ in 0..32 {
+                update_preferences(&key_root, |preferences| {
+                    preferences.open_router_key = Some("sk-or-secret".to_string());
+                })
+                .unwrap();
+            }
+        });
+
+        launcher.join().unwrap();
+        key.join().unwrap();
+        let preferences = load_preferences(&root).unwrap();
+        assert_eq!(preferences.launcher_adapter_id.as_deref(), Some("codex"));
+        assert_eq!(preferences.open_router_key.as_deref(), Some("sk-or-secret"));
+        fs::remove_dir_all(root.as_ref()).unwrap();
+    }
+
+    #[test]
+    fn preference_update_does_not_replace_corrupt_file_with_defaults() {
+        let root = temp_root();
+        let path = preferences_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{not valid json").unwrap();
+
+        let error = update_preferences(&root, |preferences| {
+            preferences.use_login_shell = Some(false);
+        })
+        .unwrap_err();
+
+        assert!(error.contains("invalid preferences"));
+        assert_eq!(fs::read(&path).unwrap(), b"{not valid json");
         fs::remove_dir_all(root).unwrap();
     }
 

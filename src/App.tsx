@@ -185,6 +185,7 @@ import {
   getShowHideShortcut,
   activatePane,
   getRuntimeConfig,
+  getUseLoginShell,
   generateFoundationTabTitle,
   killPane,
   listenToMenuBarSelectPane,
@@ -1053,6 +1054,9 @@ export default function App() {
   // Set once the OpenRouter key has been loaded from the backend, so the
   // persist-on-change effect doesn't push the pre-hydration in-memory value back.
   const openRouterKeyHydratedRef = useRef(false);
+  // The backend preference is the startup/recovery source of truth. Do not let the
+  // localStorage mirror write its default back before that durable value is loaded.
+  const useLoginShellHydratedRef = useRef(false);
   const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
   const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
@@ -3516,6 +3520,7 @@ export default function App() {
           existingTurns,
           existingThreadGraphs,
           storedOpenRouterKey,
+          storedUseLoginShell,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
@@ -3527,6 +3532,7 @@ export default function App() {
           listTurns(),
           listThreadGraphs().catch((): ThreadGraph[] => []),
           getOpenRouterKey().catch(() => ""),
+          getUseLoginShell().catch((): boolean | null => null),
         ]);
         if (cancelled) {
           return;
@@ -3539,13 +3545,20 @@ export default function App() {
           const backendKey = storedOpenRouterKey.trim();
           const migratedKey = current.openRouterKey.trim();
           const effectiveKey = backendKey || migratedKey;
+          const effectiveUseLoginShell = storedUseLoginShell ?? current.useLoginShell;
           if (!backendKey && migratedKey) {
             void setOpenRouterKey(migratedKey).catch(() => undefined);
           }
           openRouterKeyHydratedRef.current = true;
-          return current.openRouterKey === effectiveKey
+          useLoginShellHydratedRef.current = true;
+          return current.openRouterKey === effectiveKey &&
+            current.useLoginShell === effectiveUseLoginShell
             ? current
-            : { ...current, openRouterKey: effectiveKey };
+            : {
+                ...current,
+                openRouterKey: effectiveKey,
+                useLoginShell: effectiveUseLoginShell,
+              };
         });
 
         setConfig(runtimeConfig);
@@ -5740,11 +5753,15 @@ export default function App() {
 
   // Mirror the login-shell preference to the backend, which keeps its own
   // persisted copy (read on the spawn path, including startup recovery that runs
-  // before this fires). Pushing on mount and on every change keeps the two stores
-  // in agreement so a fresh spawn — and the next restart's recovery — honors what
-  // the dialog shows.
+  // before this fires). Hydrate that durable value first, then mirror later changes
+  // so a fresh spawn — and the next restart's recovery — honors what the dialog shows.
   useEffect(() => {
-    void setUseLoginShell(settings.useLoginShell).catch(() => undefined);
+    if (!useLoginShellHydratedRef.current) {
+      return;
+    }
+    void setUseLoginShell(settings.useLoginShell).catch((err) => {
+      setError(`Could not save the login-shell setting: ${unknownErrorMessage(err)}`);
+    });
   }, [settings.useLoginShell]);
 
   // Escape cancels the worktree close dialog. Capture phase so it wins over the

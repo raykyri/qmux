@@ -164,14 +164,15 @@ fn openrouter_key_get(state: tauri::State<'_, AppState>) -> Result<String, Strin
 #[tauri::command]
 fn openrouter_key_set(state: tauri::State<'_, AppState>, key: String) -> Result<(), String> {
     let workspace_root = &state.config().workspace_root;
-    let mut preferences = persistence::load_preferences(workspace_root).unwrap_or_default();
     let trimmed = key.trim();
-    preferences.open_router_key = if trimmed.is_empty() {
+    let open_router_key = if trimmed.is_empty() {
         None
     } else {
         Some(trimmed.to_string())
     };
-    persistence::save_preferences(workspace_root, &preferences)
+    persistence::update_preferences(workspace_root, move |preferences| {
+        preferences.open_router_key = open_router_key;
+    })
 }
 
 #[tauri::command]
@@ -189,10 +190,9 @@ fn launcher_adapter_preference_set(
         return Err(format!("unknown agent adapter '{adapter_id}'"));
     }
 
-    let mut preferences =
-        persistence::load_preferences(&state.config().workspace_root).unwrap_or_default();
-    preferences.launcher_adapter_id = Some(adapter_id);
-    persistence::save_preferences(&state.config().workspace_root, &preferences)
+    persistence::update_preferences(&state.config().workspace_root, move |preferences| {
+        preferences.launcher_adapter_id = Some(adapter_id);
+    })
 }
 
 #[tauri::command]
@@ -494,11 +494,19 @@ fn spawn_shell(
 }
 
 #[tauri::command]
+fn use_login_shell_get(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    Ok(
+        persistence::load_preferences(&state.config().workspace_root)?
+            .use_login_shell
+            .unwrap_or(true),
+    )
+}
+
+#[tauri::command]
 fn use_login_shell_set(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
-    let mut preferences =
-        persistence::load_preferences(&state.config().workspace_root).unwrap_or_default();
-    preferences.use_login_shell = Some(enabled);
-    persistence::save_preferences(&state.config().workspace_root, &preferences)
+    persistence::update_preferences(&state.config().workspace_root, |preferences| {
+        preferences.use_login_shell = Some(enabled);
+    })
 }
 
 #[tauri::command]
@@ -981,6 +989,7 @@ fn main() {
             group_create_pick,
             group_pick_dir,
             spawn_shell,
+            use_login_shell_get,
             use_login_shell_set,
             agent_spawn,
             spawn_claude,
