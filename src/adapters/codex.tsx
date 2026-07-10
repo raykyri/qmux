@@ -6,6 +6,7 @@ export const CODEX_ADAPTER_ID = "codex";
 
 const CODEX_SANDBOX_OPTIONS: LauncherSelectOption[] = [
   { value: "workspace-write", label: "Workspace access" },
+  { value: "read-only", label: "Read-only access" },
   { value: "danger-full-access", label: "System access" },
 ];
 
@@ -15,6 +16,7 @@ const CODEX_AUTO_REVIEWER = "auto_review";
 const CODEX_APPROVAL_OPTIONS: LauncherSelectOption[] = [
   { value: CODEX_AUTO_REVIEW_APPROVAL, label: "Auto approvals" },
   { value: "", label: "Default approvals", dividerBefore: true },
+  { value: "untrusted", label: "Ask for untrusted commands" },
   { value: "on-request", label: "Allow approval requests" },
   { value: "never", label: "Block approval requests" },
 ];
@@ -64,7 +66,11 @@ function codexApprovalSelection(value: Record<string, unknown>): string {
     return CODEX_AUTO_REVIEW_APPROVAL;
   }
   const approvalPolicy = stringOption(value.approvalPolicy);
-  return approvalPolicy === "on-request" || approvalPolicy === "never" ? approvalPolicy : "";
+  return approvalPolicy === "untrusted" ||
+    approvalPolicy === "on-request" ||
+    approvalPolicy === "never"
+    ? approvalPolicy
+    : "";
 }
 
 function setOption(

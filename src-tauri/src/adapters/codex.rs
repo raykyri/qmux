@@ -2,7 +2,7 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
     SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
-    reusable_session_agent, shell_quote_arg, shell_quote_path,
+    record_shell_fork_lineage, reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -36,6 +36,10 @@ const CODEX_HOOK_EVENTS: &[&str] = &[
     "PermissionRequest",
     "PreToolUse",
     "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
     "Stop",
 ];
 
@@ -222,6 +226,16 @@ impl CodexAdapter {
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
 
+        // Bind before spawn so a fast SessionStart hook can authenticate against the
+        // pane/agent scope and record the native session identity. The spawn-failure
+        // path clears this reserved binding.
+        attach_codex_agent_pane(
+            state,
+            &agent.id,
+            pane_id.clone(),
+            has_initial_prompt,
+        )?;
+
         let spawn_result = spawn_pty(
             state,
             PtySpawnSpec {
@@ -240,12 +254,9 @@ impl CodexAdapter {
         );
 
         match spawn_result {
-            Ok(pane) => {
-                attach_codex_agent_pane(state, &agent.id, pane.id.clone(), has_initial_prompt)?;
-                Ok(pane)
-            }
+            Ok(pane) => Ok(pane),
             Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
+                let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
                 Err(err)
             }
         }
@@ -447,22 +458,24 @@ impl CodexAdapter {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 
-        let cwd = PathBuf::from(&request.cwd);
-        if !cwd.is_dir() {
+        let shell_cwd = PathBuf::from(&request.cwd);
+        if !shell_cwd.is_dir() {
             return Err(format!(
                 "Codex working directory {} does not exist",
-                cwd.display()
+                shell_cwd.display()
             ));
         }
+        let agent_cwd = codex_effective_cwd(&shell_cwd, &request.args)?;
         let codex_home = ensure_codex_integration()?;
 
         // A restart-driven resume (`codex resume <id>`) rebinds the original agent for
         // that session instead of minting a duplicate; any other invocation starts a
         // fresh agent in the current directory.
-        let cwd_str = cwd.display().to_string();
+        let cwd_str = agent_cwd.display().to_string();
         let pane_group_id = state
             .pane_group_id(&request.pane_id)?
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let fork_point = codex_fork_source_session_id(&request.args).map(str::to_string);
         let agent = match reusable_session_agent(
             state,
             self.id(),
@@ -483,6 +496,13 @@ impl CodexAdapter {
                 },
             )?,
         };
+        let agent = record_shell_fork_lineage(
+            state,
+            agent,
+            self.id(),
+            fork_point.as_deref(),
+            &cwd_str,
+        )?;
         let agent = attach_codex_agent_pane(
             state,
             &agent.id,
@@ -492,7 +512,7 @@ impl CodexAdapter {
 
         let options = CodexLaunchOptions::default();
         let args = build_codex_args(
-            &cwd,
+            &shell_cwd,
             Some(&state.config().workspace_root),
             None,
             &options,
@@ -503,7 +523,7 @@ impl CodexAdapter {
         envs.push(("QMUX_CLI".to_string(), qmux_cli_path()?));
         envs.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
         let agent_id = agent.id.clone();
-        let worktree_dir = agent.worktree_dir.clone();
+        let launch_cwd = shell_cwd.display().to_string();
 
         state.emit(QmuxEvent::new(
             "agent.spawned",
@@ -514,7 +534,7 @@ impl CodexAdapter {
 
         Ok(PreparedShellAgentLaunch {
             binary,
-            cwd: worktree_dir,
+            cwd: launch_cwd,
             args,
             envs: envs
                 .into_iter()
@@ -540,6 +560,11 @@ impl CodexAdapter {
                     .and_then(|pane_id| state.agent_by_pane(pane_id).ok().flatten())
             });
         let hook_event = notification.event.clone();
+        if hook_event != "SessionStart"
+            && let Some(current) = agent.as_ref()
+        {
+            adopt_forked_codex_session_identity(state, current, &notification.payload)?;
+        }
         let event_type = match hook_event.as_str() {
             "SessionStart" => {
                 if let Some(current) = agent.as_ref() {
@@ -563,27 +588,39 @@ impl CodexAdapter {
                         });
                     let session_id_for_tail = session_id.clone();
                     let transcript_path_for_tail = transcript_path.clone();
+                    let stale_fork_payload = current
+                        .fork_point
+                        .as_deref()
+                        .is_some_and(|fork_point| {
+                            session_id.as_deref() == Some(fork_point)
+                                || transcript_path.as_deref().is_some_and(|path| {
+                                    codex_transcript_session_id(Path::new(path)).as_deref()
+                                        == Some(fork_point)
+                                })
+                        });
                     // Field-scoped mutation, not a full-struct `update_agent`: this
                     // freshly spawned process's pane is being bound by attach_agent_pane
                     // on another thread, and a stale-snapshot write here would race it —
                     // wiping either the pane_id it set or the session_id we set.
-                    state.mutate_agent(&current.id, |agent| {
-                        // Only overwrite when this event carries a session id; a
-                        // late/duplicate SessionStart that omits it must not blank a
-                        // recorded one, which fork + recovery key off.
-                        if let Some(session_id) = session_id {
-                            agent.session_id = Some(session_id);
-                        }
-                        // A startup hook only means Codex is ready, not that a turn is
-                        // running. Keep status unchanged here; the first real prompt/tool
-                        // hook promotes the agent to Running.
-                    })?;
-                    start_codex_transcript_binding(
-                        state.clone(),
-                        current.id.clone(),
-                        session_id_for_tail,
-                        transcript_path_for_tail,
-                    );
+                    if !stale_fork_payload {
+                        state.mutate_agent(&current.id, |agent| {
+                            // Only overwrite when this event carries a session id; a
+                            // late/duplicate SessionStart that omits it must not blank a
+                            // recorded one, which fork + recovery key off.
+                            if let Some(session_id) = session_id {
+                                agent.session_id = Some(session_id);
+                            }
+                            // A startup hook only means Codex is ready, not that a turn is
+                            // running. Keep status unchanged here; the first real prompt/tool
+                            // hook promotes the agent to Running.
+                        })?;
+                        start_codex_transcript_binding(
+                            state.clone(),
+                            current.id.clone(),
+                            session_id_for_tail,
+                            transcript_path_for_tail,
+                        );
+                    }
                 }
                 "agent.session_start"
             }
@@ -621,6 +658,22 @@ impl CodexAdapter {
                 }
                 "agent.awaiting_permission"
             }
+            "PreCompact" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.compacting"
+            }
+            "PostCompact" => {
+                if let Some(agent) = agent.as_mut() {
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.compacted"
+            }
+            "SubagentStart" => "agent.subagent_started",
+            "SubagentStop" => "agent.subagent_stopped",
             "Stop" => {
                 let deferred = if let Some(agent) = agent.as_ref() {
                     schedule_finish_agent_after_stop(state, agent)?
@@ -868,54 +921,231 @@ fn attach_codex_agent_pane(
     Ok(agent)
 }
 
+/// The project Codex will actually operate on for a shell invocation. Keep this
+/// separate from the process cwd so the intercepted shell command retains normal
+/// relative-path behavior while qMux identity and resume matching follow `--cd`.
+fn codex_effective_cwd(shell_cwd: &Path, args: &[String]) -> Result<PathBuf, String> {
+    let mut requested = None;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            break;
+        }
+        if arg == "--cd" || arg == "-C" {
+            let value = args
+                .get(index + 1)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("Codex {arg} requires a directory"))?;
+            requested = Some(PathBuf::from(value));
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--cd=") {
+            if value.is_empty() {
+                return Err("Codex --cd requires a directory".to_string());
+            }
+            requested = Some(PathBuf::from(value));
+        } else if let Some(value) = arg.strip_prefix("-C")
+            && !value.is_empty()
+        {
+            requested = Some(PathBuf::from(value));
+        }
+        index += 1;
+    }
+
+    let cwd = match requested {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => shell_cwd.join(path),
+        None => shell_cwd.to_path_buf(),
+    };
+    if !cwd.is_dir() {
+        return Err(format!(
+            "Codex working directory {} does not exist",
+            cwd.display()
+        ));
+    }
+    Ok(fs::canonicalize(&cwd).unwrap_or(cwd))
+}
+
 /// Whether a manual `codex ...` invocation carries an inline prompt. Value-taking
 /// flags are skipped so `codex --model gpt-5` is treated as interactive.
 fn args_contain_prompt(args: &[String]) -> bool {
-    let mut after_delimiter = false;
-    let mut skip_next = false;
-    for arg in args {
-        if after_delimiter {
-            return true;
-        }
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
         if arg == "--" {
-            after_delimiter = true;
+            return index + 1 < args.len();
+        }
+        if codex_variadic_value_flag(arg) {
+            index += 1;
+            while index < args.len() && !args[index].starts_with('-') {
+                index += 1;
+            }
             continue;
         }
         if codex_value_flag(arg) {
-            skip_next = true;
+            index += 2;
             continue;
         }
         if codex_inline_value_flag(arg) || arg.starts_with('-') {
+            index += 1;
             continue;
         }
-        // `codex resume [...]` is an interactive subcommand launch (resume a saved
-        // session), not an inline prompt. Treating it as a prompt left the rebound
-        // agent in its prior working status, pinning a stale "Thinking…" indicator
-        // until the next turn finished.
-        if arg == "resume" {
-            return false;
-        }
-        return true;
+
+        return match arg.as_str() {
+            // These interactive subcommands take an optional session selector and
+            // then an optional prompt. Parse both positions rather than treating the
+            // command or session id itself as prompt text.
+            "resume" | "fork" => codex_session_command_has_prompt(args, index + 1),
+            // Non-interactive agent runs are working even when their instructions
+            // come from stdin or review-selection flags instead of a prompt token.
+            "exec" | "e" | "review" => true,
+            command if codex_utility_command(command) => false,
+            // The first positional token of the base interactive CLI is its prompt.
+            _ => true,
+        };
     }
     false
+}
+
+fn codex_session_command_has_prompt(args: &[String], mut index: usize) -> bool {
+    let mut session_seen = false;
+    let mut use_last = false;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--last" {
+            use_last = true;
+            index += 1;
+            continue;
+        }
+        if arg == "--" {
+            let remaining = args.len().saturating_sub(index + 1);
+            return if use_last || session_seen {
+                remaining >= 1
+            } else {
+                remaining >= 2
+            };
+        }
+        if codex_variadic_value_flag(arg) {
+            index += 1;
+            while index < args.len() && !args[index].starts_with('-') {
+                index += 1;
+            }
+            continue;
+        }
+        if codex_value_flag(arg) {
+            index += 2;
+            continue;
+        }
+        if codex_inline_value_flag(arg) || arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        if use_last || session_seen {
+            return true;
+        }
+        session_seen = true;
+        index += 1;
+    }
+    false
+}
+
+fn codex_utility_command(command: &str) -> bool {
+    matches!(
+        command,
+        "a" | "app"
+            | "app-server"
+            | "apply"
+            | "archive"
+            | "cloud"
+            | "completion"
+            | "debug"
+            | "delete"
+            | "doctor"
+            | "exec-server"
+            | "features"
+            | "help"
+            | "login"
+            | "logout"
+            | "mcp"
+            | "mcp-server"
+            | "plugin"
+            | "remote-control"
+            | "sandbox"
+            | "unarchive"
+            | "update"
+    )
 }
 
 /// Extracts the session id from a `codex resume <id>` shell argument list, so a resume
 /// launch can rebind the original agent. `None` when the invocation isn't a `resume` of
 /// a specific session (e.g. `codex resume --last`).
 fn codex_resume_session_id(args: &[String]) -> Option<&str> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "resume" {
-            return iter.find(|next| !next.starts_with('-')).map(String::as_str);
-        }
+    codex_session_command_id(args, "resume")
+}
+
+fn codex_fork_source_session_id(args: &[String]) -> Option<&str> {
+    codex_session_command_id(args, "fork")
+}
+
+fn codex_session_command_id<'a>(args: &'a [String], expected_command: &str) -> Option<&'a str> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
         if arg == "--" {
             break;
         }
+        if codex_variadic_value_flag(arg) {
+            index += 1;
+            while index < args.len() && !args[index].starts_with('-') {
+                index += 1;
+            }
+            continue;
+        }
+        if codex_value_flag(arg) {
+            index += 2;
+            continue;
+        }
+        if codex_inline_value_flag(arg) || arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        // The first positional token is either the interactive prompt or a
+        // subcommand. Only the requested session command can identify its native
+        // source; never scan through another command's arguments.
+        return (arg == expected_command)
+            .then(|| codex_resume_command_session_id(args, index + 1))
+            .flatten();
+    }
+    None
+}
+
+fn codex_resume_command_session_id(args: &[String], mut index: usize) -> Option<&str> {
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--last" {
+            return None;
+        }
+        if arg == "--" {
+            return args.get(index + 1).map(String::as_str);
+        }
+        if codex_variadic_value_flag(arg) {
+            index += 1;
+            while index < args.len() && !args[index].starts_with('-') {
+                index += 1;
+            }
+            continue;
+        }
+        if codex_value_flag(arg) {
+            index += 2;
+            continue;
+        }
+        if codex_inline_value_flag(arg) || arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(arg);
     }
     None
 }
@@ -929,10 +1159,23 @@ fn codex_value_flag(arg: &str) -> bool {
             | "--model"
             | "-m"
             | "--sandbox"
+            | "-s"
             | "--ask-for-approval"
+            | "-a"
             | "--config"
             | "-c"
+            | "--enable"
+            | "--disable"
+            | "--remote"
+            | "--remote-auth-token-env"
+            | "--local-provider"
+            | "--profile"
+            | "-p"
     )
+}
+
+fn codex_variadic_value_flag(arg: &str) -> bool {
+    matches!(arg, "--image" | "-i")
 }
 
 fn codex_inline_value_flag(arg: &str) -> bool {
@@ -943,12 +1186,21 @@ fn codex_inline_value_flag(arg: &str) -> bool {
         "--sandbox=",
         "--ask-for-approval=",
         "--config=",
+        "--enable=",
+        "--disable=",
+        "--remote=",
+        "--remote-auth-token-env=",
+        "--local-provider=",
+        "--profile=",
     ]
     .iter()
     .any(|prefix| arg.starts_with(prefix))
         || (arg.starts_with("-C") && arg.len() > 2)
         || (arg.starts_with("-m") && arg.len() > 2)
         || (arg.starts_with("-c") && arg.len() > 2)
+        || (arg.starts_with("-s") && arg.len() > 2)
+        || (arg.starts_with("-a") && arg.len() > 2)
+        || (arg.starts_with("-p") && arg.len() > 2)
 }
 
 fn ensure_codex_integration() -> Result<PathBuf, String> {
@@ -1073,12 +1325,20 @@ fn toml_string(value: &str) -> String {
 }
 
 fn validate_shell_tail_args(args: &[String]) -> Result<(), String> {
-    for arg in args {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
         if arg == "--" {
             break;
         }
         if arg == "--oss" {
             return Err("qMux Codex integration does not support --oss".to_string());
+        }
+        if arg == "--remote" || arg.starts_with("--remote=") {
+            return Err(
+                "qMux Codex integration does not support --remote because lifecycle hooks and transcripts must run locally"
+                    .to_string(),
+            );
         }
         if arg == "--profile" || arg == "-p" || arg.starts_with("--profile=") {
             return Err(
@@ -1091,8 +1351,37 @@ fn validate_shell_tail_args(args: &[String]) -> Result<(), String> {
                 "qMux Codex integration uses its own profile and does not support -p".to_string(),
             );
         }
+        if arg == "--disable" && args.get(index + 1).is_some_and(|value| value == "hooks")
+            || arg == "--disable=hooks"
+        {
+            return Err(
+                "qMux Codex integration does not support disabling hooks because lifecycle tracking requires them"
+                    .to_string(),
+            );
+        }
+        let config_override = if arg == "--config" || arg == "-c" {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("--config=")
+                .or_else(|| arg.strip_prefix("-c").filter(|value| !value.is_empty()))
+        };
+        if config_override.is_some_and(codex_config_overrides_hooks) {
+            return Err(
+                "qMux Codex integration does not support overriding hook configuration because lifecycle tracking requires the qMux hooks"
+                    .to_string(),
+            );
+        }
+        index += 1;
     }
     Ok(())
+}
+
+fn codex_config_overrides_hooks(value: &str) -> bool {
+    let key = value
+        .split_once('=')
+        .map_or(value, |(key, _)| key)
+        .trim();
+    key == "hooks" || key.starts_with("hooks.") || key == "features.hooks"
 }
 
 /// Codex can carry its own internal queue: a user may submit into the TUI while a
@@ -1177,6 +1466,62 @@ fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, 
             Ok(false)
         }
     }
+}
+
+/// Recovers a fork's child identity when its startup hook briefly reported the
+/// source session. Later lifecycle hooks carry the child session metadata, so the
+/// first trustworthy child id can repair the one rejected at SessionStart.
+fn adopt_forked_codex_session_identity(
+    state: &AppState,
+    current: &AgentInfo,
+    payload: &Value,
+) -> Result<(), String> {
+    let Some(fork_point) = current.fork_point.as_deref() else {
+        return Ok(());
+    };
+    if current
+        .session_id
+        .as_deref()
+        .is_some_and(|session_id| session_id != fork_point)
+    {
+        return Ok(());
+    }
+
+    let transcript_path = string_field(payload, "transcript_path")
+        .or_else(|| string_field(payload, "transcriptPath"))
+        .filter(|candidate| {
+            hook_transcript_path_acceptable(current.transcript_path.as_deref(), candidate)
+        });
+    let child_session_id = string_field(payload, "session_id")
+        .or_else(|| string_field(payload, "sessionId"))
+        .or_else(|| string_field(payload, "resource_id"))
+        .or_else(|| string_field(payload, "resourceId"))
+        .or_else(|| {
+            transcript_path
+                .as_deref()
+                .and_then(|path| codex_transcript_session_id(Path::new(path)))
+        })
+        .filter(|session_id| session_id != fork_point);
+    let Some(child_session_id) = child_session_id else {
+        return Ok(());
+    };
+
+    let updated = state.mutate_agent(&current.id, |agent| {
+        if agent.session_id.is_none() || agent.session_id.as_deref() == Some(fork_point) {
+            agent.session_id = Some(child_session_id.clone());
+        }
+    })?;
+    if updated.as_ref().and_then(|agent| agent.session_id.as_deref())
+        == Some(child_session_id.as_str())
+    {
+        start_codex_transcript_binding(
+            state.clone(),
+            current.id.clone(),
+            Some(child_session_id),
+            transcript_path,
+        );
+    }
+    Ok(())
 }
 
 const CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS: usize = 40;
@@ -1856,6 +2201,8 @@ mod tests {
         assert!(!args_contain_prompt(&svec(&["--sandbox=workspace-write"])));
         assert!(!args_contain_prompt(&svec(&["--add-dir=/tmp/workspaces"])));
         assert!(!args_contain_prompt(&svec(&["--search"])));
+        assert!(!args_contain_prompt(&svec(&["--image", "one.png", "two.png"])));
+        assert!(!args_contain_prompt(&svec(&["doctor"])));
 
         assert!(args_contain_prompt(&svec(&["fix the bug"])));
         assert!(args_contain_prompt(&svec(&[
@@ -1870,9 +2217,65 @@ mod tests {
         assert!(!args_contain_prompt(&svec(&["resume"])));
         assert!(!args_contain_prompt(&svec(&["resume", "sess-1"])));
         assert!(!args_contain_prompt(&svec(&["resume", "--last"])));
+        assert!(args_contain_prompt(&svec(&[
+            "resume",
+            "sess-1",
+            "continue here"
+        ])));
+        assert!(args_contain_prompt(&svec(&[
+            "resume",
+            "--last",
+            "continue here"
+        ])));
         assert!(!args_contain_prompt(&svec(&[
             "--model", "gpt-5", "resume", "sess-1"
         ])));
+        assert!(!args_contain_prompt(&svec(&["fork", "sess-1"])));
+        assert!(args_contain_prompt(&svec(&[
+            "fork",
+            "sess-1",
+            "try another path"
+        ])));
+        assert!(args_contain_prompt(&svec(&["fork", "sess-1", "--", "-prompt"])));
+        assert!(args_contain_prompt(&svec(&["exec"])));
+        assert!(args_contain_prompt(&svec(&["review", "--uncommitted"])));
+    }
+
+    #[test]
+    fn shell_cd_override_drives_agent_workspace_identity() {
+        let root = temp_dir();
+        let shell = root.join("shell");
+        let project = root.join("project");
+        fs::create_dir_all(&shell).unwrap();
+        fs::create_dir_all(&project).unwrap();
+
+        assert_eq!(
+            codex_effective_cwd(&shell, &[]).unwrap(),
+            fs::canonicalize(&shell).unwrap()
+        );
+        assert_eq!(
+            codex_effective_cwd(&shell, &svec(&["--cd", "../project"])).unwrap(),
+            fs::canonicalize(&project).unwrap()
+        );
+        assert_eq!(
+            codex_effective_cwd(
+                &shell,
+                &svec(&[&format!("--cd={}", project.display())])
+            )
+            .unwrap(),
+            fs::canonicalize(&project).unwrap()
+        );
+        assert_eq!(
+            codex_effective_cwd(&shell, &svec(&[&format!("-C{}", project.display())])).unwrap(),
+            fs::canonicalize(&project).unwrap()
+        );
+        assert_eq!(
+            codex_effective_cwd(&shell, &svec(&["--", "--cd", "../project"])).unwrap(),
+            fs::canonicalize(&shell).unwrap()
+        );
+        assert!(codex_effective_cwd(&shell, &svec(&["--cd"])).is_err());
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -1881,11 +2284,50 @@ mod tests {
             codex_resume_session_id(&svec(&["resume", "sess-1"])),
             Some("sess-1")
         );
+        assert_eq!(
+            codex_resume_session_id(&svec(&[
+                "--remote",
+                "unix:///tmp/codex.sock",
+                "resume",
+                "--model",
+                "gpt-5",
+                "sess-2"
+            ])),
+            Some("sess-2")
+        );
+        assert_eq!(
+            codex_resume_session_id(&svec(&["resume", "--model=gpt-5", "--", "sess-3"])),
+            Some("sess-3")
+        );
         // Not a resume invocation, or no concrete session id (e.g. `resume --last`).
         assert_eq!(codex_resume_session_id(&svec(&[])), None);
         assert_eq!(codex_resume_session_id(&svec(&["fix the bug"])), None);
         assert_eq!(codex_resume_session_id(&svec(&["resume"])), None);
         assert_eq!(codex_resume_session_id(&svec(&["resume", "--last"])), None);
+        assert_eq!(
+            codex_resume_session_id(&svec(&["--config", "resume", "actual-prompt"])),
+            None
+        );
+        assert_eq!(
+            codex_resume_session_id(&svec(&["--image", "one.png", "resume", "sess-4"])),
+            None
+        );
+        assert_eq!(
+            codex_resume_session_id(&svec(&["--", "resume", "prompt-session"])),
+            None
+        );
+        assert_eq!(
+            codex_fork_source_session_id(&svec(&["fork", "source-session"])),
+            Some("source-session")
+        );
+        assert_eq!(
+            codex_fork_source_session_id(&svec(&["fork", "--last"])),
+            None
+        );
+        assert_eq!(
+            codex_fork_source_session_id(&svec(&["resume", "source-session"])),
+            None
+        );
     }
 
     #[test]
@@ -2020,11 +2462,23 @@ mod tests {
     }
 
     #[test]
-    fn shell_tail_args_reject_profile_and_oss_before_delimiter() {
+    fn shell_tail_args_reject_incompatible_modes_before_delimiter() {
         let profile_args = vec!["--profile".to_string(), "work".to_string()];
         let inline_profile_args = vec!["--profile=work".to_string()];
         let short_profile_args = vec!["-pwork".to_string()];
         let oss_args = vec!["--oss".to_string()];
+        let remote_args = vec![
+            "--remote".to_string(),
+            "unix:///tmp/codex.sock".to_string(),
+        ];
+        let inline_remote_args = vec!["--remote=unix:///tmp/codex.sock".to_string()];
+        let disable_hooks_args = vec!["--disable".to_string(), "hooks".to_string()];
+        let inline_disable_hooks_args = vec!["--disable=hooks".to_string()];
+        let config_hooks_args = vec![
+            "--config".to_string(),
+            "features.hooks=false".to_string(),
+        ];
+        let short_config_hooks_args = vec!["-chooks.SessionStart=[]".to_string()];
         let prompt_args = vec![
             "--".to_string(),
             "--profile".to_string(),
@@ -2035,6 +2489,16 @@ mod tests {
         assert!(validate_shell_tail_args(&inline_profile_args).is_err());
         assert!(validate_shell_tail_args(&short_profile_args).is_err());
         assert!(validate_shell_tail_args(&oss_args).is_err());
+        assert!(validate_shell_tail_args(&remote_args).is_err());
+        assert!(validate_shell_tail_args(&inline_remote_args).is_err());
+        assert!(validate_shell_tail_args(&disable_hooks_args).is_err());
+        assert!(validate_shell_tail_args(&inline_disable_hooks_args).is_err());
+        assert!(validate_shell_tail_args(&config_hooks_args).is_err());
+        assert!(validate_shell_tail_args(&short_config_hooks_args).is_err());
+        assert!(
+            validate_shell_tail_args(&svec(&["--config", "model_reasoning_effort=high"]))
+                .is_ok()
+        );
         assert!(validate_shell_tail_args(&prompt_args).is_ok());
     }
 
@@ -2054,8 +2518,16 @@ mod tests {
         assert!(profile.contains("hooks = true"));
         assert!(profile.contains("[[hooks.SessionStart]]"));
         assert!(profile.contains("matcher = \"startup|resume\""));
-        assert!(profile.contains("[[hooks.Stop]]"));
-        assert!(profile.contains("qmux-codex-hook' Stop"));
+        for event in CODEX_HOOK_EVENTS {
+            assert!(
+                profile.contains(&format!("[[hooks.{event}]]")),
+                "missing hook group for {event}"
+            );
+            assert!(
+                profile.contains(&format!("qmux-codex-hook' {event}")),
+                "missing hook command for {event}"
+            );
+        }
         assert!(profile.contains("qMux executable: /Applications/qmux app/qmux"));
         assert!(shim.contains("QMUX_SOCK"));
         assert!(shim.contains("exec \"$QMUX_CLI\" notify \"$event\""));
@@ -2172,6 +2644,41 @@ trusted_hash = "sha256:trusted"
         assert_eq!(stored.parent_id.as_deref(), Some("agent-source"));
         assert_eq!(stored.fork_point.as_deref(), Some("source-session"));
         assert_eq!(stored.root_session_id.as_deref(), Some("root-session"));
+    }
+
+    #[test]
+    fn fork_rejects_stale_startup_identity_then_adopts_child_identity() {
+        let state = test_state();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Idle;
+        agent.fork_point = Some("source-session".to_string());
+        agent.root_session_id = Some("source-session".to_string());
+        state.insert_agent(agent).unwrap();
+
+        ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({ "session_id": "source-session" }),
+            ),
+        );
+        assert_eq!(state.agent("agent-1").unwrap().unwrap().session_id, None);
+
+        ingest(
+            &state,
+            hook_for_agent(
+                "UserPromptSubmit",
+                "agent-1",
+                json!({
+                    "session_id": "child-session",
+                    "prompt": "continue from the fork"
+                }),
+            ),
+        );
+        let stored = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(stored.session_id.as_deref(), Some("child-session"));
+        assert_eq!(stored.fork_point.as_deref(), Some("source-session"));
     }
 
     #[test]
@@ -2725,6 +3232,51 @@ trusted_hash = "sha256:trusted"
         assert_eq!(event.event_type, "agent.awaiting_permission");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::AwaitingPermission));
+    }
+
+    #[test]
+    fn compaction_and_subagent_hooks_preserve_parent_activity() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        state
+            .set_agent_status("agent-1", AgentStatus::AwaitingInput)
+            .unwrap();
+        let event = ingest(
+            &state,
+            hook_for_agent("PreCompact", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.compacting");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(
+            &state,
+            hook_for_agent("PostCompact", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.compacted");
+
+        let event = ingest(
+            &state,
+            hook_for_agent("SubagentStart", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.subagent_started");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(
+            &state,
+            hook_for_agent("SubagentStop", "agent-1", json!({})),
+        );
+        assert_eq!(event.event_type, "agent.subagent_stopped");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
     }
 
     #[test]
