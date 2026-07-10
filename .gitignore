@@ -10,8 +10,8 @@ src-tauri/gen/
 .codex/
 .claude/
 
-# Legacy in-repo session dir: older builds resolved the default config's
-# relative `.qmux/workspaces` into the checkout. State now lives in ~/.qmux, but
-# keep this ignored so a pre-existing .qmux/ (state.json, the control socket,
-# per-pane scrollback) is never accidentally committed.
+# Legacy in-repo session dir: older builds stored session data and thread graphs
+# in the checkout. Active state now lives in the global qmux data root, but keep
+# this ignored so legacy data and retained thread recovery copies are never
+# accidentally committed.
 .qmux/

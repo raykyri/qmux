@@ -236,28 +236,85 @@ pub fn agent_branch_id(agent: &AgentInfo) -> String {
         .unwrap_or_else(|| format!("branch-{}", agent.id))
 }
 
-pub fn snapshot_path(worktree_dir: &str, thread_id: &str) -> PathBuf {
-    Path::new(worktree_dir)
+pub fn snapshot_path(storage_root: &str, thread_id: &str) -> PathBuf {
+    Path::new(storage_root)
         .join(".qmux")
         .join("threads")
         .join(format!("{thread_id}.json"))
 }
 
-pub fn thread_record_for_agent(agent: &AgentInfo, default_focused_branch_id: &str) -> ThreadRecord {
+pub fn thread_record_for_agent(
+    agent: &AgentInfo,
+    default_focused_branch_id: &str,
+    storage_root: &Path,
+) -> ThreadRecord {
     let thread_id = agent_thread_id(agent);
+    let storage_root = storage_root.display().to_string();
     ThreadRecord {
         id: thread_id.clone(),
-        storage_root: agent.worktree_dir.clone(),
-        snapshot_path: snapshot_path(&agent.worktree_dir, &thread_id)
+        snapshot_path: snapshot_path(&storage_root, &thread_id)
             .display()
             .to_string(),
+        storage_root,
         default_focused_branch_id: default_focused_branch_id.to_string(),
         created_at: agent_created_at(agent),
     }
 }
 
-pub fn read_snapshot(worktree_dir: &str, thread_id: &str) -> Result<Option<ThreadGraph>, String> {
-    let path = snapshot_path(worktree_dir, thread_id);
+pub fn migrate_record_to_storage_root(
+    record: &mut ThreadRecord,
+    storage_root: &Path,
+) -> Result<bool, String> {
+    let destination_root = storage_root.display().to_string();
+    let destination_path = snapshot_path(&destination_root, &record.id);
+    let record_is_current = record.storage_root == destination_root
+        && Path::new(&record.snapshot_path) == destination_path;
+
+    if let Some(graph) = read_snapshot(&destination_root, &record.id)? {
+        validate_snapshot_thread_id(&graph, &record.id, &destination_path)?;
+        if record_is_current {
+            return Ok(false);
+        }
+        update_record_storage(record, destination_root, destination_path);
+        return Ok(true);
+    }
+
+    if record_is_current {
+        return Ok(false);
+    }
+
+    if let Some(graph) = read_snapshot(&record.storage_root, &record.id)? {
+        let source_path = snapshot_path(&record.storage_root, &record.id);
+        validate_snapshot_thread_id(&graph, &record.id, &source_path)?;
+        write_snapshot(&destination_root, &graph)?;
+    }
+
+    update_record_storage(record, destination_root, destination_path);
+    Ok(true)
+}
+
+fn update_record_storage(record: &mut ThreadRecord, storage_root: String, snapshot_path: PathBuf) {
+    record.storage_root = storage_root;
+    record.snapshot_path = snapshot_path.display().to_string();
+}
+
+fn validate_snapshot_thread_id(
+    graph: &ThreadGraph,
+    expected_thread_id: &str,
+    path: &Path,
+) -> Result<(), String> {
+    if graph.thread_id == expected_thread_id {
+        return Ok(());
+    }
+    Err(format!(
+        "thread graph {} contains thread id {}, expected {expected_thread_id}",
+        path.display(),
+        graph.thread_id
+    ))
+}
+
+pub fn read_snapshot(storage_root: &str, thread_id: &str) -> Result<Option<ThreadGraph>, String> {
+    let path = snapshot_path(storage_root, thread_id);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -273,8 +330,8 @@ pub fn read_snapshot(worktree_dir: &str, thread_id: &str) -> Result<Option<Threa
         .map_err(|err| format!("invalid thread graph {}: {err}", path.display()))
 }
 
-pub fn write_snapshot(worktree_dir: &str, graph: &ThreadGraph) -> Result<(), String> {
-    let path = snapshot_path(worktree_dir, &graph.thread_id);
+pub fn write_snapshot(storage_root: &str, graph: &ThreadGraph) -> Result<(), String> {
+    let path = snapshot_path(storage_root, &graph.thread_id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
             format!(
@@ -282,22 +339,24 @@ pub fn write_snapshot(worktree_dir: &str, graph: &ThreadGraph) -> Result<(), Str
                 parent.display()
             )
         })?;
+        if let Some(state_dir) = parent.parent() {
+            fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+                format!(
+                    "failed to set permissions on thread state dir {}: {err}",
+                    state_dir.display()
+                )
+            })?;
+        }
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            format!(
+                "failed to set permissions on thread graph dir {}: {err}",
+                parent.display()
+            )
+        })?;
     }
     let raw = serde_json::to_vec_pretty(graph)
         .map_err(|err| format!("failed to encode thread graph {}: {err}", path.display()))?;
     atomic_write_owner_only(&path, &raw)
-}
-
-#[allow(dead_code)]
-pub fn replace_agent_turns_snapshot(agent: &AgentInfo, turns: &[Turn]) -> Result<(), String> {
-    ThreadStore::for_agent(agent).replace_agent_branch_turns(agent, turns)?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn append_agent_turn_snapshot(agent: &AgentInfo, turn: &Turn) -> Result<(), String> {
-    ThreadStore::for_agent(agent).append_turn_node(agent, turn)?;
-    Ok(())
 }
 
 #[allow(dead_code)]
@@ -338,10 +397,6 @@ impl ThreadStore {
         Self {
             storage_root: storage_root.into(),
         }
-    }
-
-    pub fn for_agent(agent: &AgentInfo) -> Self {
-        Self::new(PathBuf::from(&agent.worktree_dir))
     }
 
     pub fn read_thread(&self, thread_id: &str) -> Result<Option<ThreadGraph>, String> {
@@ -972,12 +1027,18 @@ mod tests {
         let worktree = temp_worktree("qmux-thread-graph-roundtrip");
         let agent = sample_agent(worktree.display().to_string());
         let turns = vec![sample_turn("agent-1", "turn-1", "user", 0)];
+        let store = ThreadStore::new(worktree.clone());
 
-        replace_agent_turns_snapshot(&agent, &turns).unwrap();
+        store.replace_agent_branch_turns(&agent, &turns).unwrap();
 
         let path = snapshot_path(&agent.worktree_dir, "thread-1");
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "snapshot must be owner-only");
+        let dir_mode = fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o077, 0, "thread directory must be owner-only");
 
         let graph = read_snapshot(&agent.worktree_dir, "thread-1")
             .unwrap()
@@ -994,14 +1055,15 @@ mod tests {
         let agent = sample_agent(worktree.display().to_string());
         let first = sample_turn("agent-1", "turn-1", "user", 0);
         let second = sample_turn("agent-1", "turn-2", "assistant", 1);
-        append_agent_turn_snapshot(&agent, &first).unwrap();
-        append_agent_turn_snapshot(&agent, &second).unwrap();
+        let store = ThreadStore::new(worktree.clone());
+        store.append_turn_node(&agent, &first).unwrap();
+        store.append_turn_node(&agent, &second).unwrap();
 
         let mut updated = second.clone();
         updated.blocks = vec![TurnBlock::Text {
             text: "updated text".to_string(),
         }];
-        append_agent_turn_snapshot(&agent, &updated).unwrap();
+        store.append_turn_node(&agent, &updated).unwrap();
 
         let graph = read_snapshot(&agent.worktree_dir, "thread-1")
             .unwrap()
@@ -1021,6 +1083,72 @@ mod tests {
     }
 
     #[test]
+    fn legacy_record_migrates_without_removing_source_snapshot() {
+        let legacy_root = temp_worktree("qmux-thread-graph-legacy");
+        let global_root = temp_worktree("qmux-thread-graph-global");
+        let agent = sample_agent(legacy_root.display().to_string());
+        ThreadStore::new(legacy_root.clone())
+            .replace_agent_branch_turns(&agent, &[sample_turn("agent-1", "legacy-turn", "user", 0)])
+            .unwrap();
+        let mut record = thread_record_for_agent(&agent, "branch-1", &legacy_root);
+
+        assert!(migrate_record_to_storage_root(&mut record, &global_root).unwrap());
+
+        let global_root_string = global_root.display().to_string();
+        assert_eq!(record.storage_root, global_root_string);
+        assert_eq!(
+            record.snapshot_path,
+            snapshot_path(&global_root.display().to_string(), "thread-1")
+                .display()
+                .to_string()
+        );
+        assert!(
+            read_snapshot(&global_root.display().to_string(), "thread-1")
+                .unwrap()
+                .expect("global snapshot exists")
+                .nodes
+                .contains_key("legacy-turn")
+        );
+        assert!(
+            read_snapshot(&legacy_root.display().to_string(), "thread-1")
+                .unwrap()
+                .is_some(),
+            "legacy snapshot is retained as a recovery copy"
+        );
+
+        fs::remove_dir_all(legacy_root).unwrap();
+        fs::remove_dir_all(global_root).unwrap();
+    }
+
+    #[test]
+    fn existing_global_snapshot_wins_during_migration() {
+        let legacy_root = temp_worktree("qmux-thread-graph-stale");
+        let global_root = temp_worktree("qmux-thread-graph-current");
+        let agent = sample_agent(legacy_root.display().to_string());
+        ThreadStore::new(legacy_root.clone())
+            .replace_agent_branch_turns(&agent, &[sample_turn("agent-1", "stale-turn", "user", 0)])
+            .unwrap();
+        ThreadStore::new(global_root.clone())
+            .replace_agent_branch_turns(
+                &agent,
+                &[sample_turn("agent-1", "current-turn", "user", 0)],
+            )
+            .unwrap();
+        let mut record = thread_record_for_agent(&agent, "branch-1", &legacy_root);
+
+        assert!(migrate_record_to_storage_root(&mut record, &global_root).unwrap());
+
+        let graph = read_snapshot(&global_root.display().to_string(), "thread-1")
+            .unwrap()
+            .expect("global snapshot exists");
+        assert!(graph.nodes.contains_key("current-turn"));
+        assert!(!graph.nodes.contains_key("stale-turn"));
+
+        fs::remove_dir_all(legacy_root).unwrap();
+        fs::remove_dir_all(global_root).unwrap();
+    }
+
+    #[test]
     fn scoped_refresh_preserves_graph_nodes_and_other_branches() {
         let worktree = temp_worktree("qmux-thread-graph-shared");
         let source = sample_agent_with(
@@ -1037,7 +1165,7 @@ mod tests {
             "branch-target",
             worktree.display().to_string(),
         );
-        let store = ThreadStore::for_agent(&source);
+        let store = ThreadStore::new(worktree.clone());
 
         store
             .append_turn_node(
@@ -1121,7 +1249,7 @@ mod tests {
             "branch-second",
             worktree.display().to_string(),
         );
-        let store = ThreadStore::for_agent(&first);
+        let store = ThreadStore::new(worktree.clone());
         store
             .append_turn_node(&first, &sample_turn("agent-first", "first-turn", "user", 0))
             .unwrap();

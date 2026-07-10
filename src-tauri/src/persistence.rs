@@ -64,14 +64,14 @@ pub struct PersistedState {
     /// sentinel; the frontend validates it against the recovered panes on boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tab_id: Option<String>,
-    /// Per-thread routing and storage metadata. The thread snapshot itself remains
-    /// in `.qmux/threads/<thread-id>.json`; this only tells qmux where to find it
-    /// and what branch a default view should focus.
+    /// Per-thread routing and storage metadata. The thread snapshot itself lives in
+    /// `<workspaceRoot>/.qmux/threads/<thread-id>.json`; this tells qmux where to find
+    /// it and what branch a default view should focus.
     #[serde(default)]
     pub threads: HashMap<String, ThreadRecord>,
-    /// Focused branch per qmux transcript thread. The full graph lives in
-    /// `.qmux/threads/<thread-id>.json`; state.json keeps only the routing metadata
-    /// needed to recover pane/agent views.
+    /// Focused branch per qmux transcript thread. The full graph lives in the global
+    /// thread store; state.json keeps only the routing metadata needed to recover
+    /// pane/agent views.
     #[serde(default)]
     pub thread_focus: HashMap<String, String>,
 }

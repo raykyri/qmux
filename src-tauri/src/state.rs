@@ -541,11 +541,11 @@ fn sanitize_active_tab_id(tab_id: Option<String>) -> Option<String> {
 }
 
 fn ensure_agent_thread_metadata(state: &AppState, model: &mut Model, agent: &mut AgentInfo) {
-    if agent
+    let had_thread_id = agent
         .thread_id
         .as_deref()
-        .is_none_or(|thread_id| thread_id.trim().is_empty())
-    {
+        .is_some_and(|thread_id| !thread_id.trim().is_empty());
+    if !had_thread_id {
         agent.thread_id = Some(state.next_id("thread"));
     }
     if agent
@@ -562,7 +562,38 @@ fn ensure_agent_thread_metadata(state: &AppState, model: &mut Model, agent: &mut
             .cloned()
             .unwrap_or_else(|| branch_id.clone());
         model.threads.entry(thread_id.clone()).or_insert_with(|| {
-            thread_graph::thread_record_for_agent(agent, &default_focused_branch_id)
+            let workspace_root = &state.inner.config.workspace_root;
+            let mut record = thread_graph::thread_record_for_agent(
+                agent,
+                &default_focused_branch_id,
+                workspace_root,
+            );
+            // Builds that assigned agents thread ids before thread records
+            // existed wrote graphs to <worktree>/.qmux/threads/<id>.json and
+            // persisted no record, so the startup migration (which walks only
+            // persisted records) never sees them. Minting a fresh global
+            // record here would silently shadow that history behind an empty
+            // graph — adopt the legacy worktree snapshot and migrate it into
+            // global storage through the same machinery instead.
+            if had_thread_id {
+                let legacy_path = thread_graph::snapshot_path(&agent.worktree_dir, thread_id);
+                if legacy_path.is_file() {
+                    record.storage_root = agent.worktree_dir.clone();
+                    record.snapshot_path = legacy_path.display().to_string();
+                    if let Err(err) =
+                        thread_graph::migrate_record_to_storage_root(&mut record, workspace_root)
+                    {
+                        // Keep the record pointed at the worktree copy: the
+                        // history stays readable and the startup migration
+                        // retries (and warns) on the next launch.
+                        eprintln!(
+                            "qmux: could not migrate legacy thread graph {}: {err}",
+                            record.id
+                        );
+                    }
+                }
+            }
+            record
         });
         model
             .thread_focus
@@ -574,6 +605,7 @@ fn ensure_agent_thread_metadata(state: &AppState, model: &mut Model, agent: &mut
 fn thread_store_for_agent_locked(
     model: &mut Model,
     agent: &AgentInfo,
+    storage_root: &std::path::Path,
 ) -> (thread_graph::ThreadStore, bool) {
     let thread_id = thread_graph::agent_thread_id(agent);
     let branch_id = thread_graph::agent_branch_id(agent);
@@ -584,12 +616,25 @@ fn thread_store_for_agent_locked(
         .unwrap_or(branch_id);
     let existed = model.threads.contains_key(&thread_id);
     let record = model.threads.entry(thread_id).or_insert_with(|| {
-        thread_graph::thread_record_for_agent(agent, &default_focused_branch_id)
+        thread_graph::thread_record_for_agent(agent, &default_focused_branch_id, storage_root)
     });
     (
         thread_graph::ThreadStore::new(record.storage_root.clone()),
         !existed,
     )
+}
+
+fn migrate_thread_records_to_global(
+    workspace_root: &std::path::Path,
+    records: &mut HashMap<String, thread_graph::ThreadRecord>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for record in records.values_mut() {
+        if let Err(err) = thread_graph::migrate_record_to_storage_root(record, workspace_root) {
+            warnings.push(format!("could not migrate thread {}: {err}", record.id));
+        }
+    }
+    warnings
 }
 
 fn wait_dependency_would_cycle_locked(model: &Model, source: &str, target: &str) -> bool {
@@ -973,13 +1018,26 @@ impl AppState {
 
     pub fn restore_session(&self) -> Vec<PaneInfo> {
         let outcome = persistence::load_with_diagnostics(&self.inner.config.workspace_root);
-        if let Some(warning) = outcome.warning.as_ref() {
-            eprintln!("qmux: {}", warning.message);
+        let persistence_warning = outcome.warning.map(|warning| warning.message);
+        let mut persisted = outcome.state;
+        let migration_warnings = migrate_thread_records_to_global(
+            &self.inner.config.workspace_root,
+            &mut persisted.threads,
+        );
+        let recovery_warning = match (persistence_warning, migration_warnings.is_empty()) {
+            (Some(warning), true) => Some(warning),
+            (Some(warning), false) => {
+                Some(format!("{warning}\n\n{}", migration_warnings.join("\n")))
+            }
+            (None, false) => Some(migration_warnings.join("\n")),
+            (None, true) => None,
+        };
+        if let Some(warning) = recovery_warning {
+            eprintln!("qmux: {warning}");
             if let Ok(mut slot) = self.inner.recovery_warning.lock() {
-                *slot = Some(warning.message.clone());
+                *slot = Some(warning);
             }
         }
-        let persisted = outcome.state;
         let active_tab_id = sanitize_active_tab_id(persisted.active_tab_id.clone());
         let shell_pane_ids = persisted
             .panes
@@ -2387,7 +2445,11 @@ impl AppState {
             let mut graph_store = None;
             let mut created_thread_record = false;
             if let Some(agent) = agent_for_graph.as_ref() {
-                let (store, created) = thread_store_for_agent_locked(&mut model, agent);
+                let (store, created) = thread_store_for_agent_locked(
+                    &mut model,
+                    agent,
+                    &self.inner.config.workspace_root,
+                );
                 graph_store = Some(store);
                 created_thread_record = created;
             }
@@ -2432,7 +2494,11 @@ impl AppState {
             let mut graph_store = None;
             let mut created_thread_record = false;
             if let Some(agent) = agent_for_graph.as_ref() {
-                let (store, created) = thread_store_for_agent_locked(&mut model, agent);
+                let (store, created) = thread_store_for_agent_locked(
+                    &mut model,
+                    agent,
+                    &self.inner.config.workspace_root,
+                );
                 graph_store = Some(store);
                 created_thread_record = created;
             }
@@ -4270,7 +4336,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_thread_turn_writes_use_thread_record_storage_root() {
+    fn shared_thread_turn_writes_use_global_storage_root() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace.clone()));
         let source_root = workspace.join("source-worktree");
@@ -4296,18 +4362,150 @@ mod tests {
             .append_turn(sample_user_turn("target", "target turn"))
             .unwrap();
 
-        let shared_graph = thread_graph::read_snapshot(&source_root_string, "thread-shared")
+        let workspace_string = workspace.display().to_string();
+        let shared_graph = thread_graph::read_snapshot(&workspace_string, "thread-shared")
             .unwrap()
-            .expect("shared graph exists at thread record root");
+            .expect("shared graph exists at global thread root");
         assert!(shared_graph.nodes.contains_key("source-0"));
         assert!(shared_graph.nodes.contains_key("target-0"));
         assert!(shared_graph.branches.contains_key("branch-source"));
         assert!(shared_graph.branches.contains_key("branch-target"));
         assert!(
+            thread_graph::read_snapshot(&source_root_string, "thread-shared")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
             thread_graph::read_snapshot(&target_root_string, "thread-shared")
                 .unwrap()
                 .is_none()
         );
+        let model = state.inner.model.lock().unwrap();
+        let record = model.threads.get("thread-shared").unwrap();
+        assert_eq!(record.storage_root, workspace_string);
+        drop(model);
+
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn restore_migrates_legacy_thread_record_to_global_storage() {
+        let workspace = temp_workspace();
+        let legacy_root = workspace.join("legacy-worktree");
+        let mut agent = sample_agent("legacy");
+        agent.worktree_dir = legacy_root.display().to_string();
+        agent.thread_id = Some("thread-legacy".to_string());
+        agent.branch_id = Some("branch-legacy".to_string());
+        thread_graph::ThreadStore::new(legacy_root.clone())
+            .append_turn_node(&agent, &sample_user_turn("legacy", "legacy turn"))
+            .unwrap();
+
+        let mut persisted = PersistedState::default();
+        persisted.threads.insert(
+            "thread-legacy".to_string(),
+            thread_graph::thread_record_for_agent(&agent, "branch-legacy", &legacy_root),
+        );
+        persistence::save(&workspace, &persisted).unwrap();
+
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+
+        let workspace_string = workspace.display().to_string();
+        let model = state.inner.model.lock().unwrap();
+        let record = model.threads.get("thread-legacy").unwrap();
+        assert_eq!(record.storage_root, workspace_string);
+        drop(model);
+        assert!(
+            thread_graph::read_snapshot(&workspace.display().to_string(), "thread-legacy")
+                .unwrap()
+                .expect("migrated global graph exists")
+                .nodes
+                .contains_key("legacy-0")
+        );
+        assert!(
+            thread_graph::read_snapshot(&legacy_root.display().to_string(), "thread-legacy")
+                .unwrap()
+                .is_some(),
+            "legacy graph remains as a recovery copy"
+        );
+        assert!(state.take_recovery_warning().is_none());
+
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn restore_adopts_pre_record_worktree_thread_graph() {
+        let workspace = temp_workspace();
+        let legacy_root = workspace.join("legacy-worktree");
+        let mut agent = sample_agent("legacy");
+        agent.worktree_dir = legacy_root.display().to_string();
+        agent.thread_id = Some("thread-prerecord".to_string());
+        agent.branch_id = Some("branch-prerecord".to_string());
+        thread_graph::ThreadStore::new(legacy_root.clone())
+            .append_turn_node(&agent, &sample_user_turn("legacy", "legacy turn"))
+            .unwrap();
+
+        // Builds that predate thread records persisted agents (with thread
+        // ids) and worktree-local graphs but no `threads` map at all, so the
+        // record-walking startup migration never sees them.
+        let mut persisted = PersistedState::default();
+        persisted.agents.push(agent);
+        persistence::save(&workspace, &persisted).unwrap();
+
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+
+        let workspace_string = workspace.display().to_string();
+        let model = state.inner.model.lock().unwrap();
+        let record = model.threads.get("thread-prerecord").unwrap();
+        assert_eq!(record.storage_root, workspace_string);
+        drop(model);
+        assert!(
+            thread_graph::read_snapshot(&workspace_string, "thread-prerecord")
+                .unwrap()
+                .expect("adopted graph migrated to global storage")
+                .nodes
+                .contains_key("legacy-0")
+        );
+
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn restore_keeps_legacy_record_and_warns_when_migration_fails() {
+        let workspace = temp_workspace();
+        let legacy_root = workspace.join("corrupt-legacy-worktree");
+        let mut agent = sample_agent("legacy-corrupt");
+        agent.worktree_dir = legacy_root.display().to_string();
+        agent.thread_id = Some("thread-corrupt".to_string());
+        agent.branch_id = Some("branch-corrupt".to_string());
+        let legacy_path =
+            thread_graph::snapshot_path(&legacy_root.display().to_string(), "thread-corrupt");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_path, b"{").unwrap();
+
+        let mut persisted = PersistedState::default();
+        persisted.threads.insert(
+            "thread-corrupt".to_string(),
+            thread_graph::thread_record_for_agent(&agent, "branch-corrupt", &legacy_root),
+        );
+        persistence::save(&workspace, &persisted).unwrap();
+
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+
+        let model = state.inner.model.lock().unwrap();
+        let record = model.threads.get("thread-corrupt").unwrap();
+        assert_eq!(record.storage_root, legacy_root.display().to_string());
+        drop(model);
+        assert!(
+            thread_graph::read_snapshot(&workspace.display().to_string(), "thread-corrupt")
+                .unwrap()
+                .is_none()
+        );
+        let warning = state.take_recovery_warning().expect("migration warning");
+        assert!(warning.contains("could not migrate thread thread-corrupt"));
+        assert!(warning.contains("invalid thread graph"));
 
         std::fs::remove_dir_all(workspace).unwrap();
     }

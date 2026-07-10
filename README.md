@@ -164,7 +164,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Transcript tailing starts once an adapter binds a transcript path: Claude via
   `SessionStart`, Codex via an explicit `SessionStart` path or session-id lookup,
   and OpenCode via qmux-managed JSONL.
-- Persisted state is written under `<workspaceRoot>/.qmux/state.json`.
+- Persisted state is written under `<workspaceRoot>/.qmux/state.json`, with normalized
+  thread graphs stored separately in `<workspaceRoot>/.qmux/threads/<thread-id>.json`.
+  Older worktree-local thread graphs are copied into this global store on startup and
+  retained in place as recovery copies.
 - `qmux.config.json` keeps dev-build state in a fixed, shared `~/.qmux` dir.
   Only dev (debug) builds discover it in the process cwd; release builds always
   use the platform data dir (`~/Library/Application Support/qmux` on macOS) so
