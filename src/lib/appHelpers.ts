@@ -25,6 +25,89 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+/** Fixed-position placement for a popover anchored to a control inside a pane. */
+export type PanePopoverPlacement = {
+  left: number;
+  top: number;
+  maxHeight: number;
+  maxWidth: number;
+};
+
+/**
+ * Place a fixed popover next to a trigger, clamped inside the right pane (or
+ * the viewport). Horizontal `align: "start"` left-aligns to the trigger and
+ * grows right (toward center for left-edge controls); `"end"` right-aligns and
+ * grows left (toward center for right-edge controls). Vertical preference flips
+ * when the other side has more room.
+ */
+export function placePanePopover(args: {
+  triggerRect: DOMRect;
+  popoverSize: { width: number; height: number };
+  paneRect?: DOMRect | null;
+  align: "start" | "end";
+  prefer: "above" | "below";
+  margin?: number;
+  gap?: number;
+}): PanePopoverPlacement {
+  const margin = args.margin ?? 8;
+  const gap = args.gap ?? 6;
+  const pane = args.paneRect ?? null;
+  const boundLeft = (pane ? pane.left : 0) + margin;
+  const boundRight = (pane ? pane.right : window.innerWidth) - margin;
+  const boundTop = (pane ? pane.top : 0) + margin;
+  const boundBottom = (pane ? pane.bottom : window.innerHeight) - margin;
+  const maxWidth = Math.max(0, boundRight - boundLeft);
+  const width = Math.min(args.popoverSize.width, maxWidth);
+
+  let left =
+    args.align === "end" ? args.triggerRect.right - width : args.triggerRect.left;
+  // When the popover is wider than the bounds, pin to the inward edge so it
+  // grows toward the center rather than spilling off the outer edge.
+  if (width >= maxWidth) {
+    left = boundLeft;
+  } else {
+    left = Math.max(boundLeft, Math.min(left, boundRight - width));
+  }
+
+  const availableAbove = Math.max(0, args.triggerRect.top - gap - boundTop);
+  const availableBelow = Math.max(0, boundBottom - (args.triggerRect.bottom + gap));
+
+  let prefer = args.prefer;
+  if (
+    prefer === "below" &&
+    args.popoverSize.height > availableBelow &&
+    availableAbove > availableBelow
+  ) {
+    prefer = "above";
+  } else if (
+    prefer === "above" &&
+    args.popoverSize.height > availableAbove &&
+    availableBelow > availableAbove
+  ) {
+    prefer = "below";
+  }
+
+  const maxHeight = prefer === "above" ? availableAbove : availableBelow;
+  const height = Math.min(args.popoverSize.height, maxHeight);
+  const top =
+    prefer === "above"
+      ? args.triggerRect.top - gap - height
+      : args.triggerRect.bottom + gap;
+
+  return {
+    left,
+    top: clamp(top, boundTop, Math.max(boundTop, boundBottom - height)),
+    maxHeight,
+    maxWidth,
+  };
+}
+
+/** Resolve the nearest `.turn-pane` bounds for clamping a right-pane popover. */
+export function turnPaneRectFrom(el: Element | null): DOMRect | null {
+  const pane = el?.closest(".turn-pane");
+  return pane instanceof HTMLElement ? pane.getBoundingClientRect() : null;
+}
+
 // Formats a quoted selection plus the user's question into one agent message: the
 // quote as a Markdown blockquote (each line prefixed with `>`), a blank line, then
 // the question. Used by the "Ask about this quote" launcher so the agent receives

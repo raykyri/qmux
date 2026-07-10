@@ -6,14 +6,19 @@ import {
   PanelRightClose,
   SquareCenterlineDashedVertical,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
 import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions";
 import type { TranscriptOption } from "../types";
 
 // How long the "copied" toast stays up after copying the session id.
 const COPIED_TOAST_MS = 1600;
+
+// Preferred natural widths for the header menus; placement clamps them to the pane.
+const SESSION_MENU_PREFERRED_WIDTH = 320;
+const FORK_MENU_PREFERRED_WIDTH = 220;
 
 // The top bar across the right pane: the active session's id on the left, and
 // session/browser/transcript controls on the right. Forking is only enabled for
@@ -43,6 +48,13 @@ interface TurnPaneHeaderProps {
   onCollapseRightBar: () => void;
 }
 
+type MenuPos = {
+  left: number;
+  top: number;
+  maxHeight: number;
+  maxWidth: number;
+};
+
 export default function TurnPaneHeader({
   sessionId,
   transcriptOptions,
@@ -61,9 +73,13 @@ export default function TurnPaneHeader({
   onCollapseRightBar,
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuPopoverRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
-  const sessionMenuRef = useRef<HTMLDivElement | null>(null);
+  const sessionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const sessionPopoverRef = useRef<HTMLDivElement | null>(null);
+  const [sessionPos, setSessionPos] = useState<MenuPos | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   // Sorted newest first so recent sessions appear at the top of the menu.
@@ -85,7 +101,11 @@ export default function TurnPaneHeader({
       return;
     }
     const handlePointerDown = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        !menuTriggerRef.current?.contains(target) &&
+        !menuPopoverRef.current?.contains(target)
+      ) {
         setMenuOpen(false);
       }
     };
@@ -114,9 +134,10 @@ export default function TurnPaneHeader({
       return;
     }
     const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
       if (
-        sessionMenuRef.current &&
-        !sessionMenuRef.current.contains(event.target as Node)
+        !sessionTriggerRef.current?.contains(target) &&
+        !sessionPopoverRef.current?.contains(target)
       ) {
         setSessionMenuOpen(false);
       }
@@ -139,6 +160,74 @@ export default function TurnPaneHeader({
       setSessionMenuOpen(false);
     }
   }, [canOpenSessionMenu]);
+
+  // Portaled menus escape the header/sidebar overflow:hidden. Session opens from
+  // the left control (grow right / toward center); fork from the right (grow left).
+  const positionSessionMenu = useCallback(() => {
+    const trigger = sessionTriggerRef.current;
+    const popover = sessionPopoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const { height } = popover.getBoundingClientRect();
+    setSessionPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width: SESSION_MENU_PREFERRED_WIDTH, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "start",
+        prefer: "below",
+      }),
+    );
+  }, []);
+
+  const positionForkMenu = useCallback(() => {
+    const trigger = menuTriggerRef.current;
+    const popover = menuPopoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const { height } = popover.getBoundingClientRect();
+    setMenuPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width: FORK_MENU_PREFERRED_WIDTH, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "end",
+        prefer: "below",
+      }),
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!sessionMenuOpen) {
+      setSessionPos(null);
+      return;
+    }
+    positionSessionMenu();
+    const onReflow = () => positionSessionMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [sessionMenuOpen, positionSessionMenu, sessionOptions.length]);
+
+  useLayoutEffect(() => {
+    if (!menuOpen) {
+      setMenuPos(null);
+      return;
+    }
+    positionForkMenu();
+    const onReflow = () => positionForkMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [menuOpen, positionForkMenu]);
 
   const fork = (options: { nest: boolean; useWorktree: boolean }) => {
     setMenuOpen(false);
@@ -171,9 +260,10 @@ export default function TurnPaneHeader({
 
   return (
     <div className="turn-pane-header">
-      <div className="turn-pane-session-control" ref={sessionMenuRef}>
+      <div className="turn-pane-session-control">
         {canOpenSessionMenu ? (
           <button
+            ref={sessionTriggerRef}
             type="button"
             className="turn-pane-session turn-pane-session-trigger"
             title="Session actions"
@@ -189,59 +279,78 @@ export default function TurnPaneHeader({
         ) : (
           <span className="turn-pane-session">New session</span>
         )}
-        {sessionMenuOpen ? (
-          <div className="turn-pane-session-menu" role="menu">
-            <button
-              type="button"
-              role="menuitem"
-              className="turn-pane-session-menu-item"
-              disabled={!sessionId}
-              onClick={() => {
-                setSessionMenuOpen(false);
-                void copySessionId();
-              }}
-            >
-              Copy Session ID
-            </button>
-            {sessionOptions.length > 0 ? (
-              <>
-                <div className="turn-pane-session-menu-divider" role="separator" />
-                <div className="turn-pane-session-menu-label">Select Session</div>
-                <div
-                  className="turn-pane-session-list"
-                  role="group"
-                  aria-label="Select Session"
+        {sessionMenuOpen
+          ? createPortal(
+              <div
+                ref={sessionPopoverRef}
+                className="turn-pane-session-menu"
+                role="menu"
+                style={
+                  sessionPos
+                    ? {
+                        left: sessionPos.left,
+                        top: sessionPos.top,
+                        maxHeight: sessionPos.maxHeight,
+                        width: Math.min(SESSION_MENU_PREFERRED_WIDTH, sessionPos.maxWidth),
+                        maxWidth: sessionPos.maxWidth,
+                      }
+                    : { left: -9999, top: -9999 }
+                }
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="turn-pane-session-menu-item"
+                  disabled={!sessionId}
+                  onClick={() => {
+                    setSessionMenuOpen(false);
+                    void copySessionId();
+                  }}
                 >
-                  {sessionOptions.map((option) => {
-                    const active = option.path === transcriptPath;
-                    return (
-                      <button
-                        key={option.path}
-                        type="button"
-                        role="menuitemcheckbox"
-                        aria-checked={active}
-                        className={`turn-pane-session-menu-item session-menu-item${
-                          active ? " is-active" : ""
-                        }`}
-                        onClick={() => selectTranscript(active ? null : option.path)}
-                      >
-                        <span className="session-menu-title">{sessionMenuTitle(option)}</span>
-                        <span className="session-menu-meta">
-                          {formatRelativeTime(option.modifiedMs)}
-                          {option.boundToOtherAgent ? " · In use" : ""}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            ) : null}
-          </div>
-        ) : null}
+                  Copy Session ID
+                </button>
+                {sessionOptions.length > 0 ? (
+                  <>
+                    <div className="turn-pane-session-menu-divider" role="separator" />
+                    <div className="turn-pane-session-menu-label">Select Session</div>
+                    <div
+                      className="turn-pane-session-list"
+                      role="group"
+                      aria-label="Select Session"
+                    >
+                      {sessionOptions.map((option) => {
+                        const active = option.path === transcriptPath;
+                        return (
+                          <button
+                            key={option.path}
+                            type="button"
+                            role="menuitemcheckbox"
+                            aria-checked={active}
+                            className={`turn-pane-session-menu-item session-menu-item${
+                              active ? " is-active" : ""
+                            }`}
+                            onClick={() => selectTranscript(active ? null : option.path)}
+                          >
+                            <span className="session-menu-title">{sessionMenuTitle(option)}</span>
+                            <span className="session-menu-meta">
+                              {formatRelativeTime(option.modifiedMs)}
+                              {option.boundToOtherAgent ? " · In use" : ""}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
       <div className="turn-pane-header-controls">
-        <div className="turn-pane-fork" ref={menuRef}>
+        <div className="turn-pane-fork">
           <button
+            ref={menuTriggerRef}
             type="button"
             className="turn-pane-header-button"
             disabled={!canFork}
@@ -262,26 +371,44 @@ export default function TurnPaneHeader({
           >
             <GitBranch size={14} aria-hidden="true" />
           </button>
-          {canFork && menuOpen ? (
-            <div className="turn-pane-fork-menu" role="menu">
-              <button
-                type="button"
-                role="menuitem"
-                className="turn-pane-fork-item"
-                onClick={() => fork({ nest: true, useWorktree: false })}
-              >
-                Fork session
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="turn-pane-fork-item"
-                onClick={() => fork({ nest: true, useWorktree: true })}
-              >
-                Fork session in worktree
-              </button>
-            </div>
-          ) : null}
+          {canFork && menuOpen
+            ? createPortal(
+                <div
+                  ref={menuPopoverRef}
+                  className="turn-pane-fork-menu"
+                  role="menu"
+                  style={
+                    menuPos
+                      ? {
+                          left: menuPos.left,
+                          top: menuPos.top,
+                          maxHeight: menuPos.maxHeight,
+                          width: Math.min(FORK_MENU_PREFERRED_WIDTH, menuPos.maxWidth),
+                          maxWidth: menuPos.maxWidth,
+                        }
+                      : { left: -9999, top: -9999 }
+                  }
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="turn-pane-fork-item"
+                    onClick={() => fork({ nest: true, useWorktree: false })}
+                  >
+                    Fork session
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="turn-pane-fork-item"
+                    onClick={() => fork({ nest: true, useWorktree: true })}
+                  >
+                    Fork session in worktree
+                  </button>
+                </div>,
+                document.body,
+              )
+            : null}
         </div>
         {showQueueSplit ? (
           <button

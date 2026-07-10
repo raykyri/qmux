@@ -3147,15 +3147,13 @@ button.home-cascade-wait-pill:focus-visible {
   text-decoration: underline;
 }
 
+/* Portaled to <body>; left/top/width/max-height come from placePanePopover so the
+   menu stays inside the right pane and opens downward from the session control. */
 .turn-pane-session-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 6;
+  position: fixed;
+  z-index: 15;
   display: flex;
-  width: min(320px, calc(var(--turn-pane-width, 420px) - 20px));
-  max-height: min(420px, calc(100vh - 64px));
-  min-width: 220px;
+  min-width: 0;
   flex-direction: column;
   gap: 2px;
   padding: 4px;
@@ -3293,26 +3291,25 @@ button.home-cascade-wait-pill:focus-visible {
   z-index: 9;
 }
 
-/* Fork menu opens downward, right edge pinned to the button so it grows leftward. */
 .turn-pane-fork {
   position: relative;
   display: flex;
 }
 
+/* Portaled; right-aligned to the fork button so it grows toward the pane center. */
 .turn-pane-fork-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 5;
+  position: fixed;
+  z-index: 15;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 200px;
+  min-width: 0;
   padding: 4px;
   border: 1px solid #2a2d2f;
   border-radius: 8px;
   background: #1d2224;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
 }
 
 .turn-pane-fork-item {
@@ -3457,14 +3454,14 @@ button.home-cascade-wait-pill:focus-visible {
   color: var(--placeholder-color);
 }
 
+/* Portaled; left/top/width/max-height from placePanePopover (clamped to the pane). */
 .turn-empty-picker-popover {
   position: fixed;
-  z-index: 50;
+  z-index: 15;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-width: calc(100vw - 24px);
-  max-height: 320px;
+  min-width: 0;
   overflow-y: auto;
   padding: 4px;
   border: 1px solid #2a2d2f;
@@ -3722,15 +3719,15 @@ button.home-cascade-wait-pill:focus-visible {
   opacity: 0.45;
 }
 
+/* Portaled so the scrollable timeline cannot clip it; right-aligned to the "..."
+   button (grows left / toward the pane center). left/top/width from placement. */
 .turn-title-menu-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 1000;
+  position: fixed;
+  z-index: 15;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 160px;
+  min-width: 0;
   padding: 4px;
   border: 0.5px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
@@ -3738,6 +3735,7 @@ button.home-cascade-wait-pill:focus-visible {
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
+  overflow-y: auto;
 }
 
 .turn-title-menu-item {
@@ -4756,19 +4754,17 @@ header + .turn-blocks {
 }
 
 .composer-menu-popover {
-  /* Portaled to <body> and positioned in fixed coordinates by JS (see
-     positionMenu in NativeInput): opened upward from the ⋮ trigger and clamped
-     to stay within the right pane, so it never spills off either edge or gets
-     clipped by the pane's overflow:hidden. left/top/max-height come from the
-     inline style. */
+  /* Portaled to <body> and positioned by placePanePopover: opens upward from the
+     ⋮ trigger, right-aligned (grows toward the pane center), width/height
+     clamped to the right pane. left/top/max-height/max-width from inline style. */
   position: fixed;
   z-index: 15;
   display: flex;
   width: 220px;
-  max-width: calc(100vw - 24px);
   flex-direction: column;
   gap: 2px;
-  min-width: 180px;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 4px;
   border: 1px solid #2a2d2f;
   border-radius: 8px;
@@ -4970,14 +4966,15 @@ header + .turn-blocks {
 }
 
 .wait-target-popover {
+  /* Same placement rules as .composer-menu-popover (upward, right-aligned, pane-clamped). */
   position: fixed;
   z-index: 15;
   display: flex;
   width: 260px;
-  max-width: calc(100vw - 24px);
   flex-direction: column;
   gap: 2px;
-  min-width: 200px;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 4px;
   border: 1px solid #2a2d2f;
   border-radius: 8px;

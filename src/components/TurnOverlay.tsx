@@ -18,6 +18,7 @@ import type {
   ReactElement,
   ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { ChevronRight, Ellipsis, WrapText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -25,7 +26,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
 import type { SelectionAnchor } from "../appTypes";
-import { IS_MAC, isEditableTarget } from "../lib/appHelpers";
+import { IS_MAC, isEditableTarget, placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
@@ -1266,8 +1267,13 @@ function MessageItemView({
   );
 }
 
+// Preferred natural width for the message "..." menu; placement clamps to the pane.
+const TITLE_MENU_PREFERRED_WIDTH = 180;
+
 // The "..." menu shown at the right of a user message header. Opens a small popover
 // with actions for this message: regenerate the tab title from it, or copy its text.
+// Portaled so the scrollable timeline cannot clip it; right-aligned so it grows
+// toward the pane center.
 function MessageTitleMenu({
   titleSourceText,
   titleGenerationBusy,
@@ -1278,14 +1284,40 @@ function MessageTitleMenu({
   onRegenerateTitleFromUserMessage: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLSpanElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number;
+    maxWidth: number;
+  } | null>(null);
+
+  const positionMenu = useCallback(() => {
+    const trigger = triggerRef.current;
+    const popover = popoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const { height } = popover.getBoundingClientRect();
+    setPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width: TITLE_MENU_PREFERRED_WIDTH, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "end",
+        prefer: "below",
+      }),
+    );
+  }, []);
 
   useEffect(() => {
     if (!open) {
       return;
     }
     const handlePointerDown = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
         setOpen(false);
       }
     };
@@ -1302,9 +1334,25 @@ function MessageTitleMenu({
     };
   }, [open]);
 
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    positionMenu();
+    const onReflow = () => positionMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [open, positionMenu]);
+
   return (
-    <span ref={containerRef} className="turn-title-menu">
+    <span className="turn-title-menu">
       <button
+        ref={triggerRef}
         type="button"
         className="turn-title-regenerate-button"
         title="Title options"
@@ -1319,37 +1367,55 @@ function MessageTitleMenu({
       >
         <Ellipsis size={14} aria-hidden="true" />
       </button>
-      {open ? (
-        <div className="turn-title-menu-popover" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            className="turn-title-menu-item"
-            disabled={titleGenerationBusy}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpen(false);
-              onRegenerateTitleFromUserMessage?.(titleSourceText);
-            }}
-          >
-            {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="turn-title-menu-item"
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpen(false);
-              void writeClipboardText(titleSourceText);
-            }}
-          >
-            Copy message
-          </button>
-        </div>
-      ) : null}
+      {open
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="turn-title-menu-popover"
+              role="menu"
+              style={
+                pos
+                  ? {
+                      left: pos.left,
+                      top: pos.top,
+                      maxHeight: pos.maxHeight,
+                      width: Math.min(TITLE_MENU_PREFERRED_WIDTH, pos.maxWidth),
+                      maxWidth: pos.maxWidth,
+                    }
+                  : { left: -9999, top: -9999 }
+              }
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="turn-title-menu-item"
+                disabled={titleGenerationBusy}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpen(false);
+                  onRegenerateTitleFromUserMessage?.(titleSourceText);
+                }}
+              >
+                {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="turn-title-menu-item"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpen(false);
+                  void writeClipboardText(titleSourceText);
+                }}
+              >
+                Copy message
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
     </span>
   );
 }

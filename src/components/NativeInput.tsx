@@ -35,7 +35,12 @@ import type {
   SubmitAgentTurnResult,
   WaitTarget,
 } from "../types";
-import { agentCanFork, agentStatusTone } from "../lib/appHelpers";
+import {
+  agentCanFork,
+  agentStatusTone,
+  placePanePopover,
+  turnPaneRectFrom,
+} from "../lib/appHelpers";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -296,11 +301,13 @@ export default function NativeInput({
     left: number;
     top: number;
     maxHeight: number;
+    maxWidth: number;
   } | null>(null);
   const [waitPos, setWaitPos] = useState<{
     left: number;
     top: number;
     maxHeight: number;
+    maxWidth: number;
   } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -386,29 +393,24 @@ export default function NativeInput({
 
   useEffect(() => () => onWaitTargetHover(null), [onWaitTargetHover]);
 
-  // Place the portaled popover above the ⋮ trigger, opening upward (away from the
-  // bottom edge). It right-aligns to the trigger, then clamps horizontally within
-  // the right pane (falling back to the viewport) so it never spills off either
-  // edge. If there isn't room above, it caps its height and scrolls.
+  // Place the portaled popover above the ⋮ / queue-options trigger, right-aligned
+  // so it grows toward the pane center, clamped so it never spills past the pane.
   const positionMenu = useCallback(() => {
     const trigger = menuTriggerRef.current;
     const popover = menuPopoverRef.current;
     if (!trigger || !popover) {
       return;
     }
-    const margin = 8;
-    const gap = 6;
-    const triggerRect = trigger.getBoundingClientRect();
-    const pane = trigger.closest(".turn-pane");
-    const paneRect = pane?.getBoundingClientRect();
-    const boundLeft = (paneRect ? paneRect.left : 0) + margin;
-    const boundRight = (paneRect ? paneRect.right : window.innerWidth) - margin;
     const { width, height } = popover.getBoundingClientRect();
-    let left = triggerRect.right - width;
-    left = Math.max(boundLeft, Math.min(left, boundRight - width));
-    const availableAbove = triggerRect.top - gap - margin;
-    const top = Math.max(margin, triggerRect.top - gap - height);
-    setMenuPos({ left, top, maxHeight: availableAbove });
+    setMenuPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "end",
+        prefer: "above",
+      }),
+    );
   }, []);
 
   const positionWait = useCallback(() => {
@@ -417,19 +419,16 @@ export default function NativeInput({
     if (!trigger || !popover) {
       return;
     }
-    const margin = 8;
-    const gap = 6;
-    const triggerRect = trigger.getBoundingClientRect();
-    const pane = trigger.closest(".turn-pane");
-    const paneRect = pane?.getBoundingClientRect();
-    const boundLeft = (paneRect ? paneRect.left : 0) + margin;
-    const boundRight = (paneRect ? paneRect.right : window.innerWidth) - margin;
     const { width, height } = popover.getBoundingClientRect();
-    let left = triggerRect.right - width;
-    left = Math.max(boundLeft, Math.min(left, boundRight - width));
-    const availableAbove = triggerRect.top - gap - margin;
-    const top = Math.max(margin, triggerRect.top - gap - height);
-    setWaitPos({ left, top, maxHeight: availableAbove });
+    setWaitPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "end",
+        prefer: "above",
+      }),
+    );
   }, []);
 
   useLayoutEffect(() => {
@@ -1238,6 +1237,7 @@ export default function NativeInput({
                             left: menuPos.left,
                             top: menuPos.top,
                             maxHeight: menuPos.maxHeight,
+                            maxWidth: menuPos.maxWidth,
                           }
                         : { left: -9999, top: -9999 }
                     }
@@ -1414,6 +1414,7 @@ export default function NativeInput({
                               left: waitPos.left,
                               top: waitPos.top,
                               maxHeight: waitPos.maxHeight,
+                              maxWidth: waitPos.maxWidth,
                             }
                           : { left: -9999, top: -9999 }
                       }
