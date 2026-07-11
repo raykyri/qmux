@@ -22,16 +22,20 @@ import type {
   Turn,
 } from "../types";
 
-// How long to hold follow-up events after handling one immediately. A busy agent
-// emits bursts of hook/status/turn events (dozens per second), and handling each
-// in its own listener callback commits a separate React render of the whole app —
-// which is what makes typing lag while an agent streams. The first event of a
-// burst is handled synchronously; everything arriving within this window is then
-// processed in one synchronous batch (in arrival order), which React commits as
-// a single render. Interactive events (terminal shortcuts, paste requests) that
-// land mid-burst share the window, so they can run up to one frame late — kept
-// deliberately, since reordering them ahead of queued pane/agent events would
-// let a shortcut act on state the queued events are about to change.
+// How long events accumulate before the batch is handled. A busy agent emits
+// bursts of hook/status/turn events (dozens per second), and handling each in
+// its own listener callback commits a separate React render of the whole app —
+// which is what makes typing lag while an agent streams. Coalescing is
+// trailing-only: every event (including the first of a burst) waits for the
+// window, then the whole batch is processed in arrival order in one synchronous
+// block, which React commits as a single render. Under a sustained stream that
+// caps handling at one render per window; the old leading-edge variant handled
+// the first event of every burst synchronously and committed roughly two
+// renders per window under exactly the load the coalescing was built for.
+// Interactive events (terminal shortcuts, paste requests) share the window and
+// so run up to one frame late — kept deliberately, since reordering them ahead
+// of queued pane/agent events would let a shortcut act on state the queued
+// events are about to change, and one frame is imperceptible for those actions.
 const EVENT_COALESCE_MS = 16;
 
 // Mirror the backend's per-agent turn cap (MAX_TURNS_PER_AGENT in state.rs). The
@@ -444,11 +448,9 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (disposed) {
         return;
       }
+      pendingEvents.push(event);
       if (coalesceTimer === null) {
-        handleEvent(event);
         coalesceTimer = window.setTimeout(flushPendingEvents, EVENT_COALESCE_MS);
-      } else {
-        pendingEvents.push(event);
       }
     }).then((cleanup) => {
       if (disposed) {
