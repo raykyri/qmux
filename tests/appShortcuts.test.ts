@@ -32,6 +32,11 @@ test("resolves qmux command and control shortcuts", () => {
     type: "focusTab",
     tabIndex: 3,
   });
+  // ⌘K opens the palette for web targets only; the terminal keeps it (clear
+  // screen), matching the native classifier which never claims ⌘K.
+  assert.deepEqual(resolveAppShortcut(shortcut({ key: "k", metaKey: true })), {
+    type: "openCommandPalette",
+  });
 });
 
 test("normalizes shifted bracket shortcuts", () => {
@@ -46,9 +51,13 @@ test("normalizes shifted bracket shortcuts", () => {
 });
 
 test("leaves terminal command chords and control editing keys alone", () => {
-  for (const key of ["k", "a", "z", "Enter"]) {
+  for (const key of ["a", "z", "Enter"]) {
     assert.equal(resolveAppShortcut(shortcut({ key, metaKey: true })), null);
   }
+  assert.equal(
+    resolveAppShortcut(shortcut({ key: "k", metaKey: true, terminalTarget: true })),
+    null,
+  );
   assert.equal(
     resolveAppShortcut(shortcut({ key: "w", ctrlKey: true, terminalTarget: true })),
     null,

@@ -366,8 +366,18 @@ export function isEditableTarget(target: EventTarget | null) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+// Container class rendered by TerminalPane and matched by isTerminalTarget.
+// Shared so the renderer and the key-routing guards cannot drift apart the
+// way the old ".terminal-mount" selector did after the web terminal's DOM
+// was replaced by native panes.
+export const TERMINAL_PANE_CLASS = "terminal-pane";
+
+// True when a DOM event originated inside a terminal pane's container —
+// which for native panes means its web chrome (find bar, confirm dialog),
+// since the Ghostty surface itself is an NSView and never dispatches DOM
+// keydowns. Chords like ctrl-W and ⌘K stay with the terminal there.
 export function isTerminalTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && target.closest(".terminal-mount") !== null;
+  return target instanceof HTMLElement && target.closest(`.${TERMINAL_PANE_CLASS}`) !== null;
 }
 
 export function measureTerminalCellSize(fontFamily: string, fontSize: number) {

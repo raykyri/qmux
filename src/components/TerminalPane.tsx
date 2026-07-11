@@ -17,6 +17,7 @@ import {
   setNativeTerminalLayout,
   updateNativeTerminalSettings,
 } from "../lib/api";
+import { TERMINAL_PANE_CLASS } from "../lib/appHelpers";
 import { readClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
@@ -379,7 +380,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 
   return (
     <div
-      className={`terminal-pane is-native ${visible ? "is-visible" : ""} ${active ? "is-focused" : ""}`}
+      className={`${TERMINAL_PANE_CLASS} is-native ${visible ? "is-visible" : ""} ${active ? "is-focused" : ""}`}
       aria-hidden={!visible}
       style={style}
       onPointerDown={() => onActivateRef.current?.(pane.id)}

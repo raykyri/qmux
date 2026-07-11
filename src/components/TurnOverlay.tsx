@@ -25,7 +25,13 @@ import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
-import { IS_MAC, isEditableTarget, placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
+import {
+  IS_MAC,
+  isEditableTarget,
+  isTerminalTarget,
+  placePanePopover,
+  turnPaneRectFrom,
+} from "../lib/appHelpers";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
@@ -630,7 +636,7 @@ export default function TurnOverlay({
         // The terminal owns find while focused (its native handler opens its bar),
         // and editable fields outside this pane (ask modal, settings, Home)
         // keep the combo for themselves.
-        if (target.closest(".terminal-mount")) {
+        if (isTerminalTarget(target)) {
           return;
         }
         if (!sidebarRef.current?.contains(target) && isEditableTarget(target)) {
