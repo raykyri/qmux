@@ -285,16 +285,32 @@ export function agentCanFork(agent: AgentInfo | null | undefined): boolean {
 
 // Applies a single updated agent to the list: replaces it in place when present,
 // otherwise appends it (e.g. a freshly spawned agent), preserving order.
+//
+// Returns the previous array itself when the incoming agent is content-equal to
+// the stored one. A busy agent's hook stream (PreToolUse/PostToolUse per tool
+// call) mostly re-delivers a byte-identical agent, and handing out a fresh
+// array for every event committed a full-app render and invalidated every
+// agents-keyed memo (turn-info cache, tray snapshot, home cascades) each time.
+// Agents are small flat payloads, so one JSON comparison per event is far
+// cheaper than the render it avoids.
 export function upsertAgent(agents: AgentInfo[], updated: AgentInfo): AgentInfo[] {
+  let unchanged = false;
   let replaced = false;
   const next = agents.map((agent) => {
     if (agent.id === updated.id) {
       replaced = true;
+      if (JSON.stringify(agent) === JSON.stringify(updated)) {
+        unchanged = true;
+        return agent;
+      }
       return updated;
     }
     return agent;
   });
-  return replaced ? next : [...next, updated];
+  if (!replaced) {
+    return [...next, updated];
+  }
+  return unchanged ? agents : next;
 }
 
 // Preserves object identity across thread-graph refetches. A refetch
