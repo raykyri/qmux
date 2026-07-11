@@ -50,6 +50,10 @@ interface TurnPaneHeaderProps {
   // Inserts saved-prompt text into this pane's composer; absent when the pane
   // has no agent composer, which disables the prompt-library trigger.
   onInsertPrompt?: (text: string) => void;
+  // The pane's project directory + display label, keying the prompt library's
+  // Project scope (see PromptLibraryMenu).
+  promptProjectDir?: string | null;
+  promptProjectLabel?: string | null;
 }
 
 type MenuPos = {
@@ -76,6 +80,8 @@ export default function TurnPaneHeader({
   onToggleTranscriptExpanded,
   onCollapseRightBar,
   onInsertPrompt,
+  promptProjectDir,
+  promptProjectLabel,
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -353,7 +359,11 @@ export default function TurnPaneHeader({
           : null}
       </div>
       <div className="turn-pane-header-controls">
-        <PromptLibraryMenu onInsert={onInsertPrompt} />
+        <PromptLibraryMenu
+          onInsert={onInsertPrompt}
+          projectDir={promptProjectDir}
+          projectLabel={promptProjectLabel}
+        />
         <div className="turn-pane-fork">
           <button
             ref={menuTriggerRef}

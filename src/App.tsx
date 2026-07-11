@@ -3920,6 +3920,21 @@ export default function App() {
     focusLauncherInput();
   }
 
+  // The prompt library's project scope follows the pane's group directory; a
+  // worktree group resolves to its base repo so prompts don't fork with the
+  // tree. Null (no pane, or group without a dir) hides the Project section.
+  function promptProjectDirForPane(pane: PaneInfo | undefined): string | null {
+    if (!pane) {
+      return null;
+    }
+    const group = groupById.get(pane.groupId);
+    if (!group) {
+      return null;
+    }
+    const baseRepo = group.baseRepo?.trim();
+    return baseRepo ? baseRepo : group.dir || null;
+  }
+
   // The ⌘K palette's command list, rebuilt on each open from live state: tab
   // navigation, pane/session actions gated on what the active pane supports,
   // and saved prompts that insert into the active agent's composer.
@@ -5968,10 +5983,10 @@ export default function App() {
     if (!commandPaletteOpen) {
       return;
     }
-    void listSavedPrompts()
+    void listSavedPrompts(promptProjectDirForPane(activePane))
       .then((library) => setPaletteSavedPrompts(library.prompts))
       .catch(() => setPaletteSavedPrompts([]));
-  }, [commandPaletteOpen]);
+  }, [commandPaletteOpen, activePane, groupById]);
 
   useEffect(() => {
     if (!launcherVisible) {
@@ -6770,6 +6785,8 @@ export default function App() {
               onInsertPrompt={
                 agent ? (text) => requestComposerInsert(agent.id, text) : undefined
               }
+              promptProjectDir={promptProjectDirForPane(surface.pane)}
+              promptProjectLabel={groupById.get(surface.pane.groupId)?.name ?? null}
             />
           ) : undefined
         }

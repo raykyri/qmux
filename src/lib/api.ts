@@ -52,10 +52,12 @@ export function setOpenRouterKey(key: string) {
 }
 
 // The prompt library: reusable composer messages stored as markdown files, one
-// file per prompt, in a global (~/.qmux/prompts/) or project
-// (<workspaceRoot>/.qmux/prompts/) scope.
-export function listSavedPrompts() {
-  return invoke<PromptLibrary>("prompt_library_list");
+// file per prompt, in a global (~/.qmux/prompts/) or per-project
+// (~/.qmux/projects/<basename>-<hash>/prompts/) scope. `projectDir` is the
+// active pane's project directory (group dir, or base repo for worktrees);
+// omit it when no project context exists and only the global scope is served.
+export function listSavedPrompts(projectDir?: string | null) {
+  return invoke<PromptLibrary>("prompt_library_list", { projectDir: projectDir ?? null });
 }
 
 // Creates or overwrites a saved prompt in `scope`. Passing a different
@@ -65,24 +67,30 @@ export function saveSavedPrompt(
   scope: PromptScope,
   name: string,
   content: string,
+  projectDir?: string | null,
   previous?: { scope: PromptScope; name: string } | null,
 ) {
   return invoke<SavedPrompt>("prompt_library_save", {
     scope,
     name,
     content,
+    projectDir: projectDir ?? null,
     previousScope: previous?.scope ?? null,
     previousName: previous?.name ?? null,
   });
 }
 
-export function deleteSavedPrompt(scope: PromptScope, name: string) {
-  return invoke<void>("prompt_library_delete", { scope, name });
+export function deleteSavedPrompt(
+  scope: PromptScope,
+  name: string,
+  projectDir?: string | null,
+) {
+  return invoke<void>("prompt_library_delete", { scope, name, projectDir: projectDir ?? null });
 }
 
 /** Opens a scope's prompts folder in Finder, creating it if needed. */
-export function revealSavedPrompts(scope: PromptScope) {
-  return invoke<void>("prompt_library_reveal", { scope });
+export function revealSavedPrompts(scope: PromptScope, projectDir?: string | null) {
+  return invoke<void>("prompt_library_reveal", { scope, projectDir: projectDir ?? null });
 }
 
 export function getActiveTab() {

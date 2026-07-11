@@ -5,12 +5,17 @@
 //! body.
 //!
 //! Prompts live in one of two scopes: `global` (`~/.qmux/prompts/`, visible from
-//! every workspace) and `project` (`<workspaceRoot>/.qmux/prompts/`, visible only
-//! while qmux runs in that workspace). Moving a prompt between scopes is a save
+//! every project) and `project`, keyed by the active pane's project directory and
+//! stored centrally at `~/.qmux/projects/<basename>-<hash>/prompts/` — one flat
+//! level per project path, so repos never grow a `.qmux` dir. The store dir name
+//! combines the project's basename (readable) with a short SHA-256 of its
+//! canonical path (collision-proof); `meta.json` alongside records the full path
+//! since the hash is not reversible. Moving a prompt between scopes is a save
 //! into the target directory followed by a delete from the source.
 
 use crate::persistence;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -19,9 +24,17 @@ use std::sync::{LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
 
 const PROMPTS_DIR: &str = "prompts";
+const PROJECTS_DIR: &str = "projects";
+const META_FILE: &str = "meta.json";
 const PROMPT_EXTENSION: &str = "md";
 /// Filenames land in menus and Finder; anything longer is a paragraph, not a name.
 const MAX_NAME_CHARS: usize = 120;
+/// Store dir names stay scannable in Finder: a readable basename prefix plus the
+/// hash suffix, comfortably under filesystem name limits.
+const MAX_BASENAME_CHARS: usize = 40;
+/// 12 hex chars (48 bits) of the canonical-path SHA-256: far beyond collision
+/// range for the number of projects one user has, while keeping names short.
+const HASH_CHARS: usize = 12;
 
 /// Serializes save/delete pairs (a rename's or move's write-then-remove) so two UI
 /// surfaces can't interleave and leave both the old and new file behind.
@@ -45,10 +58,9 @@ pub struct SavedPrompt {
     pub scope: PromptScope,
 }
 
-/// The whole library plus whether the project scope is a distinct place: when the
-/// workspace root *is* the home directory the two scopes share one folder, and the
-/// UI should collapse to a single Global section instead of showing a mirage of
-/// two independent stores.
+/// The whole library plus whether a project scope exists for the caller's
+/// context: absent when no project directory was supplied (e.g. a pane with no
+/// group dir), in which case the UI collapses to a single Global section.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptLibrary {
@@ -56,36 +68,137 @@ pub struct PromptLibrary {
     pub has_project_scope: bool,
 }
 
-fn global_dir() -> Result<PathBuf, String> {
+/// Recorded next to each project's prompts so the hashed dir name can be mapped
+/// back to the project it belongs to (by tooling, future GC, or a curious user).
+#[derive(Serialize)]
+struct ProjectMeta<'a> {
+    path: &'a str,
+}
+
+fn qmux_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
-        .map(|home| {
-            PathBuf::from(home)
-                .join(persistence::STATE_DIR)
-                .join(PROMPTS_DIR)
+        .map(|home| PathBuf::from(home).join(persistence::STATE_DIR))
+        .ok_or_else(|| "HOME is not set; the prompt library is unavailable".to_string())
+}
+
+fn global_dir() -> Result<PathBuf, String> {
+    Ok(qmux_home()?.join(PROMPTS_DIR))
+}
+
+/// A filesystem-safe, bounded prefix of the project's basename. Only used for
+/// readability; uniqueness comes from the hash suffix.
+fn sanitized_basename(path: &Path) -> String {
+    let raw = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
         })
-        .ok_or_else(|| "HOME is not set; global prompts are unavailable".to_string())
+        .skip_while(|&c| c == '.' || c == '-')
+        .take(MAX_BASENAME_CHARS)
+        .collect();
+    if cleaned.is_empty() {
+        "project".to_string()
+    } else {
+        cleaned
+    }
 }
 
-fn project_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(persistence::STATE_DIR)
-        .join(PROMPTS_DIR)
+/// One project's resolved central store: `~/.qmux/projects/<basename>-<hash>`.
+/// Resolving canonicalizes and hashes the path, so callers resolve once and
+/// reuse it rather than re-deriving per operation.
+struct ProjectStore {
+    dir: PathBuf,
+    canonical: PathBuf,
 }
 
-pub fn scope_dir(workspace_root: &Path, scope: PromptScope) -> Result<PathBuf, String> {
+impl ProjectStore {
+    /// The path is canonicalized first so symlinked or differently-spelled
+    /// routes to the same project share one store; a project that can't be
+    /// canonicalized (deleted, permission) falls back to hashing the path as
+    /// given. In practice qmux group dirs are already canonical (workspace.rs
+    /// canonicalizes them at creation), so both branches agree.
+    fn resolve(project: &Path) -> Result<Self, String> {
+        let canonical = project
+            .canonicalize()
+            .unwrap_or_else(|_| project.to_path_buf());
+        let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
+        let hash: String = digest
+            .iter()
+            .take(HASH_CHARS / 2)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let dir = qmux_home()?
+            .join(PROJECTS_DIR)
+            .join(format!("{}-{hash}", sanitized_basename(&canonical)));
+        Ok(Self { dir, canonical })
+    }
+
+    fn prompts_dir(&self) -> PathBuf {
+        self.dir.join(PROMPTS_DIR)
+    }
+
+    /// Writes the store's meta.json if it doesn't exist yet, so a hashed dir is
+    /// never left unexplained. Best-effort: failing to record the path must not
+    /// block the prompt operation itself.
+    fn ensure_meta(&self) {
+        let meta_path = self.dir.join(META_FILE);
+        if meta_path.exists() {
+            return;
+        }
+        let meta = ProjectMeta {
+            path: &self.canonical.to_string_lossy(),
+        };
+        if let Ok(raw) = serde_json::to_string_pretty(&meta) {
+            let _ = fs::create_dir_all(&self.dir);
+            let _ = fs::write(&meta_path, raw);
+        }
+    }
+}
+
+fn project_prompts_dir(project: &Path) -> Result<PathBuf, String> {
+    Ok(ProjectStore::resolve(project)?.prompts_dir())
+}
+
+pub fn scope_dir(project: Option<&Path>, scope: PromptScope) -> Result<PathBuf, String> {
     match scope {
         PromptScope::Global => global_dir(),
-        PromptScope::Project => Ok(project_dir(workspace_root)),
+        PromptScope::Project => match project {
+            Some(project) => project_prompts_dir(project),
+            None => Err("no project directory for project-scoped prompts".to_string()),
+        },
     }
 }
 
-/// Whether global and project prompts live in different folders (see PromptLibrary).
-fn scopes_distinct(workspace_root: &Path) -> bool {
-    match global_dir() {
-        Ok(global) => global != project_dir(workspace_root),
-        Err(_) => false,
-    }
+/// Resolves a scope's prompts dir and materializes it on disk (including the
+/// project store's meta.json), for surfaces like reveal-in-Finder that hand the
+/// directory to something external.
+pub fn materialize_scope_dir(
+    project: Option<&Path>,
+    scope: PromptScope,
+) -> Result<PathBuf, String> {
+    let dir = match (scope, project) {
+        (PromptScope::Global, _) => global_dir()?,
+        (PromptScope::Project, Some(project)) => {
+            let store = ProjectStore::resolve(project)?;
+            store.ensure_meta();
+            store.prompts_dir()
+        }
+        (PromptScope::Project, None) => {
+            return Err("no project directory for project-scoped prompts".to_string());
+        }
+    };
+    fs::create_dir_all(&dir)
+        .map_err(|err| format!("failed to create prompts dir {}: {err}", dir.display()))?;
+    Ok(dir)
 }
 
 /// Validates a prompt name and returns it trimmed. Names become filename stems,
@@ -128,9 +241,11 @@ fn modified_ms(path: &Path) -> u64 {
 }
 
 /// Lists every readable `.md` prompt in `dir`, tagged with `scope` and sorted by
-/// name (case-insensitive). A missing directory is an empty scope, not an error;
-/// unreadable or non-UTF-8 files are skipped so one damaged file can't hide the
-/// rest of the library.
+/// name (case-insensitive). A missing directory is an empty scope, not an error,
+/// but an unreadable one IS an error: rendering hidden prompts as an empty
+/// section would invite the user to re-create (and silently overwrite) them.
+/// Individually unreadable or non-UTF-8 files are still skipped so one damaged
+/// file can't hide the rest of the library.
 fn list_dir(dir: &Path, scope: PromptScope) -> Result<Vec<SavedPrompt>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -171,19 +286,15 @@ fn list_dir(dir: &Path, scope: PromptScope) -> Result<Vec<SavedPrompt>, String> 
     Ok(prompts)
 }
 
-/// Lists both scopes. A global scope that is unavailable (no HOME) or unreadable
-/// degrades to empty rather than hiding the project prompts, and vice versa is not
-/// forgiven: the project dir lives under the workspace the app already writes to,
-/// so a read failure there is a real error worth surfacing.
-pub fn list(workspace_root: &Path) -> Result<PromptLibrary, String> {
-    let has_project_scope = scopes_distinct(workspace_root);
-    let mut prompts = match global_dir() {
-        Ok(dir) => list_dir(&dir, PromptScope::Global).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    if has_project_scope {
+/// Lists the global scope plus, when a project directory is supplied, that
+/// project's scope. Read failures propagate (see list_dir) rather than
+/// masquerading as an empty library.
+pub fn list(project: Option<&Path>) -> Result<PromptLibrary, String> {
+    let mut prompts = list_dir(&global_dir()?, PromptScope::Global)?;
+    let has_project_scope = project.is_some();
+    if let Some(project) = project {
         prompts.extend(list_dir(
-            &project_dir(workspace_root),
+            &project_prompts_dir(project)?,
             PromptScope::Project,
         )?);
     }
@@ -226,7 +337,7 @@ fn remove_prompt_file(path: &Path) -> Result<(), String> {
 /// the new file is committed first, then the old one removed, so an interruption
 /// can duplicate a prompt but never lose one.
 pub fn save(
-    workspace_root: &Path,
+    project: Option<&Path>,
     scope: PromptScope,
     name: &str,
     content: &str,
@@ -236,12 +347,35 @@ pub fn save(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let dir = scope_dir(workspace_root, scope)?;
+    // Resolve the project store once: canonicalize + hash would otherwise run
+    // for the write, the meta check, and again for a same-scope rename.
+    let needs_project = scope == PromptScope::Project
+        || previous.is_some_and(|(previous_scope, _)| previous_scope == PromptScope::Project);
+    let store = match (needs_project, project) {
+        (true, Some(project)) => Some(ProjectStore::resolve(project)?),
+        (true, None) => {
+            return Err("no project directory for project-scoped prompts".to_string());
+        }
+        (false, _) => None,
+    };
+    let dir_for = |wanted: PromptScope| -> Result<PathBuf, String> {
+        match wanted {
+            PromptScope::Global => global_dir(),
+            // needs_project guarantees the store exists for any Project ask.
+            PromptScope::Project => Ok(store.as_ref().unwrap().prompts_dir()),
+        }
+    };
+
+    let dir = dir_for(scope)?;
     let path = write_prompt(&dir, name, content)?;
+    if scope == PromptScope::Project
+        && let Some(store) = &store
+    {
+        store.ensure_meta();
+    }
 
     if let Some((previous_scope, previous_name)) = previous {
-        let previous_dir = scope_dir(workspace_root, previous_scope)?;
-        let previous_path = prompt_path(&previous_dir, previous_name)?;
+        let previous_path = prompt_path(&dir_for(previous_scope)?, previous_name)?;
         if previous_path != path {
             remove_prompt_file(&previous_path)
                 .map_err(|err| format!("saved, but couldn't remove the old prompt: {err}"))?;
@@ -258,11 +392,11 @@ pub fn save(
 
 /// Removes the prompt `name` from `scope`. Deleting a prompt that is already gone
 /// succeeds: the caller's goal (the file no longer exists) is met either way.
-pub fn delete(workspace_root: &Path, scope: PromptScope, name: &str) -> Result<(), String> {
+pub fn delete(project: Option<&Path>, scope: PromptScope, name: &str) -> Result<(), String> {
     let _guard = LIBRARY_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let dir = scope_dir(workspace_root, scope)?;
+    let dir = scope_dir(project, scope)?;
     remove_prompt_file(&prompt_path(&dir, name)?)
 }
 
@@ -274,59 +408,125 @@ mod tests {
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn temp_dir() -> PathBuf {
+    fn temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("qmux-prompts-{nanos}-{seq}"));
+        let dir = std::env::temp_dir().join(format!("qmux-prompts-{label}-{nanos}-{seq}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     #[test]
     fn empty_dir_lists_nothing() {
-        let dir = temp_dir().join("missing");
+        let dir = temp_dir("empty").join("missing");
         assert!(list_dir(&dir, PromptScope::Project).unwrap().is_empty());
     }
 
     #[test]
-    fn project_save_list_delete_round_trip() {
-        let root = temp_dir();
+    fn store_dir_is_one_level_with_basename_and_hash() {
+        let project = temp_dir("store");
+        let store = ProjectStore::resolve(&project).unwrap();
+
+        let name = store.dir.file_name().unwrap().to_str().unwrap();
+        let stem = store.dir.parent().unwrap();
+        assert_eq!(stem.file_name().unwrap(), PROJECTS_DIR);
+        // <sanitized-basename>-<12 hex chars>
+        let (prefix, hash) = name.rsplit_once('-').unwrap();
+        assert!(prefix.starts_with("qmux-prompts-store"));
+        assert_eq!(hash.len(), HASH_CHARS);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(store.canonical.is_absolute());
+
+        // Deterministic: the same project maps to the same store.
+        assert_eq!(store.dir, ProjectStore::resolve(&project).unwrap().dir);
+    }
+
+    #[test]
+    fn store_dir_distinguishes_same_basename_projects() {
+        let a = temp_dir("same").join("app");
+        let b = temp_dir("same").join("app");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        assert_ne!(
+            ProjectStore::resolve(&a).unwrap().dir,
+            ProjectStore::resolve(&b).unwrap().dir
+        );
+    }
+
+    #[test]
+    fn store_dir_sanitizes_hostile_basenames() {
+        let base = temp_dir("hostile");
+        let project = base.join("my répo/**");
+        // Non-existent (can't canonicalize) — falls back to the literal path.
+        let store = ProjectStore::resolve(&project).unwrap();
+        let name = store.dir.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'),
+            "unsafe store name {name:?}"
+        );
+    }
+
+    #[test]
+    fn project_save_writes_meta_and_round_trips() {
+        let project = temp_dir("meta");
         save(
-            &root,
+            Some(&project),
             PromptScope::Project,
             "Review checklist",
             "Review {target} for bugs.",
             None,
         )
         .unwrap();
-        save(&root, PromptScope::Project, "bugfix", "Fix {file}.", None).unwrap();
 
-        let prompts = list_dir(&project_dir(&root), PromptScope::Project).unwrap();
-        assert_eq!(
-            prompts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-            vec!["bugfix", "Review checklist"]
-        );
-        assert_eq!(prompts[1].content, "Review {target} for bugs.");
-        assert!(prompts.iter().all(|p| p.scope == PromptScope::Project));
+        let store = ProjectStore::resolve(&project).unwrap();
+        let meta: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.dir.join(META_FILE)).unwrap()).unwrap();
+        assert_eq!(meta["path"], store.canonical.to_string_lossy().as_ref());
 
-        delete(&root, PromptScope::Project, "bugfix").unwrap();
-        let prompts = list_dir(&project_dir(&root), PromptScope::Project).unwrap();
+        let dir = store.prompts_dir();
+        let prompts = list_dir(&dir, PromptScope::Project).unwrap();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "Review checklist");
+        assert_eq!(prompts[0].content, "Review {target} for bugs.");
 
+        delete(Some(&project), PromptScope::Project, "Review checklist").unwrap();
+        assert!(list_dir(&dir, PromptScope::Project).unwrap().is_empty());
         // Deleting an already-missing prompt is a no-op, not an error.
-        delete(&root, PromptScope::Project, "bugfix").unwrap();
+        delete(Some(&project), PromptScope::Project, "Review checklist").unwrap();
+
+        // Clean up the real ~/.qmux/projects entry this test created.
+        let _ = fs::remove_dir_all(store.dir);
+    }
+
+    #[test]
+    fn materialize_creates_dir_and_meta() {
+        let project = temp_dir("materialize");
+        let dir = materialize_scope_dir(Some(&project), PromptScope::Project).unwrap();
+        assert!(dir.is_dir());
+
+        let store = ProjectStore::resolve(&project).unwrap();
+        assert!(store.dir.join(META_FILE).exists());
+
+        let _ = fs::remove_dir_all(store.dir);
     }
 
     #[test]
     fn rename_within_scope_moves_the_file() {
-        let root = temp_dir();
-        save(&root, PromptScope::Project, "old name", "body", None).unwrap();
+        let project = temp_dir("rename");
         save(
-            &root,
+            Some(&project),
+            PromptScope::Project,
+            "old name",
+            "body",
+            None,
+        )
+        .unwrap();
+        save(
+            Some(&project),
             PromptScope::Project,
             "new name",
             "body v2",
@@ -334,48 +534,49 @@ mod tests {
         )
         .unwrap();
 
-        let prompts = list_dir(&project_dir(&root), PromptScope::Project).unwrap();
+        let store = ProjectStore::resolve(&project).unwrap();
+        let prompts = list_dir(&store.prompts_dir(), PromptScope::Project).unwrap();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "new name");
         assert_eq!(prompts[0].content, "body v2");
+
+        let _ = fs::remove_dir_all(store.dir);
     }
 
     #[test]
-    fn move_between_dirs_removes_the_source() {
-        // Exercise the move mechanics on two explicit dirs (the global dir depends
-        // on HOME, which tests must not mutate process-wide).
-        let from = temp_dir();
-        let to = temp_dir();
-        write_prompt(&from, "shared", "body").unwrap();
-
-        let path = write_prompt(&to, "shared", "body").unwrap();
-        remove_prompt_file(&prompt_path(&from, "shared").unwrap()).unwrap();
-
-        assert!(path.exists());
-        assert!(list_dir(&from, PromptScope::Project).unwrap().is_empty());
-        assert_eq!(list_dir(&to, PromptScope::Global).unwrap().len(), 1);
+    fn project_scope_without_project_dir_errors() {
+        assert!(save(None, PromptScope::Project, "note", "body", None).is_err());
+        assert!(delete(None, PromptScope::Project, "note").is_err());
+        assert!(scope_dir(None, PromptScope::Project).is_err());
+        assert!(materialize_scope_dir(None, PromptScope::Project).is_err());
+        // A global save whose `previous` names the project scope needs one too.
+        assert!(
+            save(
+                None,
+                PromptScope::Global,
+                "note",
+                "body",
+                Some((PromptScope::Project, "note")),
+            )
+            .is_err()
+        );
     }
 
     #[test]
-    fn overwrite_updates_content() {
-        let root = temp_dir();
-        save(&root, PromptScope::Project, "note", "v1", None).unwrap();
-        save(
-            &root,
-            PromptScope::Project,
-            "note",
-            "v2",
-            Some((PromptScope::Project, "note")),
-        )
-        .unwrap();
-        let prompts = list_dir(&project_dir(&root), PromptScope::Project).unwrap();
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0].content, "v2");
+    fn list_without_project_has_no_project_scope() {
+        let library = list(None).unwrap();
+        assert!(!library.has_project_scope);
+        assert!(
+            library
+                .prompts
+                .iter()
+                .all(|p| p.scope == PromptScope::Global)
+        );
     }
 
     #[test]
     fn rejects_unsafe_names() {
-        let root = temp_dir();
+        let project = temp_dir("names");
         for bad in [
             "",
             "  ",
@@ -387,25 +588,25 @@ mod tests {
             "a\nb",
         ] {
             assert!(
-                save(&root, PromptScope::Project, bad, "body", None).is_err(),
+                save(Some(&project), PromptScope::Project, bad, "body", None).is_err(),
                 "accepted {bad:?}"
             );
         }
-        assert!(
-            list_dir(&project_dir(&root), PromptScope::Project)
-                .unwrap()
-                .is_empty()
-        );
+        let dir = project_prompts_dir(&project).unwrap();
+        assert!(list_dir(&dir, PromptScope::Project).unwrap().is_empty());
     }
 
     #[test]
     fn skips_non_markdown_files() {
-        let root = temp_dir();
-        save(&root, PromptScope::Project, "keep", "body", None).unwrap();
-        fs::write(project_dir(&root).join("notes.txt"), "ignored").unwrap();
-        let prompts = list_dir(&project_dir(&root), PromptScope::Project).unwrap();
+        let project = temp_dir("filter");
+        save(Some(&project), PromptScope::Project, "keep", "body", None).unwrap();
+        let store = ProjectStore::resolve(&project).unwrap();
+        fs::write(store.prompts_dir().join("notes.txt"), "ignored").unwrap();
+        let prompts = list_dir(&store.prompts_dir(), PromptScope::Project).unwrap();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "keep");
+
+        let _ = fs::remove_dir_all(store.dir);
     }
 
     #[test]

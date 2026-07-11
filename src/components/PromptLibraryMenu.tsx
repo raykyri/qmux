@@ -10,7 +10,6 @@ import {
 import { createPortal } from "react-dom";
 import {
   deleteSavedPrompt,
-  getRuntimeConfig,
   listSavedPrompts,
   revealSavedPrompts,
   saveSavedPrompt,
@@ -35,22 +34,31 @@ interface PromptLibraryMenuProps {
   // Inserts the chosen prompt text into the active composer at its caret.
   // Absent (e.g. a terminal pane with no agent) the trigger is disabled.
   onInsert?: (text: string) => void;
+  // The active pane's project directory (group dir, or base repo for
+  // worktrees). Keys the Project scope; absent hides that section.
+  projectDir?: string | null;
+  // Human label for the project section, e.g. the group name.
+  projectLabel?: string | null;
 }
 
 // The pane header's saved-prompt library: a bookmark button opening a portaled
 // popover with a searchable list of reusable messages, split into a Global
-// section (~/.qmux/prompts/, visible everywhere) and a Project section
-// (<workspaceRoot>/.qmux/prompts/, this workspace only). Rows drag-and-drop
-// between the sections to move a prompt's home. `{placeholder}` slots discovered
-// in a prompt's text get a fill-in step before insertion, Smithers-style.
-export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) {
+// section (~/.qmux/prompts/, visible everywhere) and a Project section keyed
+// by the active pane's project directory (stored centrally under
+// ~/.qmux/projects/, so repos stay clean). Rows drag-and-drop between the
+// sections to move a prompt's home. `{placeholder}` slots discovered in a
+// prompt's text get a fill-in step before insertion, Smithers-style.
+export default function PromptLibraryMenu({
+  onInsert,
+  projectDir,
+  projectLabel,
+}: PromptLibraryMenuProps) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
   // Null while the first load is in flight, so "No saved prompts" can't flash
   // before the list arrives.
   const [prompts, setPrompts] = useState<SavedPrompt[] | null>(null);
-  const [hasProjectScope, setHasProjectScope] = useState(true);
-  const [projectName, setProjectName] = useState<string | null>(null);
+  const [hasProjectScope, setHasProjectScope] = useState(Boolean(projectDir));
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   // Two-step delete: the first click arms this prompt's button, the second deletes.
@@ -73,14 +81,14 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
 
   const refresh = useCallback(async () => {
     try {
-      const library = await listSavedPrompts();
+      const library = await listSavedPrompts(projectDir);
       setPrompts(library.prompts);
       setHasProjectScope(library.hasProjectScope);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [projectDir]);
 
   const openMenu = () => {
     setView({ kind: "list" });
@@ -90,15 +98,20 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
     setDropScope(null);
     setOpen(true);
     void refresh();
-    // Label the project section with the workspace folder's name so "Project"
-    // reads as a concrete place. Best-effort; the plain label works without it.
-    void getRuntimeConfig()
-      .then((config) => {
-        const base = config.workspaceRoot.replace(/\/+$/, "").split("/").pop();
-        setProjectName(base || null);
-      })
-      .catch(() => setProjectName(null));
   };
+
+  // A pane switch (e.g. ⌘1–9) can land on a different project while the popover
+  // is open. The listed prompts would then belong to the old project while
+  // save/delete/reveal target the new one — close instead, so the next open
+  // loads the right store. Ref-compared so the effect only fires on a real
+  // project change, not on open/close or unrelated re-renders.
+  const openProjectDirRef = useRef(projectDir);
+  useEffect(() => {
+    if (openProjectDirRef.current !== projectDir) {
+      openProjectDirRef.current = projectDir;
+      setOpen(false);
+    }
+  }, [projectDir]);
 
   // Close on an outside click. Escape steps back to the list from a subview
   // (so a half-typed prompt isn't lost to a reflexive Escape) and closes from it.
@@ -201,6 +214,7 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
         editScope,
         editName,
         editContent,
+        projectDir,
         view.original ? { scope: view.original.scope, name: view.original.name } : null,
       );
       await refresh();
@@ -218,7 +232,7 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
     }
     setBusy(true);
     try {
-      await deleteSavedPrompt(prompt.scope, prompt.name);
+      await deleteSavedPrompt(prompt.scope, prompt.name, projectDir);
       setDeleteArmed(null);
       await refresh();
     } catch (err) {
@@ -246,7 +260,7 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
     }
     setBusy(true);
     try {
-      await saveSavedPrompt(target, prompt.name, prompt.content, {
+      await saveSavedPrompt(target, prompt.name, prompt.content, projectDir, {
         scope: prompt.scope,
         name: prompt.name,
       });
@@ -258,6 +272,13 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
       setBusy(false);
     }
   };
+
+  // Prefer the caller's label (group name); fall back to the directory's
+  // basename so the section always names a concrete place.
+  const projectSectionName =
+    projectLabel?.trim() ||
+    projectDir?.replace(/\/+$/, "").split("/").pop() ||
+    null;
 
   const query = search.trim().toLowerCase();
   const matchesQuery = (prompt: SavedPrompt) =>
@@ -379,7 +400,7 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
             aria-label={`Open ${label} prompts folder`}
             onClick={() => {
               setOpen(false);
-              void revealSavedPrompts(scope).catch(() => undefined);
+              void revealSavedPrompts(scope, projectDir).catch(() => undefined);
             }}
           >
             <FolderOpen size={12} aria-hidden="true" />
@@ -423,7 +444,7 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
       <div className="prompt-library-list">
         {section("global", "Global")}
         {hasProjectScope
-          ? section("project", projectName ? `Project · ${projectName}` : "Project")
+          ? section("project", projectSectionName ? `Project · ${projectSectionName}` : "Project")
           : null}
       </div>
     </>
@@ -496,7 +517,7 @@ export default function PromptLibraryMenu({ onInsert }: PromptLibraryMenuProps) 
               {(
                 [
                   ["global", "Global"],
-                  ["project", projectName ? `Project · ${projectName}` : "Project"],
+                  ["project", projectSectionName ? `Project · ${projectSectionName}` : "Project"],
                 ] as const
               ).map(([scope, label]) => (
                 <button

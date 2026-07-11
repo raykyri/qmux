@@ -759,11 +759,9 @@ fn spawn_native_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, St
         backend: PaneBackend::Native { root_pid: None },
     })?;
 
-    if let Err(err) = crate::native_terminal::create(
-        &pane_id,
-        &launcher.display().to_string(),
-        Some(&pane.cwd),
-    ) {
+    if let Err(err) =
+        crate::native_terminal::create(&pane_id, &launcher.display().to_string(), Some(&pane.cwd))
+    {
         let _ = state.remove_pane(&pane_id);
         remove_shell_integration_dir(&pane_id);
         return Err(err);
