@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>qmux — The queueing terminal multiplexer</title>
-<meta name="description" content="qmux is a macOS desktop terminal with a native control plane for AI coding agents. Launch Claude Code, Codex, OpenCode, or Grok in real PTYs, organize them with vertical tabs, and queue follow-up work. Free and open source.">
+<meta name="description" content="qmux is a macOS desktop terminal with a native control plane for AI coding agents. Launch Claude Code, Codex, OpenCode, or Grok in native Ghostty terminals, organize them with vertical tabs, and queue follow-up work. Free and open source.">
 <link rel="icon" type="image/png" href="logo.png">
 <style>
   :root {
@@ -210,9 +210,9 @@
     <h1>qmux</h1>
     <p class="tagline">A powerful, native interface for coding agents.</p>
     <p class="subhead">
-      Launch Claude Code, Codex, OpenCode, or Grok in real PTYs, organize
-      them with vertical tabs and groups, and read their transcripts in
-      a native sidebar.
+      Launch Claude Code, Codex, OpenCode, or Grok in native Ghostty
+      terminals, organize them with vertical tabs and groups, and read
+      their transcripts in a native sidebar.
     </p>
     <p class="subhead">
       Queue up work that runs automatically as agents go idle. Create
@@ -224,7 +224,7 @@
       <a class="btn primary" href="https://github.com/raykyri/qmux/releases">Get qmux &rarr;</a>
       <a class="btn secondary" href="https://github.com/raykyri/qmux">View on GitHub</a>
     </div>
-    <p class="platform-note">macOS supported, Linux soon.</p>
+    <p class="platform-note">macOS 13+ supported, Linux soon.</p>
     <img class="shot" src="qmux.png" alt="qmux running multiple coding agents with vertical tabs, a transcript sidebar, and a terminal pane">
   </header>
 
@@ -235,9 +235,11 @@
       <li><strong>Vertical tabs</strong> — The sidebar shows every terminal and agent, grouped by the project that you’re working on. Drag to reorder. Collapse groups you’re not using with one click.</li>
       <li><strong>Native transcript</strong> — qmux tails the agent&rsquo;s transcript and renders it as a rich timeline: Markdown, tables, code blocks, Mermaid and Graphviz, tool calls (optionally collapsed). Search your transcript with native &#8984;F while you keep working.</li>
       <li><strong>Turn queue</strong> — Queue up follow-ups while an agent works; edit, reorder, and drag queued work between panes. Wait on other terminals or agents to finish their work.</li>
-      <li><strong>Session forking</strong> — fork a running Claude or Codex session to a new tab with <code>qmux fork</code>. The fork inherits the transcript and continues in the same folder, or in a new <code>--worktree</code>.</li>
+      <li><strong>Session forking</strong> — fork a running session to a new tab with <code>qmux fork</code>. All four agents fork natively. The fork inherits the transcript and continues in the same folder, or in a new <code>--worktree</code>.</li>
+      <li><strong>Prompt library &amp; &#8984;K palette</strong> — save prompts as Markdown files, globally or per project, with <code>{placeholder}</code> fill-in. Insert them from the pane header or the &#8984;K command palette, which also covers tab navigation and pane actions.</li>
       <li><strong>Git worktrees</strong> — launch each agent into its own worktree, with dirty-state checks and a keep-or-delete prompt on close.</li>
-      <li><strong>Terminal, done properly</strong> — xterm.js with WebGL rendering, vertical splits (<code>&#8984;D</code>), find in scrollback, copy-on-select, paste confirmation, &#8984;-click links, and scroll position that survives layout changes.</li>
+      <li><strong>Terminal, done properly</strong> — every pane is a real Ghostty terminal, rendered natively with Metal. Vertical splits (<code>&#8984;D</code>), find in scrollback, copy-on-select, paste confirmation, &#8984;-click links, and 485 bundled color themes.</li>
+      <li><strong>Browser overlay</strong><span class="exp">experimental</span> — preview a local file or a <code>localhost</code> dev server in a resizable panel over the terminal. Markdown files render as styled HTML.</li>
       <li><strong>Generated tab titles</strong> — tabs name themselves from your first message, via Apple Foundation Models on-device by default (OpenRouter optional, or off).</li>
       <li><strong>Extensible</strong> — Claude Code, Codex, OpenCode, and Grok ship built in. New agents are one Rust trait + UI adapter away.</li>
     </ul>
@@ -268,7 +270,7 @@
 
     <details>
       <summary>Which agents does it support?</summary>
-      <p>Claude Code and Codex are fully supported; OpenCode and Grok have limited support. Agents are integrated through a pluggable adapter layer, so new ones can be added. Contributions are welcome.</p>
+      <p>Claude Code, Codex, OpenCode, and Grok all ship with full adapters: lifecycle hooks, native transcripts, session resumes, and native forks. Agents are integrated through a pluggable adapter layer, so new ones can be added. Contributions are welcome.</p>
     </details>
 
     <details>
@@ -278,17 +280,17 @@
 
     <details>
       <summary>How does qmux know what an agent is doing?</summary>
-      <p>We install wrapper commands for `claude`, `codex`, and other agents, that add hooks at launch. They report session start, prompts, tool use, permission requests, and idle state over a token-gated Unix socket. Hooks are only added when launching agents through our application, not globally.</p>
+      <p>We install wrapper commands for <code>claude</code>, <code>codex</code>, and other agents, that add hooks at launch. They report session start, prompts, tool use, permission requests, and idle state over a token-gated Unix socket. Hooks are only added when launching agents through our application, not globally.</p>
     </details>
 
     <details>
       <summary>What platforms does it run on?</summary>
-      <p>macOS today. Linux support is planned.</p>
+      <p>macOS 13 (Ventura) or later today. The DMG is a universal binary and runs natively on Apple Silicon and Intel Macs. Linux support is planned.</p>
     </details>
 
     <details>
       <summary>Is my data sent anywhere?</summary>
-      <p>No. The application is entirely local. Tab title generation uses Apple Foundation Models on your local device by default.</p>
+      <p>No. The application is entirely local and sends no telemetry. Tab title generation uses Apple Foundation Models on your local device by default. Release builds check the GitHub releases page for updates on startup.</p>
     </details>
 
     <details>
