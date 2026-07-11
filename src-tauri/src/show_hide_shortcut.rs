@@ -478,6 +478,11 @@ pub fn show_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         return Ok(());
     };
 
+    // App-level show/hide is a macOS-only Tauri API (it restores the whole app,
+    // including other windows and the Dock state). Other platforms fall back to
+    // the window-level calls alone, which also keeps the crate compiling for
+    // Linux dev/test builds.
+    #[cfg(target_os = "macos")]
     app.show()?;
     window.show()?;
     window.unminimize()?;
@@ -485,8 +490,17 @@ pub fn show_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 pub fn hide_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     app.hide()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn hide_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    window.hide()
 }
 
 fn display_accelerator(shortcut: Shortcut) -> String {

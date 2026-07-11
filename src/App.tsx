@@ -329,6 +329,12 @@ const TITLE_GENERATION_TEST_MESSAGE =
 // in-memory copy updates on every keystroke (so tab switches never lose it); the
 // disk write is debounced so a paused composer — and a restart — can recover it.
 const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
+// Upper bound on the per-agent hook-event history. This feed accumulates for an
+// agent's whole lifetime (it backs the "copy transcript as JSON" export), so
+// without a cap a long-running, tool-heavy agent grows the array without limit.
+// N is generous enough that the copy export stays complete for any realistic
+// session.
+const MAX_HOOK_EVENTS_PER_AGENT = 2000;
 
 function waitForPaintedFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -346,7 +352,11 @@ interface PendingFirstMessageTitle {
 interface AgentTurnInfo {
   turns: Turn[];
   assistantLabel: string;
-  transcript: string;
+  // Formats the full transcript string on first call and caches it. Only the
+  // copy actions consume it, so eagerly formatting every agent's transcript on
+  // every turn/status event was pure waste; use hasTranscript for emptiness.
+  getTranscript: () => string;
+  hasTranscript: boolean;
 }
 
 interface TurnPaneSurface {
@@ -354,8 +364,8 @@ interface TurnPaneSurface {
   agent: AgentInfo | undefined;
   turns: Turn[];
   assistantLabel: string;
-  transcript: string;
-  hookEvents: TranscriptHookEvent[];
+  getTranscript: () => string;
+  hasTranscript: boolean;
   transcriptNotice: string | null;
   transcriptOptions: TranscriptOption[];
   queuedTurns: QueuedTurn[];
@@ -1129,9 +1139,24 @@ export default function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [threadGraphs, setThreadGraphs] = useState<ThreadGraph[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
-  const [hookEventsByAgent, setHookEventsByAgent] = useState<
-    Record<string, TranscriptHookEvent[]>
-  >({});
+  // Per-agent hook-event history. It backs only the "copy transcript as JSON"
+  // export — nothing renders it — so it lives outside React state: hooks fire on
+  // every tool call of a busy agent, and putting each one through setState was a
+  // full-app re-render per event. Mutated in place; capped so a long-running,
+  // tool-heavy agent bounds both memory and export size.
+  const hookEventsByAgentRef = useRef<Record<string, TranscriptHookEvent[]>>({});
+  const appendHookEvent = useCallback((event: TranscriptHookEvent) => {
+    const store = hookEventsByAgentRef.current;
+    const existing = store[event.agentId];
+    if (!existing) {
+      store[event.agentId] = [event];
+      return;
+    }
+    existing.push(event);
+    if (existing.length > MAX_HOOK_EVENTS_PER_AGENT) {
+      existing.splice(0, existing.length - MAX_HOOK_EVENTS_PER_AGENT);
+    }
+  }, []);
   // Latest unexpected-state message per agent (stalled/unreadable transcript,
   // adapter failure). Shown under the right pane's "No activity yet" placeholder;
   // null clears it once the transcript tail recovers.
@@ -1297,7 +1322,42 @@ export default function App() {
     }
     return result;
   }, [agents]);
+  // Per-agent cache behind agentTurnInfoById. Rebuilding an agent's thread graph
+  // and (worse) handing out a fresh `turns` array identity invalidates the
+  // transcript timeline's memoization and re-parses all of its markdown — so an
+  // event about agent A must not churn agent B's entry, and a status-only change
+  // to A must not churn A's own turns. Entries are reused when the inputs that
+  // actually feed the computation are unchanged: the per-agent turn list
+  // (element-wise — turn objects are immutable once appended), the stored graph
+  // object, and the agent fields the graph builders read.
+  const turnInfoCacheRef = useRef(
+    new Map<
+      string,
+      {
+        agentKey: string;
+        agentTurns: Turn[];
+        storedGraph: ThreadGraph | undefined;
+        info: AgentTurnInfo;
+      }
+    >(),
+  );
   const agentTurnInfoById = useMemo(() => {
+    // The fields consulted by buildSingleAgentThreadGraph / focusedBranchTurns /
+    // graphHasCompleteAgentBranch / participantForTurn. Status flips and other
+    // activity metadata deliberately don't invalidate.
+    const agentCacheKey = (agent: AgentInfo) =>
+      [
+        agent.id,
+        agent.adapter,
+        agent.threadId ?? "",
+        agent.branchId ?? "",
+        agent.sessionId ?? "",
+        agent.transcriptPath ?? "",
+        agent.createdAt,
+      ].join("\0");
+    const sameTurnList = (a: Turn[], b: Turn[]) =>
+      a.length === b.length && a.every((turn, index) => turn === b[index]);
+
     const threadGraphById = new Map(threadGraphs.map((graph) => [graph.threadId, graph]));
     const turnsByAgent = new Map<string, Turn[]>();
     for (const turn of turns) {
@@ -1308,15 +1368,29 @@ export default function App() {
         turnsByAgent.set(turn.agentId, [turn]);
       }
     }
+    const cache = turnInfoCacheRef.current;
+    const liveAgentIds = new Set<string>();
     const result = new Map<string, AgentTurnInfo>();
     for (const agent of agents) {
+      liveAgentIds.add(agent.id);
       const agentTurns = turnsByAgent.get(agent.id) ?? [];
-      const adapter = getAgentUiAdapter(agent.adapter);
-      const normalizedTurns = adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
+      const agentKey = agentCacheKey(agent);
       const storedGraph =
         agent.threadId && agent.threadId.trim()
           ? threadGraphById.get(agent.threadId)
           : undefined;
+      const cached = cache.get(agent.id);
+      if (
+        cached &&
+        cached.agentKey === agentKey &&
+        cached.storedGraph === storedGraph &&
+        sameTurnList(cached.agentTurns, agentTurns)
+      ) {
+        result.set(agent.id, cached.info);
+        continue;
+      }
+      const adapter = getAgentUiAdapter(agent.adapter);
+      const normalizedTurns = adapter.normalizeTurns?.(agentTurns) ?? agentTurns;
       const threadGraph =
         storedGraph && graphHasCompleteAgentBranch(storedGraph, agent, normalizedTurns)
           ? storedGraph
@@ -1328,11 +1402,23 @@ export default function App() {
       // and copied transcript agree regardless of which graph source won above.
       const visibleTurns = adapter.normalizeTurns?.(graphTurns) ?? graphTurns;
       const assistantLabel = adapter.label;
-      result.set(agent.id, {
+      // Every turn formats at least its role label, so emptiness is just "no
+      // turns" — the full string is only ever built for the copy actions.
+      let transcript: string | null = null;
+      const info: AgentTurnInfo = {
         turns: visibleTurns,
         assistantLabel,
-        transcript: formatTurnsTranscript(visibleTurns, assistantLabel),
-      });
+        getTranscript: () =>
+          (transcript ??= formatTurnsTranscript(visibleTurns, assistantLabel)),
+        hasTranscript: visibleTurns.length > 0,
+      };
+      cache.set(agent.id, { agentKey, agentTurns, storedGraph, info });
+      result.set(agent.id, info);
+    }
+    for (const agentId of cache.keys()) {
+      if (!liveAgentIds.has(agentId)) {
+        cache.delete(agentId);
+      }
     }
     return result;
   }, [agents, threadGraphs, turns]);
@@ -1905,7 +1991,6 @@ export default function App() {
       const next = Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     };
-    setHookEventsByAgent(pruneRecord);
     setTranscriptNoticeByAgent(pruneRecord);
     setTranscriptOptionsByAgent(pruneRecord);
     setCollapsedQueuedTurnsByAgent(pruneRecord);
@@ -1919,6 +2004,9 @@ export default function App() {
     }
     for (const id of Object.keys(draftsByAgentRef.current)) {
       if (!ids.has(id)) delete draftsByAgentRef.current[id];
+    }
+    for (const id of Object.keys(hookEventsByAgentRef.current)) {
+      if (!ids.has(id)) delete hookEventsByAgentRef.current[id];
     }
     for (const id of Object.keys(queueScrollByAgentRef.current)) {
       if (!ids.has(id)) delete queueScrollByAgentRef.current[id];
@@ -2307,13 +2395,19 @@ export default function App() {
 
   function turnInfoForAgent(agent: AgentInfo | undefined): AgentTurnInfo {
     if (!agent) {
-      return { turns: [], assistantLabel: "Claude", transcript: "" };
+      return {
+        turns: [],
+        assistantLabel: "Claude",
+        getTranscript: () => "",
+        hasTranscript: false,
+      };
     }
     return (
       agentTurnInfoById.get(agent.id) ?? {
         turns: [],
         assistantLabel: getAgentUiAdapter(agent.adapter).label,
-        transcript: "",
+        getTranscript: () => "",
+        hasTranscript: false,
       }
     );
   }
@@ -2383,8 +2477,8 @@ export default function App() {
       agent,
       turns: turnInfo.turns,
       assistantLabel: turnInfo.assistantLabel,
-      transcript: turnInfo.transcript,
-      hookEvents: agent ? (hookEventsByAgent[agent.id] ?? []) : [],
+      getTranscript: turnInfo.getTranscript,
+      hasTranscript: turnInfo.hasTranscript,
       transcriptNotice: agent ? (transcriptNoticeByAgent[agent.id] ?? null) : null,
       transcriptOptions: agent ? (transcriptOptionsByAgent[agent.id] ?? []) : [],
       queuedTurns: agent ? (queuedTurnsByAgent[agent.id] ?? []) : [],
@@ -3827,7 +3921,7 @@ export default function App() {
   );
 
   useQmuxEvents({
-    setHookEventsByAgent,
+    appendHookEvent,
     setPanes: setPanesPreservingRecoveredDismissals,
     setActivePaneId,
     setPaneContextMenu,
@@ -6821,14 +6915,14 @@ export default function App() {
                 queueSplit={queueSplit}
                 requireCmdEnterToSend={settings.requireCmdEnterToSend}
                 pasteProtection={pasteProtection}
-                transcriptText={surface.transcript}
+                hasTranscript={surface.hasTranscript}
                 transcriptCopyText={() =>
                   formatTranscriptCopyJson({
                     agent,
                     pane: surface.pane,
-                    transcriptText: surface.transcript,
+                    transcriptText: surface.getTranscript(),
                     turns: surface.turns,
-                    hooks: surface.hookEvents,
+                    hooks: hookEventsByAgentRef.current[agent.id] ?? [],
                   })
                 }
                 composerPolicy={getAgentUiAdapter(agent.adapter).composerPolicy(agent)}

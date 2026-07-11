@@ -5,6 +5,7 @@ import {
   isAgentInfo,
   isQueuedTurn,
   isTurn,
+  reconcileThreadGraphs,
   transcriptHookEvent,
   upsertAgent,
 } from "../lib/appHelpers";
@@ -14,19 +15,21 @@ import type {
   AgentInfo,
   GroupInfo,
   PaneInfo,
+  QmuxEvent,
   QueuedTurn,
   ThreadGraph,
   TranscriptHookEvent,
   Turn,
 } from "../types";
 
-// Upper bound on the per-agent hook-event history. This feed accumulates for an
-// agent's whole lifetime (it backs the "copy transcript as JSON" export), so
-// without a cap a long-running, tool-heavy agent grows the array without limit
-// and pays an O(n) copy on every single hook event. Keeping the most recent N
-// bounds both memory and the per-event copy; N is generous enough that the copy
-// export stays complete for any realistic session.
-const MAX_HOOK_EVENTS_PER_AGENT = 2000;
+// How long to hold follow-up events after handling one immediately. A busy agent
+// emits bursts of hook/status/turn events (dozens per second), and handling each
+// in its own listener callback commits a separate React render of the whole app —
+// which is what makes typing lag while an agent streams. The first event of a
+// burst is still handled synchronously (so interactive events like terminal
+// shortcuts stay immediate); everything arriving within this window is then
+// processed in one synchronous batch, which React commits as a single render.
+const EVENT_COALESCE_MS = 16;
 
 // Mirror the backend's per-agent turn cap (MAX_TURNS_PER_AGENT in state.rs). The
 // backend only ever holds the most recent N turns per agent, but the frontend
@@ -41,7 +44,10 @@ const MAX_TURNS_PER_AGENT = 200;
 // from useState are stable, and the three helper callbacks read through refs
 // internally, so the first-render capture stays correct.
 export interface UseQmuxEventsHandlers {
-  setHookEventsByAgent: Dispatch<SetStateAction<Record<string, TranscriptHookEvent[]>>>;
+  // Records a transcript hook event for the copy-as-JSON export. Nothing renders
+  // hook events, so the store lives outside React state (see App) and appending
+  // must never trigger a render.
+  appendHookEvent: (event: TranscriptHookEvent) => void;
   setPanes: Dispatch<SetStateAction<PaneInfo[]>>;
   setActivePaneId: Dispatch<SetStateAction<string | null>>;
   setPaneContextMenu: Dispatch<SetStateAction<PaneContextMenuState | null>>;
@@ -99,7 +105,7 @@ function agentPromptSubmittedText(payload: Record<string, unknown>): string | nu
 
 export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
   const {
-    setHookEventsByAgent,
+    appendHookEvent,
     setPanes,
     setActivePaneId,
     setPaneContextMenu,
@@ -138,35 +144,37 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     let panesRefreshSeq = 0;
     let groupsRefreshSeq = 0;
     let threadGraphRefreshSeq = 0;
+    // Turn events arrive in bursts (every appended line schedules a refresh), so
+    // collapse all requests raised within one synchronous batch into a single
+    // refetch; the seq guard still drops any stale response that loses a race.
+    let threadGraphRefreshQueued = false;
     const refreshThreadGraphs = () => {
-      const seq = (threadGraphRefreshSeq += 1);
-      void listThreadGraphs()
-        .then((graphs) => {
-          if (!disposed && seq === threadGraphRefreshSeq) {
-            setThreadGraphs(graphs);
-          }
-        })
-        .catch(() => undefined);
-    };
-
-    void listenToEvents((event) => {
-      if (disposed) {
+      if (threadGraphRefreshQueued) {
         return;
       }
+      threadGraphRefreshQueued = true;
+      queueMicrotask(() => {
+        threadGraphRefreshQueued = false;
+        if (disposed) {
+          return;
+        }
+        const seq = (threadGraphRefreshSeq += 1);
+        void listThreadGraphs()
+          .then((graphs) => {
+            if (!disposed && seq === threadGraphRefreshSeq) {
+              // Reuse prior graph objects when their content is unchanged so
+              // the per-agent turn-info cache (keyed on graph identity) holds.
+              setThreadGraphs((current) => reconcileThreadGraphs(current, graphs));
+            }
+          })
+          .catch(() => undefined);
+      });
+    };
+
+    const handleEvent = (event: QmuxEvent) => {
       const hookEvent = transcriptHookEvent(event);
       if (hookEvent) {
-        setHookEventsByAgent((current) => {
-          const existing = current[hookEvent.agentId] ?? [];
-          const appended = [...existing, hookEvent];
-          // Bound the history so a busy agent can't grow it without limit (and so
-          // each append copies at most MAX_HOOK_EVENTS_PER_AGENT elements, not the
-          // whole session's worth). Drop the oldest events past the cap.
-          const next =
-            appended.length > MAX_HOOK_EVENTS_PER_AGENT
-              ? appended.slice(appended.length - MAX_HOOK_EVENTS_PER_AGENT)
-              : appended;
-          return { ...current, [hookEvent.agentId]: next };
-        });
+        appendHookEvent(hookEvent);
       }
       if (event.type === "pty.exit" && event.paneId) {
         const exitedPaneId = event.paneId;
@@ -412,6 +420,33 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (event.agentId && event.type === "agent.transcript_recovered") {
         void refreshTranscriptOptions(event.agentId).catch(() => undefined);
       }
+    };
+
+    const pendingEvents: QmuxEvent[] = [];
+    let coalesceTimer: number | null = null;
+    const flushPendingEvents = () => {
+      coalesceTimer = null;
+      if (disposed || pendingEvents.length === 0) {
+        return;
+      }
+      const batch = pendingEvents.splice(0, pendingEvents.length);
+      // Every setState across the batch runs in this one synchronous block, so
+      // React commits a single render for the whole burst.
+      for (const event of batch) {
+        handleEvent(event);
+      }
+    };
+
+    void listenToEvents((event) => {
+      if (disposed) {
+        return;
+      }
+      if (coalesceTimer === null) {
+        handleEvent(event);
+        coalesceTimer = window.setTimeout(flushPendingEvents, EVENT_COALESCE_MS);
+      } else {
+        pendingEvents.push(event);
+      }
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -423,6 +458,9 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
 
     return () => {
       disposed = true;
+      if (coalesceTimer !== null) {
+        clearTimeout(coalesceTimer);
+      }
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

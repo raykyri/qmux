@@ -50,6 +50,11 @@ import {
 // The composer grows with its content up to this height, then scrolls.
 const MAX_INPUT_HEIGHT = 200;
 
+// Trailing debounce for pushing local composer edits to the app's draft store.
+// Long enough to keep steady typing from re-rendering the app per keystroke,
+// short enough that tab indicators and crash recovery stay effectively live.
+const DRAFT_PUSH_DEBOUNCE_MS = 150;
+
 // A quick, subtle ease for the queued-turn collapse/expand. CSS can't transition
 // to/from `auto`, so we measure both layouts and tween between explicit pixel
 // heights, then hand control back to CSS once it settles.
@@ -205,8 +210,11 @@ function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean 
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
-  // Controlled composer text, owned by the app and keyed by agent so it survives
-  // tab switches; onDraftChange both updates that store and schedules the disk flush.
+  // The app's copy of the composer text, keyed by agent so it survives tab
+  // switches. The live value while typing is component-local (a keystroke must
+  // not re-render the whole app); onDraftChange pushes local edits back to the
+  // app store on a short debounce, and an external change to this prop (agent
+  // switch, queued-turn edit, restore) is adopted into the local value.
   draft: string;
   queuedTurns: QueuedTurn[];
   waitTargets: WaitTarget[];
@@ -217,7 +225,7 @@ interface NativeInputProps {
   queueSplit: boolean;
   requireCmdEnterToSend: boolean;
   pasteProtection: PasteProtectionSettings;
-  transcriptText: string;
+  hasTranscript: boolean;
   transcriptCopyText: () => string;
   composerPolicy: ComposerPolicy;
   shortcutLabelForPane: (paneId?: string | null) => string | null;
@@ -248,7 +256,7 @@ export default function NativeInput({
   queueSplit,
   requireCmdEnterToSend,
   pasteProtection,
-  transcriptText,
+  hasTranscript,
   transcriptCopyText,
   composerPolicy,
   shortcutLabelForPane,
@@ -264,8 +272,68 @@ export default function NativeInput({
   saveQueueScroll,
   onError,
 }: NativeInputProps) {
-  const value = draft;
-  const setValue = (next: string) => onDraftChange(agent.id, next);
+  // The composer text is component-local while typing: a controlled value from
+  // App-root state made every keystroke a full-app render, which queued the
+  // typed character's DOM commit behind whatever a busy agent's event stream was
+  // rendering. Local edits are pushed to the app store on a trailing debounce
+  // (immediately when cleared, so a sent draft never lingers), and any change to
+  // the `draft` prop this component didn't push itself — switching agents,
+  // restart recovery — is adopted into the local value.
+  const [localDraft, setLocalDraft] = useState(draft);
+  const lastPushedDraftRef = useRef(draft);
+  const draftPushTimerRef = useRef<number | null>(null);
+  const pendingDraftPushRef = useRef<{ agentId: string; text: string } | null>(null);
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  // Commits a still-debounced local edit to the app store right now. The pending
+  // record carries the agent id captured when the edit was made, so a flush that
+  // runs as part of switching to another agent still credits the right draft.
+  const flushDraftPush = useCallback(() => {
+    if (draftPushTimerRef.current !== null) {
+      clearTimeout(draftPushTimerRef.current);
+      draftPushTimerRef.current = null;
+    }
+    const pending = pendingDraftPushRef.current;
+    if (pending) {
+      pendingDraftPushRef.current = null;
+      lastPushedDraftRef.current = pending.text;
+      onDraftChangeRef.current(pending.agentId, pending.text);
+    }
+  }, []);
+  // Adopt external draft changes. Runs before paint so an agent switch never
+  // flashes the previous agent's text, and flushes any pending local edit first
+  // so the last moments of typing are never lost to the switch.
+  useLayoutEffect(() => {
+    flushDraftPush();
+    if (draft !== lastPushedDraftRef.current) {
+      lastPushedDraftRef.current = draft;
+      setLocalDraft(draft);
+    }
+  }, [draft, flushDraftPush]);
+  // A draft still sitting in the debounce window when the composer unmounts
+  // (pane closed, right bar collapsed) is committed rather than dropped.
+  useEffect(() => flushDraftPush, [flushDraftPush]);
+  const value = localDraft;
+  const setValue = (next: string) => {
+    setLocalDraft(next);
+    if (draftPushTimerRef.current !== null) {
+      clearTimeout(draftPushTimerRef.current);
+      draftPushTimerRef.current = null;
+    }
+    if (!next) {
+      // Clears push through immediately: App flushes empty drafts to disk at
+      // once so a sent/emptied draft never lingers in state.json.
+      pendingDraftPushRef.current = null;
+      lastPushedDraftRef.current = next;
+      onDraftChangeRef.current(agent.id, next);
+      return;
+    }
+    pendingDraftPushRef.current = { agentId: agent.id, text: next };
+    draftPushTimerRef.current = window.setTimeout(() => {
+      draftPushTimerRef.current = null;
+      flushDraftPush();
+    }, DRAFT_PUSH_DEBOUNCE_MS);
+  };
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -342,7 +410,6 @@ export default function NativeInput({
   const canSteer = composerPolicy.steerStatuses.includes(agent.status);
   const hasQueuedTurns = queuedTurns.length > 0;
   const canAppendQueue = agent.status !== "failed" && (canQueue || hasQueuedTurns);
-  const hasTranscript = transcriptText.trim().length > 0;
   const hasSubmitValue = value.trim().length > 0;
   const sendDisabled = submitting || !canSend || !hasSubmitValue;
   // Delivery to a brand-new session only needs an adapter, which every agent has,

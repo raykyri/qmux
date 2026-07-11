@@ -11,8 +11,8 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 pub type SharedChild = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
@@ -61,6 +61,12 @@ const MAX_QUEUED_TURNS_PER_AGENT: usize = 500;
 /// prevents the persisted state from growing forever across months of work.
 const MAX_RECENT_SESSIONS: usize = 80;
 
+/// How long the persister thread lets a burst of mutations settle before taking
+/// its snapshot. Long enough to fold an agent's status-hook storm (or a window
+/// resize) into one write, short enough that a crash loses at most a blink of
+/// bookkeeping — pane content itself lives in the PTYs, not in state.json.
+const PERSIST_DEBOUNCE: Duration = Duration::from_millis(200);
+
 const RECENT_SESSION_PREVIEW_MAX_CHARS: usize = 90;
 
 /// Holds PTY output produced before the webview's listener is attached.
@@ -95,14 +101,26 @@ struct AppStateInner {
     next_id: AtomicU64,
     app_handle: Mutex<Option<AppHandle>>,
     // Persistence stays off until restore_session() runs so constructing a state
-    // (notably in tests) never touches disk. Once enabled, every model mutation
-    // snapshots to workspace_root/.qmux/state.json.
+    // (notably in tests) never touches disk. Once enabled, model mutations mark
+    // the state dirty and the persister thread snapshots it to
+    // workspace_root/.qmux/state.json on a short debounce.
     persist_enabled: AtomicBool,
     // Serializes the whole snapshot->write->rename in persist() so concurrent
     // saves commit in snapshot order. Without it, a slower older snapshot's
     // rename can land after a newer one and clobber it, losing the last change
     // (or re-sending an already-drained queued turn) across a restart.
     persist_lock: Mutex<()>,
+    // Debounced persistence. Mutations only mark this dirty flag and wake the
+    // dedicated writer thread, which coalesces a burst of mutations (agent
+    // status hooks, transcript appends, resize storms) into one snapshot+write
+    // instead of a full-state serialize+fsync per mutation — the snapshot clone
+    // runs under the model lock, so synchronous persists lengthened every lock
+    // hold the input path contends with. A clean exit still writes its final
+    // snapshot synchronously via `finalize_persistence_for_exit`; what the
+    // debounce trades away is at most the last window of changes on a crash.
+    persist_dirty: Mutex<bool>,
+    persist_wake: Condvar,
+    persister_spawned: AtomicBool,
     // Why restore_session had to fall back or drop entries, held until startup
     // surfaces it in a GUI dialog — a Finder launch never shows stderr, and a
     // silently discarded session looks like the app ate the user's tabs.
@@ -798,6 +816,9 @@ impl AppState {
                 app_handle: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
                 persist_lock: Mutex::new(()),
+                persist_dirty: Mutex::new(false),
+                persist_wake: Condvar::new(),
+                persister_spawned: AtomicBool::new(false),
                 recovery_warning: Mutex::new(None),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
@@ -1170,13 +1191,90 @@ impl AppState {
         // Enable persistence only after hydration so loading does not rewrite the
         // file, but before respawn so respawned panes get persisted.
         self.inner.persist_enabled.store(true, Ordering::Relaxed);
+        self.spawn_persister();
 
         persisted.panes
     }
 
-    /// Snapshots the model to disk when persistence is enabled. Best-effort: a
-    /// failed write is logged but never propagated, so it cannot break a mutation.
+    /// Records that the model changed and needs persisting. The write itself is
+    /// debounced onto the persister thread (see `spawn_persister`); in tests it
+    /// runs synchronously so state files can be asserted right after a mutation.
+    /// Best-effort either way: a failed write is logged but never propagated, so
+    /// it cannot break a mutation.
     fn persist(&self) {
+        // Cheap early-out while persistence is disabled (hydration, bare test
+        // states). The writer re-checks the flag under `persist_lock`, so this
+        // unlocked read can never race `finalize_persistence_for_exit` into
+        // clobbering the final snapshot — at worst a mutation made while
+        // disabled marks nothing, which is today's behavior too.
+        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        if cfg!(test) {
+            self.persist_now();
+            return;
+        }
+        let mut dirty = self
+            .inner
+            .persist_dirty
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *dirty = true;
+        self.inner.persist_wake.notify_one();
+    }
+
+    /// Starts the background writer that turns dirty marks into debounced
+    /// snapshots. Called once when persistence is enabled; a second call is a
+    /// no-op. The thread parks on the condvar between bursts, so an idle app
+    /// costs nothing.
+    fn spawn_persister(&self) {
+        if cfg!(test)
+            || self
+                .inner
+                .persister_spawned
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
+            return;
+        }
+        let state = self.clone();
+        std::thread::spawn(move || {
+            loop {
+                {
+                    let mut dirty = state
+                        .inner
+                        .persist_dirty
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while !*dirty {
+                        dirty = state
+                            .inner
+                            .persist_wake
+                            .wait(dirty)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                    *dirty = false;
+                }
+                // Coalescing window: let the rest of the burst (status hooks,
+                // transcript appends, a resize storm) land before snapshotting.
+                std::thread::sleep(PERSIST_DEBOUNCE);
+                // Absorb marks made during the window — the snapshot below will
+                // include them, so they must not schedule another write.
+                {
+                    let mut dirty = state
+                        .inner
+                        .persist_dirty
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *dirty = false;
+                }
+                state.persist_now();
+            }
+        });
+    }
+
+    /// Snapshots the model to disk when persistence is enabled.
+    fn persist_now(&self) {
         // Hold the persist lock across snapshot + write + rename so concurrent
         // persists commit in snapshot order. The snapshot must be taken *inside*
         // the lock: otherwise two threads could snapshot as S1,S2 but acquire the

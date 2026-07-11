@@ -655,8 +655,11 @@ pub fn save(workspace_root: &Path, state: &PersistedState) -> Result<(), String>
         let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
 
-    let raw = serde_json::to_string_pretty(state)
-        .map_err(|err| format!("failed to encode state: {err}"))?;
+    // Compact rather than pretty: this file is machine-read only, and it is
+    // rewritten in full on every debounced snapshot, so the pretty encoding's
+    // extra bytes were pure serialize+write overhead on a recurring path.
+    let raw =
+        serde_json::to_string(state).map_err(|err| format!("failed to encode state: {err}"))?;
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
 
