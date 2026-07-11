@@ -1364,14 +1364,21 @@ button:disabled {
   background: #3a221d;
 }
 
-/* Keep the danger button's red border on focus instead of recoloring it to the
-   accent focus ring. The focus indicator becomes a second outline sitting 1px
-   outside the border, in a slightly brighter shade of the same red. */
-.confirm-dialog-actions .danger:focus-visible {
-  border-color: #7a3b34;
+/* Dialog action buttons are focused programmatically when the dialog opens, which
+   doesn't count as :focus-visible after a mouse interaction — so style plain :focus
+   to make the default action visible either way. Every action shares the same
+   indicator: the border keeps its resting color and a second outline sits 1px
+   outside it — accent for neutral buttons, a brighter red for danger ones. */
+.confirm-dialog-actions button:focus {
+  border-color: var(--control-border);
   box-shadow: none;
-  outline: 1px solid #a55349;
+  outline: 1px solid var(--focus-ring);
   outline-offset: 1px;
+}
+
+.confirm-dialog-actions .danger:focus {
+  border-color: #7a3b34;
+  outline-color: #a55349;
 }
 
 /* Settings panel — a small modal reusing the confirm-dialog surface. */
