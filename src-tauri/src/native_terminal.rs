@@ -61,6 +61,8 @@ enum AppShortcutCommand {
     FocusTab(u8),
     HomeOrCycleAdapter,
     FocusHome,
+    FocusTerminalMode,
+    FocusResearchMode,
     CyclePaneTab(i8),
     CycleAllTab(i8),
     LauncherOrCycleAdapter,
@@ -82,6 +84,8 @@ impl AppShortcutCommand {
             Self::FocusTab(index) => ("focusTab", Some(index)),
             Self::HomeOrCycleAdapter => ("homeOrCycleAdapter", None),
             Self::FocusHome => ("focusHome", None),
+            Self::FocusTerminalMode => ("focusTerminalMode", None),
+            Self::FocusResearchMode => ("focusResearchMode", None),
             Self::CyclePaneTab(-1) => ("cyclePaneTabPrevious", None),
             Self::CyclePaneTab(_) => ("cyclePaneTabNext", None),
             Self::CycleAllTab(-1) => ("cycleAllTabPrevious", None),
@@ -136,6 +140,12 @@ fn classify_app_shortcut(
     }
     if command && !control && !option && shift && key == "h" {
         return Some(AppShortcutCommand::FocusHome);
+    }
+    if command && !control && option && !shift && key == "t" {
+        return Some(AppShortcutCommand::FocusTerminalMode);
+    }
+    if command && !control && option && !shift && key == "r" {
+        return Some(AppShortcutCommand::FocusResearchMode);
     }
     if !command && control && !option && key == "tab" {
         return Some(AppShortcutCommand::CyclePaneTab(if shift { -1 } else { 1 }));
@@ -975,6 +985,14 @@ mod tests {
         assert_eq!(
             super::classify_app_shortcut("4", false, true, false, false),
             Some(AppShortcutCommand::FocusTab(3))
+        );
+        assert_eq!(
+            super::classify_app_shortcut("t", false, false, true, true),
+            Some(AppShortcutCommand::FocusTerminalMode)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("r", false, false, true, true),
+            Some(AppShortcutCommand::FocusResearchMode)
         );
         for key in ["k", "a", "z", "Enter"] {
             assert_eq!(

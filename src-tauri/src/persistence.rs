@@ -1,3 +1,4 @@
+use crate::research::{ResearchNode, ResearchTree};
 use crate::state::{PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use crate::thread_graph::ThreadRecord;
 use crate::workspace::{AgentInfo, GroupInfo};
@@ -5,6 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -32,7 +34,8 @@ static PREFERENCES_CACHE: LazyLock<Mutex<HashMap<PathBuf, AppPreferences>>> =
 
 /// Bumped whenever the on-disk shape changes incompatibly. A file written by a
 /// newer or unknown version is treated as empty rather than misinterpreted.
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
+const MIN_MIGRATABLE_STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = "state.json";
 const PREFERENCES_FILE: &str = "preferences.json";
 pub(crate) const STATE_DIR: &str = ".qmux";
@@ -88,6 +91,11 @@ pub struct PersistedState {
     /// pane/agent views.
     #[serde(default)]
     pub thread_focus: HashMap<String, String>,
+    /// Durable research documents and their one-prompt native-session nodes.
+    #[serde(default)]
+    pub research_trees: HashMap<String, ResearchTree>,
+    #[serde(default)]
+    pub research_nodes: HashMap<String, ResearchNode>,
 }
 
 impl Default for PersistedState {
@@ -107,12 +115,23 @@ impl Default for PersistedState {
             active_tab_id: None,
             threads: HashMap::new(),
             thread_focus: HashMap::new(),
+            research_trees: HashMap::new(),
+            research_nodes: HashMap::new(),
         }
     }
 }
 
 pub fn state_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(STATE_DIR).join(STATE_FILE)
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorktreeLocation {
+    #[default]
+    Global,
+    LocalQmux,
+    LocalClaude,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -125,6 +144,10 @@ pub struct AppPreferences {
     /// default, on — matching how terminal emulators launch shells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_login_shell: Option<bool>,
+    /// Root used for newly-created isolated worktrees. Absent preserves the
+    /// historical global qmux workspace location.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_location: Option<WorktreeLocation>,
     /// Global shortcut used to show or hide the qmux app. Absent means no
     /// shortcut is registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,6 +287,7 @@ pub struct LoadWarning {
 pub struct LoadOutcome {
     pub state: PersistedState,
     pub warning: Option<LoadWarning>,
+    pub source_version: Option<u32>,
 }
 
 /// True when the user asked to force startup past an *unreadable* state file,
@@ -436,7 +460,7 @@ pub fn load_with_diagnostics_from(workspace_root: &Path, preread: Option<Vec<u8>
         },
     };
 
-    let value = match serde_json::from_str::<Value>(&raw) {
+    let mut value = match serde_json::from_str::<Value>(&raw) {
         Ok(value) => value,
         Err(err) => {
             return discard_state_file(
@@ -462,7 +486,7 @@ pub fn load_with_diagnostics_from(workspace_root: &Path, preread: Option<Vec<u8>
         );
     };
 
-    if version != STATE_VERSION {
+    if !(MIN_MIGRATABLE_STATE_VERSION..=STATE_VERSION).contains(&version) {
         return discard_state_file(
             &path,
             "unsupported-version",
@@ -473,6 +497,14 @@ pub fn load_with_diagnostics_from(workspace_root: &Path, preread: Option<Vec<u8>
         );
     }
 
+    // Version 3 introduces durable workspace ownership. Perform the shape-only
+    // portion here, before lenient deserialization, so no research tree is lost
+    // merely because its authoritative workspace field did not exist in v2.
+    // Filesystem-backed workspace isolation remains a state-reconciliation job.
+    if version == 2 {
+        migrate_v2_to_v3(&mut value);
+    }
+
     // Deserialize collections element-by-element so a single malformed record
     // (partial corruption, a hand-edit, an unforeseen schema drift in one entry)
     // drops only that entry instead of discarding the entire session. The bad
@@ -480,7 +512,7 @@ pub fn load_with_diagnostics_from(workspace_root: &Path, preread: Option<Vec<u8>
     // state over it; the dropped entries are surfaced as a warning.
     let (state, dropped) = deserialize_lenient(value);
     if dropped.is_empty() {
-        load_ok(state)
+        load_ok_version(state, Some(version))
     } else {
         LoadOutcome {
             state,
@@ -495,8 +527,105 @@ pub fn load_with_diagnostics_from(workspace_root: &Path, preread: Option<Vec<u8>
                 path,
                 backup_path: None,
             }),
+            source_version: Some(version),
         }
     }
+}
+
+/// Pure JSON-shape migration for version-2 state. This deliberately performs no
+/// filesystem I/O: loading a valid session must not have external side effects.
+fn migrate_v2_to_v3(value: &mut Value) {
+    let Value::Object(map) = value else {
+        return;
+    };
+
+    let research_nodes = map
+        .get("researchNodes")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    if let Some(Value::Object(trees)) = map.get_mut("researchTrees") {
+        for tree in trees.values_mut() {
+            let Some(tree) = tree.as_object_mut() else {
+                continue;
+            };
+            if tree
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                continue;
+            }
+            let Some(root_node_id) = tree.get("rootNodeId").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(group_id) = research_nodes
+                .get(root_node_id)
+                .and_then(Value::as_object)
+                .and_then(|node| node.get("groupId"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+            else {
+                continue;
+            };
+            tree.insert(
+                "workspaceId".to_string(),
+                Value::String(group_id.to_string()),
+            );
+        }
+    }
+
+    // Research trees are their own durable history. Remove their native agent
+    // sessions from Home's recent-session pool instead of tagging/filtering them;
+    // otherwise they consume the global pruning cap and can evict terminal work.
+    let mut agent_ids = HashSet::new();
+    let mut pane_ids = HashSet::new();
+    let mut session_ids = HashSet::new();
+    let mut transcript_paths = HashSet::new();
+    for node in research_nodes.values().filter_map(Value::as_object) {
+        collect_nonempty_string(node, "agentId", &mut agent_ids);
+        collect_nonempty_string(node, "paneId", &mut pane_ids);
+        collect_nonempty_string(node, "nativeSessionId", &mut session_ids);
+        collect_nonempty_string(node, "transcriptPath", &mut transcript_paths);
+    }
+    if let Some(Value::Array(sessions)) = map.get_mut("recentSessions") {
+        sessions.retain(|session| {
+            let Some(session) = session.as_object() else {
+                return true;
+            };
+            !value_matches_set(session, "agentId", &agent_ids)
+                && !value_matches_set(session, "paneId", &pane_ids)
+                && !value_matches_set(session, "sessionId", &session_ids)
+                && !value_matches_set(session, "transcriptPath", &transcript_paths)
+        });
+    }
+
+    map.insert("version".to_string(), Value::from(STATE_VERSION));
+}
+
+fn collect_nonempty_string(
+    map: &serde_json::Map<String, Value>,
+    key: &str,
+    values: &mut HashSet<String>,
+) {
+    if let Some(value) = map
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        values.insert(value.to_string());
+    }
+}
+
+fn value_matches_set(
+    map: &serde_json::Map<String, Value>,
+    key: &str,
+    values: &HashSet<String>,
+) -> bool {
+    map.get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|value| values.contains(value))
 }
 
 /// Rebuilds a `PersistedState` from an already-validated JSON object, converting
@@ -528,6 +657,8 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.drafts = take_string_map(&mut map, "drafts");
     state.threads = take_typed_map(&mut map, "threads", "thread", &mut dropped);
     state.thread_focus = take_string_map(&mut map, "threadFocus");
+    state.research_trees = take_typed_map(&mut map, "researchTrees", "research tree", &mut dropped);
+    state.research_nodes = take_typed_map(&mut map, "researchNodes", "research node", &mut dropped);
     state.active_tab_id = map
         .get("activeTabId")
         .and_then(Value::as_str)
@@ -649,9 +780,14 @@ fn take_string_map(map: &mut serde_json::Map<String, Value>, key: &str) -> HashM
 }
 
 fn load_ok(state: PersistedState) -> LoadOutcome {
+    load_ok_version(state, None)
+}
+
+fn load_ok_version(state: PersistedState, source_version: Option<u32>) -> LoadOutcome {
     LoadOutcome {
         state,
         warning: None,
+        source_version,
     }
 }
 
@@ -663,7 +799,36 @@ fn load_warning(path: PathBuf, message: String, backup_path: Option<PathBuf>) ->
             path,
             backup_path,
         }),
+        source_version: None,
     }
+}
+
+/// Preserves the last v2 bytes before the first successful v3 snapshot replaces
+/// state.json. Unlike rejected-state handling this copies rather than renames:
+/// recovery continues from the valid source in the same boot.
+pub fn backup_v2_state_for_migration(workspace_root: &Path) -> Result<Option<PathBuf>, String> {
+    let source = state_path(workspace_root);
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let backup = source.with_file_name("state.v2.bak");
+    if backup.exists() {
+        return Ok(Some(backup));
+    }
+    fs::copy(&source, &backup).map_err(|err| {
+        format!(
+            "failed to preserve version-2 state {} at {}: {err}",
+            source.display(),
+            backup.display()
+        )
+    })?;
+    fs::set_permissions(&backup, fs::Permissions::from_mode(0o600)).map_err(|err| {
+        format!(
+            "failed to restrict version-2 state backup {}: {err}",
+            backup.display()
+        )
+    })?;
+    Ok(Some(backup))
 }
 
 fn discard_state_file(path: &Path, label: &str, reason: String) -> LoadOutcome {
@@ -942,6 +1107,29 @@ mod tests {
     }
 
     #[test]
+    fn preferences_round_trip_worktree_location() {
+        let root = temp_root();
+        assert_eq!(load_preferences(&root).unwrap().worktree_location, None);
+
+        save_preferences(
+            &root,
+            &AppPreferences {
+                worktree_location: Some(WorktreeLocation::LocalClaude),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_preferences_from_disk(&preferences_path(&root))
+                .unwrap()
+                .worktree_location,
+            Some(WorktreeLocation::LocalClaude)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn concurrent_preference_updates_preserve_unrelated_fields() {
         let root = std::sync::Arc::new(temp_root());
         let launcher_root = root.clone();
@@ -1014,6 +1202,104 @@ mod tests {
         assert!(state.panes.is_empty());
         assert!(state.agents.is_empty());
         assert!(state.queues.is_empty());
+    }
+
+    #[test]
+    fn version_two_state_migrates_workspace_scope_without_losing_groups() {
+        let root = temp_root();
+        let path = state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+                "version": 2,
+                "groups": [{
+                    "id": "group-1",
+                    "name": "work",
+                    "dir": "/tmp/work",
+                    "managedDir": "/tmp/qmux/group-1",
+                    "baseRepo": null,
+                    "baseRef": null,
+                    "parentId": null,
+                    "createdAt": 1,
+                    "collapsed": false,
+                    "agents": []
+                }],
+                "groupOrder": ["group-1"]
+            }"#,
+        )
+        .unwrap();
+
+        let outcome = load_with_diagnostics(&root);
+        assert!(outcome.warning.is_none());
+        assert_eq!(outcome.state.version, STATE_VERSION);
+        assert_eq!(outcome.state.groups.len(), 1);
+        assert_eq!(
+            outcome.state.groups[0].scope,
+            crate::workspace::WorkspaceScope::Terminal
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn version_two_shape_migration_backfills_workspace_and_drops_research_recents() {
+        let mut value = serde_json::json!({
+            "version": 2,
+            "researchTrees": {
+                "tree-1": { "rootNodeId": "node-1" }
+            },
+            "researchNodes": {
+                "node-1": {
+                    "groupId": "group-1",
+                    "agentId": "research-agent",
+                    "paneId": "research-pane",
+                    "nativeSessionId": "research-session",
+                    "transcriptPath": "/tmp/research.jsonl"
+                }
+            },
+            "recentSessions": [
+                { "id": "by-agent", "agentId": "research-agent" },
+                { "id": "by-pane", "paneId": "research-pane" },
+                { "id": "by-session", "sessionId": "research-session" },
+                { "id": "by-transcript", "transcriptPath": "/tmp/research.jsonl" },
+                { "id": "terminal", "agentId": "terminal-agent" }
+            ]
+        });
+
+        migrate_v2_to_v3(&mut value);
+
+        assert_eq!(value["version"], serde_json::json!(STATE_VERSION));
+        assert_eq!(value["researchTrees"]["tree-1"]["workspaceId"], "group-1");
+        assert_eq!(
+            value["recentSessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|session| session["id"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["terminal"]
+        );
+    }
+
+    #[test]
+    fn version_two_migration_backup_preserves_original_bytes_once() {
+        let root = temp_root();
+        let path = state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"version":2,"nextId":7}"#;
+        fs::write(&path, original).unwrap();
+
+        let backup = backup_v2_state_for_migration(&root)
+            .unwrap()
+            .expect("existing state is backed up");
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        fs::write(&path, br#"{"version":3}"#).unwrap();
+        assert_eq!(
+            backup_v2_state_for_migration(&root).unwrap(),
+            Some(backup.clone())
+        );
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
     }
 
     // The path production startup actually takes: preflight reads and

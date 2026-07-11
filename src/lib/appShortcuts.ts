@@ -5,6 +5,8 @@ export type AppShortcutCommand =
   | { type: "focusTab"; tabIndex: number }
   | { type: "homeOrCycleAdapter" }
   | { type: "focusHome" }
+  | { type: "focusTerminalMode" }
+  | { type: "focusResearchMode" }
   | { type: "cyclePaneTab"; direction: -1 | 1 }
   | { type: "cycleAllTab"; direction: -1 | 1 }
   | { type: "launcherOrCycleAdapter" }
@@ -19,6 +21,10 @@ export type AppShortcutCommand =
 
 export interface AppShortcutInput {
   key: string;
+  /** KeyboardEvent.code (physical key). Needed to recognize Option chords on
+   * macOS, where `key` arrives as the composed character (Cmd-Opt-T → "†"),
+   * so a letter match on `key` alone never fires from web-focused surfaces. */
+  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
@@ -67,6 +73,12 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   }
   if (command && !control && !option && shift && key === "h") {
     return { type: "focusHome" };
+  }
+  if (command && !control && option && !shift && (key === "t" || input.code === "KeyT")) {
+    return { type: "focusTerminalMode" };
+  }
+  if (command && !control && option && !shift && (key === "r" || input.code === "KeyR")) {
+    return { type: "focusResearchMode" };
   }
   if (!command && control && !option && key === "tab") {
     return { type: "cyclePaneTab", direction: shift ? -1 : 1 };
@@ -131,6 +143,8 @@ export function parseAppShortcutCommand(
     case "fontZoomReset":
     case "homeOrCycleAdapter":
     case "focusHome":
+    case "focusTerminalMode":
+    case "focusResearchMode":
     case "launcherOrCycleAdapter":
     case "openSettings":
     case "toggleTranscriptOrBrowser":

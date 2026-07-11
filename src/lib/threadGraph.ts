@@ -8,8 +8,23 @@ import type {
   TurnNode,
 } from "../types";
 
+// The agent's thread id, mirroring the backend's fallback (agent_thread_id in
+// thread_graph.rs): the stored value when present, else the synthetic
+// `thread-{agentId}` the backend keys graph records by for agents that never
+// got an explicit thread. Kept untrimmed so lookups match the backend's keys.
+export function threadIdForAgent(agent: AgentInfo): string {
+  return agent.threadId && agent.threadId.trim() ? agent.threadId : `thread-${agent.id}`;
+}
+
+// The branch whose turns the right pane renders for this agent — shared by
+// focusedBranchTurns and pendingGraphOverlayTurns so the overlay's acceptance
+// check can never validate a different branch than the one rendered.
+export function resolveFocusedBranchId(graph: ThreadGraph, agent: AgentInfo): string {
+  return agent.branchId?.trim() || graph.focusedBranchId;
+}
+
 export function buildSingleAgentThreadGraph(agent: AgentInfo, turns: Turn[]): ThreadGraph {
-  const threadId = agent.threadId?.trim() || `thread-${agent.id}`;
+  const threadId = threadIdForAgent(agent);
   const branchId = agent.branchId?.trim() || `branch-${agent.id}`;
   const nodes: Record<string, ThreadNode> = {};
   const rootTurnIds: string[] = [];
@@ -74,8 +89,74 @@ export function buildSingleAgentThreadGraph(agent: AgentInfo, turns: Turn[]): Th
   };
 }
 
+// Decides whether a stored thread graph can render the agent's timeline, and
+// which of the agent's current turns the graph hasn't absorbed yet. The graph
+// refresh is debounced behind the live turn stream, so during streaming the
+// newest turn(s) are typically missing from the graph for a few hundred
+// milliseconds. Falling back to the (200-capped) raw turn list in that window
+// swaps a long history for a short one and back — a full DOM replacement per
+// appended turn. Instead, keep rendering the stored graph and overlay the
+// missing suffix on top.
+//
+// `branchTurns` must be focusedBranchTurns(graph, agent) — the prefix the pane
+// will actually render. Membership is checked against that branch, not the
+// whole graph, so a live history from one branch can never be stitched onto a
+// different branch's turns.
+//
+// Returns the turns to append after `branchTurns`, or null when the stored
+// graph cannot represent this history at all:
+// - the agent's branch is missing from the graph, or
+// - none of the current turns are on the rendered branch (a different
+//   session/branch/transcript was loaded wholesale), or
+// - a turn missing from the branch is already known to the graph (it belongs
+//   to another branch — the live history diverges from the rendered one), or
+// - the missing turns are interleaved with known ones rather than a trailing
+//   suffix (the history was rewritten, not appended to).
+// Turn ids are deterministic over transcript position (`{agentId}-{sourceIndex}`),
+// so a turn already in the graph keeps its id across re-parses and a genuinely
+// new turn can only appear after the known ones. That also means the check is
+// content-blind: a rewrite that reuses line indexes (rewind-then-continue) can
+// briefly render the graph's superseded copy of a turn — bounded by the reset
+// event's graph refresh, which rewrites the branch and lands within the same
+// debounce window.
+export function pendingGraphOverlayTurns(
+  graph: ThreadGraph,
+  agent: AgentInfo,
+  branchTurns: Turn[],
+  turns: Turn[],
+): Turn[] | null {
+  const branchId = resolveFocusedBranchId(graph, agent);
+  if (!branchId || !graph.branches[branchId]) {
+    return null;
+  }
+  const branchTurnIds = new Set(branchTurns.map((turn) => turn.id));
+  let firstMissing = turns.length;
+  for (let index = 0; index < turns.length; index += 1) {
+    if (!branchTurnIds.has(turns[index].id)) {
+      firstMissing = index;
+      break;
+    }
+  }
+  if (firstMissing === turns.length) {
+    // The rendered branch already contains every turn — nothing pending.
+    return [];
+  }
+  if (firstMissing === 0) {
+    // No overlap with the rendered branch: the graph describes another history.
+    return null;
+  }
+  for (let index = firstMissing; index < turns.length; index += 1) {
+    // A "missing" turn the graph does know (on any branch) means divergence,
+    // not appending; interleaved branch members are caught here too.
+    if (graph.nodes[turns[index].id]?.kind === "turn") {
+      return null;
+    }
+  }
+  return turns.slice(firstMissing);
+}
+
 export function focusedBranchTurns(graph: ThreadGraph, agent: AgentInfo): Turn[] {
-  const branchId = agent.branchId?.trim() || graph.focusedBranchId;
+  const branchId = resolveFocusedBranchId(graph, agent);
   const branchSelection = focusedBranchSelection(graph, branchId);
   return Object.values(graph.nodes)
     .filter(

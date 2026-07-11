@@ -1,10 +1,14 @@
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
+use crate::research::{
+    self, CreateResearchTreeRequest, ResearchNode, ResearchNodeCard, ResearchNodeContent,
+    ResearchNodeStatus, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+};
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
 use crate::transcript::Turn;
-use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
+use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -163,6 +167,10 @@ struct Model {
     turns: HashMap<String, Vec<Turn>>,
     threads: HashMap<String, thread_graph::ThreadRecord>,
     thread_focus: HashMap<String, String>,
+    research_trees: HashMap<String, ResearchTree>,
+    research_nodes: HashMap<String, ResearchNode>,
+    /// Pane ids with a backend retirement worker in flight. Transient and deduplicated.
+    research_retiring_panes: HashSet<String>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
     /// A queued turn claimed for delivery but not yet confirmed on the PTY, per agent
     /// (at most one — `agent_draining` serializes drains). Popped out of the queue at
@@ -276,6 +284,13 @@ pub struct RecentSessionInfo {
     pub status: Option<AgentStatus>,
     #[serde(default)]
     pub missing: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ResearchWorkspaceDependencies {
+    pub tree_count: usize,
+    pub has_active_runs: bool,
+    pub has_live_panes: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -887,6 +902,17 @@ impl AppState {
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"))
     }
 
+    /// Empty, qmux-managed working directory used when the user has not chosen
+    /// a project for research. It is deliberately separate from `.qmux`, which
+    /// contains private state and terminal credentials.
+    pub fn default_research_dir(&self) -> std::path::PathBuf {
+        self.inner
+            .config
+            .workspace_root
+            .join(".research")
+            .join("default")
+    }
+
     /// The working directory a newly opened shell should inherit from `pane_id`: the
     /// live cwd of that pane when it is a shell whose directory still exists. Agent
     /// panes (rooted in a worktree) and stale or missing directories yield `None`, so
@@ -1072,12 +1098,190 @@ impl AppState {
             .and_then(|mut slot| slot.take());
         let outcome =
             persistence::load_with_diagnostics_from(&self.inner.config.workspace_root, preread);
+        let source_version = outcome.source_version;
         let persistence_warning = outcome.warning.map(|warning| warning.message);
         let mut persisted = outcome.state;
-        let migration_warnings = migrate_thread_records_to_global(
+        // Workspace migration allocates durable ids, so restore the allocator
+        // before reconciliation rather than waiting until hydration completes.
+        if persisted.next_id > self.inner.next_id.load(Ordering::Relaxed) {
+            self.inner
+                .next_id
+                .store(persisted.next_id, Ordering::Relaxed);
+        }
+        let (mut research_reconciled, mut migration_warnings) =
+            migrate_legacy_research_workspaces(self, &mut persisted);
+        if source_version == Some(2)
+            && let Err(err) =
+                persistence::backup_v2_state_for_migration(&self.inner.config.workspace_root)
+        {
+            migration_warnings.push(err);
+        }
+        // The tree owns future execution. Node group ids are retained only as
+        // compatibility/provenance fields, so reconcile stale copies to the
+        // authoritative workspace before any recovery launch can consult them.
+        let tree_workspaces = persisted
+            .research_trees
+            .iter()
+            .map(|(tree_id, tree)| (tree_id.clone(), tree.workspace_id.clone()))
+            .collect::<HashMap<_, _>>();
+        for node in persisted.research_nodes.values_mut() {
+            if let Some(workspace_id) = tree_workspaces
+                .get(&node.tree_id)
+                .filter(|workspace_id| !workspace_id.trim().is_empty())
+                && node.group_id != *workspace_id
+            {
+                node.group_id = workspace_id.clone();
+                research_reconciled = true;
+            }
+        }
+        // Structural reconciliation, iterated to a fixpoint: a node needs an
+        // existing tree and an existing same-tree parent; a tree needs a root
+        // node that is actually its own parentless root. Each removal can
+        // invalidate further references (a dropped parent orphans its
+        // descendants, a dropped root drops its tree, which drops the tree's
+        // remaining nodes), so one pass is not enough.
+        loop {
+            let mut changed = false;
+            let valid_tree_ids = persisted
+                .research_trees
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>();
+            let node_tree_by_id = persisted
+                .research_nodes
+                .iter()
+                .map(|(id, node)| (id.clone(), node.tree_id.clone()))
+                .collect::<HashMap<_, _>>();
+            persisted.research_nodes.retain(|_, node| {
+                let tree_ok = valid_tree_ids.contains(&node.tree_id);
+                let parent_ok = node
+                    .parent_node_id
+                    .as_ref()
+                    .is_none_or(|parent_id| node_tree_by_id.get(parent_id) == Some(&node.tree_id));
+                let keep = tree_ok && parent_ok;
+                changed |= !keep;
+                keep
+            });
+            let nodes = &persisted.research_nodes;
+            persisted.research_trees.retain(|tree_id, tree| {
+                let keep = !tree.workspace_id.trim().is_empty()
+                    && nodes.get(&tree.root_node_id).is_some_and(|root| {
+                        root.tree_id == *tree_id && root.parent_node_id.is_none()
+                    });
+                changed |= !keep;
+                keep
+            });
+            research_reconciled |= changed;
+            if !changed {
+                break;
+            }
+        }
+        // Research runs never survive a restart. Every pane in a Research
+        // workspace is a one-shot hidden launch (shells and ordinary agents are
+        // rejected there) whose interrupted turn died with the old process; a
+        // recovered adapter resumes *Idle*, which the agent sync would read as
+        // Complete and permanently snapshot a partial answer. Drop the panes
+        // from recovery outright — respawning a hidden TUI only to reclaim it
+        // buys nothing — and settle every still-active node as failed, since
+        // nothing that could finish it remains.
+        let research_group_ids = persisted
+            .groups
+            .iter()
+            .filter(|group| group.scope == WorkspaceScope::Research)
+            .map(|group| group.id.as_str())
+            .collect::<HashSet<_>>();
+        let dropped_research_pane_ids = persisted
+            .panes
+            .iter()
+            .filter(|pane| research_group_ids.contains(pane.group_id.as_str()))
+            .map(|pane| pane.id.clone())
+            .collect::<HashSet<_>>();
+        if !dropped_research_pane_ids.is_empty() {
+            persisted
+                .panes
+                .retain(|pane| !dropped_research_pane_ids.contains(&pane.id));
+            // Mirror remove_pane's agent reclamation for panes that will never
+            // pass through it: a dropped pane's agent has nothing left to own
+            // (research runs cannot hold queued turns — guarded anyway), and
+            // keeping the record accumulated one dead AgentInfo in state.json
+            // per interrupted run, with nothing that would ever reap it.
+            let dropped_agent_ids = persisted
+                .agents
+                .iter()
+                .filter(|agent| {
+                    agent
+                        .pane_id
+                        .as_deref()
+                        .is_some_and(|pane_id| dropped_research_pane_ids.contains(pane_id))
+                        && persisted
+                            .queues
+                            .get(&agent.id)
+                            .is_none_or(|turns| turns.is_empty())
+                        && !persisted.inflight.contains_key(&agent.id)
+                })
+                .map(|agent| agent.id.clone())
+                .collect::<HashSet<_>>();
+            persisted
+                .agents
+                .retain(|agent| !dropped_agent_ids.contains(&agent.id));
+            for agent in &mut persisted.agents {
+                // Kept only because it still holds recoverable queued work.
+                if agent
+                    .pane_id
+                    .as_deref()
+                    .is_some_and(|pane_id| dropped_research_pane_ids.contains(pane_id))
+                {
+                    agent.pane_id = None;
+                }
+            }
+            for group in &mut persisted.groups {
+                group
+                    .agents
+                    .retain(|agent_id| !dropped_agent_ids.contains(agent_id));
+            }
+            for agent_id in &dropped_agent_ids {
+                persisted.queues.remove(agent_id);
+                persisted.drafts.remove(agent_id);
+            }
+            research_reconciled = true;
+        }
+        for node in persisted.research_nodes.values_mut() {
+            // Also covers bindings to panes that were never persisted (crash
+            // during multi-stage removal): either way the pane is gone, and a
+            // stale binding would count the node as an active run forever.
+            if node.pane_id.take().is_some() {
+                research_reconciled = true;
+            }
+            if node.status.is_active() {
+                node.status = ResearchNodeStatus::Failed;
+                node.error =
+                    Some("research run was interrupted before it could resume".to_string());
+                node.completed_at = Some(now_millis());
+                research_reconciled = true;
+            }
+        }
+        // Snapshots for nodes the passes above dropped (or that a crash left
+        // behind mid tree-removal) have no other reaper. Prune against the
+        // surviving node set now that it is final — but never off a degraded
+        // load: a corrupt state file reads as "no nodes", and pruning against
+        // that would destroy every snapshot the user might still recover.
+        if persistence_warning.is_none() {
+            let surviving_research_node_ids = persisted
+                .research_nodes
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>();
+            if let Err(err) = research::prune_response_snapshots(
+                &self.inner.config.workspace_root,
+                &surviving_research_node_ids,
+            ) {
+                eprintln!("qmux: {err}");
+            }
+        }
+        migration_warnings.extend(migrate_thread_records_to_global(
             &self.inner.config.workspace_root,
             &mut persisted.threads,
-        );
+        ));
         let recovery_warning = match (persistence_warning, migration_warnings.is_empty()) {
             (Some(warning), true) => Some(warning),
             (Some(warning), false) => {
@@ -1135,6 +1339,8 @@ impl AppState {
             }
             model.threads = persisted.threads;
             model.thread_focus = persisted.thread_focus;
+            model.research_trees = persisted.research_trees;
+            model.research_nodes = persisted.research_nodes;
             for mut agent in persisted.agents {
                 ensure_agent_thread_metadata(self, &mut model, &mut agent);
                 if let Some(pane_id) = agent
@@ -1212,17 +1418,16 @@ impl AppState {
             self.upsert_recent_session_for_agent(agent, now, false);
         }
 
-        // Keep id allocation monotonic across restarts so reused ids never alias.
-        if persisted.next_id > self.inner.next_id.load(Ordering::Relaxed) {
-            self.inner
-                .next_id
-                .store(persisted.next_id, Ordering::Relaxed);
-        }
-
         // Enable persistence only after hydration so loading does not rewrite the
         // file, but before respawn so respawned panes get persisted.
         self.inner.persist_enabled.store(true, Ordering::Relaxed);
         self.spawn_persister();
+        if research_reconciled {
+            // Migration/reconciliation may have created durable workspace
+            // manifests. Commit the matching state snapshot before recovery
+            // continues so a crash cannot leave only half of that relationship.
+            self.persist_now();
+        }
 
         persisted.panes
     }
@@ -1360,6 +1565,8 @@ impl AppState {
                 active_tab_id: model.active_tab_id.clone(),
                 threads: model.threads.clone(),
                 thread_focus: model.thread_focus.clone(),
+                research_trees: model.research_trees.clone(),
+                research_nodes: model.research_nodes.clone(),
             }
         };
 
@@ -1602,6 +1809,14 @@ impl AppState {
         Ok(groups)
     }
 
+    pub fn list_research_workspaces(&self) -> Result<Vec<GroupInfo>, String> {
+        Ok(self
+            .list_groups()?
+            .into_iter()
+            .filter(|group| group.scope == WorkspaceScope::Research)
+            .collect())
+    }
+
     pub fn list_agents(&self) -> Result<Vec<AgentInfo>, String> {
         let model = self
             .inner
@@ -1695,6 +1910,848 @@ impl AppState {
         Ok(graphs)
     }
 
+    /// Reads a single thread's graph, so streaming turn activity can refresh just
+    /// the affected thread instead of re-reading (and re-serializing) every graph
+    /// in the workspace. Returns `None` for an unknown thread or one whose graph
+    /// snapshot doesn't exist yet.
+    pub fn thread_graph(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<thread_graph::ThreadGraph>, String> {
+        let record = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.threads.get(thread_id).cloned()
+        };
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let store = thread_graph::ThreadStore::new(record.storage_root);
+        store.read_thread(&record.id)
+    }
+
+    pub fn list_research_trees(&self) -> Result<Vec<ResearchTreeSummary>, String> {
+        self.list_research_trees_with_archived(false)
+    }
+
+    pub fn list_research_trees_with_archived(
+        &self,
+        include_archived: bool,
+    ) -> Result<Vec<ResearchTreeSummary>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let mut summaries = model
+            .research_trees
+            .values()
+            .filter(|tree| include_archived || tree.archived_at.is_none())
+            .map(|tree| {
+                let nodes = model
+                    .research_nodes
+                    .values()
+                    .filter(|node| node.tree_id == tree.id);
+                fn merge(left: Option<u128>, right: Option<u128>) -> Option<u128> {
+                    match (left, right) {
+                        (Some(left), Some(right)) => Some(left.max(right)),
+                        (None, right) => right,
+                        (left, None) => left,
+                    }
+                }
+                let (
+                    running_count,
+                    failed_count,
+                    completed_count,
+                    cancelled_count,
+                    latest_settlement,
+                    latest_failure,
+                ) = nodes.fold((0, 0, 0, 0, None::<u128>, None::<u128>), |counts, node| {
+                    let failed = node.status == ResearchNodeStatus::Failed;
+                    (
+                        counts.0 + usize::from(node.status.is_active()),
+                        counts.1 + usize::from(failed),
+                        counts.2 + usize::from(node.status == ResearchNodeStatus::Complete),
+                        counts.3 + usize::from(node.status == ResearchNodeStatus::Cancelled),
+                        merge(counts.4, node.completed_at),
+                        if failed {
+                            merge(counts.5, node.completed_at)
+                        } else {
+                            counts.5
+                        },
+                    )
+                });
+                let unseen = |settled_at: Option<u128>| {
+                    settled_at.is_some_and(|settled_at| {
+                        tree.last_viewed_at
+                            .is_none_or(|last_viewed_at| settled_at > last_viewed_at)
+                    })
+                };
+                ResearchTreeSummary {
+                    id: tree.id.clone(),
+                    title: tree.title.clone(),
+                    root_node_id: tree.root_node_id.clone(),
+                    workspace_id: tree.workspace_id.clone(),
+                    running_count,
+                    failed_count,
+                    completed_count,
+                    cancelled_count,
+                    updated_at: tree.updated_at,
+                    archived_at: tree.archived_at,
+                    has_unseen_update: unseen(latest_settlement),
+                    // Viewing the tree acknowledges the failure; the lifetime
+                    // failed_count stays for detail displays but must not brand
+                    // the sidebar forever.
+                    has_unseen_failure: unseen(latest_failure),
+                }
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then(left.id.cmp(&right.id))
+        });
+        Ok(summaries)
+    }
+
+    pub fn list_research_activity(&self) -> Result<Vec<ResearchNode>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let mut nodes = model
+            .research_nodes
+            .values()
+            // Queued launch-in-flight nodes are active even before a pane is
+            // bound. Keep them visible to exit cancellation and activity UI.
+            .filter(|node| node.pane_id.is_some() || node.status.is_active())
+            .cloned()
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
+        Ok(nodes)
+    }
+
+    pub fn research_tree(&self, tree_id: &str) -> Result<ResearchTreeDetail, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let tree = model
+            .research_trees
+            .get(tree_id)
+            .cloned()
+            .ok_or_else(|| format!("research tree {tree_id} was not found"))?;
+        let mut nodes = model
+            .research_nodes
+            .values()
+            .filter(|node| node.tree_id == tree_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
+        Ok(ResearchTreeDetail { tree, nodes })
+    }
+
+    pub fn research_node(&self, node_id: &str) -> Result<ResearchNode, String> {
+        self.inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?
+            .research_nodes
+            .get(node_id)
+            .cloned()
+            .ok_or_else(|| format!("research node {node_id} was not found"))
+    }
+
+    pub fn research_node_content(&self, node_id: &str) -> Result<ResearchNodeContent, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let node = model
+            .research_nodes
+            .get(node_id)
+            .cloned()
+            .ok_or_else(|| format!("research node {node_id} was not found"))?;
+        let turns = node
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| model.turns.get(agent_id))
+            .map(|turns| {
+                research::response_turns(turns, node.prompt_native_id.as_deref(), &node.prompt)
+            })
+            .unwrap_or_default();
+        let mut children = model
+            .research_nodes
+            .values()
+            .filter(|child| child.parent_node_id.as_deref() == Some(node_id))
+            .map(|child| ResearchNodeCard {
+                id: child.id.clone(),
+                prompt: child.prompt.clone(),
+                response_preview: child.response_preview.clone(),
+                status: child.status,
+                created_at: child.created_at,
+            })
+            .collect::<Vec<_>>();
+        children.sort_by_key(|child| (child.created_at, child.id.clone()));
+        Ok(ResearchNodeContent {
+            node,
+            turns,
+            children,
+            source_error: None,
+        })
+    }
+
+    pub fn create_research_tree(
+        &self,
+        request: CreateResearchTreeRequest,
+    ) -> Result<ResearchTreeDetail, String> {
+        let prompt = request.prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err("research prompt cannot be empty".to_string());
+        }
+        if request.adapter.trim().is_empty() {
+            return Err("research adapter cannot be empty".to_string());
+        }
+        // Branching is the defining research feature; accepting an adapter
+        // without a native fork command would only be discovered when the
+        // first follow-up fails after a completed root run.
+        if !crate::adapters::adapter_supports_fork(&request.adapter) {
+            return Err(format!(
+                "research requires an adapter with follow-up (fork) support; '{}' has none",
+                request.adapter
+            ));
+        }
+        if request.group_id.trim().is_empty() {
+            return Err("research workspace cannot be empty".to_string());
+        }
+        let tree_id = self.next_id("research");
+        let node_id = self.next_id("research-node");
+        let now = now_millis();
+        let title = request
+            .title
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| research::default_title(&prompt));
+        let tree = ResearchTree {
+            id: tree_id.clone(),
+            title,
+            root_node_id: node_id.clone(),
+            workspace_id: request.group_id.clone(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            last_viewed_at: Some(now),
+        };
+        let mut node = ResearchNode {
+            id: node_id.clone(),
+            tree_id: tree_id.clone(),
+            parent_node_id: None,
+            prompt,
+            response_preview: None,
+            adapter: request.adapter,
+            model: request.model,
+            group_id: request.group_id,
+            worktree_dir: String::new(),
+            native_session_id: None,
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            status: ResearchNodeStatus::Queued,
+            error: None,
+            response_snapshot_at: None,
+            created_at: now,
+            started_at: None,
+            completed_at: None,
+        };
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            // The run directory comes from the durable group record, resolved
+            // under the same lock that admits the node, so the launch always
+            // runs where the selected workspace actually lives.
+            let workspace = model
+                .groups
+                .get(&node.group_id)
+                .ok_or_else(|| format!("research workspace {} was not found", node.group_id))?;
+            if workspace.scope != WorkspaceScope::Research {
+                return Err("research requires a Research-scoped workspace".to_string());
+            }
+            node.worktree_dir = workspace.dir.clone();
+            model.research_trees.insert(tree_id.clone(), tree.clone());
+            model.research_nodes.insert(node_id, node.clone());
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.created",
+            None,
+            None,
+            json!({ "tree": tree, "node": node }),
+        ));
+        self.research_tree(&tree_id)
+    }
+
+    pub fn create_research_child(
+        &self,
+        parent_node_id: &str,
+        prompt: String,
+    ) -> Result<ResearchNode, String> {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err("research prompt cannot be empty".to_string());
+        }
+        let node_id = self.next_id("research-node");
+        let now = now_millis();
+        let node = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let parent = model
+                .research_nodes
+                .get(parent_node_id)
+                .cloned()
+                .ok_or_else(|| format!("research node {parent_node_id} was not found"))?;
+            let tree = model
+                .research_trees
+                .get(&parent.tree_id)
+                .cloned()
+                .ok_or_else(|| format!("research tree {} was not found", parent.tree_id))?;
+            if tree.archived_at.is_some() {
+                return Err("restore archived research before creating a follow-up".to_string());
+            }
+            if parent.status != ResearchNodeStatus::Complete {
+                return Err("research follow-ups require a completed parent response".to_string());
+            }
+            if parent.native_session_id.is_none() {
+                return Err("research follow-ups require a recorded parent checkpoint".to_string());
+            }
+            let workspace = model
+                .groups
+                .get(&tree.workspace_id)
+                .ok_or_else(|| format!("research workspace {} was not found", tree.workspace_id))?;
+            if workspace.scope != WorkspaceScope::Research {
+                return Err("research requires a Research-scoped workspace".to_string());
+            }
+            let node = ResearchNode {
+                id: node_id.clone(),
+                tree_id: parent.tree_id.clone(),
+                parent_node_id: Some(parent.id),
+                prompt,
+                response_preview: None,
+                adapter: parent.adapter,
+                model: parent.model,
+                group_id: workspace.id.clone(),
+                worktree_dir: workspace.dir.clone(),
+                native_session_id: None,
+                transcript_path: None,
+                prompt_native_id: None,
+                agent_id: None,
+                pane_id: None,
+                status: ResearchNodeStatus::Queued,
+                error: None,
+                response_snapshot_at: None,
+                created_at: now,
+                started_at: None,
+                completed_at: None,
+            };
+            model.research_nodes.insert(node_id, node.clone());
+            touch_research_tree_locked(&mut model, &node.tree_id, now);
+            node
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.created",
+            None,
+            None,
+            json!({ "node": node }),
+        ));
+        Ok(node)
+    }
+
+    pub fn bind_research_node_run(
+        &self,
+        node_id: &str,
+        agent: &AgentInfo,
+        pane_id: &str,
+    ) -> Result<ResearchNode, String> {
+        let node = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node_snapshot = model
+                .research_nodes
+                .get(node_id)
+                .cloned()
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let tree = model
+                .research_trees
+                .get(&node_snapshot.tree_id)
+                .ok_or_else(|| format!("research tree {} was not found", node_snapshot.tree_id))?;
+            let workspace = model
+                .groups
+                .get(&tree.workspace_id)
+                .ok_or_else(|| format!("research workspace {} was not found", tree.workspace_id))?;
+            if workspace.scope != WorkspaceScope::Research || agent.group_id != workspace.id {
+                return Err("research launch did not use the tree's current workspace".to_string());
+            }
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .expect("research node was checked above");
+            node.agent_id = Some(agent.id.clone());
+            node.pane_id = Some(pane_id.to_string());
+            node.native_session_id = agent.session_id.clone();
+            node.transcript_path = agent.transcript_path.clone();
+            let now = now_millis();
+            node.started_at.get_or_insert(now);
+            // Launch and cancellation race: the user can settle a Queued node
+            // while its spawn is still in flight. Binding must still record the
+            // pane and agent — the caller reclaims them — but a settled outcome
+            // is monotonic and the bind must not resurrect the run.
+            if !node.status.is_terminal() {
+                node.status = research_status_for_agent(agent.status);
+                node.error = None;
+                if node.status.is_terminal() {
+                    node.completed_at.get_or_insert(now);
+                }
+            }
+            let node = node.clone();
+            touch_research_tree_locked(&mut model, &node.tree_id, now);
+            node
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            Some(pane_id.to_string()),
+            Some(agent.id.clone()),
+            json!({ "node": node }),
+        ));
+        self.maybe_schedule_research_retirement(&node);
+        Ok(node)
+    }
+
+    pub fn research_workspace_for_node(&self, node_id: &str) -> Result<GroupInfo, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let node = model
+            .research_nodes
+            .get(node_id)
+            .ok_or_else(|| format!("research node {node_id} was not found"))?;
+        let tree = model
+            .research_trees
+            .get(&node.tree_id)
+            .ok_or_else(|| format!("research tree {} was not found", node.tree_id))?;
+        let workspace = model
+            .groups
+            .get(&tree.workspace_id)
+            .ok_or_else(|| format!("research workspace {} was not found", tree.workspace_id))?;
+        if workspace.scope != WorkspaceScope::Research {
+            return Err("research requires a Research-scoped workspace".to_string());
+        }
+        validate_research_workspace_available(workspace)?;
+        Ok(workspace.clone())
+    }
+
+    pub fn fail_research_node(&self, node_id: &str, error: String) -> Result<ResearchNode, String> {
+        let node = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            // Failure settles an active run (and may refine the error on one
+            // that already failed), but a Complete or Cancelled outcome the
+            // user can already see must not be rewritten by a late launch
+            // cleanup racing that settlement.
+            if node.status.is_terminal() && node.status != ResearchNodeStatus::Failed {
+                return Ok(node.clone());
+            }
+            let now = now_millis();
+            node.status = ResearchNodeStatus::Failed;
+            node.error = Some(error);
+            node.completed_at = Some(now);
+            let node = node.clone();
+            touch_research_tree_locked(&mut model, &node.tree_id, now);
+            node
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            node.pane_id.clone(),
+            node.agent_id.clone(),
+            json!({ "node": node }),
+        ));
+        Ok(node)
+    }
+
+    /// User-driven cancellation of an active run: settles the node as
+    /// `Cancelled` and reclaims its pane. Also reclaims a still-bound pane on
+    /// an already-settled node (a kill that failed on a previous cancel), so
+    /// a stuck binding cannot pin the tree forever.
+    pub fn cancel_research_node(&self, node_id: &str) -> Result<ResearchNode, String> {
+        let (node, pane_id) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let active = node.status.is_active();
+            if !active && node.pane_id.is_none() {
+                return Err("research run is not active".to_string());
+            }
+            if active {
+                node.status = ResearchNodeStatus::Cancelled;
+                node.error = None;
+                node.completed_at = Some(now_millis());
+            }
+            let pane_id = node.pane_id.clone();
+            let node = node.clone();
+            touch_research_tree_locked(&mut model, &node.tree_id, now_millis());
+            (node, pane_id)
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            node.pane_id.clone(),
+            node.agent_id.clone(),
+            json!({ "node": node }),
+        ));
+        if let Some(pane_id) = pane_id {
+            // The pane detach path clears the binding; a Cancelled node is
+            // already settled, so detach leaves its status alone.
+            if let Err(err) = crate::pty::kill_pane(self, pane_id.clone())
+                && self.pane_exists(&pane_id).unwrap_or(false)
+            {
+                // Keep the Cancelled outcome monotonic, but report the partial
+                // failure. The UI keeps cancellation available while pane_id
+                // remains bound, so the user can retry instead of leaving an
+                // invisible process that pins the tree until restart.
+                return Err(format!(
+                    "research was cancelled, but its terminal could not be closed: {err}"
+                ));
+            }
+        }
+        self.research_node(node_id)
+    }
+
+    pub fn active_research_node_for_pane(
+        &self,
+        pane_id: &str,
+    ) -> Result<Option<ResearchNode>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .research_nodes
+            .values()
+            .find(|node| node.pane_id.as_deref() == Some(pane_id) && node.status.is_active())
+            .cloned())
+    }
+
+    pub fn close_pane_for_user(&self, pane_id: &str) -> Result<(), String> {
+        if let Some(node) = self.active_research_node_for_pane(pane_id)? {
+            self.cancel_research_node(&node.id).map(|_| ())
+        } else {
+            crate::pty::kill_pane(self, pane_id.to_string())
+        }
+    }
+
+    /// Records a native-surface user close before its delegate removes the pane.
+    /// The delegate already owns teardown, so this settles only the node and lets
+    /// the ordinary remove path clear runtime bindings without rewriting it Failed.
+    pub fn settle_research_pane_cancelled(&self, pane_id: &str) -> Result<bool, String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node_id = model
+                .research_nodes
+                .values()
+                .find(|node| node.pane_id.as_deref() == Some(pane_id) && node.status.is_active())
+                .map(|node| node.id.clone());
+            node_id.and_then(|node_id| {
+                let now = now_millis();
+                let node = model.research_nodes.get_mut(&node_id)?;
+                node.status = ResearchNodeStatus::Cancelled;
+                node.error = None;
+                node.completed_at = Some(now);
+                let node = node.clone();
+                touch_research_tree_locked(&mut model, &node.tree_id, now);
+                Some(node)
+            })
+        };
+        let Some(node) = updated else {
+            return Ok(false);
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            node.pane_id.clone(),
+            node.agent_id.clone(),
+            json!({ "node": node }),
+        ));
+        Ok(true)
+    }
+
+    pub fn detach_research_pane(&self, pane_id: &str) -> Result<Option<ResearchNode>, String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node_id = model
+                .research_nodes
+                .values()
+                .find(|node| node.pane_id.as_deref() == Some(pane_id))
+                .map(|node| node.id.clone());
+            node_id.and_then(|node_id| {
+                let now = now_millis();
+                // An adapter whose process exits the moment its turn ends can
+                // race its own Done notification: the pane teardown lands here
+                // while the node is still nominally active. If the agent has
+                // already reported end-of-turn, the run *finished* — settling
+                // it Failed would brand a delivered answer, and monotonic
+                // terminal statuses would keep it branded forever.
+                let agent_finished = model
+                    .research_nodes
+                    .get(&node_id)
+                    .and_then(|node| node.agent_id.as_deref())
+                    .and_then(|agent_id| model.agents.get(agent_id))
+                    .is_some_and(|agent| {
+                        matches!(agent.status, AgentStatus::Done | AgentStatus::Idle)
+                    });
+                let node = model.research_nodes.get_mut(&node_id)?;
+                node.pane_id = None;
+                if node.status.is_active() {
+                    if agent_finished {
+                        node.status = ResearchNodeStatus::Complete;
+                    } else {
+                        node.status = ResearchNodeStatus::Failed;
+                        node.error =
+                            Some("Research process exited before completion".to_string());
+                    }
+                    node.completed_at = Some(now);
+                }
+                let node = node.clone();
+                touch_research_tree_locked(&mut model, &node.tree_id, now);
+                Some(node)
+            })
+        };
+        if let Some(node) = &updated {
+            self.persist();
+            self.emit(QmuxEvent::new(
+                "research.node.updated",
+                None,
+                None,
+                json!({ "node": node }),
+            ));
+        }
+        Ok(updated)
+    }
+
+    pub fn rename_research_tree(
+        &self,
+        tree_id: &str,
+        title: String,
+    ) -> Result<ResearchTree, String> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err("research title cannot be empty".to_string());
+        }
+        let tree = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let tree = model
+                .research_trees
+                .get_mut(tree_id)
+                .ok_or_else(|| format!("research tree {tree_id} was not found"))?;
+            tree.title = title;
+            tree.updated_at = now_millis();
+            tree.clone()
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.updated",
+            None,
+            None,
+            json!({ "tree": tree }),
+        ));
+        Ok(tree)
+    }
+
+    pub fn mark_research_tree_viewed(&self, tree_id: &str) -> Result<ResearchTree, String> {
+        let (tree, changed) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let latest_settlement = model
+                .research_nodes
+                .values()
+                .filter(|node| node.tree_id == tree_id)
+                .filter_map(|node| node.completed_at)
+                .max();
+            let tree = model
+                .research_trees
+                .get_mut(tree_id)
+                .ok_or_else(|| format!("research tree {tree_id} was not found"))?;
+            let changed = latest_settlement.is_some_and(|settled_at| {
+                tree.last_viewed_at
+                    .is_none_or(|last_viewed_at| settled_at > last_viewed_at)
+            });
+            if changed {
+                let viewed_at = now_millis().max(latest_settlement.unwrap_or_default());
+                tree.last_viewed_at = Some(viewed_at);
+            }
+            (tree.clone(), changed)
+        };
+        if changed {
+            self.persist();
+        }
+        Ok(tree)
+    }
+
+    pub fn archive_research_tree(&self, tree_id: &str) -> Result<ResearchTree, String> {
+        let tree = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.research_nodes.values().any(|node| {
+                node.tree_id == tree_id && (node.pane_id.is_some() || node.status.is_active())
+            }) {
+                return Err("cannot archive research while it has active runs".to_string());
+            }
+            let tree = model
+                .research_trees
+                .get_mut(tree_id)
+                .ok_or_else(|| format!("research tree {tree_id} was not found"))?;
+            if tree.archived_at.is_none() {
+                let now = now_millis();
+                tree.archived_at = Some(now);
+                tree.last_viewed_at = Some(now);
+            }
+            tree.clone()
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.archived",
+            None,
+            None,
+            json!({ "tree": tree }),
+        ));
+        Ok(tree)
+    }
+
+    pub fn restore_research_tree(&self, tree_id: &str) -> Result<ResearchTree, String> {
+        let tree = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let tree = model
+                .research_trees
+                .get_mut(tree_id)
+                .ok_or_else(|| format!("research tree {tree_id} was not found"))?;
+            tree.archived_at = None;
+            tree.last_viewed_at = Some(now_millis());
+            tree.clone()
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.restored",
+            None,
+            None,
+            json!({ "tree": tree }),
+        ));
+        Ok(tree)
+    }
+
+    pub fn remove_research_tree(&self, tree_id: &str) -> Result<(), String> {
+        let (removed, removed_node_ids) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.research_nodes.values().any(|node| {
+                node.tree_id == tree_id && (node.pane_id.is_some() || node.status.is_active())
+            }) {
+                return Err("cannot remove a research tree while it has active runs".to_string());
+            }
+            let node_ids = model
+                .research_nodes
+                .values()
+                .filter(|node| node.tree_id == tree_id)
+                .map(|node| node.id.clone())
+                .collect::<Vec<_>>();
+            let removed = model.research_trees.remove(tree_id).is_some();
+            if removed {
+                model
+                    .research_nodes
+                    .retain(|_, node| node.tree_id != tree_id);
+            }
+            // A research tree references its durable workspace; it does not own
+            // it. Other trees may use the same directory, so deleting a tree
+            // never deletes the workspace record or anything in that directory.
+            (removed, node_ids)
+        };
+        if !removed {
+            return Err(format!("research tree {tree_id} was not found"));
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.removed",
+            None,
+            None,
+            json!({ "treeId": tree_id }),
+        ));
+        for node_id in removed_node_ids {
+            if let Err(err) =
+                research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id)
+            {
+                eprintln!("qmux: failed to remove research response {node_id}: {err}");
+            }
+        }
+        Ok(())
+    }
+
     pub fn group(&self, group_id: &str) -> Result<Option<GroupInfo>, String> {
         let model = self
             .inner
@@ -1702,6 +2759,34 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.groups.get(group_id).cloned())
+    }
+
+    pub fn research_workspace_dependencies(
+        &self,
+        workspace_id: &str,
+    ) -> Result<ResearchWorkspaceDependencies, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let tree_ids = model
+            .research_trees
+            .values()
+            .filter(|tree| tree.workspace_id == workspace_id)
+            .map(|tree| tree.id.as_str())
+            .collect::<HashSet<_>>();
+        Ok(ResearchWorkspaceDependencies {
+            tree_count: tree_ids.len(),
+            has_active_runs: model.research_nodes.values().any(|node| {
+                tree_ids.contains(node.tree_id.as_str())
+                    && (node.status.is_active() || node.pane_id.is_some())
+            }),
+            has_live_panes: model
+                .panes
+                .values()
+                .any(|pane| pane.info.group_id == workspace_id),
+        })
     }
 
     pub fn pane_group_id(&self, pane_id: &str) -> Result<Option<String>, String> {
@@ -1763,6 +2848,18 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            // A pane bound to a research node is reclaimed by research lifecycle
+            // handling (settlement, cancellation, or failed-launch cleanup), so
+            // it must not become a restorable "closed tab". Skipping the
+            // capture here, rather than clearing it after kill_pane returns,
+            // closes the window in which a restore request could still see it.
+            if model
+                .research_nodes
+                .values()
+                .any(|node| node.pane_id.as_deref() == Some(pane_id))
+            {
+                return Ok(());
+            }
             let runtime = model
                 .panes
                 .get(pane_id)
@@ -2054,6 +3151,7 @@ impl AppState {
                 .map(|pane| pane.info.group_id.clone());
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
+            model.research_retiring_panes.remove(pane_id);
 
             // The pane is gone for good (kill or PTY EOF — never a respawn), so reclaim
             // the agent it owned and its per-agent state, which would otherwise live for
@@ -2142,8 +3240,9 @@ impl AppState {
             // (a closed parent must not leave its children at an unreachable depth).
             normalize_pane_depths(&mut model);
             normalize_pane_splits_locked(&mut model);
-            removed_group_id
-                .filter(|group_id| remove_group_without_open_panes_locked(&mut model, group_id))
+            removed_group_id.filter(|group_id| {
+                remove_group_without_open_panes_locked(&mut model, group_id, true)
+            })
         };
         // The pane's control-socket token is captured by its in-pane process as
         // QMUX_TOKEN; once the pane is gone for good it can never legitimately be used
@@ -2163,10 +3262,14 @@ impl AppState {
         if let Ok(mut locks) = self.inner.pane_send_locks.lock() {
             locks.remove(pane_id);
         }
+        if let Err(err) = self.detach_research_pane(pane_id) {
+            eprintln!("qmux: failed to detach research pane {pane_id}: {err}");
+        }
         if let Err(err) = remove_pane_scrollback(&self.inner.config.workspace_root, pane_id) {
             eprintln!("qmux: failed to remove scrollback for pane {pane_id}: {err}");
         }
         self.persist();
+        self.emit(QmuxEvent::pane_removed(pane_id.to_string()));
         if let Some(group_id) = removed_group_id {
             self.emit(QmuxEvent::new(
                 "group.removed",
@@ -2483,7 +3586,14 @@ impl AppState {
             {
                 return Err("group still has open panes".to_string());
             }
-            remove_group_without_open_panes_locked(&mut model, group_id)
+            if model
+                .research_trees
+                .values()
+                .any(|tree| tree.workspace_id == group_id)
+            {
+                return Err("group is retained by a research tree".to_string());
+            }
+            remove_group_without_open_panes_locked(&mut model, group_id, false)
         };
         if removed {
             self.persist();
@@ -2511,6 +3621,7 @@ impl AppState {
             agent_for_sessions
         };
         self.upsert_recent_session_for_agent(&agent_for_sessions, now_millis(), true);
+        self.sync_research_node_from_agent(&agent_for_sessions)?;
         self.persist();
         Ok(())
     }
@@ -2544,6 +3655,7 @@ impl AppState {
         };
         if let Some(agent) = updated.as_ref() {
             self.upsert_recent_session_for_agent(agent, now_millis(), true);
+            self.sync_research_node_from_agent(agent)?;
             self.persist();
         }
         Ok(updated)
@@ -2603,14 +3715,258 @@ impl AppState {
                 None => (None, false),
             }
         };
-        let session_changed = match updated.as_ref() {
-            Some(agent) => self.upsert_recent_session_for_agent(agent, now_millis(), true),
-            None => false,
+        let (research_changed, session_changed) = match updated.as_ref() {
+            Some(agent) => {
+                let research_changed = self.sync_research_node_from_agent(agent)?;
+                let session_changed =
+                    self.upsert_recent_session_for_agent(agent, now_millis(), true);
+                (research_changed, session_changed)
+            }
+            None => (false, false),
         };
-        if status_changed || session_changed {
+        if status_changed || session_changed || research_changed {
             self.persist();
         }
         Ok(updated)
+    }
+
+    fn sync_research_node_from_agent(&self, agent: &AgentInfo) -> Result<bool, String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node_id = model
+                .research_nodes
+                .values()
+                .find(|node| node.agent_id.as_deref() == Some(&agent.id))
+                .map(|node| node.id.clone());
+            let Some(node_id) = node_id else {
+                return Ok(false);
+            };
+            let (node_prompt, existing_prompt_id) = model
+                .research_nodes
+                .get(&node_id)
+                .map(|node| (node.prompt.clone(), node.prompt_native_id.clone()))
+                .expect("node exists");
+            let (prompt_id, preview) = model.turns.get(&agent.id).map_or((None, None), |turns| {
+                let prompt_id = research::prompt_native_id(turns, &node_prompt);
+                let preview = research::response_preview(
+                    turns,
+                    prompt_id.as_deref().or(existing_prompt_id.as_deref()),
+                    &node_prompt,
+                );
+                (prompt_id, preview)
+            });
+            let now = now_millis();
+            let node = model.research_nodes.get_mut(&node_id).expect("node exists");
+            let before = node.clone();
+            node.native_session_id = agent.session_id.clone();
+            node.transcript_path = agent.transcript_path.clone();
+            node.pane_id = agent.pane_id.clone();
+            if prompt_id.is_some() {
+                node.prompt_native_id = prompt_id;
+            }
+            if preview.is_some() {
+                node.response_preview = preview;
+            }
+            // Hooks and transcript tailing deliver agent events asynchronously,
+            // so a generic Running/Idle update can arrive after the run has
+            // settled — most visibly after a user cancellation, where rewriting
+            // the status would resurrect the run and let the pane teardown
+            // re-settle it as Failed. Terminal outcomes stay as written.
+            if !node.status.is_terminal() {
+                node.status = research_status_for_agent(agent.status);
+                if node.status.is_terminal() && node.completed_at.is_none() {
+                    node.completed_at = Some(now);
+                }
+            }
+            let changed = *node != before;
+            // Recency (and with it the sidebar sort) moves only on lifecycle
+            // transitions. Preview/session churn arrives several times a
+            // second while streaming, and bumping updated_at for each made
+            // concurrently-running trees swap positions under the cursor.
+            let lifecycle_changed =
+                node.status != before.status || node.completed_at != before.completed_at;
+            let node = node.clone();
+            if lifecycle_changed {
+                touch_research_tree_locked(&mut model, &node.tree_id, now);
+            }
+            changed.then_some(node)
+        };
+        let changed = updated.is_some();
+        if let Some(node) = updated {
+            self.maybe_schedule_research_retirement(&node);
+            self.emit(QmuxEvent::new(
+                "research.node.updated",
+                node.pane_id.clone(),
+                node.agent_id.clone(),
+                json!({ "node": node }),
+            ));
+        }
+        Ok(changed)
+    }
+
+    fn maybe_schedule_research_retirement(&self, node: &ResearchNode) {
+        let Some(pane_id) = node.pane_id.clone() else {
+            return;
+        };
+        if !matches!(
+            node.status,
+            ResearchNodeStatus::Complete | ResearchNodeStatus::Failed
+        ) {
+            return;
+        }
+        let scheduled = self
+            .inner
+            .model
+            .lock()
+            .map(|mut model| {
+                model.panes.contains_key(&pane_id)
+                    && model.research_retiring_panes.insert(pane_id.clone())
+            })
+            .unwrap_or(false);
+        if !scheduled {
+            return;
+        }
+        let state = self.clone();
+        let node_id = node.id.clone();
+        std::thread::spawn(move || {
+            let mut last_error = None;
+            let mut last_candidate = None;
+            for attempt in 0..5_u32 {
+                // The first delay lets the adapter flush its final lifecycle record;
+                // later delays provide bounded recovery from transient file/process races.
+                let delay_ms = 250_u64.saturating_mul(1_u64 << attempt).min(4_000);
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                // Re-read per attempt rather than capturing at schedule time:
+                // the native checkpoint (session id / transcript path) usually
+                // trails the Complete status by a beat, and a fresh read lets a
+                // late checkpoint feed the snapshot. Waiting for it *before*
+                // scheduling leaked the hidden pane forever when it never
+                // arrived; now the pane retires after the bounded retries and
+                // the snapshot falls back to the live turns, so the answer
+                // stays viewable even though follow-ups remain blocked.
+                let should_snapshot = state
+                    .research_node(&node_id)
+                    .map(|node| node.status == ResearchNodeStatus::Complete)
+                    .unwrap_or(false);
+                if should_snapshot {
+                    if let Err(err) =
+                        state.snapshot_research_response(&node_id, &mut last_candidate)
+                    {
+                        last_error = Some(format!("snapshot failed: {err}"));
+                        // Keep the pane alive while retries remain — the snapshot
+                        // wants the live turns — but a deterministic failure (e.g.
+                        // a response over the snapshot size cap) would otherwise
+                        // skip kill_pane on every attempt and nothing re-triggers
+                        // retirement once the flag is cleared. On the last attempt
+                        // reclaim the pane anyway; the adapter transcript remains
+                        // as the viewing fallback.
+                        if attempt < 4 {
+                            continue;
+                        }
+                        eprintln!(
+                            "qmux: retiring research pane {pane_id} without a response snapshot: {err}"
+                        );
+                    }
+                }
+                match crate::pty::kill_pane(&state, pane_id.clone()) {
+                    Ok(()) => {
+                        // Automated retirement is not a user close and must not be undoable.
+                        state.clear_last_closed_pane_for_pane(&pane_id);
+                        return;
+                    }
+                    Err(err) => {
+                        if !state.pane_exists(&pane_id).unwrap_or(true) {
+                            return;
+                        }
+                        last_error = Some(format!("pane close failed: {err}"));
+                    }
+                }
+            }
+            eprintln!(
+                "qmux: failed to retire settled research pane {pane_id} after retries: {}",
+                last_error.unwrap_or_else(|| "unknown error".to_string())
+            );
+            if let Ok(mut model) = state.inner.model.lock() {
+                model.research_retiring_panes.remove(&pane_id);
+            }
+        });
+    }
+
+    /// Writes the node's durable response snapshot once the response is actually
+    /// final. The agent reporting Done only means its lifecycle ended — the
+    /// adapter may still be flushing transcript records — so a successfully
+    /// *parsed* response is not yet a *complete* one. Two guards close that gap:
+    /// the response must contain an assistant turn (an empty or prompt-only
+    /// tail is never a finished answer), and it must read back identically on
+    /// two consecutive attempts (`last_candidate` carries the previous read
+    /// across the caller's retry loop). Either failure returns `Err` so the
+    /// retry loop backs off and re-reads instead of committing a partial
+    /// response as the permanent snapshot.
+    fn snapshot_research_response(
+        &self,
+        node_id: &str,
+        last_candidate: &mut Option<Vec<Turn>>,
+    ) -> Result<(), String> {
+        if research::read_response_snapshot(&self.inner.config.workspace_root, node_id)?.is_some() {
+            self.mark_research_response_snapshotted(node_id)?;
+            return Ok(());
+        }
+        let content = self.research_node_content(node_id)?;
+        let turns = research::load_transcript_response(&self.inner.config, &content.node).or_else(
+            |_| {
+                (!content.turns.is_empty())
+                    .then_some(content.turns)
+                    .ok_or_else(|| "completed research response is not available yet".to_string())
+            },
+        )?;
+        if !turns.iter().any(|turn| turn.role == "assistant") {
+            *last_candidate = Some(turns);
+            return Err("research response has no assistant turn yet".to_string());
+        }
+        if last_candidate.as_ref() != Some(&turns) {
+            *last_candidate = Some(turns);
+            return Err("research response has not settled yet".to_string());
+        }
+        research::write_response_snapshot(&self.inner.config.workspace_root, node_id, &turns)?;
+        self.mark_research_response_snapshotted(node_id)
+    }
+
+    /// Records that the node's durable snapshot exists and announces it. The
+    /// node was typically marked Complete *before* the adapter finished
+    /// flushing, so a viewer that fetched content on the status transition may
+    /// hold a truncated response; the stamped update is its refetch signal.
+    fn mark_research_response_snapshotted(&self, node_id: &str) -> Result<(), String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            if node.response_snapshot_at.is_some() {
+                None
+            } else {
+                node.response_snapshot_at = Some(now_millis());
+                Some(node.clone())
+            }
+        };
+        if let Some(node) = updated {
+            self.persist();
+            self.emit(QmuxEvent::new(
+                "research.node.updated",
+                node.pane_id.clone(),
+                node.agent_id.clone(),
+                json!({ "node": node }),
+            ));
+        }
+        Ok(())
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
@@ -2675,6 +4031,11 @@ impl AppState {
         if should_persist_state {
             self.persist();
         }
+        if let Some(agent) = self.agent(&turn.agent_id)?
+            && self.sync_research_node_from_agent(&agent)?
+        {
+            self.persist();
+        }
         Ok(())
     }
 
@@ -2729,6 +4090,11 @@ impl AppState {
             );
         }
         if should_persist_state {
+            self.persist();
+        }
+        if let Some(agent) = self.agent(agent_id)?
+            && self.sync_research_node_from_agent(&agent)?
+        {
             self.persist();
         }
         Ok(())
@@ -3603,6 +4969,47 @@ impl AppState {
             .map(|pane| matches!(pane.backend, PaneBackend::Native { .. })))
     }
 
+    pub fn research_pane_accepts_input(&self, pane_id: &str) -> Result<Option<bool>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let Some(node) = model
+            .research_nodes
+            .values()
+            .find(|node| node.pane_id.as_deref() == Some(pane_id))
+        else {
+            return Ok(None);
+        };
+        let allowed = node
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| model.agents.get(agent_id))
+            .is_some_and(|agent| {
+                matches!(
+                    agent.status,
+                    AgentStatus::AwaitingPermission | AgentStatus::AwaitingInput
+                )
+            });
+        Ok(Some(allowed))
+    }
+
+    /// Whether the agent is (or was) the run behind a research node. Research
+    /// runs take exactly one prompt at launch; queued turns can never drain
+    /// into them and would park the agent past pane retirement.
+    pub fn agent_is_research_run(&self, agent_id: &str) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .research_nodes
+            .values()
+            .any(|node| node.agent_id.as_deref() == Some(agent_id)))
+    }
+
     pub fn native_pane_pid(&self, pane_id: &str) -> Result<Option<u32>, String> {
         let model = self
             .inner
@@ -3884,6 +5291,13 @@ fn upsert_recent_session_for_agent_locked(
     touch: bool,
     meta: RecentSessionMeta,
 ) -> RecentSessionUpsert {
+    if model
+        .groups
+        .get(&agent.group_id)
+        .is_some_and(|group| group.scope == WorkspaceScope::Research)
+    {
+        return RecentSessionUpsert::unchanged();
+    }
     let Some(key) = agent_recent_session_key(agent) else {
         return RecentSessionUpsert::unchanged();
     };
@@ -4304,11 +5718,385 @@ fn bump_agent_status_activity_locked(model: &mut Model, agent_id: &str) {
     *seq = seq.wrapping_add(1);
 }
 
-fn remove_group_without_open_panes_locked(model: &mut Model, group_id: &str) -> bool {
+/// Every research-node mutation is a tree mutation for ordering/recency
+/// purposes; failure and detachment paths previously skipped this, leaving
+/// `updated_at` stale exactly when a tree last changed by failing.
+fn touch_research_tree_locked(model: &mut Model, tree_id: &str, now: u128) {
+    if let Some(tree) = model.research_trees.get_mut(tree_id) {
+        tree.updated_at = now;
+    }
+}
+
+/// Splits research-owned panes and agents out of the ordinary groups used by
+/// the original research implementation. The migration runs for version-2
+/// state and for version-3 snapshots written by the short-lived transitional
+/// build where scope existed but research still referenced Terminal groups.
+fn migrate_legacy_research_workspaces(
+    state: &AppState,
+    persisted: &mut PersistedState,
+) -> (bool, Vec<String>) {
+    let mut changed = drop_research_recent_sessions(persisted);
+    let mut warnings = Vec::new();
+
+    // Backfill tree ownership from its root node before deciding which groups
+    // need to split. A missing root is handled by structural reconciliation.
+    for tree in persisted.research_trees.values_mut() {
+        if tree.workspace_id.trim().is_empty()
+            && let Some(root) = persisted.research_nodes.get(&tree.root_node_id)
+        {
+            tree.workspace_id = root.group_id.clone();
+            changed = true;
+        }
+    }
+
+    let group_scope = persisted
+        .groups
+        .iter()
+        .map(|group| (group.id.clone(), group.scope))
+        .collect::<HashMap<_, _>>();
+    let mut legacy_group_ids = persisted
+        .research_trees
+        .values()
+        .filter_map(|tree| {
+            (group_scope.get(&tree.workspace_id) != Some(&WorkspaceScope::Research))
+                .then_some(tree.workspace_id.clone())
+        })
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    legacy_group_ids.sort();
+    legacy_group_ids.dedup();
+
+    for legacy_group_id in legacy_group_ids {
+        let tree_ids = persisted
+            .research_trees
+            .values()
+            .filter(|tree| tree.workspace_id == legacy_group_id)
+            .map(|tree| tree.id.clone())
+            .collect::<HashSet<_>>();
+        let source_index = persisted
+            .groups
+            .iter()
+            .position(|group| group.id == legacy_group_id);
+        let legacy_dir = source_index
+            .map(|index| persisted.groups[index].dir.clone())
+            .or_else(|| {
+                persisted
+                    .research_trees
+                    .values()
+                    .filter(|tree| tree_ids.contains(&tree.id))
+                    .filter_map(|tree| persisted.research_nodes.get(&tree.root_node_id))
+                    .map(|root| root.worktree_dir.clone())
+                    .find(|dir| !dir.trim().is_empty())
+            });
+        let Some(legacy_dir) = legacy_dir else {
+            warnings.push(format!(
+                "research workspace migration could not recover a folder for legacy group {legacy_group_id}"
+            ));
+            continue;
+        };
+        let source = source_index
+            .map(|index| persisted.groups[index].clone())
+            .unwrap_or_else(|| {
+                let name = std::path::Path::new(&legacy_dir)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("Recovered")
+                    .to_string();
+                GroupInfo {
+                    id: legacy_group_id.clone(),
+                    name,
+                    name_override: Some("Recovered Research".to_string()),
+                    dir: legacy_dir.clone(),
+                    managed_dir: String::new(),
+                    base_repo: None,
+                    base_ref: Some("HEAD".to_string()),
+                    parent_id: None,
+                    created_at: now_millis(),
+                    collapsed: false,
+                    scope: WorkspaceScope::Terminal,
+                    agents: Vec::new(),
+                }
+            });
+        let dir_key = research_workspace_dir_key(&legacy_dir);
+        let existing_research_group = persisted
+            .groups
+            .iter()
+            .find(|group| {
+                group.scope == WorkspaceScope::Research
+                    && research_workspace_dir_key(&group.dir) == dir_key
+            })
+            .cloned();
+        let created_research_group = existing_research_group.is_none();
+        let mut research_group = match existing_research_group {
+            Some(group) => group,
+            None => match crate::workspace::clone_group_record_for_scope(
+                state,
+                &source,
+                WorkspaceScope::Research,
+            ) {
+                Ok(group) => group,
+                Err(err) => {
+                    warnings.push(format!(
+                        "could not isolate legacy research group {legacy_group_id}: {err}"
+                    ));
+                    continue;
+                }
+            },
+        };
+
+        let research_pane_ids = persisted
+            .research_nodes
+            .values()
+            .filter(|node| tree_ids.contains(&node.tree_id))
+            .filter_map(|node| node.pane_id.clone())
+            .collect::<HashSet<_>>();
+        let research_agent_ids = persisted
+            .research_nodes
+            .values()
+            .filter(|node| tree_ids.contains(&node.tree_id))
+            .filter_map(|node| node.agent_id.clone())
+            .collect::<HashSet<_>>();
+        research_group
+            .agents
+            .extend(research_agent_ids.iter().cloned());
+        research_group.agents.sort();
+        research_group.agents.dedup();
+        let mut updated_source = source_index.map(|index| persisted.groups[index].clone());
+        if let Some(source) = &mut updated_source {
+            source
+                .agents
+                .retain(|agent_id| !research_agent_ids.contains(agent_id));
+        }
+        if let Err(err) = crate::workspace::write_group_manifest(&research_group) {
+            warnings.push(format!(
+                "could not finish migrated research workspace {}: {err}",
+                research_group.id
+            ));
+            if created_research_group {
+                let _ = std::fs::remove_dir_all(&research_group.managed_dir);
+            }
+            continue;
+        }
+        if let Some(source) = &updated_source
+            && let Err(err) = crate::workspace::write_group_manifest(source)
+        {
+            warnings.push(format!(
+                "could not update legacy terminal workspace {legacy_group_id}: {err}"
+            ));
+            if created_research_group {
+                let _ = std::fs::remove_dir_all(&research_group.managed_dir);
+            } else if let Some(original) = persisted
+                .groups
+                .iter()
+                .find(|group| group.id == research_group.id)
+            {
+                let _ = crate::workspace::write_group_manifest(original);
+            }
+            continue;
+        }
+
+        let research_group_id = research_group.id.clone();
+        for tree in persisted.research_trees.values_mut() {
+            if tree.workspace_id == legacy_group_id {
+                tree.workspace_id = research_group_id.clone();
+            }
+        }
+        for node in persisted.research_nodes.values_mut() {
+            if tree_ids.contains(&node.tree_id) {
+                node.group_id = research_group_id.clone();
+            }
+        }
+        for pane in &mut persisted.panes {
+            if pane.group_id == legacy_group_id && research_pane_ids.contains(&pane.id) {
+                pane.group_id = research_group_id.clone();
+                pane.depth = 0;
+            }
+        }
+        for agent in &mut persisted.agents {
+            if agent.group_id == legacy_group_id && research_agent_ids.contains(&agent.id) {
+                agent.group_id = research_group_id.clone();
+            }
+        }
+        if let Some(index) = persisted
+            .groups
+            .iter()
+            .position(|group| group.id == research_group_id)
+        {
+            persisted.groups[index] = research_group;
+        } else {
+            let insert_index = source_index.map_or(persisted.groups.len(), |index| index + 1);
+            persisted.groups.insert(insert_index, research_group);
+            if let Some(order_index) = persisted
+                .group_order
+                .iter()
+                .position(|id| id == &legacy_group_id)
+            {
+                persisted
+                    .group_order
+                    .insert(order_index + 1, research_group_id.clone());
+            } else {
+                persisted.group_order.push(research_group_id.clone());
+            }
+        }
+        if let (Some(index), Some(source)) = (source_index, updated_source) {
+            persisted.groups[index] = source;
+        }
+        let source_still_used = persisted
+            .panes
+            .iter()
+            .any(|pane| pane.group_id == legacy_group_id)
+            || persisted
+                .agents
+                .iter()
+                .any(|agent| agent.group_id == legacy_group_id);
+        if !source_still_used {
+            persisted.groups.retain(|group| group.id != legacy_group_id);
+            persisted.group_order.retain(|id| id != &legacy_group_id);
+        }
+        changed = true;
+    }
+
+    // Split groups are viewport constructs and cannot span modes. Drop only the
+    // invalid split; the normal layout reconciliation keeps all valid siblings.
+    let pane_group = persisted
+        .panes
+        .iter()
+        .map(|pane| (pane.id.clone(), pane.group_id.clone()))
+        .collect::<HashMap<_, _>>();
+    let scope_by_group = persisted
+        .groups
+        .iter()
+        .map(|group| (group.id.clone(), group.scope))
+        .collect::<HashMap<_, _>>();
+    let split_count = persisted.pane_splits.len();
+    persisted.pane_splits.retain(|split| {
+        let mut scopes = split.pane_ids.iter().filter_map(|pane_id| {
+            pane_group
+                .get(pane_id)
+                .and_then(|group_id| scope_by_group.get(group_id))
+        });
+        let first = scopes.next();
+        first.is_none_or(|first| scopes.all(|scope| scope == first))
+    });
+    changed |= persisted.pane_splits.len() != split_count;
+
+    (changed, warnings)
+}
+
+fn research_workspace_dir_key(dir: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(dir);
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+fn drop_research_recent_sessions(persisted: &mut PersistedState) -> bool {
+    let agent_ids = persisted
+        .research_nodes
+        .values()
+        .filter_map(|node| node.agent_id.clone())
+        .collect::<HashSet<_>>();
+    let pane_ids = persisted
+        .research_nodes
+        .values()
+        .filter_map(|node| node.pane_id.clone())
+        .collect::<HashSet<_>>();
+    let session_ids = persisted
+        .research_nodes
+        .values()
+        .filter_map(|node| node.native_session_id.clone())
+        .collect::<HashSet<_>>();
+    let transcript_paths = persisted
+        .research_nodes
+        .values()
+        .filter_map(|node| node.transcript_path.clone())
+        .collect::<HashSet<_>>();
+    let before = persisted.recent_sessions.len();
+    persisted.recent_sessions.retain(|session| {
+        !session
+            .agent_id
+            .as_ref()
+            .is_some_and(|id| agent_ids.contains(id))
+            && !session
+                .pane_id
+                .as_ref()
+                .is_some_and(|id| pane_ids.contains(id))
+            && !session
+                .session_id
+                .as_ref()
+                .is_some_and(|id| session_ids.contains(id))
+            && !session
+                .transcript_path
+                .as_ref()
+                .is_some_and(|path| transcript_paths.contains(path))
+    });
+    before != persisted.recent_sessions.len()
+}
+
+/// Adapter contract this mapping (and research completion as a whole) depends
+/// on: a research-capable adapter must report `Done`/`Idle` at end-of-turn
+/// while its process stays alive. An adapter that instead *rests* at
+/// `AwaitingInput` after a normal turn would leave its nodes Researching…
+/// forever (no completion, no snapshot, no retirement, no follow-ups); one
+/// whose process exits on completion relies on `detach_research_pane`'s
+/// agent-finished check to settle Complete instead of Failed.
+fn research_status_for_agent(status: AgentStatus) -> ResearchNodeStatus {
+    match status {
+        AgentStatus::Starting => ResearchNodeStatus::Starting,
+        // AwaitingInput is a mid-turn pause (elicitation / clarifying question),
+        // not completion: the adapters return to Running once the user answers,
+        // so the node must stay live or retirement would kill the waiting agent.
+        AgentStatus::Running | AgentStatus::AwaitingPermission | AgentStatus::AwaitingInput => {
+            ResearchNodeStatus::Running
+        }
+        AgentStatus::Done | AgentStatus::Idle => ResearchNodeStatus::Complete,
+        AgentStatus::Failed => ResearchNodeStatus::Failed,
+    }
+}
+
+fn validate_research_workspace_available(workspace: &GroupInfo) -> Result<(), String> {
+    let dir = std::path::Path::new(&workspace.dir);
+    if !dir.is_dir() {
+        return Err(format!(
+            "research folder '{}' is unavailable; choose a replacement folder for '{}' before launching another run",
+            workspace.dir,
+            workspace
+                .name_override
+                .as_deref()
+                .unwrap_or(&workspace.name)
+        ));
+    }
+    Ok(())
+}
+
+fn remove_group_without_open_panes_locked(
+    model: &mut Model,
+    group_id: &str,
+    preserve_research: bool,
+) -> bool {
     if model
         .panes
         .values()
         .any(|pane| pane.info.group_id == group_id)
+    {
+        return false;
+    }
+
+    if preserve_research
+        && model
+            .groups
+            .get(group_id)
+            .is_some_and(|group| group.scope == WorkspaceScope::Research)
+    {
+        return false;
+    }
+
+    // Legacy safeguard: after workspace migration every research node should
+    // reference a Research-scoped group, but keep old or partially recovered
+    // state from losing its launch context.
+    if model
+        .research_trees
+        .values()
+        .any(|tree| tree.workspace_id == group_id)
     {
         return false;
     }
@@ -4556,7 +6344,7 @@ mod tests {
     };
     use crate::persistence::PersistedState;
     use crate::scrollback::append_pane_scrollback;
-    use crate::workspace::AgentStatus;
+    use crate::workspace::{AgentStatus, WorkspaceScope};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io;
     use std::path::PathBuf;
@@ -4634,16 +6422,24 @@ mod tests {
             parent_id: None,
             created_at: 1,
             collapsed: false,
+            scope: WorkspaceScope::Research,
             agents: vec!["agent-1".to_string()],
         }
     }
 
     fn sample_group_with_id(id: &str) -> GroupInfo {
         let mut group = sample_group();
+        group.scope = WorkspaceScope::Terminal;
         group.id = id.to_string();
         group.name = id.to_string();
         group.managed_dir = format!("/tmp/qmux-workspaces/{id}");
         group.agents.clear();
+        group
+    }
+
+    fn sample_terminal_group() -> GroupInfo {
+        let mut group = sample_group();
+        group.scope = WorkspaceScope::Terminal;
         group
     }
 
@@ -4662,6 +6458,1494 @@ mod tests {
             recovered: false,
             depth: 0,
         }
+    }
+
+    #[test]
+    fn research_tree_crud_keeps_nodes_scoped_to_the_tree() {
+        let state = AppState::new(test_config(PathBuf::from("/tmp/qmux-state-research-crud")));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "  Compare the available approaches  ".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: Some("opus".to_string()),
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(detail.tree.title, "Compare the available approaches");
+        assert_eq!(detail.nodes.len(), 1);
+        assert_eq!(detail.nodes[0].prompt, "Compare the available approaches");
+        assert_eq!(detail.nodes[0].status, ResearchNodeStatus::Queued);
+        assert_eq!(state.list_research_trees().unwrap()[0].running_count, 1);
+        assert_eq!(
+            state.list_research_activity().unwrap()[0].id,
+            detail.tree.root_node_id,
+            "launch-in-flight work is active before its pane binds"
+        );
+
+        let renamed = state
+            .rename_research_tree(&detail.tree.id, "Approach comparison".to_string())
+            .unwrap();
+        assert_eq!(renamed.title, "Approach comparison");
+        state
+            .fail_research_node(&detail.tree.root_node_id, "Launch cancelled".to_string())
+            .unwrap();
+        state.remove_research_tree(&detail.tree.id).unwrap();
+        assert!(state.list_research_trees().unwrap().is_empty());
+        assert!(state.research_tree(&detail.tree.id).is_err());
+    }
+
+    #[test]
+    fn research_archive_and_view_state_are_durable_navigation_metadata() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+        let state = AppState::new(config.clone());
+        state.restore_session();
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Compare options".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+
+        assert!(!state.list_research_trees().unwrap()[0].has_unseen_update);
+        std::thread::sleep(Duration::from_millis(2));
+        state
+            .rename_research_tree(&detail.tree.id, "Renamed without settlement".to_string())
+            .unwrap();
+        assert!(
+            !state.list_research_trees().unwrap()[0].has_unseen_update,
+            "metadata-only updates must not raise settlement attention"
+        );
+        assert!(
+            state
+                .archive_research_tree(&detail.tree.id)
+                .unwrap_err()
+                .contains("active runs")
+        );
+
+        std::thread::sleep(Duration::from_millis(2));
+        state
+            .fail_research_node(&detail.tree.root_node_id, "stopped".to_string())
+            .unwrap();
+        let summary = state
+            .list_research_trees()
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(summary.has_unseen_update);
+        assert_eq!(summary.failed_count, 1);
+        assert_eq!(summary.completed_count, 0);
+        assert_eq!(summary.cancelled_count, 0);
+
+        state.mark_research_tree_viewed(&detail.tree.id).unwrap();
+        assert!(!state.list_research_trees().unwrap()[0].has_unseen_update);
+
+        let archived = state.archive_research_tree(&detail.tree.id).unwrap();
+        assert!(archived.archived_at.is_some());
+        assert!(state.list_research_trees().unwrap().is_empty());
+        assert!(
+            state
+                .create_research_child(&detail.tree.root_node_id, "More".to_string())
+                .unwrap_err()
+                .contains("restore archived research")
+        );
+        let restored_state = AppState::new(config);
+        restored_state.restore_session();
+        let all = restored_state
+            .list_research_trees_with_archived(true)
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].archived_at.is_some());
+
+        let restored = restored_state
+            .restore_research_tree(&detail.tree.id)
+            .unwrap();
+        assert!(restored.archived_at.is_none());
+        assert_eq!(restored_state.list_research_trees().unwrap().len(), 1);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn research_tree_creation_requires_an_existing_group() {
+        let state = AppState::new(test_config(PathBuf::from(
+            "/tmp/qmux-state-research-missing",
+        )));
+        let err = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "missing".to_string(),
+            })
+            .unwrap_err();
+        assert!(err.contains("research workspace missing was not found"));
+    }
+
+    #[test]
+    fn research_tree_creation_rejects_a_terminal_workspace() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
+        let err = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap_err();
+
+        assert!(err.contains("Research-scoped workspace"));
+        assert!(state.list_research_trees().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_research_workspace_survives_automatic_pane_cleanup() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        assert!(state.group("group-1").unwrap().is_some());
+        state.remove_group("group-1").unwrap();
+        assert!(state.group("group-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn research_tree_creation_requires_a_forkable_adapter() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let err = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "shell-only".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap_err();
+        assert!(err.contains("follow-up (fork) support"), "{err}");
+        assert!(state.list_research_trees().unwrap().is_empty());
+    }
+
+    #[test]
+    fn research_run_directory_comes_from_the_workspace_group() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        assert_eq!(detail.nodes[0].worktree_dir, sample_group().dir);
+    }
+
+    #[test]
+    fn research_node_tracks_agent_status_and_response_preview() {
+        let state = AppState::new(test_config(PathBuf::from("/tmp/qmux-state-research-run")));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let root_id = detail.tree.root_node_id;
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&root_id, &agent, "pane-7")
+            .unwrap();
+
+        state
+            .append_turn(sample_user_turn("research-agent", "Question"))
+            .unwrap();
+        let mut answer = sample_user_turn("research-agent", "A concise answer");
+        answer.id = "research-agent-1".to_string();
+        answer.role = "assistant".to_string();
+        answer.source_index = 1;
+        state.append_turn(answer).unwrap();
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+
+        let content = state.research_node_content(&root_id).unwrap();
+        assert_eq!(content.node.status, ResearchNodeStatus::Complete);
+        assert_eq!(
+            content.node.response_preview.as_deref(),
+            Some("A concise answer")
+        );
+        assert_eq!(content.turns.len(), 1);
+        assert_eq!(content.turns[0].role, "assistant");
+    }
+
+    #[test]
+    fn research_child_inherits_parent_launch_context() {
+        let state = AppState::new(test_config(PathBuf::from("/tmp/qmux-state-research-child")));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "codex".to_string(),
+                model: Some("gpt-5".to_string()),
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state
+            .append_turn(sample_user_turn("research-agent", "Root"))
+            .unwrap();
+        let mut answer = sample_user_turn("research-agent", "Durable response");
+        answer.role = "assistant".to_string();
+        answer.id = "research-agent-answer".to_string();
+        state.append_turn(answer).unwrap();
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+        let child = state
+            .create_research_child(&detail.tree.root_node_id, "Follow up".to_string())
+            .unwrap();
+        assert_eq!(
+            child.parent_node_id.as_deref(),
+            Some(detail.tree.root_node_id.as_str())
+        );
+        assert_eq!(child.adapter, "codex");
+        assert_eq!(child.model.as_deref(), Some("gpt-5"));
+        assert_eq!(state.research_tree(&detail.tree.id).unwrap().nodes.len(), 2);
+    }
+
+    #[test]
+    fn research_child_requires_a_completed_checkpoint() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+
+        let err = state
+            .create_research_child(&detail.tree.root_node_id, "Too soon".to_string())
+            .unwrap_err();
+        assert!(err.contains("completed parent"));
+        assert_eq!(state.research_tree(&detail.tree.id).unwrap().nodes.len(), 1);
+    }
+
+    #[test]
+    fn detaching_completed_research_pane_preserves_native_checkpoint() {
+        let state = AppState::new(test_config(PathBuf::from(
+            "/tmp/qmux-state-research-detach",
+        )));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Done;
+        state.insert_agent(agent.clone()).unwrap();
+        let bound = state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        assert_eq!(bound.status, ResearchNodeStatus::Complete);
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+
+        let detached = state.detach_research_pane("pane-7").unwrap().unwrap();
+        assert_eq!(detached.status, ResearchNodeStatus::Complete);
+        assert_eq!(detached.agent_id.as_deref(), Some("research-agent"));
+        assert!(detached.pane_id.is_none());
+        assert_eq!(detached.native_session_id.as_deref(), Some("session-abc"));
+        assert!(state.list_research_activity().unwrap().is_empty());
+    }
+
+    #[test]
+    fn research_tree_removal_releases_but_never_deletes_the_group() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+        assert!(state.group("group-1").unwrap().is_some());
+        assert!(
+            state
+                .remove_group("group-1")
+                .unwrap_err()
+                .contains("research tree")
+        );
+        state
+            .fail_research_node(&detail.tree.root_node_id, "Launch cancelled".to_string())
+            .unwrap();
+        state.remove_research_tree(&detail.tree.id).unwrap();
+        // The user picked this pre-existing group for the research run; the
+        // tree never owned it, so removing the tree must not delete it (or
+        // prune agents retained in it) — it only lifts the retention guard.
+        assert!(state.group("group-1").unwrap().is_some());
+        state.remove_group("group-1").unwrap();
+        assert!(state.group("group-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn active_research_tree_cannot_be_removed() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+
+        let err = state.remove_research_tree(&detail.tree.id).unwrap_err();
+        assert!(err.contains("active runs"));
+        assert!(state.research_tree(&detail.tree.id).is_ok());
+    }
+
+    #[test]
+    fn restart_fails_interrupted_research_and_drops_its_pane_from_recovery() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        assert!(state.restore_session().is_empty());
+        state.insert_group_after(sample_group(), None).unwrap();
+        let mut pane = sample_pane_runtime("pane-7");
+        pane.info.kind = PaneKind::Agent;
+        pane.info.agent_id = Some("research-agent".to_string());
+        state.insert_pane(pane).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state.finalize_persistence_for_exit();
+
+        // The interrupted turn died with the old process, and a recovered
+        // adapter resumes Idle — which the agent sync would misread as a
+        // *completed* answer and permanently snapshot a partial response.
+        // The run settles Failed and its hidden pane is dropped from
+        // recovery, not respawned just to be reclaimed.
+        let restored = AppState::new(test_config(workspace));
+        let panes = restored.restore_session();
+        assert!(panes.iter().all(|pane| pane.id != "pane-7"));
+        let node = restored.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Failed);
+        assert!(
+            node.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("interrupted"),
+            "{:?}",
+            node.error
+        );
+        assert!(node.pane_id.is_none());
+        // The agent is reclaimed with its pane, exactly as remove_pane would
+        // have done — a dropped run must not leave a dead AgentInfo behind.
+        assert!(restored.agent("research-agent").unwrap().is_none());
+        // Nothing active or bound remains, so the tree is immediately removable.
+        restored.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn transcript_updates_persist_research_preview_without_a_status_change() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        assert!(state.restore_session().is_empty());
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state
+            .append_turn(sample_user_turn("research-agent", "Question"))
+            .unwrap();
+        let updated_at_before_preview = state.list_research_trees().unwrap()[0].updated_at;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut answer = sample_user_turn("research-agent", "Persisted preview");
+        answer.id = "research-agent-1".to_string();
+        answer.role = "assistant".to_string();
+        answer.source_index = 1;
+        state.append_turn(answer).unwrap();
+        assert!(
+            !state.list_research_trees().unwrap()[0].has_unseen_update,
+            "streaming preview churn must not raise settlement attention"
+        );
+        assert_eq!(
+            state.list_research_trees().unwrap()[0].updated_at,
+            updated_at_before_preview,
+            "streaming preview churn must not resort the sidebar"
+        );
+        state.finalize_persistence_for_exit();
+
+        let restored = AppState::new(test_config(workspace));
+        restored.restore_session();
+        let node = restored.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.response_preview.as_deref(), Some("Persisted preview"));
+    }
+
+    #[test]
+    fn research_panes_reject_terminal_writes() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+
+        let err = crate::pty::write_pane(
+            &state,
+            crate::pty::PaneWriteOptions {
+                pane_id: "pane-7".to_string(),
+                data: "another prompt".to_string(),
+                paste: false,
+                submit: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("read-only"));
+
+        state
+            .set_agent_status("research-agent", AgentStatus::AwaitingPermission)
+            .unwrap();
+        assert_eq!(
+            state.research_pane_accepts_input("pane-7").unwrap(),
+            Some(true)
+        );
+
+        // An elicitation pause is mid-turn: the user must be able to answer,
+        // and the node must stay live rather than complete-and-retire.
+        state
+            .set_agent_status("research-agent", AgentStatus::AwaitingInput)
+            .unwrap();
+        assert_eq!(
+            state.research_pane_accepts_input("pane-7").unwrap(),
+            Some(true)
+        );
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Running);
+    }
+
+    #[test]
+    fn research_agents_reject_queued_turns() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+
+        // Queueing bypasses write_pane, so it must be rejected on its own: a
+        // research run never drains a queue, and an accepted turn would park
+        // the agent past retirement.
+        let err = crate::turn_queue::submit_agent_turn(
+            &state,
+            crate::turn_queue::SubmitAgentTurnRequest {
+                agent_id: "research-agent".to_string(),
+                data: "queued follow-up".to_string(),
+                mode: Some(crate::turn_queue::SubmitAgentTurnMode::Queue),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("read-only"));
+        assert!(
+            state
+                .agent_queued_turns("research-agent")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn restore_fails_research_nodes_that_never_launched() {
+        let workspace = temp_workspace();
+        let detail = {
+            let state = AppState::new(test_config(workspace.clone()));
+            assert!(state.restore_session().is_empty());
+            state.insert_group_after(sample_group(), None).unwrap();
+            // Persisted as Queued with no agent/pane bound — the crash window
+            // between create_research_tree() and the command's spawn/bind.
+            let detail = state
+                .create_research_tree(CreateResearchTreeRequest {
+                    prompt: "Never launched".to_string(),
+                    title: None,
+                    adapter: "claude".to_string(),
+                    model: None,
+                    group_id: "group-1".to_string(),
+                })
+                .unwrap();
+            state.finalize_persistence_for_exit();
+            detail
+        };
+
+        let restored = AppState::new(test_config(workspace));
+        restored.restore_session();
+        let node = restored.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Failed);
+        // A settled node no longer counts as an active run, so the tree stays
+        // removable instead of being pinned by a phantom launch.
+        restored.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn failure_and_detachment_paths_touch_the_tree_timestamp() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        // Force a stale timestamp so the bump is observable even within one
+        // millisecond of the creation.
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            model
+                .research_trees
+                .get_mut(&detail.tree.id)
+                .unwrap()
+                .updated_at = 0;
+        }
+
+        state
+            .fail_research_node(&detail.tree.root_node_id, "boom".to_string())
+            .unwrap();
+        let updated_after_failure = state
+            .research_tree(&detail.tree.id)
+            .unwrap()
+            .tree
+            .updated_at;
+        assert!(updated_after_failure > 0, "failure must touch updated_at");
+    }
+
+    #[test]
+    fn user_close_of_active_research_run_cancels_and_reclaims_the_pane() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+
+        state.close_pane_for_user("pane-7").unwrap();
+        let cancelled = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(cancelled.status, ResearchNodeStatus::Cancelled);
+        assert_eq!(state.list_research_trees().unwrap()[0].cancelled_count, 1);
+        assert!(cancelled.pane_id.is_none());
+        assert!(cancelled.completed_at.is_some());
+        assert!(state.list_panes().unwrap().is_empty());
+        // No undo entry: cancellation reclaims the pane for good.
+        assert!(state.take_last_closed_pane().unwrap().is_none());
+        // A settled tree is removable, and double-cancel is rejected cleanly.
+        assert!(
+            state
+                .cancel_research_node(&detail.tree.root_node_id)
+                .unwrap_err()
+                .contains("not active")
+        );
+        state.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn cancelled_research_run_ignores_stale_agent_status_updates() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let root_id = detail.tree.root_node_id;
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&root_id, &agent, "pane-7")
+            .unwrap();
+        let cancelled = state.cancel_research_node(&root_id).unwrap();
+        assert_eq!(cancelled.status, ResearchNodeStatus::Cancelled);
+
+        // Hooks deliver status asynchronously: a Running update from the dying
+        // process arrives after the user's cancellation has settled the run.
+        state
+            .set_agent_status("research-agent", AgentStatus::Running)
+            .unwrap();
+        let node = state.research_node(&root_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Cancelled);
+        assert_eq!(node.completed_at, cancelled.completed_at);
+
+        // A late launch-cleanup failure must not rewrite the outcome either.
+        state
+            .fail_research_node(&root_id, "launch cleanup".to_string())
+            .unwrap();
+        let node = state.research_node(&root_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Cancelled);
+        assert!(node.error.is_none());
+        state.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn binding_after_cancellation_does_not_resurrect_the_run() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let root_id = detail.tree.root_node_id;
+        // The user cancels the Queued node while its spawn is still in flight.
+        let cancelled = state.cancel_research_node(&root_id).unwrap();
+        assert_eq!(cancelled.status, ResearchNodeStatus::Cancelled);
+
+        // The spawn then completes and binds. The pane and agent are recorded
+        // (the launch path reclaims them), but the outcome stands.
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        let bound = state
+            .bind_research_node_run(&root_id, &agent, "pane-7")
+            .unwrap();
+        assert_eq!(bound.status, ResearchNodeStatus::Cancelled);
+        assert!(bound.error.is_none());
+        assert_eq!(bound.pane_id.as_deref(), Some("pane-7"));
+        assert_eq!(bound.completed_at, cancelled.completed_at);
+    }
+
+    #[test]
+    fn restore_reconciles_broken_research_references() {
+        let persisted_node = |id: &str, tree_id: &str, parent: Option<&str>| ResearchNode {
+            id: id.to_string(),
+            tree_id: tree_id.to_string(),
+            parent_node_id: parent.map(str::to_string),
+            prompt: "Q".to_string(),
+            response_preview: None,
+            adapter: "claude".to_string(),
+            model: None,
+            group_id: "group-1".to_string(),
+            worktree_dir: "/tmp/work".to_string(),
+            native_session_id: Some("session".to_string()),
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: None,
+            created_at: 1,
+            started_at: Some(1),
+            completed_at: Some(2),
+        };
+        let persisted_tree = |id: &str, root: &str| ResearchTree {
+            id: id.to_string(),
+            title: id.to_string(),
+            root_node_id: root.to_string(),
+            workspace_id: "group-1".to_string(),
+            created_at: 1,
+            updated_at: 1,
+            archived_at: None,
+            last_viewed_at: None,
+        };
+
+        let workspace = temp_workspace();
+        let mut state = PersistedState::default();
+        state.groups.push(sample_group());
+        // A valid tree with a valid child, plus a completed node still bound
+        // to a pane that no longer exists (crash during multi-stage removal).
+        state
+            .research_trees
+            .insert("tree-a".to_string(), persisted_tree("tree-a", "root-a"));
+        let mut root_a = persisted_node("root-a", "tree-a", None);
+        root_a.pane_id = Some("ghost-pane".to_string());
+        state.research_nodes.insert("root-a".to_string(), root_a);
+        state.research_nodes.insert(
+            "child-a".to_string(),
+            persisted_node("child-a", "tree-a", Some("root-a")),
+        );
+        // A node whose parent vanished, and a descendant hanging off it: both
+        // must go (the fixpoint pass, not just one sweep).
+        state.research_nodes.insert(
+            "orphan-a".to_string(),
+            persisted_node("orphan-a", "tree-a", Some("ghost")),
+        );
+        state.research_nodes.insert(
+            "orphan-child-a".to_string(),
+            persisted_node("orphan-child-a", "tree-a", Some("orphan-a")),
+        );
+        // A tree claiming another tree's root, with a node of its own.
+        state
+            .research_trees
+            .insert("tree-b".to_string(), persisted_tree("tree-b", "root-a"));
+        state.research_nodes.insert(
+            "node-b".to_string(),
+            persisted_node("node-b", "tree-b", None),
+        );
+        persistence::save(&workspace, &state).unwrap();
+
+        let restored = AppState::new(test_config(workspace));
+        restored.restore_session();
+
+        let detail = restored.research_tree("tree-a").unwrap();
+        let mut kept = detail
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+        kept.sort_unstable();
+        assert_eq!(kept, ["child-a", "root-a"]);
+        // The dangling pane binding is cleared, so the tree is removable
+        // instead of being pinned by a phantom active run.
+        assert!(restored.research_node("root-a").unwrap().pane_id.is_none());
+        assert!(restored.research_tree("tree-b").is_err());
+        assert!(restored.research_node("node-b").is_err());
+        restored.remove_research_tree("tree-a").unwrap();
+    }
+
+    #[test]
+    fn restore_splits_legacy_research_runtime_out_of_a_terminal_group() {
+        let workspace = temp_workspace();
+        let managed = workspace.join("legacy-managed");
+        std::fs::create_dir_all(managed.join(".qmux")).unwrap();
+        let mut group = sample_terminal_group();
+        group.dir = workspace.display().to_string();
+        group.managed_dir = managed.display().to_string();
+        group.agents = vec!["research-agent".to_string()];
+
+        let terminal_pane = sample_pane("pane-terminal", None);
+        let mut research_pane = sample_pane("pane-research", Some("research-agent"));
+        research_pane.depth = 1;
+        let mut agent = sample_agent("research-agent");
+        agent.pane_id = Some(research_pane.id.clone());
+        agent.group_id = group.id.clone();
+        agent.worktree_dir = workspace.display().to_string();
+        let tree = ResearchTree {
+            id: "tree-1".to_string(),
+            title: "Legacy research".to_string(),
+            root_node_id: "node-1".to_string(),
+            workspace_id: String::new(),
+            created_at: 1,
+            updated_at: 1,
+            archived_at: None,
+            last_viewed_at: None,
+        };
+        let node = ResearchNode {
+            id: "node-1".to_string(),
+            tree_id: tree.id.clone(),
+            parent_node_id: None,
+            prompt: "Question".to_string(),
+            response_preview: None,
+            adapter: "claude".to_string(),
+            model: None,
+            group_id: group.id.clone(),
+            worktree_dir: workspace.display().to_string(),
+            native_session_id: Some("session-abc".to_string()),
+            transcript_path: Some("/tmp/transcript.jsonl".to_string()),
+            prompt_native_id: None,
+            agent_id: Some(agent.id.clone()),
+            pane_id: Some(research_pane.id.clone()),
+            status: ResearchNodeStatus::Running,
+            error: None,
+            response_snapshot_at: None,
+            created_at: 1,
+            started_at: Some(1),
+            completed_at: None,
+        };
+        let persisted = PersistedState {
+            next_id: 100,
+            panes: vec![terminal_pane.clone(), research_pane.clone()],
+            groups: vec![group],
+            group_order: vec!["group-1".to_string()],
+            agents: vec![agent],
+            pane_splits: vec![PaneSplitInfo {
+                id: "split-1".to_string(),
+                pane_ids: vec![terminal_pane.id.clone(), research_pane.id.clone()],
+                sizes: HashMap::new(),
+                intent: HashMap::new(),
+            }],
+            research_trees: HashMap::from([(tree.id.clone(), tree)]),
+            research_nodes: HashMap::from([(node.id.clone(), node)]),
+            ..PersistedState::default()
+        };
+        persistence::save(&workspace, &persisted).unwrap();
+
+        let restored = AppState::new(test_config(workspace.clone()));
+        let recovered_panes = restored.restore_session();
+        let detail = restored.research_tree("tree-1").unwrap();
+        let research_workspace = restored.group(&detail.tree.workspace_id).unwrap().unwrap();
+
+        assert_eq!(research_workspace.scope, WorkspaceScope::Research);
+        assert_ne!(research_workspace.id, "group-1");
+        assert_eq!(detail.nodes[0].group_id, research_workspace.id);
+        // The migrated run cannot resume across the restart: its pane is
+        // dropped from recovery (research panes never respawn) and the node
+        // settles Failed instead of resurrecting as a live run.
+        assert!(recovered_panes.iter().all(|pane| pane.id != "pane-research"));
+        assert_eq!(detail.nodes[0].status, ResearchNodeStatus::Failed);
+        assert!(detail.nodes[0].pane_id.is_none());
+        assert_eq!(
+            recovered_panes
+                .iter()
+                .find(|pane| pane.id == "pane-terminal")
+                .unwrap()
+                .group_id,
+            "group-1"
+        );
+        assert!(restored.pane_splits().unwrap().is_empty());
+        // The migrated run's agent is reclaimed along with its dropped pane;
+        // only the durable node (Failed) records that the run existed.
+        assert!(restored.agent("research-agent").unwrap().is_none());
+    }
+
+    #[test]
+    fn research_workspace_manifest_failure_leaves_legacy_binding_for_retry() {
+        let workspace = temp_workspace();
+        let mut group = sample_terminal_group();
+        group.dir = workspace.display().to_string();
+        // The target manifest can be staged, but updating this source manifest
+        // must fail. Reconciliation must therefore leave the in-memory shape
+        // untouched and remove the staged target directory.
+        group.managed_dir = "/dev/null".to_string();
+        group.agents.clear();
+        let tree = ResearchTree {
+            id: "tree-retry".to_string(),
+            title: "Retry migration".to_string(),
+            root_node_id: "node-retry".to_string(),
+            workspace_id: group.id.clone(),
+            created_at: 1,
+            updated_at: 2,
+            archived_at: None,
+            last_viewed_at: None,
+        };
+        let node = ResearchNode {
+            id: tree.root_node_id.clone(),
+            tree_id: tree.id.clone(),
+            parent_node_id: None,
+            prompt: "Question".to_string(),
+            response_preview: None,
+            adapter: "claude".to_string(),
+            model: None,
+            group_id: group.id.clone(),
+            worktree_dir: group.dir.clone(),
+            native_session_id: Some("session".to_string()),
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: None,
+            created_at: 1,
+            started_at: Some(1),
+            completed_at: Some(2),
+        };
+        let mut persisted = PersistedState {
+            groups: vec![group.clone()],
+            group_order: vec![group.id.clone()],
+            research_trees: HashMap::from([(tree.id.clone(), tree)]),
+            research_nodes: HashMap::from([(node.id.clone(), node)]),
+            ..PersistedState::default()
+        };
+        let state = AppState::new(test_config(workspace.clone()));
+
+        let (changed, warnings) = migrate_legacy_research_workspaces(&state, &mut persisted);
+
+        assert!(!changed);
+        assert_eq!(persisted.groups.len(), 1);
+        assert_eq!(persisted.groups[0].scope, WorkspaceScope::Terminal);
+        assert_eq!(
+            persisted.research_trees["tree-retry"].workspace_id,
+            group.id
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("could not update legacy"))
+        );
+        assert!(
+            std::fs::read_dir(&workspace).unwrap().all(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                == ".qmux")
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn restore_rehomes_missing_legacy_group_from_root_provenance() {
+        let workspace = temp_workspace();
+        let legacy_dir = workspace.join("moved-project");
+        let tree = ResearchTree {
+            id: "tree-missing".to_string(),
+            title: "Recovered research".to_string(),
+            root_node_id: "node-missing".to_string(),
+            workspace_id: "missing-group".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            archived_at: None,
+            last_viewed_at: None,
+        };
+        let node = ResearchNode {
+            id: "node-missing".to_string(),
+            tree_id: tree.id.clone(),
+            parent_node_id: None,
+            prompt: "Question".to_string(),
+            response_preview: Some("Answer".to_string()),
+            adapter: "claude".to_string(),
+            model: None,
+            group_id: "missing-group".to_string(),
+            worktree_dir: legacy_dir.display().to_string(),
+            native_session_id: Some("session".to_string()),
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: None,
+            created_at: 1,
+            started_at: Some(1),
+            completed_at: Some(2),
+        };
+        let persisted = PersistedState {
+            research_trees: HashMap::from([(tree.id.clone(), tree)]),
+            research_nodes: HashMap::from([(node.id.clone(), node)]),
+            ..PersistedState::default()
+        };
+        persistence::save(&workspace, &persisted).unwrap();
+
+        let restored = AppState::new(test_config(workspace.clone()));
+        restored.restore_session();
+        let detail = restored.research_tree("tree-missing").unwrap();
+        let research_workspace = restored
+            .group(&detail.tree.workspace_id)
+            .unwrap()
+            .expect("provenance creates a replacement workspace record");
+        assert_eq!(research_workspace.scope, WorkspaceScope::Research);
+        assert_eq!(research_workspace.dir, legacy_dir.display().to_string());
+        assert_eq!(detail.nodes[0].group_id, research_workspace.id);
+        assert!(restored.take_recovery_warning().is_none());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn restore_merges_legacy_groups_that_share_one_directory() {
+        let workspace = temp_workspace();
+        let shared_dir = workspace.join("shared-project");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        let mut groups = Vec::new();
+        let mut trees = HashMap::new();
+        let mut nodes = HashMap::new();
+        for index in 1..=2 {
+            let group_id = format!("legacy-{index}");
+            let managed_dir = workspace.join(format!("managed-{index}"));
+            std::fs::create_dir_all(managed_dir.join(".qmux")).unwrap();
+            let mut group = sample_terminal_group();
+            group.id = group_id.clone();
+            group.dir = shared_dir.display().to_string();
+            group.managed_dir = managed_dir.display().to_string();
+            group.agents.clear();
+            groups.push(group);
+            let tree_id = format!("tree-{index}");
+            let node_id = format!("node-{index}");
+            trees.insert(
+                tree_id.clone(),
+                ResearchTree {
+                    id: tree_id.clone(),
+                    title: tree_id.clone(),
+                    root_node_id: node_id.clone(),
+                    workspace_id: group_id.clone(),
+                    created_at: 1,
+                    updated_at: 2,
+                    archived_at: None,
+                    last_viewed_at: None,
+                },
+            );
+            nodes.insert(
+                node_id.clone(),
+                ResearchNode {
+                    id: node_id,
+                    tree_id,
+                    parent_node_id: None,
+                    prompt: "Question".to_string(),
+                    response_preview: None,
+                    adapter: "claude".to_string(),
+                    model: None,
+                    group_id,
+                    worktree_dir: shared_dir.display().to_string(),
+                    native_session_id: Some(format!("session-{index}")),
+                    transcript_path: None,
+                    prompt_native_id: None,
+                    agent_id: None,
+                    pane_id: None,
+                    status: ResearchNodeStatus::Complete,
+                    error: None,
+                    response_snapshot_at: None,
+                    created_at: 1,
+                    started_at: Some(1),
+                    completed_at: Some(2),
+                },
+            );
+        }
+        let persisted = PersistedState {
+            groups,
+            group_order: vec!["legacy-1".to_string(), "legacy-2".to_string()],
+            research_trees: trees,
+            research_nodes: nodes,
+            ..PersistedState::default()
+        };
+        persistence::save(&workspace, &persisted).unwrap();
+
+        let restored = AppState::new(test_config(workspace.clone()));
+        restored.restore_session();
+        let first = restored.research_tree("tree-1").unwrap().tree.workspace_id;
+        let second = restored.research_tree("tree-2").unwrap().tree.workspace_id;
+        assert_eq!(first, second);
+        assert_eq!(restored.list_research_workspaces().unwrap().len(), 1);
+        let restored_again = AppState::new(test_config(workspace.clone()));
+        restored_again.restore_session();
+        assert_eq!(
+            restored_again
+                .research_tree("tree-1")
+                .unwrap()
+                .tree
+                .workspace_id,
+            first
+        );
+        assert_eq!(restored_again.list_research_workspaces().unwrap().len(), 1);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn completed_research_pane_retires_without_creating_an_undo_entry() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state
+            .append_turn(sample_user_turn("research-agent", "Root"))
+            .unwrap();
+        let mut answer = sample_user_turn("research-agent", "Durable response");
+        answer.role = "assistant".to_string();
+        answer.id = "research-agent-answer".to_string();
+        state.append_turn(answer).unwrap();
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+
+        // Retirement now needs at least two snapshot reads (250ms + 500ms
+        // backoff) to prove the response is stable before it closes the pane.
+        for _ in 0..500 {
+            if state.list_panes().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(state.list_panes().unwrap().is_empty());
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert!(node.pane_id.is_none());
+        assert_eq!(node.agent_id.as_deref(), Some("research-agent"));
+        assert!(state.take_last_closed_pane().unwrap().is_none());
+        assert!(state.group("group-1").unwrap().is_some());
+        let snapshot = research::read_response_snapshot(
+            &state.config().workspace_root,
+            &detail.tree.root_node_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(snapshot.len(), 1);
+    }
+
+    #[test]
+    fn complete_run_without_checkpoint_still_retires_and_snapshots_live_turns() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        // An adapter whose session hooks never fired: no session id, no
+        // transcript path. Waiting for the checkpoint before scheduling
+        // retirement leaked this (hidden) pane forever.
+        let mut agent = sample_agent("research-agent");
+        agent.session_id = None;
+        agent.transcript_path = None;
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state
+            .append_turn(sample_user_turn("research-agent", "Root"))
+            .unwrap();
+        let mut answer = sample_user_turn("research-agent", "Answer without a checkpoint");
+        answer.role = "assistant".to_string();
+        answer.id = "research-agent-answer".to_string();
+        state.append_turn(answer).unwrap();
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+
+        for _ in 0..500 {
+            if state.list_panes().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(state.list_panes().unwrap().is_empty());
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Complete);
+        assert!(node.pane_id.is_none());
+        assert!(node.native_session_id.is_none());
+        // The answer survives durably via the live turns even though the
+        // adapter transcript never materialized.
+        let snapshot = research::read_response_snapshot(
+            &state.config().workspace_root,
+            &detail.tree.root_node_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(node.response_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn detach_settles_a_finished_agents_run_complete_not_failed() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        // The process exits right after finishing its turn: the agent record
+        // already says Done, but the node sync lost the race with the pane
+        // teardown (insert_agent does not sync research nodes, mirroring it).
+        agent.status = AgentStatus::Done;
+        state.insert_agent(agent).unwrap();
+
+        let node = state.detach_research_pane("pane-7").unwrap().unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Complete);
+        assert!(node.error.is_none());
+
+        // A genuine crash — the agent never reported end-of-turn — still
+        // settles Failed. (The Complete parent above carries the checkpoint
+        // the bind recorded, so a follow-up child can be created from it.)
+        state.insert_pane(sample_pane_runtime("pane-8")).unwrap();
+        let crash = state
+            .create_research_child(&detail.tree.root_node_id, "Follow-up".to_string())
+            .unwrap();
+        let mut crash_agent = sample_agent("crash-agent");
+        crash_agent.pane_id = Some("pane-8".to_string());
+        crash_agent.status = AgentStatus::Running;
+        state.insert_agent(crash_agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&crash.id, &crash_agent, "pane-8")
+            .unwrap();
+        let node = state.detach_research_pane("pane-8").unwrap().unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Failed);
+        assert!(
+            node.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exited before completion")
+        );
+    }
+
+    #[test]
+    fn unseen_failure_badge_clears_when_the_tree_is_viewed() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        // Creation stamps last_viewed_at; the failure must settle strictly
+        // later for the unseen comparison (millisecond clock) to see it.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        state
+            .fail_research_node(&detail.tree.root_node_id, "boom".to_string())
+            .unwrap();
+
+        let summary = state.list_research_trees().unwrap().remove(0);
+        assert_eq!(summary.failed_count, 1);
+        assert!(summary.has_unseen_failure);
+        assert!(summary.has_unseen_update);
+
+        state.mark_research_tree_viewed(&detail.tree.id).unwrap();
+        let summary = state.list_research_trees().unwrap().remove(0);
+        // Viewing acknowledges the failure; the lifetime count remains for
+        // detail displays but the attention flags clear.
+        assert_eq!(summary.failed_count, 1);
+        assert!(!summary.has_unseen_failure);
+        assert!(!summary.has_unseen_update);
+    }
+
+    #[test]
+    fn failed_research_pane_retires_instead_of_becoming_hidden_orphan() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state
+            .set_agent_status("research-agent", AgentStatus::Failed)
+            .unwrap();
+
+        for _ in 0..200 {
+            if state.list_panes().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(state.list_panes().unwrap().is_empty());
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Failed);
+        assert!(node.pane_id.is_none());
+        assert!(state.take_last_closed_pane().unwrap().is_none());
+    }
+
+    #[test]
+    fn research_snapshot_requires_a_stable_response_with_an_assistant_turn() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let root_id = detail.tree.root_node_id.clone();
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&root_id, &agent, "pane-7")
+            .unwrap();
+        state
+            .append_turn(sample_user_turn("research-agent", "Root"))
+            .unwrap();
+
+        // A prompt-only transcript (the adapter has not flushed the answer yet)
+        // must never become the durable snapshot.
+        let mut candidate = None;
+        let err = state
+            .snapshot_research_response(&root_id, &mut candidate)
+            .unwrap_err();
+        assert!(err.contains("not available yet"), "{err}");
+
+        // A response tail without any assistant turn (e.g. only a flushed tool
+        // result so far) is a partial response, not a finished answer.
+        let mut tool_result = sample_user_turn("research-agent", "tool");
+        tool_result.id = "research-agent-tool".to_string();
+        tool_result.source_index = 1;
+        tool_result.blocks = vec![crate::transcript::TurnBlock::ToolResult {
+            tool_use_id: Some("tool-1".to_string()),
+            content: serde_json::json!("output"),
+            is_error: false,
+        }];
+        state.append_turn(tool_result).unwrap();
+        let err = state
+            .snapshot_research_response(&root_id, &mut candidate)
+            .unwrap_err();
+        assert!(err.contains("no assistant turn"), "{err}");
+
+        let mut answer = sample_user_turn("research-agent", "Partial answer");
+        answer.id = "research-agent-1".to_string();
+        answer.role = "assistant".to_string();
+        answer.source_index = 2;
+        state.append_turn(answer).unwrap();
+
+        // The first read of a parseable response is only a candidate; nothing
+        // is committed until a second read proves it stopped changing.
+        let err = state
+            .snapshot_research_response(&root_id, &mut candidate)
+            .unwrap_err();
+        assert!(err.contains("not settled"), "{err}");
+        assert!(
+            research::read_response_snapshot(&state.config().workspace_root, &root_id)
+                .unwrap()
+                .is_none()
+        );
+
+        // A response that grew between reads restarts the stability window.
+        let mut more = sample_user_turn("research-agent", "The full answer");
+        more.id = "research-agent-2".to_string();
+        more.role = "assistant".to_string();
+        more.source_index = 3;
+        state.append_turn(more).unwrap();
+        let err = state
+            .snapshot_research_response(&root_id, &mut candidate)
+            .unwrap_err();
+        assert!(err.contains("not settled"), "{err}");
+
+        // Two identical consecutive reads finally commit the snapshot.
+        state
+            .snapshot_research_response(&root_id, &mut candidate)
+            .unwrap();
+        let snapshot = research::read_response_snapshot(&state.config().workspace_root, &root_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.len(), 3);
+        assert_eq!(snapshot[2].id, "research-agent-2");
     }
 
     #[derive(Debug)]
@@ -5031,6 +8315,19 @@ mod tests {
         assert_eq!(sessions[0].pane_id, None);
         assert_eq!(sessions[0].agent_id, None);
         assert_eq!(sessions[0].preview.as_deref(), Some("Keep me in Home"));
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn research_sessions_are_not_exposed_as_terminal_recents() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_agent(sample_agent("research-agent")).unwrap();
+
+        assert!(state.list_recent_sessions(10).unwrap().is_empty());
+        assert!(state.inner.model.lock().unwrap().recent_sessions.is_empty());
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
@@ -6157,7 +9454,9 @@ mod tests {
     fn capture_last_group_pane_records_orphaned_agents_for_restore() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let mut agent = sample_agent("agent-1");
         agent.pane_id = None;
@@ -6187,7 +9486,9 @@ mod tests {
     fn capture_last_group_pane_skips_queueless_orphaned_agents() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         // A pane-less sibling with no queue: restoring it would only resurrect an
         // invisible, unreachable agent, so it must not be captured.
@@ -6205,7 +9506,9 @@ mod tests {
     fn closing_pane_would_strand_queued_work_only_for_last_pane_with_a_queue() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
 
@@ -6304,7 +9607,9 @@ mod tests {
     fn remove_pane_keeps_queued_agent_while_sibling_pane_remains() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         state.insert_pane(sample_pane_runtime("pane-8")).unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
@@ -6326,7 +9631,9 @@ mod tests {
     fn remove_group_removes_empty_group() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
 
         state.remove_group("group-1").unwrap();
 
@@ -6337,7 +9644,9 @@ mod tests {
     fn remove_pane_removes_group_when_last_pane_closes() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
 
         state.remove_pane("pane-7").unwrap();
@@ -6349,7 +9658,9 @@ mod tests {
     fn remove_pane_keeps_group_when_sibling_panes_remain() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
         state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
 
@@ -6364,7 +9675,9 @@ mod tests {
     fn restore_closed_pane_metadata_recreates_removed_group() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         state.capture_last_closed_pane("pane-7").unwrap();
         let snapshot = state.take_last_closed_pane().unwrap().unwrap();
@@ -6380,7 +9693,9 @@ mod tests {
     fn last_agent_pane_close_removes_group_and_restore_recreates_it() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         let mut pane = sample_pane_runtime("pane-7");
         pane.info.kind = PaneKind::Agent;
         pane.info.agent_id = Some("agent-1".to_string());
@@ -6418,7 +9733,9 @@ mod tests {
     fn last_pane_close_prunes_orphaned_agents_and_restore_rehydrates_them() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let mut agent = sample_agent("agent-1");
         agent.pane_id = None;
@@ -6460,7 +9777,9 @@ mod tests {
     fn remove_group_refuses_open_panes_but_prunes_recoverable_agents() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
 
         assert_eq!(
@@ -6468,7 +9787,9 @@ mod tests {
             "group still has open panes"
         );
         let state = AppState::new(test_config(temp_workspace()));
-        state.insert_group_after(sample_group(), None).unwrap();
+        state
+            .insert_group_after(sample_terminal_group(), None)
+            .unwrap();
         state.insert_agent(sample_agent("agent-1")).unwrap();
         state.remove_group("group-1").unwrap();
         assert!(state.list_groups().unwrap().is_empty());
@@ -6877,7 +10198,7 @@ mod tests {
         // Stand in for a previous process having persisted a full session.
         let persisted = PersistedState {
             next_id: 99,
-            groups: vec![sample_group()],
+            groups: vec![sample_terminal_group()],
             agents: vec![sample_agent("agent-1")],
             panes: vec![sample_pane("pane-7", Some("agent-1"))],
             queues: HashMap::from([(
@@ -6941,7 +10262,7 @@ mod tests {
 
         let persisted = PersistedState {
             next_id: 99,
-            groups: vec![sample_group()],
+            groups: vec![sample_terminal_group()],
             // The agent is still bound to its shell pane (it was running at shutdown).
             agents: vec![agent],
             panes: vec![sample_pane("pane-7", None)],
@@ -6970,7 +10291,7 @@ mod tests {
         // only error in the new shell, so no resume should be captured.
         let persisted = PersistedState {
             next_id: 99,
-            groups: vec![sample_group()],
+            groups: vec![sample_terminal_group()],
             agents: vec![sample_agent("agent-1")],
             panes: vec![sample_pane("pane-7", None)],
             ..PersistedState::default()

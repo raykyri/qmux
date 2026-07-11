@@ -72,6 +72,7 @@ export const DEFAULT_THEME_ID = "qmux";
 export type CursorStyle = "block" | "underline" | "bar";
 export type MouseWheelSensitivity = "low" | "normal" | "high" | "veryHigh";
 export type TabTitleProvider = "appleFoundationModels" | "openRouter" | "disabled";
+export type WorktreeLocation = "global" | "localQmux" | "localClaude";
 
 export const CURSOR_STYLE_OPTIONS: { id: CursorStyle; label: string }[] = [
   { id: "block", label: "Block" },
@@ -95,6 +96,12 @@ export const TAB_TITLE_PROVIDER_OPTIONS: { id: TabTitleProvider; label: string }
   { id: "appleFoundationModels", label: "Apple Foundation Models" },
   { id: "openRouter", label: "OpenRouter" },
   { id: "disabled", label: "Disable" },
+];
+
+export const WORKTREE_LOCATION_OPTIONS: { id: WorktreeLocation; label: string }[] = [
+  { id: "global", label: "Global (default)" },
+  { id: "localQmux", label: "Local .qmux/" },
+  { id: "localClaude", label: "Local .claude/" },
 ];
 
 export const DEFAULT_SCROLLBACK_ROWS = 10000;
@@ -160,6 +167,8 @@ export interface AppSettings {
    * including startup recovery); this mirror keeps the dialog in sync.
    */
   useLoginShell: boolean;
+  /** root used for newly-created isolated worktrees */
+  worktreeLocation: WorktreeLocation;
   /**
    * Show code-oriented context in tabs and the launcher: per-tab paths, git
    * worktree metadata, and the "New worktree" launcher option. When off, tabs
@@ -195,6 +204,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   openRouterModel: "",
   preventSleep: true,
   useLoginShell: true,
+  worktreeLocation: "global",
   codeMode: true,
   showTabDirectories: true,
   showToolCalls: true,
@@ -344,6 +354,11 @@ export function loadSettings(): AppSettings {
       typeof parsed.useLoginShell === "boolean"
         ? parsed.useLoginShell
         : DEFAULT_SETTINGS.useLoginShell;
+    const worktreeLocation =
+      typeof parsed.worktreeLocation === "string" &&
+      WORKTREE_LOCATION_OPTIONS.some((option) => option.id === parsed.worktreeLocation)
+        ? parsed.worktreeLocation
+        : DEFAULT_SETTINGS.worktreeLocation;
     const showShortcutHints =
       typeof parsed.showShortcutHints === "boolean"
         ? parsed.showShortcutHints
@@ -398,6 +413,7 @@ export function loadSettings(): AppSettings {
       openRouterModel,
       preventSleep,
       useLoginShell,
+      worktreeLocation,
       codeMode,
       showTabDirectories,
       showToolCalls,

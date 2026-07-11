@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { PaneLayoutItem } from "./paneTree";
+import type { WorktreeLocation } from "./settings";
 import type {
   AgentInfo,
   ClaudeSkill,
@@ -18,6 +19,12 @@ import type {
   SavedPrompt,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
+  ResearchTree,
+  ResearchWorkspaceInfo,
+  ResearchTreeDetail,
+  ResearchTreeSummary,
+  ResearchNode,
+  ResearchNodeContent,
   SendNextQueuedAgentTurnResult,
   RuntimeConfig,
   SpawnAgentRequest,
@@ -185,6 +192,26 @@ export function listGroups() {
   return invoke<GroupInfo[]>("list_groups");
 }
 
+export function listResearchWorkspaces() {
+  return invoke<ResearchWorkspaceInfo[]>("list_research_workspaces");
+}
+
+export function ensureDefaultResearchWorkspace() {
+  return invoke<GroupInfo>("ensure_default_research_workspace_command");
+}
+
+export function createResearchWorkspaceWithFolder() {
+  return invoke<GroupInfo | null>("research_workspace_create_pick");
+}
+
+export function renameResearchWorkspace(workspaceId: string, name: string | null) {
+  return invoke<GroupInfo>("research_workspace_rename", { workspaceId, name });
+}
+
+export function removeResearchWorkspace(workspaceId: string) {
+  return invoke<void>("research_workspace_remove", { workspaceId });
+}
+
 export function createGroup(request?: {
   name?: string | null;
   dir?: string | null;
@@ -239,6 +266,64 @@ export function listThreadGraphs() {
   return invoke<ThreadGraph[]>("list_thread_graphs");
 }
 
+export function getThreadGraph(threadId: string) {
+  return invoke<ThreadGraph | null>("get_thread_graph", { threadId });
+}
+
+export function listResearchTrees(includeArchived = false) {
+  return invoke<ResearchTreeSummary[]>("list_research_trees", { includeArchived });
+}
+
+export function listResearchActivity() {
+  return invoke<ResearchNode[]>("list_research_activity");
+}
+
+export function getResearchTree(treeId: string) {
+  return invoke<ResearchTreeDetail>("get_research_tree", { treeId });
+}
+
+export function createResearchTree(request: {
+  prompt: string;
+  title?: string | null;
+  adapter: string;
+  model?: string | null;
+  workspaceId: string;
+}) {
+  return invoke<ResearchTreeDetail>("create_research_tree", { request });
+}
+
+export function getResearchNodeContent(nodeId: string) {
+  return invoke<ResearchNodeContent>("get_research_node_content", { nodeId });
+}
+
+export function forkResearchNode(parentNodeId: string, prompt: string) {
+  return invoke<ResearchNode>("fork_research_node", { parentNodeId, prompt });
+}
+
+export function cancelResearchNode(nodeId: string) {
+  return invoke<ResearchNode>("cancel_research_node", { nodeId });
+}
+
+export function renameResearchTree(treeId: string, title: string) {
+  return invoke<ResearchTree>("rename_research_tree", { treeId, title });
+}
+
+export function markResearchTreeViewed(treeId: string) {
+  return invoke<ResearchTree>("mark_research_tree_viewed", { treeId });
+}
+
+export function archiveResearchTree(treeId: string) {
+  return invoke<ResearchTree>("archive_research_tree", { treeId });
+}
+
+export function restoreResearchTree(treeId: string) {
+  return invoke<ResearchTree>("restore_research_tree", { treeId });
+}
+
+export function removeResearchTree(treeId: string) {
+  return invoke<void>("remove_research_tree", { treeId });
+}
+
 export function listAgentTurnQueue(agentId: string) {
   return invoke<QueuedTurn[]>("list_agent_turn_queue", { agentId });
 }
@@ -289,6 +374,14 @@ export function getUseLoginShell() {
 
 export function setUseLoginShell(enabled: boolean) {
   return invoke<void>("use_login_shell_set", { enabled });
+}
+
+export function getWorktreeLocation() {
+  return invoke<WorktreeLocation>("worktree_location_get");
+}
+
+export function setWorktreeLocation(location: WorktreeLocation) {
+  return invoke<void>("worktree_location_set", { location });
 }
 
 export function spawnAgent(request: SpawnAgentRequest) {

@@ -1,0 +1,754 @@
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Copy, ExternalLink, LoaderCircle, X } from "lucide-react";
+import { getResearchNodeContent } from "../../lib/api";
+import { writeClipboardText } from "../../lib/clipboard";
+import {
+  isResearchNodeSelectionChange,
+  pruneResearchNavigationNodes,
+  researchNavigationStore,
+  saveResearchNavigation,
+} from "../../lib/researchNavigation";
+import {
+  assistantTextFromTimelineItems,
+  buildTimelineItems,
+  timelineItemsAfterLastToolCall,
+} from "../../lib/turnTimeline";
+import type { MessageBlock, MessageItem } from "../../lib/turnTimeline";
+import type { ResearchNode, ResearchNodeContent, ResearchTreeDetail } from "../../types";
+import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
+import {
+  RawTranscriptDisclosure,
+  TranscriptActivityItem,
+  timelineStatusClass,
+} from "../TranscriptActivity";
+import TranscriptMarkdown, {
+  TranscriptLinkActionsProvider,
+  type LinkActions,
+} from "../TranscriptMarkdown";
+
+interface ResearchDocumentProps {
+  detail: ResearchTreeDetail | null;
+  /** Why `detail` is null, when the tree fetch itself failed. */
+  detailError?: string | null;
+  /** Refetches the active tree's detail after a failed load. */
+  onRetryDetail?: () => void;
+  onFork: (parentNodeId: string, prompt: string) => Promise<ResearchNode>;
+  onCancel: (nodeId: string) => Promise<void>;
+  onOpenPane: (paneId: string) => void;
+  linkActions: LinkActions;
+  onError: (message: string) => void;
+  onToast: (message: string, tone?: "normal" | "warning") => void;
+}
+
+// The backend caps snapshots at 16MB, which is still far beyond what markdown
+// parsing and eager React element creation can absorb without freezing the
+// interface. Blocks past this size render as plain preformatted text, and
+// long transcripts render only their tail until expanded.
+const MARKDOWN_CHAR_LIMIT = 100_000;
+const ACTIVITY_PAYLOAD_CHAR_LIMIT = 200_000;
+const TIMELINE_ITEM_RENDER_WINDOW = 100;
+// Hoisted so the memoized markdown renderer sees a stable prop identity — an
+// inline object literal would defeat its render cache on every poll.
+const OVERSIZED_MARKDOWN_POLICY = {
+  maxCharacters: MARKDOWN_CHAR_LIMIT,
+  fallbackClassName: "research-plaintext",
+} as const;
+
+function statusLabel(status: ResearchNode["status"]) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "starting":
+      return "Starting";
+    case "running":
+      return "Researching…";
+    case "complete":
+      return "Complete";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+  }
+}
+
+function formatDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ${totalSeconds % 60}s`;
+  }
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function countWords(text: string) {
+  return text.match(/\S+/g)?.length ?? 0;
+}
+
+function unexpectedRoleLabel(role: string) {
+  if (role === "system") {
+    return "System content";
+  }
+  if (role === "user") {
+    return "Additional user content";
+  }
+  return `${role || "Unknown"} content`;
+}
+
+function ResearchMessageBlock({ block, role }: { block: MessageBlock; role: string }) {
+  if (block.type === "text") {
+    if (role === "assistant") {
+      return (
+        <TranscriptMarkdown
+          text={block.text}
+          imageBehavior="open"
+          oversizedContent={OVERSIZED_MARKDOWN_POLICY}
+        />
+      );
+    }
+    return <p className="research-unexpected-text">{block.text}</p>;
+  }
+  return (
+    <RawTranscriptDisclosure
+      value={block.value}
+      maxPayloadCharacters={ACTIVITY_PAYLOAD_CHAR_LIMIT}
+      deferPayload
+    />
+  );
+}
+
+// Memoized on item identity: the tree detail is replaced by every research
+// event (4×/s while any run in the tree streams), and without the memo each
+// replacement re-rendered — and re-parsed the markdown of — every visible
+// item. Item identities are stable across detail replacements because they
+// derive from `content`, which only changes when this node's own fetch lands.
+const ResearchTimelineItem = memo(function ResearchTimelineItem({ item }: { item: MessageItem }) {
+  const hasUnexpectedContent = item.role !== "assistant" && item.blocks.length > 0;
+  return (
+    <section
+      className={`research-response-item role-${item.role}`}
+      data-timeline-key={item.key}
+    >
+      {item.blocks.length > 0 ? (
+        <div
+          className={`research-response-message${
+            hasUnexpectedContent ? " research-unexpected-content" : ""
+          }${timelineStatusClass(item.status)}`}
+        >
+          {hasUnexpectedContent ? <span>{unexpectedRoleLabel(item.role)}</span> : null}
+          {item.blocks.map((block, index) => (
+            <ResearchMessageBlock key={`${item.key}-${index}`} block={block} role={item.role} />
+          ))}
+        </div>
+      ) : null}
+      {item.activities.map((activity) => (
+        <TranscriptActivityItem
+          key={activity.key}
+          item={activity}
+          isRootActivity
+          maxPayloadCharacters={ACTIVITY_PAYLOAD_CHAR_LIMIT}
+          deferPayloads
+          showResultCharacterCount={false}
+        />
+      ))}
+    </section>
+  );
+});
+
+export default function ResearchDocument({
+  detail,
+  detailError,
+  onRetryDetail,
+  onFork,
+  onCancel,
+  onOpenPane,
+  linkActions,
+  onError,
+  onToast,
+}: ResearchDocumentProps) {
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [content, setContent] = useState<ResearchNodeContent | null>(null);
+  const [followup, setFollowup] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const [contentLoadNonce, setContentLoadNonce] = useState(0);
+  const [showAllTurns, setShowAllTurns] = useState(false);
+  const [showFullTrace, setShowFullTrace] = useState(false);
+  const [metadataNow, setMetadataNow] = useState(() => Date.now());
+  const treeId = detail?.tree.id ?? null;
+  const documentScrollRef = useRef<HTMLElement | null>(null);
+  const navigationRef = useRef(researchNavigationStore());
+  const navigationPersistTimerRef = useRef<number | null>(null);
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  const treeIdRef = useRef(treeId);
+  // The content-loading effect reads the tree through this ref so a routine
+  // detail replacement (every research event rebuilds the object) does not
+  // restart the effect and refetch content that has not changed.
+  const detailRef = useRef(detail);
+  selectedNodeIdRef.current = selectedNodeId;
+  treeIdRef.current = treeId;
+  detailRef.current = detail;
+  // Event-driven node metadata; fresher than content.node for anything that
+  // does not require reparsing the transcript (status, checkpoint, children).
+  const selectedDetailNode = useMemo(
+    () => detail?.nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [detail, selectedNodeId],
+  );
+  const selectedNodeStatus = selectedDetailNode?.status ?? null;
+  // The run is marked complete before the adapter finishes flushing, so the
+  // fetch made on the status transition can read a truncated response. The
+  // durable snapshot landing (stamped and announced by the backend) is the
+  // signal that the final content exists — refetch when it appears.
+  const selectedNodeSnapshotAt = selectedDetailNode?.responseSnapshotAt ?? null;
+  const childNodes = useMemo(
+    () =>
+      detail && selectedNodeId
+        ? detail.nodes.filter((node) => node.parentNodeId === selectedNodeId)
+        : [],
+    [detail, selectedNodeId],
+  );
+
+  // Scroll offsets and selections for deleted nodes would otherwise sit in
+  // localStorage forever (tree-level pruning happens in the app shell, which
+  // does not know a tree's nodes).
+  useEffect(() => {
+    if (treeId && detail) {
+      pruneResearchNavigationNodes(
+        treeId,
+        detail.nodes.map((node) => node.id),
+      );
+    }
+  }, [detail, treeId]);
+
+  useEffect(() => {
+    const rootNodeId = detail?.tree.rootNodeId ?? null;
+    const savedNodeId = treeId ? navigationRef.current[treeId]?.selectedNodeId : undefined;
+    const selected =
+      savedNodeId && detail?.nodes.some((node) => node.id === savedNodeId)
+        ? savedNodeId
+        : rootNodeId;
+    setSelectedNodeId(selected);
+    setContent(null);
+    setContentError(null);
+    // Restore the expanded window with the selection: the saved scroll offset
+    // was captured against this state, and restoring one without the other
+    // lands the viewport in the wrong place.
+    setShowAllTurns(
+      Boolean(treeId && selected && navigationRef.current[treeId]?.expandedByNode?.[selected]),
+    );
+  }, [treeId, detail?.tree.rootNodeId]);
+
+  const selectNode = useCallback(
+    (nodeId: string) => {
+      if (!treeId) {
+        return;
+      }
+      // Clearing content without changing the node ID leaves the content loader's
+      // dependencies unchanged, so clicking the current breadcrumb would show a
+      // spinner forever. A current-node click is navigation-wise a no-op — except
+      // as a retry affordance when the last load failed.
+      if (!isResearchNodeSelectionChange(selectedNodeId, nodeId)) {
+        if (contentError) {
+          setContentLoadNonce((value) => value + 1);
+        }
+        return;
+      }
+      const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+      if (selectedNodeId && documentScrollRef.current) {
+        navigation.scrollByNode[selectedNodeId] = documentScrollRef.current.scrollTop;
+      }
+      navigation.selectedNodeId = nodeId;
+      saveResearchNavigation();
+      setContent(null);
+      setContentError(null);
+      setShowAllTurns(Boolean(navigation.expandedByNode?.[nodeId]));
+      setSelectedNodeId(nodeId);
+    },
+    [contentError, selectedNodeId, treeId],
+  );
+
+  const expandAllTurns = useCallback(() => {
+    setShowAllTurns(true);
+    if (treeId && selectedNodeId) {
+      const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+      (navigation.expandedByNode ??= {})[selectedNodeId] = true;
+      saveResearchNavigation();
+    }
+  }, [selectedNodeId, treeId]);
+
+  useEffect(() => {
+    if (!selectedNodeId) {
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    let consecutiveErrors = 0;
+    // A restart of this effect is a fresh load (status transition, snapshot
+    // landing, retry): a failure reported by the *previous* run must not sit
+    // on screen while this one is in flight. Failures within one run keep
+    // their error up across the backoff retries.
+    setContentError(null);
+    const load = async () => {
+      try {
+        const next = await getResearchNodeContent(selectedNodeId);
+        if (cancelled) {
+          return;
+        }
+        consecutiveErrors = 0;
+        setContentError(null);
+        setContent(next);
+        if (["queued", "starting", "running"].includes(next.node.status)) {
+          timer = window.setTimeout(load, 1000);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setContentError(err instanceof Error ? err.message : String(err));
+          const knownNode = detailRef.current?.nodes.find((node) => node.id === selectedNodeId);
+          consecutiveErrors += 1;
+          const isActive =
+            knownNode && ["queued", "starting", "running"].includes(knownNode.status);
+          if (isActive || consecutiveErrors <= 5) {
+            timer = window.setTimeout(load, Math.min(5000, 1000 * consecutiveErrors));
+          }
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+    // Keyed on the node's *status* rather than the detail object: streaming
+    // runs replace `detail` on every event, and restarting this effect for
+    // each replacement refetched and reparsed unchanged content. A status
+    // transition still restarts it, which is what fetches the final content
+    // once the run completes — and the snapshot stamp restarts it once more
+    // if that fetch beat the adapter's final transcript flush.
+  }, [selectedNodeId, selectedNodeStatus, selectedNodeSnapshotAt, contentLoadNonce]);
+
+  useLayoutEffect(() => {
+    if (!treeId || !content || !documentScrollRef.current) {
+      return;
+    }
+    const saved = navigationRef.current[treeId]?.scrollByNode?.[content.node.id] ?? 0;
+    documentScrollRef.current.scrollTop = saved;
+  }, [content?.node.id, treeId]);
+
+  useEffect(() => {
+    if (treeId && selectedNodeId && detail?.nodes.some((node) => node.id === selectedNodeId)) {
+      const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+      navigation.selectedNodeId = selectedNodeId;
+      saveResearchNavigation();
+    }
+  }, [detail?.nodes, selectedNodeId, treeId]);
+
+  useEffect(
+    () => () => {
+      if (navigationPersistTimerRef.current !== null) {
+        window.clearTimeout(navigationPersistTimerRef.current);
+      }
+      const currentTreeId = treeIdRef.current;
+      const currentNodeId = selectedNodeIdRef.current;
+      if (currentTreeId && currentNodeId && documentScrollRef.current) {
+        const navigation = (navigationRef.current[currentTreeId] ??= { scrollByNode: {} });
+        navigation.scrollByNode[currentNodeId] = documentScrollRef.current.scrollTop;
+      }
+      saveResearchNavigation();
+    },
+    [],
+  );
+
+  const recordScroll = useCallback(() => {
+    if (!treeId || !selectedNodeId || !documentScrollRef.current) {
+      return;
+    }
+    const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+    navigation.scrollByNode[selectedNodeId] = documentScrollRef.current.scrollTop;
+    if (navigationPersistTimerRef.current !== null) {
+      window.clearTimeout(navigationPersistTimerRef.current);
+    }
+    navigationPersistTimerRef.current = window.setTimeout(() => {
+      navigationPersistTimerRef.current = null;
+      saveResearchNavigation();
+    }, 250);
+  }, [selectedNodeId, treeId]);
+
+  const breadcrumb = useMemo(() => {
+    if (!detail || !selectedNodeId) {
+      return [];
+    }
+    const byId = new Map(detail.nodes.map((node) => [node.id, node]));
+    const path: ResearchNode[] = [];
+    let node = byId.get(selectedNodeId);
+    const seen = new Set<string>();
+    while (node && !seen.has(node.id)) {
+      seen.add(node.id);
+      path.unshift(node);
+      node = node.parentNodeId ? byId.get(node.parentNodeId) : undefined;
+    }
+    return path;
+  }, [detail, selectedNodeId]);
+
+  const followupNode = selectedDetailNode ?? content?.node ?? null;
+  // Normalize the complete response before windowing it. The resulting item
+  // boundaries keep a call and its result together and preserve text → tools →
+  // continued-text ordering across every adapter's transcript role choices.
+  const timelineItems = useMemo(
+    () => buildTimelineItems(content?.turns ?? []),
+    [content?.turns],
+  );
+  const answerTimelineItems = useMemo(
+    () => timelineItemsAfterLastToolCall(timelineItems),
+    [timelineItems],
+  );
+  const hasHiddenTrace = answerTimelineItems.length < timelineItems.length;
+  const displayedTimelineItems = showFullTrace ? timelineItems : answerTimelineItems;
+  const visibleTimelineItems =
+    showAllTurns || displayedTimelineItems.length <= TIMELINE_ITEM_RENDER_WINDOW
+      ? displayedTimelineItems
+      : displayedTimelineItems.slice(-TIMELINE_ITEM_RENDER_WINDOW);
+  const hiddenTimelineItemCount = displayedTimelineItems.length - visibleTimelineItems.length;
+  const rawAnswer = useMemo(
+    () => assistantTextFromTimelineItems(answerTimelineItems),
+    [answerTimelineItems],
+  );
+  const answerWordCount = countWords(rawAnswer);
+
+  async function submitFollowup() {
+    const prompt = followup.trim();
+    // Mirrors the submit button's disabled conditions: Cmd+Enter must not
+    // reach the backend (and bounce with an error) from a state the button
+    // presents as unavailable — a running node already has a session id.
+    if (
+      !followupNode ||
+      !prompt ||
+      submitting ||
+      followupNode.status !== "complete" ||
+      !followupNode.nativeSessionId
+    ) {
+      return;
+    }
+    setSubmitting(true);
+    try {
+      // The new child lands in the tree detail (refreshed by the fork flow),
+      // which is where the follow-up cards render from.
+      const child = await onFork(followupNode.id, prompt);
+      setFollowup("");
+      selectNode(child.id);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // Prefer the event-driven node over the last content fetch for metadata:
+  // detail updates arrive without reparsing the transcript. The chrome
+  // (breadcrumb, prompt, follow-ups) renders from this alone, so switching
+  // nodes no longer blanks the whole document while content loads — only the
+  // response section waits for the fetch.
+  const displayNode = selectedDetailNode ?? content?.node ?? null;
+
+  useEffect(() => {
+    setMetadataNow(Date.now());
+    if (!displayNode || !["queued", "starting", "running"].includes(displayNode.status)) {
+      return;
+    }
+    const timer = window.setInterval(() => setMetadataNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [displayNode?.id, displayNode?.status]);
+
+  const generationDuration = displayNode?.startedAt
+    ? (displayNode.completedAt ?? metadataNow) - displayNode.startedAt
+    : null;
+  const generationActive = Boolean(
+    displayNode && ["queued", "starting", "running"].includes(displayNode.status),
+  );
+
+  async function copyAnswer() {
+    if (!rawAnswer) {
+      return;
+    }
+    try {
+      await writeClipboardText(rawAnswer);
+      onToast("Copied research answer");
+    } catch {
+      onToast("Couldn’t copy the research answer", "warning");
+    }
+  }
+
+  if (!detail || !displayNode) {
+    // A failed *tree* fetch retries through the app shell — without detail
+    // there is no node to load, so no in-document retry can recover.
+    const placeholderError = detail ? contentError : detailError ?? null;
+    const retry = detail
+      ? () => setContentLoadNonce((value) => value + 1)
+      : onRetryDetail;
+    return (
+      <div className="research-placeholder">
+        {placeholderError ? null : (
+          <LoaderCircle className="research-spinner" size={24} aria-hidden="true" />
+        )}
+        <h1>{detail?.tree.title ?? (placeholderError ? "Research unavailable" : "Loading research…")}</h1>
+        {placeholderError ? (
+          <>
+            <p role="alert">{placeholderError}</p>
+            {retry ? (
+              <button type="button" onClick={retry}>
+                Retry
+              </button>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
+  const activeRun = ["queued", "starting", "running"].includes(displayNode.status);
+  const cancellationNeedsRetry = displayNode.status === "cancelled" && Boolean(displayNode.paneId);
+
+  return (
+    <TranscriptLinkActionsProvider actions={linkActions}>
+      <div className="research-workspace">
+        <main className="research-document">
+          <header className="research-document-header">
+            <div className="research-breadcrumb" aria-label="Research path">
+              {breadcrumb.map((node, index) => (
+                <span key={node.id}>
+                  {index > 0 ? <span className="research-breadcrumb-separator">/</span> : null}
+                  <button type="button" onClick={() => selectNode(node.id)}>
+                    {index === 0 ? detail.tree.title : node.prompt}
+                  </button>
+                </span>
+              ))}
+            </div>
+            {hasHiddenTrace ? (
+              <button
+                type="button"
+                className={`research-trace-toggle${showFullTrace ? " is-active" : ""}`}
+                aria-pressed={showFullTrace}
+                title={showFullTrace ? "Hide tool trace" : "Show full tool trace"}
+                onClick={() => setShowFullTrace((current) => !current)}
+              >
+                Full trace
+              </button>
+            ) : null}
+            {displayNode.paneId && (activeRun || cancellationNeedsRetry) ? (
+              <button
+                type="button"
+                className="research-open-terminal"
+                onClick={() => onOpenPane(displayNode.paneId!)}
+              >
+                <ExternalLink size={13} aria-hidden="true" />
+                Open terminal
+              </button>
+            ) : null}
+            {activeRun || cancellationNeedsRetry ? (
+              <button
+                type="button"
+                className="research-cancel-run"
+                disabled={cancelling}
+                onClick={() => {
+                  const nodeId = displayNode.id;
+                  setCancelling(true);
+                  onCancel(nodeId)
+                    .catch((err) => onError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setCancelling(false));
+                }}
+              >
+                <X size={13} aria-hidden="true" />
+                {cancelling
+                  ? "Cancelling…"
+                  : cancellationNeedsRetry
+                    ? "Retry cancel"
+                    : "Cancel"}
+              </button>
+            ) : null}
+          </header>
+
+          <article
+            ref={documentScrollRef}
+            className="research-document-scroll"
+            onScroll={recordScroll}
+          >
+            <div className="research-document-content">
+              <div className="research-prompt">
+                {displayNode.parentNodeId ? (
+                  <button
+                    type="button"
+                    className="research-parent-link"
+                    onClick={() => selectNode(displayNode.parentNodeId!)}
+                  >
+                    <ArrowLeft size={13} aria-hidden="true" />
+                    Parent response
+                  </button>
+                ) : null}
+                <p>{displayNode.prompt}</p>
+              </div>
+              <div className="research-response-grid">
+                <section className="research-response" aria-label="Research response">
+                  {!content ? (
+                    <div className="research-response-loading">
+                      {contentError ? (
+                        <>
+                          <p role="alert">{contentError}</p>
+                          <button
+                            type="button"
+                            onClick={() => setContentLoadNonce((value) => value + 1)}
+                          >
+                            Retry
+                          </button>
+                        </>
+                      ) : (
+                        <LoaderCircle
+                          className="research-spinner"
+                          size={18}
+                          aria-hidden="true"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                  {displayNode.status === "failed" && content.turns.length > 0 ? (
+                    <p className="research-response-error" role="alert">
+                      {displayNode.error ?? "The research run failed."}
+                    </p>
+                  ) : null}
+                  {displayedTimelineItems.length === 0 ? (
+                    <p className="research-response-empty">
+                      {displayNode.status === "failed"
+                        ? displayNode.error ?? "The research run failed."
+                        : displayNode.status === "cancelled"
+                          ? "Research was cancelled."
+                          : content.sourceError
+                            ? `The response is no longer available: ${content.sourceError}`
+                            : displayNode.status === "complete"
+                              ? "Research completed, but its response is unavailable. Open the original session transcript if it still exists."
+                              : ["queued", "starting", "running"].includes(displayNode.status)
+                                ? timelineItems.length > 0
+                                  ? "Waiting for the final response…"
+                                  : "Waiting for the response…"
+                                : "No response is available."}
+                    </p>
+                  ) : (
+                    <>
+                      {hiddenTimelineItemCount > 0 ? (
+                        <button
+                          type="button"
+                          className="research-show-earlier"
+                          onClick={expandAllTurns}
+                        >
+                          Show {hiddenTimelineItemCount} earlier response item
+                          {hiddenTimelineItemCount === 1 ? "" : "s"}
+                        </button>
+                      ) : null}
+                      <div className="research-response-content-root">
+                        {visibleTimelineItems.map((item) => (
+                          <ResearchTimelineItem key={item.key} item={item} />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                    </>
+                  )}
+                  {content ? (
+                    <footer className="research-answer-meta">
+                      <span>
+                        {answerWordCount.toLocaleString()}{" "}
+                        {answerWordCount === 1 ? "word" : "words"}
+                      </span>
+                      {generationDuration !== null ? (
+                        <span>
+                          {generationActive
+                            ? "Generating for"
+                            : displayNode.status === "complete"
+                              ? "Generated in"
+                              : "Ran for"}{" "}
+                          {formatDuration(generationDuration)}
+                        </span>
+                      ) : generationActive ? (
+                        <span>Waiting to start</span>
+                      ) : null}
+                      {displayNode.status === "complete" && rawAnswer ? (
+                        <button
+                          type="button"
+                          className="research-answer-copy"
+                          title="Copy answer as Markdown"
+                          onClick={() => void copyAnswer()}
+                        >
+                          <Copy size={11} aria-hidden="true" />
+                          Copy
+                        </button>
+                      ) : null}
+                    </footer>
+                  ) : null}
+                </section>
+
+                <aside className="research-followups" aria-label="Follow-ups">
+                  <div className="research-followup-composer">
+                    <textarea
+                      value={followup}
+                      placeholder="Ask a follow-up from this response…"
+                      aria-label="Follow-up question"
+                      onChange={(event) => setFollowup(event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                          event.preventDefault();
+                          void submitFollowup();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={
+                        !followup.trim() ||
+                        submitting ||
+                        displayNode.status !== "complete" ||
+                        !displayNode.nativeSessionId
+                      }
+                      onClick={() => void submitFollowup()}
+                    >
+                      <span>{submitting ? "Creating…" : "Create follow-up"}</span>
+                      {!submitting ? (
+                        <ComposerSubmitShortcutGlyph
+                          requireCmdEnter
+                          className="shortcut-hint"
+                        />
+                      ) : null}
+                    </button>
+                    {displayNode.status === "complete" && !displayNode.nativeSessionId ? (
+                      <small>Waiting for the native session checkpoint before branching.</small>
+                    ) : displayNode.status !== "complete" ? (
+                      <small>Follow-ups become available when this response completes.</small>
+                    ) : null}
+                  </div>
+                  <div className="research-followup-cards">
+                    {childNodes.map((child) => (
+                      <button
+                        key={child.id}
+                        type="button"
+                        className="research-followup-card"
+                        onClick={() => selectNode(child.id)}
+                      >
+                        <strong>{child.prompt}</strong>
+                        {child.responsePreview ? <span>{child.responsePreview}</span> : null}
+                        {child.status !== "complete" ? (
+                          <small className={`is-${child.status}`}>{statusLabel(child.status)}</small>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </article>
+        </main>
+      </div>
+    </TranscriptLinkActionsProvider>
+  );
+}

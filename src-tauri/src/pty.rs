@@ -7,7 +7,8 @@ use crate::state::{
 };
 use crate::turn_queue::release_waiters_for_agent;
 use crate::workspace::{
-    CreateGroupRequest, capture_agent_worktree_removal, create_group, remove_captured_worktree,
+    CreateGroupRequest, WorkspaceScope, capture_agent_worktree_removal, create_group,
+    remove_captured_worktree,
 };
 use portable_pty::PtySize;
 #[cfg(any(not(target_os = "macos"), test))]
@@ -161,6 +162,9 @@ pub fn spawn_shell_pane(
             },
         )?,
     };
+    if group.scope != WorkspaceScope::Terminal {
+        return Err("ordinary shells cannot be opened in a research workspace".to_string());
+    }
     // Inherit the focused shell's cwd only when it belongs to the group we are
     // spawning into ("new tab here"). When opening into a group from *outside* it,
     // derive the cwd from that group's own most-recently-active shell pane instead
@@ -969,6 +973,11 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 }
 
 pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), String> {
+    if state.research_pane_accepts_input(&options.pane_id)? == Some(false) {
+        return Err(
+            "research terminals are read-only; create a follow-up branch instead".to_string(),
+        );
+    }
     if state.pane_is_native(&options.pane_id)? == Some(true) {
         // Runs on the calling (background) thread; each bridge call hops to
         // the main thread internally (`DispatchQueue.main.sync`) for just the
@@ -1412,7 +1421,7 @@ fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
             "qmux: native surface close failed for pane {pane_id}; removing the pane anyway: {err}"
         );
     }
-    let _ = state.remove_pane(&pane_id);
+    let remove_result = state.remove_pane(&pane_id);
     let _ = crate::native_terminal::remove(&pane_id);
     if let Some(agent_id) = pane_agent_id
         && let Err(err) = release_waiters_for_agent(state, &agent_id)
@@ -1423,10 +1432,13 @@ fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     if let Ok(mut closing) = closing_native_panes().lock() {
         closing.remove(&pane_id);
     }
-    Ok(())
+    remove_result
 }
 
-pub fn native_pane_did_close(state: &AppState, pane_id: &str, _process_alive: bool) {
+pub fn native_pane_did_close(state: &AppState, pane_id: &str, process_alive: bool) {
+    if process_alive && let Err(err) = state.settle_research_pane_cancelled(pane_id) {
+        eprintln!("qmux: failed to cancel user-closed research pane {pane_id}: {err}");
+    }
     // Atomically claim this close. A close `kill_native_pane` owns (it claims
     // before its first destructive step, and its `terminate` can re-fire this
     // delegate) — or a duplicate delegate delivery — fails the insert and
@@ -1479,7 +1491,6 @@ fn native_pane_did_close_owned(state: &AppState, pane_id: &str) {
         eprintln!("qmux: failed to release waiters for exited agent {agent_id}: {err}");
     }
     remove_shell_integration_dir(pane_id);
-    state.emit(QmuxEvent::pty_exit(pane_id.to_string(), None));
 }
 
 /// Best-effort teardown of every pane's process tree on app exit.
@@ -2073,7 +2084,7 @@ mod tests {
         OpencodeAdapterConfig, QmuxConfig,
     };
     use crate::scrollback::read_pane_scrollback;
-    use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
+    use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
     use std::cell::RefCell;
     use std::io;
     use std::os::unix::process::CommandExt;
@@ -2555,6 +2566,7 @@ mod tests {
                     parent_id: None,
                     created_at: 1,
                     collapsed: false,
+                    scope: WorkspaceScope::Terminal,
                     agents: vec!["agent-1".to_string()],
                 },
                 None,

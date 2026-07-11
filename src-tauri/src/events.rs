@@ -53,6 +53,15 @@ impl QmuxEvent {
             json!({ "exitCode": exit_code }),
         )
     }
+
+    pub fn pane_removed(pane_id: String) -> Self {
+        Self::new(
+            "pane.removed",
+            Some(pane_id.clone()),
+            None,
+            json!({ "paneId": pane_id }),
+        )
+    }
 }
 
 /// Standard base64 (RFC 4648) encoder. Hand-rolled to keep PTY streaming free of
@@ -89,6 +98,14 @@ mod tests {
         let event = QmuxEvent::pty_data("pane-1".to_string(), &[0xf0, 0x9f]);
 
         assert_eq!(event.payload, json!({ "dataBase64": "8J8=" }));
+    }
+
+    #[test]
+    fn pane_removed_carries_the_authoritative_pane_id() {
+        let event = QmuxEvent::pane_removed("pane-1".to_string());
+        assert_eq!(event.event_type, "pane.removed");
+        assert_eq!(event.pane_id.as_deref(), Some("pane-1"));
+        assert_eq!(event.payload, json!({ "paneId": "pane-1" }));
     }
 
     #[test]

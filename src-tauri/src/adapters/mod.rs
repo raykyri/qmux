@@ -508,6 +508,7 @@ impl AdapterRegistry {
                 id: adapter.id().to_string(),
                 label: adapter.display_name().to_string(),
                 default: adapter.id() == "claude",
+                supports_fork: adapter_supports_fork(adapter.id()),
             })
             .collect()
     }
@@ -519,6 +520,11 @@ pub struct AdapterMetadata {
     pub id: String,
     pub label: String,
     pub default: bool,
+    /// Whether the adapter has a native fork command. Surfaces the capability
+    /// to the frontend so features built on branching (research follow-ups)
+    /// can filter their adapter choices instead of discovering the gap after
+    /// a long root run.
+    pub supports_fork: bool,
 }
 
 pub fn adapter_registry(config: &QmuxConfig) -> AdapterRegistry {
@@ -600,10 +606,23 @@ pub fn fork_agent_source(
         _ => return Err(FORK_UNSUPPORTED_ERROR.to_string()),
     };
     if let Some(source_pane) = source.pane_id.as_deref() {
-        if nest {
-            state.nest_pane_under(&pane.id, source_pane)?;
+        // Placement is cosmetic and the fork has already spawned. The source
+        // pane can legitimately vanish between the fork and this point —
+        // research retirement closes a completed parent pane the moment its
+        // node completes, exactly when follow-ups become possible — and
+        // propagating the placement error would report failure for a live
+        // pane+agent the caller then can neither see nor clean up. Leave the
+        // new pane at the end of the order instead.
+        let placed = if nest {
+            state.nest_pane_under(&pane.id, source_pane)
         } else {
-            state.place_pane_after(&pane.id, source_pane)?;
+            state.place_pane_after(&pane.id, source_pane)
+        };
+        if let Err(err) = placed {
+            eprintln!(
+                "qmux: fork of agent {} spawned but could not be placed relative to pane {source_pane}: {err}",
+                source.id
+            );
         }
     }
     state.emit(QmuxEvent::new(
@@ -644,7 +663,15 @@ pub fn spawn_sibling_agent_session(
             },
         )?;
     if let Some(source_pane) = source.pane_id.as_deref() {
-        state.nest_pane_under(&pane.id, source_pane)?;
+        // Best-effort, like fork placement above: the session has already
+        // spawned, and a source pane closed in the meantime must not turn a
+        // live pane into a reported failure.
+        if let Err(err) = state.nest_pane_under(&pane.id, source_pane) {
+            eprintln!(
+                "qmux: sibling session for agent {} spawned but could not be nested under pane {source_pane}: {err}",
+                source.id
+            );
+        }
     }
     let agent = state.agent_by_pane(&pane.id)?;
     state.emit(QmuxEvent::new(

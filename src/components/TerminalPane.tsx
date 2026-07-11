@@ -46,6 +46,8 @@ interface TerminalPaneProps {
   /// The final rectangle is applied when the drag ends.
   deferGeometryUpdates: boolean;
   inputBlocked: boolean;
+  /** Allows viewing and scrolling while preventing all terminal input. */
+  readOnly?: boolean;
   /// True while a web editable (composer, rename field, search input…) holds
   /// DOM focus. The native pane must not claim first responder then, or it
   /// would steal the keyboard mid-typing.
@@ -85,6 +87,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     pasteProtection,
     deferGeometryUpdates,
     inputBlocked,
+    readOnly = false,
     webEditableFocused,
     requestAttach,
     onUserInput,
@@ -98,6 +101,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const activeRef = useRef(active);
   const visibleRef = useRef(visible);
   const inputBlockedRef = useRef(inputBlocked);
+  const readOnlyRef = useRef(readOnly);
   const webEditableFocusedRef = useRef(webEditableFocused);
   const pasteProtectionRef = useRef(pasteProtection);
   const onUserInputRef = useRef(onUserInput);
@@ -105,6 +109,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   activeRef.current = active;
   visibleRef.current = visible;
   inputBlockedRef.current = inputBlocked;
+  readOnlyRef.current = readOnly;
   webEditableFocusedRef.current = webEditableFocused;
   pasteProtectionRef.current = pasteProtection;
   onUserInputRef.current = onUserInput;
@@ -144,6 +149,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       !activeRef.current ||
       !visibleRef.current ||
       inputBlockedRef.current ||
+      readOnlyRef.current ||
       webEditableFocusedRef.current ||
       searchOpenRef.current ||
       confirmOpenRef.current
@@ -198,7 +204,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   // its pasteboard privacy alert on every paste. The read fallback covers
   // callers that have no native capture.
   const requestPaste = useCallback((capturedText?: string | null) => {
-    if (inputBlockedRef.current) {
+    if (inputBlockedRef.current || readOnlyRef.current) {
       return;
     }
     const textPromise =
@@ -302,6 +308,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         surfaceVisible &&
         active &&
         !inputBlocked &&
+        !readOnly &&
         !searchOpen &&
         !confirmOpen &&
         !webEditableFocused;
@@ -368,6 +375,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     focus,
     focusSearchInput,
     inputBlocked,
+    readOnly,
     pane.id,
     searchOpen,
     style,

@@ -6,6 +6,7 @@ use crate::connection_limit::ConnectionLimiter;
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, track_native_pane_process, write_pane};
 use crate::state::AppState;
+use crate::workspace::{LaunchOrigin, validate_launch_workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
@@ -214,6 +215,7 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             let launch = serde_json::from_value::<PrepareShellAgentLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid agent.prepare_shell_launch payload: {err}"))?;
             ensure_pane_scope(&authed_pane, &launch.pane_id)?;
+            validate_control_launch_workspace(state, &authed_pane)?;
             let prepared = agent_prepare_shell_launch(state, launch)?;
             serde_json::to_value(prepared)
                 .map_err(|err| format!("failed to encode prepared agent launch: {err}"))
@@ -231,6 +233,7 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             let launch = serde_json::from_value::<PrepareShellClaudeLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid claude.prepare_shell_launch payload: {err}"))?;
             ensure_pane_scope(&authed_pane, &launch.pane_id)?;
+            validate_control_launch_workspace(state, &authed_pane)?;
             let prepared = agent_prepare_shell_launch(
                 state,
                 PrepareShellAgentLaunchRequest {
@@ -278,6 +281,7 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             }
             let payload = serde_json::from_value::<ForkPayload>(request.payload)
                 .map_err(|err| format!("invalid agent.fork payload: {err}"))?;
+            validate_control_launch_workspace(state, &authed_pane)?;
             // The one spawn the control plane allows: it forks ONLY the authenticated
             // pane's own session (the source is resolved from the token, not the
             // payload), so a token can never spawn off another pane's session. This is
@@ -325,6 +329,14 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
         // to the trusted GUI (Tauri commands), not to processes holding a pane token.
         other => Err(format!("unknown control command '{other}'")),
     }
+}
+
+fn validate_control_launch_workspace(state: &AppState, pane_id: &str) -> Result<(), String> {
+    let group_id = state
+        .pane_group_id(pane_id)?
+        .ok_or_else(|| format!("pane {pane_id} has no workspace"))?;
+    validate_launch_workspace(state, Some(&group_id), LaunchOrigin::Terminal)?;
+    Ok(())
 }
 
 /// Turns an `open` target into a URL the browser overlay can load, plus whether the

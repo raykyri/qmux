@@ -3,7 +3,9 @@ use crate::events::QmuxEvent;
 use crate::pty::{InitialPaneSize, respawn_shell_pane};
 use crate::scrollback::append_pane_scrollback;
 use crate::state::{AppState, PaneInfo, PaneKind, PaneStatus};
-use crate::workspace::{AgentInfo, AgentStatus, mark_agent_failed};
+use crate::workspace::{
+    AgentInfo, AgentStatus, LaunchOrigin, mark_agent_failed, validate_launch_workspace,
+};
 use serde_json::json;
 
 const DEFAULT_RECENT_SESSION_COLS: u16 = 100;
@@ -25,6 +27,19 @@ pub fn respawn_session(state: &AppState, panes: Vec<PaneInfo>) {
             pane.status,
             PaneStatus::Exited | PaneStatus::Killed | PaneStatus::Failed
         ) {
+            continue;
+        }
+
+        if let Err(err) =
+            validate_launch_workspace(state, Some(&pane.group_id), LaunchOrigin::Recovery)
+        {
+            failed += 1;
+            state.emit(QmuxEvent::new(
+                "pane.recovery_failed",
+                Some(pane.id.clone()),
+                pane.agent_id.clone(),
+                json!({ "error": err, "title": pane.title, "kind": pane.kind }),
+            ));
             continue;
         }
 

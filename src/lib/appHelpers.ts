@@ -371,18 +371,7 @@ export function reconcileThreadGraphs(
   next: ThreadGraph[],
 ): ThreadGraph[] {
   const previousById = new Map(previous.map((graph) => [graph.threadId, graph]));
-  const reconciled = next.map((graph) => {
-    const prior = previousById.get(graph.threadId);
-    if (
-      prior &&
-      prior.focusedBranchId === graph.focusedBranchId &&
-      prior.nextCreatedOrder === graph.nextCreatedOrder &&
-      JSON.stringify(prior) === JSON.stringify(graph)
-    ) {
-      return prior;
-    }
-    return graph;
-  });
+  const reconciled = next.map((graph) => reconcileThreadGraph(previousById.get(graph.threadId), graph));
   if (
     reconciled.length === previous.length &&
     reconciled.every((graph, index) => graph === previous[index])
@@ -390,6 +379,48 @@ export function reconcileThreadGraphs(
     return previous;
   }
   return reconciled;
+}
+
+function reconcileThreadGraph(prior: ThreadGraph | undefined, graph: ThreadGraph): ThreadGraph {
+  if (
+    prior &&
+    prior.focusedBranchId === graph.focusedBranchId &&
+    prior.nextCreatedOrder === graph.nextCreatedOrder &&
+    JSON.stringify(prior) === JSON.stringify(graph)
+  ) {
+    return prior;
+  }
+  return graph;
+}
+
+// Merges targeted single-thread refetches into the graph list without touching
+// the other graphs — the streaming path refreshes only the thread whose agent
+// produced turn events, so unrelated graphs keep their identity (and their
+// downstream memoized timelines) untouched by construction. Content-identical
+// updates keep the prior object; a brand-new thread is appended. Returns
+// `previous` itself when nothing changed.
+export function upsertThreadGraphs(
+  previous: ThreadGraph[],
+  updates: ThreadGraph[],
+): ThreadGraph[] {
+  let changed = false;
+  let next = previous;
+  for (const update of updates) {
+    const index = next.findIndex((graph) => graph.threadId === update.threadId);
+    if (index === -1) {
+      next = [...next, update];
+      changed = true;
+      continue;
+    }
+    const reconciled = reconcileThreadGraph(next[index], update);
+    if (reconciled !== next[index]) {
+      const copy = next.slice();
+      copy[index] = reconciled;
+      next = copy;
+      changed = true;
+    }
+  }
+  return changed ? next : previous;
 }
 
 export function reconcileQueuedTurnCollapse(

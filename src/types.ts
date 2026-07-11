@@ -21,6 +21,8 @@ export interface AgentAdapterMetadata {
   id: string;
   label: string;
   default: boolean;
+  /** Whether the adapter can fork a session — required for research follow-ups. */
+  supportsFork: boolean;
 }
 
 export interface ClaudeSkill {
@@ -95,7 +97,13 @@ export interface GroupInfo {
   parentId?: string | null;
   createdAt: number;
   collapsed: boolean;
+  scope: "terminal" | "research";
   agents: string[];
+}
+
+export interface ResearchWorkspaceInfo extends GroupInfo {
+  available: boolean;
+  treeCount: number;
 }
 
 export interface AgentInfo {
@@ -122,6 +130,88 @@ export interface AgentInfo {
   // True when the queue has paused after a pause-after turn finished.
   paused?: boolean;
   createdAt: number;
+}
+
+export type ResearchNodeStatus =
+  | "queued"
+  | "starting"
+  | "running"
+  | "complete"
+  | "failed"
+  | "cancelled";
+
+export interface ResearchTree {
+  id: string;
+  title: string;
+  rootNodeId: string;
+  workspaceId: string;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt?: number | null;
+  lastViewedAt?: number | null;
+}
+
+export interface ResearchNode {
+  id: string;
+  treeId: string;
+  parentNodeId?: string | null;
+  prompt: string;
+  responsePreview?: string | null;
+  adapter: string;
+  model?: string | null;
+  groupId: string;
+  worktreeDir: string;
+  nativeSessionId?: string | null;
+  transcriptPath?: string | null;
+  promptNativeId?: string | null;
+  agentId?: string | null;
+  paneId?: string | null;
+  status: ResearchNodeStatus;
+  error?: string | null;
+  /** Set when the durable response snapshot lands — the viewer's signal to
+   * refetch content it may have read before the adapter finished flushing. */
+  responseSnapshotAt?: number | null;
+  createdAt: number;
+  startedAt?: number | null;
+  completedAt?: number | null;
+}
+
+export interface ResearchTreeSummary {
+  id: string;
+  title: string;
+  rootNodeId: string;
+  workspaceId: string;
+  runningCount: number;
+  failedCount: number;
+  completedCount: number;
+  cancelledCount: number;
+  updatedAt: number;
+  archivedAt?: number | null;
+  hasUnseenUpdate: boolean;
+  /** A failure settled after the tree was last viewed. Attention flag —
+   * viewing the tree acknowledges it — unlike failedCount, a lifetime total. */
+  hasUnseenFailure: boolean;
+}
+
+export interface ResearchTreeDetail {
+  tree: ResearchTree;
+  nodes: ResearchNode[];
+}
+
+export interface ResearchNodeCard {
+  id: string;
+  prompt: string;
+  responsePreview?: string | null;
+  status: ResearchNodeStatus;
+  createdAt: number;
+}
+
+export interface ResearchNodeContent {
+  node: ResearchNode;
+  turns: Turn[];
+  children: ResearchNodeCard[];
+  /** Why turns is empty for a finished node (snapshot and transcript both unavailable). */
+  sourceError?: string;
 }
 
 // Where a queued turn is delivered when it is reached: absent means the agent's

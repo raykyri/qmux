@@ -1,9 +1,78 @@
+use crate::persistence::{self, WorktreeLocation};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static RESEARCH_WORKSPACE_CREATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static AGENT_WORKSPACE_CREATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static MANIFEST_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Serializes research-workspace mutations against research launches. The
+/// folder-replace and remove commands make a compound decision — "no live
+/// panes, no active runs / no trees → commit" — that is not atomic under the
+/// model lock alone: a tree or follow-up admitted between the check and the
+/// commit would either launch into the old directory or silently survive a
+/// removal. Launch admission (`create_research_tree` / `fork_research_node`)
+/// takes this same guard, so the check-then-commit windows close.
+pub fn lock_research_workspace_mutations() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    RESEARCH_WORKSPACE_CREATION_LOCK
+        .lock()
+        .map_err(|_| "research workspace mutation lock poisoned".to_string())
+}
+
+/// Which application mode owns a workspace and every pane launched into it.
+/// Ownership is durable: callers must never infer it from a transient agent or
+/// research-node binding.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceScope {
+    #[default]
+    Terminal,
+    Research,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchOrigin {
+    Terminal,
+    Research,
+    Recovery,
+}
+
+pub fn validate_launch_workspace(
+    state: &AppState,
+    group_id: Option<&str>,
+    origin: LaunchOrigin,
+) -> Result<Option<GroupInfo>, String> {
+    let Some(group_id) = group_id else {
+        return match origin {
+            LaunchOrigin::Terminal | LaunchOrigin::Recovery => Ok(None),
+            LaunchOrigin::Research => Err("research launch requires a workspace".to_string()),
+        };
+    };
+    let group = state
+        .group(group_id)?
+        .ok_or_else(|| format!("workspace {group_id} was not found"))?;
+    match origin {
+        LaunchOrigin::Terminal if group.scope != WorkspaceScope::Terminal => {
+            Err("ordinary agents cannot be launched in a research workspace".to_string())
+        }
+        LaunchOrigin::Research if group.scope != WorkspaceScope::Research => {
+            Err("research requires a Research-scoped workspace".to_string())
+        }
+        LaunchOrigin::Research if !Path::new(&group.dir).is_dir() => Err(format!(
+            "research folder '{}' is unavailable; choose a replacement folder before launching another run",
+            group.dir
+        )),
+        _ => Ok(Some(group)),
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +91,18 @@ pub struct GroupInfo {
     pub created_at: u128,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub scope: WorkspaceScope,
     pub agents: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchWorkspaceInfo {
+    #[serde(flatten)]
+    pub group: GroupInfo,
+    pub available: bool,
+    pub tree_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -90,6 +170,225 @@ pub struct PrepareAgentWorkspaceRequest {
 }
 
 pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<GroupInfo, String> {
+    create_scoped_group(state, request, WorkspaceScope::Terminal)
+}
+
+/// Creates a durable research workspace rooted at `dir`. Research workspaces
+/// share the group/agent execution machinery, but their explicit scope gives
+/// them independent navigation and retention policy.
+pub fn create_research_workspace(
+    state: &AppState,
+    name: Option<String>,
+    dir: String,
+) -> Result<GroupInfo, String> {
+    let _guard = lock_research_workspace_mutations()?;
+    create_research_workspace_locked(state, name, dir)
+}
+
+/// Whether an existing workspace record refers to the requested directory.
+/// Records are stored canonicalized, but a record whose folder is currently
+/// missing cannot be re-canonicalized (and legacy-migrated records may hold
+/// non-canonical paths), so fall back to comparing the stored string against
+/// both the canonical and as-picked forms of the requested path. Without the
+/// fallback, re-picking a folder while the record's copy was unreadable
+/// created a second workspace for the same directory.
+fn group_dir_matches(group: &GroupInfo, canonical: &Path, requested: &Path) -> bool {
+    let stored = Path::new(&group.dir);
+    match fs::canonicalize(stored) {
+        Ok(stored_canonical) => stored_canonical == canonical,
+        Err(_) => stored == canonical || stored == requested,
+    }
+}
+
+fn create_research_workspace_locked(
+    state: &AppState,
+    name: Option<String>,
+    dir: String,
+) -> Result<GroupInfo, String> {
+    let requested = PathBuf::from(&dir);
+    let canonical = fs::canonicalize(&requested).map_err(|err| {
+        format!(
+            "research folder {} is unavailable: {err}",
+            requested.display()
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "research folder {} is not a directory",
+            canonical.display()
+        ));
+    }
+    if let Some(existing) = state.list_groups()?.into_iter().find(|group| {
+        group.scope == WorkspaceScope::Research && group_dir_matches(group, &canonical, &requested)
+    }) {
+        return Ok(existing);
+    }
+    create_scoped_group(
+        state,
+        CreateGroupRequest {
+            name,
+            dir: Some(canonical.display().to_string()),
+            after_group_id: None,
+            base_repo: None,
+            base_ref: Some("HEAD".to_string()),
+        },
+        WorkspaceScope::Research,
+    )
+}
+
+pub fn ensure_default_research_workspace(state: &AppState) -> Result<GroupInfo, String> {
+    let _guard = lock_research_workspace_mutations()?;
+    let dir = state.default_research_dir();
+    fs::create_dir_all(&dir).map_err(|err| {
+        format!(
+            "failed to create default research directory {}: {err}",
+            dir.display()
+        )
+    })?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+        format!(
+            "failed to restrict default research directory {}: {err}",
+            dir.display()
+        )
+    })?;
+    let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+    if let Some(existing) = state.list_groups()?.into_iter().find(|group| {
+        group.scope == WorkspaceScope::Research && group_dir_matches(group, &canonical, &dir)
+    }) {
+        return Ok(existing);
+    }
+    create_research_workspace_locked(
+        state,
+        Some("Default research".to_string()),
+        canonical.display().to_string(),
+    )
+}
+
+pub fn rename_research_workspace(
+    state: &AppState,
+    workspace_id: &str,
+    name: Option<String>,
+) -> Result<GroupInfo, String> {
+    let workspace = require_research_workspace(state, workspace_id)?;
+    rename_group_record(state, workspace, name)
+}
+
+/// Changes the folder represented by a Research workspace without changing its
+/// durable id. Settled node paths remain historical provenance; future launches
+/// resolve the new directory through the tree's workspace.
+pub fn set_research_workspace_dir(
+    state: &AppState,
+    workspace_id: &str,
+    dir: String,
+) -> Result<GroupInfo, String> {
+    let _guard = lock_research_workspace_mutations()?;
+    require_research_workspace(state, workspace_id)?;
+    let raw = PathBuf::from(&dir);
+    let requested = canonical_dir(&dir)?;
+    if let Some(existing) = state.list_groups()?.into_iter().find(|group| {
+        group.scope == WorkspaceScope::Research
+            && group.id != workspace_id
+            && group_dir_matches(group, &requested, &raw)
+    }) {
+        return Err(format!(
+            "{} is already used by research workspace '{}'",
+            requested.display(),
+            existing.name_override.as_deref().unwrap_or(&existing.name)
+        ));
+    }
+    let dependencies = state.research_workspace_dependencies(workspace_id)?;
+    if dependencies.has_live_panes || dependencies.has_active_runs {
+        return Err("cannot change a research folder while it has an active run".to_string());
+    }
+    set_group_dir_record(state, workspace_id, requested)
+}
+
+pub fn remove_research_workspace(state: &AppState, workspace_id: &str) -> Result<(), String> {
+    let _guard = lock_research_workspace_mutations()?;
+    let workspace = require_research_workspace(state, workspace_id)?;
+    let dependencies = state.research_workspace_dependencies(workspace_id)?;
+    let display_name = workspace
+        .name_override
+        .as_deref()
+        .unwrap_or(&workspace.name);
+    if dependencies.has_live_panes {
+        return Err(format!(
+            "research folder '{display_name}' cannot be removed while it has live terminals"
+        ));
+    }
+    if dependencies.has_active_runs {
+        return Err(format!(
+            "research folder '{display_name}' cannot be removed while it has active runs"
+        ));
+    }
+    if dependencies.tree_count > 0 {
+        let noun = if dependencies.tree_count == 1 {
+            "research item"
+        } else {
+            "research items"
+        };
+        // Trees cannot move between folders, so deletion (of the trees or, for
+        // archived ones, their archive entries) is the only unblock to offer.
+        return Err(format!(
+            "research folder '{display_name}' is still used by {} {noun}; delete them (including archived ones) before removing the folder",
+            dependencies.tree_count
+        ));
+    }
+    state.remove_group(workspace_id)?;
+    // The manifest directory is qmux-internal bookkeeping for this group and
+    // nothing else: research runs never create worktrees under it, so once the
+    // record is gone it holds only the stale group.json. Deleting it here (and
+    // only here — Terminal groups may own worktrees) keeps removed folders
+    // from accumulating on disk forever. Best-effort, with a guard against a
+    // record that ever pointed managed_dir at the user's own folder.
+    if workspace.managed_dir != workspace.dir
+        && Path::new(&workspace.managed_dir).join(".qmux").is_dir()
+        && let Err(err) = fs::remove_dir_all(&workspace.managed_dir)
+        && !matches!(err.kind(), std::io::ErrorKind::NotFound)
+    {
+        eprintln!(
+            "qmux: failed to remove research workspace manifest dir {}: {err}",
+            workspace.managed_dir
+        );
+    }
+    Ok(())
+}
+
+fn require_research_workspace(state: &AppState, workspace_id: &str) -> Result<GroupInfo, String> {
+    let workspace = state
+        .group(workspace_id)?
+        .ok_or_else(|| format!("research workspace {workspace_id} was not found"))?;
+    if workspace.scope != WorkspaceScope::Research {
+        return Err(format!("workspace {workspace_id} is not Research-scoped"));
+    }
+    Ok(workspace)
+}
+
+fn create_scoped_group(
+    state: &AppState,
+    request: CreateGroupRequest,
+    scope: WorkspaceScope,
+) -> Result<GroupInfo, String> {
+    let after_group_id = request.after_group_id.clone();
+    let group = create_group_record(state, request, scope)?;
+    state.insert_group_after(group.clone(), after_group_id.as_deref())?;
+    state.emit(crate::events::QmuxEvent::new(
+        "group.created",
+        None,
+        None,
+        serde_json::json!({ "group": group.clone() }),
+    ));
+    Ok(group)
+}
+
+/// Allocates and persists a group manifest without inserting it into AppState.
+/// Startup migration uses this to construct scoped workspace records before the
+/// persisted model is hydrated.
+pub(crate) fn create_group_record(
+    state: &AppState,
+    request: CreateGroupRequest,
+    scope: WorkspaceScope,
+) -> Result<GroupInfo, String> {
     let id = state.next_id("group");
     let dir = match request.dir.as_deref() {
         Some(dir) => canonical_dir(dir)?,
@@ -119,25 +418,79 @@ pub fn create_group(state: &AppState, request: CreateGroupRequest) -> Result<Gro
         parent_id: None,
         created_at: now_millis(),
         collapsed: false,
+        scope,
         agents: Vec::new(),
     };
 
-    write_group_manifest(&group)?;
-    state.insert_group_after(group.clone(), request.after_group_id.as_deref())?;
-    state.emit(crate::events::QmuxEvent::new(
-        "group.created",
-        None,
-        None,
-        serde_json::json!({ "group": group.clone() }),
-    ));
+    if let Err(err) = write_group_manifest(&group) {
+        let _ = fs::remove_dir_all(&managed_dir);
+        return Err(err);
+    }
+    Ok(group)
+}
+
+/// Creates a distinct scoped record from a legacy group without requiring its
+/// working directory to still exist. Historical research remains viewable even
+/// when its original project was moved; a later launch can surface that missing
+/// directory and let the user choose a replacement deliberately.
+pub(crate) fn clone_group_record_for_scope(
+    state: &AppState,
+    source: &GroupInfo,
+    scope: WorkspaceScope,
+) -> Result<GroupInfo, String> {
+    let display_name = format!(
+        "{} Research",
+        source.name_override.as_deref().unwrap_or(&source.name)
+    );
+    let managed_dir = unique_group_dir(&state.config().workspace_root, &display_name)?;
+    fs::create_dir_all(managed_dir.join(".qmux")).map_err(|err| {
+        format!(
+            "failed to create migrated research workspace {}: {err}",
+            managed_dir.display()
+        )
+    })?;
+    let group = GroupInfo {
+        id: state.next_id("group"),
+        name: source.name.clone(),
+        name_override: Some(display_name),
+        dir: source.dir.clone(),
+        managed_dir: managed_dir.display().to_string(),
+        base_repo: source.base_repo.clone(),
+        base_ref: source.base_ref.clone(),
+        parent_id: None,
+        created_at: now_millis(),
+        collapsed: false,
+        scope,
+        agents: Vec::new(),
+    };
+    if let Err(err) = write_group_manifest(&group) {
+        let _ = fs::remove_dir_all(&managed_dir);
+        return Err(err);
+    }
     Ok(group)
 }
 
 pub fn set_group_dir(state: &AppState, group_id: &str, dir: String) -> Result<GroupInfo, String> {
+    let group = state
+        .group(group_id)?
+        .ok_or_else(|| format!("group {group_id} was not found"))?;
+    if group.scope != WorkspaceScope::Terminal {
+        return Err(
+            "use the research workspace folder command for Research workspaces".to_string(),
+        );
+    }
+    let dir = canonical_dir(&dir)?;
+    set_group_dir_record(state, group_id, dir)
+}
+
+fn set_group_dir_record(
+    state: &AppState,
+    group_id: &str,
+    dir: PathBuf,
+) -> Result<GroupInfo, String> {
     let mut group = state
         .group(group_id)?
         .ok_or_else(|| format!("group {group_id} was not found"))?;
-    let dir = canonical_dir(&dir)?;
     group.dir = dir.display().to_string();
     group.name = group_name_for_dir(&dir);
     group.base_repo = None;
@@ -158,9 +511,22 @@ pub fn rename_group(
     group_id: &str,
     name: Option<String>,
 ) -> Result<GroupInfo, String> {
-    let mut group = state
+    let group = state
         .group(group_id)?
         .ok_or_else(|| format!("group {group_id} was not found"))?;
+    if group.scope != WorkspaceScope::Terminal {
+        return Err(
+            "use the research workspace rename command for Research workspaces".to_string(),
+        );
+    }
+    rename_group_record(state, group, name)
+}
+
+fn rename_group_record(
+    state: &AppState,
+    mut group: GroupInfo,
+    name: Option<String>,
+) -> Result<GroupInfo, String> {
     group.name_override = name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
@@ -199,6 +565,9 @@ pub fn prepare_agent_workspace(
     state: &AppState,
     request: PrepareAgentWorkspaceRequest,
 ) -> Result<AgentInfo, String> {
+    let _guard = AGENT_WORKSPACE_CREATION_LOCK
+        .lock()
+        .map_err(|_| "agent workspace creation lock poisoned".to_string())?;
     let mut group = match request.group_id.as_deref() {
         Some(group_id) => state
             .group(group_id)?
@@ -246,9 +615,9 @@ pub fn prepare_agent_workspace(
     let mut branch = None;
 
     let worktree_dir = if request.use_worktree {
-        // Isolated git worktree under the group dir (or a plain directory when the
-        // base is not a git repo).
-        let dir = PathBuf::from(&group.managed_dir).join(&agent_name);
+        // Isolated git worktree in the configured global or project-local root
+        // (or a plain directory when the base is not a git repo).
+        let dir = allocate_agent_worktree_dir(state, base_repo.as_deref(), &group, &agent_name)?;
         match base_repo.as_deref().filter(|repo| is_git_repo(repo)) {
             Some(base_repo) => {
                 let branch_name =
@@ -733,6 +1102,17 @@ fn default_group_name() -> String {
 }
 
 fn unique_group_dir(root: &Path, requested_name: &str) -> Result<PathBuf, String> {
+    unique_dir(root, requested_name, "group")
+}
+
+fn unique_worktree_dir(root: &Path, requested_name: &str) -> Result<PathBuf, String> {
+    // Leave room for unique_dir's largest collision suffix ("-999") under
+    // the common 255-byte filesystem component limit. Group display names are
+    // user-controlled and may be much longer than a valid filename.
+    unique_dir(root, &bounded_path_segment(requested_name, 240), "worktree")
+}
+
+fn unique_dir(root: &Path, requested_name: &str, kind: &str) -> Result<PathBuf, String> {
     let base = sanitize_path_segment(requested_name);
     for index in 0..1000 {
         let name = if index == 0 {
@@ -746,9 +1126,122 @@ fn unique_group_dir(root: &Path, requested_name: &str) -> Result<PathBuf, String
         }
     }
     Err(format!(
-        "failed to allocate a unique group directory under {}",
+        "failed to allocate a unique {kind} directory under {}",
         root.display()
     ))
+}
+
+fn allocate_agent_worktree_dir(
+    state: &AppState,
+    base_repo: Option<&str>,
+    group: &GroupInfo,
+    agent_name: &str,
+) -> Result<PathBuf, String> {
+    let location = persistence::load_preferences(&state.config().workspace_root)?
+        .worktree_location
+        .unwrap_or_default();
+    if location == WorktreeLocation::Global {
+        return Ok(PathBuf::from(&group.managed_dir).join(agent_name));
+    }
+
+    let base_repo = base_repo.ok_or_else(|| {
+        "cannot resolve a project-local worktree location without a project directory".to_string()
+    })?;
+    let is_git = is_git_repo(base_repo);
+    let project_root = if is_git {
+        git_project_root(base_repo)?
+    } else {
+        fs::canonicalize(base_repo)
+            .map_err(|err| format!("failed to resolve project directory {base_repo}: {err}"))?
+    };
+    let (relative_root, exclude_pattern) = match location {
+        WorktreeLocation::Global => unreachable!(),
+        WorktreeLocation::LocalQmux => (Path::new(".qmux/worktrees"), "/.qmux/worktrees/"),
+        WorktreeLocation::LocalClaude => (Path::new(".claude/worktrees"), "/.claude/worktrees/"),
+    };
+
+    if is_git {
+        ensure_git_local_exclude(base_repo, exclude_pattern)?;
+    }
+    let root = project_root.join(relative_root);
+    fs::create_dir_all(&root)
+        .map_err(|err| format!("failed to create worktree root {}: {err}", root.display()))?;
+    let display_name = group.name_override.as_deref().unwrap_or(&group.name);
+    unique_worktree_dir(&root, &format!("{display_name}-{agent_name}"))
+}
+
+fn git_project_root(base_repo: &str) -> Result<PathBuf, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(base_repo)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .map_err(|err| format!("failed to resolve git project root: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to resolve git project root: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return Err("git returned an empty project root".to_string());
+    }
+    Ok(PathBuf::from(root))
+}
+
+fn ensure_git_local_exclude(base_repo: &str, pattern: &str) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(base_repo)
+        .arg("rev-parse")
+        .arg("--git-path")
+        .arg("info/exclude")
+        .output()
+        .map_err(|err| format!("failed to resolve git exclude path: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to resolve git exclude path: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let raw_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw_path.is_empty() {
+        return Err("git returned an empty exclude path".to_string());
+    }
+    let path = {
+        let candidate = PathBuf::from(raw_path);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            PathBuf::from(base_repo).join(candidate)
+        }
+    };
+    let existing = match fs::read_to_string(&path) {
+        Ok(existing) => existing,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
+    };
+    if existing.lines().any(|line| line.trim() == pattern) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        file.write_all(b"\n")
+            .map_err(|err| format!("failed to update {}: {err}", path.display()))?;
+    }
+    writeln!(file, "{pattern}").map_err(|err| format!("failed to update {}: {err}", path.display()))
 }
 
 fn sanitize_path_segment(value: &str) -> String {
@@ -770,6 +1263,27 @@ fn sanitize_path_segment(value: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn bounded_path_segment(value: &str, max_bytes: usize) -> String {
+    let sanitized = sanitize_path_segment(value);
+    if sanitized.len() <= max_bytes {
+        return sanitized;
+    }
+
+    // FNV-1a is sufficient here: the hash only keeps two long names with the
+    // same truncated prefix distinguishable; unique_dir still handles an
+    // actual collision. sanitize_path_segment emits ASCII, so byte slicing is
+    // safe and exactly matches filesystem component accounting.
+    let hash = value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    let suffix = format!("-{hash:016x}");
+    let prefix_len = max_bytes.saturating_sub(suffix.len());
+    format!("{}{}", &sanitized[..prefix_len], suffix)
 }
 
 fn sanitize_ref_segment(value: &str) -> String {
@@ -847,12 +1361,42 @@ fn verify_base_ref(base_repo: &str, base_ref: &str) -> Result<(), String> {
     }
 }
 
-fn write_group_manifest(group: &GroupInfo) -> Result<(), String> {
+pub(crate) fn write_group_manifest(group: &GroupInfo) -> Result<(), String> {
     let manifest_path = PathBuf::from(&group.managed_dir).join(".qmux/group.json");
+    let parent = manifest_path
+        .parent()
+        .ok_or_else(|| format!("group manifest {} has no parent", manifest_path.display()))?;
+    fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "failed to create group manifest directory {}: {err}",
+            parent.display()
+        )
+    })?;
     let raw = serde_json::to_string_pretty(group)
         .map_err(|err| format!("failed to encode group manifest: {err}"))?;
-    fs::write(&manifest_path, raw)
-        .map_err(|err| format!("failed to write {}: {err}", manifest_path.display()))
+    let seq = MANIFEST_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(".group.json.tmp-{}-{seq}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(|err| format!("failed to create {}: {err}", tmp.display()))?;
+    if let Err(err) = file
+        .write_all(raw.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("failed to write {}: {err}", tmp.display()));
+    }
+    fs::rename(&tmp, &manifest_path).map_err(|err| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed to commit {}: {err}", manifest_path.display())
+    })?;
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 fn now_millis() -> u128 {
@@ -996,6 +1540,205 @@ mod tests {
         assert_eq!(moved.name, "second");
         assert_eq!(moved.name_override.as_deref(), Some("Research"));
         std::fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn default_research_workspace_is_scoped_persistent_and_idempotent() {
+        let root = std::env::temp_dir().join(format!("qmux-default-research-{}", now_millis()));
+        let state = test_state_with_workspace(root.clone());
+
+        let first = ensure_default_research_workspace(&state).unwrap();
+        let second = ensure_default_research_workspace(&state).unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.scope, WorkspaceScope::Research);
+        assert_eq!(
+            std::fs::canonicalize(&first.dir).unwrap(),
+            std::fs::canonicalize(state.default_research_dir()).unwrap()
+        );
+        assert!(Path::new(&first.dir).is_dir());
+        assert_eq!(state.list_research_workspaces().unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chosen_research_workspace_reuses_the_same_directory() {
+        let root = temp_workspace("chosen-research");
+        let chosen = root.join("project");
+        std::fs::create_dir_all(&chosen).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+
+        let first =
+            create_research_workspace(&state, None, chosen.to_string_lossy().into_owned()).unwrap();
+        let second = create_research_workspace(
+            &state,
+            Some("Duplicate".to_string()),
+            chosen.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(state.list_research_workspaces().unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_research_workspace_creation_converges_on_one_directory() {
+        let root = temp_workspace("concurrent-research");
+        let chosen = root.join("project");
+        std::fs::create_dir_all(&chosen).unwrap();
+        let state = std::sync::Arc::new(test_state_with_workspace(root.join("managed")));
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let state = state.clone();
+            let chosen = chosen.clone();
+            workers.push(std::thread::spawn(move || {
+                create_research_workspace(&state, None, chosen.display().to_string())
+                    .unwrap()
+                    .id
+            }));
+        }
+        let ids = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(state.list_research_workspaces().unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_research_folder_preserves_id_and_rejects_collisions() {
+        let root = temp_workspace("replace-research");
+        let first_dir = root.join("first");
+        let second_dir = root.join("second");
+        let replacement_dir = root.join("replacement");
+        for dir in [&first_dir, &second_dir, &replacement_dir] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let state = test_state_with_workspace(root.join("managed"));
+        let first = create_research_workspace(
+            &state,
+            Some("First".to_string()),
+            first_dir.display().to_string(),
+        )
+        .unwrap();
+        let second = create_research_workspace(
+            &state,
+            Some("Second".to_string()),
+            second_dir.display().to_string(),
+        )
+        .unwrap();
+
+        let moved =
+            set_research_workspace_dir(&state, &first.id, replacement_dir.display().to_string())
+                .unwrap();
+        assert_eq!(moved.id, first.id);
+        assert_eq!(
+            std::fs::canonicalize(moved.dir).unwrap(),
+            std::fs::canonicalize(&replacement_dir).unwrap()
+        );
+        let error = set_research_workspace_dir(&state, &first.id, second_dir.display().to_string())
+            .unwrap_err();
+        assert!(error.contains("already used"));
+        assert_eq!(state.group(&second.id).unwrap().unwrap().dir, second.dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_research_folder_is_blocked_by_an_active_tree() {
+        let root = temp_workspace("active-research-replacement");
+        let original = root.join("original");
+        let replacement = root.join("replacement");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::create_dir_all(&replacement).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        let workspace =
+            create_research_workspace(&state, None, original.display().to_string()).unwrap();
+        let detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: workspace.id.clone(),
+            })
+            .unwrap();
+
+        let error =
+            set_research_workspace_dir(&state, &workspace.id, replacement.display().to_string())
+                .unwrap_err();
+        assert!(error.contains("active run"));
+        state
+            .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+        assert!(
+            set_research_workspace_dir(&state, &workspace.id, replacement.display().to_string())
+                .is_ok()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removing_research_folder_names_active_and_durable_dependencies() {
+        let root = temp_workspace("remove-research");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        let workspace =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        let detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: workspace.id.clone(),
+            })
+            .unwrap();
+
+        assert!(
+            remove_research_workspace(&state, &workspace.id)
+                .unwrap_err()
+                .contains("active runs")
+        );
+        state
+            .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+        assert!(
+            remove_research_workspace(&state, &workspace.id)
+                .unwrap_err()
+                .contains("research item")
+        );
+        state.remove_research_tree(&detail.tree.id).unwrap();
+        remove_research_workspace(&state, &workspace.id).unwrap();
+        assert!(state.group(&workspace.id).unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn launch_origin_enforces_workspace_scope_and_research_availability() {
+        let root = temp_workspace("launch-origin");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        let research =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        assert!(
+            validate_launch_workspace(&state, Some(&research.id), LaunchOrigin::Terminal)
+                .unwrap_err()
+                .contains("ordinary agents")
+        );
+        assert!(
+            validate_launch_workspace(&state, Some(&research.id), LaunchOrigin::Research).is_ok()
+        );
+        std::fs::remove_dir_all(&project).unwrap();
+        assert!(
+            validate_launch_workspace(&state, Some(&research.id), LaunchOrigin::Research)
+                .unwrap_err()
+                .contains("unavailable")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1328,6 +2071,163 @@ mod tests {
                 "name should not use the group- prefix: {name:?}"
             );
         }
+    }
+
+    fn allocation_group(project: &Path, managed: &Path) -> GroupInfo {
+        GroupInfo {
+            id: "group-1".to_string(),
+            name: "brave otter".to_string(),
+            name_override: None,
+            dir: project.display().to_string(),
+            managed_dir: managed.display().to_string(),
+            base_repo: Some(project.display().to_string()),
+            base_ref: Some("HEAD".to_string()),
+            parent_id: None,
+            created_at: 1,
+            collapsed: false,
+            scope: WorkspaceScope::Terminal,
+            agents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn allocates_non_git_worktrees_in_local_qmux_root() {
+        let workspace = temp_workspace("local-qmux");
+        let project = workspace.join("project");
+        let managed = workspace.join("managed/group");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&managed).unwrap();
+        let state = test_state_with_workspace(workspace.join("state"));
+        persistence::save_preferences(
+            &state.config().workspace_root,
+            &persistence::AppPreferences {
+                worktree_location: Some(WorktreeLocation::LocalQmux),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let group = allocation_group(&project, &managed);
+        let canonical_project = fs::canonicalize(&project).unwrap();
+
+        let first =
+            allocate_agent_worktree_dir(&state, Some(project.to_str().unwrap()), &group, "agent-1")
+                .unwrap();
+        assert_eq!(
+            first,
+            canonical_project.join(".qmux/worktrees/brave-otter-agent-1")
+        );
+        fs::create_dir_all(&first).unwrap();
+        let collision =
+            allocate_agent_worktree_dir(&state, Some(project.to_str().unwrap()), &group, "agent-1")
+                .unwrap();
+        assert_eq!(
+            collision,
+            canonical_project.join(".qmux/worktrees/brave-otter-agent-1-1")
+        );
+        fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn local_worktree_names_bound_long_group_names() {
+        let workspace = temp_workspace("local-long-name");
+        let project = workspace.join("project");
+        let managed = workspace.join("managed/group");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&managed).unwrap();
+        let state = test_state_with_workspace(workspace.join("state"));
+        persistence::save_preferences(
+            &state.config().workspace_root,
+            &persistence::AppPreferences {
+                worktree_location: Some(WorktreeLocation::LocalQmux),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut group = allocation_group(&project, &managed);
+        group.name_override = Some("a".repeat(400));
+
+        let dir =
+            allocate_agent_worktree_dir(&state, Some(project.to_str().unwrap()), &group, "agent-1")
+                .unwrap();
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.len() <= 240,
+            "worktree component was {} bytes",
+            name.len()
+        );
+        fs::create_dir_all(&dir).unwrap();
+        assert!(dir.is_dir());
+
+        let mut other = group;
+        other.name_override = Some(format!("{}b", "a".repeat(399)));
+        let other_dir =
+            allocate_agent_worktree_dir(&state, Some(project.to_str().unwrap()), &other, "agent-1")
+                .unwrap();
+        assert_ne!(
+            dir, other_dir,
+            "the hash should distinguish truncated names"
+        );
+        fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn local_claude_uses_git_top_level_and_excludes_worktrees_once() {
+        let workspace = temp_workspace("local-claude");
+        let project = workspace.join("project");
+        let nested = project.join("nested/path");
+        let managed = workspace.join("managed/group");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&managed).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        let canonical_project = fs::canonicalize(&project).unwrap();
+        let state = test_state_with_workspace(workspace.join("state"));
+        persistence::save_preferences(
+            &state.config().workspace_root,
+            &persistence::AppPreferences {
+                worktree_location: Some(WorktreeLocation::LocalClaude),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let group = allocation_group(&nested, &managed);
+
+        let first =
+            allocate_agent_worktree_dir(&state, Some(nested.to_str().unwrap()), &group, "agent-1")
+                .unwrap();
+        let second =
+            allocate_agent_worktree_dir(&state, Some(nested.to_str().unwrap()), &group, "agent-2")
+                .unwrap();
+
+        assert_eq!(
+            first,
+            canonical_project.join(".claude/worktrees/brave-otter-agent-1")
+        );
+        assert_eq!(
+            second,
+            canonical_project.join(".claude/worktrees/brave-otter-agent-2")
+        );
+        let exclude = fs::read_to_string(project.join(".git/info/exclude")).unwrap();
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|line| line.trim() == "/.claude/worktrees/")
+                .count(),
+            1
+        );
+        fs::remove_dir_all(workspace).ok();
     }
 
     fn branch_exists(repo: &Path, branch: &str) -> bool {

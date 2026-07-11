@@ -36,6 +36,25 @@ test("resolves qmux command and control shortcuts", () => {
     type: "focusTab",
     tabIndex: 3,
   });
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "t", metaKey: true, altKey: true })),
+    { type: "focusTerminalMode" },
+  );
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "r", metaKey: true, altKey: true })),
+    { type: "focusResearchMode" },
+  );
+  // macOS composes Option chords: the browser reports Cmd-Opt-T as key "†"
+  // (and Cmd-Opt-R as "®"), so the physical code must carry the match or the
+  // shortcut never fires from web-focused surfaces.
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "†", code: "KeyT", metaKey: true, altKey: true })),
+    { type: "focusTerminalMode" },
+  );
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "®", code: "KeyR", metaKey: true, altKey: true })),
+    { type: "focusResearchMode" },
+  );
   // ⌘K opens the palette for web targets only; the terminal keeps it (clear
   // screen), matching the native classifier which never claims ⌘K.
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "k", metaKey: true })), {
@@ -85,6 +104,12 @@ test("parses semantic commands from native payloads", () => {
   });
   assert.deepEqual(parseAppShortcutCommand("newGroup", null), {
     type: "newGroup",
+  });
+  assert.deepEqual(parseAppShortcutCommand("focusTerminalMode", null), {
+    type: "focusTerminalMode",
+  });
+  assert.deepEqual(parseAppShortcutCommand("focusResearchMode", null), {
+    type: "focusResearchMode",
   });
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);

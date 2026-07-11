@@ -38,8 +38,9 @@ matching UI adapter on the frontend.
   the bundled Ghostty color schemes), mouse wheel sensitivity, and a
   macOS wake lock that keeps the machine awake while agents are running
   (skipped on battery below 10%).
-- (Experimental) git worktree creation for launched agents, with dirty
-  worktree checks and a delete-or-keep prompt when closing worktree-backed panes.
+- (Experimental) git worktree creation for launched agents, with configurable
+  global, local `.qmux/`, or local `.claude/` storage, dirty-worktree checks,
+  and a delete-or-keep prompt when closing worktree-backed panes.
 - (Experimental) A tab-bound, resizable browser that renders a local file or a
   `http://localhost` dev server in a panel over the terminal. Markdown
   files render as styled HTML.
@@ -132,6 +133,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-T`: open a shell pane in code mode; outside code mode, open the agent
   launcher.
 - `Cmd-N`: focus Home.
+- `Cmd-Option-T`: switch to the Terminal tab.
+- `Cmd-Option-R`: switch to the Research tab.
 - `Cmd-;` / `Ctrl-;`: open the agent launcher.
 - `Cmd-=` / `Cmd-+`: increase terminal font size.
 - `Cmd--`: decrease terminal font size.

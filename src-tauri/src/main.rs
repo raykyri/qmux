@@ -12,6 +12,7 @@ mod persistence;
 mod prompt_library;
 mod pty;
 mod recovery;
+mod research;
 mod scrollback;
 mod show_hide_shortcut;
 mod sleep;
@@ -25,7 +26,7 @@ mod workspace;
 
 use adapters::{
     SpawnAgentRequest, SpawnClaudeRequest, agent_fork as fork_agent_pane,
-    agent_spawn as spawn_agent_pane,
+    agent_spawn as spawn_agent_pane, fork_agent_source,
 };
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
@@ -39,6 +40,10 @@ use native_terminal::{
 use pty::{
     InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
+};
+use research::{
+    CreateResearchTreeRequest, ResearchNode, ResearchNodeContent, ResearchTree, ResearchTreeDetail,
+    ResearchTreeSummary,
 };
 use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
@@ -60,9 +65,11 @@ use turn_queue::{
     unpause_agent,
 };
 use workspace::{
-    AgentInfo, CreateGroupRequest, GroupInfo, WorktreeStatus, acknowledge_agent,
-    agent_worktree_status, clear_agent_working_status, create_group, remove_agent_worktree,
-    rename_group, set_group_collapsed, set_group_dir,
+    AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, ResearchWorkspaceInfo,
+    WorktreeStatus, acknowledge_agent, agent_worktree_status, clear_agent_working_status,
+    create_group, create_research_workspace, ensure_default_research_workspace,
+    remove_agent_worktree, remove_research_workspace, rename_group, rename_research_workspace,
+    set_group_collapsed, set_group_dir, set_research_workspace_dir, validate_launch_workspace,
 };
 
 /// Menu id for the Quit item we substitute for the native predefined one (see
@@ -352,10 +359,10 @@ fn notify_startup_warning(app: &tauri::AppHandle, message: &str) {
 /// `None` when the user cancels. Blocks the calling thread, so callers must be
 /// `#[tauri::command(async)]` (the panel itself is dispatched to the main thread
 /// by the plugin).
-fn pick_folder_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+fn pick_folder_dialog(app: &tauri::AppHandle, title: &str) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let mut dialog = app.dialog().file().set_title("Select the group directory");
+    let mut dialog = app.dialog().file().set_title(title);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.set_parent(&window);
     }
@@ -447,6 +454,84 @@ fn list_groups(state: tauri::State<'_, AppState>) -> Result<Vec<GroupInfo>, Stri
 }
 
 #[tauri::command]
+fn list_research_workspaces(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ResearchWorkspaceInfo>, String> {
+    state
+        .list_research_workspaces()?
+        .into_iter()
+        .map(|group| {
+            let dependencies = state.research_workspace_dependencies(&group.id)?;
+            Ok(ResearchWorkspaceInfo {
+                available: std::path::Path::new(&group.dir).is_dir(),
+                tree_count: dependencies.tree_count,
+                group,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn ensure_default_research_workspace_command(
+    state: tauri::State<'_, AppState>,
+) -> Result<GroupInfo, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || ensure_default_research_workspace(&state))
+        .await
+        .map_err(|err| format!("ensure_default_research_workspace task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn research_workspace_create_pick(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<GroupInfo>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        match pick_folder_dialog(&app, "Select a research folder")? {
+            Some(path) => create_research_workspace(&state, None, path).map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|err| format!("research_workspace_create_pick task failed: {err}"))?
+}
+
+#[tauri::command]
+fn research_workspace_rename(
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+    name: Option<String>,
+) -> Result<GroupInfo, String> {
+    rename_research_workspace(&state, &workspace_id, name)
+}
+
+#[tauri::command]
+async fn research_workspace_pick_dir(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+) -> Result<Option<GroupInfo>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        match pick_folder_dialog(&app, "Select a replacement research folder")? {
+            Some(path) => set_research_workspace_dir(&state, &workspace_id, path).map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|err| format!("research_workspace_pick_dir task failed: {err}"))?
+}
+
+#[tauri::command]
+fn research_workspace_remove(
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    remove_research_workspace(&state, &workspace_id)
+}
+
+#[tauri::command]
 fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
     state.list_agents()
 }
@@ -486,6 +571,377 @@ fn list_thread_graphs(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<thread_graph::ThreadGraph>, String> {
     state.list_thread_graphs()
+}
+
+#[tauri::command]
+fn get_thread_graph(
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+) -> Result<Option<thread_graph::ThreadGraph>, String> {
+    state.thread_graph(&thread_id)
+}
+
+#[tauri::command]
+fn list_research_trees(
+    state: tauri::State<'_, AppState>,
+    include_archived: Option<bool>,
+) -> Result<Vec<ResearchTreeSummary>, String> {
+    if include_archived.unwrap_or(false) {
+        state.list_research_trees_with_archived(true)
+    } else {
+        state.list_research_trees()
+    }
+}
+
+#[tauri::command]
+fn list_research_activity(state: tauri::State<'_, AppState>) -> Result<Vec<ResearchNode>, String> {
+    state.list_research_activity()
+}
+
+#[tauri::command]
+fn get_research_tree(
+    state: tauri::State<'_, AppState>,
+    tree_id: String,
+) -> Result<ResearchTreeDetail, String> {
+    state.research_tree(&tree_id)
+}
+
+fn fail_research_launch(state: &AppState, node_id: &str, pane_id: &str, error: String) -> String {
+    match kill_pane(state, pane_id.to_string()) {
+        Ok(()) => state.clear_last_closed_pane_for_pane(pane_id),
+        Err(cleanup_error) => {
+            eprintln!("qmux: failed to clean up unbound research pane {pane_id}: {cleanup_error}");
+        }
+    }
+    let _ = state.fail_research_node(node_id, error.clone());
+    error
+}
+
+/// A research run the user settled (cancelled) while its launch was still in
+/// flight keeps its outcome — binding never resurrects it — but the launch has
+/// produced a live pane nothing will ever retire: research panes are hidden
+/// from the tab strip and the Cancel control is gone once the node is settled.
+/// Reclaim it here, mirroring cancellation's own pane teardown.
+fn reclaim_settled_research_launch(state: &AppState, node: &research::ResearchNode, pane_id: &str) {
+    if !node.status.is_terminal() {
+        return;
+    }
+    match kill_pane(state, pane_id.to_string()) {
+        Ok(()) => state.clear_last_closed_pane_for_pane(pane_id),
+        Err(err) => {
+            if state.pane_exists(pane_id).unwrap_or(false) {
+                eprintln!("qmux: failed to reclaim settled research pane {pane_id}: {err}");
+            }
+        }
+    }
+}
+
+#[tauri::command]
+async fn create_research_tree(
+    state: tauri::State<'_, AppState>,
+    request: CreateResearchTreeRequest,
+) -> Result<ResearchTreeDetail, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Admission holds the workspace-mutation guard so a concurrent folder
+        // replace/remove can't slip between validation and the node insert —
+        // the spawn itself runs unguarded (it's slow, and the Queued node
+        // already marks the workspace busy).
+        let detail = {
+            let _guard = workspace::lock_research_workspace_mutations()?;
+            validate_launch_workspace(&state, Some(&request.group_id), LaunchOrigin::Research)?;
+            state.create_research_tree(request)?
+        };
+        let root = detail
+            .nodes
+            .first()
+            .cloned()
+            .ok_or_else(|| "new research tree has no root node".to_string())?;
+        let workspace = match state.research_workspace_for_node(&root.id) {
+            Ok(workspace) => workspace,
+            Err(err) => {
+                let _ = state.fail_research_node(&root.id, err.clone());
+                remove_unlaunched_research_tree(&state, &detail.tree.id);
+                return Err(err);
+            }
+        };
+        let spawn = SpawnAgentRequest {
+            adapter_id: root.adapter.clone(),
+            prompt: root.prompt.clone(),
+            group_id: Some(workspace.id.clone()),
+            base_repo: Some(workspace.dir.clone()),
+            base_ref: Some("HEAD".to_string()),
+            cwd: None,
+            model: root.model.clone(),
+            initial_size: None,
+            use_worktree: Some(false),
+            options: serde_json::Value::Null,
+        };
+        match spawn_agent_pane(&state, spawn) {
+            Ok(pane) => {
+                let association = pane
+                    .agent_id
+                    .as_deref()
+                    .and_then(|agent_id| state.agent(agent_id).ok().flatten())
+                    .ok_or_else(|| "research agent was not recorded after launch".to_string())
+                    .and_then(|agent| {
+                        state
+                            .bind_research_node_run(&root.id, &agent, &pane.id)
+                            .map(|node| (agent, node))
+                    });
+                match association {
+                    Ok((agent, node)) => {
+                        if node.status.is_terminal() {
+                            // Cancelled while the spawn was in flight: the
+                            // outcome stands and the pane is reclaimed, so
+                            // there is nothing to announce.
+                            reclaim_settled_research_launch(&state, &node, &pane.id);
+                        } else {
+                            // Root spawns go through launch(), which emits no event
+                            // (launcher spawns assume a frontend caller holds the
+                            // pane). Nothing holds this one, so announce it or the
+                            // pane never enters the frontend list: Background
+                            // activity can't show it and "Open terminal" misses.
+                            state.emit(events::QmuxEvent::new(
+                                "agent.spawned",
+                                Some(pane.id.clone()),
+                                Some(agent.id.clone()),
+                                serde_json::json!({
+                                    "agent": agent,
+                                    "pane": pane,
+                                    "source": "research",
+                                }),
+                            ));
+                        }
+                        state.research_tree(&detail.tree.id)
+                    }
+                    Err(err) => {
+                        let err = fail_research_launch(&state, &root.id, &pane.id, err);
+                        remove_unlaunched_research_tree(&state, &detail.tree.id);
+                        Err(err)
+                    }
+                }
+            }
+            Err(err) => {
+                let _ = state.fail_research_node(&root.id, err.clone());
+                remove_unlaunched_research_tree(&state, &detail.tree.id);
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(|err| format!("create_research_tree task failed: {err}"))?
+}
+
+/// The tree is committed before its root run launches so a crash mid-launch is
+/// recoverable, but a root that never launched holds nothing durable. Leaving
+/// it behind on a launch failure accumulated dead entries the caller could not
+/// even identify — the command returns the error, not the tree id — while the
+/// dialog keeps the prompt for a retry. Best-effort: if the removal itself
+/// fails, the failed tree remains visible (and removable) in the sidebar.
+fn remove_unlaunched_research_tree(state: &AppState, tree_id: &str) {
+    if let Err(err) = state.remove_research_tree(tree_id) {
+        eprintln!("qmux: failed to remove unlaunched research tree {tree_id}: {err}");
+    }
+}
+
+#[tauri::command]
+async fn get_research_node_content(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+) -> Result<ResearchNodeContent, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut content = state.research_node_content(&node_id)?;
+        // A corrupt or oversized snapshot must not wedge the node: fall back to
+        // the transcript exactly as if no snapshot existed, keeping the read
+        // failure only as diagnostic context if nothing else is viewable.
+        let snapshot_error =
+            match research::read_response_snapshot(&state.config().workspace_root, &node_id) {
+                Ok(Some(turns)) => {
+                    content.turns = turns;
+                    return Ok(content);
+                }
+                Ok(None) => None,
+                Err(err) => {
+                    eprintln!("qmux: unreadable research response snapshot {node_id}: {err}");
+                    Some(err)
+                }
+            };
+        if content.node.transcript_path.is_some()
+            && matches!(
+                content.node.status,
+                research::ResearchNodeStatus::Complete
+                    | research::ResearchNodeStatus::Failed
+                    | research::ResearchNodeStatus::Cancelled
+            )
+        {
+            match research::load_transcript_response(state.config(), &content.node) {
+                Ok(turns) => content.turns = turns,
+                // No snapshot, no live turns, and the adapter transcript is
+                // unreadable: return the node with the failure recorded rather
+                // than erroring, which would wedge the workspace on a retry
+                // loop that can never succeed and hide the node entirely.
+                Err(err) if content.turns.is_empty() => {
+                    content.source_error = Some(match snapshot_error {
+                        Some(snapshot_error) => format!("{snapshot_error}; {err}"),
+                        None => err,
+                    });
+                }
+                Err(_) => {}
+            }
+        } else if content.turns.is_empty() {
+            content.source_error = snapshot_error;
+        }
+        Ok(content)
+    })
+    .await
+    .map_err(|err| format!("get_research_node_content task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn fork_research_node(
+    state: tauri::State<'_, AppState>,
+    parent_node_id: String,
+    prompt: String,
+) -> Result<ResearchNode, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Same admission guard as create_research_tree: the Queued child must
+        // be admitted atomically with the workspace checks, or a concurrent
+        // folder replace could commit between them and the fork would run in
+        // the old directory.
+        let (parent, workspace, child) = {
+            let _guard = workspace::lock_research_workspace_mutations()?;
+            let parent = state.research_node(&parent_node_id)?;
+            let workspace = state.research_workspace_for_node(&parent_node_id)?;
+            validate_launch_workspace(&state, Some(&workspace.id), LaunchOrigin::Research)?;
+            let child = state.create_research_child(&parent_node_id, prompt)?;
+            (parent, workspace, child)
+        };
+        let live_source = parent
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| state.agent(agent_id).ok().flatten());
+        let mut source = match live_source {
+            Some(source) => source,
+            None => {
+                let session_id = match parent.native_session_id.clone() {
+                    Some(session_id) => session_id,
+                    None => {
+                        let err = "the parent research session has no native session id to fork"
+                            .to_string();
+                        let _ = state.fail_research_node(&child.id, err.clone());
+                        return Err(err);
+                    }
+                };
+                AgentInfo {
+                    id: parent
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| format!("research-source-{}", parent.id)),
+                    group_id: parent.group_id.clone(),
+                    adapter: parent.adapter.clone(),
+                    worktree_dir: parent.worktree_dir.clone(),
+                    branch: None,
+                    pane_id: None,
+                    orphaned_queue_pane_id: None,
+                    session_id: Some(session_id.clone()),
+                    transcript_path: parent.transcript_path.clone(),
+                    status: AgentStatus::Done,
+                    model: parent.model.clone(),
+                    parent_id: None,
+                    fork_point: None,
+                    root_session_id: Some(session_id),
+                    thread_id: None,
+                    branch_id: None,
+                    paused: false,
+                    created_at: parent.created_at,
+                }
+            }
+        };
+        // Native checkpoints come from the parent run, but execution ownership
+        // and cwd always come from the tree's current durable workspace.
+        source.group_id = workspace.id;
+        source.worktree_dir = workspace.dir;
+        match fork_agent_source(&state, &source, false, true, Some(&child.prompt)) {
+            Ok(pane) => {
+                let association = pane
+                    .agent_id
+                    .as_deref()
+                    .and_then(|agent_id| state.agent(agent_id).ok().flatten())
+                    .ok_or_else(|| "forked research agent was not recorded".to_string())
+                    .and_then(|agent| state.bind_research_node_run(&child.id, &agent, &pane.id));
+                match association {
+                    Ok(node) if node.status.is_terminal() => {
+                        // Cancelled while the fork was in flight: keep the
+                        // settled outcome, reclaim the fresh pane, and hand
+                        // back the node as it stands after the teardown.
+                        reclaim_settled_research_launch(&state, &node, &pane.id);
+                        state.research_node(&child.id)
+                    }
+                    Ok(node) => Ok(node),
+                    Err(err) => Err(fail_research_launch(&state, &child.id, &pane.id, err)),
+                }
+            }
+            Err(err) => {
+                let _ = state.fail_research_node(&child.id, err.clone());
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(|err| format!("fork_research_node task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn cancel_research_node(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+) -> Result<ResearchNode, String> {
+    let state = state.inner().clone();
+    // Blocking: cancellation kills the run's pane (process wait + teardown).
+    tauri::async_runtime::spawn_blocking(move || state.cancel_research_node(&node_id))
+        .await
+        .map_err(|err| format!("cancel_research_node task failed: {err}"))?
+}
+
+#[tauri::command]
+fn rename_research_tree(
+    state: tauri::State<'_, AppState>,
+    tree_id: String,
+    title: String,
+) -> Result<ResearchTree, String> {
+    state.rename_research_tree(&tree_id, title)
+}
+
+#[tauri::command]
+fn mark_research_tree_viewed(
+    state: tauri::State<'_, AppState>,
+    tree_id: String,
+) -> Result<ResearchTree, String> {
+    state.mark_research_tree_viewed(&tree_id)
+}
+
+#[tauri::command]
+fn archive_research_tree(
+    state: tauri::State<'_, AppState>,
+    tree_id: String,
+) -> Result<ResearchTree, String> {
+    state.archive_research_tree(&tree_id)
+}
+
+#[tauri::command]
+fn restore_research_tree(
+    state: tauri::State<'_, AppState>,
+    tree_id: String,
+) -> Result<ResearchTree, String> {
+    state.restore_research_tree(&tree_id)
+}
+
+#[tauri::command]
+fn remove_research_tree(state: tauri::State<'_, AppState>, tree_id: String) -> Result<(), String> {
+    state.remove_research_tree(&tree_id)
 }
 
 #[tauri::command]
@@ -529,6 +985,14 @@ async fn group_create(
 
 #[tauri::command]
 fn group_remove(state: tauri::State<'_, AppState>, group_id: String) -> Result<(), String> {
+    if state
+        .group(&group_id)?
+        .is_some_and(|group| group.scope != workspace::WorkspaceScope::Terminal)
+    {
+        return Err(
+            "use the research workspace removal command for Research workspaces".to_string(),
+        );
+    }
     state.remove_group(&group_id)
 }
 
@@ -571,19 +1035,21 @@ async fn group_create_pick(
     after_group_id: Option<String>,
 ) -> Result<Option<GroupInfo>, String> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || match pick_folder_dialog(&app)? {
-        Some(path) => create_group(
-            &state,
-            CreateGroupRequest {
-                name: None,
-                dir: Some(path),
-                after_group_id,
-                base_repo: None,
-                base_ref: None,
-            },
-        )
-        .map(Some),
-        None => Ok(None),
+    tauri::async_runtime::spawn_blocking(move || {
+        match pick_folder_dialog(&app, "Select the group directory")? {
+            Some(path) => create_group(
+                &state,
+                CreateGroupRequest {
+                    name: None,
+                    dir: Some(path),
+                    after_group_id,
+                    base_repo: None,
+                    base_ref: None,
+                },
+            )
+            .map(Some),
+            None => Ok(None),
+        }
     })
     .await
     .map_err(|err| format!("group_create_pick task failed: {err}"))?
@@ -596,9 +1062,11 @@ async fn group_pick_dir(
     group_id: String,
 ) -> Result<Option<GroupInfo>, String> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || match pick_folder_dialog(&app)? {
-        Some(path) => set_group_dir(&state, &group_id, path).map(Some),
-        None => Ok(None),
+    tauri::async_runtime::spawn_blocking(move || {
+        match pick_folder_dialog(&app, "Select the group directory")? {
+            Some(path) => set_group_dir(&state, &group_id, path).map(Some),
+            None => Ok(None),
+        }
     })
     .await
     .map_err(|err| format!("group_pick_dir task failed: {err}"))?
@@ -613,6 +1081,7 @@ async fn spawn_shell(
 ) -> Result<PaneInfo, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        validate_launch_workspace(&state, group_id.as_deref(), LaunchOrigin::Terminal)?;
         spawn_shell_pane(
             &state,
             initial_size,
@@ -640,15 +1109,39 @@ fn use_login_shell_set(state: tauri::State<'_, AppState>, enabled: bool) -> Resu
     })
 }
 
+#[tauri::command(async)]
+fn worktree_location_get(
+    state: tauri::State<'_, AppState>,
+) -> Result<persistence::WorktreeLocation, String> {
+    Ok(
+        persistence::load_preferences(&state.config().workspace_root)?
+            .worktree_location
+            .unwrap_or_default(),
+    )
+}
+
+#[tauri::command(async)]
+fn worktree_location_set(
+    state: tauri::State<'_, AppState>,
+    location: persistence::WorktreeLocation,
+) -> Result<(), String> {
+    persistence::update_preferences(&state.config().workspace_root, |preferences| {
+        preferences.worktree_location = Some(location);
+    })
+}
+
 #[tauri::command]
 async fn agent_spawn(
     state: tauri::State<'_, AppState>,
     request: SpawnAgentRequest,
 ) -> Result<PaneInfo, String> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || spawn_agent_pane(&state, request))
-        .await
-        .map_err(|err| format!("agent_spawn task failed: {err}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_launch_workspace(&state, request.group_id.as_deref(), LaunchOrigin::Terminal)?;
+        spawn_agent_pane(&state, request)
+    })
+    .await
+    .map_err(|err| format!("agent_spawn task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -658,7 +1151,9 @@ async fn spawn_claude(
 ) -> Result<PaneInfo, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        spawn_agent_pane(&state, request.into_agent_request())
+        let request = request.into_agent_request();
+        validate_launch_workspace(&state, request.group_id.as_deref(), LaunchOrigin::Terminal)?;
+        spawn_agent_pane(&state, request)
     })
     .await
     .map_err(|err| format!("spawn_claude task failed: {err}"))?
@@ -677,6 +1172,9 @@ async fn agent_fork(
 ) -> Result<PaneInfo, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some(group_id) = state.pane_group_id(&pane_id)? {
+            validate_launch_workspace(&state, Some(&group_id), LaunchOrigin::Terminal)?;
+        }
         fork_agent_pane(&state, &pane_id, use_worktree, nest, prompt)
     })
     .await
@@ -738,7 +1236,7 @@ async fn pane_activity(
 #[tauri::command]
 async fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || kill_pane(&state, pane_id))
+    tauri::async_runtime::spawn_blocking(move || state.close_pane_for_user(&pane_id))
         .await
         .map_err(|err| format!("pane_kill task failed: {err}"))?
 }
@@ -1209,11 +1707,30 @@ fn main() {
             list_claude_skills,
             list_panes,
             list_groups,
+            list_research_workspaces,
+            ensure_default_research_workspace_command,
+            research_workspace_create_pick,
+            research_workspace_rename,
+            research_workspace_pick_dir,
+            research_workspace_remove,
             list_agents,
             list_recent_sessions,
             recent_session_resume,
             list_turns,
             list_thread_graphs,
+            get_thread_graph,
+            list_research_trees,
+            list_research_activity,
+            get_research_tree,
+            create_research_tree,
+            get_research_node_content,
+            fork_research_node,
+            cancel_research_node,
+            rename_research_tree,
+            mark_research_tree_viewed,
+            archive_research_tree,
+            restore_research_tree,
+            remove_research_tree,
             list_agent_turn_queue,
             list_agent_transcripts,
             set_agent_transcript,
@@ -1227,6 +1744,8 @@ fn main() {
             spawn_shell,
             use_login_shell_get,
             use_login_shell_set,
+            worktree_location_get,
+            worktree_location_set,
             agent_spawn,
             spawn_claude,
             agent_fork,

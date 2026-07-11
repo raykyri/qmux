@@ -1,4 +1,4 @@
-import type { PaneInfo } from "./types";
+import type { GroupInfo, PaneInfo } from "./types";
 
 export type CloseGroupContinuation = {
   groupId: string;
@@ -11,12 +11,15 @@ type CloseDialogGroupContext = {
   groupClose?: CloseGroupContinuation;
 };
 
-// The close-confirmation dialog covers four cases: a worktree agent (offer to
+// The close-confirmation dialog covers research cancellation, research-folder
+// removal, plus four ordinary cases: a worktree agent (offer to
 // keep or delete the worktree), a live agent without a worktree (just confirm the
 // stop), a tab with child processes, and the explicit tab close button (always
 // confirm). These render in-app because window.confirm is a no-op in the Tauri
 // webview.
 export type CloseDialogState =
+  | ({ kind: "researchFolderRemove"; workspace: GroupInfo } & CloseDialogGroupContext)
+  | ({ kind: "researchCancel"; pane: PaneInfo } & CloseDialogGroupContext)
   | ({
       kind: "worktree";
       pane: PaneInfo;
