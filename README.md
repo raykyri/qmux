@@ -6,17 +6,20 @@ transcript rendering.
 
 <p align="center"><img src="qmux.png" alt="qmux screenshot" width="700" style="max-width: 100%; height: auto;"></p>
 
-It includes native UI for launching agents, queueing follow-ups,
+It has a native UI for launching agents, queueing follow-ups,
 tracking agent status, and driving TUI-based agents.
 
 Agents are integrated through a pluggable adapter layer. Claude Code,
-Codex, OpenCode (limited support), and Grok (limited support) are
-included as adapters, but new agents can be added by implementing the
-adapter trait in Rust and adding a matching UI adapter on the frontend.
+Codex, OpenCode, and Grok are included as adapters, each with lifecycle
+hooks, native transcripts, session resumes, and native forks. New agents
+can be added by implementing the adapter trait in Rust and adding a
+matching UI adapter on the frontend.
 
 ## Features
 
-- Shell panes backed by Rust-owned PTYs in Tauri.
+- Native Ghostty terminals: each pane hosts a Metal-rendered Ghostty
+  surface on macOS, with a portable Rust PTY backend for tests and
+  non-macOS platforms.
 - Agent panes for Claude Code, Codex, OpenCode, and Grok, launched from the app
   or by running `claude` / `codex` / `opencode` / `grok` inside a shell pane.
 - Transcript JSONL tailing and a native follow-up composer: send, queue,
@@ -26,13 +29,20 @@ adapter trait in Rust and adding a matching UI adapter on the frontend.
   restart, along with drafts that you've typed in qmux.
 - Persisted pane, group, agent, transcript, and queued-turn metadata with
   best-effort restart recovery.
-- Session forking from inside a running Claude or Codex session.
-- App settings: terminal font and size, macOS wake lock that keeps the
-  machine awake while agents are running (skipped on battery below 10%).
+- Session forking from inside a running agent session (`qmux fork`),
+  supported natively by all four adapters.
+- Saved prompt library: prompts as Markdown files with global and
+  per-project scopes, `{placeholder}` fill-in, and a `Cmd-K` command
+  palette covering prompts, tab navigation, and pane actions.
+- App settings: terminal font, size, and theme (the qmux default plus
+  the bundled Ghostty color schemes), mouse wheel sensitivity, and a
+  macOS wake lock that keeps the machine awake while agents are running
+  (skipped on battery below 10%).
 - (Experimental) git worktree creation for launched agents, with dirty
   worktree checks and a delete-or-keep prompt when closing worktree-backed panes.
 - (Experimental) A tab-bound, resizable browser that renders a local file or a
-  `http://localhost` dev server in a panel over the terminal.
+  `http://localhost` dev server in a panel over the terminal. Markdown
+  files render as styled HTML.
 - macOS-only at this time. Linux support is planned for the future.
 
 ## Install
@@ -139,13 +149,16 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-D` / `Cmd-Shift-D`: split the active terminal downward.
 - `Cmd-W`: close the active pane.
 - `Ctrl-W`: close the active pane unless focus is in a terminal or text field.
+- `Cmd-K`: open the command palette (tab navigation, pane actions, saved
+  prompts) when focus is outside a terminal.
 - `Cmd-,` / `Ctrl-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch by default
   (`Enter` launches when "Require Cmd-Enter to send" is off).
 
-## How it Works
+## How it Works (for agents)
 
-- A pane is one Rust-owned PTY.
+- A pane is one terminal process: a native Ghostty exec surface on macOS,
+  or a Rust-owned PTY in tests and on other platforms.
 - Shell panes spawn `$SHELL`.
 - Agent panes spawn the adapter's configured agent binary, either in the current
   repo/directory or in a qmux-created agent worktree. Shell functions can route
