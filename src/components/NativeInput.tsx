@@ -26,7 +26,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
-import { listenToComposerInsert } from "../lib/promptLibrary";
+import { listenToComposerInsert, requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import type {
   AgentInfo,
   PaneInfo,
@@ -1406,6 +1406,19 @@ export default function NativeInput({
                     <div className="composer-menu-divider" role="separator" />
                   </>
                 ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composer-menu-item"
+                  disabled={value.trim().length === 0}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    requestSaveDraftAsPrompt(agent.id, value);
+                  }}
+                >
+                  Save current draft as prompt
+                </button>
+                <div className="composer-menu-divider" role="separator" />
                 <button
                   type="button"
                   role="menuitem"

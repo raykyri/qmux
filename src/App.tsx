@@ -7107,6 +7107,7 @@ export default function App() {
         header={
           showHeader ? (
             <TurnPaneHeader
+              agentId={agent?.id ?? null}
               sessionId={agent?.sessionId ?? null}
               transcriptOptions={agent ? surface.transcriptOptions : []}
               transcriptPath={agent?.transcriptPath ?? null}

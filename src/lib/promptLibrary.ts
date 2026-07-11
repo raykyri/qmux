@@ -29,6 +29,7 @@ export function fillPlaceholders(content: string, values: Record<string, string>
 }
 
 const COMPOSER_INSERT_EVENT = "qmux:composer-insert";
+const SAVE_DRAFT_AS_PROMPT_EVENT = "qmux:save-draft-as-prompt";
 
 interface ComposerInsertDetail {
   agentId: string;
@@ -57,4 +58,33 @@ export function listenToComposerInsert(
   };
   window.addEventListener(COMPOSER_INSERT_EVENT, handler);
   return () => window.removeEventListener(COMPOSER_INSERT_EVENT, handler);
+}
+
+interface SaveDraftAsPromptDetail {
+  agentId: string;
+  text: string;
+}
+
+/** Opens the prompt-library editor for `agentId`, prefilled from its composer. */
+export function requestSaveDraftAsPrompt(agentId: string, text: string) {
+  window.dispatchEvent(
+    new CustomEvent<SaveDraftAsPromptDetail>(SAVE_DRAFT_AS_PROMPT_EVENT, {
+      detail: { agentId, text },
+    }),
+  );
+}
+
+/** Subscribes one pane's prompt library to save-draft requests for its agent. */
+export function listenToSaveDraftAsPrompt(
+  agentId: string,
+  onSaveDraft: (text: string) => void,
+): () => void {
+  const handler = (event: Event) => {
+    const { detail } = event as CustomEvent<SaveDraftAsPromptDetail>;
+    if (detail?.agentId === agentId && typeof detail.text === "string") {
+      onSaveDraft(detail.text);
+    }
+  };
+  window.addEventListener(SAVE_DRAFT_AS_PROMPT_EVENT, handler);
+  return () => window.removeEventListener(SAVE_DRAFT_AS_PROMPT_EVENT, handler);
 }

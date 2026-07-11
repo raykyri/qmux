@@ -3526,10 +3526,14 @@ button.home-cascade-wait-pill:focus-visible {
   white-space: nowrap;
 }
 
-/* The header's folder/new buttons stay subdued until the section is hovered,
-   matching the per-row edit/delete affordances. */
+/* Keep secondary header actions subdued until hover, while the primary new-prompt
+   action remains discoverable at all times. */
 .prompt-library-section-header .prompt-library-icon-button {
   visibility: hidden;
+}
+
+.prompt-library-section-header .prompt-library-icon-button.is-always-visible {
+  visibility: visible;
 }
 
 .prompt-library-section:hover .prompt-library-section-header .prompt-library-icon-button,

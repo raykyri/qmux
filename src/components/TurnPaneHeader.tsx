@@ -26,6 +26,7 @@ const FORK_MENU_PREFERRED_WIDTH = 220;
 // supported sessions with a live id. Its height matches the browser overlay's
 // address bar so the two read as a single chrome line when the browser is open.
 interface TurnPaneHeaderProps {
+  agentId?: string | null;
   // The active agent's session id, or null before SessionStart lands.
   sessionId: string | null;
   // Sessions in this agent's folder for the top-left session switcher; the
@@ -64,6 +65,7 @@ type MenuPos = {
 };
 
 export default function TurnPaneHeader({
+  agentId,
   sessionId,
   transcriptOptions,
   transcriptPath,
@@ -365,6 +367,7 @@ export default function TurnPaneHeader({
       </div>
       <div className="turn-pane-header-controls">
         <PromptLibraryMenu
+          agentId={agentId}
           onInsert={onInsertPrompt}
           projectDir={promptProjectDir}
           projectLabel={promptProjectLabel}

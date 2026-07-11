@@ -15,7 +15,11 @@ import {
   saveSavedPrompt,
 } from "../lib/api";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
-import { discoverPlaceholders, fillPlaceholders } from "../lib/promptLibrary";
+import {
+  discoverPlaceholders,
+  fillPlaceholders,
+  listenToSaveDraftAsPrompt,
+} from "../lib/promptLibrary";
 import type { PromptScope, SavedPrompt } from "../types";
 
 const MENU_PREFERRED_WIDTH = 300;
@@ -28,9 +32,11 @@ const PROMPT_DRAG_TYPE = "application/x-qmux-prompt";
 type View =
   | { kind: "list" }
   | { kind: "fill"; prompt: SavedPrompt; placeholders: string[] }
-  | { kind: "edit"; original: SavedPrompt | null };
+  | { kind: "edit"; original: SavedPrompt | null; lockedScope?: PromptScope };
 
 interface PromptLibraryMenuProps {
+  // Identifies the composer whose draft-save requests this menu handles.
+  agentId?: string | null;
   // Inserts the chosen prompt text into the active composer at its caret.
   // Absent (e.g. a terminal pane with no agent) the trigger is disabled.
   onInsert?: (text: string) => void;
@@ -49,6 +55,7 @@ interface PromptLibraryMenuProps {
 // sections to move a prompt's home. `{placeholder}` slots discovered in a
 // prompt's text get a fill-in step before insertion, Smithers-style.
 export default function PromptLibraryMenu({
+  agentId,
   onInsert,
   projectDir,
   projectLabel,
@@ -99,6 +106,26 @@ export default function PromptLibraryMenu({
     setOpen(true);
     void refresh();
   };
+
+  // The send-button menu can open this editor directly with the current draft.
+  // That workflow deliberately locks the destination to Global.
+  useEffect(() => {
+    if (!agentId) {
+      return;
+    }
+    return listenToSaveDraftAsPrompt(agentId, (text) => {
+      setOpen(true);
+      setSearch("");
+      setError(null);
+      setDeleteArmed(null);
+      setDropScope(null);
+      setEditName("");
+      setEditContent(text);
+      setEditScope("global");
+      setView({ kind: "edit", original: null, lockedScope: "global" });
+      void refresh();
+    });
+  }, [agentId, refresh]);
 
   // A pane switch (e.g. ⌘1–9) can land on a different project while the popover
   // is open. The listed prompts would then belong to the old project while
@@ -407,7 +434,7 @@ export default function PromptLibraryMenu({
           </button>
           <button
             type="button"
-            className="prompt-library-icon-button"
+            className="prompt-library-icon-button is-always-visible"
             title={`New ${label.toLowerCase()} prompt`}
             aria-label={`New ${label} prompt`}
             onClick={() => startEdit(null, scope)}
@@ -510,7 +537,7 @@ export default function PromptLibraryMenu({
             onChange={(event) => setEditName(event.target.value)}
           />
         </label>
-        {hasProjectScope ? (
+        {hasProjectScope && !view.lockedScope ? (
           <div className="prompt-library-field">
             <span className="prompt-library-field-label">Saved in</span>
             <div className="prompt-library-scope-picker" role="radiogroup" aria-label="Saved in">
@@ -534,6 +561,11 @@ export default function PromptLibraryMenu({
                 </button>
               ))}
             </div>
+          </div>
+        ) : view.lockedScope ? (
+          <div className="prompt-library-field">
+            <span className="prompt-library-field-label">Saved in</span>
+            <div>Global</div>
           </div>
         ) : null}
         <label className="prompt-library-field">
