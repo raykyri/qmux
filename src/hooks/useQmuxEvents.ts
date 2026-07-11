@@ -39,6 +39,13 @@ import type {
 // events are about to change, and one frame is imperceptible for those actions.
 const EVENT_COALESCE_MS = 16;
 
+// Trailing debounce for thread-graph refetches raised by turn events. Graphs
+// back branch pickers and fork lineage — cosmetic relative to the timeline
+// itself — so a few hundred milliseconds of staleness is invisible, while
+// refetching per event burst was a full IPC round-trip plus a JSON diff of
+// every graph several times a second during streaming.
+const THREAD_GRAPH_REFRESH_DEBOUNCE_MS = 300;
+
 // Mirror the backend's per-agent turn cap (MAX_TURNS_PER_AGENT in state.rs). The
 // backend only ever holds the most recent N turns per agent, but the frontend
 // appended to its global turns array forever — a long-lived session grew memory and
@@ -152,17 +159,21 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     let panesRefreshSeq = 0;
     let groupsRefreshSeq = 0;
     let threadGraphRefreshSeq = 0;
-    // Turn events arrive in bursts (every appended line schedules a refresh), so
-    // collapse all requests raised within one synchronous batch into a single
-    // refetch; the seq guard still drops any stale response that loses a race.
-    let threadGraphRefreshQueued = false;
+    // Turn events arrive in bursts — every appended line schedules a refresh,
+    // and the transcript tail delivers a fresh burst every few hundred ms for
+    // as long as an agent streams. A microtask-level collapse still refetched
+    // (and re-serialized, re-parsed, and JSON-diffed) every thread graph once
+    // per burst. Debounce with a trailing timer instead: the timeline renders
+    // from `turns` directly, so graph freshness is not latency-critical, and
+    // one refetch per quiet window replaces several per second. The seq guard
+    // still drops any stale response that loses a race.
+    let threadGraphRefreshTimer: number | null = null;
     const refreshThreadGraphs = () => {
-      if (threadGraphRefreshQueued) {
+      if (threadGraphRefreshTimer !== null) {
         return;
       }
-      threadGraphRefreshQueued = true;
-      queueMicrotask(() => {
-        threadGraphRefreshQueued = false;
+      threadGraphRefreshTimer = window.setTimeout(() => {
+        threadGraphRefreshTimer = null;
         if (disposed) {
           return;
         }
@@ -176,7 +187,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
             }
           })
           .catch(() => undefined);
-      });
+      }, THREAD_GRAPH_REFRESH_DEBOUNCE_MS);
     };
 
     const handleEvent = (event: QmuxEvent) => {
@@ -466,6 +477,9 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       disposed = true;
       if (coalesceTimer !== null) {
         clearTimeout(coalesceTimer);
+      }
+      if (threadGraphRefreshTimer !== null) {
+        clearTimeout(threadGraphRefreshTimer);
       }
       unlisten?.();
     };
