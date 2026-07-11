@@ -1126,10 +1126,69 @@ function uniqueToolEntries(items: ActivityLeafItem[]) {
   return entries;
 }
 
-// Memoized on the item: buildTimelineItems is itself memoized on `turns`, so item
-// references are stable while turns are unchanged. That lets a re-render driven by
-// something else (e.g. each composer keystroke, which lives in a parent) skip
-// re-rendering — and re-running ReactMarkdown over — the whole timeline.
+// Structural equality for rebuilt timeline items. buildTimelineItems re-runs on
+// every turns change (every parsed line while an agent streams) and always
+// allocates fresh item wrappers, so the identity-based memo below missed for
+// every message on every turn event — re-running ReactMarkdown over the entire
+// transcript per event. The block/value objects *inside* the wrappers keep
+// their identity for unchanged turns (turn reconciliation reuses turn objects),
+// so wrappers are compared structurally with reference equality at the leaves:
+// an append then re-renders only the items whose content actually changed.
+// Keys are deterministic over the fold (a sequence over identical prefix
+// content yields identical numbers), so key equality is a real content signal.
+function sameMessageBlockList(a: MessageBlock[], b: MessageBlock[]) {
+  return a.length === b.length && a.every((block, index) => block === b[index]);
+}
+
+function sameActivityLeaf(a: ActivityLeafItem, b: ActivityLeafItem): boolean {
+  if (a.key !== b.key || a.status !== b.status) {
+    return false;
+  }
+  if (a.type === "tool" && b.type === "tool") {
+    return (
+      a.id === b.id &&
+      a.name === b.name &&
+      a.input === b.input &&
+      a.result === b.result &&
+      a.isError === b.isError
+    );
+  }
+  if (a.type === "thinking" && b.type === "thinking") {
+    return (
+      a.values.length === b.values.length &&
+      a.values.every((value, index) => value === b.values[index])
+    );
+  }
+  return false;
+}
+
+function sameActivityItem(a: ActivityItem, b: ActivityItem): boolean {
+  if (a.type === "activityGroup" || b.type === "activityGroup") {
+    return (
+      a.type === "activityGroup" &&
+      b.type === "activityGroup" &&
+      a.key === b.key &&
+      a.status === b.status &&
+      a.toolCallCount === b.toolCallCount &&
+      a.children.length === b.children.length &&
+      a.children.every((child, index) => sameActivityLeaf(child, b.children[index]))
+    );
+  }
+  return sameActivityLeaf(a, b);
+}
+
+function sameMessageItem(a: MessageItem, b: MessageItem): boolean {
+  return (
+    a.key === b.key &&
+    a.role === b.role &&
+    a.status === b.status &&
+    participantKey(a.participant) === participantKey(b.participant) &&
+    sameMessageBlockList(a.blocks, b.blocks) &&
+    a.activities.length === b.activities.length &&
+    a.activities.every((activity, index) => sameActivityItem(activity, b.activities[index]))
+  );
+}
+
 const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
   assistantLabel,
@@ -1165,7 +1224,15 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
       ))}
     </>
   );
-});
+},
+(previous, next) =>
+  previous.assistantLabel === next.assistantLabel &&
+  previous.showName === next.showName &&
+  previous.stickyClassName === next.stickyClassName &&
+  previous.titleGenerationEnabled === next.titleGenerationEnabled &&
+  previous.titleGenerationBusy === next.titleGenerationBusy &&
+  previous.onRegenerateTitleFromUserMessage === next.onRegenerateTitleFromUserMessage &&
+  (previous.item === next.item || sameMessageItem(previous.item, next.item)));
 
 function MessageItemView({
   item,
