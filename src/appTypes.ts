@@ -96,30 +96,3 @@ export type BrowserOverlayState = {
   sandbox: boolean;
   size?: BrowserOverlaySize | null;
 };
-
-// Viewport-coordinate bounding box of a text selection, used to anchor the
-// floating "Ask" popup near the selected text.
-export type SelectionAnchor = { left: number; right: number; top: number; bottom: number };
-
-// The floating Ask / Ask-in-new-thread button group shown over a non-empty text
-// selection in the terminal or an assistant transcript message. Ephemeral.
-export type SelectionAskState = {
-  quote: string;
-  anchor: SelectionAnchor;
-  sourceAgentId: string;
-  sourcePaneId: string;
-  // Whether the source agent can be forked (supported adapter with a recorded
-  // session), which gates the "Ask in new thread" button.
-  canFork: boolean;
-};
-
-// The ask launcher modal: a launcher-style popup seeded with a quote. "ask" sends
-// to the source agent; "newThread" forks the source conversation with the question
-// as its launch prompt.
-// Ephemeral — closing discards the typed question and any options.
-export type AskLauncherState = {
-  quote: string;
-  mode: "ask" | "newThread";
-  sourceAgentId: string;
-  sourcePaneId: string;
-};

@@ -46,8 +46,7 @@ public func qmuxNativeTerminalInitialize(
 public func qmuxNativeTerminalCreate(
     _ paneID: UnsafePointer<CChar>?,
     _ launcherPath: UnsafePointer<CChar>?,
-    _ workingDirectory: UnsafePointer<CChar>?,
-    _ canAskSelection: Int32
+    _ workingDirectory: UnsafePointer<CChar>?
 ) -> Int32 {
     guard let paneID = terminalString(paneID),
           let launcherPath = terminalString(launcherPath)
@@ -59,8 +58,7 @@ public func qmuxNativeTerminalCreate(
         NativeTerminalHost.shared.createPane(
             id: paneID,
             launcherPath: launcherPath,
-            workingDirectory: cwd,
-            canAskSelection: canAskSelection == 1
+            workingDirectory: cwd
         )
             ? 1 : 0
     }
@@ -209,7 +207,6 @@ public func qmuxNativeTerminalUpdateSettings(
     _ cursorStyle: UnsafePointer<CChar>?,
     _ scrollbackRows: UInt32,
     _ scrollOnUserInput: Int32,
-    _ canAskSelection: Int32,
     _ scrollSensitivity: Double,
     _ copyOnSelect: Int32,
     _ selectionClearOnCopy: Int32
@@ -231,7 +228,6 @@ public func qmuxNativeTerminalUpdateSettings(
             cursorStyle: cursorStyle,
             scrollbackRows: scrollbackRows,
             scrollOnUserInput: scrollOnUserInput == 1,
-            canAskSelection: canAskSelection == 1,
             scrollSensitivity: scrollSensitivity,
             copyOnSelect: copyOnSelect == 1,
             selectionClearOnCopy: selectionClearOnCopy == 1

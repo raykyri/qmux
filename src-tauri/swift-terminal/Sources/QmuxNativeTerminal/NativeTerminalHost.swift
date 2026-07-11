@@ -90,8 +90,7 @@ final class NativeTerminalHost {
     func createPane(
         id: String,
         launcherPath: String,
-        workingDirectory: String?,
-        canAskSelection: Bool
+        workingDirectory: String?
     ) -> Bool {
         guard let container else { return false }
         if panes[id] != nil {
@@ -101,8 +100,7 @@ final class NativeTerminalHost {
         let pane = NativeTerminalPane(
             paneID: id,
             launcherPath: launcherPath,
-            workingDirectory: workingDirectory,
-            canAskSelection: canAskSelection
+            workingDirectory: workingDirectory
         )
         pane.view.isHidden = true
         pane.view.setSurfaceVisible(false)
@@ -307,7 +305,6 @@ final class NativeTerminalHost {
         cursorStyle: String,
         scrollbackRows: UInt32,
         scrollOnUserInput: Bool,
-        canAskSelection: Bool,
         scrollSensitivity: Double,
         copyOnSelect: Bool,
         selectionClearOnCopy: Bool
@@ -322,7 +319,6 @@ final class NativeTerminalHost {
             cursorStyle: cursorStyle,
             scrollbackRows: scrollbackRows,
             scrollOnUserInput: scrollOnUserInput,
-            canAskSelection: canAskSelection,
             scrollSensitivity: scrollSensitivity,
             copyOnSelect: copyOnSelect,
             selectionClearOnCopy: selectionClearOnCopy

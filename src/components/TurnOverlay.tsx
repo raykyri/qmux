@@ -25,7 +25,6 @@ import type { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
-import type { SelectionAnchor } from "../appTypes";
 import { IS_MAC, isEditableTarget, placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
@@ -82,14 +81,6 @@ interface TurnOverlayProps {
   // How rendered-markdown links behave (left-click opens internally; right-click
   // opens a chooser).
   linkActions: LinkActions;
-  // Called on mouse-up when the user selects non-whitespace text within the
-  // transcript, with the text and its viewport bounding box, so the app can offer to
-  // ask the agent about it.
-  onAskSelection?: (quote: string, anchor: SelectionAnchor) => void;
-  // Called on a mouse-up that leaves no usable transcript selection, so the app can
-  // dismiss an open Ask popup (the popup stays mounted across re-selections, so a
-  // click that just clears the selection has to be reported here to close it).
-  onDismissSelection?: () => void;
   // When true, the agent is actively working, so a "Working…" indicator is pinned
   // to the bottom of the transcript. Driven by live status transitions upstream, so
   // an agent merely restored into a working status does not light it up.
@@ -297,8 +288,6 @@ export default function TurnOverlay({
   queueSplitHeight,
   onQueueSplitHeightChange,
   linkActions,
-  onAskSelection,
-  onDismissSelection,
   thinking = false,
   thinkingLabel = "Working…",
   showActivityDetail = true,
@@ -316,54 +305,6 @@ export default function TurnOverlay({
     regenerateTitleFromUserMessageRef.current?.(message);
   }, []);
 
-  // On mouse-up, offer an "ask about this" action for any non-whitespace selection
-  // within the transcript — any message (user, assistant, or system), tool output, or
-  // thinking. Only the composer/input below the transcript is excluded.
-  const handleSelectionMouseUp = () => {
-    if (!onAskSelection) {
-      return;
-    }
-    const timeline = timelineRef.current;
-    if (!timeline) {
-      return;
-    }
-    const selection = document.getSelection();
-    const text = selection ? selection.toString() : "";
-    // Require the selection to *start* inside the transcript, so a drag that begins in a
-    // message but is released over the composer still registers, while a selection made
-    // inside the composer itself is ignored. The start (not the mouse-up target) is what
-    // matters, since the highlighted text stays in the transcript even when the release
-    // lands below it.
-    const range =
-      selection && !selection.isCollapsed && selection.rangeCount > 0 && text.trim()
-        ? selection.getRangeAt(0)
-        : null;
-    if (!range || !timeline.contains(range.startContainer)) {
-      // No usable transcript selection (e.g. a click that collapsed the previous one).
-      // The popup stays mounted across re-selections, so dismiss it explicitly rather
-      // than leaving it stranded over text that is no longer highlighted.
-      onDismissSelection?.();
-      return;
-    }
-    // Anchor over the highlighted text. A triple-click selects a whole block and leaves
-    // a zero-width caret rect at the start of the following block, which would stretch
-    // the box past the selection, so union only the rects that actually cover something.
-    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
-    const box = rects.length
-      ? {
-          left: Math.min(...rects.map((r) => r.left)),
-          right: Math.max(...rects.map((r) => r.right)),
-          top: Math.min(...rects.map((r) => r.top)),
-          bottom: Math.max(...rects.map((r) => r.bottom)),
-        }
-      : range.getBoundingClientRect();
-    onAskSelection(text, {
-      left: box.left,
-      right: box.right,
-      top: box.top,
-      bottom: box.bottom,
-    });
-  };
   const queueSplitDragRef = useRef<QueueSplitDrag | null>(null);
   const queueSplitPointerReleaseRef = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -815,10 +756,6 @@ export default function TurnOverlay({
       ref={sidebarRef}
       className={`turn-sidebar${header ? " has-header" : ""}${queueSplit ? " has-queue-split" : ""}`}
       aria-label="Agent turns"
-      // Listen on the whole pane, not just the timeline, so a selection that starts
-      // in a message but is released over the composer below still registers. The
-      // Ask popup is portaled outside this section, so clicking it can't re-fire.
-      onMouseUp={handleSelectionMouseUp}
     >
       {header}
       {searchOpen ? (

@@ -82,7 +82,6 @@ export interface UseQmuxEventsHandlers {
   onTerminalCommandModifier?: (paneId: string, active: boolean) => void;
   onTerminalOpenUrl?: (paneId: string, url: string) => void;
   onTerminalTitleChanged?: (paneId: string, title: string) => void;
-  onTerminalSelection?: (paneId: string, text: string) => void;
 }
 
 function stringField(value: unknown, field: string): string | null {
@@ -127,7 +126,6 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     onTerminalCommandModifier,
     onTerminalOpenUrl,
     onTerminalTitleChanged,
-    onTerminalSelection,
   } = handlers;
 
   useEffect(() => {
@@ -233,12 +231,6 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const url = stringField(event.payload, "url");
         if (url !== null) {
           onTerminalOpenUrl?.(event.paneId, url);
-        }
-      }
-      if (event.type === "terminal.selection" && event.paneId) {
-        const text = stringField(event.payload, "text");
-        if (text !== null) {
-          onTerminalSelection?.(event.paneId, text);
         }
       }
       if (event.type === "app.exit_confirmation_requested") {

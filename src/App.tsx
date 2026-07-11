@@ -66,7 +66,6 @@ import LinkContextMenu from "./components/LinkContextMenu";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
-import SelectionAskPopup from "./components/SelectionAskPopup";
 import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TurnOverlay";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
@@ -75,7 +74,6 @@ import {
   agentStatusLabel,
   agentCanFork,
   agentStatusTone,
-  buildQuotedMessage,
   clamp,
   cycleTabId,
   formatTranscriptCopyJson,
@@ -95,7 +93,6 @@ import {
 import { buildSingleAgentThreadGraph, focusedBranchTurns } from "./lib/threadGraph";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
-  AskLauncherState,
   BrowserOverlayState,
   BrowserOverlaySize,
   CloseGroupContinuation,
@@ -107,8 +104,6 @@ import type {
   PaneContextMenuState,
   PaneDropTarget,
   PaneTabPointerDrag,
-  SelectionAnchor,
-  SelectionAskState,
 } from "./appTypes";
 import {
   canIndent,
@@ -285,9 +280,6 @@ function claimResizePointer(event: ReactPointerEvent<HTMLDivElement>): () => voi
 const ATTACH_MAX_RETRIES = 4;
 const ATTACH_INITIAL_RETRY_MS = 150;
 const ATTACH_MAX_RETRY_MS = 2000;
-// Short grace period for selection popup closes: rapid re-selection should move the
-// popup instead of flashing it out and back in.
-const SELECTION_ASK_HIDE_DEBOUNCE_MS = 150;
 // Left strip of the sidebar the browser overlay leaves uncovered, so the first few
 // chars of each tab stay visible and clickable for switching tabs.
 const BROWSER_OVERLAY_LEFT_MARGIN = 64;
@@ -1217,25 +1209,7 @@ export default function App() {
   // of the composer so typed text starts after the immutable command.
   const [skillPrefixWidth, setSkillPrefixWidth] = useState(0);
   const skillPrefixRef = useRef<HTMLSpanElement | null>(null);
-  // The floating Ask popup over a text selection, and the ask launcher it opens.
-  // Both are ephemeral: dismissing discards their contents (per the "can be lost"
-  // requirement). The ask launcher reuses the launcher's markup but its own state.
-  const [selectionAsk, setSelectionAsk] = useState<SelectionAskState | null>(null);
-  const selectionAskHideTimerRef = useRef<number | null>(null);
-  const [askLauncher, setAskLauncher] = useState<AskLauncherState | null>(null);
-  const [askPrompt, setAskPrompt] = useState("");
-  const [askCreateInWorktree, setAskCreateInWorktree] = useState(false);
-  const [askSelectedSkillId, setAskSelectedSkillId] = useState<string | null>(null);
-  const askInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // Mirrors `askLauncher !== null` for the global keydown handler (which reads refs
-  // rather than re-subscribing) so it can yield the keyboard while the ask modal is
-  // open.
-  const askLauncherOpenRef = useRef(false);
-  askLauncherOpenRef.current = askLauncher !== null;
-  // Guards `submitAsk` against re-entry (held Cmd+Enter, a double-click) so a single
-  // ask never sends twice or — worse, in "new thread" mode — forks twice.
-  const askSubmittingRef = useRef(false);
-  // Same guard for the new-agent launcher: addAgentPane awaits spawnAgent before it
+  // Guard for the new-agent launcher: addAgentPane awaits spawnAgent before it
   // closes the launcher, so a held Enter or double submit would otherwise spawn
   // several agents (and worktrees) from one intended launch.
   const launchingAgentRef = useRef(false);
@@ -2066,9 +2040,6 @@ export default function App() {
       rememberLauncherAdapter(nextAdapterId);
     }
     focusLauncherInput();
-  }
-  function focusAskInput() {
-    requestAnimationFrame(() => askInputRef.current?.focus());
   }
   // The launcher renders in two places: the modal (Cmd-; / sidebar button) and,
   // when there are no panes, inline as the content-pane placeholder. Only one is
@@ -3820,11 +3791,6 @@ export default function App() {
   const reportNativeTerminalInput = useCallback((paneId: string) => {
     terminalPaneRefs.current.get(paneId)?.reportUserInput();
   }, []);
-  const reportNativeTerminalSelection = useCallback(
-    (paneId: string, text: string) =>
-      terminalHandlersRef.current.handleTerminalAskSelection(paneId, text),
-    [],
-  );
   const activateTerminalPane = useCallback((paneId: string) => {
     setActivePaneId(paneId);
     setLauncherOpen(false);
@@ -3875,7 +3841,6 @@ export default function App() {
     onTerminalCommandModifier: handleNativeTerminalCommandModifier,
     onTerminalOpenUrl: openPaneLink,
     onTerminalTitleChanged: handleTerminalTitleChange,
-    onTerminalSelection: reportNativeTerminalSelection,
   });
 
   async function addShellPane() {
@@ -5227,86 +5192,17 @@ export default function App() {
     await forkPane(activePane, options);
   }
 
-  // Show the floating Ask popup for a selection. Both surfaces (terminal and
-  // transcript) route here; the selection is always within the active agent's pane,
-  // and we require an active agent (shell panes have nothing to ask).
-  function clearSelectionAskHideTimer() {
-    if (selectionAskHideTimerRef.current === null) {
-      return;
-    }
-    window.clearTimeout(selectionAskHideTimerRef.current);
-    selectionAskHideTimerRef.current = null;
-  }
-  function dismissSelectionAskSoon() {
-    clearSelectionAskHideTimer();
-    selectionAskHideTimerRef.current = window.setTimeout(() => {
-      selectionAskHideTimerRef.current = null;
-      setSelectionAsk(null);
-    }, SELECTION_ASK_HIDE_DEBOUNCE_MS);
-  }
-  function dismissSelectionAskNow() {
-    clearSelectionAskHideTimer();
-    setSelectionAsk(null);
-  }
-  function showSelectionAskForPane(
-    pane: PaneInfo | undefined,
-    agent: AgentInfo | undefined,
-    quote: string,
-    anchor: SelectionAnchor,
-  ) {
-    if (!agent || !pane) {
-      return;
-    }
-    const trimmed = quote.trim();
-    if (!trimmed) {
-      return;
-    }
-    clearSelectionAskHideTimer();
-    setSelectionAsk({
-      quote: trimmed,
-      anchor,
-      sourceAgentId: agent.id,
-      sourcePaneId: pane.id,
-      // "Ask in new thread" forks — gate the button so it's never a dead end.
-      canFork: agentCanFork(agent),
-    });
-  }
-  function handleTerminalAskSelection(paneId: string, quote: string) {
-    if (!visibleTerminalPaneIdSet.has(paneId)) {
-      return;
-    }
-    const pane = paneById.get(paneId);
-    const agent = pane ? agentByPaneId.get(pane.id) : undefined;
-    const trimmed = quote.trim();
-    if (!pane || !agent || !trimmed) {
-      return;
-    }
-    setAskLauncher({
-      quote: trimmed,
-      mode: "ask",
-      sourceAgentId: agent.id,
-      sourcePaneId: pane.id,
-    });
-    setAskPrompt("");
-    setAskCreateInWorktree(false);
-    setAskSelectedSkillId(null);
-    focusAskInput();
-  }
-
-  // Stable identities for terminal handlers. The impls above are plain functions
-  // that close over fresh state / unstable helpers, so passing them directly gives
-  // a new identity every render — defeating TerminalPane's React.memo (making every
-  // mounted pane reconcile on unrelated App re-renders) and re-subscribing event
-  // hooks. Routing through a latest-ref wrapper is behavior-neutral; it just lets
-  // the memo hold. (reportNativeTerminalSelection above reads this ref too — safe,
-  // since events only fire after the render that initializes it.)
+  // Stable identity for the terminal input handler. The impl above is a plain
+  // function that closes over fresh state / unstable helpers, so passing it directly
+  // gives a new identity every render — defeating TerminalPane's React.memo (making
+  // every mounted pane reconcile on unrelated App re-renders) and re-subscribing
+  // event hooks. Routing through a latest-ref wrapper is behavior-neutral; it just
+  // lets the memo hold.
   const terminalHandlersRef = useRef({
     noteUserInput,
-    handleTerminalAskSelection,
   });
   terminalHandlersRef.current = {
     noteUserInput,
-    handleTerminalAskSelection,
   };
   const stableNoteUserInput = useCallback(
     (agentId: string) => terminalHandlersRef.current.noteUserInput(agentId),
@@ -5326,95 +5222,6 @@ export default function App() {
       return next;
     });
   }, []);
-  function openAskLauncher(mode: "ask" | "newThread") {
-    const selection = selectionAsk;
-    if (!selection) {
-      return;
-    }
-    setAskLauncher({
-      quote: selection.quote,
-      mode,
-      sourceAgentId: selection.sourceAgentId,
-      sourcePaneId: selection.sourcePaneId,
-    });
-    setAskPrompt("");
-    setAskCreateInWorktree(false);
-    setAskSelectedSkillId(null);
-    dismissSelectionAskNow();
-    focusAskInput();
-  }
-  function closeAskLauncher(focusPaneId?: string) {
-    setAskLauncher(null);
-    setAskPrompt("");
-    setAskCreateInWorktree(false);
-    setAskSelectedSkillId(null);
-    // After a fork the active pane changed, but `focusActiveTerminal` reads the
-    // pre-update `activePane` from this render's closure — so focus the requested
-    // pane (the fork) explicitly; otherwise fall back to the active terminal.
-    if (focusPaneId) {
-      requestAnimationFrame(() => terminalPaneRefs.current.get(focusPaneId)?.focus());
-    } else {
-      focusActiveTerminal();
-    }
-  }
-  async function submitAsk() {
-    if (!askLauncher || askSubmittingRef.current) {
-      return;
-    }
-    const question = askPrompt.trim();
-    if (!question) {
-      return;
-    }
-    const target = askLauncher;
-    const targetAgent = agents.find((agent) => agent.id === target.sourceAgentId) ?? null;
-    const skill =
-      target.mode === "newThread" &&
-      targetAgent?.adapter === CLAUDE_ADAPTER_ID &&
-      askSelectedSkillId
-        ? availableSkills.find((entry) => entry.id === askSelectedSkillId) ?? null
-        : null;
-    let message = buildQuotedMessage(target.quote, question);
-    if (skill) {
-      message = `${skill.command} ${message}`;
-    }
-    setError(null);
-    askSubmittingRef.current = true;
-    let focusPaneId: string | undefined;
-    try {
-      if (target.mode === "ask") {
-        // "auto": the backend sends now if the agent is ready, or queues onto the
-        // current conversation if it's busy.
-        const result = await submitAgentTurn(target.sourceAgentId, message, "auto");
-        setAgentQueuedTurns(target.sourceAgentId, result.queuedTurns);
-      } else {
-        const pane = await forkAgent(target.sourcePaneId, {
-          nest: true,
-          useWorktree: askCreateInWorktree,
-          prompt: message,
-        });
-        setPanesPreservingRecoveredDismissals((current) =>
-          current.some((existing) => existing.id === pane.id) ? current : [...current, pane],
-        );
-        setActivePaneId(pane.id);
-        expandNewAgentTranscriptByDefault(pane);
-        // Land focus on the fork we just switched to, not the source pane.
-        focusPaneId = pane.id;
-        if (!pane.agentId) {
-          // A forkable pane should always come back with an agent id; surface it
-          // rather than silently accepting a fork that cannot be tracked.
-          setError("The forked conversation isn't ready to receive a message.");
-        }
-      }
-      closeAskLauncher(focusPaneId);
-    } catch (err) {
-      // Keep the launcher open on failure so the question isn't lost and the user
-      // can retry.
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      askSubmittingRef.current = false;
-    }
-  }
-
   // Mirror active-tab state into refs so the always-on keydown listener never reads
   // stale state.
   useEffect(() => {
@@ -5750,8 +5557,6 @@ export default function App() {
     },
     [],
   );
-  useEffect(() => () => clearSelectionAskHideTimer(), []);
-
   // Keep the machine awake while the toggle is on and at least one agent is
   // actively working (running or starting up). Releasing the lock the moment no
   // agent is busy lets normal power management resume.
@@ -5997,18 +5802,14 @@ export default function App() {
     };
 
     nativeTerminalShortcutHandlerRef.current = (paneId, command, repeat) => {
-      if (askLauncherOpenRef.current || activePaneRef.current?.id !== paneId) {
+      if (activePaneRef.current?.id !== paneId) {
         return;
       }
       executeShortcut(command, repeat);
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        isShowHideShortcutCaptureTarget(event.target) ||
-        event.defaultPrevented ||
-        askLauncherOpenRef.current
-      ) {
+      if (isShowHideShortcutCaptureTarget(event.target) || event.defaultPrevented) {
         return;
       }
       const command = resolveAppShortcut({
@@ -6070,24 +5871,6 @@ export default function App() {
     // opening the modal (e.g. ⌘;) doesn't flip launcherVisible. Without this the modal's
     // freshly-mounted textarea — a different node than the inline one — never gets focus.
   }, [launcherVisible, launcherOpen]);
-
-  // The ask launcher's Claude "new thread" mode shows the same skill toggles, but
-  // opening it doesn't pass through the launcher-visible effect above — so load the
-  // skills here too, otherwise the toggles are empty until the main launcher has
-  // been opened once this session.
-  useEffect(() => {
-    if (askLauncher?.mode !== "newThread") {
-      return;
-    }
-    const sourceAgent = agents.find((agent) => agent.id === askLauncher.sourceAgentId);
-    if (sourceAgent?.adapter !== CLAUDE_ADAPTER_ID) {
-      setAskSelectedSkillId(null);
-      return;
-    }
-    void listClaudeSkills()
-      .then(setAvailableSkills)
-      .catch(() => setAvailableSkills([]));
-  }, [agents, askLauncher?.mode, askLauncher?.sourceAgentId]);
 
   // Selecting a non-Claude adapter clears any chosen skill; measure the faint
   // command prefix so the composer's first line is indented past it.
@@ -6436,124 +6219,6 @@ export default function App() {
             aria-label={`Launch ${launchAdapter.label}`}
             title={`Launch ${launchAdapter.label}`}
           >
-            <ComposerSubmitShortcutGlyph
-              requireCmdEnter={settings.requireCmdEnterToSend}
-              ariaHidden
-            />
-          </button>
-        </div>
-      </div>
-    </form>
-  );
-
-  const askLauncherSourceAgent = askLauncher
-    ? agents.find((agent) => agent.id === askLauncher.sourceAgentId) ?? null
-    : null;
-  const askLauncherSkillsEnabled =
-    askLauncher?.mode === "newThread" && askLauncherSourceAgent?.adapter === CLAUDE_ADAPTER_ID;
-
-  // The ask launcher: a launcher-style modal seeded with a quoted selection. In
-  // "ask" mode only the question field and submit show; in "newThread" mode
-  // (fork-with-prompt) the worktree checkbox is shown, with Claude skill toggles
-  // when the source adapter supports them. The adapter select is intentionally
-  // omitted — a fork inherits the source's adapter.
-  const renderAskLauncher = (state: AskLauncherState) => (
-    <form
-      className="command-launcher command-launcher--ask"
-      role="dialog"
-      aria-modal={true}
-      aria-label={state.mode === "newThread" ? "Ask in a new thread" : "Ask about selection"}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          closeAskLauncher();
-          return;
-        }
-        // Swallow Undo/Redo so the WebView doesn't blur the controlled textarea
-        // (see the launcher's note).
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
-          event.preventDefault();
-          return;
-        }
-        if (
-          isComposerSubmitShortcut(event, settings.requireCmdEnterToSend) &&
-          !event.repeat
-        ) {
-          event.preventDefault();
-          void submitAsk();
-        }
-      }}
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submitAsk();
-      }}
-    >
-      <blockquote className="command-launcher-quote">{state.quote}</blockquote>
-      <textarea
-        ref={askInputRef}
-        className="command-launcher-input command-launcher-input--ask"
-        value={askPrompt}
-        onChange={(event) => setAskPrompt(event.currentTarget.value)}
-        rows={2}
-        placeholder="Ask about this quote"
-        autoFocus
-      />
-      <div className="command-launcher-overlay">
-        <div className="command-launcher-overlay-group">
-          {state.mode === "newThread" ? (
-            <>
-              {settings.codeMode ? (
-                <label className="command-launcher-worktree">
-                  <input
-                    type="checkbox"
-                    checked={askCreateInWorktree}
-                    onChange={(event) => {
-                      setAskCreateInWorktree(event.currentTarget.checked);
-                      focusAskInput();
-                    }}
-                  />
-                  <span>New worktree</span>
-                </label>
-              ) : null}
-              {askLauncherSkillsEnabled && availableSkills.length > 0 ? (
-                <div className="command-launcher-skills">
-                  {availableSkills.map((skill) => (
-                    <label
-                      key={skill.id}
-                      className="command-launcher-worktree command-launcher-skill"
-                      title={skill.command}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={askSelectedSkillId === skill.id}
-                        onChange={() => {
-                          setAskSelectedSkillId((current) =>
-                            current === skill.id ? null : skill.id,
-                          );
-                          focusAskInput();
-                        }}
-                      />
-                      <span>{skill.name}</span>
-                    </label>
-                  ))}
-                </div>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-        <div className="command-launcher-controls">
-          <button
-            type="submit"
-            className="command-launcher-send"
-            aria-label={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
-            title={state.mode === "newThread" ? "Ask in a new thread" : "Ask"}
-          >
-            {state.mode === "newThread" ? (
-              <GitBranch size={13} aria-hidden="true" />
-            ) : null}
-            <span className="command-launcher-send-label">
-              {state.mode === "newThread" ? "Ask in fork" : "Queue"}
-            </span>
             <ComposerSubmitShortcutGlyph
               requireCmdEnter={settings.requireCmdEnterToSend}
               ariaHidden
@@ -6950,10 +6615,6 @@ export default function App() {
           agent ? (height) => setQueueSplitHeightForAgent(agent.id, height) : undefined
         }
         linkActions={linkActionsForPane(surface.pane.id)}
-        onAskSelection={(quote, anchor) =>
-          showSelectionAskForPane(surface.pane, agent, quote, anchor)
-        }
-        onDismissSelection={dismissSelectionAskSoon}
         onRegenerateTitleFromUserMessage={
           agent && titleGenerationEnabled
             ? (message) =>
@@ -7641,20 +7302,6 @@ export default function App() {
           }}
         >
           {renderLauncher("modal")}
-        </div>
-      ) : null}
-
-      {askLauncher ? (
-        <div
-          className="command-launcher-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeAskLauncher();
-            }
-          }}
-        >
-          {renderAskLauncher(askLauncher)}
         </div>
       ) : null}
 
@@ -8555,12 +8202,11 @@ export default function App() {
                 settingsOpen ||
                 launcherOpen ||
                 Boolean(activeBrowserOverlay?.open) ||
-                Boolean(askLauncher) ||
                 Boolean(closeDialog) ||
                 Boolean(exitDialog) ||
                 Boolean(exitPreflightRequest) ||
                 Boolean(renamePaneId || renameGroupId) ||
-                Boolean(linkMenu || selectionAsk) ||
+                Boolean(linkMenu) ||
                 // Context/settings menus overhang the terminal stage; while
                 // one is open the native pointer monitor must not swallow the
                 // mouse-up of a menu-item click (or feed phantom clicks into
@@ -8709,19 +8355,6 @@ export default function App() {
             setLinkMenu(null);
           }}
           onClose={() => setLinkMenu(null)}
-        />
-      ) : null}
-
-      {selectionAsk ? (
-        <SelectionAskPopup
-          anchor={selectionAsk.anchor}
-          canAskNewThread={selectionAsk.canFork}
-          // The transcript is a re-selection surface: a mousedown there keeps the popup
-          // mounted so it glides to the next selection instead of flashing.
-          reselectWithin=".turn-timeline"
-          onAsk={() => openAskLauncher("ask")}
-          onAskNewThread={() => openAskLauncher("newThread")}
-          onClose={dismissSelectionAskSoon}
         />
       ) : null}
 

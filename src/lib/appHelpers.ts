@@ -110,21 +110,6 @@ export function turnPaneRectFrom(el: Element | null): DOMRect | null {
   return pane instanceof HTMLElement ? pane.getBoundingClientRect() : null;
 }
 
-// Formats a quoted selection plus the user's question into one agent message: the
-// quote as a Markdown blockquote (each line prefixed with `>`), a blank line, then
-// the question. Used by the "Ask about this quote" launcher so the agent receives
-// the quote inline regardless of which surface it was selected from.
-export function buildQuotedMessage(quote: string, question: string): string {
-  const quoted = quote
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => `> ${line}`.trimEnd())
-    .join("\n");
-  const trimmedQuestion = question.trim();
-  return trimmedQuestion ? `${quoted}\n\n${trimmedQuestion}` : quoted;
-}
-
 export function selectPaneAfterClose(
   panes: PaneInfo[],
   closedPaneId: string,

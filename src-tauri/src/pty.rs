@@ -763,7 +763,6 @@ fn spawn_native_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, St
         &pane_id,
         &launcher.display().to_string(),
         Some(&pane.cwd),
-        pane.agent_id.is_some(),
     ) {
         let _ = state.remove_pane(&pane_id);
         remove_shell_integration_dir(&pane_id);

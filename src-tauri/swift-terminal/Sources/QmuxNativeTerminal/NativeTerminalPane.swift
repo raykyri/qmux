@@ -60,12 +60,6 @@ private func nativeTerminalDidOpenURL(
     _ url: UnsafePointer<CChar>
 )
 
-@_silgen_name("qmux_native_terminal_did_select_text")
-private func nativeTerminalDidSelectText(
-    _ paneID: UnsafePointer<CChar>,
-    _ text: UnsafePointer<CChar>
-)
-
 @MainActor
 final class NativeTerminalPane: NSObject,
     TerminalSurfaceCloseDelegate,
@@ -87,8 +81,7 @@ final class NativeTerminalPane: NSObject,
     init(
         paneID: String,
         launcherPath: String,
-        workingDirectory: String?,
-        canAskSelection: Bool
+        workingDirectory: String?
     ) {
         self.paneID = paneID
         self.launcherPath = launcherPath
@@ -137,10 +130,6 @@ final class NativeTerminalPane: NSObject,
         view.setAccessibilityElement(true)
         view.setAccessibilityLabel("Terminal")
         view.setAccessibilityIdentifier("terminal.\(paneID)")
-        view.onAskSelection = { [weak self] in
-            self?.reportSelection()
-        }
-        view.canAskSelection = canAskSelection
         view.onPasteRequest = { [weak self] in self?.requestPaste() }
     }
 
@@ -242,19 +231,6 @@ final class NativeTerminalPane: NSObject,
         view.pasteApprovedText(text)
     }
 
-    func reportSelection() {
-        guard let text = view.readSelectedText(),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            return
-        }
-        paneID.withCString { paneID in
-            text.withCString {
-                nativeTerminalDidSelectText(paneID, $0)
-            }
-        }
-    }
-
     func updateSettings(
         fontSize: Double,
         fontFamily: String,
@@ -264,14 +240,12 @@ final class NativeTerminalPane: NSObject,
         cursorStyle: String,
         scrollbackRows: UInt32,
         scrollOnUserInput: Bool,
-        canAskSelection: Bool,
         scrollSensitivity: Double,
         copyOnSelect: Bool,
         selectionClearOnCopy: Bool
     ) -> Bool {
         let style = TerminalCursorStyle(rawValue: cursorStyle) ?? .block
         let scrollbackBytes = max(UInt64(scrollbackRows) * 1024, 1_048_576)
-        view.canAskSelection = canAskSelection
         let configuration = TerminalConfiguration { builder in
             builder.withFontSize(Float(fontSize))
             builder.withFontFamily(fontFamily)
@@ -298,10 +272,8 @@ final class NativeTerminalPane: NSObject,
             )
         }
         // setTerminalConfiguration declines no-op updates with false, but an
-        // unchanged Ghostty config is success here — canAskSelection above is
-        // view state that changes without touching the config (e.g. an agent
-        // attaching to an existing pane), and reporting failure for it would
-        // surface a spurious settings error in the frontend.
+        // unchanged Ghostty config is success here; reporting failure for a
+        // no-op would surface a spurious settings error in the frontend.
         if configuration != controller.terminalConfiguration,
            !controller.setTerminalConfiguration(configuration)
         {

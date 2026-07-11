@@ -33,7 +33,6 @@ pub struct NativeTerminalSettings {
     pub cursor_style: String,
     pub scrollback_rows: u32,
     pub scroll_on_user_input: bool,
-    pub can_ask_selection: bool,
     pub scroll_sensitivity: f64,
     pub copy_on_select: bool,
     pub selection_clear_on_copy: bool,
@@ -173,7 +172,6 @@ mod imp {
             pane_id: *const c_char,
             launcher_path: *const c_char,
             working_directory: *const c_char,
-            can_ask_selection: i32,
         ) -> i32;
         fn qmux_native_terminal_remove(pane_id: *const c_char);
         fn qmux_native_terminal_terminate(pane_id: *const c_char) -> i32;
@@ -210,7 +208,6 @@ mod imp {
             cursor_style: *const c_char,
             scrollback_rows: u32,
             scroll_on_user_input: i32,
-            can_ask_selection: i32,
             scroll_sensitivity: f64,
             copy_on_select: i32,
             selection_clear_on_copy: i32,
@@ -249,7 +246,6 @@ mod imp {
         pane_id: &str,
         launcher_path: &str,
         working_directory: Option<&str>,
-        can_ask_selection: bool,
     ) -> Result<(), String> {
         let pane_id = cstring(pane_id, "pane id")?;
         let launcher_path = cstring(launcher_path, "launcher path")?;
@@ -265,7 +261,6 @@ mod imp {
                 pane_id.as_ptr(),
                 launcher_path.as_ptr(),
                 working_directory_ptr,
-                i32::from(can_ask_selection),
             )
         } == 1
         {
@@ -447,7 +442,6 @@ mod imp {
                 cursor_style.as_ptr(),
                 settings.scrollback_rows,
                 i32::from(settings.scroll_on_user_input),
-                i32::from(settings.can_ask_selection),
                 settings.scroll_sensitivity,
                 i32::from(settings.copy_on_select),
                 i32::from(settings.selection_clear_on_copy),
@@ -492,7 +486,6 @@ mod imp {
         _pane_id: &str,
         _launcher_path: &str,
         _working_directory: Option<&str>,
-        _can_ask_selection: bool,
     ) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
@@ -764,24 +757,6 @@ pub extern "C" fn qmux_native_terminal_did_open_url(
             Some(pane_id),
             None,
             serde_json::json!({ "url": url }),
-        ));
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn qmux_native_terminal_did_select_text(
-    pane_id: *const std::ffi::c_char,
-    text: *const std::ffi::c_char,
-) {
-    let (Some(pane_id), Some(text)) = (callback_string(pane_id), callback_string(text)) else {
-        return;
-    };
-    with_app_state(|state| {
-        state.emit(QmuxEvent::new(
-            "terminal.selection",
-            Some(pane_id),
-            None,
-            serde_json::json!({ "text": text }),
         ));
     });
 }

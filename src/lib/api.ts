@@ -460,7 +460,6 @@ export interface NativeTerminalSettings {
   cursorStyle: "block" | "underline" | "bar";
   scrollbackRows: number;
   scrollOnUserInput: boolean;
-  canAskSelection: boolean;
   scrollSensitivity: number;
   copyOnSelect: boolean;
   selectionClearOnCopy: boolean;
