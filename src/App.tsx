@@ -1296,7 +1296,12 @@ export default function App() {
   }, [selectedTheme]);
   const pasteProtection = useMemo(() => pasteProtectionFor(settings), [settings]);
   const shortcutHintsShown = settings.showShortcutHints && shortcutHintsVisible;
-  const [prompt, setPrompt] = useState("");
+  // The launcher prompt is deliberately NOT React state: as app-root state it
+  // re-rendered the entire component tree on every keystroke (the composer had
+  // the same problem and got a component-local draft). The textarea runs
+  // uncontrolled; this ref tracks the live text for submit, and remounts (the
+  // modal/inline variant switch) reseed from it via defaultValue.
+  const promptRef = useRef("");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
   const [launcherOptionsByAdapter, setLauncherOptionsByAdapter] = useState<
@@ -5517,7 +5522,7 @@ export default function App() {
       return;
     }
     launchingAgentRef.current = true;
-    const trimmed = prompt.trim();
+    const trimmed = promptRef.current.trim();
     // A selected skill is sent as a leading slash command so the launched agent
     // invokes it before the user's prompt (e.g. `/qmux:deep-research <prompt>`).
     const finalPrompt = selectedSkill ? `${selectedSkill.command} ${trimmed}`.trim() : trimmed;
@@ -5548,7 +5553,7 @@ export default function App() {
         );
         applyPendingFirstMessageTitle(pane.agentId, trimmed);
       }
-      setPrompt("");
+      clearLauncherPrompt();
       setSelectedSkillId(null);
       setLauncherOpen(false);
       const [latestAgents] = await Promise.all([listAgents(), refreshGroups()]);
@@ -6300,16 +6305,32 @@ export default function App() {
   }, [selectedSkill, launcherVisible]);
 
   // Grow the launcher textarea to fit its content so a multi-line prompt expands the
-  // whole launcher (the CSS max-height caps it, after which the field scrolls). The
-  // skill prefix changes the first line's indent, so re-measure when it changes too.
-  useLayoutEffect(() => {
+  // whole launcher (the CSS max-height caps it, after which the field scrolls). Runs
+  // from the (uncontrolled) textarea's onChange for typing; this effect covers the
+  // remaining triggers — the launcher appearing and the skill prefix changing the
+  // first line's indent.
+  const growLauncherInput = useCallback(() => {
     const textarea = launcherInputRef.current;
-    if (!launcherVisible || !textarea) {
+    if (!textarea) {
       return;
     }
     textarea.style.height = "auto";
     textarea.style.height = `${textarea.scrollHeight}px`;
-  }, [prompt, launcherVisible, skillPrefixWidth]);
+  }, []);
+  const clearLauncherPrompt = useCallback(() => {
+    promptRef.current = "";
+    const textarea = launcherInputRef.current;
+    if (textarea) {
+      textarea.value = "";
+    }
+    growLauncherInput();
+  }, [growLauncherInput]);
+  useLayoutEffect(() => {
+    if (!launcherVisible) {
+      return;
+    }
+    growLauncherInput();
+  }, [growLauncherInput, launcherVisible, skillPrefixWidth]);
 
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
@@ -6521,10 +6542,11 @@ export default function App() {
           }
           return;
         }
-        // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is a
-        // controlled input, so the WebView's native undo has no field-local history
-        // to act on and instead blurs the textarea — which hands focus back to the
-        // terminal. Trapping the combo here keeps focus (and the caret) put.
+        // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is
+        // cleared programmatically on launch (outside the WebView's undo
+        // history), so native undo could resurrect a sent prompt — or, with no
+        // applicable history, blur the textarea and hand focus back to the
+        // terminal. Trapping the combo keeps focus (and the caret) put.
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
           event.preventDefault();
           return;
@@ -6552,8 +6574,11 @@ export default function App() {
         ref={launcherInputRef}
         id="agent-prompt"
         className="command-launcher-input"
-        value={prompt}
-        onChange={(event) => setPrompt(event.currentTarget.value)}
+        defaultValue={promptRef.current}
+        onChange={(event) => {
+          promptRef.current = event.currentTarget.value;
+          growLauncherInput();
+        }}
         rows={2}
         placeholder="What should we investigate next?"
         style={selectedSkill ? { textIndent: `${skillPrefixWidth}px` } : undefined}
