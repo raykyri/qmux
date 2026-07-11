@@ -28,6 +28,10 @@ export type CloseDialogState =
       // immediately (git status can take seconds on a large worktree) and the
       // verdict patches in when the probe resolves.
       checkingChanges: boolean;
+      // Identifies which dialog generation an in-flight probe belongs to, so a
+      // probe from a dismissed dialog can't patch a newer dialog for the same
+      // pane with its older verdict.
+      probeNonce: number;
       busy: boolean;
     } & CloseDialogGroupContext)
   | ({ kind: "stop"; pane: PaneInfo; reason: string } & CloseDialogGroupContext)

@@ -1328,6 +1328,8 @@ export default function App() {
   } | null>(null);
   const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  // Monotonic id for worktree-dialog git-status probes (see closeDialogForPane).
+  const worktreeProbeNonceRef = useRef(0);
   const closeConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
   // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
   // buttons disabled) until the close/delete actually finishes.
@@ -5253,13 +5255,16 @@ export default function App() {
     const agent = agentsRef.current.find((candidate) => candidate.paneId === paneToClose.id);
     if (agent && agent.branch) {
       const checkingChanges = options?.checkWorktreeStatus !== false;
+      const probeNonce = (worktreeProbeNonceRef.current += 1);
       if (checkingChanges) {
         // The dialog opens immediately and the git-status verdict patches in:
         // awaiting the probe here left ⌘W with no visible response for as
         // long as `git status` takes on the worktree (seconds on large or
         // cold-cache repos). A probe failure keeps the unknown state so the
-        // dialog cannot falsely assure the user that deleting is safe; a
-        // dialog that was dismissed or replaced meanwhile is left alone.
+        // dialog cannot falsely assure the user that deleting is safe. The
+        // nonce ties the patch to this dialog generation: a probe from a
+        // dismissed dialog (cancel → reopen the same pane) must not land its
+        // older verdict on the newer dialog.
         void worktreeStatus(agent.id)
           .then(
             (status): boolean | null => status.hasChanges,
@@ -5268,8 +5273,7 @@ export default function App() {
           .then((hasChanges) => {
             setCloseDialog((current) =>
               current?.kind === "worktree" &&
-              current.agentId === agent.id &&
-              current.pane.id === paneToClose.id &&
+              current.probeNonce === probeNonce &&
               current.checkingChanges
                 ? { ...current, hasChanges, checkingChanges: false }
                 : current,
@@ -5283,6 +5287,7 @@ export default function App() {
         worktreeDir: agent.worktreeDir,
         hasChanges: null,
         checkingChanges,
+        probeNonce,
         busy:
           agent.status === "starting" ||
           agent.status === "running" ||
