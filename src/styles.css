@@ -3960,11 +3960,14 @@ button.home-cascade-wait-pill:focus-visible {
   margin: 7px 0;
 }
 
-/* The last user message pins to the top of the pane while the turn beneath it
-   plays out, and releases as the view scrolls back up to its original slot.
+/* In the compact pane, the last user message pins to the top while the turn
+   beneath it plays out, and releases as the view scrolls back up to its original slot.
+   Expanded transcripts keep every message in the normal document flow.
    TurnOverlay arms this (has-sticky-user) only while the bubble is short
    relative to the pane, so a tall message never blankets the transcript. */
-.turn-timeline.has-sticky-user .turn-card.is-sticky-user-message {
+.turn-pane:not(.is-expanded)
+  .turn-timeline.has-sticky-user
+  .turn-card.is-sticky-user-message {
   position: sticky;
   top: 0;
 }
@@ -3979,7 +3982,9 @@ button.home-cascade-wait-pill:focus-visible {
    TurnOverlay's STICKY_USER_MAX_HEIGHT_RATIO cap keeps a pinned card short
    enough that they can never meet.
    Nothing here applies while the message sits in its normal flow position. */
-.turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck {
+.turn-pane:not(.is-expanded)
+  .turn-timeline.has-sticky-user
+  .turn-card.is-sticky-user-message.is-stuck {
   z-index: 1;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
@@ -3990,7 +3995,9 @@ button.home-cascade-wait-pill:focus-visible {
    flush at the card's top edge: a negative-z-index pseudo paints over its own
    element's background, so any overlap would erase the card's top border and
    corners. Anything above the scrollport is clipped. */
-.turn-timeline.has-sticky-user .turn-card.is-sticky-user-message.is-stuck::before {
+.turn-pane:not(.is-expanded)
+  .turn-timeline.has-sticky-user
+  .turn-card.is-sticky-user-message.is-stuck::before {
   content: "";
   position: absolute;
   z-index: -1;
