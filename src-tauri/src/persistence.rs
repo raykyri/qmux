@@ -295,7 +295,12 @@ fn reset_state_requested() -> bool {
 /// `QMUX_RESET_STATE` set, an unreadable or newer-versioned file is renamed
 /// aside to a `.bak` and `Ok` is returned so the user can deliberately start
 /// fresh without losing the original bytes.
-pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
+///
+/// On success the raw bytes that were read (and version-checked) are returned
+/// so the subsequent hydration can reuse them instead of reading and parsing
+/// the same file a second time; `None` means there was nothing to read (first
+/// run, or the file was deliberately moved aside).
+pub fn preflight_state(workspace_root: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = state_path(workspace_root);
     // Read raw bytes, not a UTF-8 string: a state file with invalid UTF-8 is
     // *corrupt content*, not an I/O failure, and must fall through to the
@@ -306,7 +311,7 @@ pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
     // guidance.
     let raw = match fs::read(&path) {
         Ok(raw) => raw,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
         Err(err) if reset_state_requested() => {
             return match preserve_rejected_state(&path, "unreadable") {
                 Ok(backup_path) => {
@@ -315,7 +320,7 @@ pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
                         path.display(),
                         backup_path.display()
                     );
-                    Ok(())
+                    Ok(None)
                 }
                 Err(rename_err) => Err(format!(
                     "could not read persisted state {} ({err}) and could not move it aside to reset: {rename_err}",
@@ -348,7 +353,7 @@ pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
         .and_then(|value| value.get("version").and_then(Value::as_u64))
         .filter(|&version| version > u64::from(STATE_VERSION));
     let Some(version) = newer_version else {
-        return Ok(());
+        return Ok(Some(raw));
     };
 
     if reset_state_requested() {
@@ -359,7 +364,7 @@ pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
                     path.display(),
                     backup_path.display()
                 );
-                Ok(())
+                Ok(None)
             }
             Err(rename_err) => Err(format!(
                 "persisted state {} was written by a newer qmux (state version {version}) and could not be moved aside to reset: {rename_err}",
@@ -385,22 +390,46 @@ pub fn preflight_state(workspace_root: &Path) -> Result<(), String> {
 /// Corrupt or unsupported state files are renamed aside before future saves can
 /// overwrite them.
 pub fn load_with_diagnostics(workspace_root: &Path) -> LoadOutcome {
+    load_with_diagnostics_from(workspace_root, None)
+}
+
+/// Like [`load_with_diagnostics`], but reuses bytes already read by
+/// [`preflight_state`] instead of reading and parsing the same file a second
+/// time during startup.
+pub fn load_with_diagnostics_from(workspace_root: &Path, preread: Option<Vec<u8>>) -> LoadOutcome {
     let path = state_path(workspace_root);
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == ErrorKind::NotFound => return load_ok(PersistedState::default()),
-        Err(err) => {
-            // `preflight_state` runs first and aborts startup on an unreadable
-            // file, so this is only reached if the read starts failing between
-            // preflight and here (e.g. transient EIO). Preserve the bytes aside
-            // as a `.bak` rather than starting empty and letting the next save
-            // overwrite an intact session with no way back.
-            return discard_state_file(
-                &path,
-                "unreadable",
-                format!("failed to read persisted state {}: {err}", path.display()),
-            );
-        }
+    let raw = match preread {
+        Some(raw) => match String::from_utf8(raw) {
+            Ok(raw) => raw,
+            Err(err) => {
+                return discard_state_file(
+                    &path,
+                    "corrupt",
+                    format!(
+                        "persisted state {} is not valid UTF-8: {err}",
+                        path.display()
+                    ),
+                );
+            }
+        },
+        None => match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return load_ok(PersistedState::default());
+            }
+            Err(err) => {
+                // `preflight_state` runs first and aborts startup on an unreadable
+                // file, so this is only reached if the read starts failing between
+                // preflight and here (e.g. transient EIO). Preserve the bytes aside
+                // as a `.bak` rather than starting empty and letting the next save
+                // overwrite an intact session with no way back.
+                return discard_state_file(
+                    &path,
+                    "unreadable",
+                    format!("failed to read persisted state {}: {err}", path.display()),
+                );
+            }
+        },
     };
 
     let value = match serde_json::from_str::<Value>(&raw) {

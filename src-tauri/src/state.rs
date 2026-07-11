@@ -129,6 +129,10 @@ struct AppStateInner {
     // surfaces it in a GUI dialog — a Finder launch never shows stderr, and a
     // silently discarded session looks like the app ate the user's tabs.
     recovery_warning: Mutex<Option<String>>,
+    // The state-file bytes the startup preflight already read, handed to
+    // restore_session so hydration doesn't read and parse the same file a
+    // second time. Taken (and dropped) on first use.
+    preflighted_state: Mutex<Option<Vec<u8>>>,
     exit_confirmed: AtomicBool,
     // Loopback file-server port, set once at startup. The control socket pairs it with
     // a per-pane file token to build browser-overlay URLs.
@@ -824,6 +828,7 @@ impl AppState {
                 persist_wake: Condvar::new(),
                 persister_spawned: AtomicBool::new(false),
                 recovery_warning: Mutex::new(None),
+                preflighted_state: Mutex::new(None),
                 exit_confirmed: AtomicBool::new(false),
                 file_server: Mutex::new(None),
                 control_socket_identity: Mutex::new(None),
@@ -1036,7 +1041,13 @@ impl AppState {
     /// overwriting an intact session with an empty one. See
     /// [`persistence::preflight_state`].
     pub fn preflight_persisted_state(&self) -> Result<(), String> {
-        persistence::preflight_state(&self.inner.config.workspace_root)
+        let raw = persistence::preflight_state(&self.inner.config.workspace_root)?;
+        // Keep the bytes for restore_session so hydration reuses this read
+        // instead of re-reading and re-parsing the file.
+        if let Ok(mut slot) = self.inner.preflighted_state.lock() {
+            *slot = raw;
+        }
+        Ok(())
     }
 
     /// The warning produced while loading persisted state, if any, taken once so
@@ -1050,7 +1061,17 @@ impl AppState {
     }
 
     pub fn restore_session(&self) -> Vec<PaneInfo> {
-        let outcome = persistence::load_with_diagnostics(&self.inner.config.workspace_root);
+        // Reuse the bytes preflight already read; when there was no preflight
+        // (tests, or a first run with nothing on disk) this falls back to
+        // reading the file itself.
+        let preread = self
+            .inner
+            .preflighted_state
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        let outcome =
+            persistence::load_with_diagnostics_from(&self.inner.config.workspace_root, preread);
         let persistence_warning = outcome.warning.map(|warning| warning.message);
         let mut persisted = outcome.state;
         let migration_warnings = migrate_thread_records_to_global(
