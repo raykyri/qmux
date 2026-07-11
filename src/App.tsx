@@ -195,6 +195,7 @@ import {
   listThreadGraphs,
   listTurns,
   listPanes,
+  markAppWindowReady,
   moveQueuedAgentTurn,
   openExternalUrl,
   paneActivity,
@@ -2640,7 +2641,16 @@ export default function App() {
     terminalTitleByPane,
   ]);
 
+  // The snapshot memo recomputes whenever any input's identity changes (agents
+  // churn on every status hook), but the tray only needs an IPC — and AppKit
+  // only needs a full menu rebuild — when the visible content actually changed.
+  const lastMenuBarSnapshotJsonRef = useRef<string | null>(null);
   useEffect(() => {
+    const json = JSON.stringify(menuBarSnapshot);
+    if (json === lastMenuBarSnapshotJsonRef.current) {
+      return;
+    }
+    lastMenuBarSnapshotJsonRef.current = json;
     void updateMenuBar(menuBarSnapshot).catch(() => undefined);
   }, [menuBarSnapshot]);
 
@@ -3717,7 +3727,15 @@ export default function App() {
       }
     }
 
-    void boot();
+    // Reveal the hidden-at-boot window whether boot succeeded or threw — the
+    // error banner is exactly what the user must see on a failed boot. The
+    // effect-cancelled rerun (StrictMode, remount) leaves showing to the run
+    // that actually completes; the backend watchdog covers a hung boot.
+    void boot().finally(() => {
+      if (!cancelled) {
+        void markAppWindowReady().catch(() => undefined);
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -8446,23 +8464,29 @@ export default function App() {
               selectionClearOnCopy={settings.selectionClearOnCopy}
               pasteProtection={pasteProtection}
               deferGeometryUpdates={terminalGeometryResizing}
+              // Only visible panes take the blocking signal: a hidden pane's
+              // surface neither owns the keyboard nor receives pointer events,
+              // and keeping its prop pinned false means opening a dialog/menu
+              // re-renders (and re-issues layout FFI for) only the panes on
+              // screen instead of every mounted tab.
               inputBlocked={
-                settingsOpen ||
-                launcherOpen ||
-                Boolean(activeBrowserOverlay?.open) ||
-                Boolean(closeDialog) ||
-                Boolean(exitDialog) ||
-                Boolean(exitPreflightRequest) ||
-                Boolean(renamePaneId || renameGroupId) ||
-                Boolean(linkMenu) ||
-                // Context/settings menus overhang the terminal stage; while
-                // one is open the native pointer monitor must not swallow the
-                // mouse-up of a menu-item click (or feed phantom clicks into
-                // the terminal underneath).
-                Boolean(paneContextMenu || groupMenu || settingsMenu) ||
-                draggingPaneId !== null ||
-                terminalGeometryResizing ||
-                terminalOverlayBlockedPaneIds.size > 0
+                visibleTerminalPaneIdSet.has(pane.id) &&
+                (settingsOpen ||
+                  launcherOpen ||
+                  Boolean(activeBrowserOverlay?.open) ||
+                  Boolean(closeDialog) ||
+                  Boolean(exitDialog) ||
+                  Boolean(exitPreflightRequest) ||
+                  Boolean(renamePaneId || renameGroupId) ||
+                  Boolean(linkMenu) ||
+                  // Context/settings menus overhang the terminal stage; while
+                  // one is open the native pointer monitor must not swallow the
+                  // mouse-up of a menu-item click (or feed phantom clicks into
+                  // the terminal underneath).
+                  Boolean(paneContextMenu || groupMenu || settingsMenu) ||
+                  draggingPaneId !== null ||
+                  terminalGeometryResizing ||
+                  terminalOverlayBlockedPaneIds.size > 0)
               }
               // A live web selection cedes the keyboard to WebKit just like a
               // focused editable: the pane releases ownership, first responder

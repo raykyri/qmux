@@ -272,12 +272,34 @@ fn status_icon(tone: &str, waiting_on_pane: bool) -> tauri::image::Image<'static
 
 #[cfg(target_os = "macos")]
 fn dot_icon(red: u8, green: u8, blue: u8, outline: bool) -> tauri::image::Image<'static> {
-    const SIZE: u32 = 18;
-    const SAMPLES: u32 = 4;
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
 
-    for y in 0..SIZE {
-        for x in 0..SIZE {
+    const SIZE: u32 = 18;
+
+    // The menu rebuilds on every agent status flip, re-rasterizing a dot per
+    // tab each time — on the main thread. There are only a handful of distinct
+    // (color, outline) dots, so rasterize each once and reuse the pixels.
+    static RASTER_CACHE: LazyLock<Mutex<HashMap<(u8, u8, u8, bool), Vec<u8>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let rgba = {
+        let mut cache = RASTER_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        cache
+            .entry((red, green, blue, outline))
+            .or_insert_with(|| render_dot_rgba(red, green, blue, outline, SIZE))
+            .clone()
+    };
+    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
+}
+
+#[cfg(target_os = "macos")]
+fn render_dot_rgba(red: u8, green: u8, blue: u8, outline: bool, size: u32) -> Vec<u8> {
+    const SAMPLES: u32 = 4;
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+
+    for y in 0..size {
+        for x in 0..size {
             let mut covered = 0u32;
             for sample_y in 0..SAMPLES {
                 for sample_x in 0..SAMPLES {
@@ -299,7 +321,7 @@ fn dot_icon(red: u8, green: u8, blue: u8, outline: bool) -> tauri::image::Image<
         }
     }
 
-    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
+    rgba
 }
 
 #[cfg(target_os = "macos")]

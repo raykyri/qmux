@@ -482,7 +482,10 @@ fn list_agent_turn_queue(
     state.agent_queued_turns(&agent_id)
 }
 
-#[tauri::command]
+// Async so it runs off the main thread: building the picker reads the head of
+// up to 30 transcript files (and walks the Codex sessions tree), which froze
+// the UI for the duration when run as a synchronous command.
+#[tauri::command(async)]
 fn list_agent_transcripts(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -905,6 +908,31 @@ fn app_confirm_exit(
     Ok(())
 }
 
+/// Whether the frontend has reported its first meaningful paint. Read by the
+/// startup watchdog so it only force-shows the window when the frontend never
+/// booted — not when the user has already seen the window and hidden it again.
+static WINDOW_READY_REPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The window starts hidden (`visible: false` in tauri.conf.json) so startup
+/// never shows a blank translucent shell while the session restores and the
+/// webview boots. The frontend calls this once its boot snapshot is applied —
+/// the first paint the user sees is the restored session. A watchdog in setup
+/// shows the window anyway if the frontend never reports in.
+#[tauri::command]
+fn app_window_ready(app: tauri::AppHandle) -> Result<(), String> {
+    WINDOW_READY_REPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    show_main_window(&app);
+    Ok(())
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// Arms or releases the macOS wake lock. The frontend calls this whenever its
 /// "prevent sleep" setting or the set of running agents changes.
 #[tauri::command]
@@ -976,6 +1004,10 @@ fn main() {
         .setup({
             let state = state.clone();
             move |app| {
+                // First thing, so the login-shell PATH probe (up to seconds under
+                // heavy shell profiles) overlaps the rest of startup instead of
+                // stalling the first recovered pane's spawn at the end of it.
+                launch_path::warm_login_shell_path();
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
@@ -1034,7 +1066,15 @@ fn main() {
                 }
                 // Sweep scratch files stranded by earlier processes that were killed
                 // mid-save (most commonly the final persist racing process exit).
-                persistence::remove_stale_tmp_files(&state.config().workspace_root);
+                // Backgrounded: it scans the state dir and only ever removes files
+                // whose unique pid-tagged names no live save can be using, so it
+                // doesn't need to gate window creation.
+                {
+                    let workspace_root = state.config().workspace_root.clone();
+                    std::thread::spawn(move || {
+                        persistence::remove_stale_tmp_files(&workspace_root);
+                    });
+                }
                 // Restore persisted groups/agents/queues, then respawn recoverable
                 // panes into fresh PTYs before the command handlers go live so the
                 // webview's first list_panes() already sees the recovered session.
@@ -1051,11 +1091,28 @@ fn main() {
                 state.normalize_pane_layout();
                 app.manage(state.clone());
                 app.manage(SleepGuard::default());
+                // Watchdog for the hidden-at-boot window: if the frontend fails
+                // to boot (dev server down, bundle error) it can never call
+                // app_window_ready, and an invisible app that must be force-quit
+                // is worse than a blank window. Show it after a grace period.
+                {
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        if !WINDOW_READY_REPORTED.load(std::sync::atomic::Ordering::Relaxed) {
+                            let app_handle_on_main = app_handle.clone();
+                            let _ = app_handle.run_on_main_thread(move || {
+                                show_main_window(&app_handle_on_main);
+                            });
+                        }
+                    });
+                }
                 updater::check_on_startup(app.handle());
                 Ok(())
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_window_ready,
             get_runtime_config,
             launcher_adapter_preference_get,
             launcher_adapter_preference_set,

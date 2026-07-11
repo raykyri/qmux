@@ -31,6 +31,19 @@ const SYSTEM_FALLBACK_DIRS: &[&str] = &[
     "/sbin",
 ];
 
+/// Resolves the login-shell PATH cache on a background thread. The probe runs
+/// the user's shell as an interactive login shell (`-ilc`) and can take
+/// hundreds of milliseconds to seconds under nvm/pyenv-style profiles; its
+/// first caller used to be the first recovered pane's spawn, which sat on the
+/// main thread inside the startup hook. Warming it as startup's first act
+/// overlaps the probe with the rest of setup, and any spawn that arrives early
+/// simply blocks on the same `OnceLock` init instead of starting a second probe.
+pub(crate) fn warm_login_shell_path() {
+    std::thread::spawn(|| {
+        let _ = login_shell_path_dirs();
+    });
+}
+
 pub(crate) fn resolve_binary(binary: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH");
     let home = env::var_os("HOME").map(PathBuf::from);

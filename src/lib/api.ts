@@ -33,6 +33,13 @@ export function getRuntimeConfig() {
   return invoke<RuntimeConfig>("get_runtime_config");
 }
 
+// Shows the main window. It starts hidden (visible: false in tauri.conf.json)
+// so launches never flash a blank translucent shell; App calls this once the
+// boot snapshot has been applied and the first real paint is imminent.
+export function markAppWindowReady() {
+  return invoke<void>("app_window_ready");
+}
+
 export function getLauncherAdapterPreference() {
   return invoke<string | null>("launcher_adapter_preference_get");
 }

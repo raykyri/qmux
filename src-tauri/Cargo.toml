@@ -13,6 +13,18 @@ path = "src/main.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Shipping builds were using cargo's stock release profile. Thin LTO and a
+# single codegen unit recover the cross-crate inlining a Tauri-sized dependency
+# tree otherwise leaves behind, and stripping symbols meaningfully shrinks the
+# binary the app (and every in-shell `qmux` CLI fork) must page in at launch.
+# panic stays "unwind" deliberately: lock-poisoning recovery in the state and
+# persistence paths assumes a stray panic doesn't take the whole app (and every
+# live PTY) down with it.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dependencies]
 dirs = "6.0.0"
 getrandom = "0.2"

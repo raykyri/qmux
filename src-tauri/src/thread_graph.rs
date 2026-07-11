@@ -6,13 +6,126 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 static THREAD_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// How long the graph flusher lets a burst of mutations settle before writing.
+/// A streaming turn appends transcript lines every tail tick; without this each
+/// line re-wrote (and fsynced) the whole snapshot file.
+const GRAPH_FLUSH_DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// In-memory authority for thread graphs, keyed by (storage root, thread id).
+///
+/// Every transcript line used to read+parse the whole snapshot off disk, mutate
+/// it, and rewrite it with two fsyncs — O(conversation) I/O per appended line.
+/// Mutations now run against this cache and only mark the entry dirty; a single
+/// flusher thread writes dirty graphs on a debounce, and reads are served from
+/// the cache so they always observe the newest mutation rather than a
+/// yet-to-be-flushed disk file. Test builds bypass the cache entirely (reads
+/// and writes stay synchronous on disk) so tests can assert snapshot files
+/// immediately after a mutation.
+///
+/// A crash can lose at most the last debounce window of graph updates; graphs
+/// derive from transcripts, which the next launch re-tails.
+struct CachedGraph {
+    graph: ThreadGraph,
+    dirty: bool,
+}
+
+static GRAPH_CACHE: LazyLock<Mutex<HashMap<(String, String), CachedGraph>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static GRAPH_FLUSH_PENDING: LazyLock<(Mutex<bool>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(false), Condvar::new()));
+static GRAPH_FLUSHER_SPAWNED: AtomicBool = AtomicBool::new(false);
+
+fn graph_cache_enabled() -> bool {
+    !cfg!(test)
+}
+
+fn cached_graph(storage_root: &str, thread_id: &str) -> Option<ThreadGraph> {
+    let cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+    cache
+        .get(&(storage_root.to_string(), thread_id.to_string()))
+        .map(|entry| entry.graph.clone())
+}
+
+fn cache_graph(storage_root: &str, thread_id: &str, graph: ThreadGraph, dirty: bool) {
+    let mut cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+    cache.insert(
+        (storage_root.to_string(), thread_id.to_string()),
+        CachedGraph { graph, dirty },
+    );
+}
+
+fn schedule_graph_flush() {
+    if GRAPH_FLUSHER_SPAWNED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        std::thread::spawn(graph_flusher_loop);
+    }
+    let (pending, wake) = &*GRAPH_FLUSH_PENDING;
+    let mut pending = pending.lock().unwrap_or_else(|err| err.into_inner());
+    *pending = true;
+    wake.notify_one();
+}
+
+fn graph_flusher_loop() {
+    loop {
+        {
+            let (pending, wake) = &*GRAPH_FLUSH_PENDING;
+            let mut pending = pending.lock().unwrap_or_else(|err| err.into_inner());
+            while !*pending {
+                pending = wake.wait(pending).unwrap_or_else(|err| err.into_inner());
+            }
+            *pending = false;
+        }
+        // Let the rest of the burst land; marks made during the sleep are
+        // covered by the flush below, so absorb them instead of re-looping.
+        std::thread::sleep(GRAPH_FLUSH_DEBOUNCE);
+        {
+            let (pending, _) = &*GRAPH_FLUSH_PENDING;
+            *pending.lock().unwrap_or_else(|err| err.into_inner()) = false;
+        }
+        flush_dirty_thread_graphs();
+    }
+}
+
+/// Writes every dirty cached graph to disk. Called by the flusher after each
+/// debounce window and once at exit (alongside the state.json final snapshot)
+/// so a clean quit never loses graph updates.
+pub fn flush_dirty_thread_graphs() {
+    // Snapshot the dirty entries without holding the cache lock across disk
+    // writes; clearing the flag in the same critical section means a mutation
+    // racing the write simply re-marks the entry for the next cycle.
+    let dirty = {
+        let mut cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        cache
+            .iter_mut()
+            .filter(|(_, entry)| entry.dirty)
+            .map(|(key, entry)| {
+                entry.dirty = false;
+                (key.clone(), entry.graph.clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    for ((storage_root, thread_id), graph) in dirty {
+        if let Err(err) = write_snapshot_to_disk(&storage_root, &graph) {
+            eprintln!("qmux: failed to flush thread graph {thread_id}: {err}");
+            // Re-mark so the next flush (or the exit flush) retries instead of
+            // silently dropping the update.
+            let mut cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(entry) = cache.get_mut(&(storage_root, thread_id)) {
+                entry.dirty = true;
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -314,6 +427,24 @@ fn validate_snapshot_thread_id(
 }
 
 pub fn read_snapshot(storage_root: &str, thread_id: &str) -> Result<Option<ThreadGraph>, String> {
+    if graph_cache_enabled() {
+        if let Some(graph) = cached_graph(storage_root, thread_id) {
+            return Ok(Some(graph));
+        }
+    }
+    let loaded = read_snapshot_from_disk(storage_root, thread_id)?;
+    if graph_cache_enabled()
+        && let Some(graph) = &loaded
+    {
+        cache_graph(storage_root, thread_id, graph.clone(), false);
+    }
+    Ok(loaded)
+}
+
+fn read_snapshot_from_disk(
+    storage_root: &str,
+    thread_id: &str,
+) -> Result<Option<ThreadGraph>, String> {
     let path = snapshot_path(storage_root, thread_id);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -331,6 +462,16 @@ pub fn read_snapshot(storage_root: &str, thread_id: &str) -> Result<Option<Threa
 }
 
 pub fn write_snapshot(storage_root: &str, graph: &ThreadGraph) -> Result<(), String> {
+    write_snapshot_to_disk(storage_root, graph)?;
+    // Keep the cache coherent for direct writers (thread-record migration at
+    // startup): the disk write succeeded, so the cached copy is clean.
+    if graph_cache_enabled() {
+        cache_graph(storage_root, &graph.thread_id, graph.clone(), false);
+    }
+    Ok(())
+}
+
+fn write_snapshot_to_disk(storage_root: &str, graph: &ThreadGraph) -> Result<(), String> {
     let path = snapshot_path(storage_root, &graph.thread_id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
@@ -354,7 +495,9 @@ pub fn write_snapshot(storage_root: &str, graph: &ThreadGraph) -> Result<(), Str
             )
         })?;
     }
-    let raw = serde_json::to_vec_pretty(graph)
+    // Compact rather than pretty: snapshots are machine-read only and rewritten
+    // in full on every flush, so pretty encoding was pure serialize+write cost.
+    let raw = serde_json::to_vec(graph)
         .map_err(|err| format!("failed to encode thread graph {}: {err}", path.display()))?;
     atomic_write_owner_only(&path, &raw)
 }
@@ -677,7 +820,15 @@ impl ThreadStore {
         let storage_root = self.storage_root_string();
         let mut graph = read_snapshot(&storage_root, thread_id)?.unwrap_or_else(default_graph);
         mutate(&mut graph);
-        write_snapshot(&storage_root, &graph)?;
+        if graph_cache_enabled() {
+            // Mutations are memory-first: update the cache (the read authority)
+            // and let the debounced flusher batch the disk write. Tests keep the
+            // synchronous write below so snapshot files can be asserted directly.
+            cache_graph(&storage_root, thread_id, graph.clone(), true);
+            schedule_graph_flush();
+        } else {
+            write_snapshot_to_disk(&storage_root, &graph)?;
+        }
         Ok(graph)
     }
 

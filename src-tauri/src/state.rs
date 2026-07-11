@@ -1356,6 +1356,9 @@ impl AppState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.persist_snapshot_locked();
         self.inner.persist_enabled.store(false, Ordering::Relaxed);
+        // Thread-graph writes are debounced the same way state.json is; commit
+        // anything still buffered so a clean quit never loses graph updates.
+        thread_graph::flush_dirty_thread_graphs();
     }
 
     /// Returns the control-socket token scoped to a single pane, minting one on first
@@ -1409,9 +1412,18 @@ impl AppState {
     }
 
     pub fn emit(&self, event: QmuxEvent) {
-        if let Ok(handle) = self.inner.app_handle.lock()
-            && let Some(app_handle) = handle.as_ref()
-        {
+        // Clone the handle under the lock but emit outside it. emit() serializes
+        // the payload (turn.updated events carry whole turn arrays) and enqueues
+        // the IPC; holding the mutex across that serialized every event in the
+        // process behind one lock — including main-thread native-input callbacks
+        // contending with transcript tails mid-serialize.
+        let app_handle = self
+            .inner
+            .app_handle
+            .lock()
+            .ok()
+            .and_then(|handle| handle.as_ref().cloned());
+        if let Some(app_handle) = app_handle {
             let _ = app_handle.emit("qmux-event", event);
         }
     }

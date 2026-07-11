@@ -1,5 +1,13 @@
 use std::process::{Child, Command};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// How long a battery probe's verdict is reused before `pmset` is consulted
+/// again. The frontend re-asserts the wake lock every 30 seconds for as long as
+/// an agent runs, and battery state moves slowly around the 10% threshold, so a
+/// short TTL trades sub-minute threshold precision for not forking a subprocess
+/// on every re-assert.
+const BATTERY_PROBE_TTL: Duration = Duration::from_secs(60);
 
 /// Owns the `caffeinate(8)` helper that keeps macOS awake while agents are
 /// working. Shelling out to the bundled system tool keeps this dependency-free:
@@ -10,6 +18,7 @@ use std::sync::Mutex;
 #[derive(Default)]
 pub struct SleepGuard {
     child: Mutex<Option<Child>>,
+    battery_probe: Mutex<Option<(Instant, bool)>>,
 }
 
 impl SleepGuard {
@@ -21,7 +30,7 @@ impl SleepGuard {
     /// so the lock re-arms once the charge recovers or power is plugged in.
     pub fn set_active(&self, active: bool) -> Result<(), String> {
         // `&&` short-circuits, so the battery is only probed when the lock is wanted.
-        let active = active && !battery_blocks_wake();
+        let active = active && !self.battery_blocks_wake_cached();
 
         let mut slot = self
             .child
@@ -46,6 +55,23 @@ impl SleepGuard {
             let _ = child.wait();
         }
         Ok(())
+    }
+
+    /// `battery_blocks_wake` behind a short-lived cache, so the periodic wake-lock
+    /// re-asserts don't each pay a `pmset` fork. A poisoned cache lock just probes
+    /// fresh — the cache is an optimization, never a correctness dependency.
+    fn battery_blocks_wake_cached(&self) -> bool {
+        if let Ok(cache) = self.battery_probe.lock()
+            && let Some((probed_at, verdict)) = *cache
+            && probed_at.elapsed() < BATTERY_PROBE_TTL
+        {
+            return verdict;
+        }
+        let verdict = battery_blocks_wake();
+        if let Ok(mut cache) = self.battery_probe.lock() {
+            *cache = Some((Instant::now(), verdict));
+        }
+        verdict
     }
 }
 
