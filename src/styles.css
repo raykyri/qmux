@@ -1681,6 +1681,29 @@ button:disabled {
   background-color: #16191b;
 }
 
+.settings-theme-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Swatch strip previewing the selected theme: background, foreground, then
+   the primary ANSI accents. */
+.settings-theme-preview {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.settings-theme-preview > span {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
 .settings-input {
   flex: 0 1 190px;
   min-width: 0;
@@ -2291,12 +2314,15 @@ button:disabled {
   height: 14px;
 }
 
+/* --terminal-bg is set on :root by App.tsx from the selected terminal theme's
+   background; chrome that sits flush against terminal pixels uses it so pane
+   gaps and empty states match the panes instead of the qmux default. */
 .terminal-stage {
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  background: #111315;
+  background: var(--terminal-bg, #111315);
 }
 
 .terminal-stage.is-native {
@@ -2308,11 +2334,11 @@ button:disabled {
    launcher dialog replaces the inline empty state, which would otherwise expose
    the window's vibrancy material. */
 .terminal-stage.is-native.is-home {
-  background: #111315;
+  background: var(--terminal-bg, #111315);
 }
 
 .terminal-stage.is-native .terminal-empty-state {
-  background: #111315;
+  background: var(--terminal-bg, #111315);
 }
 
 .terminal-empty-state {
@@ -2834,7 +2860,7 @@ button.home-cascade-wait-pill:focus-visible {
    reserved gutter between splits must paint itself or the window vibrancy
    material shows through it. */
 .terminal-stage.is-native .terminal-split-resizer {
-  background: #111315;
+  background: var(--terminal-bg, #111315);
 }
 
 .terminal-split-resizer:hover::before,

@@ -36,6 +36,7 @@ pub struct NativeTerminalSettings {
     pub scroll_sensitivity: f64,
     pub copy_on_select: bool,
     pub selection_clear_on_copy: bool,
+    pub theme_name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,7 +215,9 @@ mod imp {
             scroll_sensitivity: f64,
             copy_on_select: i32,
             selection_clear_on_copy: i32,
+            theme_name: *const c_char,
         ) -> i32;
+        fn qmux_native_terminal_theme_catalog() -> *const c_char;
         fn qmux_native_terminal_shutdown();
     }
 
@@ -433,6 +436,7 @@ mod imp {
         let pane_id = cstring(&settings.pane_id, "pane id")?;
         let font_family = cstring(&settings.font_family, "font family")?;
         let cursor_style = cstring(&settings.cursor_style, "cursor style")?;
+        let theme_name = cstring(&settings.theme_name, "theme name")?;
         // SAFETY: Swift copies strings and scalar settings synchronously.
         if unsafe {
             qmux_native_terminal_update_settings(
@@ -448,6 +452,7 @@ mod imp {
                 settings.scroll_sensitivity,
                 i32::from(settings.copy_on_select),
                 i32::from(settings.selection_clear_on_copy),
+                theme_name.as_ptr(),
             )
         } == 1
         {
@@ -455,6 +460,23 @@ mod imp {
         } else {
             Err("native terminal pane was not found or rejected its settings".to_string())
         }
+    }
+
+    /// Returns the theme catalog as JSON: the qmux default plus every bundled
+    /// Ghostty color scheme, with the colors the settings UI needs for
+    /// previews.
+    pub fn theme_catalog() -> Result<String, String> {
+        // SAFETY: Swift returns a pointer to a process-lifetime JSON buffer
+        // (or null if encoding failed); the bytes are copied before returning.
+        let catalog = unsafe { qmux_native_terminal_theme_catalog() };
+        if catalog.is_null() {
+            return Err("native terminal theme catalog is unavailable".to_string());
+        }
+        // SAFETY: the pointer is non-null, NUL-terminated, and never freed.
+        unsafe { std::ffi::CStr::from_ptr(catalog) }
+            .to_str()
+            .map(ToString::to_string)
+            .map_err(|_| "native terminal theme catalog is not valid UTF-8".to_string())
     }
 
     pub fn shutdown() {
@@ -535,6 +557,12 @@ mod imp {
 
     pub fn update_settings(_settings: NativeTerminalSettings) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
+    }
+
+    pub fn theme_catalog() -> Result<String, String> {
+        // No native themes off macOS; the settings UI treats an empty catalog
+        // as "only the built-in default is available".
+        Ok("[]".to_string())
     }
 
     pub fn shutdown() {}
@@ -808,6 +836,11 @@ pub fn native_terminal_paste_approved_text(pane_id: String, text: String) -> Res
 #[tauri::command]
 pub fn native_terminal_update_settings(settings: NativeTerminalSettings) -> Result<(), String> {
     imp::update_settings(settings)
+}
+
+#[tauri::command]
+pub fn native_terminal_theme_catalog() -> Result<String, String> {
+    imp::theme_catalog()
 }
 
 #[cfg(all(test, target_os = "macos"))]

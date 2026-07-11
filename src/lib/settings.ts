@@ -62,6 +62,13 @@ export const FONT_OPTIONS: FontOption[] = [
 
 export const DEFAULT_FONT_ID = FONT_OPTIONS[0].id;
 
+/**
+ * The built-in qmux terminal colors. Any other value names a Ghostty color
+ * scheme from the catalog bundled with libghostty-spm; the native side falls
+ * back to the qmux colors when a stored name no longer resolves.
+ */
+export const DEFAULT_THEME_ID = "qmux";
+
 export type CursorStyle = "block" | "underline" | "bar";
 export type MouseWheelSensitivity = "low" | "normal" | "high" | "veryHigh";
 export type TabTitleProvider = "appleFoundationModels" | "openRouter" | "disabled";
@@ -103,6 +110,8 @@ export const CONFIRM_PASTE_OVER_CHARS_MAX = 5_000_000;
 export interface AppSettings {
   /** id into FONT_OPTIONS */
   fontId: string;
+  /** terminal color theme: DEFAULT_THEME_ID or a catalog scheme name */
+  themeId: string;
   /** terminal font size in px */
   fontSize: number;
   /** whether the focused terminal cursor blinks */
@@ -167,6 +176,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   fontId: DEFAULT_FONT_ID,
+  themeId: DEFAULT_THEME_ID,
   fontSize: TERMINAL_FONT_SIZE,
   cursorBlink: false,
   cursorStyle: "block",
@@ -276,6 +286,12 @@ export function loadSettings(): AppSettings {
       typeof parsed.fontId === "string" && FONT_OPTIONS.some((option) => option.id === parsed.fontId)
         ? parsed.fontId
         : DEFAULT_FONT_ID;
+    // Any non-empty string is accepted: the catalog lives on the native side,
+    // which falls back to the default colors for names it cannot resolve.
+    const themeId =
+      typeof parsed.themeId === "string" && parsed.themeId.length > 0
+        ? parsed.themeId
+        : DEFAULT_THEME_ID;
     const fontSize =
       typeof parsed.fontSize === "number" ? clampFontSize(parsed.fontSize) : TERMINAL_FONT_SIZE;
     const cursorBlink =
@@ -363,6 +379,7 @@ export function loadSettings(): AppSettings {
         : DEFAULT_SETTINGS.openRouterModel;
     return {
       fontId,
+      themeId,
       fontSize,
       cursorBlink,
       cursorStyle,

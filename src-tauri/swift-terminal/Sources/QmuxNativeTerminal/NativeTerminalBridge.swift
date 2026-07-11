@@ -209,11 +209,13 @@ public func qmuxNativeTerminalUpdateSettings(
     _ scrollOnUserInput: Int32,
     _ scrollSensitivity: Double,
     _ copyOnSelect: Int32,
-    _ selectionClearOnCopy: Int32
+    _ selectionClearOnCopy: Int32,
+    _ themeName: UnsafePointer<CChar>?
 ) -> Int32 {
     guard let paneID = terminalString(paneID),
           let fontFamily = terminalString(fontFamily),
-          let cursorStyle = terminalString(cursorStyle)
+          let cursorStyle = terminalString(cursorStyle),
+          let themeName = terminalString(themeName)
     else {
         return 0
     }
@@ -230,9 +232,20 @@ public func qmuxNativeTerminalUpdateSettings(
             scrollOnUserInput: scrollOnUserInput == 1,
             scrollSensitivity: scrollSensitivity,
             copyOnSelect: copyOnSelect == 1,
-            selectionClearOnCopy: selectionClearOnCopy == 1
+            selectionClearOnCopy: selectionClearOnCopy == 1,
+            themeName: themeName
         ) ? 1 : 0
     }
+}
+
+/// One process-lifetime allocation: the catalog is static data, and Rust
+/// borrows the pointer without ever freeing it.
+private nonisolated(unsafe) let themeCatalogCString: UnsafePointer<CChar>? =
+    QmuxTerminalTheme.catalogJSON.withCString { strdup($0) }.map { UnsafePointer($0) }
+
+@_cdecl("qmux_native_terminal_theme_catalog")
+public func qmuxNativeTerminalThemeCatalog() -> UnsafePointer<CChar>? {
+    themeCatalogCString
 }
 
 @_cdecl("qmux_native_terminal_shutdown")

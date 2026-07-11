@@ -40,6 +40,7 @@ interface TerminalPaneProps {
   lineHeight: number;
   copyOnSelect: boolean;
   selectionClearOnCopy: boolean;
+  themeName: string;
   pasteProtection: PasteProtectionSettings;
   /// Hold the last native frame while an internal resize drag updates the DOM.
   /// The final rectangle is applied when the drag ends.
@@ -80,6 +81,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     scrollSensitivity,
     copyOnSelect,
     selectionClearOnCopy,
+    themeName,
     pasteProtection,
     deferGeometryUpdates,
     inputBlocked,
@@ -258,6 +260,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       scrollSensitivity,
       copyOnSelect,
       selectionClearOnCopy,
+      themeName,
     }).catch((err) => {
       console.error(`qmux: failed to apply native terminal settings for ${pane.id}:`, err);
     });
@@ -274,6 +277,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     scrollbackRows,
     scrollOnUserInput,
     selectionClearOnCopy,
+    themeName,
   ]);
 
   useEffect(() => {

@@ -81,22 +81,19 @@ final class NativeTerminalPane: NSObject,
     init(
         paneID: String,
         launcherPath: String,
-        workingDirectory: String?
+        workingDirectory: String?,
+        themeName: String
     ) {
         self.paneID = paneID
         self.launcherPath = launcherPath
-        // The empty theme is load-bearing: TerminalController appends its theme
-        // *after* these builder lines in the rendered Ghostty config, and the
-        // default theme is Alabaster/Afterglow — Alabaster would repaint every
-        // pane white whenever macOS reports a light appearance. qmux panes match
-        // the app's own dark chrome instead of the OS appearance.
-        controller = TerminalController(theme: TerminalTheme()) { builder in
-            builder.withBackground("111315")
-            builder.withForeground("e7e7e2")
-            builder.withSelectionBackground("3d4a52")
-            builder.withSelectionForeground("f4f4ef")
-            builder.withCursorColor("f2d37b")
-            builder.withCursorText("111315")
+        // The explicit theme is load-bearing: TerminalController's own default
+        // is Alabaster/Afterglow, which follows the OS appearance — Alabaster
+        // would repaint every pane white whenever macOS reports light mode.
+        // QmuxTerminalTheme puts the same colors in both appearance slots, so
+        // panes track the selected qmux theme instead of the OS appearance.
+        controller = TerminalController(
+            theme: QmuxTerminalTheme.theme(named: themeName)
+        ) { builder in
             builder.withWindowPaddingX(10)
             builder.withWindowPaddingY(10)
             builder.withCustom("command", "direct:\(launcherPath)")
@@ -147,11 +144,8 @@ final class NativeTerminalPane: NSObject,
         // paints terminal-colored pixels before its first Metal frame instead
         // of exposing the window's vibrancy material through the transparent
         // webview above it.
-        view.layer?.backgroundColor = CGColor(
-            srgbRed: 0x11 / 255.0,
-            green: 0x13 / 255.0,
-            blue: 0x15 / 255.0,
-            alpha: 1
+        view.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
+            named: themeName
         )
         view.delegate = self
         view.configuration = TerminalSurfaceOptions(
@@ -275,7 +269,8 @@ final class NativeTerminalPane: NSObject,
         scrollOnUserInput: Bool,
         scrollSensitivity: Double,
         copyOnSelect: Bool,
-        selectionClearOnCopy: Bool
+        selectionClearOnCopy: Bool,
+        themeName: String
     ) -> Bool {
         let style = TerminalCursorStyle(rawValue: cursorStyle) ?? .block
         let scrollbackBytes = max(UInt64(scrollbackRows) * 1024, 1_048_576)
@@ -304,9 +299,17 @@ final class NativeTerminalPane: NSObject,
                 selectionClearOnCopy ? "true" : "false"
             )
         }
-        // setTerminalConfiguration declines no-op updates with false, but an
-        // unchanged Ghostty config is success here; reporting failure for a
-        // no-op would surface a spurious settings error in the frontend.
+        // setTheme and setTerminalConfiguration decline no-op updates with
+        // false, but an unchanged Ghostty config is success here; reporting
+        // failure for a no-op would surface a spurious settings error in the
+        // frontend.
+        let theme = QmuxTerminalTheme.theme(named: themeName)
+        if theme != controller.theme, !controller.setTheme(theme) {
+            return false
+        }
+        view.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
+            named: themeName
+        )
         if configuration != controller.terminalConfiguration,
            !controller.setTerminalConfiguration(configuration)
         {

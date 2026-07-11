@@ -21,6 +21,10 @@ final class NativeTerminalHost {
     private var clientDeferredGeometryPaneIDs: Set<String> = []
     private var pendingPaneFrames: [String: CGRect] = [:]
     private var pendingFitPaneIDs: Set<String> = []
+    /// The theme every pane currently uses. Settings arrive per pane, but the
+    /// frontend sends one theme for all of them; new panes and the stage
+    /// backstop read this instead of waiting for their first settings update.
+    private var currentThemeName = QmuxTerminalTheme.defaultName
 
     private init() {}
 
@@ -71,11 +75,8 @@ final class NativeTerminalHost {
         } else {
             let created = NSView(frame: frame)
             created.wantsLayer = true
-            created.layer?.backgroundColor = CGColor(
-                srgbRed: 0x11 / 255.0,
-                green: 0x13 / 255.0,
-                blue: 0x15 / 255.0,
-                alpha: 1
+            created.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
+                named: currentThemeName
             )
             container.addSubview(created, positioned: .below, relativeTo: nil)
             backstop = created
@@ -100,7 +101,8 @@ final class NativeTerminalHost {
         let pane = NativeTerminalPane(
             paneID: id,
             launcherPath: launcherPath,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            themeName: currentThemeName
         )
         pane.view.isHidden = true
         pane.view.setSurfaceVisible(false)
@@ -307,9 +309,16 @@ final class NativeTerminalHost {
         scrollOnUserInput: Bool,
         scrollSensitivity: Double,
         copyOnSelect: Bool,
-        selectionClearOnCopy: Bool
+        selectionClearOnCopy: Bool,
+        themeName: String
     ) -> Bool {
         guard let pane = panes[id] else { return false }
+        if themeName != currentThemeName {
+            currentThemeName = themeName
+            backstop?.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
+                named: themeName
+            )
+        }
         return pane.updateSettings(
             fontSize: fontSize,
             fontFamily: fontFamily,
@@ -321,7 +330,8 @@ final class NativeTerminalHost {
             scrollOnUserInput: scrollOnUserInput,
             scrollSensitivity: scrollSensitivity,
             copyOnSelect: copyOnSelect,
-            selectionClearOnCopy: selectionClearOnCopy
+            selectionClearOnCopy: selectionClearOnCopy,
+            themeName: themeName
         )
     }
 

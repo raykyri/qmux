@@ -147,6 +147,7 @@ import {
   CONFIRM_PASTE_OVER_CHARS_MAX,
   CONFIRM_PASTE_OVER_CHARS_MIN,
   CURSOR_STYLE_OPTIONS,
+  DEFAULT_THEME_ID,
   FONT_OPTIONS,
   fontStackFor,
   nativeFontFamilyFor,
@@ -189,6 +190,7 @@ import {
   listGroups,
   listAgents,
   listClaudeSkills,
+  listNativeTerminalThemes,
   listSavedPrompts,
   listAgentTranscripts,
   listAgentTurnQueue,
@@ -242,7 +244,7 @@ import type {
   Turn,
   WaitTarget,
 } from "./types";
-import type { ShowHideShortcutSetting } from "./lib/api";
+import type { NativeTerminalTheme, ShowHideShortcutSetting } from "./lib/api";
 import type { MenuBarSnapshot, MenuBarStatusTone } from "./lib/api";
 
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
@@ -496,6 +498,26 @@ function tabTitleProviderLabel(provider: AppSettings["tabTitleProvider"]): strin
   return (
     TAB_TITLE_PROVIDER_OPTIONS.find((option) => option.id === provider)?.label ?? "Tab titles"
   );
+}
+
+/** Catalog colors are bare RRGGBB hex; CSS needs the leading '#'. */
+function themeCssColor(hex: string): string | null {
+  if (!/^#?[0-9a-fA-F]{6}$/.test(hex)) {
+    return null;
+  }
+  return hex.startsWith("#") ? hex : `#${hex}`;
+}
+
+/**
+ * The swatch strip shown next to the theme select: background, foreground,
+ * then the six primary ANSI accents (red through cyan) when the scheme
+ * defines them.
+ */
+function themePreviewColors(theme: NativeTerminalTheme): string[] {
+  const swatches = [theme.background, theme.foreground, ...theme.palette.slice(1, 7)];
+  return swatches
+    .map((color) => themeCssColor(color))
+    .filter((color): color is string => color !== null);
 }
 
 function focusConfirmDialogButton(button: HTMLButtonElement | null, force = false) {
@@ -1225,6 +1247,49 @@ export default function App() {
   const terminalNativeFontFamily = nativeFontFamilyFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
+  // The theme catalog (qmux default first, then every bundled Ghostty scheme).
+  // Loaded once at startup: the theme select needs it when settings open, and
+  // --terminal-bg below needs the selected theme's background right away.
+  const [themeCatalog, setThemeCatalog] = useState<NativeTerminalTheme[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void listNativeTerminalThemes()
+      .then((themes) => {
+        if (!cancelled) {
+          setThemeCatalog(themes);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setThemeCatalog([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const selectedTheme = useMemo(
+    () => themeCatalog?.find((theme) => theme.name === settings.themeId) ?? null,
+    [settings.themeId, themeCatalog],
+  );
+  const themeGroups = useMemo(() => {
+    const named = (themeCatalog ?? []).filter((theme) => theme.name !== DEFAULT_THEME_ID);
+    return {
+      dark: named.filter((theme) => theme.isDark),
+      light: named.filter((theme) => !theme.isDark),
+    };
+  }, [themeCatalog]);
+  // Chrome that sits flush against terminal pixels (the stage, split gutters,
+  // the empty state) follows the terminal theme's background so pane spawn and
+  // resize gaps show theme-colored pixels instead of the qmux default.
+  useEffect(() => {
+    const background = selectedTheme ? themeCssColor(selectedTheme.background) : null;
+    if (background) {
+      document.documentElement.style.setProperty("--terminal-bg", background);
+    } else {
+      document.documentElement.style.removeProperty("--terminal-bg");
+    }
+  }, [selectedTheme]);
   const pasteProtection = useMemo(() => pasteProtectionFor(settings), [settings]);
   const shortcutHintsShown = settings.showShortcutHints && shortcutHintsVisible;
   const [prompt, setPrompt] = useState("");
@@ -7665,6 +7730,57 @@ export default function App() {
             </div>
 
             <div className="settings-row">
+              <label htmlFor="settings-theme" className="settings-label">
+                Theme
+              </label>
+              <div className="settings-theme-field">
+                {selectedTheme ? (
+                  <span className="settings-theme-preview" aria-hidden="true">
+                    {themePreviewColors(selectedTheme).map((color, index) => (
+                      <span key={index} style={{ background: color }} />
+                    ))}
+                  </span>
+                ) : null}
+                <select
+                  id="settings-theme"
+                  className="settings-select"
+                  value={settings.themeId}
+                  onChange={(event) => {
+                    // Read the value synchronously: see the font select above.
+                    const themeId = event.currentTarget.value;
+                    setSettings((current) => ({ ...current, themeId }));
+                  }}
+                >
+                  <option value={DEFAULT_THEME_ID}>qmux (default)</option>
+                  {selectedTheme === null && settings.themeId !== DEFAULT_THEME_ID ? (
+                    // A stored theme the catalog doesn't have (or the catalog
+                    // is still loading): keep the select controlled without
+                    // silently jumping the visible selection to the default.
+                    <option value={settings.themeId}>{settings.themeId}</option>
+                  ) : null}
+                  {themeGroups.dark.length > 0 ? (
+                    <optgroup label="Dark">
+                      {themeGroups.dark.map((theme) => (
+                        <option key={theme.name} value={theme.name}>
+                          {theme.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                  {themeGroups.light.length > 0 ? (
+                    <optgroup label="Light">
+                      {themeGroups.light.map((theme) => (
+                        <option key={theme.name} value={theme.name}>
+                          {theme.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                </select>
+              </div>
+            </div>
+
+            <div className="settings-row">
               <span className="settings-label">Font size</span>
               <div className="settings-stepper" role="group" aria-label="Font size">
                 <button
@@ -8480,6 +8596,7 @@ export default function App() {
               lineHeight={settings.lineHeight}
               copyOnSelect={settings.copyOnSelect}
               selectionClearOnCopy={settings.selectionClearOnCopy}
+              themeName={settings.themeId}
               pasteProtection={pasteProtection}
               deferGeometryUpdates={terminalGeometryResizing}
               // Only visible panes take the blocking signal: a hidden pane's

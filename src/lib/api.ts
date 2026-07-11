@@ -515,6 +515,18 @@ export interface NativeTerminalSettings {
   scrollSensitivity: number;
   copyOnSelect: boolean;
   selectionClearOnCopy: boolean;
+  themeName: string;
+}
+
+export interface NativeTerminalTheme {
+  name: string;
+  /** Bare RRGGBB hex, no leading '#'. */
+  background: string;
+  /** Bare RRGGBB hex, no leading '#'. */
+  foreground: string;
+  isDark: boolean;
+  /** The 16 ANSI palette colors; entries are empty when a scheme omits them. */
+  palette: string[];
 }
 
 export function performNativeTerminalAction(paneId: string, action: string) {
@@ -527,6 +539,16 @@ export function pasteApprovedNativeTerminalText(paneId: string, text: string) {
 
 export function updateNativeTerminalSettings(settings: NativeTerminalSettings) {
   return invoke<void>("native_terminal_update_settings", { settings });
+}
+
+/**
+ * The terminal theme catalog: the qmux default first, then every Ghostty
+ * color scheme bundled with libghostty-spm. Empty on platforms without
+ * native terminals.
+ */
+export async function listNativeTerminalThemes(): Promise<NativeTerminalTheme[]> {
+  const catalog = await invoke<string>("native_terminal_theme_catalog");
+  return JSON.parse(catalog) as NativeTerminalTheme[];
 }
 
 export function paneActivity(paneId: string) {
