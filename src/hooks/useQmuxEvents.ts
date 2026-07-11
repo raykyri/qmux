@@ -26,9 +26,12 @@ import type {
 // emits bursts of hook/status/turn events (dozens per second), and handling each
 // in its own listener callback commits a separate React render of the whole app —
 // which is what makes typing lag while an agent streams. The first event of a
-// burst is still handled synchronously (so interactive events like terminal
-// shortcuts stay immediate); everything arriving within this window is then
-// processed in one synchronous batch, which React commits as a single render.
+// burst is handled synchronously; everything arriving within this window is then
+// processed in one synchronous batch (in arrival order), which React commits as
+// a single render. Interactive events (terminal shortcuts, paste requests) that
+// land mid-burst share the window, so they can run up to one frame late — kept
+// deliberately, since reordering them ahead of queued pane/agent events would
+// let a shortcut act on state the queued events are about to change.
 const EVENT_COALESCE_MS = 16;
 
 // Mirror the backend's per-agent turn cap (MAX_TURNS_PER_AGENT in state.rs). The

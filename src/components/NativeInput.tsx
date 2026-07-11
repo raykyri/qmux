@@ -306,18 +306,34 @@ export default function NativeInput({
     }
   }, []);
   // Adopt external draft changes. Runs before paint so an agent switch never
-  // flashes the previous agent's text, and flushes any pending local edit first
-  // so the last moments of typing are never lost to the switch. The instance is
-  // reused across agents in the global sidebar, so an agent switch always
-  // re-adopts — even when both agents' stored drafts are content-equal (both
-  // empty, typically), where the prop comparison alone would keep the previous
-  // agent's un-pushed text on screen under the new agent.
+  // flashes the previous agent's text. The instance is reused across agents in
+  // the global sidebar, so an agent switch always flushes the pending edit (the
+  // pending record carries the agent it was typed for) and re-adopts — even
+  // when both agents' stored drafts are content-equal (both empty, typically),
+  // where the prop comparison alone would keep the previous agent's un-pushed
+  // text on screen under the new agent.
+  //
+  // For the same agent, a prop change while a local edit is mid-debounce is
+  // ignored outright: the prop can only be an echo of an older push (or a
+  // stale external write), both by definition older than what the user just
+  // typed — flushing-then-comparing here would misread that echo as external
+  // and revert freshly typed characters. Only a prop that differs from our
+  // newest push, arriving with no edit pending, is a genuine external write
+  // (queued-turn edit, restore) and gets adopted.
   const adoptedAgentIdRef = useRef(agent.id);
   useLayoutEffect(() => {
     const agentChanged = adoptedAgentIdRef.current !== agent.id;
     adoptedAgentIdRef.current = agent.id;
-    flushDraftPush();
-    if (agentChanged || draft !== lastPushedDraftRef.current) {
+    if (agentChanged) {
+      flushDraftPush();
+      lastPushedDraftRef.current = draft;
+      setLocalDraft(draft);
+      return;
+    }
+    if (pendingDraftPushRef.current !== null) {
+      return;
+    }
+    if (draft !== lastPushedDraftRef.current) {
       lastPushedDraftRef.current = draft;
       setLocalDraft(draft);
     }

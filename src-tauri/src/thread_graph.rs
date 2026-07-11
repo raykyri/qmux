@@ -436,7 +436,20 @@ pub fn read_snapshot(storage_root: &str, thread_id: &str) -> Result<Option<Threa
     if graph_cache_enabled()
         && let Some(graph) = &loaded
     {
-        cache_graph(storage_root, thread_id, graph.clone(), false);
+        // Populate-if-vacant, never overwrite: this read path holds no
+        // per-thread lock, so between the cache miss above and here a mutation
+        // (which does hold the lock) can have cached a newer, dirty graph.
+        // Overwriting it with the pre-mutation disk copy marked clean would
+        // drop that update from memory and skip its flush to disk. When the
+        // entry got filled in the meantime, that newer copy wins.
+        let mut cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        let entry = cache
+            .entry((storage_root.to_string(), thread_id.to_string()))
+            .or_insert_with(|| CachedGraph {
+                graph: graph.clone(),
+                dirty: false,
+            });
+        return Ok(Some(entry.graph.clone()));
     }
     Ok(loaded)
 }
@@ -464,9 +477,21 @@ fn read_snapshot_from_disk(
 pub fn write_snapshot(storage_root: &str, graph: &ThreadGraph) -> Result<(), String> {
     write_snapshot_to_disk(storage_root, graph)?;
     // Keep the cache coherent for direct writers (thread-record migration at
-    // startup): the disk write succeeded, so the cached copy is clean.
+    // startup): the disk write succeeded, so the cached copy is clean. A dirty
+    // entry is left alone — this writer holds no per-thread lock, and a dirty
+    // entry means a locked mutation has produced something newer than what was
+    // just written; the flusher will bring disk up to date with it.
     if graph_cache_enabled() {
-        cache_graph(storage_root, &graph.thread_id, graph.clone(), false);
+        let mut cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        let entry = cache
+            .entry((storage_root.to_string(), graph.thread_id.clone()))
+            .or_insert_with(|| CachedGraph {
+                graph: graph.clone(),
+                dirty: false,
+            });
+        if !entry.dirty {
+            entry.graph = graph.clone();
+        }
     }
     Ok(())
 }
