@@ -21,6 +21,14 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// each read-modify-write transaction under one lock so concurrent setters cannot
 /// both read the same snapshot and then overwrite one another's field.
 static PREFERENCES_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+/// Last-loaded preferences per path, written through on every successful save.
+/// Preference reads sit on hot paths — every shell spawn consults
+/// `use_login_shell` — and each previously re-read and re-parsed the file;
+/// serving repeats from memory keeps spawn paths free of disk I/O. Writes from
+/// outside this process are only picked up at the next in-process save, which
+/// matches the app's single-writer assumption for this file.
+static PREFERENCES_CACHE: LazyLock<Mutex<HashMap<PathBuf, AppPreferences>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Bumped whenever the on-disk shape changes incompatibly. A file written by a
 /// newer or unknown version is treated as empty rather than misinterpreted.
@@ -135,7 +143,40 @@ pub fn preferences_path(workspace_root: &Path) -> PathBuf {
 
 pub fn load_preferences(workspace_root: &Path) -> Result<AppPreferences, String> {
     let path = preferences_path(workspace_root);
-    let raw = match fs::read_to_string(&path) {
+    if let Some(cached) = cached_preferences(&path) {
+        return Ok(cached);
+    }
+    // Fill the cache under the preferences lock so a cold read racing an
+    // in-flight update can't stash the pre-update snapshot after the update
+    // wrote through its fresh one.
+    let _guard = PREFERENCES_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = cached_preferences(&path) {
+        return Ok(cached);
+    }
+    let preferences = read_preferences_from_disk(&path)?;
+    store_cached_preferences(&path, &preferences);
+    Ok(preferences)
+}
+
+fn cached_preferences(path: &Path) -> Option<AppPreferences> {
+    PREFERENCES_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(path)
+        .cloned()
+}
+
+fn store_cached_preferences(path: &Path, preferences: &AppPreferences) {
+    PREFERENCES_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), preferences.clone());
+}
+
+fn read_preferences_from_disk(path: &Path) -> Result<AppPreferences, String> {
+    let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(AppPreferences::default()),
         Err(err) => {
@@ -161,7 +202,8 @@ pub fn save_preferences(workspace_root: &Path, preferences: &AppPreferences) -> 
 /// Atomically updates selected preference fields while preserving every unrelated
 /// field from the latest on-disk snapshot. A read/parse failure is returned without
 /// writing anything, rather than treating a damaged preferences file as empty and
-/// erasing recoverable settings (including the stored API key).
+/// erasing recoverable settings (including the stored API key). Reads the disk —
+/// not the cache — so a damaged file still refuses the write.
 pub fn update_preferences(
     workspace_root: &Path,
     update: impl FnOnce(&mut AppPreferences),
@@ -169,7 +211,7 @@ pub fn update_preferences(
     let _guard = PREFERENCES_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut preferences = load_preferences(workspace_root)?;
+    let mut preferences = read_preferences_from_disk(&preferences_path(workspace_root))?;
     update(&mut preferences);
     save_preferences_unlocked(workspace_root, &preferences)
 }
@@ -207,6 +249,7 @@ fn save_preferences_unlocked(
     {
         let _ = dir.sync_all();
     }
+    store_cached_preferences(&path, preferences);
     Ok(())
 }
 
