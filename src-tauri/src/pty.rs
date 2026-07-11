@@ -1289,8 +1289,8 @@ pub fn track_native_pane_process(state: AppState, pane_id: String, root_pid: u32
                     .as_ref(),
             );
             // The root-liveness probe above is a proc_pidinfo syscall, so it can
-            // run every tick; the descendant walk spawns a `pgrep` per tree node
-            // and is gated to the coarse refresh, matching the portable watcher.
+            // run every tick; the descendant walk forks a `ps` snapshot and is
+            // gated to the coarse refresh, matching the portable watcher.
             // Teardown accuracy doesn't depend on this cadence: the close path
             // re-merges via take_native_process_tree before signalling.
             if tick.is_multiple_of(DESCENDANT_REFRESH_TICKS)
@@ -1679,13 +1679,9 @@ fn start_child_watcher(
             // holding the PTY slave open and the reader is blocked on read(). Force
             // the tree down (best-effort) so the slave closes, the reader hits EOF,
             // and the normal cleanup runs.
-            let group = format!("-{root_pid}");
-            let _ = Command::new("/bin/kill").arg("-TERM").arg(&group).status();
+            let _ = unsafe { libc::kill(-(root_pid as libc::pid_t), libc::SIGTERM) };
             for pid in &descendants {
-                let _ = Command::new("/bin/kill")
-                    .arg("-TERM")
-                    .arg(pid.to_string())
-                    .status();
+                let _ = unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };
             }
             break;
         }
@@ -1893,8 +1889,7 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
         // down before we enumerate it, shrinking the window in which an enumerated
         // descendant could exit and have its pid reused by an unrelated process
         // before we signal it.
-        let group = format!("-{}", pid);
-        let _ = Command::new("/bin/kill").arg("-TERM").arg(&group).status();
+        let _ = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
         // Best-effort backstop for descendants that escaped the group (e.g. via
         // setsid). This walks live pids, so it is inherently subject to pid reuse
         // and is intentionally secondary to the group signal above.
@@ -1923,12 +1918,11 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
 }
 
 fn terminate_descendants(pid: u32) {
-    for child_pid in child_process_ids(pid) {
-        terminate_descendants(child_pid);
-        let _ = Command::new("/bin/kill")
-            .arg("-TERM")
-            .arg(child_pid.to_string())
-            .status();
+    // Reversing the pre-order walk signals every process before its parent
+    // (deepest first), preserving the old recursive kill order without a
+    // subprocess per descendant.
+    for child_pid in descendant_process_ids(pid).into_iter().rev() {
+        let _ = unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGTERM) };
     }
 }
 
@@ -1972,36 +1966,59 @@ fn running_processes(pids: &[u32]) -> Vec<RunningProcess> {
         .collect()
 }
 
+/// Walks a process's live descendants from a single `ps` snapshot. The previous
+/// implementation forked one `pgrep -P` per tree node, so inspecting a shell
+/// running a dev server with a handful of children cost a fork/exec (~5-15ms on
+/// macOS) per process — every pane close and watcher refresh paid tens to
+/// hundreds of milliseconds. One `ps` is a single subprocess regardless of tree
+/// size.
 fn descendant_process_ids(pid: u32) -> Vec<u32> {
+    descendants_from_parent_pairs(pid, &process_parent_snapshot())
+}
+
+/// Every live process's (pid, ppid), from one `ps` invocation.
+fn process_parent_snapshot() -> Vec<(u32, u32)> {
+    let Ok(output) = Command::new("/bin/ps")
+        .arg("-axo")
+        .arg("pid=,ppid=")
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse::<u32>().ok()?;
+            let ppid = parts.next()?.parse::<u32>().ok()?;
+            Some((pid, ppid))
+        })
+        .collect()
+}
+
+/// Pre-order walk (each process before its own descendants) so callers can
+/// reverse the list for a deepest-first teardown. The `seen` guard keeps a
+/// cyclic snapshot — possible if a pid was recycled mid-`ps` — from looping.
+fn descendants_from_parent_pairs(root: u32, parent_pairs: &[(u32, u32)]) -> Vec<u32> {
+    let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, ppid) in parent_pairs {
+        children_by_parent.entry(*ppid).or_default().push(*pid);
+    }
     let mut descendants = Vec::new();
-    let mut seen = HashSet::new();
-    collect_descendant_process_ids(pid, &mut seen, &mut descendants);
-    descendants
-}
-
-fn collect_descendant_process_ids(pid: u32, seen: &mut HashSet<u32>, descendants: &mut Vec<u32>) {
-    for child_pid in child_process_ids(pid) {
-        if !seen.insert(child_pid) {
+    let mut seen = HashSet::from([root]);
+    let mut stack = vec![root];
+    while let Some(pid) = stack.pop() {
+        let Some(children) = children_by_parent.get(&pid) else {
             continue;
+        };
+        for child_pid in children {
+            if seen.insert(*child_pid) {
+                descendants.push(*child_pid);
+                stack.push(*child_pid);
+            }
         }
-        descendants.push(child_pid);
-        collect_descendant_process_ids(child_pid, seen, descendants);
     }
-}
-
-fn child_process_ids(pid: u32) -> Vec<u32> {
-    let output = Command::new("/usr/bin/pgrep")
-        .arg("-P")
-        .arg(pid.to_string())
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| line.trim().parse::<u32>().ok())
-            .collect(),
-        _ => Vec::new(),
-    }
+    descendants
 }
 
 fn running_process_from_line(line: &str) -> Option<RunningProcess> {
@@ -2632,6 +2649,39 @@ mod tests {
         }
 
         kill_pane(&state, pane.id).expect("cleanup test pane");
+    }
+
+    #[test]
+    fn descendant_walk_follows_parent_pairs_and_survives_cycles() {
+        // 1 → {2, 3}, 2 → {4}, plus an unrelated 9→10 subtree and a stale
+        // cycle (4 → 1) a mid-snapshot pid reuse could produce.
+        let pairs = vec![(2, 1), (3, 1), (4, 2), (10, 9), (1, 4)];
+        let mut descendants = descendants_from_parent_pairs(1, &pairs);
+        // Each process must appear before its own descendants so a reversed
+        // walk kills deepest-first; sibling order is unspecified.
+        let position = |pid: u32| {
+            descendants
+                .iter()
+                .position(|candidate| *candidate == pid)
+                .unwrap_or_else(|| panic!("pid {pid} missing from walk"))
+        };
+        assert!(position(2) < position(4));
+        descendants.sort_unstable();
+        assert_eq!(descendants, vec![2, 3, 4]);
+
+        assert_eq!(descendants_from_parent_pairs(9, &pairs), vec![10]);
+        assert!(descendants_from_parent_pairs(42, &pairs).is_empty());
+    }
+
+    #[test]
+    fn process_parent_snapshot_includes_this_process() {
+        let pid = std::process::id();
+        assert!(
+            process_parent_snapshot()
+                .iter()
+                .any(|(candidate, _)| *candidate == pid),
+            "ps snapshot did not include the test process"
+        );
     }
 
     #[test]
