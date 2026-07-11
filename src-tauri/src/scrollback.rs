@@ -1,19 +1,34 @@
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 const SCROLLBACK_DIR: &str = "terminal";
 const STATE_DIR: &str = ".qmux";
 const LOG_EXTENSION: &str = "pty";
-/// Per-pane cap for durable terminal output. This is intentionally byte-based:
-/// The legacy portable renderer parses these bytes on replay, and retaining the latest bytes gives
-/// the same practical behavior as a bounded scrollback window without storing a
-/// frontend-specific buffer shape.
+/// Per-pane cap for durable terminal output — the size a trim retains. This is
+/// intentionally byte-based: the legacy portable renderer parses these bytes on
+/// replay, and retaining the latest bytes gives the same practical behavior as
+/// a bounded scrollback window without storing a frontend-specific buffer shape.
 const SCROLLBACK_LOG_CAP: u64 = 8 * 1024 * 1024;
+/// File length at which a trim actually runs. Trimming rewrites the whole
+/// retained tail with an fsync, so triggering it the moment the file passed the
+/// cap meant every subsequent append of a long-lived noisy pane paid a full
+/// 8MB read + synced write + rename — per PTY chunk, under the global
+/// scrollback lock. The slack amortizes that to one rewrite per
+/// `SCROLLBACK_TRIM_TRIGGER - SCROLLBACK_LOG_CAP` bytes of output, at the cost
+/// of the on-disk file transiently exceeding the cap by up to the slack.
+const SCROLLBACK_TRIM_TRIGGER: u64 = SCROLLBACK_LOG_CAP + SCROLLBACK_LOG_CAP / 2;
 
 static SCROLLBACK_IO_LOCK: Mutex<()> = Mutex::new(());
+/// Scrollback directories already created and permission-locked this process
+/// run, so the steady-state append path skips the mkdir + chmod syscalls it
+/// previously paid per chunk. Guarded by `SCROLLBACK_IO_LOCK` ordering: every
+/// writer takes that lock first.
+static PREPARED_DIRS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub fn read_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<Vec<u8>, String> {
     let _guard = SCROLLBACK_IO_LOCK
@@ -44,19 +59,28 @@ pub fn append_pane_scrollback(
         .map_err(|_| "scrollback lock poisoned".to_string())?;
     let path = pane_scrollback_path(workspace_root, pane_id)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "failed to create scrollback dir {}: {err}",
-                parent.display()
-            )
-        })?;
-        // Scrollback captures raw terminal output — any secret echoed to a pane, plus
-        // the pane's own QMUX_TOKEN — so keep its directory owner-only, matching the
-        // socket / shell-integration hardening. Best-effort on an existing dir.
-        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        let already_prepared = PREPARED_DIRS
+            .lock()
+            .map(|prepared| prepared.contains(parent))
+            .unwrap_or(false);
+        if !already_prepared {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "failed to create scrollback dir {}: {err}",
+                    parent.display()
+                )
+            })?;
+            // Scrollback captures raw terminal output — any secret echoed to a pane, plus
+            // the pane's own QMUX_TOKEN — so keep its directory owner-only, matching the
+            // socket / shell-integration hardening. Best-effort on an existing dir.
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            if let Ok(mut prepared) = PREPARED_DIRS.lock() {
+                prepared.insert(parent.to_path_buf());
+            }
+        }
     }
 
-    {
+    let len = {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -67,11 +91,17 @@ pub fn append_pane_scrollback(
             .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?;
         file.write_all(chunk)
             .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
-        file.flush()
-            .map_err(|err| format!("failed to flush scrollback {}: {err}", path.display()))?;
-    }
+        // fstat on the open handle instead of a path stat: the post-append
+        // length decides whether the trim trigger tripped.
+        file.metadata()
+            .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?
+            .len()
+    };
 
-    trim_scrollback_file(&path)
+    if len > SCROLLBACK_TRIM_TRIGGER {
+        trim_scrollback_file(&path, len)?;
+    }
+    Ok(())
 }
 
 pub fn remove_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<(), String> {
@@ -89,15 +119,11 @@ pub fn remove_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<()
     }
 }
 
-fn trim_scrollback_file(path: &Path) -> Result<(), String> {
-    let len = fs::metadata(path)
-        .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?
-        .len();
-    if len <= SCROLLBACK_LOG_CAP {
-        return Ok(());
-    }
-
-    let keep_from = len - SCROLLBACK_LOG_CAP;
+/// Rewrites the log down to the newest `SCROLLBACK_LOG_CAP` bytes. Only called
+/// once the file has grown past `SCROLLBACK_TRIM_TRIGGER`, so the rewrite cost
+/// is amortized over the slack instead of paid per append.
+fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
+    let keep_from = len.saturating_sub(SCROLLBACK_LOG_CAP);
     let mut file = fs::File::open(path)
         .map_err(|err| format!("failed to reopen scrollback {}: {err}", path.display()))?;
     file.seek(SeekFrom::Start(keep_from))
@@ -194,14 +220,28 @@ mod tests {
     #[test]
     fn scrollback_is_capped_to_recent_bytes() {
         let workspace = temp_workspace();
-        let large = vec![b'a'; SCROLLBACK_LOG_CAP as usize];
+        let large = vec![b'a'; SCROLLBACK_TRIM_TRIGGER as usize];
 
+        // Exactly at the trigger: no trim yet (hysteresis slack, not the cap,
+        // bounds the on-disk file between trims).
         append_pane_scrollback(&workspace, "pane-1", &large).unwrap();
-        append_pane_scrollback(&workspace, "pane-1", b"tail").unwrap();
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap().len(),
+            SCROLLBACK_TRIM_TRIGGER as usize
+        );
 
+        // Past the trigger: trimmed down to the newest cap-sized tail.
+        append_pane_scrollback(&workspace, "pane-1", b"tail").unwrap();
         let restored = read_pane_scrollback(&workspace, "pane-1").unwrap();
         assert_eq!(restored.len(), SCROLLBACK_LOG_CAP as usize);
         assert_eq!(&restored[restored.len() - 4..], b"tail");
+
+        // Appends below the trigger leave the file alone — no rewrite per chunk.
+        append_pane_scrollback(&workspace, "pane-1", b"-more").unwrap();
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap().len(),
+            SCROLLBACK_LOG_CAP as usize + 5
+        );
     }
 
     #[test]
