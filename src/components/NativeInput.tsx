@@ -235,6 +235,10 @@ interface NativeInputProps {
   onQueueDropTargetChange: (agentId: string | null) => void;
   onMoveQueuedTurn: (targetAgentId: string, index: number, turn: string) => void;
   onDraftChange: (agentId: string, draft: string) => void;
+  // Registers a callback the app invokes on quit/close flushes so the composer's
+  // debounced local edits reach the draft store before it writes to disk.
+  // Returns the unregister function.
+  registerDraftFlusher: (flush: () => void) => () => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onWaitTargetHover: (agentId: string | null) => void;
   onTurnSubmitted: (agentId: string, text: string, mode: SubmitAgentTurnMode) => void;
@@ -264,6 +268,7 @@ export default function NativeInput({
   onQueueDropTargetChange,
   onMoveQueuedTurn,
   onDraftChange,
+  registerDraftFlusher,
   onQueuedTurnCollapseToggle,
   onWaitTargetHover,
   onTurnSubmitted,
@@ -320,6 +325,13 @@ export default function NativeInput({
   // A draft still sitting in the debounce window when the composer unmounts
   // (pane closed, right bar collapsed) is committed rather than dropped.
   useEffect(() => flushDraftPush, [flushDraftPush]);
+  // And the app's quit/close flush can pull it out before writing to disk —
+  // pagehide and Cmd-Q run App-level flushes that would otherwise miss the
+  // debounce window's worth of typing.
+  useEffect(
+    () => registerDraftFlusher(flushDraftPush),
+    [flushDraftPush, registerDraftFlusher],
+  );
   const value = localDraft;
   const setValue = (next: string) => {
     setLocalDraft(next);

@@ -2733,9 +2733,26 @@ export default function App() {
     }, DRAFT_FLUSH_DEBOUNCE_MS);
   }
 
+  // Composer-local edit flushers, registered by each mounted NativeInput. The
+  // composer holds keystrokes locally behind a short debounce, so a quit/close
+  // flush must first pull those edits into draftsByAgentRef before writing to
+  // disk — otherwise the last moments of typing are invisible to it.
+  const composerDraftFlushersRef = useRef(new Set<() => void>());
+  const registerComposerDraftFlusher = useCallback((flush: () => void) => {
+    composerDraftFlushersRef.current.add(flush);
+    return () => {
+      composerDraftFlushersRef.current.delete(flush);
+    };
+  }, []);
+
   // Flushes every still-pending debounced draft right now (used when the window is
   // going away, so the last second of typing is not lost on a quick close).
   function flushPendingDrafts() {
+    // Drain composer-local edits first; each flusher synchronously pushes into
+    // draftsByAgentRef (and re-arms a disk timer that the loop below collects).
+    for (const flush of composerDraftFlushersRef.current) {
+      flush();
+    }
     const timers = draftFlushTimersRef.current;
     for (const [agentId, timer] of Object.entries(timers)) {
       clearTimeout(timer);
@@ -6951,6 +6968,7 @@ export default function App() {
                   void moveQueuedTurnToAgent(agent.id, targetAgentId, index, turn)
                 }
                 onDraftChange={setAgentDraft}
+                registerDraftFlusher={registerComposerDraftFlusher}
                 onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                 onWaitTargetHover={setWaitTargetHoverAgentId}
                 onTurnSubmitted={(agentId, text, mode) => {
