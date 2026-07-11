@@ -4040,6 +4040,16 @@ button.home-cascade-wait-pill:focus-visible {
   background: transparent;
 }
 
+/* Expanded transcripts are for reading the conversation at full width, so omit
+   collapsed metadata-style user messages instead of filling the reading column
+   with tag pills. A tag opened before expansion remains visible. */
+.turn-pane.is-expanded
+  .turn-card.role-user.is-tagged-instruction-message:has(
+    .tagged-user-instruction.is-collapsed
+  ) {
+  display: none;
+}
+
 .turn-card.role-user.is-tagged-instruction-message
   + .turn-card.role-user.is-tagged-instruction-message {
   margin-top: -3px;
