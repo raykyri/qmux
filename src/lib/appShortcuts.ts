@@ -14,6 +14,7 @@ export type AppShortcutCommand =
   | { type: "splitPaneBelow" }
   | { type: "restoreClosedPane" }
   | { type: "closePane" }
+  | { type: "newGroup" }
   | { type: "newPane" };
 
 export interface AppShortcutInput {
@@ -93,6 +94,9 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (command && !control && !option && shift && key === "t") {
     return { type: "restoreClosedPane" };
   }
+  if (command && !control && !option && shift && key === "n") {
+    return { type: "newGroup" };
+  }
   if (
     key === "w" &&
     !option &&
@@ -133,6 +137,7 @@ export function parseAppShortcutCommand(
     case "splitPaneBelow":
     case "restoreClosedPane":
     case "closePane":
+    case "newGroup":
     case "newPane":
       return { type: command };
     case "focusTab":

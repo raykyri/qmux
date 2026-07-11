@@ -20,6 +20,10 @@ test("resolves qmux command and control shortcuts", () => {
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "t", metaKey: true })), {
     type: "newPane",
   });
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "n", metaKey: true, shiftKey: true })),
+    { type: "newGroup" },
+  );
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "Tab", ctrlKey: true })), {
     type: "cyclePaneTab",
     direction: 1,
@@ -78,6 +82,9 @@ test("parses semantic commands from native payloads", () => {
   assert.deepEqual(parseAppShortcutCommand("cycleAllTabPrevious", null), {
     type: "cycleAllTab",
     direction: -1,
+  });
+  assert.deepEqual(parseAppShortcutCommand("newGroup", null), {
+    type: "newGroup",
   });
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);

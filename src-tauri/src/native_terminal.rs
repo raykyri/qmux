@@ -69,6 +69,7 @@ enum AppShortcutCommand {
     SplitPaneBelow,
     RestoreClosedPane,
     ClosePane,
+    NewGroup,
     NewPane,
 }
 
@@ -91,6 +92,7 @@ impl AppShortcutCommand {
             Self::SplitPaneBelow => ("splitPaneBelow", None),
             Self::RestoreClosedPane => ("restoreClosedPane", None),
             Self::ClosePane => ("closePane", None),
+            Self::NewGroup => ("newGroup", None),
             Self::NewPane => ("newPane", None),
         }
     }
@@ -162,6 +164,9 @@ fn classify_app_shortcut(
     }
     if command && !control && !option && shift && key == "t" {
         return Some(AppShortcutCommand::RestoreClosedPane);
+    }
+    if command && !control && !option && shift && key == "n" {
+        return Some(AppShortcutCommand::NewGroup);
     }
     if command && !control && !option && !shift && key == "w" {
         return Some(AppShortcutCommand::ClosePane);
@@ -948,6 +953,10 @@ mod tests {
         assert_eq!(
             super::classify_app_shortcut("t", false, false, false, true),
             Some(AppShortcutCommand::NewPane)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("n", true, false, false, true),
+            Some(AppShortcutCommand::NewGroup)
         );
         assert_eq!(
             super::classify_app_shortcut("Tab", true, true, false, false),

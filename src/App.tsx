@@ -6128,6 +6128,9 @@ export default function App() {
           }
           return;
         }
+        case "newGroup":
+          void createGroupFromSettingsMenu();
+          return;
         case "newPane":
           if (!settingsRef.current.codeMode) {
             setLauncherOpen(true);
@@ -7335,6 +7338,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
+              className="context-menu-has-shortcut"
               disabled={folderPickerStatus !== null}
               onClick={() => {
                 void createGroupFromSettingsMenu();
@@ -7342,6 +7346,7 @@ export default function App() {
             >
               <Plus size={13} aria-hidden="true" />
               <span>New group...</span>
+              <kbd className="context-menu-shortcut">⌘⇧N</kbd>
             </button>
             <button
               type="button"
@@ -7441,6 +7446,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
+              className="context-menu-has-shortcut"
               disabled={folderPickerStatus !== null}
               onClick={() => {
                 setGroupMenu(null);
@@ -7449,6 +7455,7 @@ export default function App() {
             >
               <Plus size={13} aria-hidden="true" />
               <span>New group...</span>
+              <kbd className="context-menu-shortcut">⌘⇧N</kbd>
             </button>
             <button
               type="button"
