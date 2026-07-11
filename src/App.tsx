@@ -2647,6 +2647,12 @@ export default function App() {
   // on the state atoms those helpers read — keep this list in sync when a helper
   // starts reading new state, or the memo will serve stale workstreams.
   const homeCascadeWorkstreams = useMemo<HomeCascadeWorkstream[]>(() => {
+    // Only Home renders the cascades, but this memo's inputs churn with every
+    // event batch — recomputing the per-agent latest-turn extraction (a regex
+    // pass over each latest user message) for a hidden Home was pure waste.
+    if (!homeActive) {
+      return [];
+    }
     return sidebarPanes.flatMap((pane) => {
       const agent = agentByPaneId.get(pane.id);
       if (!agent) {
@@ -2675,6 +2681,7 @@ export default function App() {
   }, [
     agentByPaneId,
     agentTurnInfoById,
+    homeActive,
     queuedTurnsByAgent,
     sidebarPanes,
     terminalTitleByPane,
@@ -8738,7 +8745,14 @@ export default function App() {
               // A live web selection cedes the keyboard to WebKit just like a
               // focused editable: the pane releases ownership, first responder
               // hands to the webview, and Cmd+C copies the selected web text.
-              webEditableFocused={webEditableFocused || webSelectionActive}
+              // Pinned false for hidden panes (like inputBlocked above): their
+              // surface can't own the keyboard regardless, so a composer focus
+              // or selection flip re-renders — and re-issues layout FFI for —
+              // only the panes on screen instead of every mounted tab.
+              webEditableFocused={
+                visibleTerminalPaneIdSet.has(pane.id) &&
+                (webEditableFocused || webSelectionActive)
+              }
               requestAttach={requestPaneAttach}
               onUserInput={stableNoteUserInput}
               onActivate={activateTerminalPane}
