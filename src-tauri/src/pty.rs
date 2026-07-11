@@ -1352,19 +1352,35 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 }
 
 fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
-    let pane_agent_id = state.agent_by_pane(&pane_id)?.map(|agent| agent.id);
+    // Claim the close before ANY destructive step, not just before touching the
+    // surface. Both this function and the natural-exit close delegate
+    // (`native_pane_did_close`) now run off the main thread, so a user close
+    // racing a pane whose process just exited could interleave with the
+    // delegate's teardown: duplicate undo snapshots, a spurious "pane was not
+    // found" from the surface close, and the abort branch below clearing the
+    // delegate's strand snapshot. Whoever inserts into `closing_native_panes`
+    // first owns the entire teardown; the loser backs off. (The claim also
+    // covers the original hazard: `close_surface` can fire the close delegate
+    // re-entrantly while this function is mid-sequence.)
+    if let Ok(mut closing) = closing_native_panes().lock()
+        && !closing.insert(pane_id.clone())
+    {
+        // The close delegate already owns this pane's teardown — it captures,
+        // removes, and releases waiters itself, so the user's close has
+        // nothing left to do.
+        return Ok(());
+    }
+    let pane_agent_id = state
+        .agent_by_pane(&pane_id)
+        .ok()
+        .flatten()
+        .map(|agent| agent.id);
     if let Err(err) = state.capture_last_closed_pane(&pane_id) {
         eprintln!("qmux: failed to capture closed native pane {pane_id}: {err}");
     }
     let process_tree = take_native_process_tree(state, &pane_id);
     if let Some(tree) = process_tree.as_ref() {
         signal_native_process_tree(tree, libc::SIGTERM);
-    }
-    // Own this close before touching the surface: `close_surface` can fire the
-    // close delegate re-entrantly, and `native_pane_did_close` must not run its
-    // own capture/remove/emit sequence for a close this function handles.
-    if let Ok(mut closing) = closing_native_panes().lock() {
-        closing.insert(pane_id.clone());
     }
     let terminate_result = crate::native_terminal::terminate(&pane_id);
     let had_process_tree = process_tree.is_some();
@@ -1411,18 +1427,27 @@ fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 }
 
 pub fn native_pane_did_close(state: &AppState, pane_id: &str, _process_alive: bool) {
-    // A close initiated by `kill_native_pane` is fully handled there; this
-    // delegate may fire re-entrantly from its `terminate` call while the pane
-    // is still registered, and running the sequence below too would duplicate
-    // the undo snapshot and double-release waiters. (A late delivery after
-    // `kill_native_pane` finishes is caught by the pane check below instead.)
-    if closing_native_panes()
-        .lock()
-        .map(|closing| closing.contains(pane_id))
-        .unwrap_or(false)
+    // Atomically claim this close. A close `kill_native_pane` owns (it claims
+    // before its first destructive step, and its `terminate` can re-fire this
+    // delegate) — or a duplicate delegate delivery — fails the insert and
+    // backs off; otherwise this thread owns the whole teardown and releases
+    // the claim when done. A late delivery after a finished close claims
+    // successfully but is caught by the pane-registered check below.
     {
-        return;
+        let Ok(mut closing) = closing_native_panes().lock() else {
+            return;
+        };
+        if !closing.insert(pane_id.to_string()) {
+            return;
+        }
     }
+    native_pane_did_close_owned(state, pane_id);
+    if let Ok(mut closing) = closing_native_panes().lock() {
+        closing.remove(pane_id);
+    }
+}
+
+fn native_pane_did_close_owned(state: &AppState, pane_id: &str) {
     if state.pane_is_native(pane_id).ok().flatten() != Some(true) {
         return;
     }
