@@ -3724,43 +3724,44 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    // Everything the first paint doesn't need: the turn store (whole
-    // transcripts including tool results — by far the largest boot payload),
-    // thread graphs, per-agent queues and drafts, and the stored key/login
-    // preferences. Runs detached after the window is revealed, so startup is
-    // gated only by the pane/group/agent snapshot.
-    async function hydrateSecondary(existingAgents: AgentInfo[]) {
+    // Everything the first paint doesn't need, hydrated detached after the
+    // window is revealed so startup is gated only by the pane/group/agent
+    // snapshot. Two independent passes: the fast one (settings, per-agent
+    // queues and drafts — small map lookups) applies within milliseconds, and
+    // the heavy one (the turn store — whole transcripts including tool
+    // results, by far the largest boot payload — plus thread graphs) fills in
+    // whenever it lands. Keeping them independent matters: the user can
+    // interact the moment the window shows, so the fast pass must not wait on
+    // listTurns, and everything it applies merges UNDER live state rather than
+    // clobbering edits or events that arrived while the snapshot was in
+    // flight.
+    async function hydrateSecondaryFast(existingAgents: AgentInfo[]) {
       try {
-        const [
-          existingTurns,
-          existingThreadGraphs,
-          storedOpenRouterKey,
-          storedUseLoginShell,
-          queueEntries,
-          draftEntries,
-        ] = await Promise.all([
-          listTurns(),
-          listThreadGraphs().catch((): ThreadGraph[] => []),
-          getOpenRouterKey().catch(() => ""),
-          getUseLoginShell().catch((): boolean | null => null),
-          // Per-agent fetches are individually guarded so one failed
-          // draft/queue read just falls back to empty for that agent.
-          Promise.all(
-            existingAgents.map(
-              async (agent) =>
-                [
-                  agent.id,
-                  await listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => []),
-                ] as const,
+        const [storedOpenRouterKey, storedUseLoginShell, queueEntries, draftEntries] =
+          await Promise.all([
+            getOpenRouterKey().catch(() => ""),
+            getUseLoginShell().catch((): boolean | null => null),
+            // Per-agent fetches are individually guarded so one failed
+            // draft/queue read just falls back to empty for that agent.
+            Promise.all(
+              existingAgents.map(
+                async (agent) =>
+                  [
+                    agent.id,
+                    await listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => []),
+                  ] as const,
+              ),
             ),
-          ),
-          Promise.all(
-            existingAgents.map(
-              async (agent) =>
-                [agent.id, await getAgentDraft(agent.id).catch((): string | null => null)] as const,
+            Promise.all(
+              existingAgents.map(
+                async (agent) =>
+                  [
+                    agent.id,
+                    await getAgentDraft(agent.id).catch((): string | null => null),
+                  ] as const,
+              ),
             ),
-          ),
-        ]);
+          ]);
         if (cancelled) {
           return;
         }
@@ -3788,6 +3789,38 @@ export default function App() {
               };
         });
 
+        // Live entries win over the snapshot: a queue event or a draft the
+        // user already typed since the window appeared is fresher than the
+        // boot-time disk state, and clobbering a live draft would erase text
+        // mid-composition (and then persist the stale value).
+        replaceQueuedTurnsByAgent({
+          ...Object.fromEntries(queueEntries),
+          ...queuedTurnsByAgentRef.current,
+        });
+        const restoredDrafts = {
+          ...Object.fromEntries(
+            draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
+          ),
+          ...draftsByAgentRef.current,
+        };
+        draftsByAgentRef.current = restoredDrafts;
+        setDraftsByAgentState(restoredDrafts);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+
+    async function hydrateSecondaryHeavy() {
+      try {
+        const [existingTurns, existingThreadGraphs] = await Promise.all([
+          listTurns(),
+          listThreadGraphs().catch((): ThreadGraph[] => []),
+        ]);
+        if (cancelled) {
+          return;
+        }
         // The event stream is already live while this snapshot was in flight,
         // so keep any turns it appended in the meantime instead of clobbering
         // them with the (marginally older) snapshot.
@@ -3797,12 +3830,6 @@ export default function App() {
           return extras.length === 0 ? existingTurns : [...existingTurns, ...extras];
         });
         setThreadGraphs(existingThreadGraphs);
-        replaceQueuedTurnsByAgent(Object.fromEntries(queueEntries));
-        const restoredDrafts = Object.fromEntries(
-          draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
-        );
-        draftsByAgentRef.current = restoredDrafts;
-        setDraftsByAgentState(restoredDrafts);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -3843,7 +3870,8 @@ export default function App() {
             : null,
         );
         setAgents(existingAgents);
-        void hydrateSecondary(existingAgents);
+        void hydrateSecondaryFast(existingAgents);
+        void hydrateSecondaryHeavy();
 
         if (existingPanes.length > 0) {
           const restoredActivePane =
