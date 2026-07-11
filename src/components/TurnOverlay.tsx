@@ -1725,11 +1725,18 @@ function ToolEntryView({
   const summaryArgument = toolSummaryArgument(entry);
   const toolNameLabel = showChevron ? entry.name : `Called ${entry.name}`;
   const summaryLabel = summaryArgument ? `${toolNameLabel} ${summaryArgument}` : toolNameLabel;
+  // Payload bodies mount only once the row has been expanded: a tool-heavy
+  // transcript otherwise keeps megabytes of pretty-printed JSON as collapsed
+  // DOM text, stringified and committed for rows nobody has opened. The
+  // <details> element owns the visual open state; this just gates whether the
+  // children exist at all.
+  const [expanded, setExpanded] = useState(false);
   return (
     <details
       className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${
         showChevron ? "" : " is-root-activity"
       }${turnStatusClass(entry.status)}`}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
       <summary>
         {showChevron ? <DisclosureChevron /> : null}
@@ -1741,8 +1748,10 @@ function ToolEntryView({
           <ToolEntryStatus entry={entry} showCharCount={showChevron} />
         </span>
       </summary>
-      {entry.input !== undefined ? <ToolPayload label="Input" value={entry.input} /> : null}
-      {entry.result !== undefined ? (
+      {expanded && entry.input !== undefined ? (
+        <ToolPayload label="Input" value={entry.input} />
+      ) : null}
+      {expanded && entry.result !== undefined ? (
         <ToolPayload label={entry.isError ? "Error" : "Result"} value={entry.result} />
       ) : null}
     </details>
@@ -1822,13 +1831,21 @@ function ToolEntryStatus({
   entry: ToolEntry;
   showCharCount: boolean;
 }) {
+  // Memoized on the result object (identity-stable across timeline rebuilds)
+  // so the label's stringify runs once per result rather than per render.
+  const charCount = useMemo(
+    () =>
+      showCharCount && entry.result !== undefined
+        ? `${stringify(entry.result).length} chars`
+        : null,
+    [entry.result, showCharCount],
+  );
   if (entry.result === undefined) {
     return <span className="tool-summary-meta">running</span>;
   }
-  if (!showCharCount) {
+  if (!showCharCount || charCount === null) {
     return entry.isError ? <span className="tool-summary-meta">error</span> : null;
   }
-  const charCount = `${stringify(entry.result).length} chars`;
   if (entry.isError) {
     return <span className="tool-summary-meta">error, {charCount}</span>;
   }

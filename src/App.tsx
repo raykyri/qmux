@@ -1546,6 +1546,12 @@ export default function App() {
     const groupedIds = new Set(grouped.map((pane) => pane.id));
     return [...grouped, ...panes.filter((pane) => !groupedIds.has(pane.id))];
   }, [groups, panes]);
+  // Row index per pane id, so each sidebar row doesn't linear-scan the pane
+  // list (O(panes²) per render across the rows).
+  const sidebarPaneIndexById = useMemo(
+    () => new Map(sidebarPanes.map((pane, index) => [pane.id, index])),
+    [sidebarPanes],
+  );
   const cycleableSidebarPanes = useMemo(
     () => sidebarPanes.filter((pane) => groupById.get(pane.groupId)?.collapsed !== true),
     [groupById, sidebarPanes],
@@ -2698,13 +2704,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleTurnPaneAgentIdsKey]);
 
+  // Content-unchanged rebuilds are already rare here: the agents array keeps
+  // its identity across no-op hook events (upsertAgent bails out), terminal
+  // titles commit on a debounce, and the JSON comparison below gates the IPC
+  // and AppKit rebuild. What remains is a small O(panes) structure per real
+  // change, sharing the app-level agentByPaneId map instead of rebuilding one.
   const menuBarSnapshot = useMemo<MenuBarSnapshot>(() => {
-    const agentByPaneId = new Map<string, AgentInfo>();
-    for (const agent of agents) {
-      if (agent.paneId) {
-        agentByPaneId.set(agent.paneId, agent);
-      }
-    }
     const groupedPaneIds = new Set<string>();
     const tabForPane = (pane: PaneInfo) => {
       const paneAgent = agentByPaneId.get(pane.id);
@@ -2740,7 +2745,7 @@ export default function App() {
     return { groups: snapshotGroups };
   }, [
     activePane?.id,
-    agents,
+    agentByPaneId,
     config,
     groups,
     manuallyTitledPaneIds,
@@ -6752,7 +6757,7 @@ export default function App() {
   }
 
   function renderPaneTabRow(pane: PaneInfo, index: number, groupPanes: PaneInfo[], groupId: string) {
-    const paneAgent = agents.find((agent) => agent.paneId === pane.id);
+    const paneAgent = agentByPaneId.get(pane.id);
     const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
     const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
     const paneAgentStatusTone = paneTabStatusTone(paneAgent);
@@ -6810,7 +6815,7 @@ export default function App() {
       draggingPaneIndex >= 0 &&
       index >= draggingPaneIndex &&
       index < draggingSubtreeEnd;
-    const shortcutIndex = sidebarPanes.findIndex((sidebarPane) => sidebarPane.id === pane.id);
+    const shortcutIndex = sidebarPaneIndexById.get(pane.id) ?? -1;
     const className = [
       "pane-tab-row",
       pane.id === activePane?.id ? "is-selected" : "",

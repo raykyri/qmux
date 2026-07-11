@@ -418,14 +418,20 @@ export default function NativeInput({
   // Saved-prompt insertion requests from the pane header's library menu. The
   // caret lives here, so the splice happens here: insert at the selection (or
   // append when the textarea never had focus), then restore focus with the caret
-  // after the inserted text. Depends on `value` so the splice always sees the
-  // current draft.
+  // after the inserted text. The draft and setter are read through latest-refs
+  // so the splice always sees the current text without the effect re-subscribing
+  // the listener on every keystroke (its old `value` dependency did exactly that).
+  const valueForInsertRef = useRef(value);
+  valueForInsertRef.current = value;
+  const setValueForInsertRef = useRef(setValue);
+  setValueForInsertRef.current = setValue;
   useEffect(() => {
     return listenToComposerInsert(agent.id, (text) => {
       const textarea = textareaRef.current;
-      const start = textarea?.selectionStart ?? value.length;
-      const end = textarea?.selectionEnd ?? value.length;
-      setValue(value.slice(0, start) + text + value.slice(end));
+      const current = valueForInsertRef.current;
+      const start = textarea?.selectionStart ?? current.length;
+      const end = textarea?.selectionEnd ?? current.length;
+      setValueForInsertRef.current(current.slice(0, start) + text + current.slice(end));
       const caret = start + text.length;
       requestAnimationFrame(() => {
         const el = textareaRef.current;
@@ -436,7 +442,7 @@ export default function NativeInput({
         el.setSelectionRange(caret, caret);
       });
     });
-  }, [agent.id, value]);
+  }, [agent.id]);
 
   const awaitingPermission = agent.status === "awaitingPermission";
   const paused = agent.paused ?? false;

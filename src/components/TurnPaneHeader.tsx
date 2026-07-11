@@ -6,7 +6,7 @@ import {
   PanelRightClose,
   SquareCenterlineDashedVertical,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
@@ -94,7 +94,12 @@ export default function TurnPaneHeader({
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   // Sorted newest first so recent sessions appear at the top of the menu.
-  const sessionOptions = [...transcriptOptions].sort((a, b) => b.modifiedMs - a.modifiedMs);
+  // Memoized: the header re-renders with every app render, and re-sorting the
+  // (up to 30-entry) list each time was avoidable churn.
+  const sessionOptions = useMemo(
+    () => [...transcriptOptions].sort((a, b) => b.modifiedMs - a.modifiedMs),
+    [transcriptOptions],
+  );
   const canOpenSessionMenu = Boolean(sessionId || sessionOptions.length > 0);
 
   // Clear any pending toast timer on unmount so it can't fire into a gone component.
