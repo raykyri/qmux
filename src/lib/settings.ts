@@ -63,7 +63,7 @@ export const FONT_OPTIONS: FontOption[] = [
 export const DEFAULT_FONT_ID = FONT_OPTIONS[0].id;
 
 export type CursorStyle = "block" | "underline" | "bar";
-export type MouseWheelSensitivity = "low" | "normal" | "high";
+export type MouseWheelSensitivity = "low" | "normal" | "high" | "veryHigh";
 export type TabTitleProvider = "appleFoundationModels" | "openRouter" | "disabled";
 
 export const CURSOR_STYLE_OPTIONS: { id: CursorStyle; label: string }[] = [
@@ -80,6 +80,8 @@ export const MOUSE_WHEEL_SENSITIVITY_OPTIONS: {
   { id: "low", label: "Low", value: 0.65 },
   { id: "normal", label: "Standard", value: 1 },
   { id: "high", label: "High", value: 1.75 },
+  // Keeps roughly the same ratio over High as High has over Standard.
+  { id: "veryHigh", label: "Very high", value: 3 },
 ];
 
 export const TAB_TITLE_PROVIDER_OPTIONS: { id: TabTitleProvider; label: string }[] = [
