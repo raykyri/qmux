@@ -109,7 +109,11 @@ pub fn show_hide_shortcut_get(
     Ok(shortcut_state.status())
 }
 
-#[tauri::command]
+// Async (like the blocking commands in main.rs): both setters rewrite the
+// fsync'd preferences file and talk to the OS shortcut registry, which would
+// otherwise stall the main thread. The getter reads in-memory state and stays
+// synchronous.
+#[tauri::command(async)]
 pub fn show_hide_shortcut_set<R: Runtime>(
     app: AppHandle<R>,
     app_state: tauri::State<'_, AppState>,
@@ -164,7 +168,7 @@ pub fn show_hide_shortcut_set<R: Runtime>(
     Ok(shortcut_state.status())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn show_hide_shortcut_capture_set<R: Runtime>(
     app: AppHandle<R>,
     app_state: tauri::State<'_, AppState>,

@@ -146,7 +146,15 @@ fn get_runtime_config(state: tauri::State<'_, AppState>) -> RuntimeConfig {
     runtime
 }
 
-#[tauri::command]
+// Commands below are marked `async` when they block: on this Tauri version a
+// plain synchronous command runs on the macOS main thread, so any file I/O,
+// subprocess spawn (git, pgrep/ps, pmset, open), PTY teardown, or sleep inside
+// one freezes the entire UI — webview rendering, keyboard dispatch, and the
+// native terminal surfaces — for its duration. `(async)` moves the same body to
+// a worker thread; cheap in-memory getters/setters stay synchronous, and the
+// native_terminal_* commands stay synchronous because their work must run on
+// the main thread anyway (going async would only add a round-trip).
+#[tauri::command(async)]
 fn launcher_adapter_preference_get(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
@@ -155,7 +163,7 @@ fn launcher_adapter_preference_get(
 
 /// Returns the stored OpenRouter API key (empty string when none is set). Kept in the
 /// owner-only preferences file rather than webview localStorage — see AppPreferences.
-#[tauri::command]
+#[tauri::command(async)]
 fn openrouter_key_get(state: tauri::State<'_, AppState>) -> Result<String, String> {
     Ok(
         persistence::load_preferences(&state.config().workspace_root)?
@@ -165,7 +173,7 @@ fn openrouter_key_get(state: tauri::State<'_, AppState>) -> Result<String, Strin
 }
 
 /// Persists the OpenRouter API key. An empty/whitespace key clears it.
-#[tauri::command]
+#[tauri::command(async)]
 fn openrouter_key_set(state: tauri::State<'_, AppState>, key: String) -> Result<(), String> {
     let workspace_root = &state.config().workspace_root;
     let trimmed = key.trim();
@@ -179,7 +187,7 @@ fn openrouter_key_set(state: tauri::State<'_, AppState>, key: String) -> Result<
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn launcher_adapter_preference_set(
     state: tauri::State<'_, AppState>,
     adapter_id: String,
@@ -210,7 +218,7 @@ fn prompt_project_path(project_dir: &Option<String>) -> Option<&std::path::Path>
         .map(std::path::Path::new)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn prompt_library_list(
     project_dir: Option<String>,
 ) -> Result<prompt_library::PromptLibrary, String> {
@@ -220,7 +228,7 @@ fn prompt_library_list(
 /// Creates or overwrites a saved prompt in `scope`. `previous_scope`/`previous_name`,
 /// when they name a different prompt location, make this a rename and/or a move
 /// between scopes (write new, then remove old).
-#[tauri::command]
+#[tauri::command(async)]
 fn prompt_library_save(
     scope: prompt_library::PromptScope,
     name: String,
@@ -245,7 +253,7 @@ fn prompt_library_save(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn prompt_library_delete(
     scope: prompt_library::PromptScope,
     name: String,
@@ -257,7 +265,7 @@ fn prompt_library_delete(
 /// Reveals a scope's prompts folder in the OS file manager, creating it (and the
 /// project store's meta.json) first so a fresh library opens an empty folder
 /// instead of erroring.
-#[tauri::command]
+#[tauri::command(async)]
 fn prompt_library_reveal(
     scope: prompt_library::PromptScope,
     project_dir: Option<String>,
@@ -363,7 +371,7 @@ fn pick_folder_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> 
 /// Opens a URL in the user's default external browser (or mail client). Only
 /// http(s)/mailto are accepted; the URL is passed as a single argv to the OS opener
 /// (no shell), so it can't trigger arbitrary scheme handlers or shell injection.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_external_url(state: tauri::State<'_, AppState>, url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")) {
         return Err("refusing to open a non-http(s)/mailto URL externally".to_string());
@@ -423,7 +431,7 @@ fn open_in_os_browser(url: &str) -> Result<(), String> {
         .map_err(|err| format!("failed to open externally: {err}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_claude_skills(state: tauri::State<'_, AppState>) -> Vec<adapters::claude::ClaudeSkill> {
     adapters::claude::list_skills(state.config())
 }
@@ -443,7 +451,7 @@ fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, Stri
     state.list_agents()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_recent_sessions(
     state: tauri::State<'_, AppState>,
     limit: Option<usize>,
@@ -451,7 +459,7 @@ fn list_recent_sessions(
     state.list_recent_sessions(limit.unwrap_or(12))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn recent_session_resume(
     state: tauri::State<'_, AppState>,
     session_id: String,
@@ -460,7 +468,7 @@ fn recent_session_resume(
     recovery::resume_recent_session(&state, &session_id, initial_size)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_turns(
     state: tauri::State<'_, AppState>,
     agent_id: Option<String>,
@@ -494,7 +502,7 @@ fn list_agent_transcripts(
     list_agent_transcript_options(&state, &agent_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_agent_transcript(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -503,7 +511,7 @@ fn set_agent_transcript(
     repoint_agent_transcript(&state, &agent_id, path.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn group_create(
     state: tauri::State<'_, AppState>,
     request: CreateGroupRequest,
@@ -576,7 +584,7 @@ fn group_pick_dir(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn spawn_shell(
     state: tauri::State<'_, AppState>,
     initial_size: Option<InitialPaneSize>,
@@ -591,7 +599,7 @@ fn spawn_shell(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn use_login_shell_get(state: tauri::State<'_, AppState>) -> Result<bool, String> {
     Ok(
         persistence::load_preferences(&state.config().workspace_root)?
@@ -600,14 +608,14 @@ fn use_login_shell_get(state: tauri::State<'_, AppState>) -> Result<bool, String
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn use_login_shell_set(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
     persistence::update_preferences(&state.config().workspace_root, |preferences| {
         preferences.use_login_shell = Some(enabled);
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_spawn(
     state: tauri::State<'_, AppState>,
     request: SpawnAgentRequest,
@@ -615,7 +623,7 @@ fn agent_spawn(
     spawn_agent_pane(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn spawn_claude(
     state: tauri::State<'_, AppState>,
     request: SpawnClaudeRequest,
@@ -626,7 +634,7 @@ fn spawn_claude(
 /// Forks the session in `pane_id` into a new tab and resumes it. `nest` places the
 /// fork as a child of the source; otherwise it lands as a sibling immediately after
 /// it. When `prompt` is set, it is submitted as the fork's launch message.
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_fork(
     state: tauri::State<'_, AppState>,
     pane_id: String,
@@ -658,7 +666,7 @@ fn pane_write(
 
 /// Signals that the webview's listener for `pane_id` is live, flushing any
 /// output the pane produced before the frontend was ready to receive it.
-#[tauri::command]
+#[tauri::command(async)]
 fn pane_attach(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
     attach_pane(&state, pane_id)
 }
@@ -673,7 +681,7 @@ fn pane_resize(
     resize_pane(&state, pane_id, cols, rows)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pane_activity(
     state: tauri::State<'_, AppState>,
     pane_id: String,
@@ -681,7 +689,7 @@ fn pane_activity(
     inspect_pane_activity(&state, pane_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
     kill_pane(&state, pane_id)
 }
@@ -694,7 +702,7 @@ fn pane_activate(state: tauri::State<'_, AppState>, pane_id: String) {
     state.touch_pane_active(&pane_id);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pane_restore_last_closed(state: tauri::State<'_, AppState>) -> Result<Option<PaneInfo>, String> {
     recovery::restore_last_closed_pane(&state)
 }
@@ -877,7 +885,7 @@ fn agent_clear_working_status(
     clear_agent_working_status(&state, &agent_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn worktree_status(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -885,12 +893,12 @@ fn worktree_status(
     agent_worktree_status(&state, &agent_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn worktree_remove(state: tauri::State<'_, AppState>, agent_id: String) -> Result<(), String> {
     remove_agent_worktree(&state, &agent_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn worktree_close_pane(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -936,7 +944,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 /// Arms or releases the macOS wake lock. The frontend calls this whenever its
 /// "prevent sleep" setting or the set of running agents changes.
-#[tauri::command]
+#[tauri::command(async)]
 fn app_set_prevent_sleep(guard: tauri::State<'_, SleepGuard>, active: bool) -> Result<(), String> {
     guard.set_active(active)
 }
