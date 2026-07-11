@@ -63,26 +63,31 @@ export function listenToComposerInsert(
 interface SaveDraftAsPromptDetail {
   agentId: string;
   text: string;
+  lockToGlobal: boolean;
 }
 
-/** Opens the prompt-library editor for `agentId`, prefilled from its composer. */
-export function requestSaveDraftAsPrompt(agentId: string, text: string) {
+/** Opens the prompt-library editor for `agentId`, prefilled with reusable text. */
+export function requestSaveDraftAsPrompt(
+  agentId: string,
+  text: string,
+  { lockToGlobal = true }: { lockToGlobal?: boolean } = {},
+) {
   window.dispatchEvent(
     new CustomEvent<SaveDraftAsPromptDetail>(SAVE_DRAFT_AS_PROMPT_EVENT, {
-      detail: { agentId, text },
+      detail: { agentId, text, lockToGlobal },
     }),
   );
 }
 
-/** Subscribes one pane's prompt library to save-draft requests for its agent. */
+/** Subscribes one pane's prompt library to prefilled save requests for its agent. */
 export function listenToSaveDraftAsPrompt(
   agentId: string,
-  onSaveDraft: (text: string) => void,
+  onSaveDraft: (text: string, lockToGlobal: boolean) => void,
 ): () => void {
   const handler = (event: Event) => {
     const { detail } = event as CustomEvent<SaveDraftAsPromptDetail>;
     if (detail?.agentId === agentId && typeof detail.text === "string") {
-      onSaveDraft(detail.text);
+      onSaveDraft(detail.text, detail.lockToGlobal !== false);
     }
   };
   window.addEventListener(SAVE_DRAFT_AS_PROMPT_EVENT, handler);

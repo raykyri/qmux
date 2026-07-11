@@ -35,6 +35,7 @@ import {
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
+import { requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import {
   stripTaggedUserInstructionBlocks,
   taggedUserInstructionDetails,
@@ -848,6 +849,7 @@ export default function TurnOverlay({
               <MessageTimelineItemView
                 key={item.key}
                 item={item}
+                agentId={agentId}
                 assistantLabel={assistantLabel}
                 showName={showName}
                 stickyClassName={stickyClassName}
@@ -1194,6 +1196,7 @@ function sameMessageItem(a: MessageItem, b: MessageItem): boolean {
 
 const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
+  agentId,
   assistantLabel,
   showName,
   stickyClassName = "",
@@ -1202,6 +1205,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   titleGenerationBusy,
 }: {
   item: MessageItem;
+  agentId?: string;
   assistantLabel: string;
   showName: boolean;
   stickyClassName?: string;
@@ -1214,6 +1218,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
       {item.blocks.length > 0 ? (
         <MessageItemView
           item={item}
+          agentId={agentId}
           assistantLabel={assistantLabel}
           showName={showName}
           stickyClassName={stickyClassName}
@@ -1230,6 +1235,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
 },
 (previous, next) =>
   previous.assistantLabel === next.assistantLabel &&
+  previous.agentId === next.agentId &&
   previous.showName === next.showName &&
   previous.stickyClassName === next.stickyClassName &&
   previous.titleGenerationEnabled === next.titleGenerationEnabled &&
@@ -1239,6 +1245,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
 
 function MessageItemView({
   item,
+  agentId,
   assistantLabel,
   showName,
   stickyClassName = "",
@@ -1247,6 +1254,7 @@ function MessageItemView({
   titleGenerationBusy,
 }: {
   item: MessageItem;
+  agentId?: string;
   assistantLabel: string;
   showName: boolean;
   stickyClassName?: string;
@@ -1255,9 +1263,13 @@ function MessageItemView({
   titleGenerationBusy: boolean;
 }) {
   const taggedInstructionMessage = messageItemIsTaggedInstruction(item);
-  const titleSourceText =
-    item.role === "user" && titleGenerationEnabled ? messageItemText(item) : null;
-  const showTitleAction = Boolean(showName && !taggedInstructionMessage && titleSourceText);
+  const messageText = item.role === "user" ? messageItemText(item) : null;
+  const showMessageActions = Boolean(
+    showName &&
+      !taggedInstructionMessage &&
+      messageText &&
+      (titleGenerationEnabled || agentId),
+  );
   return (
     <article
       className={`turn-card role-${item.role}${
@@ -1269,9 +1281,11 @@ function MessageItemView({
           <span className="turn-card-role-label">
             {turnRoleLabel(item.role, assistantLabel, item.participant)}
           </span>
-          {showTitleAction && titleSourceText ? (
+          {showMessageActions && messageText ? (
             <MessageTitleMenu
-              titleSourceText={titleSourceText}
+              agentId={agentId}
+              messageText={messageText}
+              titleGenerationEnabled={titleGenerationEnabled}
               titleGenerationBusy={titleGenerationBusy}
               onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
             />
@@ -1291,15 +1305,20 @@ function MessageItemView({
 const TITLE_MENU_PREFERRED_WIDTH = 180;
 
 // The "..." menu shown at the right of a user message header. Opens a small popover
-// with actions for this message: regenerate the tab title from it, or copy its text.
+// with actions for regenerating the tab title, copying the message, or saving it to
+// the prompt library.
 // Portaled so the scrollable timeline cannot clip it; right-aligned so it grows
 // toward the pane center.
 function MessageTitleMenu({
-  titleSourceText,
+  agentId,
+  messageText,
+  titleGenerationEnabled,
   titleGenerationBusy,
   onRegenerateTitleFromUserMessage,
 }: {
-  titleSourceText: string;
+  agentId?: string;
+  messageText: string;
+  titleGenerationEnabled: boolean;
   titleGenerationBusy: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
 }) {
@@ -1405,33 +1424,54 @@ function MessageTitleMenu({
                   : { left: -9999, top: -9999 }
               }
             >
+              {titleGenerationEnabled ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="turn-title-menu-item"
+                  disabled={titleGenerationBusy}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(false);
+                    onRegenerateTitleFromUserMessage?.(messageText);
+                  }}
+                >
+                  {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
+                </button>
+              ) : null}
               <button
                 type="button"
                 role="menuitem"
                 className="turn-title-menu-item"
-                disabled={titleGenerationBusy}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpen(false);
-                  onRegenerateTitleFromUserMessage?.(titleSourceText);
-                }}
-              >
-                {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="turn-title-menu-item"
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setOpen(false);
-                  void writeClipboardText(stripTaggedUserInstructionBlocks(titleSourceText));
+                  void writeClipboardText(stripTaggedUserInstructionBlocks(messageText));
                 }}
               >
                 Copy message
               </button>
+              {agentId ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="turn-title-menu-item"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(false);
+                    requestSaveDraftAsPrompt(
+                      agentId,
+                      stripTaggedUserInstructionBlocks(messageText),
+                      { lockToGlobal: false },
+                    );
+                  }}
+                >
+                  Save to prompt library
+                </button>
+              ) : null}
             </div>,
             document.body,
           )

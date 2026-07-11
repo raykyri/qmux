@@ -107,13 +107,13 @@ export default function PromptLibraryMenu({
     void refresh();
   };
 
-  // The send-button menu can open this editor directly with the current draft.
-  // That workflow deliberately locks the destination to Global.
+  // Composer and sent-message menus can open this editor with reusable text.
+  // Composer drafts lock to Global; sent messages merely default there.
   useEffect(() => {
     if (!agentId) {
       return;
     }
-    return listenToSaveDraftAsPrompt(agentId, (text) => {
+    return listenToSaveDraftAsPrompt(agentId, (text, lockToGlobal) => {
       setOpen(true);
       setSearch("");
       setError(null);
@@ -122,7 +122,11 @@ export default function PromptLibraryMenu({
       setEditName("");
       setEditContent(text);
       setEditScope("global");
-      setView({ kind: "edit", original: null, lockedScope: "global" });
+      setView({
+        kind: "edit",
+        original: null,
+        ...(lockToGlobal ? { lockedScope: "global" as const } : {}),
+      });
       void refresh();
     });
   }, [agentId, refresh]);
