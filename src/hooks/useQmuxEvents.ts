@@ -5,6 +5,7 @@ import {
   isAgentInfo,
   isQueuedTurn,
   isTurn,
+  reconcileReplacedTurns,
   reconcileThreadGraphs,
   transcriptHookEvent,
   upsertAgent,
@@ -398,10 +399,10 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const replacementTurns = Array.isArray(event.payload.turns)
           ? event.payload.turns.filter(isTurn)
           : [];
-        setTurns((current) => [
-          ...current.filter((turn) => turn.agentId !== agentId),
-          ...replacementTurns,
-        ]);
+        // Reuse prior turn objects for content-identical replacements so the
+        // per-agent turn caches (and per-message memos) hold across a reset;
+        // see reconcileReplacedTurns.
+        setTurns((current) => reconcileReplacedTurns(current, agentId, replacementTurns));
         refreshThreadGraphs();
       }
       if (

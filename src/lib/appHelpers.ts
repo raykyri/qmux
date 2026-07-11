@@ -313,6 +313,51 @@ export function upsertAgent(agents: AgentInfo[], updated: AgentInfo): AgentInfo[
   return unchanged ? agents : next;
 }
 
+// Preserves turn object identity across a `turn.updated` reset. A reset ships
+// the agent's whole turn list re-parsed into fresh objects — fired for every
+// typed user prompt and lifecycle marker — even though almost every turn is
+// content-identical to what the app already holds. Downstream memoization
+// (the per-agent turn-info cache, the per-message timeline memo) keys on turn
+// identity, so handing out fresh objects re-rendered and re-parsed the whole
+// visible transcript per reset. Reuse the prior object when a replacement is
+// content-equal, gated behind cheap discriminators so genuinely changed turns
+// skip the JSON comparison; returns `current` itself when nothing about the
+// agent's slice (content, order, or placement) changed.
+export function reconcileReplacedTurns(
+  current: Turn[],
+  agentId: string | null | undefined,
+  replacement: Turn[],
+): Turn[] {
+  const priorById = new Map<string, Turn>();
+  for (const turn of current) {
+    if (turn.agentId === agentId) {
+      priorById.set(turn.id, turn);
+    }
+  }
+  const reconciled = replacement.map((turn) => {
+    const prior = priorById.get(turn.id);
+    if (
+      prior &&
+      prior.sourceIndex === turn.sourceIndex &&
+      prior.status === turn.status &&
+      prior.statusReason === turn.statusReason &&
+      prior.blocks.length === turn.blocks.length &&
+      JSON.stringify(prior) === JSON.stringify(turn)
+    ) {
+      return prior;
+    }
+    return turn;
+  });
+  const next = [
+    ...current.filter((turn) => turn.agentId !== agentId),
+    ...reconciled,
+  ];
+  if (next.length === current.length && next.every((turn, index) => turn === current[index])) {
+    return current;
+  }
+  return next;
+}
+
 // Preserves object identity across thread-graph refetches. A refetch
 // re-deserializes every graph into fresh objects even when nothing changed,
 // but downstream memoization (the per-agent turn-info cache in App) keys on
