@@ -459,13 +459,18 @@ fn list_recent_sessions(
     state.list_recent_sessions(limit.unwrap_or(12))
 }
 
-#[tauri::command(async)]
-fn recent_session_resume(
+#[tauri::command]
+async fn recent_session_resume(
     state: tauri::State<'_, AppState>,
     session_id: String,
     initial_size: Option<InitialPaneSize>,
 ) -> Result<PaneInfo, String> {
-    recovery::resume_recent_session(&state, &session_id, initial_size)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        recovery::resume_recent_session(&state, &session_id, initial_size)
+    })
+    .await
+    .map_err(|err| format!("recent_session_resume task failed: {err}"))?
 }
 
 #[tauri::command(async)]
@@ -511,12 +516,15 @@ fn set_agent_transcript(
     repoint_agent_transcript(&state, &agent_id, path.as_deref())
 }
 
-#[tauri::command(async)]
-fn group_create(
+#[tauri::command]
+async fn group_create(
     state: tauri::State<'_, AppState>,
     request: CreateGroupRequest,
 ) -> Result<GroupInfo, String> {
-    create_group(&state, request)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || create_group(&state, request))
+        .await
+        .map_err(|err| format!("group_create task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -550,13 +558,20 @@ fn group_set_collapsed(
     set_group_collapsed(&state, &group_id, collapsed)
 }
 
-#[tauri::command(async)]
-fn group_create_pick(
+// Commands whose bodies can block for seconds or longer run on tokio's
+// dedicated blocking pool (spawn_blocking, which grows to hundreds of threads)
+// rather than as `(async)` sync bodies: the latter execute inline on the
+// runtime's core workers (one per CPU), so a handful of concurrent git
+// checkouts — or a folder picker parked open — could otherwise starve every
+// other command, including pane writes and turn submits.
+#[tauri::command]
+async fn group_create_pick(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     after_group_id: Option<String>,
 ) -> Result<Option<GroupInfo>, String> {
-    match pick_folder_dialog(&app)? {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || match pick_folder_dialog(&app)? {
         Some(path) => create_group(
             &state,
             CreateGroupRequest {
@@ -569,34 +584,44 @@ fn group_create_pick(
         )
         .map(Some),
         None => Ok(None),
-    }
+    })
+    .await
+    .map_err(|err| format!("group_create_pick task failed: {err}"))?
 }
 
-#[tauri::command(async)]
-fn group_pick_dir(
+#[tauri::command]
+async fn group_pick_dir(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     group_id: String,
 ) -> Result<Option<GroupInfo>, String> {
-    match pick_folder_dialog(&app)? {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || match pick_folder_dialog(&app)? {
         Some(path) => set_group_dir(&state, &group_id, path).map(Some),
         None => Ok(None),
-    }
+    })
+    .await
+    .map_err(|err| format!("group_pick_dir task failed: {err}"))?
 }
 
-#[tauri::command(async)]
-fn spawn_shell(
+#[tauri::command]
+async fn spawn_shell(
     state: tauri::State<'_, AppState>,
     initial_size: Option<InitialPaneSize>,
     source_pane_id: Option<String>,
     group_id: Option<String>,
 ) -> Result<PaneInfo, String> {
-    spawn_shell_pane(
-        &state,
-        initial_size,
-        source_pane_id.as_deref(),
-        group_id.as_deref(),
-    )
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        spawn_shell_pane(
+            &state,
+            initial_size,
+            source_pane_id.as_deref(),
+            group_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|err| format!("spawn_shell task failed: {err}"))?
 }
 
 #[tauri::command(async)]
@@ -615,34 +640,47 @@ fn use_login_shell_set(state: tauri::State<'_, AppState>, enabled: bool) -> Resu
     })
 }
 
-#[tauri::command(async)]
-fn agent_spawn(
+#[tauri::command]
+async fn agent_spawn(
     state: tauri::State<'_, AppState>,
     request: SpawnAgentRequest,
 ) -> Result<PaneInfo, String> {
-    spawn_agent_pane(&state, request)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || spawn_agent_pane(&state, request))
+        .await
+        .map_err(|err| format!("agent_spawn task failed: {err}"))?
 }
 
-#[tauri::command(async)]
-fn spawn_claude(
+#[tauri::command]
+async fn spawn_claude(
     state: tauri::State<'_, AppState>,
     request: SpawnClaudeRequest,
 ) -> Result<PaneInfo, String> {
-    spawn_agent_pane(&state, request.into_agent_request())
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        spawn_agent_pane(&state, request.into_agent_request())
+    })
+    .await
+    .map_err(|err| format!("spawn_claude task failed: {err}"))?
 }
 
 /// Forks the session in `pane_id` into a new tab and resumes it. `nest` places the
 /// fork as a child of the source; otherwise it lands as a sibling immediately after
 /// it. When `prompt` is set, it is submitted as the fork's launch message.
-#[tauri::command(async)]
-fn agent_fork(
+#[tauri::command]
+async fn agent_fork(
     state: tauri::State<'_, AppState>,
     pane_id: String,
     use_worktree: bool,
     nest: bool,
     prompt: Option<String>,
 ) -> Result<PaneInfo, String> {
-    fork_agent_pane(&state, &pane_id, use_worktree, nest, prompt)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        fork_agent_pane(&state, &pane_id, use_worktree, nest, prompt)
+    })
+    .await
+    .map_err(|err| format!("agent_fork task failed: {err}"))?
 }
 
 // pane_write and every agent turn-queue command below are `(async)` as a
@@ -686,17 +724,23 @@ fn pane_resize(
     resize_pane(&state, pane_id, cols, rows)
 }
 
-#[tauri::command(async)]
-fn pane_activity(
+#[tauri::command]
+async fn pane_activity(
     state: tauri::State<'_, AppState>,
     pane_id: String,
 ) -> Result<PaneActivity, String> {
-    inspect_pane_activity(&state, pane_id)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || inspect_pane_activity(&state, pane_id))
+        .await
+        .map_err(|err| format!("pane_activity task failed: {err}"))?
 }
 
-#[tauri::command(async)]
-fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
-    kill_pane(&state, pane_id)
+#[tauri::command]
+async fn pane_kill(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || kill_pane(&state, pane_id))
+        .await
+        .map_err(|err| format!("pane_kill task failed: {err}"))?
 }
 
 /// Records that `pane_id` is now the focused pane. Fired by the frontend whenever
@@ -707,9 +751,14 @@ fn pane_activate(state: tauri::State<'_, AppState>, pane_id: String) {
     state.touch_pane_active(&pane_id);
 }
 
-#[tauri::command(async)]
-fn pane_restore_last_closed(state: tauri::State<'_, AppState>) -> Result<Option<PaneInfo>, String> {
-    recovery::restore_last_closed_pane(&state)
+#[tauri::command]
+async fn pane_restore_last_closed(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<PaneInfo>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || recovery::restore_last_closed_pane(&state))
+        .await
+        .map_err(|err| format!("pane_restore_last_closed task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -894,26 +943,40 @@ fn agent_clear_working_status(
     clear_agent_working_status(&state, &agent_id)
 }
 
-#[tauri::command(async)]
-fn worktree_status(
+#[tauri::command]
+async fn worktree_status(
     state: tauri::State<'_, AppState>,
     agent_id: String,
 ) -> Result<WorktreeStatus, String> {
-    agent_worktree_status(&state, &agent_id)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agent_worktree_status(&state, &agent_id))
+        .await
+        .map_err(|err| format!("worktree_status task failed: {err}"))?
 }
 
-#[tauri::command(async)]
-fn worktree_remove(state: tauri::State<'_, AppState>, agent_id: String) -> Result<(), String> {
-    remove_agent_worktree(&state, &agent_id)
+#[tauri::command]
+async fn worktree_remove(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || remove_agent_worktree(&state, &agent_id))
+        .await
+        .map_err(|err| format!("worktree_remove task failed: {err}"))?
 }
 
-#[tauri::command(async)]
-fn worktree_close_pane(
+#[tauri::command]
+async fn worktree_close_pane(
     state: tauri::State<'_, AppState>,
     agent_id: String,
     delete_worktree: bool,
 ) -> Result<(), String> {
-    close_worktree_pane(&state, &agent_id, delete_worktree)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        close_worktree_pane(&state, &agent_id, delete_worktree)
+    })
+    .await
+    .map_err(|err| format!("worktree_close_pane task failed: {err}"))?
 }
 
 #[tauri::command]
