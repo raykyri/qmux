@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
+import PromptLibraryMenu from "./PromptLibraryMenu";
 import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions";
 import type { TranscriptOption } from "../types";
 
@@ -46,6 +47,9 @@ interface TurnPaneHeaderProps {
   transcriptShortcutLabel: string;
   onToggleTranscriptExpanded: () => void;
   onCollapseRightBar: () => void;
+  // Inserts saved-prompt text into this pane's composer; absent when the pane
+  // has no agent composer, which disables the prompt-library trigger.
+  onInsertPrompt?: (text: string) => void;
 }
 
 type MenuPos = {
@@ -71,6 +75,7 @@ export default function TurnPaneHeader({
   transcriptShortcutLabel,
   onToggleTranscriptExpanded,
   onCollapseRightBar,
+  onInsertPrompt,
 }: TurnPaneHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -348,6 +353,7 @@ export default function TurnPaneHeader({
           : null}
       </div>
       <div className="turn-pane-header-controls">
+        <PromptLibraryMenu onInsert={onInsertPrompt} />
         <div className="turn-pane-fork">
           <button
             ref={menuTriggerRef}

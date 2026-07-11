@@ -136,6 +136,9 @@ fn classify_app_shortcut(
     if one_primary_modifier && !option && !shift && key == "," {
         return Some(AppShortcutCommand::OpenSettings);
     }
+    // ⌘K is deliberately NOT classified here: with a terminal focused it stays
+    // native (clear screen). The command palette binds it only for web targets,
+    // in appShortcuts.ts.
     if one_primary_modifier && !option && shift && key == "e" {
         return Some(AppShortcutCommand::ToggleTranscriptOrBrowser);
     }

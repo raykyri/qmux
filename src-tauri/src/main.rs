@@ -9,6 +9,7 @@ mod launch_path;
 mod menu_bar;
 mod native_terminal;
 mod persistence;
+mod prompt_library;
 mod pty;
 mod recovery;
 mod scrollback;
@@ -195,6 +196,90 @@ fn launcher_adapter_preference_set(
     persistence::update_preferences(&state.config().workspace_root, move |preferences| {
         preferences.launcher_adapter_id = Some(adapter_id);
     })
+}
+
+#[tauri::command]
+fn prompt_library_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<prompt_library::PromptLibrary, String> {
+    prompt_library::list(&state.config().workspace_root)
+}
+
+/// Creates or overwrites a saved prompt in `scope`. `previous_scope`/`previous_name`,
+/// when they name a different prompt location, make this a rename and/or a move
+/// between scopes (write new, then remove old).
+#[tauri::command]
+fn prompt_library_save(
+    state: tauri::State<'_, AppState>,
+    scope: prompt_library::PromptScope,
+    name: String,
+    content: String,
+    previous_scope: Option<prompt_library::PromptScope>,
+    previous_name: Option<String>,
+) -> Result<prompt_library::SavedPrompt, String> {
+    let previous = match (&previous_scope, &previous_name) {
+        (Some(previous_scope), Some(previous_name)) => {
+            Some((*previous_scope, previous_name.as_str()))
+        }
+        (None, None) => None,
+        _ => return Err("previousScope and previousName must be passed together".to_string()),
+    };
+    prompt_library::save(
+        &state.config().workspace_root,
+        scope,
+        &name,
+        &content,
+        previous,
+    )
+}
+
+#[tauri::command]
+fn prompt_library_delete(
+    state: tauri::State<'_, AppState>,
+    scope: prompt_library::PromptScope,
+    name: String,
+) -> Result<(), String> {
+    prompt_library::delete(&state.config().workspace_root, scope, &name)
+}
+
+/// Reveals a scope's prompts folder in the OS file manager, creating it first so a
+/// fresh library opens an empty folder instead of erroring.
+#[tauri::command]
+fn prompt_library_reveal(
+    state: tauri::State<'_, AppState>,
+    scope: prompt_library::PromptScope,
+) -> Result<(), String> {
+    let dir = prompt_library::scope_dir(&state.config().workspace_root, scope)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("failed to create prompts dir {}: {err}", dir.display()))?;
+    open_path_in_file_manager(&dir)
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open {}: {err}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open {}: {err}", path.display()))
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("failed to open {}: {err}", path.display()))
 }
 
 #[tauri::command]
@@ -969,6 +1054,10 @@ fn main() {
             active_tab_get,
             active_tab_set,
             open_external_url,
+            prompt_library_list,
+            prompt_library_save,
+            prompt_library_delete,
+            prompt_library_reveal,
             list_claude_skills,
             list_panes,
             list_groups,

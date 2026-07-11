@@ -9,6 +9,7 @@ export type AppShortcutCommand =
   | { type: "cycleAllTab"; direction: -1 | 1 }
   | { type: "launcherOrCycleAdapter" }
   | { type: "openSettings" }
+  | { type: "openCommandPalette" }
   | { type: "toggleTranscriptOrBrowser" }
   | { type: "splitPaneBelow" }
   | { type: "restoreClosedPane" }
@@ -77,6 +78,11 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   }
   if (onePrimaryModifier && !option && !shift && key === ",") {
     return { type: "openSettings" };
+  }
+  // Only for web targets: with a terminal focused, ⌘K stays native (clear
+  // screen), so the native classifier deliberately doesn't claim it either.
+  if (command && !control && !option && !shift && key === "k" && !input.terminalTarget) {
+    return { type: "openCommandPalette" };
   }
   if (onePrimaryModifier && !option && shift && key === "e") {
     return { type: "toggleTranscriptOrBrowser" };

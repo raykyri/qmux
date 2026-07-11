@@ -51,6 +51,7 @@ import claudeModelIconUrl from "./assets/model-icons/claude-ai.svg";
 import openAiModelIconUrl from "./assets/model-icons/openai.svg";
 import openCodeModelIconUrl from "./assets/model-icons/opencode-dark.svg";
 import grokModelIconUrl from "./assets/model-icons/grok.svg";
+import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
 import NativeInput from "./components/NativeInput";
 import {
   ComposerSubmitShortcutGlyph,
@@ -90,6 +91,7 @@ import {
   resolveAppShortcut,
   type AppShortcutCommand,
 } from "./lib/appShortcuts";
+import { requestComposerInsert } from "./lib/promptLibrary";
 import { buildSingleAgentThreadGraph, focusedBranchTurns } from "./lib/threadGraph";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
@@ -187,6 +189,7 @@ import {
   listGroups,
   listAgents,
   listClaudeSkills,
+  listSavedPrompts,
   listAgentTranscripts,
   listAgentTurnQueue,
   listThreadGraphs,
@@ -231,6 +234,7 @@ import type {
   PaneSplitInfo,
   QueuedTurn,
   RuntimeConfig,
+  SavedPrompt,
   ThreadGraph,
   TranscriptHookEvent,
   TranscriptOption,
@@ -1158,6 +1162,10 @@ export default function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  // Saved prompts shown in the palette's "Insert prompt" section, refreshed on
+  // each open so edits made in the library menu or on disk show up.
+  const [paletteSavedPrompts, setPaletteSavedPrompts] = useState<SavedPrompt[]>([]);
   // True while a web editable (composer, rename input, search field…) holds DOM
   // focus. Native terminal panes must never claim first responder then, or they
   // would steal the keyboard mid-typing.
@@ -3912,6 +3920,109 @@ export default function App() {
     focusLauncherInput();
   }
 
+  // The ⌘K palette's command list, rebuilt on each open from live state: tab
+  // navigation, pane/session actions gated on what the active pane supports,
+  // and saved prompts that insert into the active agent's composer.
+  function buildPaletteCommands(): PaletteCommand[] {
+    const commands: PaletteCommand[] = [];
+    commands.push({
+      id: "nav:home",
+      section: "Go to",
+      title: "Home",
+      hint: "⇧⌘H",
+      action: () => focusHomeTab(),
+    });
+    for (const pane of sidebarPanes) {
+      commands.push({
+        id: `nav:${pane.id}`,
+        section: "Go to",
+        title: pane.title,
+        hint: groupById.get(pane.groupId)?.name,
+        action: () => focusPaneTab(pane.id),
+      });
+    }
+    commands.push({
+      id: "action:new-tab",
+      section: "Actions",
+      title: "New tab",
+      hint: "⌘T",
+      action: () => openAgentLauncher(),
+    });
+    commands.push({
+      id: "action:new-terminal",
+      section: "Actions",
+      title: "New terminal",
+      action: () => void addShellPane(),
+    });
+    if (agentCanFork(activeAgent)) {
+      commands.push({
+        id: "action:fork",
+        section: "Actions",
+        title: "Fork session",
+        action: () => void forkActivePane({ nest: true, useWorktree: false }),
+      });
+      commands.push({
+        id: "action:fork-worktree",
+        section: "Actions",
+        title: "Fork session in worktree",
+        action: () => void forkActivePane({ nest: true, useWorktree: true }),
+      });
+    }
+    if (activePane) {
+      commands.push({
+        id: "action:toggle-browser",
+        section: "Actions",
+        title: "Toggle browser overlay",
+        action: () => toggleActiveBrowserOverlay(),
+      });
+      commands.push({
+        id: "action:close-pane",
+        section: "Actions",
+        title: "Close tab",
+        hint: "⌘W",
+        action: () => requestClosePaneRef.current(activePane),
+      });
+    }
+    if (activeAgent) {
+      commands.push({
+        id: "action:toggle-transcript",
+        section: "Actions",
+        title: "Expand or restore transcript",
+        hint: EXPAND_TOGGLE_SHORTCUT_LABEL,
+        action: () => toggleActiveTranscriptExpanded(),
+      });
+    }
+    commands.push({
+      id: "action:restore-closed",
+      section: "Actions",
+      title: "Reopen closed tab",
+      hint: "⇧⌘T",
+      action: () => void restoreClosedPane(),
+    });
+    commands.push({
+      id: "action:settings",
+      section: "Actions",
+      title: "Open Settings",
+      hint: "⌘,",
+      action: () => {
+        setSettingsMenu(null);
+        setSettingsOpen(true);
+      },
+    });
+    if (activeAgent) {
+      for (const prompt of paletteSavedPrompts) {
+        commands.push({
+          id: `prompt:${prompt.scope}:${prompt.name}`,
+          section: "Insert prompt",
+          title: prompt.name,
+          hint: prompt.content.trim().split("\n", 1)[0],
+          action: () => requestComposerInsert(activeAgent.id, prompt.content),
+        });
+      }
+    }
+    return commands;
+  }
+
   useEffect(() => {
     let disposed = false;
     let cleanup: (() => void) | undefined;
@@ -5768,6 +5879,9 @@ export default function App() {
           setSettingsMenu(null);
           setSettingsOpen(true);
           return;
+        case "openCommandPalette":
+          setCommandPaletteOpen(true);
+          return;
         case "toggleTranscriptOrBrowser":
           if (canToggleActiveTranscriptExpandedRef.current) {
             toggleActiveTranscriptExpandedRef.current();
@@ -5849,6 +5963,15 @@ export default function App() {
     launchAdapter.id,
     paneSplits,
   ]);
+
+  useEffect(() => {
+    if (!commandPaletteOpen) {
+      return;
+    }
+    void listSavedPrompts()
+      .then((library) => setPaletteSavedPrompts(library.prompts))
+      .catch(() => setPaletteSavedPrompts([]));
+  }, [commandPaletteOpen]);
 
   useEffect(() => {
     if (!launcherVisible) {
@@ -6644,6 +6767,9 @@ export default function App() {
               transcriptShortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
               onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
               onCollapseRightBar={() => setRightBarCollapsed(true)}
+              onInsertPrompt={
+                agent ? (text) => requestComposerInsert(agent.id, text) : undefined
+              }
             />
           ) : undefined
         }
@@ -7304,6 +7430,12 @@ export default function App() {
           {renderLauncher("modal")}
         </div>
       ) : null}
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        commands={commandPaletteOpen ? buildPaletteCommands() : []}
+      />
 
       {settingsOpen ? (
         <div

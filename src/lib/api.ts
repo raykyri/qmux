@@ -11,8 +11,11 @@ import type {
   PaneInfo,
   PaneSplitInfo,
   QmuxEvent,
+  PromptLibrary,
+  PromptScope,
   QueuedTurn,
   QueuedTurnDelivery,
+  SavedPrompt,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   SendNextQueuedAgentTurnResult,
@@ -46,6 +49,40 @@ export function getOpenRouterKey() {
 
 export function setOpenRouterKey(key: string) {
   return invoke<void>("openrouter_key_set", { key });
+}
+
+// The prompt library: reusable composer messages stored as markdown files, one
+// file per prompt, in a global (~/.qmux/prompts/) or project
+// (<workspaceRoot>/.qmux/prompts/) scope.
+export function listSavedPrompts() {
+  return invoke<PromptLibrary>("prompt_library_list");
+}
+
+// Creates or overwrites a saved prompt in `scope`. Passing a different
+// previousScope/previousName renames or moves that prompt instead of leaving
+// both files behind.
+export function saveSavedPrompt(
+  scope: PromptScope,
+  name: string,
+  content: string,
+  previous?: { scope: PromptScope; name: string } | null,
+) {
+  return invoke<SavedPrompt>("prompt_library_save", {
+    scope,
+    name,
+    content,
+    previousScope: previous?.scope ?? null,
+    previousName: previous?.name ?? null,
+  });
+}
+
+export function deleteSavedPrompt(scope: PromptScope, name: string) {
+  return invoke<void>("prompt_library_delete", { scope, name });
+}
+
+/** Opens a scope's prompts folder in Finder, creating it if needed. */
+export function revealSavedPrompts(scope: PromptScope) {
+  return invoke<void>("prompt_library_reveal", { scope });
 }
 
 export function getActiveTab() {

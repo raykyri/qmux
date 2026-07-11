@@ -26,6 +26,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
+import { listenToComposerInsert } from "../lib/promptLibrary";
 import type {
   AgentInfo,
   PaneInfo,
@@ -310,6 +311,29 @@ export default function NativeInput({
     maxWidth: number;
   } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Saved-prompt insertion requests from the pane header's library menu. The
+  // caret lives here, so the splice happens here: insert at the selection (or
+  // append when the textarea never had focus), then restore focus with the caret
+  // after the inserted text. Depends on `value` so the splice always sees the
+  // current draft.
+  useEffect(() => {
+    return listenToComposerInsert(agent.id, (text) => {
+      const textarea = textareaRef.current;
+      const start = textarea?.selectionStart ?? value.length;
+      const end = textarea?.selectionEnd ?? value.length;
+      setValue(value.slice(0, start) + text + value.slice(end));
+      const caret = start + text.length;
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) {
+          return;
+        }
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+    });
+  }, [agent.id, value]);
 
   const awaitingPermission = agent.status === "awaitingPermission";
   const paused = agent.paused ?? false;

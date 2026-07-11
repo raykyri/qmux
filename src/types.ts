@@ -291,6 +291,26 @@ export interface TranscriptOption {
   boundToOtherAgent: boolean;
 }
 
+// Where a saved prompt lives: "global" is ~/.qmux/prompts/ (visible from every
+// workspace), "project" is <workspaceRoot>/.qmux/prompts/ (this workspace only).
+export type PromptScope = "global" | "project";
+
+// A reusable composer message from the prompt library. Backed by a markdown file
+// whose filename stem is the name; see PromptScope for where it lives.
+export interface SavedPrompt {
+  name: string;
+  content: string;
+  modifiedMs: number;
+  scope: PromptScope;
+}
+
+export interface PromptLibrary {
+  prompts: SavedPrompt[];
+  // False when the workspace root is the home directory, making the two scopes
+  // one folder — the UI then collapses to a single Global section.
+  hasProjectScope: boolean;
+}
+
 export interface SpawnAgentRequest {
   adapterId: string;
   prompt: string;

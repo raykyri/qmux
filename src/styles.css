@@ -1382,6 +1382,115 @@ button:disabled {
 }
 
 /* Settings panel — a small modal reusing the confirm-dialog surface. */
+/* ⌘K command palette: same scrim as settings, but top-anchored so the list can
+   grow and shrink under the input without the panel jumping vertically. */
+.command-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 96px 18px 18px;
+  background: rgba(8, 10, 12, 0.58);
+}
+
+.command-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(520px, 100%);
+  max-height: min(420px, 100%);
+  padding: 8px;
+  border: 1px solid #2a2d2f;
+  border-radius: 10px;
+  background: #1d2224;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.command-palette-input {
+  width: 100%;
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  outline: none;
+}
+
+.command-palette-input:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.command-palette-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.command-palette-empty {
+  padding: 14px;
+  color: #8a938e;
+  font-size: var(--fs-base);
+  text-align: center;
+}
+
+.command-palette-section {
+  padding: 6px 10px 2px;
+  color: #8a938e;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Selection follows the keyboard (and mouse hover via onMouseMove), so only the
+   is-selected row highlights — no separate :hover style fighting the arrows. */
+.command-palette-item.is-selected {
+  background: #283032;
+}
+
+.command-palette-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-palette-item-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #8a938e;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-backdrop {
   position: fixed;
   inset: 0;
@@ -3209,6 +3318,316 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-pane-header-button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.prompt-library {
+  position: relative;
+  display: flex;
+}
+
+/* Portaled; right-aligned to its trigger like the fork menu, but taller: it hosts
+   a search field, a scrolling prompt list, and small inline fill/edit forms. */
+.prompt-library-menu {
+  position: fixed;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #2a2d2f;
+  border-radius: 8px;
+  background: #1d2224;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.prompt-library-search {
+  width: 100%;
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  outline: none;
+}
+
+.prompt-library-search:hover {
+  border-color: var(--control-border-hover);
+}
+
+.prompt-library-search:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.prompt-library-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.prompt-library-empty {
+  padding: 10px;
+  color: #8a938e;
+  font-size: var(--fs-base);
+  text-align: center;
+}
+
+.prompt-library-item {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.prompt-library-item-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e7e7e2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prompt-library-item-main:hover:not(:disabled) {
+  background: #283032;
+}
+
+.prompt-library-item-main:disabled {
+  color: #6f7773;
+  cursor: default;
+}
+
+.prompt-library-item-name {
+  overflow: hidden;
+  font-size: var(--fs-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-library-item-preview {
+  overflow: hidden;
+  color: #8a938e;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Edit/delete affordances stay hidden until the row is hovered or focused, so
+   the resting list reads as plain menu items. */
+.prompt-library-item-actions {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.prompt-library-item:hover .prompt-library-item-actions,
+.prompt-library-item:focus-within .prompt-library-item-actions {
+  display: flex;
+}
+
+.prompt-library-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  align-self: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a938e;
+  cursor: pointer;
+}
+
+.prompt-library-icon-button:hover {
+  background: #283032;
+  color: #e7e7e2;
+}
+
+.prompt-library-icon-button.is-danger {
+  border-color: #7a3030;
+  background: #3a2022;
+  color: #e08a8a;
+}
+
+/* A scope section (Global / Project) doubles as the drag-and-drop target for
+   moving prompts between scopes; the dashed accent border signals a live drop. */
+.prompt-library-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+}
+
+.prompt-library-section.is-drop-target {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+}
+
+.prompt-library-section-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 5px 1px;
+}
+
+.prompt-library-section-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #8a938e;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The header's folder/new buttons stay subdued until the section is hovered,
+   matching the per-row edit/delete affordances. */
+.prompt-library-section-header .prompt-library-icon-button {
+  visibility: hidden;
+}
+
+.prompt-library-section:hover .prompt-library-section-header .prompt-library-icon-button,
+.prompt-library-section:focus-within .prompt-library-section-header .prompt-library-icon-button {
+  visibility: visible;
+}
+
+.prompt-library-scope-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.prompt-library-scope-option {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  overflow: hidden;
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: rgba(20, 24, 26, 0.9);
+  color: #c4cbc6;
+  font-size: var(--fs-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.prompt-library-scope-option:hover {
+  background: rgba(32, 38, 40, 0.95);
+  color: #f1f0e8;
+}
+
+.prompt-library-scope-option.is-active {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: #f1f0e8;
+}
+
+.prompt-library-heading {
+  padding: 0 2px;
+  color: #e7e7e2;
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.prompt-library-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.prompt-library-field-label {
+  color: #8a938e;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.prompt-library-editor {
+  width: 100%;
+  min-height: 90px;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: 1.4;
+  outline: none;
+  resize: vertical;
+}
+
+.prompt-library-editor:hover {
+  border-color: var(--control-border-hover);
+}
+
+.prompt-library-editor:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.prompt-library-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.prompt-library-button {
+  min-height: var(--control-h-md);
+  padding: 0 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: rgba(20, 24, 26, 0.9);
+  color: #c4cbc6;
+  font-size: var(--fs-base);
+  cursor: pointer;
+}
+
+.prompt-library-button:hover:not(:disabled) {
+  background: rgba(32, 38, 40, 0.95);
+  color: #f1f0e8;
+}
+
+.prompt-library-button:disabled {
+  color: #6f7773;
+  cursor: default;
+}
+
+.prompt-library-button.is-primary {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: #f1f0e8;
+}
+
+.prompt-library-error {
+  padding: 6px 8px;
+  border: 1px solid #7a3030;
+  border-radius: 6px;
+  background: #3a2022;
+  color: #e08a8a;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .turn-pane-floating-controls {
