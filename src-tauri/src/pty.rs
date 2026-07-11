@@ -970,24 +970,22 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 
 pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), String> {
     if state.pane_is_native(&options.pane_id)? == Some(true) {
-        if !options.submit {
-            // Lock-free single call; the bridge hops to the main thread itself.
-            return dispatch_native_pane_input(state, &options);
-        }
-        // Submit sequences hold the per-pane send lock across bridge calls that
-        // each need the main thread (`DispatchQueue.main.sync`), plus the
-        // submit-key delay. Running that on a background thread deadlocks: a
-        // synchronous Tauri command contending for the same pane's lock parks
-        // the main thread, and the background holder's main-thread hop then
-        // never runs. Execute the whole locked sequence on the main thread
-        // instead — the main thread only ever runs the sequence inline (never
-        // waits on another holder, since no other thread takes a native pane's
-        // send lock anymore), and background callers park on the reply channel
-        // while holding no locks at all.
-        let state_on_main = state.clone();
-        return state.run_on_main_thread_blocking(move || {
-            dispatch_native_pane_input(&state_on_main, &options)
-        })?;
+        // Runs on the calling (background) thread; each bridge call hops to
+        // the main thread internally (`DispatchQueue.main.sync`) for just the
+        // AppKit work. A submit holds the per-pane send lock across those
+        // hops plus the 15ms submit-key delay, so this sequence must never
+        // run while the main thread can contend for a send lock — a parked
+        // main thread would deadlock the holder's main-thread hop. That
+        // invariant holds because every path that reaches a send lock is off
+        // the main thread: pane_write and all agent turn-queue commands are
+        // `(async)` Tauri commands (see main.rs), control-socket and
+        // transcript-tail callers run on their own threads, and Ghostty's
+        // close delegate defers its queue-draining work to a spawned thread
+        // (see qmux_native_terminal_did_close). Keeping the sequence here —
+        // instead of the previous hop-to-main-and-block — means a composer
+        // send or queued-turn drain no longer stalls the main thread for the
+        // duration of the delay.
+        return dispatch_native_pane_input(state, &options);
     }
     let writer = state
         .pane_writer(&options.pane_id)?

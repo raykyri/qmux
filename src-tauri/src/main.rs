@@ -645,7 +645,12 @@ fn agent_fork(
     fork_agent_pane(&state, &pane_id, use_worktree, nest, prompt)
 }
 
-#[tauri::command]
+// pane_write and every agent turn-queue command below are `(async)` as a
+// correctness requirement, not just latency: a submit holds the pane's send
+// lock across native bridge calls that each hop to the main thread, so no
+// synchronous (main-thread) command may ever contend for a send lock — see
+// write_pane. This also keeps the 15ms submit-key delay off the main thread.
+#[tauri::command(async)]
 fn pane_write(
     state: tauri::State<'_, AppState>,
     pane_id: String,
@@ -754,7 +759,7 @@ fn pane_splits_set(
     state.set_pane_splits(splits)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_submit_turn(
     state: tauri::State<'_, AppState>,
     request: SubmitAgentTurnRequest,
@@ -762,7 +767,7 @@ fn agent_submit_turn(
     submit_agent_turn(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_queue_wait_turn(
     state: tauri::State<'_, AppState>,
     request: QueueWaitAgentTurnRequest,
@@ -770,7 +775,7 @@ fn agent_queue_wait_turn(
     queue_wait_agent_turn(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_queue_delivery_turn(
     state: tauri::State<'_, AppState>,
     request: QueueDeliveryAgentTurnRequest,
@@ -778,7 +783,7 @@ fn agent_queue_delivery_turn(
     queue_delivery_agent_turn(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_remove_queued_turn(
     state: tauri::State<'_, AppState>,
     request: RemoveQueuedAgentTurnRequest,
@@ -786,7 +791,7 @@ fn agent_remove_queued_turn(
     remove_queued_agent_turn(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_reorder_queued_turn(
     state: tauri::State<'_, AppState>,
     request: ReorderQueuedAgentTurnRequest,
@@ -794,7 +799,7 @@ fn agent_reorder_queued_turn(
     reorder_queued_agent_turn(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_move_queued_turn(
     state: tauri::State<'_, AppState>,
     request: MoveQueuedAgentTurnRequest,
@@ -802,7 +807,7 @@ fn agent_move_queued_turn(
     move_queued_agent_turn(&state, request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_send_next_queued_turn(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -810,7 +815,7 @@ fn agent_send_next_queued_turn(
     send_next_queued_agent_turn(&state, &agent_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_set_queued_turn_pause(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -834,7 +839,7 @@ fn agent_set_queued_turn_pause(
     Ok(queued_turns)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_unpause(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -842,7 +847,7 @@ fn agent_unpause(
     unpause_agent(&state, &agent_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_set_typing(
     state: tauri::State<'_, AppState>,
     agent_id: String,

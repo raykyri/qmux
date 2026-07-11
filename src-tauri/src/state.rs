@@ -1428,47 +1428,6 @@ impl AppState {
         }
     }
 
-    /// Runs `task` on the app's main thread, blocking the caller until it
-    /// finishes and returning its result. Callers already on the main thread
-    /// run the task inline — dispatching through the event-loop proxy and then
-    /// blocking on the reply would park the very thread that has to run the
-    /// task. When no app handle is attached (startup, tests) the task also
-    /// runs inline on the calling thread.
-    ///
-    /// Safe-wait contract: a background caller parks until the main thread
-    /// gets to the task, so it must not hold any lock that main-thread work
-    /// can contend.
-    pub fn run_on_main_thread_blocking<T, F>(&self, task: F) -> Result<T, String>
-    where
-        T: Send + 'static,
-        F: FnOnce() -> T + Send + 'static,
-    {
-        #[cfg(target_os = "macos")]
-        {
-            let on_main_thread = unsafe { libc::pthread_main_np() != 0 };
-            if !on_main_thread {
-                let app_handle = self
-                    .inner
-                    .app_handle
-                    .lock()
-                    .ok()
-                    .and_then(|handle| handle.as_ref().cloned());
-                if let Some(app_handle) = app_handle {
-                    let (result_tx, result_rx) = std::sync::mpsc::channel();
-                    app_handle
-                        .run_on_main_thread(move || {
-                            let _ = result_tx.send(task());
-                        })
-                        .map_err(|err| format!("failed to reach the main thread: {err}"))?;
-                    return result_rx.recv().map_err(|_| {
-                        "main-thread task was dropped before it completed".to_string()
-                    });
-                }
-            }
-        }
-        Ok(task())
-    }
-
     pub fn mark_exit_confirmed(&self) {
         self.inner.exit_confirmed.store(true, Ordering::Relaxed);
     }

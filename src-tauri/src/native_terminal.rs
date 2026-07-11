@@ -665,7 +665,17 @@ pub extern "C" fn qmux_native_terminal_did_close(
         return;
     };
     with_app_state(|state| {
-        crate::pty::native_pane_did_close(state, &pane_id, process_alive == 1);
+        // This delegate fires on the main thread, but the close handler walks
+        // the pane's process tree (a `ps` fork), captures the pane (model lock
+        // + scrollback read), and drains waiter queues — and a queue drain
+        // submits turns, which takes pane send locks the main thread must
+        // never contend for (see write_pane). Hand the whole sequence to a
+        // worker; the handler's closing-set and pane-registration checks make
+        // a deferred or duplicate delivery a no-op.
+        let state = state.clone();
+        std::thread::spawn(move || {
+            crate::pty::native_pane_did_close(&state, &pane_id, process_alive == 1);
+        });
     });
 }
 
