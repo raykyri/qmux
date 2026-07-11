@@ -362,7 +362,7 @@ export default function PromptLibraryMenu({
         role="menuitem"
         className="prompt-library-item-main"
         disabled={!onInsert}
-        title={onInsert ? "Insert into composer" : "No composer in this pane"}
+        title={onInsert ? "Insert into composer" : "No composer in this tab"}
         onClick={() => choosePrompt(prompt)}
       >
         <span className="prompt-library-item-name">{prompt.name}</span>

@@ -4261,14 +4261,15 @@ export default function App() {
     commands.push({
       id: "action:new-tab",
       section: "Actions",
-      title: "New tab",
-      hint: "⌘T",
+      title: "New agent",
+      hint: settings.codeMode ? "⌘;" : "⌘; / ⌘T",
       action: () => openAgentLauncher(),
     });
     commands.push({
       id: "action:new-terminal",
       section: "Actions",
-      title: "New terminal",
+      title: "New shell",
+      hint: settings.codeMode ? "⌘T" : undefined,
       action: () => void addShellPane(),
     });
     if (agentCanFork(activeAgent)) {
@@ -7251,7 +7252,7 @@ export default function App() {
         <nav
           ref={paneListRef}
           className={`pane-list${draggingPaneId || draggingGroupId ? " is-dragging" : ""}`}
-          aria-label="Panes"
+          aria-label="Tabs"
         >
           {/* Fixed Home tab: not a real pane, so it can't be closed, reordered, or
               nested. Selecting it shows the empty content placeholder (the launcher). */}
@@ -8553,7 +8554,7 @@ export default function App() {
               </>
             ) : closeDialog.kind === "stop" ? (
               <>
-                <p>This agent {closeDialog.reason}. Close the pane and stop it?</p>
+                <p>This agent {closeDialog.reason}. Close the tab and stop it?</p>
                 <div className="confirm-dialog-actions">
                   <button type="button" onClick={() => setCloseDialog(null)}>
                     Cancel
@@ -8565,7 +8566,7 @@ export default function App() {
                     autoFocus
                     onClick={() => void confirmStopAndClose()}
                   >
-                    Close pane
+                    Close tab
                   </button>
                 </div>
               </>
