@@ -3712,32 +3712,42 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    async function boot() {
+    // Everything the first paint doesn't need: the turn store (whole
+    // transcripts including tool results — by far the largest boot payload),
+    // thread graphs, per-agent queues and drafts, and the stored key/login
+    // preferences. Runs detached after the window is revealed, so startup is
+    // gated only by the pane/group/agent snapshot.
+    async function hydrateSecondary(existingAgents: AgentInfo[]) {
       try {
         const [
-          runtimeConfig,
-          preferredLauncherAdapterId,
-          preferredActiveTabId,
-          existingGroups,
-          existingPanes,
-          existingPaneSplits,
-          existingAgents,
           existingTurns,
           existingThreadGraphs,
           storedOpenRouterKey,
           storedUseLoginShell,
+          queueEntries,
+          draftEntries,
         ] = await Promise.all([
-          getRuntimeConfig(),
-          getLauncherAdapterPreference().catch(() => null),
-          getActiveTab().catch(() => null),
-          listGroups().catch((): GroupInfo[] => []),
-          listPanes(),
-          getPaneSplits().catch((): PaneSplitInfo[] => []),
-          listAgents(),
           listTurns(),
           listThreadGraphs().catch((): ThreadGraph[] => []),
           getOpenRouterKey().catch(() => ""),
           getUseLoginShell().catch((): boolean | null => null),
+          // Per-agent fetches are individually guarded so one failed
+          // draft/queue read just falls back to empty for that agent.
+          Promise.all(
+            existingAgents.map(
+              async (agent) =>
+                [
+                  agent.id,
+                  await listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => []),
+                ] as const,
+            ),
+          ),
+          Promise.all(
+            existingAgents.map(
+              async (agent) =>
+                [agent.id, await getAgentDraft(agent.id).catch((): string | null => null)] as const,
+            ),
+          ),
         ]);
         if (cancelled) {
           return;
@@ -3766,6 +3776,51 @@ export default function App() {
               };
         });
 
+        // The event stream is already live while this snapshot was in flight,
+        // so keep any turns it appended in the meantime instead of clobbering
+        // them with the (marginally older) snapshot.
+        setTurns((current) => {
+          const seen = new Set(existingTurns.map((turn) => turn.id));
+          const extras = current.filter((turn) => !seen.has(turn.id));
+          return extras.length === 0 ? existingTurns : [...existingTurns, ...extras];
+        });
+        setThreadGraphs(existingThreadGraphs);
+        replaceQueuedTurnsByAgent(Object.fromEntries(queueEntries));
+        const restoredDrafts = Object.fromEntries(
+          draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
+        );
+        draftsByAgentRef.current = restoredDrafts;
+        setDraftsByAgentState(restoredDrafts);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+
+    async function boot() {
+      try {
+        const [
+          runtimeConfig,
+          preferredLauncherAdapterId,
+          preferredActiveTabId,
+          existingGroups,
+          existingPanes,
+          existingPaneSplits,
+          existingAgents,
+        ] = await Promise.all([
+          getRuntimeConfig(),
+          getLauncherAdapterPreference().catch(() => null),
+          getActiveTab().catch(() => null),
+          listGroups().catch((): GroupInfo[] => []),
+          listPanes(),
+          getPaneSplits().catch((): PaneSplitInfo[] => []),
+          listAgents(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+
         setConfig(runtimeConfig);
         setGroups(existingGroups);
         setPaneSplitsState(normalizePaneSplitsForPanes(existingPaneSplits, existingPanes));
@@ -3776,37 +3831,7 @@ export default function App() {
             : null,
         );
         setAgents(existingAgents);
-        setTurns(existingTurns);
-        setThreadGraphs(existingThreadGraphs);
-        // Per-agent fetches are individually guarded so one failed draft/queue read
-        // can't reject the whole boot and leave the app stuck on a fatal error with
-        // no panes rendered. A failed read just falls back to empty for that agent.
-        const [queueEntries, draftEntries] = await Promise.all([
-          Promise.all(
-            existingAgents.map(
-              async (agent) =>
-                [
-                  agent.id,
-                  await listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => []),
-                ] as const,
-            ),
-          ),
-          Promise.all(
-            existingAgents.map(
-              async (agent) =>
-                [agent.id, await getAgentDraft(agent.id).catch((): string | null => null)] as const,
-            ),
-          ),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        replaceQueuedTurnsByAgent(Object.fromEntries(queueEntries));
-        const restoredDrafts = Object.fromEntries(
-          draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
-        );
-        draftsByAgentRef.current = restoredDrafts;
-        setDraftsByAgentState(restoredDrafts);
+        void hydrateSecondary(existingAgents);
 
         if (existingPanes.length > 0) {
           const restoredActivePane =
