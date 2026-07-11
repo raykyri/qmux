@@ -873,7 +873,11 @@ fn agent_get_draft(
     state.agent_draft(&agent_id)
 }
 
-#[tauri::command]
+// Async like the turn-queue commands above, and for the same send-lock
+// invariant: acknowledging releases waiters and clearing a working status
+// routes through advance_after_idle — both can drain a queued turn into a
+// pane, which takes its send lock.
+#[tauri::command(async)]
 fn agent_acknowledge(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -882,7 +886,7 @@ fn agent_acknowledge(
     acknowledge_agent(&state, &agent_id, include_failed)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn agent_clear_working_status(
     state: tauri::State<'_, AppState>,
     agent_id: String,
