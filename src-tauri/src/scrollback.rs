@@ -58,48 +58,80 @@ pub fn append_pane_scrollback(
         .lock()
         .map_err(|_| "scrollback lock poisoned".to_string())?;
     let path = pane_scrollback_path(workspace_root, pane_id)?;
-    if let Some(parent) = path.parent() {
-        let already_prepared = PREPARED_DIRS
-            .lock()
-            .map(|prepared| prepared.contains(parent))
-            .unwrap_or(false);
-        if !already_prepared {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "failed to create scrollback dir {}: {err}",
-                    parent.display()
-                )
-            })?;
-            // Scrollback captures raw terminal output — any secret echoed to a pane, plus
-            // the pane's own QMUX_TOKEN — so keep its directory owner-only, matching the
-            // socket / shell-integration hardening. Best-effort on an existing dir.
-            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-            if let Ok(mut prepared) = PREPARED_DIRS.lock() {
-                prepared.insert(parent.to_path_buf());
-            }
-        }
-    }
+    prepare_scrollback_dir(&path)?;
 
-    let len = {
-        let mut file = OpenOptions::new()
+    let open_log = || {
+        OpenOptions::new()
             .create(true)
             .append(true)
             // Owner-only: the log is as sensitive as the socket the same codebase
             // locks to 0600.
             .mode(0o600)
             .open(&path)
-            .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?;
-        file.write_all(chunk)
-            .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
-        // fstat on the open handle instead of a path stat: the post-append
-        // length decides whether the trim trigger tripped.
-        file.metadata()
-            .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?
-            .len()
     };
+    let mut file = match open_log() {
+        Ok(file) => file,
+        // The prepared-dir cache means the directory is normally never
+        // re-checked; if something external removed it mid-run, self-heal by
+        // evicting the cache entry and recreating it once, instead of failing
+        // every append until restart (the pre-cache behavior recreated the dir
+        // per chunk).
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if let (Ok(mut prepared), Some(parent)) = (PREPARED_DIRS.lock(), path.parent()) {
+                prepared.remove(parent);
+            }
+            prepare_scrollback_dir(&path)?;
+            open_log()
+                .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?
+        }
+        Err(err) => {
+            return Err(format!(
+                "failed to open scrollback {}: {err}",
+                path.display()
+            ));
+        }
+    };
+    file.write_all(chunk)
+        .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
+    // fstat on the open handle instead of a path stat: the post-append
+    // length decides whether the trim trigger tripped.
+    let len = file
+        .metadata()
+        .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?
+        .len();
+    drop(file);
 
     if len > SCROLLBACK_TRIM_TRIGGER {
         trim_scrollback_file(&path, len)?;
+    }
+    Ok(())
+}
+
+/// Creates (and permission-locks) the scrollback directory for `path` unless
+/// this process has already prepared it. Callers hold `SCROLLBACK_IO_LOCK`.
+fn prepare_scrollback_dir(path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let already_prepared = PREPARED_DIRS
+        .lock()
+        .map(|prepared| prepared.contains(parent))
+        .unwrap_or(false);
+    if already_prepared {
+        return Ok(());
+    }
+    fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "failed to create scrollback dir {}: {err}",
+            parent.display()
+        )
+    })?;
+    // Scrollback captures raw terminal output — any secret echoed to a pane, plus
+    // the pane's own QMUX_TOKEN — so keep its directory owner-only, matching the
+    // socket / shell-integration hardening. Best-effort on an existing dir.
+    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    if let Ok(mut prepared) = PREPARED_DIRS.lock() {
+        prepared.insert(parent.to_path_buf());
     }
     Ok(())
 }
@@ -241,6 +273,29 @@ mod tests {
         assert_eq!(
             read_pane_scrollback(&workspace, "pane-1").unwrap().len(),
             SCROLLBACK_LOG_CAP as usize + 5
+        );
+    }
+
+    #[test]
+    fn append_recreates_an_externally_removed_scrollback_dir() {
+        let workspace = temp_workspace();
+
+        append_pane_scrollback(&workspace, "pane-1", b"before").unwrap();
+        // Simulate an external cleaner removing the whole terminal dir while
+        // the app runs; the prepared-dir cache must self-heal, not fail every
+        // append until restart.
+        fs::remove_dir_all(
+            pane_scrollback_path(&workspace, "pane-1")
+                .unwrap()
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        append_pane_scrollback(&workspace, "pane-1", b"after").unwrap();
+
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap(),
+            b"after"
         );
     }
 
