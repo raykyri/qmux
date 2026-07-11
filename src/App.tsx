@@ -5212,22 +5212,37 @@ export default function App() {
   ): Promise<CloseDialogState | null> {
     const agent = agentsRef.current.find((candidate) => candidate.paneId === paneToClose.id);
     if (agent && agent.branch) {
-      let hasChanges: boolean | null = null;
-      if (options?.checkWorktreeStatus !== false) {
-        try {
-          hasChanges = (await worktreeStatus(agent.id)).hasChanges;
-        } catch {
-          // Still offer the choice, but preserve the unknown state so the dialog
-          // cannot falsely assure the user that deleting the worktree is safe.
-          hasChanges = null;
-        }
+      const checkingChanges = options?.checkWorktreeStatus !== false;
+      if (checkingChanges) {
+        // The dialog opens immediately and the git-status verdict patches in:
+        // awaiting the probe here left ⌘W with no visible response for as
+        // long as `git status` takes on the worktree (seconds on large or
+        // cold-cache repos). A probe failure keeps the unknown state so the
+        // dialog cannot falsely assure the user that deleting is safe; a
+        // dialog that was dismissed or replaced meanwhile is left alone.
+        void worktreeStatus(agent.id)
+          .then(
+            (status): boolean | null => status.hasChanges,
+            (): boolean | null => null,
+          )
+          .then((hasChanges) => {
+            setCloseDialog((current) =>
+              current?.kind === "worktree" &&
+              current.agentId === agent.id &&
+              current.pane.id === paneToClose.id &&
+              current.checkingChanges
+                ? { ...current, hasChanges, checkingChanges: false }
+                : current,
+            );
+          });
       }
       return {
         kind: "worktree",
         pane: paneToClose,
         agentId: agent.id,
         worktreeDir: agent.worktreeDir,
-        hasChanges,
+        hasChanges: null,
+        checkingChanges,
         busy:
           agent.status === "starting" ||
           agent.status === "running" ||
@@ -8408,7 +8423,12 @@ export default function App() {
                     : "Closing this tab will stop the agent."}
                 </p>
                 <p>
-                  {closeDialog.hasChanges === true ? (
+                  {closeDialog.checkingChanges ? (
+                    <>
+                      Checking the worktree {formatPaneDir(closeDialog.worktreeDir)} for
+                      uncommitted changes…
+                    </>
+                  ) : closeDialog.hasChanges === true ? (
                     <span className="confirm-dialog-changes">
                       The worktree {formatPaneDir(closeDialog.worktreeDir)} has uncommitted changes
                       that will be lost if deleted.
@@ -8437,7 +8457,10 @@ export default function App() {
                   <ConfirmDialogActionButton
                     type="button"
                     className="danger"
-                    disabled={resolvingClose !== null}
+                    // Deleting stays gated on the status verdict: before the
+                    // dialog opened eagerly the user could never delete ahead
+                    // of the probe, so keep that ordering.
+                    disabled={resolvingClose !== null || closeDialog.checkingChanges}
                     pending={resolvingClose === "delete"}
                     pendingLabel="Deleting…"
                     onClick={() => void resolveCloseDialog("delete")}

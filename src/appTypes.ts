@@ -24,6 +24,10 @@ export type CloseDialogState =
       worktreeDir: string;
       // null means the git status probe failed or was intentionally skipped.
       hasChanges: boolean | null;
+      // True while the git status probe is still in flight: the dialog opens
+      // immediately (git status can take seconds on a large worktree) and the
+      // verdict patches in when the probe resolves.
+      checkingChanges: boolean;
       busy: boolean;
     } & CloseDialogGroupContext)
   | ({ kind: "stop"; pane: PaneInfo; reason: string } & CloseDialogGroupContext)
