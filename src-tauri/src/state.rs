@@ -69,6 +69,10 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(200);
 
 const RECENT_SESSION_PREVIEW_MAX_CHARS: usize = 90;
 
+/// How far a recent session's `last_active_at` must drift before a touch that
+/// changes nothing else re-stamps it (see upsert_recent_session_for_agent_locked).
+const RECENT_SESSION_TOUCH_COARSENESS_MS: u128 = 5_000;
+
 /// Holds PTY output produced before the webview's listener is attached.
 ///
 /// A pane's reader thread starts emitting the instant the process spawns, but on
@@ -2364,8 +2368,9 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             ensure_agent_thread_metadata(self, &mut model, &mut agent);
             let now = now_millis();
-            upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
-            prune_recent_sessions_locked(&mut model);
+            if upsert_recent_session_for_agent_locked(&mut model, &agent, now, true) {
+                prune_recent_sessions_locked(&mut model);
+            }
             model.agents.insert(agent.id.clone(), agent);
         }
         self.persist();
@@ -2426,8 +2431,11 @@ impl AppState {
             ensure_agent_thread_metadata(self, &mut model, &mut agent);
             let now = now_millis();
             bump_agent_activity_locked(&mut model, &agent.id);
-            upsert_recent_session_for_agent_locked(&mut model, &agent, now, true);
-            prune_recent_sessions_locked(&mut model);
+            // The prune only matters after an insert grew the map; updates
+            // can't push it over the cap, so skip the sort-and-clone otherwise.
+            if upsert_recent_session_for_agent_locked(&mut model, &agent, now, true) {
+                prune_recent_sessions_locked(&mut model);
+            }
             model.agents.insert(agent.id.clone(), agent);
         }
         self.persist();
@@ -2457,8 +2465,9 @@ impl AppState {
                     let updated = agent.clone();
                     let now = now_millis();
                     bump_agent_activity_locked(&mut model, agent_id);
-                    upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
-                    prune_recent_sessions_locked(&mut model);
+                    if upsert_recent_session_for_agent_locked(&mut model, &updated, now, true) {
+                        prune_recent_sessions_locked(&mut model);
+                    }
                     Some(updated)
                 }
                 None => None,
@@ -2498,7 +2507,7 @@ impl AppState {
         agent_id: &str,
         status: AgentStatus,
     ) -> Result<Option<AgentInfo>, String> {
-        let updated = {
+        let (updated, changed) = {
             let mut model = self
                 .inner
                 .model
@@ -2506,19 +2515,31 @@ impl AppState {
                 .map_err(|_| "model lock poisoned".to_string())?;
             match model.agents.get_mut(agent_id) {
                 Some(agent) => {
+                    // Hooks re-assert the current status several times a second
+                    // for a busy agent (PreToolUse/PostToolUse both map to
+                    // Running). Only a real transition — or a material
+                    // recent-session change — marks the state file dirty, so a
+                    // streaming agent no longer keeps the debounced persister
+                    // rewriting state.json for its whole run. The in-memory
+                    // activity bumps still happen on every call; they feed the
+                    // escape/idle watchers, not persistence.
+                    let status_changed = agent.status != status;
                     agent.status = status;
                     let updated = agent.clone();
                     let now = now_millis();
                     bump_agent_activity_locked(&mut model, agent_id);
                     bump_agent_status_activity_locked(&mut model, agent_id);
-                    upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
-                    prune_recent_sessions_locked(&mut model);
-                    Some(updated)
+                    let session_changed =
+                        upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
+                    if session_changed {
+                        prune_recent_sessions_locked(&mut model);
+                    }
+                    (Some(updated), status_changed || session_changed)
                 }
-                None => None,
+                None => (None, false),
             }
         };
-        if updated.is_some() {
+        if changed {
             self.persist();
         }
         Ok(updated)
@@ -3806,14 +3827,11 @@ fn upsert_recent_session_for_agent_locked(
         .as_ref()
         .map(|session| session.created_at)
         .unwrap_or(agent.created_at);
-    let last_active_at = if touch {
-        now
-    } else {
-        existing
-            .as_ref()
-            .map(|session| session.last_active_at)
-            .unwrap_or(agent.created_at)
-    };
+    let previous_active_at = existing
+        .as_ref()
+        .map(|session| session.last_active_at)
+        .unwrap_or(agent.created_at);
+    let last_active_at = if touch { now } else { previous_active_at };
 
     let next = RecentSessionInfo {
         id: key.clone(),
@@ -3839,6 +3857,27 @@ fn upsert_recent_session_for_agent_locked(
 
     if existing.as_ref() == Some(&next) {
         return false;
+    }
+    // Coarsen pure re-touches. A busy agent's hooks re-touch its session
+    // several times a second for the whole run; each fresh `last_active_at`
+    // made the entry differ, marked the state file dirty, and kept the
+    // debounced persister rewriting (and fsyncing) state.json every window
+    // for the duration. When nothing but the activity stamp moved, only
+    // re-stamp once it has drifted by the coarseness — recency ordering
+    // (Home, spawn-cwd inheritance) is unaffected by a few seconds of slack,
+    // and any real change (status, transcript, preview) still lands with a
+    // fresh stamp immediately via the comparison below.
+    if touch
+        && let Some(existing) = existing.as_ref()
+        && now.saturating_sub(previous_active_at) < RECENT_SESSION_TOUCH_COARSENESS_MS
+    {
+        let comparable = RecentSessionInfo {
+            last_active_at: previous_active_at,
+            ..next.clone()
+        };
+        if *existing == comparable {
+            return false;
+        }
     }
     model.recent_sessions.insert(key, next);
     true
@@ -6487,6 +6526,58 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn same_status_hooks_only_restamp_recent_session_after_coarseness() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        let agent = AgentInfo {
+            id: "agent-1".to_string(),
+            group_id: "group-1".to_string(),
+            adapter: "claude".to_string(),
+            worktree_dir: "/tmp/x".to_string(),
+            branch: None,
+            pane_id: Some("pane-1".to_string()),
+            orphaned_queue_pane_id: None,
+            session_id: Some("sess-1".to_string()),
+            transcript_path: None,
+            status: AgentStatus::Running,
+            model: None,
+            parent_id: None,
+            fork_point: None,
+            root_session_id: None,
+            thread_id: None,
+            branch_id: None,
+            paused: false,
+            created_at: 1,
+        };
+        state.insert_agent(agent).unwrap();
+
+        let stamp = |state: &AppState| {
+            state
+                .list_recent_sessions(10)
+                .unwrap()
+                .into_iter()
+                .find(|session| session.session_id.as_deref() == Some("sess-1"))
+                .expect("recent session exists")
+                .last_active_at
+        };
+        let initial = stamp(&state);
+
+        // A hook re-asserting the same status inside the coarseness window is
+        // bookkeeping-neutral: no fresh activity stamp (and so no dirty mark).
+        state
+            .set_agent_status("agent-1", AgentStatus::Running)
+            .unwrap();
+        assert_eq!(stamp(&state), initial);
+
+        // A real transition still lands immediately, with a fresh stamp.
+        std::thread::sleep(Duration::from_millis(5));
+        state
+            .set_agent_status("agent-1", AgentStatus::AwaitingInput)
+            .unwrap();
+        assert!(stamp(&state) > initial);
     }
 
     #[test]
