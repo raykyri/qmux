@@ -35,7 +35,10 @@ import {
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
-import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
+import {
+  stripTaggedUserInstructionBlocks,
+  taggedUserInstructionDetails,
+} from "../lib/taggedInstructions";
 import {
   applySearchHighlights,
   clearSearchHighlights,
@@ -1424,7 +1427,7 @@ function MessageTitleMenu({
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpen(false);
-                  void writeClipboardText(titleSourceText);
+                  void writeClipboardText(stripTaggedUserInstructionBlocks(titleSourceText));
                 }}
               >
                 Copy message
