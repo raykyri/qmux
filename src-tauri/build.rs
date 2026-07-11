@@ -125,10 +125,7 @@ fn build_native_terminal_bridge() {
                 // archive members no symbol references statically. A plain -l
                 // link drops those members and the runtime silently falls back
                 // to NSView's defaults — rendering works, keyboard input dies.
-                println!(
-                    "cargo:rustc-link-arg=-Wl,-force_load,{}",
-                    bridge.display()
-                );
+                println!("cargo:rustc-link-arg=-Wl,-force_load,{}", bridge.display());
                 println!("cargo:rustc-link-lib=static=ghostty");
                 println!("cargo:rustc-link-lib=c++");
                 for framework in [

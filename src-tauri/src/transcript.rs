@@ -1987,7 +1987,11 @@ mod tests {
 
         let options = list_agent_transcripts(&state, "agent-1").unwrap();
         assert_eq!(options.len(), 2);
-        assert!(options.iter().all(|option| option.path.ends_with("chat_history.jsonl")));
+        assert!(
+            options
+                .iter()
+                .all(|option| option.path.ends_with("chat_history.jsonl"))
+        );
         assert!(options.iter().any(|option| {
             option.session_id.as_deref() == Some("session-1")
                 && option.preview.as_deref() == Some("first prompt")
@@ -2007,7 +2011,10 @@ mod tests {
         let current = group.join("session-1").join("chat_history.jsonl");
         let sibling = group.join("session-2").join("chat_history.jsonl");
         let wrong_name = group.join("session-2").join("updates.jsonl");
-        let outside = dir.join("other").join("session-3").join("chat_history.jsonl");
+        let outside = dir
+            .join("other")
+            .join("session-3")
+            .join("chat_history.jsonl");
         for path in [&current, &sibling, &wrong_name, &outside] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "{}\n").unwrap();
@@ -2072,7 +2079,11 @@ mod tests {
         agent.transcript_path = Some(legacy.display().to_string());
         state.insert_agent(agent).unwrap();
 
-        assert!(list_agent_transcripts(&state, "agent-1").unwrap().is_empty());
+        assert!(
+            list_agent_transcripts(&state, "agent-1")
+                .unwrap()
+                .is_empty()
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

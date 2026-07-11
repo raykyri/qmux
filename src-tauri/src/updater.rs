@@ -63,14 +63,14 @@ async fn ask(
     confirm: &str,
     cancel: &str,
 ) -> Result<bool, String> {
-    let dialog = app
-        .dialog()
-        .message(message)
-        .title(title)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            confirm.to_string(),
-            cancel.to_string(),
-        ));
+    let dialog =
+        app.dialog()
+            .message(message)
+            .title(title)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                confirm.to_string(),
+                cancel.to_string(),
+            ));
     tauri::async_runtime::spawn_blocking(move || dialog.blocking_show())
         .await
         .map_err(|err| format!("update dialog task failed: {err}"))

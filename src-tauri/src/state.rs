@@ -499,10 +499,10 @@ fn queued_turn_wait_is_resolved_locked(model: &Model, wait_for: &QueuedTurnWait)
         // queue" must stay blocked until that queue actually drains, not fire the moment
         // the pane closes. Only a parked target with an empty queue has nothing left to
         // finish, so it releases the waiter.
-        return !model
+        return model
             .agent_turn_queues
             .get(&target.id)
-            .is_some_and(|queue| !queue.is_empty());
+            .is_none_or(|queue| queue.is_empty());
     };
     if !model.panes.contains_key(pane_id) {
         return true;
@@ -902,10 +902,10 @@ impl AppState {
     /// timestamp rides along on the next persist triggered by other activity; losing
     /// the last few stamps to a crash only nudges the spawn-cwd heuristic.
     pub fn touch_pane_active(&self, pane_id: &str) {
-        if let Ok(mut model) = self.inner.model.lock() {
-            if let Some(pane) = model.panes.get_mut(pane_id) {
-                pane.info.last_active_at = now_millis();
-            }
+        if let Ok(mut model) = self.inner.model.lock()
+            && let Some(pane) = model.panes.get_mut(pane_id)
+        {
+            pane.info.last_active_at = now_millis();
         }
     }
 
@@ -2496,13 +2496,13 @@ impl AppState {
                 graph_store,
             )
         };
-        if let (Some(agent), Some(store)) = (agent_for_graph, graph_store) {
-            if let Err(err) = store.append_turn_node(&agent, &turn) {
-                eprintln!(
-                    "qmux: failed to append thread graph for agent {}: {err}",
-                    agent.id
-                );
-            }
+        if let (Some(agent), Some(store)) = (agent_for_graph, graph_store)
+            && let Err(err) = store.append_turn_node(&agent, &turn)
+        {
+            eprintln!(
+                "qmux: failed to append thread graph for agent {}: {err}",
+                agent.id
+            );
         }
         if should_persist_state {
             self.persist();
@@ -2545,13 +2545,13 @@ impl AppState {
                 graph_store,
             )
         };
-        if let (Some(agent), Some(store)) = (agent_for_graph, graph_store) {
-            if let Err(err) = store.replace_agent_branch_turns(&agent, &turns_for_graph) {
-                eprintln!(
-                    "qmux: failed to write thread graph for agent {}: {err}",
-                    agent.id
-                );
-            }
+        if let (Some(agent), Some(store)) = (agent_for_graph, graph_store)
+            && let Err(err) = store.replace_agent_branch_turns(&agent, &turns_for_graph)
+        {
+            eprintln!(
+                "qmux: failed to write thread graph for agent {}: {err}",
+                agent.id
+            );
         }
         if should_persist_state {
             self.persist();
@@ -3829,13 +3829,13 @@ fn recent_session_matches_agent(session: &RecentSessionInfo, agent: &AgentInfo) 
         (Some(left), Some(right)) if !left.trim().is_empty() && left == right => return true,
         _ => {}
     }
-    match (
+    matches!(
+        (
         session.transcript_path.as_deref(),
         agent.transcript_path.as_deref(),
-    ) {
-        (Some(left), Some(right)) if !left.trim().is_empty() && left == right => true,
-        _ => false,
-    }
+        ),
+        (Some(left), Some(right)) if !left.trim().is_empty() && left == right
+    )
 }
 
 fn recent_session_missing(session: &RecentSessionInfo) -> bool {

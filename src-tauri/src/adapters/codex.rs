@@ -229,12 +229,7 @@ impl CodexAdapter {
         // Bind before spawn so a fast SessionStart hook can authenticate against the
         // pane/agent scope and record the native session identity. The spawn-failure
         // path clears this reserved binding.
-        attach_codex_agent_pane(
-            state,
-            &agent.id,
-            pane_id.clone(),
-            has_initial_prompt,
-        )?;
+        attach_codex_agent_pane(state, &agent.id, pane_id.clone(), has_initial_prompt)?;
 
         let spawn_result = spawn_pty(
             state,
@@ -496,13 +491,8 @@ impl CodexAdapter {
                 },
             )?,
         };
-        let agent = record_shell_fork_lineage(
-            state,
-            agent,
-            self.id(),
-            fork_point.as_deref(),
-            &cwd_str,
-        )?;
+        let agent =
+            record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
         let agent = attach_codex_agent_pane(
             state,
             &agent.id,
@@ -588,10 +578,8 @@ impl CodexAdapter {
                         });
                     let session_id_for_tail = session_id.clone();
                     let transcript_path_for_tail = transcript_path.clone();
-                    let stale_fork_payload = current
-                        .fork_point
-                        .as_deref()
-                        .is_some_and(|fork_point| {
+                    let stale_fork_payload =
+                        current.fork_point.as_deref().is_some_and(|fork_point| {
                             session_id.as_deref() == Some(fork_point)
                                 || transcript_path.as_deref().is_some_and(|path| {
                                     codex_transcript_session_id(Path::new(path)).as_deref()
@@ -1377,10 +1365,7 @@ fn validate_shell_tail_args(args: &[String]) -> Result<(), String> {
 }
 
 fn codex_config_overrides_hooks(value: &str) -> bool {
-    let key = value
-        .split_once('=')
-        .map_or(value, |(key, _)| key)
-        .trim();
+    let key = value.split_once('=').map_or(value, |(key, _)| key).trim();
     key == "hooks" || key.starts_with("hooks.") || key == "features.hooks"
 }
 
@@ -1511,7 +1496,9 @@ fn adopt_forked_codex_session_identity(
             agent.session_id = Some(child_session_id.clone());
         }
     })?;
-    if updated.as_ref().and_then(|agent| agent.session_id.as_deref())
+    if updated
+        .as_ref()
+        .and_then(|agent| agent.session_id.as_deref())
         == Some(child_session_id.as_str())
     {
         start_codex_transcript_binding(
@@ -1868,6 +1855,7 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
     })
 }
 
+#[cfg(test)]
 fn resolve_transcript_turns(agent_id: &str, lines: &[String]) -> Vec<Turn> {
     resolve_transcript_turns_from(agent_id, 0, lines)
 }
@@ -1890,10 +1878,10 @@ fn resolve_transcript_turns_from(
         };
 
         if value.get("type").and_then(Value::as_str) == Some("response_item") {
-            if let Some(payload) = value.get("payload") {
-                if let Some(turn_id) = codex_payload_turn_id(payload) {
-                    push_unique_turn_id(&mut active_turn_ids, turn_id);
-                }
+            if let Some(payload) = value.get("payload")
+                && let Some(turn_id) = codex_payload_turn_id(payload)
+            {
+                push_unique_turn_id(&mut active_turn_ids, turn_id);
             }
             if let Some(turn) = parse_transcript_line(agent_id, source_index, line) {
                 turns.push(turn);
@@ -2201,7 +2189,9 @@ mod tests {
         assert!(!args_contain_prompt(&svec(&["--sandbox=workspace-write"])));
         assert!(!args_contain_prompt(&svec(&["--add-dir=/tmp/workspaces"])));
         assert!(!args_contain_prompt(&svec(&["--search"])));
-        assert!(!args_contain_prompt(&svec(&["--image", "one.png", "two.png"])));
+        assert!(!args_contain_prompt(&svec(&[
+            "--image", "one.png", "two.png"
+        ])));
         assert!(!args_contain_prompt(&svec(&["doctor"])));
 
         assert!(args_contain_prompt(&svec(&["fix the bug"])));
@@ -2236,7 +2226,9 @@ mod tests {
             "sess-1",
             "try another path"
         ])));
-        assert!(args_contain_prompt(&svec(&["fork", "sess-1", "--", "-prompt"])));
+        assert!(args_contain_prompt(&svec(&[
+            "fork", "sess-1", "--", "-prompt"
+        ])));
         assert!(args_contain_prompt(&svec(&["exec"])));
         assert!(args_contain_prompt(&svec(&["review", "--uncommitted"])));
     }
@@ -2258,11 +2250,7 @@ mod tests {
             fs::canonicalize(&project).unwrap()
         );
         assert_eq!(
-            codex_effective_cwd(
-                &shell,
-                &svec(&[&format!("--cd={}", project.display())])
-            )
-            .unwrap(),
+            codex_effective_cwd(&shell, &svec(&[&format!("--cd={}", project.display())])).unwrap(),
             fs::canonicalize(&project).unwrap()
         );
         assert_eq!(
@@ -2467,17 +2455,11 @@ mod tests {
         let inline_profile_args = vec!["--profile=work".to_string()];
         let short_profile_args = vec!["-pwork".to_string()];
         let oss_args = vec!["--oss".to_string()];
-        let remote_args = vec![
-            "--remote".to_string(),
-            "unix:///tmp/codex.sock".to_string(),
-        ];
+        let remote_args = vec!["--remote".to_string(), "unix:///tmp/codex.sock".to_string()];
         let inline_remote_args = vec!["--remote=unix:///tmp/codex.sock".to_string()];
         let disable_hooks_args = vec!["--disable".to_string(), "hooks".to_string()];
         let inline_disable_hooks_args = vec!["--disable=hooks".to_string()];
-        let config_hooks_args = vec![
-            "--config".to_string(),
-            "features.hooks=false".to_string(),
-        ];
+        let config_hooks_args = vec!["--config".to_string(), "features.hooks=false".to_string()];
         let short_config_hooks_args = vec!["-chooks.SessionStart=[]".to_string()];
         let prompt_args = vec![
             "--".to_string(),
@@ -2496,8 +2478,7 @@ mod tests {
         assert!(validate_shell_tail_args(&config_hooks_args).is_err());
         assert!(validate_shell_tail_args(&short_config_hooks_args).is_err());
         assert!(
-            validate_shell_tail_args(&svec(&["--config", "model_reasoning_effort=high"]))
-                .is_ok()
+            validate_shell_tail_args(&svec(&["--config", "model_reasoning_effort=high"])).is_ok()
         );
         assert!(validate_shell_tail_args(&prompt_args).is_ok());
     }
@@ -3242,20 +3223,14 @@ trusted_hash = "sha256:trusted"
         state
             .set_agent_status("agent-1", AgentStatus::AwaitingInput)
             .unwrap();
-        let event = ingest(
-            &state,
-            hook_for_agent("PreCompact", "agent-1", json!({})),
-        );
+        let event = ingest(&state, hook_for_agent("PreCompact", "agent-1", json!({})));
         assert_eq!(event.event_type, "agent.compacting");
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Running
         ));
 
-        let event = ingest(
-            &state,
-            hook_for_agent("PostCompact", "agent-1", json!({})),
-        );
+        let event = ingest(&state, hook_for_agent("PostCompact", "agent-1", json!({})));
         assert_eq!(event.event_type, "agent.compacted");
 
         let event = ingest(
@@ -3268,10 +3243,7 @@ trusted_hash = "sha256:trusted"
             AgentStatus::Running
         ));
 
-        let event = ingest(
-            &state,
-            hook_for_agent("SubagentStop", "agent-1", json!({})),
-        );
+        let event = ingest(&state, hook_for_agent("SubagentStop", "agent-1", json!({})));
         assert_eq!(event.event_type, "agent.subagent_stopped");
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,

@@ -155,9 +155,11 @@ fn launcher_adapter_preference_get(
 /// owner-only preferences file rather than webview localStorage — see AppPreferences.
 #[tauri::command]
 fn openrouter_key_get(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    Ok(persistence::load_preferences(&state.config().workspace_root)?
-        .open_router_key
-        .unwrap_or_default())
+    Ok(
+        persistence::load_preferences(&state.config().workspace_root)?
+            .open_router_key
+            .unwrap_or_default(),
+    )
 }
 
 /// Persists the OpenRouter API key. An empty/whitespace key clears it.
@@ -249,10 +251,7 @@ fn notify_startup_warning(app: &tauri::AppHandle, message: &str) {
 fn pick_folder_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title("Select the group directory");
+    let mut dialog = app.dialog().file().set_title("Select the group directory");
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.set_parent(&window);
     }

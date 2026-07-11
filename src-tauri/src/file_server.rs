@@ -495,7 +495,11 @@ fn render_markdown_page(path: &Path, source: &str) -> String {
     let mut body = String::with_capacity(source.len() * 2);
     html::push_html(&mut body, Parser::new_ext(source, options));
 
-    let title = escape_html(path.file_name().and_then(|name| name.to_str()).unwrap_or("Markdown"));
+    let title = escape_html(
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Markdown"),
+    );
     format!(
         "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\

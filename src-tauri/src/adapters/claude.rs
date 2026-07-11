@@ -1069,24 +1069,24 @@ fn validate_claude_shell_args(args: &[String]) -> Result<(), String> {
     for arg in args.iter().take_while(|arg| arg.as_str() != "--") {
         let reason = match arg.as_str() {
             "--bare" | "--safe-mode" => Some("it disables the lifecycle hooks qMux requires"),
-            "--background" | "--bg" => Some(
-                "it detaches Claude from the pane that owns the qMux agent integration",
-            ),
+            "--background" | "--bg" => {
+                Some("it detaches Claude from the pane that owns the qMux agent integration")
+            }
             "--worktree" | "-w" => Some(
                 "Claude-created worktrees are not represented in qMux agent workspace state; use qMux's worktree fork instead",
             ),
-            "--tmux" => Some(
-                "it moves Claude out of the pane that owns the qMux agent integration",
-            ),
+            "--tmux" => {
+                Some("it moves Claude out of the pane that owns the qMux agent integration")
+            }
             "--settings" => Some(
                 "it can replace the qMux settings file that installs lifecycle hooks; use normal user or project settings instead",
             ),
             _ if arg.starts_with("--worktree=") => Some(
                 "Claude-created worktrees are not represented in qMux agent workspace state; use qMux's worktree fork instead",
             ),
-            _ if arg.starts_with("--tmux=") => Some(
-                "it moves Claude out of the pane that owns the qMux agent integration",
-            ),
+            _ if arg.starts_with("--tmux=") => {
+                Some("it moves Claude out of the pane that owns the qMux agent integration")
+            }
             _ if arg.starts_with("--settings=") => Some(
                 "it can replace the qMux settings file that installs lifecycle hooks; use normal user or project settings instead",
             ),
@@ -1641,6 +1641,7 @@ struct ClaudeGraphNode {
     is_typed_user_prompt: bool,
 }
 
+#[cfg(test)]
 fn resolve_transcript_turns(agent_id: &str, lines: &[String]) -> Vec<Turn> {
     resolve_transcript_turns_from(agent_id, 0, lines)
 }
@@ -1664,12 +1665,11 @@ fn resolve_transcript_turns_from(
             Err(_) => continue,
         };
 
-        if value.get("type").and_then(Value::as_str) == Some("last-prompt") {
-            if let Some(leaf_uuid) = super::string_field(&value, "leafUuid")
+        if value.get("type").and_then(Value::as_str) == Some("last-prompt")
+            && let Some(leaf_uuid) = super::string_field(&value, "leafUuid")
                 .or_else(|| super::string_field(&value, "leaf_uuid"))
-            {
-                leaf_uuids.push(leaf_uuid);
-            }
+        {
+            leaf_uuids.push(leaf_uuid);
         }
 
         if super::parse_claude_native_lifecycle_value(&value).is_some()
@@ -2086,7 +2086,10 @@ mod tests {
             svec(&["--settings", "/tmp/custom-settings.json"]),
             svec(&["--settings={}"]),
         ] {
-            assert!(validate_claude_shell_args(&args).is_err(), "accepted {args:?}");
+            assert!(
+                validate_claude_shell_args(&args).is_err(),
+                "accepted {args:?}"
+            );
         }
 
         assert!(validate_claude_shell_args(&svec(&["--model", "sonnet"])).is_ok());
@@ -2889,7 +2892,10 @@ mod tests {
         // Claude echoes the submitted prompt before this newly sent turn can finish.
         // A completion arriving before that echo is intentionally deduplicated as a
         // second completion for the previous turn.
-        ingest(&state, hook("UserPromptSubmit", json!({ "prompt": "first" })));
+        ingest(
+            &state,
+            hook("UserPromptSubmit", json!({ "prompt": "first" })),
+        );
 
         // When that turn finishes, the queue pauses instead of sending "second".
         let event = ingest(&state, hook("Stop", json!({})));

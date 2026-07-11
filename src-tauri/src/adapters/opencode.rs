@@ -121,7 +121,10 @@ impl AgentAdapter for OpencodeAdapter {
     }
 
     fn shell_resume_command(&self, session_id: &str) -> Option<String> {
-        Some(format!("opencode --session {}", shell_quote_arg(session_id)))
+        Some(format!(
+            "opencode --session {}",
+            shell_quote_arg(session_id)
+        ))
     }
 
     fn ingest_notification(
@@ -429,26 +432,23 @@ impl OpencodeAdapter {
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
         let resume_session_id = opencode_resume_session_id(&request.args).map(str::to_string);
         let fork_point = opencode_fork_source_session_id(&request.args).map(str::to_string);
-        let agent = match reusable_session_agent(
-            state,
-            self.id(),
-            resume_session_id.as_deref(),
-            &cwd_str,
-        )? {
-            Some(existing) => existing,
-            None => prepare_agent_workspace(
-                state,
-                PrepareAgentWorkspaceRequest {
-                    group_id: Some(pane_group_id),
-                    base_repo: Some(cwd_str.clone()),
-                    base_ref: Some("HEAD".to_string()),
-                    adapter: self.id().to_string(),
-                    model: None,
-                    // Typing `opencode` in a shell runs in the current directory.
-                    use_worktree: false,
-                },
-            )?,
-        };
+        let agent =
+            match reusable_session_agent(state, self.id(), resume_session_id.as_deref(), &cwd_str)?
+            {
+                Some(existing) => existing,
+                None => prepare_agent_workspace(
+                    state,
+                    PrepareAgentWorkspaceRequest {
+                        group_id: Some(pane_group_id),
+                        base_repo: Some(cwd_str.clone()),
+                        base_ref: Some("HEAD".to_string()),
+                        adapter: self.id().to_string(),
+                        model: None,
+                        // Typing `opencode` in a shell runs in the current directory.
+                        use_worktree: false,
+                    },
+                )?,
+            };
         let agent =
             record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
         let agent = attach_opencode_agent_pane(
@@ -541,9 +541,7 @@ impl OpencodeAdapter {
                     // Start tailing the qmux-managed transcript file. The plugin may
                     // not have written anything yet, so the tail waits for the file
                     // to appear rather than erroring.
-                    if let Some(transcript_path) =
-                        updated.and_then(|agent| agent.transcript_path)
-                    {
+                    if let Some(transcript_path) = updated.and_then(|agent| agent.transcript_path) {
                         start_transcript_tail(
                             state.clone(),
                             current.id.clone(),
@@ -738,7 +736,7 @@ fn opencode_effective_project(shell_cwd: &Path, args: &[String]) -> Result<PathB
             continue;
         }
         if opencode_subcommand(arg) {
-            return Ok(fs_canonical_dir(shell_cwd)?);
+            return fs_canonical_dir(shell_cwd);
         }
         return resolve_opencode_project(shell_cwd, arg);
     }
@@ -932,7 +930,11 @@ fn args_contain_prompt(args: &[String]) -> bool {
 }
 
 fn opencode_resume_session_id(args: &[String]) -> Option<&str> {
-    if args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| arg == "--fork") {
+    if args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--fork")
+    {
         return None;
     }
     opencode_session_argument_id(args)
@@ -1258,10 +1260,7 @@ mod tests {
         };
         assert_eq!(
             adapter.config_dir_env().unwrap(),
-            (
-                "OPENCODE_CONFIG_DIR".to_string(),
-                dir.display().to_string()
-            )
+            ("OPENCODE_CONFIG_DIR".to_string(), dir.display().to_string())
         );
         fs::remove_dir_all(dir).ok();
     }
@@ -1596,7 +1595,12 @@ mod tests {
             ),
         );
         assert_eq!(
-            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
             Some("fork-session")
         );
     }
@@ -1678,10 +1682,7 @@ mod tests {
             AgentStatus::Running
         ));
 
-        let event = ingest(
-            &state,
-            hook_for_agent("InputRequest", "agent-1", json!({})),
-        );
+        let event = ingest(&state, hook_for_agent("InputRequest", "agent-1", json!({})));
         assert_eq!(event.event_type, "agent.awaiting_input");
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
@@ -1807,8 +1808,7 @@ mod tests {
     #[test]
     fn transcript_path_is_under_workspace_root() {
         let state = test_state();
-        let path =
-            OpencodeAdapter::transcript_path_for(&state, "agent-42", "session-123");
+        let path = OpencodeAdapter::transcript_path_for(&state, "agent-42", "session-123");
 
         assert!(path.ends_with(".qmux/opencode/agent-42/session-123.jsonl"));
         assert!(path.starts_with("/tmp/qmux-opencode-tests"));

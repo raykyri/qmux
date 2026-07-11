@@ -2008,7 +2008,7 @@ fn child_process_ids(pid: u32) -> Vec<u32> {
 }
 
 fn running_process_from_line(line: &str) -> Option<RunningProcess> {
-    let mut parts = line.trim().split_whitespace();
+    let mut parts = line.split_whitespace();
     let status = parts.next()?;
     if status.starts_with('Z') {
         return None;

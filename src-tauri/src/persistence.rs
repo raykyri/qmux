@@ -150,6 +150,7 @@ pub fn load_preferences(workspace_root: &Path) -> Result<AppPreferences, String>
         .map_err(|err| format!("invalid preferences {}: {err}", path.display()))
 }
 
+#[cfg(test)]
 pub fn save_preferences(workspace_root: &Path, preferences: &AppPreferences) -> Result<(), String> {
     let _guard = PREFERENCES_LOCK
         .lock()

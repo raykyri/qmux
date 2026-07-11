@@ -536,12 +536,8 @@ impl GrokAdapter {
                         .as_deref()
                         .is_some_and(|fork_point| session_id.as_deref() == Some(fork_point));
                     let session_cwd = super::string_field(&notification.payload, "cwd")
-                        .or_else(|| {
-                            super::string_field(&notification.payload, "workspaceRoot")
-                        })
-                        .filter(|cwd| {
-                            grok_session_cwd_acceptable(&current.worktree_dir, cwd)
-                        });
+                        .or_else(|| super::string_field(&notification.payload, "workspaceRoot"))
+                        .filter(|cwd| grok_session_cwd_acceptable(&current.worktree_dir, cwd));
                     // Grok's SessionStart hook reports the rollout transcript path when
                     // it has one (Claude-compatible). Prefer it so the timeline tails
                     // Grok's own transcript.
@@ -867,11 +863,7 @@ fn grok_hooks_file_path(grok_home: &Path) -> PathBuf {
 /// `$GROK_HOME/sessions/<percent-encoded-cwd>/<session-id>/chat_history.jsonl`.
 /// Very long cwd values use a hashed group directory, so scan the one-level group
 /// list as a fallback when the conventional path is not present yet.
-fn grok_session_transcript_path(
-    grok_home: &Path,
-    cwd: &str,
-    session_id: &str,
-) -> Option<PathBuf> {
+fn grok_session_transcript_path(grok_home: &Path, cwd: &str, session_id: &str) -> Option<PathBuf> {
     if session_id.is_empty()
         || session_id.len() > 128
         || !session_id
@@ -909,10 +901,7 @@ fn grok_session_transcript_path(
             if recorded_cwd.trim_end() != cwd {
                 continue;
             }
-            let candidate = group
-                .path()
-                .join(session_id)
-                .join("chat_history.jsonl");
+            let candidate = group.path().join(session_id).join("chat_history.jsonl");
             if candidate.parent().is_some_and(Path::is_dir) {
                 return Some(candidate);
             }
@@ -950,9 +939,8 @@ fn adopt_forked_grok_session_identity(
     let Some(fork_point) = current.fork_point.as_deref() else {
         return Ok(());
     };
-    let is_unbound_or_stale = |session_id: Option<&str>| {
-        session_id.is_none() || session_id == Some(fork_point)
-    };
+    let is_unbound_or_stale =
+        |session_id: Option<&str>| session_id.is_none() || session_id == Some(fork_point);
     if !is_unbound_or_stale(current.session_id.as_deref()) {
         return Ok(());
     }
@@ -1153,10 +1141,7 @@ fn strip_stale_user_settings_hooks(grok_home: &Path, shim_path: &Path) -> Result
     }
     let mut settings: Value = serde_json::from_str(&raw)
         .map_err(|err| format!("failed to parse {}: {err}", settings_path.display()))?;
-    let Some(hooks) = settings
-        .get_mut("hooks")
-        .and_then(Value::as_object_mut)
-    else {
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return Ok(false);
     };
 
@@ -1178,11 +1163,11 @@ fn strip_stale_user_settings_hooks(grok_home: &Path, shim_path: &Path) -> Result
             changed = true;
         }
     }
-    if hooks.is_empty() {
-        if let Some(obj) = settings.as_object_mut() {
-            obj.remove("hooks");
-            changed = true;
-        }
+    if hooks.is_empty()
+        && let Some(obj) = settings.as_object_mut()
+    {
+        obj.remove("hooks");
+        changed = true;
     }
     if !changed {
         return Ok(false);
@@ -1313,12 +1298,11 @@ fn grok_resume_argument_id(args: &[String]) -> Option<&str> {
         if let Some(value) = arg.strip_prefix("--resume=") {
             return (!value.is_empty()).then_some(value);
         }
-        if grok_value_flag(arg) {
-            index += 2;
-        } else if grok_optional_value_flag(arg)
-            && args
-                .get(index + 1)
-                .is_some_and(|value| !value.starts_with('-'))
+        if grok_value_flag(arg)
+            || (grok_optional_value_flag(arg)
+                && args
+                    .get(index + 1)
+                    .is_some_and(|value| !value.starts_with('-')))
         {
             index += 2;
         } else {
@@ -1599,8 +1583,8 @@ fn parse_grok_chat_history_value(
             )
         }
         "assistant" => {
-            let mut blocks = parse_grok_synthetic_message_blocks(value.get("content"))
-                .unwrap_or_default();
+            let mut blocks =
+                parse_grok_synthetic_message_blocks(value.get("content")).unwrap_or_default();
             if let Some(tool_calls) = value.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {
                     let arguments = match tool_call.get("arguments") {
@@ -1925,10 +1909,7 @@ mod tests {
     #[test]
     fn shell_cwd_override_drives_agent_workspace_identity() {
         let args = |values: &[&str]| values.iter().map(ToString::to_string).collect::<Vec<_>>();
-        let root = std::env::temp_dir().join(format!(
-            "qmux-grok-shell-cwd-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("qmux-grok-shell-cwd-{}", std::process::id()));
         let shell = root.join("shell");
         let project = root.join("project");
         fs::create_dir_all(&shell).unwrap();
@@ -1939,11 +1920,7 @@ mod tests {
             fs::canonicalize(&project).unwrap()
         );
         assert_eq!(
-            grok_effective_cwd(
-                &shell,
-                &args(&[&format!("--cwd={}", project.display())])
-            )
-            .unwrap(),
+            grok_effective_cwd(&shell, &args(&[&format!("--cwd={}", project.display())])).unwrap(),
             fs::canonicalize(&project).unwrap()
         );
         assert!(grok_effective_cwd(&shell, &args(&["--cwd"])).is_err());
@@ -2131,10 +2108,7 @@ mod tests {
         agent.status = AgentStatus::AwaitingInput;
         state.insert_agent(agent).unwrap();
 
-        let event = ingest(
-            &state,
-            hook_for_agent("PreCompact", "agent-1", json!({})),
-        );
+        let event = ingest(&state, hook_for_agent("PreCompact", "agent-1", json!({})));
         assert_eq!(event.event_type, "agent.compacting");
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
@@ -2148,10 +2122,7 @@ mod tests {
             ("SubagentStop", "agent.subagent_stopped"),
             ("SessionEnd", "agent.session_end"),
         ] {
-            let event = ingest(
-                &state,
-                hook_for_agent(hook_event, "agent-1", json!({})),
-            );
+            let event = ingest(&state, hook_for_agent(hook_event, "agent-1", json!({})));
             assert_eq!(event.event_type, expected_event);
             assert!(matches!(
                 state.agent("agent-1").unwrap().unwrap().status,
@@ -2233,10 +2204,8 @@ mod tests {
 
     #[test]
     fn native_session_transcript_path_encodes_cwd_and_confines_session_id() {
-        let home = std::env::temp_dir().join(format!(
-            "qmux-grok-session-path-{}",
-            std::process::id()
-        ));
+        let home =
+            std::env::temp_dir().join(format!("qmux-grok-session-path-{}", std::process::id()));
         fs::create_dir_all(home.join("sessions")).unwrap();
 
         let path = grok_session_transcript_path(
@@ -2268,8 +2237,7 @@ mod tests {
         fs::create_dir_all(group.join(session_id)).unwrap();
         fs::write(group.join(".cwd"), "/very/long/project\n").unwrap();
 
-        let path =
-            grok_session_transcript_path(&home, "/very/long/project", session_id).unwrap();
+        let path = grok_session_transcript_path(&home, "/very/long/project", session_id).unwrap();
         assert_eq!(path, group.join(session_id).join("chat_history.jsonl"));
         assert!(grok_session_transcript_path(&home, "/another/project", session_id).is_some());
         assert_ne!(
@@ -2282,10 +2250,8 @@ mod tests {
 
     #[test]
     fn native_session_cwd_is_confined_to_the_agent_workspace() {
-        let root = std::env::temp_dir().join(format!(
-            "qmux-grok-session-cwd-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("qmux-grok-session-cwd-{}", std::process::id()));
         let expected = root.join("project");
         let other = root.join("other");
         fs::create_dir_all(&expected).unwrap();
@@ -2461,7 +2427,12 @@ mod tests {
             ),
         );
         assert_eq!(
-            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
             Some("forked-session")
         );
     }
@@ -2496,10 +2467,12 @@ mod tests {
 
         let agent = state.agent("agent-1").unwrap().unwrap();
         assert_eq!(agent.session_id.as_deref(), Some("forked-session"));
-        assert!(agent
-            .transcript_path
-            .as_deref()
-            .is_some_and(|path| path.ends_with("/forked-session/chat_history.jsonl")));
+        assert!(
+            agent
+                .transcript_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("/forked-session/chat_history.jsonl"))
+        );
 
         // Adoption is one-shot: later inconsistent metadata cannot move the binding.
         ingest(
@@ -2514,7 +2487,12 @@ mod tests {
             ),
         );
         assert_eq!(
-            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
             Some("forked-session")
         );
     }
@@ -2564,26 +2542,15 @@ mod tests {
             None
         );
         assert_eq!(
-            grok_resume_session_id(&args(&[
-                "--resume",
-                "source-session",
-                "--fork-session"
-            ])),
+            grok_resume_session_id(&args(&["--resume", "source-session", "--fork-session"])),
             None
         );
         assert_eq!(
-            grok_resume_session_id(&args(&[
-                "--fork-session",
-                "--resume=source-session"
-            ])),
+            grok_resume_session_id(&args(&["--fork-session", "--resume=source-session"])),
             None
         );
         assert_eq!(
-            grok_fork_source_session_id(&args(&[
-                "--resume",
-                "source-session",
-                "--fork-session"
-            ])),
+            grok_fork_source_session_id(&args(&["--resume", "source-session", "--fork-session"])),
             Some("source-session")
         );
     }
@@ -2645,7 +2612,10 @@ mod tests {
         assert_eq!(hooks_raw, grok_hooks_file_contents(&shim_path));
         let hooks: Value = serde_json::from_str(&hooks_raw).unwrap();
         for event in GROK_HOOK_EVENTS {
-            assert!(hooks["hooks"][event].is_array(), "missing hooks for {event}");
+            assert!(
+                hooks["hooks"][event].is_array(),
+                "missing hooks for {event}"
+            );
             assert!(
                 hooks["hooks"][event][0].get("matcher").is_none(),
                 "{event} must omit matcher"
