@@ -10,6 +10,7 @@
     "build": "scripts/build.sh",
     "build:web": "tsc && vite build",
     "test:app-shortcuts": "node scripts/test-app-shortcuts.mjs",
+    "test:claude-turns": "node scripts/test-claude-turns.mjs",
     "test:pane-splits": "node scripts/test-pane-splits.mjs",
     "test:image-markers": "node scripts/test-image-markers.mjs",
     "test:opencode-plugin": "node --experimental-default-type=module --test qmux-opencode-plugin/tests/*.test.mjs",

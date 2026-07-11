@@ -1322,11 +1322,16 @@ export default function App() {
           ? storedGraph
           : buildSingleAgentThreadGraph(agent, normalizedTurns);
       const graphTurns = focusedBranchTurns(threadGraph, agent);
+      // Stored graphs can predate an adapter's presentation normalization and
+      // therefore still contain native metadata turns (Claude queue operations in
+      // particular). Normalize once more at the final UI boundary so the timeline
+      // and copied transcript agree regardless of which graph source won above.
+      const visibleTurns = adapter.normalizeTurns?.(graphTurns) ?? graphTurns;
       const assistantLabel = adapter.label;
       result.set(agent.id, {
-        turns: graphTurns,
+        turns: visibleTurns,
         assistantLabel,
-        transcript: formatTurnsTranscript(graphTurns, assistantLabel),
+        transcript: formatTurnsTranscript(visibleTurns, assistantLabel),
       });
     }
     return result;

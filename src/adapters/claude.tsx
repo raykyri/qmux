@@ -1,7 +1,7 @@
 import { LauncherSelect } from "../components/LauncherSelect";
 import type { LauncherSelectOption } from "../components/LauncherSelect";
 import type { AgentUiAdapter, ComposerPolicy, LauncherOptionsProps } from ".";
-import type { Turn } from "../types";
+import { normalizeClaudeTurns } from "./claudeTurns";
 
 const CLAUDE_PERMISSION_OPTIONS: LauncherSelectOption[] = [
   { value: "auto", label: "Auto mode" },
@@ -51,45 +51,4 @@ function ClaudeLauncherOptions({ value, onChange }: LauncherOptionsProps) {
       }}
     />
   );
-}
-
-// Claude's transcript logs a queued prompt twice: once as a `queue-operation`
-// entry when it is enqueued, then again as a `user` turn when it is actually
-// submitted. With the empty bookkeeping entries filtered out, those two land
-// next to each other with identical text, so drop the queue-operation duplicate.
-// Any queue-operation turn that survives is still just the user's queued prompt,
-// so relabel it to render as a plain user message.
-function normalizeClaudeTurns(turns: Turn[]): Turn[] {
-  const result: Turn[] = [];
-  turns.forEach((turn, index) => {
-    if (turn.role !== "queue-operation") {
-      result.push(turn);
-      return;
-    }
-    const text = turnText(turn);
-    if (!text) {
-      result.push(turn);
-      return;
-    }
-    const hasAdjacentUserDuplicate = [turns[index - 1], turns[index + 1]].some(
-      (neighbor) => neighbor?.role === "user" && turnText(neighbor) === text,
-    );
-    if (hasAdjacentUserDuplicate) {
-      return;
-    }
-    result.push({ ...turn, role: "user" });
-  });
-  return result;
-}
-
-function turnText(turn: Turn): string {
-  return turn.blocks
-    .map((block) => {
-      if (block.type === "text") {
-        return block.text;
-      }
-      return "";
-    })
-    .join("")
-    .trim();
 }
