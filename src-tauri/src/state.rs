@@ -3,7 +3,7 @@ use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
-use crate::transcript::{Turn, read_transcript_meta};
+use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo};
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
@@ -1088,6 +1088,7 @@ impl AppState {
             .chain(persisted.inflight.keys().cloned())
             .collect::<HashSet<_>>();
 
+        let mut hydrated_agents = Vec::new();
         if let Ok(mut model) = self.inner.model.lock() {
             for group in persisted.groups {
                 if !model.group_order.iter().any(|id| id == &group.id) {
@@ -1169,12 +1170,7 @@ impl AppState {
             }
             model.active_tab_id = active_tab_id;
             model.pane_splits = persisted.pane_splits;
-            let now = now_millis();
-            let agents = model.agents.values().cloned().collect::<Vec<_>>();
-            for agent in &agents {
-                upsert_recent_session_for_agent_locked(&mut model, agent, now, false);
-            }
-            prune_recent_sessions_locked(&mut model);
+            hydrated_agents = model.agents.values().cloned().collect::<Vec<_>>();
             // Seed nesting depth from the persisted panes. Panes are re-inserted by
             // the respawn pass that follows; depths for panes that don't come back
             // (e.g. already-exited panes) are pruned by the post-respawn normalize.
@@ -1183,6 +1179,16 @@ impl AppState {
                     model.pane_depth.insert(pane.id.clone(), pane.depth);
                 }
             }
+        }
+
+        // Backfill recent-session entries for the hydrated agents after the
+        // hydrate lock is released: a cold entry's preview/line-count comes
+        // from reading (and parsing the head of) its transcript file, and with
+        // many recovered agents doing that under the model lock serialized
+        // startup — and every early command — behind the file reads.
+        let now = now_millis();
+        for agent in &hydrated_agents {
+            self.upsert_recent_session_for_agent(agent, now, false);
         }
 
         // Keep id allocation monotonic across restarts so reused ids never alias.
@@ -2042,7 +2048,13 @@ impl AppState {
                 .map(|agent| agent.id.clone())
             {
                 if let Some(agent) = model.agents.get(&agent_id).cloned() {
-                    upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true);
+                    upsert_recent_session_for_agent_locked(
+                        &mut model,
+                        &agent,
+                        now_millis(),
+                        true,
+                        RecentSessionMeta::CacheOnly,
+                    );
                 }
                 clear_recent_session_binding_locked(&mut model, Some(&agent_id), Some(pane_id));
                 model.agent_typing.remove(&agent_id);
@@ -2359,20 +2371,63 @@ impl AppState {
         Ok(())
     }
 
+    /// Upserts an agent's recent-session entry, filling the preview/line-count
+    /// from the transcript file when the cache has neither — with the disk read
+    /// done *between* two short model-lock sections, never under one. Returns
+    /// whether the stored entry changed. Best-effort bookkeeping: a poisoned
+    /// model lock skips the upsert rather than propagating.
+    fn upsert_recent_session_for_agent(&self, agent: &AgentInfo, now: u128, touch: bool) -> bool {
+        let first = match self.inner.model.lock() {
+            Ok(mut model) => upsert_recent_session_for_agent_locked(
+                &mut model,
+                agent,
+                now,
+                touch,
+                RecentSessionMeta::CacheOnly,
+            ),
+            Err(_) => return false,
+        };
+        let mut changed = first.changed;
+        if let Some(path) = first.wants_disk_meta {
+            let (preview, line_count) =
+                crate::transcript::read_transcript_meta(std::path::Path::new(&path));
+            if (preview.is_some() || line_count > 0)
+                && let Ok(mut model) = self.inner.model.lock()
+            {
+                changed |= upsert_recent_session_for_agent_locked(
+                    &mut model,
+                    agent,
+                    now,
+                    touch,
+                    RecentSessionMeta::Loaded {
+                        preview,
+                        line_count,
+                    },
+                )
+                .changed;
+            }
+        }
+        if changed && let Ok(mut model) = self.inner.model.lock() {
+            // The prune only matters after an insert grew the map; unchanged
+            // upserts skip the sort-and-clone entirely.
+            prune_recent_sessions_locked(&mut model);
+        }
+        changed
+    }
+
     pub fn insert_agent(&self, mut agent: AgentInfo) -> Result<(), String> {
-        {
+        let agent_for_sessions = {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
             ensure_agent_thread_metadata(self, &mut model, &mut agent);
-            let now = now_millis();
-            if upsert_recent_session_for_agent_locked(&mut model, &agent, now, true) {
-                prune_recent_sessions_locked(&mut model);
-            }
+            let agent_for_sessions = agent.clone();
             model.agents.insert(agent.id.clone(), agent);
-        }
+            agent_for_sessions
+        };
+        self.upsert_recent_session_for_agent(&agent_for_sessions, now_millis(), true);
         self.persist();
         Ok(())
     }
@@ -2422,22 +2477,19 @@ impl AppState {
     }
 
     pub fn update_agent(&self, mut agent: AgentInfo) -> Result<(), String> {
-        {
+        let agent_for_sessions = {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
             ensure_agent_thread_metadata(self, &mut model, &mut agent);
-            let now = now_millis();
             bump_agent_activity_locked(&mut model, &agent.id);
-            // The prune only matters after an insert grew the map; updates
-            // can't push it over the cap, so skip the sort-and-clone otherwise.
-            if upsert_recent_session_for_agent_locked(&mut model, &agent, now, true) {
-                prune_recent_sessions_locked(&mut model);
-            }
+            let agent_for_sessions = agent.clone();
             model.agents.insert(agent.id.clone(), agent);
-        }
+            agent_for_sessions
+        };
+        self.upsert_recent_session_for_agent(&agent_for_sessions, now_millis(), true);
         self.persist();
         Ok(())
     }
@@ -2463,17 +2515,14 @@ impl AppState {
                 Some(agent) => {
                     f(agent);
                     let updated = agent.clone();
-                    let now = now_millis();
                     bump_agent_activity_locked(&mut model, agent_id);
-                    if upsert_recent_session_for_agent_locked(&mut model, &updated, now, true) {
-                        prune_recent_sessions_locked(&mut model);
-                    }
                     Some(updated)
                 }
                 None => None,
             }
         };
-        if updated.is_some() {
+        if let Some(agent) = updated.as_ref() {
+            self.upsert_recent_session_for_agent(agent, now_millis(), true);
             self.persist();
         }
         Ok(updated)
@@ -2507,7 +2556,7 @@ impl AppState {
         agent_id: &str,
         status: AgentStatus,
     ) -> Result<Option<AgentInfo>, String> {
-        let (updated, changed) = {
+        let (updated, status_changed) = {
             let mut model = self
                 .inner
                 .model
@@ -2526,20 +2575,18 @@ impl AppState {
                     let status_changed = agent.status != status;
                     agent.status = status;
                     let updated = agent.clone();
-                    let now = now_millis();
                     bump_agent_activity_locked(&mut model, agent_id);
                     bump_agent_status_activity_locked(&mut model, agent_id);
-                    let session_changed =
-                        upsert_recent_session_for_agent_locked(&mut model, &updated, now, true);
-                    if session_changed {
-                        prune_recent_sessions_locked(&mut model);
-                    }
-                    (Some(updated), status_changed || session_changed)
+                    (Some(updated), status_changed)
                 }
                 None => (None, false),
             }
         };
-        if changed {
+        let session_changed = match updated.as_ref() {
+            Some(agent) => self.upsert_recent_session_for_agent(agent, now_millis(), true),
+            None => false,
+        };
+        if status_changed || session_changed {
             self.persist();
         }
         Ok(updated)
@@ -2564,7 +2611,17 @@ impl AppState {
             let agent_for_graph = model.agents.get(&agent_id).cloned();
             let should_persist_recent = if is_user_turn {
                 agent_for_graph.clone().is_some_and(|agent| {
-                    upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
+                    // CacheOnly: the turn just appended supplies the in-memory
+                    // preview/line-count, so the disk fallback has nothing to add
+                    // — and this runs under the model lock.
+                    upsert_recent_session_for_agent_locked(
+                        &mut model,
+                        &agent,
+                        now_millis(),
+                        true,
+                        RecentSessionMeta::CacheOnly,
+                    )
+                    .changed
                 })
             } else {
                 false
@@ -2616,7 +2673,14 @@ impl AppState {
             model.turns.insert(agent_id.to_string(), turns);
             let agent_for_graph = model.agents.get(agent_id).cloned();
             let should_persist_recent = agent_for_graph.clone().is_some_and(|agent| {
-                upsert_recent_session_for_agent_locked(&mut model, &agent, now_millis(), true)
+                upsert_recent_session_for_agent_locked(
+                    &mut model,
+                    &agent,
+                    now_millis(),
+                    true,
+                    RecentSessionMeta::CacheOnly,
+                )
+                .changed
             });
             let mut graph_store = None;
             let mut created_thread_record = false;
@@ -3762,14 +3826,45 @@ fn agent_recent_session_key(agent: &AgentInfo) -> Option<String> {
     )
 }
 
+/// Where `upsert_recent_session_for_agent_locked` may take a preview/line-count
+/// fallback from when neither the in-memory turns nor the cached entry have one.
+enum RecentSessionMeta {
+    /// Never touch the disk. Callers inside long-lived lock scopes use this;
+    /// the returned `wants_disk_meta` tells them (via
+    /// `AppState::upsert_recent_session_for_agent`) that a read would help.
+    CacheOnly,
+    /// Transcript meta the caller read from disk *outside* the model lock.
+    Loaded {
+        preview: Option<String>,
+        line_count: usize,
+    },
+}
+
+struct RecentSessionUpsert {
+    changed: bool,
+    /// The transcript path worth reading for preview/line-count, set only in
+    /// `CacheOnly` mode when the cache had neither.
+    wants_disk_meta: Option<String>,
+}
+
+impl RecentSessionUpsert {
+    fn unchanged() -> Self {
+        Self {
+            changed: false,
+            wants_disk_meta: None,
+        }
+    }
+}
+
 fn upsert_recent_session_for_agent_locked(
     model: &mut Model,
     agent: &AgentInfo,
     now: u128,
     touch: bool,
-) -> bool {
+    meta: RecentSessionMeta,
+) -> RecentSessionUpsert {
     let Some(key) = agent_recent_session_key(agent) else {
-        return false;
+        return RecentSessionUpsert::unchanged();
     };
 
     if agent
@@ -3795,14 +3890,10 @@ fn upsert_recent_session_for_agent_locked(
     });
 
     // Prefer the line count cached on the previous recent-session entry before
-    // considering a disk read. read_transcript_meta reads and JSON-parses the whole
-    // transcript file, and this runs under the model lock — so re-upserting a
-    // session we've already measured (a status flip, a restore, any mutate_agent)
-    // would otherwise stall every other thread on that IO on every call, since
-    // line_count resets to the in-memory turn count (0 for a cold session) each
-    // time. An actively-growing session keeps its turns in memory (line_count
-    // above), so the on-disk fallback below only serves cold sessions whose files
-    // aren't changing — making the cached count a faithful substitute.
+    // considering the disk. An actively-growing session keeps its turns in
+    // memory (line_count above), so the on-disk fallback below only serves cold
+    // sessions whose files aren't changing — making the cached count a faithful
+    // substitute.
     if line_count == 0 {
         line_count = existing
             .as_ref()
@@ -3810,16 +3901,31 @@ fn upsert_recent_session_for_agent_locked(
             .unwrap_or(0);
     }
 
+    // This runs under the model lock, so the transcript file is never read
+    // here: reading and parsing a whole (possibly cold, possibly huge) JSONL
+    // would stall every other thread — including main-thread input handling —
+    // behind that I/O. Callers either supply meta they read outside the lock
+    // (`Loaded`) or get the path back and re-enter with the data
+    // (`AppState::upsert_recent_session_for_agent`).
+    let mut wants_disk_meta = None;
     if (preview.is_none() || line_count == 0)
         && let Some(transcript_path) = agent.transcript_path.as_deref()
     {
-        let (disk_preview, disk_line_count) =
-            read_transcript_meta(std::path::Path::new(transcript_path));
-        if preview.is_none() {
-            preview = disk_preview;
-        }
-        if line_count == 0 {
-            line_count = disk_line_count;
+        match &meta {
+            RecentSessionMeta::CacheOnly => {
+                wants_disk_meta = Some(transcript_path.to_string());
+            }
+            RecentSessionMeta::Loaded {
+                preview: disk_preview,
+                line_count: disk_line_count,
+            } => {
+                if preview.is_none() {
+                    preview = disk_preview.clone();
+                }
+                if line_count == 0 {
+                    line_count = *disk_line_count;
+                }
+            }
         }
     }
 
@@ -3856,7 +3962,10 @@ fn upsert_recent_session_for_agent_locked(
     };
 
     if existing.as_ref() == Some(&next) {
-        return false;
+        return RecentSessionUpsert {
+            changed: false,
+            wants_disk_meta,
+        };
     }
     // Coarsen pure re-touches. A busy agent's hooks re-touch its session
     // several times a second for the whole run; each fresh `last_active_at`
@@ -3876,11 +3985,17 @@ fn upsert_recent_session_for_agent_locked(
             ..next.clone()
         };
         if *existing == comparable {
-            return false;
+            return RecentSessionUpsert {
+                changed: false,
+                wants_disk_meta,
+            };
         }
     }
     model.recent_sessions.insert(key, next);
-    true
+    RecentSessionUpsert {
+        changed: true,
+        wants_disk_meta,
+    }
 }
 
 fn clear_recent_session_binding_locked(
@@ -4128,7 +4243,13 @@ fn restore_closed_agent_snapshot_locked(
 
 fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     if let Some(agent) = model.agents.get(agent_id).cloned() {
-        upsert_recent_session_for_agent_locked(model, &agent, now_millis(), true);
+        upsert_recent_session_for_agent_locked(
+            model,
+            &agent,
+            now_millis(),
+            true,
+            RecentSessionMeta::CacheOnly,
+        );
     }
     model.agents.remove(agent_id);
     model.turns.remove(agent_id);
