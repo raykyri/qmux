@@ -55,7 +55,7 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
         let menu = build_menu(app, None)?;
         TrayIconBuilder::with_id(TRAY_ID)
-            .icon(serif_q_icon())
+            .icon(bento_icon())
             .icon_as_template(true)
             .tooltip("qmux")
             .menu(&menu)
@@ -325,7 +325,7 @@ fn render_dot_rgba(red: u8, green: u8, blue: u8, outline: bool, size: u32) -> Ve
 }
 
 #[cfg(target_os = "macos")]
-fn serif_q_icon() -> tauri::image::Image<'static> {
+fn bento_icon() -> tauri::image::Image<'static> {
     const SIZE: u32 = 36;
     const SAMPLES: u32 = 4;
     let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
@@ -337,7 +337,7 @@ fn serif_q_icon() -> tauri::image::Image<'static> {
                 for sample_x in 0..SAMPLES {
                     let px = x as f32 + (sample_x as f32 + 0.5) / SAMPLES as f32;
                     let py = y as f32 + (sample_y as f32 + 0.5) / SAMPLES as f32;
-                    if serif_q_covers(px, py) {
+                    if bento_covers(px, py) {
                         covered += 1;
                     }
                 }
@@ -350,31 +350,30 @@ fn serif_q_icon() -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(rgba, SIZE, SIZE)
 }
 
+// A 2x2 pane grid with the bottom-right cell swapped for a disc: three rounded
+// squares plus a circle, drawn on a 36px canvas (24px grid scaled by 1.5).
 #[cfg(target_os = "macos")]
-fn serif_q_covers(x: f32, y: f32) -> bool {
-    let outer = ((x - 17.8) / 11.6).powi(2) + ((y - 16.7) / 12.8).powi(2) <= 1.0;
-    let inner = ((x - 17.8) / 6.7).powi(2) + ((y - 16.7) / 8.2).powi(2) <= 1.0;
-    let ring = outer && !inner;
+fn bento_covers(x: f32, y: f32) -> bool {
+    const CELL: f32 = 11.25;
+    const NEAR: f32 = 5.25;
+    const FAR: f32 = 19.5;
+    const RADIUS: f32 = 2.625;
 
-    let tail = distance_to_segment(x, y, 22.2, 23.6, 30.1, 31.0) <= 2.2;
-    let top_serif = (12.0..=23.7).contains(&x) && (4.3..=6.4).contains(&y);
-    let bottom_serif = (11.7..=22.0).contains(&x) && (27.0..=29.2).contains(&y);
-    let left_serif = (5.9..=8.4).contains(&x) && (11.4..=16.2).contains(&y);
-    let right_serif = (27.2..=29.7).contains(&x) && (11.4..=16.2).contains(&y);
+    let squares = [(NEAR, NEAR), (FAR, NEAR), (NEAR, FAR)];
+    if squares
+        .iter()
+        .any(|&(left, top)| rounded_rect_covers(x, y, left, top, CELL, RADIUS))
+    {
+        return true;
+    }
 
-    ring || tail || top_serif || bottom_serif || left_serif || right_serif
+    (x - 25.125).powi(2) + (y - 25.125).powi(2) <= 5.625f32.powi(2)
 }
 
 #[cfg(target_os = "macos")]
-fn distance_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let dx = bx - ax;
-    let dy = by - ay;
-    let length_squared = dx * dx + dy * dy;
-    if length_squared == 0.0 {
-        return ((px - ax).powi(2) + (py - ay).powi(2)).sqrt();
-    }
-    let t = (((px - ax) * dx + (py - ay) * dy) / length_squared).clamp(0.0, 1.0);
-    let closest_x = ax + t * dx;
-    let closest_y = ay + t * dy;
-    ((px - closest_x).powi(2) + (py - closest_y).powi(2)).sqrt()
+fn rounded_rect_covers(x: f32, y: f32, left: f32, top: f32, size: f32, radius: f32) -> bool {
+    let half = size / 2.0;
+    let dx = ((x - (left + half)).abs() - (half - radius)).max(0.0);
+    let dy = ((y - (top + half)).abs() - (half - radius)).max(0.0);
+    dx * dx + dy * dy <= radius * radius
 }
