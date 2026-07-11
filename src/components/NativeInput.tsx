@@ -302,14 +302,21 @@ export default function NativeInput({
   }, []);
   // Adopt external draft changes. Runs before paint so an agent switch never
   // flashes the previous agent's text, and flushes any pending local edit first
-  // so the last moments of typing are never lost to the switch.
+  // so the last moments of typing are never lost to the switch. The instance is
+  // reused across agents in the global sidebar, so an agent switch always
+  // re-adopts — even when both agents' stored drafts are content-equal (both
+  // empty, typically), where the prop comparison alone would keep the previous
+  // agent's un-pushed text on screen under the new agent.
+  const adoptedAgentIdRef = useRef(agent.id);
   useLayoutEffect(() => {
+    const agentChanged = adoptedAgentIdRef.current !== agent.id;
+    adoptedAgentIdRef.current = agent.id;
     flushDraftPush();
-    if (draft !== lastPushedDraftRef.current) {
+    if (agentChanged || draft !== lastPushedDraftRef.current) {
       lastPushedDraftRef.current = draft;
       setLocalDraft(draft);
     }
-  }, [draft, flushDraftPush]);
+  }, [agent.id, draft, flushDraftPush]);
   // A draft still sitting in the debounce window when the composer unmounts
   // (pane closed, right bar collapsed) is committed rather than dropped.
   useEffect(() => flushDraftPush, [flushDraftPush]);

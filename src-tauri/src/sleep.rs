@@ -58,19 +58,21 @@ impl SleepGuard {
     }
 
     /// `battery_blocks_wake` behind a short-lived cache, so the periodic wake-lock
-    /// re-asserts don't each pay a `pmset` fork. A poisoned cache lock just probes
-    /// fresh — the cache is an optimization, never a correctness dependency.
+    /// re-asserts don't each pay a `pmset` fork. The lock is held across the probe
+    /// so concurrent re-asserts wait for one probe instead of each forking their
+    /// own; a poisoned lock just probes fresh — the cache is an optimization,
+    /// never a correctness dependency.
     fn battery_blocks_wake_cached(&self) -> bool {
-        if let Ok(cache) = self.battery_probe.lock()
-            && let Some((probed_at, verdict)) = *cache
+        let Ok(mut cache) = self.battery_probe.lock() else {
+            return battery_blocks_wake();
+        };
+        if let Some((probed_at, verdict)) = *cache
             && probed_at.elapsed() < BATTERY_PROBE_TTL
         {
             return verdict;
         }
         let verdict = battery_blocks_wake();
-        if let Ok(mut cache) = self.battery_probe.lock() {
-            *cache = Some((Instant::now(), verdict));
-        }
+        *cache = Some((Instant::now(), verdict));
         verdict
     }
 }
