@@ -106,6 +106,39 @@ final class NativeTerminalPane: NSObject,
             // run qmux's exit confirmation — Ghostty's own quit binding would
             // consume it first via performKeyEquivalent.
             builder.withCustom("keybind", "super+q=unbind")
+            // Ghostty's remaining surface/app-management defaults must go the
+            // same way. These chords belong to qmux's shortcut layer (the
+            // NativeTerminalHost key monitor + classifiers), which normally
+            // consumes them before Ghostty sees a thing — but on any missed
+            // path (keyboard-owner/first-responder desync, non-US layouts
+            // where charactersIgnoringModifiers isn't the classifier's key,
+            // pre-init state gaps) the surface's own default binding would
+            // fire instead. ⌘W's close_surface tears the pane down with no
+            // qmux confirmation (confirm-close-surface is false above), and
+            // the font-size trio silently diverges the surface from qmux's
+            // font settings. Once unbound, a missed chord falls through to
+            // the running program (e.g. kitty-keyboard-protocol TUIs) or to
+            // nothing — never to a divergent Ghostty action. ⌘K (clear
+            // screen) and ⌘C (copy) stay bound: those are deliberately left
+            // native for a focused terminal.
+            for chord in [
+                "super+w",  // close_surface, bypassing requestClosePane
+                "super+shift+w",  // close_window
+                "super+alt+shift+w",  // close_all_windows
+                "super+t",  // new_tab — qmux: new pane
+                "super+n",  // new_window — qmux: home / launcher
+                "super+d",  // new_split:right — qmux: split pane below
+                "super+shift+d",  // new_split:down — qmux: split pane below
+                "super+comma",  // open_config — qmux: settings
+                "super+equal",  // increase_font_size — qmux: font zoom
+                "super+plus",  // increase_font_size
+                "super+minus",  // decrease_font_size
+                "super+zero",  // reset_font_size
+                "ctrl+tab",  // next_tab — qmux: cycle pane tab
+                "ctrl+shift+tab",  // previous_tab
+            ] {
+                builder.withCustom("keybind", "\(chord)=unbind")
+            }
         }
         view = QmuxTerminalView(frame: .zero)
         super.init()
