@@ -389,6 +389,10 @@ pub fn preflight_state(workspace_root: &Path) -> Result<Option<Vec<u8>>, String>
 /// snapshot. Missing state is expected on first run and does not produce a warning.
 /// Corrupt or unsupported state files are renamed aside before future saves can
 /// overwrite them.
+///
+/// Production startup goes through `load_with_diagnostics_from` with the bytes
+/// preflight already read; this read-the-file-itself wrapper serves tests.
+#[cfg(test)]
 pub fn load_with_diagnostics(workspace_root: &Path) -> LoadOutcome {
     load_with_diagnostics_from(workspace_root, None)
 }
