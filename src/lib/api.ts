@@ -447,6 +447,25 @@ export function setNativeTerminalLayout(layout: NativeTerminalLayout) {
   return invoke<void>("native_terminal_set_layout", { layout });
 }
 
+export interface NativeWebOverlayRegion {
+  regionId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visible: boolean;
+}
+
+/**
+ * Registers a DOM rectangle whose pointer events stay with WKWebView even
+ * though it overlaps a native terminal surface — for small controls that float
+ * over the terminal. Unlike claimNativeTerminalPointerForWebDrag, the rest of
+ * the terminal keeps receiving clicks. `visible: false` removes the region.
+ */
+export function setNativeTerminalWebOverlayRegion(region: NativeWebOverlayRegion) {
+  return invoke<void>("native_terminal_set_web_overlay_region", { region });
+}
+
 let nativeTerminalWebPointerClaims = 0;
 let nativeTerminalWebPointerUpdate: Promise<void> = Promise.resolve();
 

@@ -93,6 +93,7 @@ import {
 } from "./lib/appShortcuts";
 import { requestComposerInsert } from "./lib/promptLibrary";
 import { buildSingleAgentThreadGraph, focusedBranchTurns } from "./lib/threadGraph";
+import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
   BrowserOverlayState,
@@ -2581,6 +2582,13 @@ export default function App() {
       ? [activeTurnPaneSurface]
       : [];
   const activePaneHasTurnSidebar = Boolean(activeTurnPaneSurface?.hasTurnSidebar);
+  // The restore button floats over the native terminal surface, so its rect
+  // must be registered with the native event router or its clicks would be
+  // forwarded to Ghostty instead of the DOM.
+  const floatingRestoreButtonVisible = rightBarCollapsed && activePaneHasTurnSidebar;
+  const floatingRestoreButtonRef = useNativeWebOverlayRegion<HTMLButtonElement>(
+    floatingRestoreButtonVisible,
+  );
   const visibleRightBarSurfaces = rightBarCollapsed ? [] : visibleTurnPaneSurfaces;
   const hasVisibleRightBar = visibleRightBarSurfaces.length > 0;
   const hasGlobalTurnSidebar = hasVisibleRightBar && !splitRightPaneMode;
@@ -6900,12 +6908,13 @@ export default function App() {
   }
 
   function renderFloatingRightBarRestoreButton() {
-    if (!rightBarCollapsed || !activePaneHasTurnSidebar) {
+    if (!floatingRestoreButtonVisible) {
       return null;
     }
 
     return (
       <button
+        ref={floatingRestoreButtonRef}
         type="button"
         className="turn-pane-header-button turn-pane-floating-restore-button"
         title="Show right bar"

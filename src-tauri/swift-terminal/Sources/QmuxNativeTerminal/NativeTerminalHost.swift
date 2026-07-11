@@ -17,6 +17,11 @@ final class NativeTerminalHost {
     /// mid-gesture drag claims (button already down when claimed). Sticky claims
     /// such as open sidebar menus start with buttons up and stay until explicit release.
     private var webPointerClaimClearsOnPointerUp = false
+    /// DOM rectangles (webview CSS coordinates, matching the flipped container)
+    /// that own pointer events even where they overlap a terminal surface —
+    /// small controls floating over the terminal, like the right-bar restore
+    /// button. Unlike a web pointer claim, the rest of the terminal stays live.
+    private var webOverlayRegions: [String: CGRect] = [:]
     private var windowLiveResizeActive = false
     private var clientDeferredGeometryPaneIDs: Set<String> = []
     private var pendingPaneFrames: [String: CGRect] = [:]
@@ -254,6 +259,16 @@ final class NativeTerminalHost {
         return true
     }
 
+    func setWebOverlayRegion(id: String, frame: CGRect?) -> Bool {
+        guard container != nil else { return false }
+        if let frame {
+            webOverlayRegions[id] = frame
+        } else {
+            webOverlayRegions.removeValue(forKey: id)
+        }
+        return true
+    }
+
     func sendText(id: String, text: String) -> Bool {
         guard let pane = panes[id] else { return false }
         // Report a dead/not-yet-created surface as failure: the surface only
@@ -344,6 +359,7 @@ final class NativeTerminalHost {
         pointerCapturePane = nil
         webPointerRoutingClaimed = false
         webPointerClaimClearsOnPointerUp = false
+        webOverlayRegions.removeAll()
         for pane in panes.values {
             pane.view.removeFromSuperview()
         }
@@ -606,6 +622,13 @@ final class NativeTerminalHost {
             pane = pointerCapturePane
         } else {
             let point = container.convert(event.locationInWindow, from: nil)
+            // Web controls floating over the terminal own their rectangle
+            // outside an active terminal drag: returning the event keeps DOM
+            // hit-testing (and the button's click) working, while a gesture
+            // that started inside the terminal stays captured above.
+            if webOverlayRegions.values.contains(where: { $0.contains(point) }) {
+                return event
+            }
             pane = panes.values.first {
                 !$0.view.isHidden
                     && $0.acceptsPointerInput

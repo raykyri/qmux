@@ -130,6 +130,26 @@ public func qmuxNativeTerminalSetWebPointerClaimed(_ claimed: Int32) -> Int32 {
     }
 }
 
+@_cdecl("qmux_native_terminal_set_web_overlay_region")
+public func qmuxNativeTerminalSetWebOverlayRegion(
+    _ regionID: UnsafePointer<CChar>?,
+    _ x: Double,
+    _ y: Double,
+    _ width: Double,
+    _ height: Double,
+    _ visible: Int32
+) -> Int32 {
+    guard let regionID = terminalString(regionID) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.setWebOverlayRegion(
+            id: regionID,
+            frame: visible == 1
+                ? CGRect(x: x, y: y, width: width, height: height)
+                : nil
+        ) ? 1 : 0
+    }
+}
+
 @_cdecl("qmux_native_terminal_focus")
 public func qmuxNativeTerminalFocus(_ paneID: UnsafePointer<CChar>?) -> Int32 {
     guard let paneID = terminalString(paneID) else { return 0 }

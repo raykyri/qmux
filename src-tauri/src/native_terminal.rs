@@ -21,6 +21,20 @@ pub struct NativeTerminalLayout {
     pub defer_geometry: bool,
 }
 
+/// A DOM rectangle that keeps pointer events routed to the webview even where
+/// it overlaps a native terminal surface (floating controls drawn over the
+/// terminal). `visible: false` removes the region.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWebOverlayRegion {
+    pub region_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub visible: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeTerminalSettings {
@@ -165,6 +179,7 @@ mod imp {
     use super::APP_STATE;
     use super::NativeTerminalLayout;
     use super::NativeTerminalSettings;
+    use super::NativeWebOverlayRegion;
     use crate::state::AppState;
     use std::ffi::{CString, c_char, c_void};
     use std::sync::Mutex;
@@ -193,6 +208,14 @@ mod imp {
             defer_geometry: i32,
         ) -> i32;
         fn qmux_native_terminal_set_web_pointer_claimed(claimed: i32) -> i32;
+        fn qmux_native_terminal_set_web_overlay_region(
+            region_id: *const c_char,
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+            visible: i32,
+        ) -> i32;
         fn qmux_native_terminal_focus(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_send_text(pane_id: *const c_char, text: *const c_char) -> i32;
         fn qmux_native_terminal_submit(pane_id: *const c_char) -> i32;
@@ -362,6 +385,35 @@ mod imp {
         }
     }
 
+    pub fn set_web_overlay_region(region: NativeWebOverlayRegion) -> Result<(), String> {
+        if !region.x.is_finite()
+            || !region.y.is_finite()
+            || !region.width.is_finite()
+            || !region.height.is_finite()
+            || region.width < 0.0
+            || region.height < 0.0
+        {
+            return Err("native web overlay region has invalid geometry".to_string());
+        }
+        let region_id = cstring(&region.region_id, "region id")?;
+        // SAFETY: Swift copies the string and scalars synchronously.
+        if unsafe {
+            qmux_native_terminal_set_web_overlay_region(
+                region_id.as_ptr(),
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                i32::from(region.visible),
+            )
+        } == 1
+        {
+            Ok(())
+        } else {
+            Err("native terminal host is not attached".to_string())
+        }
+    }
+
     pub fn focus(pane_id: &str) -> Result<(), String> {
         let pane_id = cstring(pane_id, "pane id")?;
         // SAFETY: Swift copies the string synchronously before returning.
@@ -496,6 +548,7 @@ mod imp {
 mod imp {
     use super::NativeTerminalLayout;
     use super::NativeTerminalSettings;
+    use super::NativeWebOverlayRegion;
     use crate::state::AppState;
     use std::ffi::c_void;
 
@@ -535,6 +588,10 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
+    pub fn set_web_overlay_region(_region: NativeWebOverlayRegion) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
     pub fn focus(_pane_id: &str) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
@@ -571,8 +628,8 @@ mod imp {
 #[allow(unused_imports)]
 pub use imp::{
     action, available, create, focus, initialize, paste_approved_text, remove, send_text,
-    set_layout, set_stage_backstop, set_web_pointer_claimed, shutdown, submit, terminate,
-    update_settings,
+    set_layout, set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown,
+    submit, terminate, update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {
@@ -800,6 +857,11 @@ pub fn native_terminal_set_layout(layout: NativeTerminalLayout) -> Result<(), St
 #[tauri::command]
 pub fn native_terminal_set_web_pointer_claimed(claimed: bool) -> Result<(), String> {
     set_web_pointer_claimed(claimed)
+}
+
+#[tauri::command]
+pub fn native_terminal_set_web_overlay_region(region: NativeWebOverlayRegion) -> Result<(), String> {
+    set_web_overlay_region(region)
 }
 
 #[tauri::command]
