@@ -263,6 +263,9 @@ const HOME_TAB_ID = "__home__";
 // How long after the user's last keystroke we keep holding the queue before letting a
 // finished turn auto-send the next queued message.
 const INPUT_DEQUEUE_HOLD_MS = 1500;
+// Trailing debounce for committing native terminal title changes into React
+// state (see handleTerminalTitleChange).
+const TERMINAL_TITLE_COMMIT_DEBOUNCE_MS = 200;
 
 function claimResizePointer(event: ReactPointerEvent<HTMLDivElement>): () => void {
   const handle = event.currentTarget;
@@ -1621,22 +1624,42 @@ export default function App() {
       }
     };
   }, []);
+  // Committed per pane on a trailing debounce rather than per event: programs
+  // that stream progress into the terminal title (OSC 0/2 spinners, build
+  // percentages) emit a distinct title many times a second, and committing each
+  // one re-rendered the whole app and rebuilt the tray-menu snapshot per change
+  // — a busy terminal made typing lag everywhere else. A tab label lagging its
+  // terminal by a couple hundred milliseconds is imperceptible.
+  const terminalTitleTimersRef = useRef(new Map<string, number>());
+  const pendingTerminalTitlesRef = useRef(new Map<string, string | null>());
   const handleTerminalTitleChange = useCallback((paneId: string, rawTitle: string) => {
-    const title = sanitizeTerminalTitle(rawTitle);
-    setTerminalTitleByPane((current) => {
-      if (!title) {
-        if (!(paneId in current)) {
+    pendingTerminalTitlesRef.current.set(paneId, sanitizeTerminalTitle(rawTitle));
+    if (terminalTitleTimersRef.current.has(paneId)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      terminalTitleTimersRef.current.delete(paneId);
+      const pending = pendingTerminalTitlesRef.current.get(paneId);
+      pendingTerminalTitlesRef.current.delete(paneId);
+      if (pending === undefined) {
+        return;
+      }
+      setTerminalTitleByPane((current) => {
+        if (!pending) {
+          if (!(paneId in current)) {
+            return current;
+          }
+          const next = { ...current };
+          delete next[paneId];
+          return next;
+        }
+        if (current[paneId] === pending) {
           return current;
         }
-        const next = { ...current };
-        delete next[paneId];
-        return next;
-      }
-      if (current[paneId] === title) {
-        return current;
-      }
-      return { ...current, [paneId]: title };
-    });
+        return { ...current, [paneId]: pending };
+      });
+    }, TERMINAL_TITLE_COMMIT_DEBOUNCE_MS);
+    terminalTitleTimersRef.current.set(paneId, timer);
   }, []);
 
   function paneUsesDefaultTitle(pane: PaneInfo, agent: AgentInfo | undefined): boolean {
