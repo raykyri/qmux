@@ -859,6 +859,15 @@ mod tests {
             load_preferences(&root).unwrap().launcher_adapter_id,
             Some("codex".to_string())
         );
+        // Also read the disk directly: load_preferences serves repeats from the
+        // write-through cache, and a cache hit alone would not prove the saved
+        // file deserializes.
+        assert_eq!(
+            read_preferences_from_disk(&preferences_path(&root))
+                .unwrap()
+                .launcher_adapter_id,
+            Some("codex".to_string())
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -879,6 +888,12 @@ mod tests {
 
         assert_eq!(
             load_preferences(&root).unwrap().open_router_key,
+            Some("sk-or-secret".to_string())
+        );
+        assert_eq!(
+            read_preferences_from_disk(&preferences_path(&root))
+                .unwrap()
+                .open_router_key,
             Some("sk-or-secret".to_string())
         );
 
@@ -915,6 +930,12 @@ mod tests {
 
         assert_eq!(
             load_preferences(&root).unwrap().use_login_shell,
+            Some(false)
+        );
+        assert_eq!(
+            read_preferences_from_disk(&preferences_path(&root))
+                .unwrap()
+                .use_login_shell,
             Some(false)
         );
         fs::remove_dir_all(root).unwrap();
@@ -993,6 +1014,70 @@ mod tests {
         assert!(state.panes.is_empty());
         assert!(state.agents.is_empty());
         assert!(state.queues.is_empty());
+    }
+
+    // The path production startup actually takes: preflight reads and
+    // version-checks the file, hands the bytes to the loader, and the loader
+    // parses them without touching the disk again.
+    #[test]
+    fn preflight_bytes_feed_the_loader_without_a_second_read() {
+        let root = temp_root();
+        let mut persisted = PersistedState::default();
+        persisted.panes.push(sample_pane());
+        save(&root, &persisted).unwrap();
+
+        let bytes = preflight_state(&root)
+            .unwrap()
+            .expect("existing state yields bytes");
+        // Prove the loader consumed the handed-off bytes, not the file: replace
+        // the on-disk state with garbage first.
+        fs::write(state_path(&root), b"{ not json").unwrap();
+
+        let outcome = load_with_diagnostics_from(&root, Some(bytes));
+        assert!(outcome.warning.is_none());
+        assert_eq!(outcome.state.panes.len(), 1);
+        assert_eq!(outcome.state.panes[0].id, sample_pane().id);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preread_non_utf8_state_is_discarded_as_corrupt() {
+        let root = temp_root();
+        let path = state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let bad_state: &[u8] = b"\xff\xfe{\"version\":2}";
+        fs::write(&path, bad_state).unwrap();
+
+        let outcome = load_with_diagnostics_from(&root, Some(bad_state.to_vec()));
+        assert_eq!(outcome.state.version, STATE_VERSION);
+        assert!(outcome.state.panes.is_empty());
+        let warning = outcome.warning.expect("non-UTF-8 state should warn");
+        assert!(warning.message.contains("not valid UTF-8"));
+        let backup_path = warning
+            .backup_path
+            .expect("non-UTF-8 state should be preserved");
+        assert!(!path.exists());
+        assert_eq!(fs::read(backup_path).unwrap(), bad_state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preflight_reset_leaves_nothing_for_the_loader_to_resurrect() {
+        // QMUX_RESET_STATE moves the file aside and preflight returns None; the
+        // loader's disk fallback must then find nothing (fresh session), not
+        // re-read the moved-aside state.
+        let root = temp_root();
+        let path = state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"version":99999}"#).unwrap();
+
+        let backup = preserve_rejected_state(&path, "newer-version").unwrap();
+        assert!(!path.exists());
+        assert!(backup.exists());
+        let outcome = load_with_diagnostics_from(&root, None);
+        assert!(outcome.warning.is_none());
+        assert!(outcome.state.panes.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
