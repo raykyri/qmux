@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Copy, ExternalLink, LoaderCircle, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, ScrollText, X } from "lucide-react";
 import { getResearchNodeContent } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { growComposerTextarea } from "../../lib/composerTextarea";
@@ -173,6 +173,10 @@ export default function ResearchDocument({
   onToast,
 }: ResearchDocumentProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // Browser-style visit history for the header's back/forward controls. Reset
+  // per tree; `historyIndex` points at the currently displayed node within it.
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const [content, setContent] = useState<ResearchNodeContent | null>(null);
   const [followup, setFollowup] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -253,6 +257,9 @@ export default function ResearchDocument({
         ? savedNodeId
         : rootNodeId;
     setSelectedNodeId(selected);
+    // A tree switch starts a fresh visit history rooted at the restored node.
+    setHistory(selected ? [selected] : []);
+    setHistoryIndex(selected ? 0 : -1);
     setContent(null);
     setContentError(null);
     // Restore the expanded window with the selection: the saved scroll offset
@@ -263,19 +270,13 @@ export default function ResearchDocument({
     );
   }, [treeId, detail?.tree.rootNodeId]);
 
-  const selectNode = useCallback(
+  // Switches the displayed node without touching visit history: records the
+  // outgoing node's scroll offset, clears content, and applies the selection.
+  // Shared by user navigation (which then extends history) and back/forward
+  // (which only moves the history cursor).
+  const applySelection = useCallback(
     (nodeId: string) => {
       if (!treeId) {
-        return;
-      }
-      // Clearing content without changing the node ID leaves the content loader's
-      // dependencies unchanged, so clicking the current breadcrumb would show a
-      // spinner forever. A current-node click is navigation-wise a no-op — except
-      // as a retry affordance when the last load failed.
-      if (!isResearchNodeSelectionChange(selectedNodeId, nodeId)) {
-        if (contentError) {
-          setContentLoadNonce((value) => value + 1);
-        }
         return;
       }
       const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
@@ -293,8 +294,51 @@ export default function ResearchDocument({
       setShowAllTurns(Boolean(navigation.expandedByNode?.[nodeId]));
       setSelectedNodeId(nodeId);
     },
-    [contentError, selectedNodeId, treeId],
+    [selectedNodeId, treeId],
   );
+
+  const selectNode = useCallback(
+    (nodeId: string) => {
+      if (!treeId) {
+        return;
+      }
+      // Clearing content without changing the node ID leaves the content loader's
+      // dependencies unchanged, so clicking the current breadcrumb would show a
+      // spinner forever. A current-node click is navigation-wise a no-op — except
+      // as a retry affordance when the last load failed.
+      if (!isResearchNodeSelectionChange(selectedNodeId, nodeId)) {
+        if (contentError) {
+          setContentLoadNonce((value) => value + 1);
+        }
+        return;
+      }
+      applySelection(nodeId);
+      // Fresh navigation truncates any forward history and appends the new node,
+      // leaving the cursor at the end — matching browser back/forward semantics.
+      setHistory((prev) => [...prev.slice(0, historyIndex + 1), nodeId]);
+      setHistoryIndex((index) => index + 1);
+    },
+    [applySelection, contentError, historyIndex, selectedNodeId, treeId],
+  );
+
+  const canGoBack = historyIndex > 0;
+  const canGoForward = historyIndex < history.length - 1;
+
+  const goBack = useCallback(() => {
+    if (historyIndex <= 0) {
+      return;
+    }
+    applySelection(history[historyIndex - 1]);
+    setHistoryIndex(historyIndex - 1);
+  }, [applySelection, history, historyIndex]);
+
+  const goForward = useCallback(() => {
+    if (historyIndex >= history.length - 1) {
+      return;
+    }
+    applySelection(history[historyIndex + 1]);
+    setHistoryIndex(historyIndex + 1);
+  }, [applySelection, history, historyIndex]);
 
   const expandAllTurns = useCallback(() => {
     setShowAllTurns(true);
@@ -568,6 +612,28 @@ export default function ResearchDocument({
       <div className="research-workspace">
         <main className="research-document">
           <header className="research-document-header">
+            <div className="research-history-nav" aria-label="Research history">
+              <button
+                type="button"
+                className="research-history-button"
+                disabled={!canGoBack}
+                title="Back"
+                aria-label="Back"
+                onClick={goBack}
+              >
+                <ArrowLeft size={16} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="research-history-button"
+                disabled={!canGoForward}
+                title="Forward"
+                aria-label="Forward"
+                onClick={goForward}
+              >
+                <ArrowRight size={16} aria-hidden="true" />
+              </button>
+            </div>
             <div className="research-breadcrumb" aria-label="Research path">
               {breadcrumb.map((node, index) => (
                 <span key={node.id}>
@@ -584,9 +650,10 @@ export default function ResearchDocument({
                 className={`research-trace-toggle${showFullTrace ? " is-active" : ""}`}
                 aria-pressed={showFullTrace}
                 title={showFullTrace ? "Hide tool trace" : "Show full tool trace"}
+                aria-label={showFullTrace ? "Hide tool trace" : "Show full tool trace"}
                 onClick={() => setShowFullTrace((current) => !current)}
               >
-                Full trace
+                <ScrollText size={15} aria-hidden="true" />
               </button>
             ) : null}
             {displayNode.paneId && (activeRun || cancellationNeedsRetry) ? (
@@ -639,7 +706,7 @@ export default function ResearchDocument({
                     Parent response
                   </button>
                 ) : null}
-                <p>{displayNode.prompt}</p>
+                <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" />
               </div>
               <div className="research-response-grid">
                 <section className="research-response" aria-label="Research response">
@@ -730,10 +797,10 @@ export default function ResearchDocument({
                           type="button"
                           className="research-answer-copy"
                           title="Copy answer as Markdown"
+                          aria-label="Copy answer as Markdown"
                           onClick={() => void copyAnswer()}
                         >
-                          <Copy size={11} aria-hidden="true" />
-                          Copy
+                          <Copy size={14} aria-hidden="true" />
                         </button>
                       ) : null}
                     </footer>
@@ -745,7 +812,7 @@ export default function ResearchDocument({
                     <textarea
                       ref={followupTextareaRef}
                       value={followup}
-                      placeholder="Ask a follow-up from this response…"
+                      placeholder="Type your query"
                       aria-label="Follow-up question"
                       onChange={(event) => setFollowup(event.currentTarget.value)}
                       onKeyDown={(event) => {
@@ -767,7 +834,7 @@ export default function ResearchDocument({
                         }
                         onClick={() => void submitFollowup()}
                       >
-                        <span>{submitting ? "Creating…" : "Create follow-up"}</span>
+                        <span>{submitting ? "Sending…" : "Send"}</span>
                         {!submitting ? (
                           <ComposerSubmitShortcutGlyph
                             requireCmdEnter
@@ -783,13 +850,6 @@ export default function ResearchDocument({
                     ) : null}
                   </div>
                   <div className="research-followup-cards">
-                    {childNodes.length > 0 ? (
-                      <h3 className="research-followup-cards-label">
-                        {childNodes.length === 1
-                          ? "1 follow-up"
-                          : `${childNodes.length} follow-ups`}
-                      </h3>
-                    ) : null}
                     {childNodes.map((child) => (
                       <button
                         key={child.id}
