@@ -6879,6 +6879,28 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [paneIdsKey]);
 
+  // The same backstop for editables that unmount with a closing modal: the ⌘K
+  // palette, rename dialog, settings, and new-research dialogs all hold DOM
+  // focus in a text input, and dismissing them (Escape, submit, backdrop)
+  // removes that input with no focusout. Without a re-sample the active
+  // terminal stays keyboard-dead until the next real focus event.
+  const modalEditorOpen =
+    commandPaletteOpen ||
+    settingsOpen ||
+    newResearchOpen ||
+    Boolean(renamePaneId || renameGroupId);
+  useEffect(() => {
+    if (modalEditorOpen) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      setWebEditableFocused(
+        document.hasFocus() && isEditableTarget(document.activeElement),
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [modalEditorOpen]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
