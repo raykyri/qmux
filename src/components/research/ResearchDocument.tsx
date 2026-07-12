@@ -482,7 +482,15 @@ export default function ResearchDocument({
       // which is where the follow-up cards render from.
       const child = await onFork(followupNode.id, prompt);
       setFollowup("");
-      selectNode(child.id);
+      // The fork round trip spans a real agent spawn, so the user can switch
+      // trees while it is in flight. Following the child then would hijack
+      // whatever tree is now displayed: this closure's selectNode records
+      // navigation for the submit-time tree but sets the live selection to a
+      // node the displayed tree does not contain. The child still exists and
+      // its card appears when its own tree is next opened.
+      if (treeIdRef.current === treeId) {
+        selectNode(child.id);
+      }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
