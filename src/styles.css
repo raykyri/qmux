@@ -659,8 +659,8 @@
   width: min(100%, 1160px);
   min-width: 0;
   margin: 0 auto;
-  /* Match the answer body's type scale so the title, metadata line, and
-     follow-up prompts inherit the same rendered size/height (the answer's
+  /* Match the answer body's type scale so the title and follow-up prompts
+     inherit the same rendered size/height (the answer's
      .research-response-content-root re-declares these to the same values). */
   --transcript-font-delta: 1px;
   --transcript-line-height-delta: 0.12;
@@ -849,7 +849,7 @@
   gap: 6px 12px;
   margin-top: 20px;
   color: #69716d;
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   line-height: 1.3;
 }
 

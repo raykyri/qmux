@@ -10074,7 +10074,7 @@ export default function App() {
                 className="danger"
                 autoFocus
                 pending={quitting}
-                pendingLabel="Quitting…"
+                pendingLabel="Closing terminals..."
                 onClick={() => void confirmExit()}
               >
                 Quit qmux
