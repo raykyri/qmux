@@ -468,9 +468,16 @@ pub fn remove_research_workspace(
                 || turns.iter().any(|turn| turn.role == "assistant")
         }) {
             responses.insert(node.id.clone(), turns);
-        } else if node.status == crate::research::ResearchNodeStatus::Complete
-            || node.transcript_path.is_some()
-        {
+        } else if node.status == crate::research::ResearchNodeStatus::Complete {
+            // Only a completed answer justifies refusing the detach: it is
+            // real data the archive would silently lose. A failed or
+            // cancelled run with a transcript_path whose file is gone (the
+            // adapter owns those files and prunes them on its own schedule)
+            // has nothing durable left to lose — the node record itself,
+            // with its prompt, error, and preview, still travels in the
+            // archive, and import does not require responses for
+            // non-complete nodes. Refusing here made the folder permanently
+            // unremovable while protecting nothing.
             return Err(format!(
                 "research item '{}' has no durable response to detach",
                 node.prompt.chars().take(80).collect::<String>()
@@ -1903,6 +1910,62 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removing_research_folder_survives_failed_run_with_pruned_transcript() {
+        let root = temp_workspace("remove-research-pruned-transcript");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        let detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Doomed question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: workspace.id.clone(),
+            })
+            .unwrap();
+        // A run that failed and whose adapter transcript has since been
+        // pruned from disk: the node keeps a transcript_path that no longer
+        // resolves to anything readable.
+        let mut agent = sample_agent("research-agent", None, AgentStatus::Failed);
+        agent.group_id = workspace.id.clone();
+        agent.transcript_path =
+            Some(root.join("pruned/session-gone.jsonl").display().to_string());
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-never-existed")
+            .unwrap();
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, crate::research::ResearchNodeStatus::Failed);
+        assert!(node.transcript_path.is_some());
+
+        remove_research_workspace(&state, &workspace.id).unwrap();
+
+        assert!(state.group(&workspace.id).unwrap().is_none());
+        let archive = crate::research::read_detached_research(&project)
+            .unwrap()
+            .expect("detached archive");
+        assert_eq!(archive.archive.nodes.len(), 1);
+        assert!(archive.responses.is_empty());
+
+        // The node record itself (prompt, failure) still restores on reopen.
+        let restored =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        assert_ne!(restored.id, workspace.id);
+        let restored_trees = state.list_research_trees_with_archived(true).unwrap();
+        assert_eq!(restored_trees.len(), 1);
+        let restored_detail = state.research_tree(&restored_trees[0].id).unwrap();
+        assert_eq!(
+            restored_detail.nodes[0].status,
+            crate::research::ResearchNodeStatus::Failed
+        );
+        assert_eq!(restored_detail.nodes[0].prompt, "Doomed question");
         std::fs::remove_dir_all(root).unwrap();
     }
 
