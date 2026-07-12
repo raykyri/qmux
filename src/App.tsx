@@ -4891,10 +4891,21 @@ export default function App() {
       localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, detail.tree.id);
       setActiveResearchDetail(detail);
       setActiveResearchDetailError(null);
+      // The dialog offers every folder (plus the default and the native
+      // picker) regardless of the sidebar's current folder scope. Follow the
+      // new tree with the scope like selectResearchTree does, or the document
+      // opens on a tree the scoped sidebar doesn't list — with nothing
+      // highlighted anywhere.
+      if (
+        researchScopeRef.current !== ALL_RESEARCH_SCOPE &&
+        researchScopeRef.current !== detail.tree.workspaceId
+      ) {
+        changeResearchFolderScope(detail.tree.workspaceId);
+      }
       localStorage.setItem(LAST_RESEARCH_WORKSPACE_KEY, group.id);
       void refreshResearchNavigation().catch(() => undefined);
     },
-    [groups, refreshResearchNavigation, setSidebarMode],
+    [changeResearchFolderScope, groups, refreshResearchNavigation, setSidebarMode],
   );
   const cancelResearchRun = useCallback(
     async (nodeId: string) => {
