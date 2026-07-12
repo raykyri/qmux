@@ -357,6 +357,41 @@ function researchDocumentIsVisible(
   );
 }
 
+// Structural equality for drag drop targets. Drop targets are recomputed as
+// fresh objects on every pointermove of a tab/group drag; without an equality
+// gate each move committed an identical target and re-rendered the whole app.
+function paneDropTargetsEqual(
+  a: PaneDropTarget | null,
+  b: PaneDropTarget | null,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+  switch (a.kind) {
+    case "gap":
+      return b.kind === "gap" && a.groupId === b.groupId && a.index === b.index;
+    case "nest":
+      return b.kind === "nest" && a.groupId === b.groupId && a.paneId === b.paneId;
+    case "terminal-split":
+      return (
+        b.kind === "terminal-split" &&
+        a.groupId === b.groupId &&
+        a.targetPaneId === b.targetPaneId &&
+        a.position === b.position
+      );
+  }
+}
+
+function groupDropTargetsEqual(
+  a: GroupDropTarget | null,
+  b: GroupDropTarget | null,
+): boolean {
+  return a === b || (a !== null && b !== null && a.index === b.index);
+}
+
 function claimResizePointer(event: ReactPointerEvent<HTMLDivElement>): () => void {
   const handle = event.currentTarget;
   const pointerId = event.pointerId;
@@ -1911,6 +1946,13 @@ export default function App() {
       }),
     [cycleableSidebarPanes, paneSplits],
   );
+  // Shortcut index per pane id: waitTargetsForAgent labels every pane with
+  // active work on each render, and resolving each label with a findIndex over
+  // numberedTabPanes made that O(panes²) per render while agents stream.
+  const numberedTabIndexByPaneId = useMemo(
+    () => new Map(numberedTabPanes.map((pane, index) => [pane.id, index])),
+    [numberedTabPanes],
+  );
   const shortcutLabelForPaneId = useCallback(
     (paneId?: string | null) => {
       if (!paneId) {
@@ -1919,10 +1961,10 @@ export default function App() {
       // Number from the same list the Cmd-1..9 shortcut jumps through, so a tab's badge
       // matches the key that reaches it (collapsed-group and non-first split members have
       // no number).
-      const index = numberedTabPanes.findIndex((pane) => pane.id === paneId);
+      const index = numberedTabIndexByPaneId.get(paneId) ?? -1;
       return index >= 0 && index < 9 ? `⌘${index + 1}` : null;
     },
-    [numberedTabPanes],
+    [numberedTabIndexByPaneId],
   );
   const activeBrowserOwnerId = researchSurfaceActive
     ? activeResearchTreeId
@@ -5499,11 +5541,17 @@ export default function App() {
   }
 
   function updatePaneDropTarget(target: PaneDropTarget | null) {
+    if (paneDropTargetsEqual(paneDropTargetRef.current, target)) {
+      return;
+    }
     paneDropTargetRef.current = target;
     setPaneDropTarget(target);
   }
 
   function updateGroupDropTarget(target: GroupDropTarget | null) {
+    if (groupDropTargetsEqual(groupDropTargetRef.current, target)) {
+      return;
+    }
     groupDropTargetRef.current = target;
     setGroupDropTarget(target);
   }
@@ -6841,15 +6889,13 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, []);
 
-  // The error banner sits over the terminal stage. While it is open, claim web
-  // pointer routing so clicks on the banner (and its dismiss control) hit
-  // WKWebView instead of being forwarded to Ghostty under the transparent hole.
-  useEffect(() => {
-    if (!error) {
-      return;
-    }
-    return claimNativeTerminalPointerForWebDrag();
-  }, [error]);
+  // The error banner floats over the terminal stage. Register its rect as a
+  // web-owned pointer region so clicks on the banner (and its dismiss control)
+  // hit WKWebView instead of being forwarded to Ghostty under the transparent
+  // hole. A region, not a global pointer claim: claiming all routing made the
+  // entire terminal mouse-dead (no clicks, scrolling, or selection) for as long
+  // as any error banner stayed up.
+  const errorBannerRegionRef = useNativeWebOverlayRegion<HTMLDivElement>(Boolean(error));
 
   // Escape dismisses the workspace error banner when no higher-priority overlay
   // is already handling it (browser overlay has its own capture-phase handler).
@@ -10004,7 +10050,12 @@ export default function App() {
 
       <section className="workspace">
         {error ? (
-          <div className="error-banner" role="alert" aria-live="assertive">
+          <div
+            ref={errorBannerRegionRef}
+            className="error-banner"
+            role="alert"
+            aria-live="assertive"
+          >
             <span className="error-banner-message">{error}</span>
             <button
               type="button"
@@ -10096,6 +10147,16 @@ export default function App() {
                 visibleTerminalPaneIdSet.has(pane.id) &&
                 (settingsOpen ||
                   newResearchOpen ||
+                  // The ⌘K palette floats over the stage and its rows commit on
+                  // click; a pointer-live pane under it would swallow the
+                  // mouse-up (dead item clicks) and steal the keyboard from the
+                  // palette's filter input on the press.
+                  commandPaletteOpen ||
+                  // The expanded transcript covers the whole stage while the
+                  // pane keeps its geometry (a hide would SIGWINCH the TUI), so
+                  // the covered surface must cede pointer and keyboard to the
+                  // DOM or scrolls/clicks/keys would reach the hidden terminal.
+                  activeTranscriptVisibleExpanded ||
                   Boolean(activeBrowserOverlay?.open) ||
                   Boolean(closeDialog) ||
                   Boolean(exitDialog) ||

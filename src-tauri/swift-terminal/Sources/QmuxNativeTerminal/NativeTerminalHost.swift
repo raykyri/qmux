@@ -17,6 +17,15 @@ final class NativeTerminalHost {
     /// mid-gesture drag claims (button already down when claimed). Sticky claims
     /// such as open sidebar menus start with buttons up and stay until explicit release.
     private var webPointerClaimClearsOnPointerUp = false
+    /// True while a pointer gesture that began over web content — an overlay
+    /// region, chrome outside any pane rect, or a pane with pointer input
+    /// disabled — is still in progress. Its drags and final release must keep
+    /// flowing to WKWebView: hit-testing them by position would hand them to
+    /// whichever terminal surface the pointer crosses mid-gesture, so Ghostty
+    /// would receive a drag it never saw a press for while the DOM selection or
+    /// control that owns the gesture never sees its pointer-up (a text
+    /// selection freezes, a pressed button sticks in its active state).
+    private var webGesturePointerActive = false
     /// DOM rectangles (webview CSS coordinates, matching the flipped container)
     /// that own pointer events even where they overlap a terminal surface —
     /// small controls floating over the terminal, like the right-bar restore
@@ -359,6 +368,7 @@ final class NativeTerminalHost {
         pointerCapturePane = nil
         webPointerRoutingClaimed = false
         webPointerClaimClearsOnPointerUp = false
+        webGesturePointerActive = false
         webOverlayRegions.removeAll()
         for pane in panes.values {
             pane.view.removeFromSuperview()
@@ -616,6 +626,26 @@ final class NativeTerminalHost {
             }
             return event
         }
+        if webGesturePointerActive {
+            let pressedButtons = NSEvent.pressedMouseButtons
+            if isPointerDown(event), pressedButtons == 1 << event.buttonNumber {
+                // A fresh press with no other button held starts a new gesture;
+                // route it normally instead of leaking the finished gesture's
+                // routing into it.
+                webGesturePointerActive = false
+            } else if pressedButtons == 0, !isPointerUp(event) {
+                // No buttons are down and this is not the gesture's own release:
+                // the release never reached this window (it landed in another
+                // window or was consumed elsewhere). Drop the stale state so
+                // hover motion and scrolling return to normal routing.
+                webGesturePointerActive = false
+            } else {
+                if isPointerUp(event), pressedButtons == 0 {
+                    webGesturePointerActive = false
+                }
+                return event
+            }
+        }
         guard let container else { return event }
         let pane: NativeTerminalPane?
         if isPointerContinuation(event), let pointerCapturePane {
@@ -627,6 +657,9 @@ final class NativeTerminalHost {
             // hit-testing (and the button's click) working, while a gesture
             // that started inside the terminal stays captured above.
             if webOverlayRegions.values.contains(where: { $0.contains(point) }) {
+                if isPointerDown(event) {
+                    webGesturePointerActive = true
+                }
                 return event
             }
             pane = panes.values.first {
@@ -635,7 +668,15 @@ final class NativeTerminalHost {
                     && $0.view.frame.contains(point)
             }
         }
-        guard let pane else { return event }
+        guard let pane else {
+            // The press belongs to web content (sidebar, transcript, chrome, a
+            // blocked pane). Mark the gesture so its drags and release keep
+            // going to WKWebView even where they cross a terminal surface.
+            if isPointerDown(event) {
+                webGesturePointerActive = true
+            }
+            return event
+        }
 
         // Ghostty treats the middle button as an unconditional paste trigger.
         // Route it through qmux's approval flow instead, and consume the whole
