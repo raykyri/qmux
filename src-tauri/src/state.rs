@@ -26,13 +26,18 @@ pub type SharedBacklog = Arc<Mutex<PaneBacklog>>;
 
 pub enum PaneBackend {
     #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
-    Portable {
+    HostPty {
         child: SharedChild,
         master: SharedMaster,
         writer: SharedWriter,
         backlog: SharedBacklog,
+        /// The process/PTY is owned by qmux, but output is rendered by a native
+        /// Ghostty host-managed surface instead of the webview renderer.
+        native_surface: bool,
     },
-    #[cfg_attr(test, allow(dead_code))]
+    // Kept for decoding/teardown compatibility with the previous Ghostty-owned
+    // process backend and for its focused lifecycle tests. New panes use HostPty.
+    #[allow(dead_code)]
     Native { root_pid: Option<u32> },
 }
 
@@ -138,6 +143,10 @@ struct AppStateInner {
     // second time. Taken (and dropped) on first use.
     preflighted_state: Mutex<Option<Vec<u8>>>,
     exit_confirmed: AtomicBool,
+    // Set before the final exit snapshot is taken. Reader threads can observe PTY
+    // EOF while kill_all_panes tears processes down; those removals must preserve
+    // the journals referenced by the frozen snapshot for the next launch.
+    exit_teardown_started: AtomicBool,
     // Loopback file-server port, set once at startup. The control socket pairs it with
     // a per-pane file token to build browser-overlay URLs.
     file_server: Mutex<Option<u16>>,
@@ -865,6 +874,7 @@ impl AppState {
                 recovery_warning: Mutex::new(None),
                 preflighted_state: Mutex::new(None),
                 exit_confirmed: AtomicBool::new(false),
+                exit_teardown_started: AtomicBool::new(false),
                 file_server: Mutex::new(None),
                 control_socket_identity: Mutex::new(None),
                 pane_send_locks: Mutex::new(HashMap::new()),
@@ -1608,6 +1618,13 @@ impl AppState {
     /// blocks on the lock and, on waking, sees the cleared flag and bails — it can
     /// never commit a post-`kill_all_panes` snapshot over this one.
     pub fn finalize_persistence_for_exit(&self) {
+        // Publish this before snapshotting. Once exit begins, a concurrent natural
+        // EOF may remove a pane from the in-memory model at any point; preserving an
+        // extra journal is harmless, while deleting the journal for a pane that made
+        // it into the frozen snapshot would permanently lose its restored history.
+        self.inner
+            .exit_teardown_started
+            .store(true, Ordering::SeqCst);
         let _persist_guard = self
             .inner
             .persist_lock
@@ -3907,7 +3924,9 @@ impl AppState {
         ) {
             eprintln!("qmux: failed to detach research pane {pane_id}: {err}");
         }
-        if let Err(err) = remove_pane_scrollback(&self.inner.config.workspace_root, pane_id) {
+        if !self.inner.exit_teardown_started.load(Ordering::SeqCst)
+            && let Err(err) = remove_pane_scrollback(&self.inner.config.workspace_root, pane_id)
+        {
             eprintln!("qmux: failed to remove scrollback for pane {pane_id}: {err}");
         }
         self.persist();
@@ -5633,9 +5652,7 @@ impl AppState {
         }
     }
 
-    /// Whether a pane is currently registered, regardless of backend. Use this
-    /// for existence checks: `pane_writer` is `None` for every native pane, so
-    /// it cannot double as one.
+    /// Whether a pane is currently registered, regardless of backend.
     pub fn pane_exists(&self, pane_id: &str) -> Result<bool, String> {
         let model = self
             .inner
@@ -5655,7 +5672,7 @@ impl AppState {
             .panes
             .get(pane_id)
             .and_then(|pane| match &pane.backend {
-                PaneBackend::Portable { writer, .. } => Some(writer.clone()),
+                PaneBackend::HostPty { writer, .. } => Some(writer.clone()),
                 PaneBackend::Native { .. } => None,
             }))
     }
@@ -5670,7 +5687,7 @@ impl AppState {
             .panes
             .get(pane_id)
             .and_then(|pane| match &pane.backend {
-                PaneBackend::Portable { master, .. } => Some(master.clone()),
+                PaneBackend::HostPty { master, .. } => Some(master.clone()),
                 PaneBackend::Native { .. } => None,
             }))
     }
@@ -5685,7 +5702,7 @@ impl AppState {
             .panes
             .get(pane_id)
             .and_then(|pane| match &pane.backend {
-                PaneBackend::Portable { child, .. } => Some(child.clone()),
+                PaneBackend::HostPty { child, .. } => Some(child.clone()),
                 PaneBackend::Native { .. } => None,
             }))
     }
@@ -5703,7 +5720,7 @@ impl AppState {
             .panes
             .iter()
             .filter_map(|(pane_id, pane)| match &pane.backend {
-                PaneBackend::Portable { child, .. } => Some((pane_id.clone(), child.clone())),
+                PaneBackend::HostPty { child, .. } => Some((pane_id.clone(), child.clone())),
                 PaneBackend::Native { .. } => None,
             })
             .collect())
@@ -5731,7 +5748,7 @@ impl AppState {
             .panes
             .get(pane_id)
             .and_then(|pane| match &pane.backend {
-                PaneBackend::Portable { backlog, .. } => Some(backlog.clone()),
+                PaneBackend::HostPty { backlog, .. } => Some(backlog.clone()),
                 PaneBackend::Native { .. } => None,
             }))
     }
@@ -5742,10 +5759,22 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.panes.get(pane_id).map(|pane| match &pane.backend {
+            PaneBackend::Native { .. } => true,
+            PaneBackend::HostPty { native_surface, .. } => *native_surface,
+        }))
+    }
+
+    pub fn pane_has_host_pty(&self, pane_id: &str) -> Result<Option<bool>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model
             .panes
             .get(pane_id)
-            .map(|pane| matches!(pane.backend, PaneBackend::Native { .. })))
+            .map(|pane| matches!(pane.backend, PaneBackend::HostPty { .. })))
     }
 
     pub fn research_pane_accepts_input(&self, pane_id: &str) -> Result<Option<bool>, String> {
@@ -5800,7 +5829,7 @@ impl AppState {
             .get(pane_id)
             .and_then(|pane| match &pane.backend {
                 PaneBackend::Native { root_pid } => *root_pid,
-                PaneBackend::Portable { .. } => None,
+                PaneBackend::HostPty { .. } => None,
             }))
     }
 
@@ -5840,7 +5869,7 @@ impl AppState {
                 *root_pid = Some(pid);
                 Ok(())
             }
-            PaneBackend::Portable { .. } => {
+            PaneBackend::HostPty { .. } => {
                 Err(format!("pane {pane_id} does not use the native backend"))
             }
         }
@@ -7131,7 +7160,7 @@ mod tests {
         OpencodeAdapterConfig,
     };
     use crate::persistence::PersistedState;
-    use crate::scrollback::append_pane_scrollback;
+    use crate::scrollback::{append_pane_scrollback, read_pane_scrollback};
     use crate::workspace::{AgentStatus, WorkspaceScope};
     use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
     use std::io;
@@ -9284,11 +9313,12 @@ mod tests {
 
         PaneRuntime {
             info: sample_pane(id, None),
-            backend: PaneBackend::Portable {
+            backend: PaneBackend::HostPty {
                 child: Arc::new(Mutex::new(Box::new(FakeChild))),
                 master: Arc::new(Mutex::new(pair.master)),
                 writer: Arc::new(Mutex::new(Box::new(io::sink()))),
                 backlog: Default::default(),
+                native_surface: false,
             },
         }
     }
@@ -10744,6 +10774,42 @@ mod tests {
         assert_eq!(agent.queued_turns.len(), 1);
         assert_eq!(agent.queued_turns[0].text, "later");
         assert_eq!(agent.draft.as_deref(), Some("draft text"));
+    }
+
+    #[test]
+    fn pane_removal_deletes_scrollback_during_normal_runtime() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        append_pane_scrollback(&workspace, "pane-1", b"old output").unwrap();
+
+        state.remove_pane("pane-1").unwrap();
+
+        assert!(
+            read_pane_scrollback(&workspace, "pane-1")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exit_teardown_preserves_scrollback_for_the_frozen_session() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        append_pane_scrollback(&workspace, "pane-1", b"old output").unwrap();
+
+        state.finalize_persistence_for_exit();
+        // This is the same removal the reader thread performs after kill_all_panes
+        // closes the PTY and delivers EOF during application shutdown.
+        state.remove_pane("pane-1").unwrap();
+
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap(),
+            b"old output"
+        );
     }
 
     #[test]

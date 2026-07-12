@@ -163,8 +163,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## How it Works (for agents)
 
-- A pane is one terminal process: a native Ghostty exec surface on macOS,
-  or a Rust-owned PTY in tests and on other platforms.
+- A pane is one qmux-owned PTY. On macOS its byte stream is rendered by a
+  host-managed native Ghostty surface; tests and other platforms use the
+  portable renderer path.
 - Shell panes spawn `$SHELL`.
 - Agent panes spawn the adapter's configured agent binary, either in the current
   repo/directory or in a qmux-created agent worktree. Shell functions can route
@@ -192,6 +193,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
   thread graphs stored separately in `<workspaceRoot>/.qmux/threads/<thread-id>.json`.
   Older worktree-local thread graphs are copied into this global store on startup and
   retained in place as recovery copies.
+- Recent terminal output is retained in owner-only per-pane journals under
+  `<workspaceRoot>/.qmux/terminal/` and safely replayed before a recovered
+  process's startup output.
 - `qmux.config.json` keeps dev-build state in a fixed, shared `~/.qmux` dir.
   Only dev (debug) builds discover it in the process cwd; release builds always
   use the platform data dir (`~/Library/Application Support/qmux` on macOS) so

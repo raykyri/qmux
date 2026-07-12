@@ -5,6 +5,8 @@ use crate::events::QmuxEvent;
 use crate::state::AppState;
 
 static APP_STATE: OnceLock<Mutex<Option<AppState>>> = OnceLock::new();
+static REPLAYING_PANES: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -220,6 +222,15 @@ mod imp {
             launcher_path: *const c_char,
             working_directory: *const c_char,
         ) -> i32;
+        fn qmux_native_terminal_create_host_managed(
+            pane_id: *const c_char,
+            working_directory: *const c_char,
+        ) -> i32;
+        fn qmux_native_terminal_receive(
+            pane_id: *const c_char,
+            bytes: *const u8,
+            bytes_len: usize,
+        ) -> i32;
         fn qmux_native_terminal_remove(pane_id: *const c_char);
         fn qmux_native_terminal_terminate(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_set_stage_backstop(x: f64, y: f64, width: f64, height: f64) -> i32;
@@ -324,6 +335,47 @@ mod imp {
             Ok(())
         } else {
             Err("failed to create the native terminal surface".to_string())
+        }
+    }
+
+    pub fn create_host_managed(
+        pane_id: &str,
+        working_directory: Option<&str>,
+    ) -> Result<(), String> {
+        let pane_id = cstring(pane_id, "pane id")?;
+        let working_directory = working_directory
+            .map(|value| cstring(value, "working directory"))
+            .transpose()?;
+        let working_directory_ptr = working_directory
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
+        // SAFETY: Swift copies both strings synchronously before returning.
+        if unsafe {
+            qmux_native_terminal_create_host_managed(pane_id.as_ptr(), working_directory_ptr)
+        } == 1
+        {
+            Ok(())
+        } else {
+            Err("failed to create the host-managed native terminal surface".to_string())
+        }
+    }
+
+    pub fn receive(pane_id: &str, bytes: &[u8], replay: bool) -> Result<(), String> {
+        let pane_id_c = cstring(pane_id, "pane id")?;
+        if replay && let Ok(mut panes) = super::REPLAYING_PANES.lock() {
+            panes.insert(pane_id.to_string());
+        }
+        // SAFETY: Swift copies the byte buffer synchronously before returning.
+        let received = unsafe {
+            qmux_native_terminal_receive(pane_id_c.as_ptr(), bytes.as_ptr(), bytes.len()) == 1
+        };
+        if replay && let Ok(mut panes) = super::REPLAYING_PANES.lock() {
+            panes.remove(pane_id);
+        }
+        if received {
+            Ok(())
+        } else {
+            Err("host-managed native terminal surface was not found".to_string())
         }
     }
 
@@ -596,6 +648,17 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
+    pub fn create_host_managed(
+        _pane_id: &str,
+        _working_directory: Option<&str>,
+    ) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
+    pub fn receive(_pane_id: &str, _bytes: &[u8], _replay: bool) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
     pub fn remove(_pane_id: &str) -> Result<(), String> {
         Ok(())
     }
@@ -655,9 +718,9 @@ mod imp {
 
 #[allow(unused_imports)]
 pub use imp::{
-    action, available, create, focus, initialize, paste_approved_text, remove, send_text,
-    set_layout, set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown,
-    submit, terminate, update_settings,
+    action, available, create, create_host_managed, focus, initialize, paste_approved_text,
+    receive, remove, send_text, set_layout, set_stage_backstop, set_web_overlay_region,
+    set_web_pointer_claimed, shutdown, submit, terminate, update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {
@@ -751,8 +814,36 @@ pub extern "C" fn qmux_native_terminal_did_resize(
         return;
     }
     with_app_state(|state| {
-        if let Err(err) = state.update_pane_size(&pane_id, columns, rows) {
-            eprintln!("qmux: failed to persist native size for pane {pane_id}: {err}");
+        if let Err(err) = crate::pty::resize_native_host_pane(state, &pane_id, columns, rows) {
+            eprintln!("qmux: failed to resize native pane {pane_id}: {err}");
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn qmux_native_terminal_did_write(
+    pane_id: *const std::ffi::c_char,
+    bytes: *const u8,
+    bytes_len: usize,
+) {
+    let Some(pane_id) = callback_string(pane_id) else {
+        return;
+    };
+    if bytes.is_null() || bytes_len == 0 {
+        return;
+    }
+    if REPLAYING_PANES
+        .lock()
+        .is_ok_and(|panes| panes.contains(&pane_id))
+    {
+        return;
+    }
+    // SAFETY: Swift keeps the Data buffer alive for the synchronous duration
+    // of this callback; copy it before returning across FFI.
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, bytes_len) }.to_vec();
+    with_app_state(|state| {
+        if let Err(err) = crate::pty::write_native_host_input(state, &pane_id, &bytes) {
+            eprintln!("qmux: failed to write native terminal input for pane {pane_id}: {err}");
         }
     });
 }

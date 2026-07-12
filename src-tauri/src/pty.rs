@@ -1,6 +1,6 @@
 use crate::adapters::{ShellCommandIntegration, adapter_registry};
 use crate::events::QmuxEvent;
-use crate::scrollback::append_pane_scrollback;
+use crate::scrollback::{append_pane_scrollback, read_pane_scrollback, sanitize_scrollback_replay};
 use crate::state::{
     AppState, PaneBackend, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
     ShellAgentResume,
@@ -11,7 +11,6 @@ use crate::workspace::{
     remove_captured_worktree,
 };
 use portable_pty::PtySize;
-#[cfg(any(not(target_os = "macos"), test))]
 use portable_pty::{CommandBuilder, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -27,6 +26,7 @@ use std::thread;
 use std::time::Duration;
 
 const SUBMIT_KEY: &[u8] = b"\r";
+const RESTORED_SCROLLBACK_TERMINAL_RESET: &[u8] = b"\x18\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?47l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1047l\x1b[?2004l\x1b[?2026l";
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
 const DEFAULT_PTY_COLS: u16 = 100;
 const DEFAULT_PTY_ROWS: u16 = 24;
@@ -729,17 +729,11 @@ fn resolved_initial_size(initial_size: Option<InitialPaneSize>) -> InitialPaneSi
 }
 
 pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
-    #[cfg(all(target_os = "macos", not(test)))]
-    {
-        spawn_native_pty(state, spec)
-    }
-    #[cfg(any(not(target_os = "macos"), test))]
-    {
-        spawn_portable_pty(state, spec)
-    }
+    spawn_portable_pty(state, spec, cfg!(all(target_os = "macos", not(test))))
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+#[allow(dead_code)]
 fn spawn_native_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
     let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
     let initial_size = resolved_initial_size(spec.initial_size);
@@ -774,6 +768,7 @@ fn spawn_native_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, St
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+#[allow(dead_code)]
 fn create_native_launcher(
     pane_id: &str,
     program: &str,
@@ -835,10 +830,10 @@ fn create_native_launcher(
     Ok(launcher)
 }
 
-/// The base environment shared by both pane backends: the resolved child PATH,
-/// 24-bit color capability, and a UTF-8 locale backfill. TERM is deliberately
-/// not set here — Ghostty names its own terminal for native panes, while the
-/// portable backend injects one itself (below).
+/// The base environment shared by both renderers: the resolved child PATH,
+/// 24-bit color capability, and a UTF-8 locale backfill. TERM is added by the
+/// host-owned PTY spawn below; using the widely installed xterm-256color entry
+/// avoids depending on a separate Ghostty app installation for terminfo.
 fn base_child_envs() -> Vec<(String, String)> {
     let mut envs = Vec::new();
     if let Some(path) = crate::launch_path::child_path() {
@@ -854,8 +849,11 @@ fn base_child_envs() -> Vec<(String, String)> {
     envs
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
-fn spawn_portable_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
+fn spawn_portable_pty(
+    state: &AppState,
+    spec: PtySpawnSpec,
+    native_surface: bool,
+) -> Result<PaneInfo, String> {
     let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
     let initial_size = resolved_initial_size(spec.initial_size);
     let pty_system = native_pty_system();
@@ -927,20 +925,34 @@ fn spawn_portable_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, 
 
     let runtime = PaneRuntime {
         info: pane.clone(),
-        backend: PaneBackend::Portable {
+        backend: PaneBackend::HostPty {
             child: child.clone(),
             master,
             writer,
             backlog: backlog.clone(),
+            native_surface,
         },
     };
 
     state.insert_pane(runtime)?;
+    if native_surface
+        && let Err(err) = crate::native_terminal::create_host_managed(&pane_id, Some(&pane.cwd))
+    {
+        let _ = kill_child(&pane_id, child.clone());
+        let _ = state.remove_pane(&pane_id);
+        return Err(err);
+    }
     // Capture the direct child's pid for the watcher before handing the child to
     // the reader/watcher threads; the watcher uses it to reach descendants that
     // outlive a naturally-exiting shell.
     let root_pid = child.lock().ok().and_then(|guard| guard.process_id());
-    start_reader_thread(state.clone(), pane_id.clone(), reader, backlog);
+    start_reader_thread(
+        state.clone(),
+        pane_id.clone(),
+        reader,
+        backlog,
+        native_surface,
+    );
     start_child_watcher(state.clone(), pane_id, child, root_pid);
 
     Ok(pane)
@@ -952,7 +964,8 @@ fn spawn_portable_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, 
 /// race. The buffered bytes are emitted before `ready` releases the reader to
 /// emit live, preserving output order.
 pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
-    if state.pane_is_native(&pane_id)? == Some(true) {
+    let native_surface = state.pane_is_native(&pane_id)? == Some(true);
+    if native_surface && state.pane_has_host_pty(&pane_id)? != Some(true) {
         return Ok(());
     }
     let backlog = state
@@ -962,12 +975,40 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         .lock()
         .map_err(|_| format!("pane {pane_id} backlog lock poisoned"))?;
     if !backlog.ready {
-        backlog.ready = true;
+        if native_surface {
+            let restored = read_pane_scrollback(&state.config().workspace_root, &pane_id)?;
+            if !restored.is_empty() {
+                let restored = sanitize_scrollback_replay(&restored);
+                if !restored.is_empty() {
+                    crate::native_terminal::receive(&pane_id, &restored, true)?;
+                }
+                crate::native_terminal::receive(
+                    &pane_id,
+                    RESTORED_SCROLLBACK_TERMINAL_RESET,
+                    true,
+                )?;
+            }
+        }
         if !backlog.buffer.is_empty() {
             let pending = std::mem::take(&mut backlog.buffer);
-            record_scrollback(state, &pane_id, &pending);
-            state.emit(QmuxEvent::pty_data(pane_id, &pending));
+            if native_surface {
+                if let Err(err) = crate::native_terminal::receive(&pane_id, &pending, false) {
+                    // Keep startup output available for the attach retry. It
+                    // has not been recorded yet, so a successful retry cannot
+                    // duplicate these bytes in durable history.
+                    backlog.buffer = pending;
+                    return Err(err);
+                }
+                record_scrollback(state, &pane_id, &pending);
+            } else {
+                record_scrollback(state, &pane_id, &pending);
+                state.emit(QmuxEvent::pty_data(pane_id, &pending));
+            }
         }
+        // Only release the reader after every startup byte was accepted. A
+        // failed native receive leaves this false so the frontend's attach
+        // retry cannot turn a transient surface-creation race into a blank pane.
+        backlog.ready = true;
     }
     Ok(())
 }
@@ -1188,7 +1229,9 @@ fn write_pane_input<W: Write + ?Sized>(
 }
 
 pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    if state.pane_is_native(&pane_id)? == Some(true) {
+    if state.pane_is_native(&pane_id)? == Some(true)
+        && state.pane_has_host_pty(&pane_id)? != Some(true)
+    {
         return state.update_pane_size(&pane_id, cols, rows);
     }
     let master = state
@@ -1208,6 +1251,35 @@ pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> R
     state.update_pane_size(&pane_id, cols, rows)
 }
 
+pub fn resize_native_host_pane(
+    state: &AppState,
+    pane_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    if state.pane_has_host_pty(pane_id)? != Some(true) {
+        return state.update_pane_size(pane_id, cols, rows);
+    }
+    resize_pane(state, pane_id.to_string(), cols, rows)
+}
+
+pub fn write_native_host_input(
+    state: &AppState,
+    pane_id: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let writer = state
+        .pane_writer(pane_id)?
+        .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+    let mut writer = writer
+        .lock()
+        .map_err(|_| format!("pane {pane_id} writer lock poisoned"))?;
+    writer
+        .write_all(bytes)
+        .and_then(|()| writer.flush())
+        .map_err(|err| format!("failed to write native pane {pane_id}: {err}"))
+}
+
 pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, String> {
     // Validate the pane id against the model before inspecting the child handle. Process
     // inspection below is best-effort, but a genuinely missing pane is still a caller error.
@@ -1215,7 +1287,9 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
         return Err(format!("pane {pane_id} was not found"));
     }
 
-    if state.pane_is_native(&pane_id)? == Some(true) {
+    if state.pane_is_native(&pane_id)? == Some(true)
+        && state.pane_has_host_pty(&pane_id)? != Some(true)
+    {
         let Some(root_pid) = state.native_pane_pid(&pane_id)? else {
             return Ok(PaneActivity::idle());
         };
@@ -1315,7 +1389,8 @@ pub fn track_native_pane_process(state: AppState, pane_id: String, root_pid: u32
 }
 
 pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
-    if state.pane_is_native(&pane_id)? == Some(true) {
+    let native_surface = state.pane_is_native(&pane_id)? == Some(true);
+    if native_surface && state.pane_has_host_pty(&pane_id)? != Some(true) {
         return kill_native_pane(state, pane_id);
     }
     let child = state
@@ -1352,6 +1427,9 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         );
     }
     state.remove_pane(&pane_id)?;
+    if native_surface {
+        let _ = crate::native_terminal::remove(&pane_id);
+    }
     if let Some(agent_id) = pane_agent_id
         && let Err(err) = release_waiters_for_agent(state, &agent_id)
     {
@@ -1438,6 +1516,12 @@ fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 pub fn native_pane_did_close(state: &AppState, pane_id: &str, process_alive: bool) {
     if process_alive && let Err(err) = state.settle_research_pane_cancelled(pane_id) {
         eprintln!("qmux: failed to cancel user-closed research pane {pane_id}: {err}");
+    }
+    if state.pane_has_host_pty(pane_id).ok().flatten() == Some(true) {
+        if let Err(err) = kill_pane(state, pane_id.to_string()) {
+            eprintln!("qmux: failed to close host-managed pane {pane_id}: {err}");
+        }
+        return;
     }
     // Atomically claim this close. A close `kill_native_pane` owns (it claims
     // before its first destructive step, and its `terminate` can re-fire this
@@ -1578,6 +1662,7 @@ fn start_reader_thread(
     pane_id: String,
     mut reader: Box<dyn Read + Send>,
     backlog: SharedBacklog,
+    native_surface: bool,
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
@@ -1603,7 +1688,17 @@ fn start_reader_thread(
                     };
                     if live {
                         record_scrollback(&state, &pane_id, chunk);
-                        state.emit(QmuxEvent::pty_data(pane_id.clone(), chunk));
+                        if native_surface {
+                            if let Err(err) =
+                                crate::native_terminal::receive(&pane_id, chunk, false)
+                            {
+                                eprintln!(
+                                    "qmux: failed to render output for native pane {pane_id}: {err}"
+                                );
+                            }
+                        } else {
+                            state.emit(QmuxEvent::pty_data(pane_id.clone(), chunk));
+                        }
                     }
                 }
                 Err(err) => {
@@ -1643,6 +1738,9 @@ fn start_reader_thread(
             // A failure here (e.g. a poisoned model lock) leaves a dead pane in
             // state; log it so the stale entry has a trace rather than vanishing.
             eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
+        }
+        if native_surface {
+            let _ = crate::native_terminal::remove(&pane_id);
         }
         if let Some(agent_id) = pane_agent_id
             && let Err(err) = release_waiters_for_agent(&state, &agent_id)

@@ -64,6 +64,40 @@ public func qmuxNativeTerminalCreate(
     }
 }
 
+@_cdecl("qmux_native_terminal_create_host_managed")
+public func qmuxNativeTerminalCreateHostManaged(
+    _ paneID: UnsafePointer<CChar>?,
+    _ workingDirectory: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let paneID = terminalString(paneID) else { return 0 }
+    let cwd = terminalString(workingDirectory)
+    return onTerminalMain {
+        NativeTerminalHost.shared.createPane(
+            id: paneID,
+            launcherPath: "",
+            workingDirectory: cwd,
+            hostManaged: true
+        ) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_receive")
+public func qmuxNativeTerminalReceive(
+    _ paneID: UnsafePointer<CChar>?,
+    _ bytes: UnsafePointer<UInt8>?,
+    _ length: Int
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          length >= 0,
+          bytes != nil || length == 0
+    else { return 0 }
+    let data = bytes.map { Data(bytes: $0, count: length) } ?? Data()
+    guard let session = onTerminalMain({
+        NativeTerminalHost.shared.terminalSession(id: paneID)
+    }) else { return 0 }
+    return session.receive(data) ? 1 : 0
+}
+
 @_cdecl("qmux_native_terminal_remove")
 public func qmuxNativeTerminalRemove(_ paneID: UnsafePointer<CChar>?) {
     guard let paneID = terminalString(paneID) else { return }

@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import GhosttyTerminal
 
 @_silgen_name("qmux_native_terminal_did_close")
@@ -18,6 +19,13 @@ private func nativeTerminalDidChangeCwd(
 
 @_silgen_name("qmux_native_terminal_did_resize")
 private func nativeTerminalDidResize(_ paneID: UnsafePointer<CChar>, _ columns: Int32, _ rows: Int32)
+
+@_silgen_name("qmux_native_terminal_did_write")
+private func nativeTerminalDidWrite(
+    _ paneID: UnsafePointer<CChar>,
+    _ bytes: UnsafePointer<UInt8>,
+    _ length: Int
+)
 
 @_silgen_name("qmux_native_terminal_did_request_search")
 private func nativeTerminalDidRequestSearch(_ paneID: UnsafePointer<CChar>)
@@ -71,6 +79,7 @@ final class NativeTerminalPane: NSObject,
     let paneID: String
     let view: QmuxTerminalView
     let controller: TerminalController
+    let terminalSession: InMemoryTerminalSession?
     private let launcherPath: String
     var acceptsPointerInput = true
     var acceptsKeyboardInput = false
@@ -82,10 +91,36 @@ final class NativeTerminalPane: NSObject,
         paneID: String,
         launcherPath: String,
         workingDirectory: String?,
-        themeName: String
+        themeName: String,
+        hostManaged: Bool = false
     ) {
         self.paneID = paneID
         self.launcherPath = launcherPath
+        terminalSession = hostManaged
+            ? InMemoryTerminalSession(
+                write: { data in
+                    guard !data.isEmpty else { return }
+                    paneID.withCString { paneID in
+                        data.withUnsafeBytes { buffer in
+                            guard let base = buffer.baseAddress else { return }
+                            nativeTerminalDidWrite(
+                                paneID,
+                                base.assumingMemoryBound(to: UInt8.self),
+                                buffer.count
+                            )
+                        }
+                    }
+                },
+                resize: { viewport in
+                    guard let columns = Int32(exactly: viewport.columns),
+                          let rows = Int32(exactly: viewport.rows)
+                    else { return }
+                    paneID.withCString {
+                        nativeTerminalDidResize($0, columns, rows)
+                    }
+                }
+            )
+            : nil
         // The explicit theme is load-bearing: TerminalController's own default
         // is Alabaster/Afterglow, which follows the OS appearance — Alabaster
         // would repaint every pane white whenever macOS reports light mode.
@@ -96,7 +131,9 @@ final class NativeTerminalPane: NSObject,
         ) { builder in
             builder.withWindowPaddingX(10)
             builder.withWindowPaddingY(10)
-            builder.withCustom("command", "direct:\(launcherPath)")
+            if !hostManaged {
+                builder.withCustom("command", "direct:\(launcherPath)")
+            }
             builder.withCustom("shell-integration", "none")
             builder.withCustom("confirm-close-surface", "false")
             // ⌘Q is passed through the native key monitor so the app menu can
@@ -157,7 +194,7 @@ final class NativeTerminalPane: NSObject,
         )
         view.delegate = self
         view.configuration = TerminalSurfaceOptions(
-            backend: .exec,
+            backend: terminalSession.map(TerminalSessionBackend.inMemory) ?? .exec,
             workingDirectory: workingDirectory,
             context: .split
         )
@@ -170,6 +207,11 @@ final class NativeTerminalPane: NSObject,
             guard let self else { return false }
             return NativeTerminalHost.shared.claimAppShortcut(event, for: self)
         }
+    }
+
+    func receive(_ data: Data) -> Bool {
+        guard let terminalSession else { return false }
+        return terminalSession.receive(data)
     }
 
     func terminalDidClose(processAlive: Bool) {

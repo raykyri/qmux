@@ -3504,13 +3504,14 @@ trusted_hash = "sha256:trusted"
                     recovered: false,
                     depth: 0,
                 },
-                backend: crate::state::PaneBackend::Portable {
+                backend: crate::state::PaneBackend::HostPty {
                     child: Arc::new(Mutex::new(Box::new(FakeChild))),
                     master: Arc::new(Mutex::new(pair.master)),
                     writer: Arc::new(Mutex::new(Box::new(RecordingWriter {
                         bytes: bytes.clone(),
                     }))),
                     backlog: Default::default(),
+                    native_surface: false,
                 },
             })
             .unwrap();

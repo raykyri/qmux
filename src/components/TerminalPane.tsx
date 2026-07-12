@@ -249,6 +249,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [confirmOpen, onOverlayStateChange, pane.id, searchOpen]);
 
   useEffect(() => {
+    // Surface creation and the pane-created event cross the native/web boundary
+    // independently. The backend keeps attach retryable until Ghostty accepts
+    // the restored history and startup backlog, so request it as soon as this
+    // pane mounts instead of coupling delivery to the settings request below.
     requestAttach(pane.id);
   }, [pane.id, requestAttach]);
 

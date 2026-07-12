@@ -116,7 +116,8 @@ final class NativeTerminalHost {
     func createPane(
         id: String,
         launcherPath: String,
-        workingDirectory: String?
+        workingDirectory: String?,
+        hostManaged: Bool = false
     ) -> Bool {
         guard let container else { return false }
         if panes[id] != nil {
@@ -127,13 +128,18 @@ final class NativeTerminalHost {
             paneID: id,
             launcherPath: launcherPath,
             workingDirectory: workingDirectory,
-            themeName: currentThemeName
+            themeName: currentThemeName,
+            hostManaged: hostManaged
         )
         pane.view.isHidden = true
         pane.view.setSurfaceVisible(false)
         container.addSubview(pane.view)
         panes[id] = pane
         return true
+    }
+
+    func terminalSession(id: String) -> InMemoryTerminalSession? {
+        panes[id]?.terminalSession
     }
 
     func removePane(id: String) {

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -155,14 +155,24 @@ pub fn remove_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<()
 /// once the file has grown past `SCROLLBACK_TRIM_TRIGGER`, so the rewrite cost
 /// is amortized over the slack instead of paid per append.
 fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
-    let keep_from = len.saturating_sub(SCROLLBACK_LOG_CAP);
     let mut file = fs::File::open(path)
         .map_err(|err| format!("failed to reopen scrollback {}: {err}", path.display()))?;
-    file.seek(SeekFrom::Start(keep_from))
-        .map_err(|err| format!("failed to seek scrollback {}: {err}", path.display()))?;
-    let mut tail = Vec::with_capacity(SCROLLBACK_LOG_CAP as usize);
-    file.read_to_end(&mut tail)
+    let mut captured = Vec::with_capacity(len as usize);
+    file.read_to_end(&mut captured)
         .map_err(|err| format!("failed to trim scrollback {}: {err}", path.display()))?;
+    // Canonicalize on each bounded rewrite. Besides making restored output
+    // inert, this preserves alternate-screen state across future appends with
+    // a synthetic entry marker: if a noisy TUI alone exceeds the byte cap,
+    // later chunks must not become apparent primary-screen history merely
+    // because the real entry sequence fell off the front of the file.
+    let (canonical, alternate_screen) = sanitize_scrollback_replay_with_state(&captured);
+    let marker = alternate_screen.then_some(b"\x1b[?1049h".as_slice());
+    let retained_cap = SCROLLBACK_LOG_CAP as usize - marker.map_or(0, <[u8]>::len);
+    let keep_from = canonical.len().saturating_sub(retained_cap);
+    let mut tail = canonical[keep_from..].to_vec();
+    if let Some(marker) = marker {
+        tail.extend_from_slice(marker);
+    }
     // Rewrite atomically: write the retained tail to a sibling temp file, then
     // rename it over the log. An in-place `fs::write` truncates the file before
     // writing, so a crash mid-write could leave the scrollback empty or
@@ -215,6 +225,226 @@ fn pane_scrollback_path(workspace_root: &Path, pane_id: &str) -> Result<PathBuf,
         .join(STATE_DIR)
         .join(SCROLLBACK_DIR)
         .join(format!("{pane_id}.{LOG_EXTENSION}")))
+}
+
+/// Converts a captured PTY byte stream into inert historical output suitable
+/// for feeding into a fresh terminal surface. String controls can mutate host
+/// state (title, clipboard, notifications, images), mode changes can leak into
+/// the resumed process, and alternate-screen repaint traffic is not scrollback;
+/// discard all three while preserving ordinary cursor/erase/SGR rendering.
+pub fn sanitize_scrollback_replay(bytes: &[u8]) -> Vec<u8> {
+    sanitize_scrollback_replay_with_state(bytes).0
+}
+
+fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
+    const ESC: u8 = 0x1b;
+    const BEL: u8 = 0x07;
+    const CSI: u8 = 0x9b;
+    const OSC: u8 = 0x9d;
+    const DCS: u8 = 0x90;
+    const SOS: u8 = 0x98;
+    const PM: u8 = 0x9e;
+    const APC: u8 = 0x9f;
+    const ST: u8 = 0x9c;
+
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut alternate_screen = false;
+
+    while index < bytes.len() {
+        let (code, prefix_len) = c1_control_at(bytes, index)
+            .map(|control| (control.0, control.1))
+            .unwrap_or((bytes[index], 1));
+
+        if code == CSI || (code == ESC && bytes.get(index + 1) == Some(&b'[')) {
+            let start = index + if code == CSI { prefix_len } else { 2 };
+            let Some(end) = find_csi_end(bytes, start) else {
+                break;
+            };
+            let csi = parse_csi(bytes, start, end);
+            let alternate_set = csi.is_alternate_screen(b'h');
+            let alternate_reset = csi.is_alternate_screen(b'l');
+            if alternate_set {
+                alternate_screen = true;
+            }
+            let discard = alternate_screen
+                || alternate_set
+                || alternate_reset
+                || matches!(csi.final_byte, b'h' | b'l' | b'c' | b'n')
+                // Window manipulation includes resize and state queries. It
+                // can call back into the host instead of merely drawing.
+                || csi.final_byte == b't'
+                || (csi.final_byte == b'p' && csi.intermediates.as_slice() == b"$");
+            if !discard {
+                output.extend_from_slice(&bytes[index..=end]);
+            }
+            if alternate_reset {
+                alternate_screen = false;
+            }
+            index = end + 1;
+            continue;
+        }
+
+        if matches!(code, OSC | DCS | SOS | PM | APC) {
+            let start = index + if code == ESC { 2 } else { prefix_len };
+            let Some(end) = find_string_control_end(bytes, start, code == OSC, BEL, ST) else {
+                break;
+            };
+            index = end;
+            continue;
+        }
+
+        if code == ESC {
+            let Some(next) = bytes.get(index + 1).copied() else {
+                break;
+            };
+            if matches!(next, b']' | b'P' | b'X' | b'^' | b'_') {
+                let Some(end) = find_string_control_end(bytes, index + 2, next == b']', BEL, ST)
+                else {
+                    break;
+                };
+                index = end;
+                continue;
+            }
+            if next == b'c' {
+                index += 2;
+                continue;
+            }
+            if alternate_screen {
+                index += 2;
+                continue;
+            }
+            output.push(ESC);
+            index += 1;
+            continue;
+        }
+
+        if !alternate_screen {
+            output.extend_from_slice(&bytes[index..index + prefix_len]);
+        }
+        index += prefix_len;
+    }
+
+    (output, alternate_screen)
+}
+
+struct ParsedCsi {
+    final_byte: u8,
+    intermediates: Vec<u8>,
+    private: bool,
+    params: Vec<u32>,
+}
+
+impl ParsedCsi {
+    fn is_alternate_screen(&self, final_byte: u8) -> bool {
+        self.private
+            && self.final_byte == final_byte
+            && self
+                .params
+                .iter()
+                .any(|param| matches!(param, 47 | 1047 | 1049))
+    }
+}
+
+fn find_csi_end(bytes: &[u8], start: usize) -> Option<usize> {
+    (start..bytes.len()).find(|index| (0x40..=0x7e).contains(&bytes[*index]))
+}
+
+fn parse_csi(bytes: &[u8], start: usize, end: usize) -> ParsedCsi {
+    let mut params = Vec::new();
+    let mut intermediates = Vec::new();
+    let mut private = false;
+    let mut current = None::<u32>;
+
+    for byte in bytes[start..end].iter().copied() {
+        match byte {
+            b'?' => private = true,
+            b'0'..=b'9' => {
+                current = Some(
+                    current
+                        .unwrap_or_default()
+                        .saturating_mul(10)
+                        .saturating_add(u32::from(byte - b'0')),
+                );
+            }
+            b';' | b':' => {
+                params.push(current.take().unwrap_or_default());
+            }
+            0x20..=0x2f => {
+                if let Some(value) = current.take() {
+                    params.push(value);
+                }
+                intermediates.push(byte);
+            }
+            _ => {
+                if let Some(value) = current.take() {
+                    params.push(value);
+                }
+            }
+        }
+    }
+    if let Some(value) = current {
+        params.push(value);
+    }
+    ParsedCsi {
+        final_byte: bytes[end],
+        intermediates,
+        private,
+        params,
+    }
+}
+
+fn find_string_control_end(
+    bytes: &[u8],
+    start: usize,
+    allow_bel: bool,
+    bel: u8,
+    st: u8,
+) -> Option<usize> {
+    let mut index = start;
+    while index < bytes.len() {
+        if let Some((code, len)) = c1_control_at(bytes, index) {
+            if code == st {
+                return Some(index + len);
+            }
+            index += len;
+            continue;
+        }
+        if allow_bel && bytes[index] == bel {
+            return Some(index + 1);
+        }
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+            return Some(index + 2);
+        }
+        index += valid_utf8_sequence_len(bytes, index).max(1);
+    }
+    None
+}
+
+fn c1_control_at(bytes: &[u8], index: usize) -> Option<(u8, usize)> {
+    let first = *bytes.get(index)?;
+    if (0x80..=0x9f).contains(&first) {
+        return Some((first, 1));
+    }
+    let second = bytes.get(index + 1).copied()?;
+    (first == 0xc2 && (0x80..=0x9f).contains(&second)).then_some((second, 2))
+}
+
+fn valid_utf8_sequence_len(bytes: &[u8], index: usize) -> usize {
+    let Some(first) = bytes.get(index).copied() else {
+        return 0;
+    };
+    let continuation = |offset: usize| {
+        bytes
+            .get(index + offset)
+            .is_some_and(|byte| (0x80..=0xbf).contains(byte))
+    };
+    match first {
+        0xc2..=0xdf if continuation(1) => 2,
+        0xe0..=0xef if continuation(1) && continuation(2) => 3,
+        0xf0..=0xf4 if continuation(1) && continuation(2) && continuation(3) => 4,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -312,5 +542,74 @@ mod tests {
         let workspace = temp_workspace();
 
         remove_pane_scrollback(&workspace, "pane-1").unwrap();
+    }
+
+    #[test]
+    fn replay_sanitizer_removes_host_controls_modes_and_queries() {
+        let input = b"before\r\n\x1b]0;secret title\x07\x1bPpayload\x07still payload\x1b\\\x1b[?2004hprompt \x1b[c\x1b[6n\x1b[8;50;120t";
+        assert_eq!(sanitize_scrollback_replay(input), b"before\r\nprompt ");
+    }
+
+    #[test]
+    fn replay_sanitizer_handles_oversized_csi_parameters_without_panicking() {
+        let input = b"before\x1b[999999999999999999999999999999999999Gafter";
+        assert_eq!(sanitize_scrollback_replay(input), input);
+    }
+
+    #[test]
+    fn replay_sanitizer_drops_alternate_screen_output() {
+        let input = b"before\r\n\x1b[?1049h\x1b[2Jhidden tui\r\n\x1b[?1049lafter\r\n";
+        assert_eq!(sanitize_scrollback_replay(input), b"before\r\nafter\r\n");
+    }
+
+    #[test]
+    fn replay_sanitizer_preserves_sgr_cursor_and_utf8() {
+        let input = "\x1b[38;2;10;20;30mhello\x1b[6G世界\x1b[39m\r\n".as_bytes();
+        assert_eq!(sanitize_scrollback_replay(input), input);
+    }
+
+    #[test]
+    fn replay_sanitizer_drops_unterminated_string_control_tail() {
+        assert_eq!(
+            sanitize_scrollback_replay(b"visible\r\n\x1b]0;unfinished"),
+            b"visible\r\n"
+        );
+    }
+
+    #[test]
+    fn trim_preserves_open_alternate_screen_state_for_future_appends() {
+        let workspace = temp_workspace();
+        let mut noisy_tui = b"before\r\n\x1b[?1049h".to_vec();
+        noisy_tui.extend(std::iter::repeat_n(b'x', SCROLLBACK_TRIM_TRIGGER as usize));
+        append_pane_scrollback(&workspace, "pane-1", &noisy_tui).unwrap();
+        assert!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap().len()
+                <= SCROLLBACK_LOG_CAP as usize
+        );
+        append_pane_scrollback(
+            &workspace,
+            "pane-1",
+            b"still hidden\r\n\x1b[?1049lafter\r\n",
+        )
+        .unwrap();
+
+        let restored = read_pane_scrollback(&workspace, "pane-1").unwrap();
+        assert_eq!(
+            sanitize_scrollback_replay(&restored),
+            b"before\r\nafter\r\n"
+        );
+    }
+
+    #[test]
+    fn trim_counts_the_alternate_screen_marker_toward_the_cap() {
+        let workspace = temp_workspace();
+        let mut output = vec![b'a'; SCROLLBACK_TRIM_TRIGGER as usize];
+        output.extend_from_slice(b"\x1b[?1049h");
+
+        append_pane_scrollback(&workspace, "pane-1", &output).unwrap();
+
+        let restored = read_pane_scrollback(&workspace, "pane-1").unwrap();
+        assert_eq!(restored.len(), SCROLLBACK_LOG_CAP as usize);
+        assert!(restored.ends_with(b"\x1b[?1049h"));
     }
 }
