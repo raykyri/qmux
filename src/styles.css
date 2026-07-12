@@ -935,25 +935,33 @@
 .research-followup-cards {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 
+/* Rendered as plain link blocks rather than cards: no border, background, or
+   other card affordances — hovering just lightens the whole block's text. */
 .research-followup-card {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   min-height: 0;
-  padding: 11px 13px 12px;
-  border-color: rgba(255, 255, 255, 0.07);
-  border-radius: var(--radius-lg);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   text-align: left;
-  background: #1e2225;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  background: transparent;
 }
 
-.research-followup-card:hover {
-  border-color: #4a5d56;
-  background: #24292c;
+.research-followup-card:hover strong {
+  color: #bcc4bf;
+}
+
+.research-followup-card:hover span {
+  color: #99a19c;
+}
+
+.research-followup-card:hover small {
+  color: #8f9893;
 }
 
 .research-followup-card strong,
@@ -962,6 +970,7 @@
   display: block;
   width: 100%;
   overflow-wrap: anywhere;
+  transition: color 120ms ease;
 }
 
 /* Prompts are user text and can run long (or be a single stray character);
