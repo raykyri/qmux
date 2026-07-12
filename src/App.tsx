@@ -45,12 +45,7 @@ import {
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import { CODEX_ADAPTER_ID } from "./adapters/codex";
-import { GROK_ADAPTER_ID } from "./adapters/grok";
-import { OPENCODE_ADAPTER_ID } from "./adapters/opencode";
-import claudeModelIconUrl from "./assets/model-icons/claude-ai.svg";
-import openAiModelIconUrl from "./assets/model-icons/openai.svg";
-import openCodeModelIconUrl from "./assets/model-icons/opencode-dark.svg";
-import grokModelIconUrl from "./assets/model-icons/grok.svg";
+import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "./lib/adapterIcons";
 import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
 import NativeInput from "./components/NativeInput";
 import {
@@ -440,12 +435,6 @@ const GROUP_CONTEXT_MENU_WIDTH = 220;
 const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
 const SETTINGS_CONTEXT_MENU_WIDTH = 160;
 const SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT = 66;
-const LAUNCHER_ADAPTER_ICON_BY_ID: Record<string, string> = {
-  [CLAUDE_ADAPTER_ID]: claudeModelIconUrl,
-  [CODEX_ADAPTER_ID]: openAiModelIconUrl,
-  [OPENCODE_ADAPTER_ID]: openCodeModelIconUrl,
-  [GROK_ADAPTER_ID]: grokModelIconUrl,
-};
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
@@ -2614,13 +2603,8 @@ export default function App() {
       launcherAdapters.map((adapter) => ({
         value: adapter.id,
         label: adapter.label,
-        iconSrc: LAUNCHER_ADAPTER_ICON_BY_ID[adapter.id],
-        iconClassName:
-          adapter.id === CODEX_ADAPTER_ID
-            ? "is-mono-light is-compact"
-            : adapter.id === OPENCODE_ADAPTER_ID
-              ? "is-compact"
-              : undefined,
+        iconSrc: ADAPTER_ICON_BY_ID[adapter.id],
+        iconClassName: adapterIconClassName(adapter.id),
       })),
     [launcherAdapters],
   );
@@ -10447,6 +10431,7 @@ export default function App() {
       <NewResearchDialog
         open={newResearchOpen}
         adapters={config?.adapters ?? []}
+        requireCmdEnterToSend={settings.requireCmdEnterToSend}
         workspaces={researchGroups}
         initialWorkspaceId={
           (researchScope !== ALL_RESEARCH_SCOPE ? researchScope : null) ??

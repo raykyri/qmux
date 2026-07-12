@@ -1025,71 +1025,73 @@
   color: #c6cdc9;
 }
 
-.new-research-dialog {
-  width: min(580px, calc(100vw - 40px));
+/* New research — the modal reuses the Home launcher's composer surface: the
+   command-launcher card floats alone on the dialog scrim (palette-style, top
+   anchored), with the folder and agent pickers as overlay chips and the folder
+   path / permissions note in a footer strip under the prompt. */
+.confirm-dialog-backdrop.new-research-backdrop {
+  align-items: flex-start;
+  padding-top: min(20vh, 170px);
 }
 
-.new-research-dialog > textarea {
-  width: 100%;
-  min-height: 150px;
-  resize: vertical;
-  padding: 12px;
-  color: #edf0ec;
-  background: #202427;
+.new-research-launcher {
+  width: min(640px, 100%);
+  /* Keep the launcher's top-lit inset and add the modal's drop shadow so the
+     card reads as floating above the scrim. */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 22px 70px rgba(0, 0, 0, 0.5);
 }
 
-.new-research-options {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+.new-research-launcher:focus-within {
+  border-color: var(--control-border-hover);
 }
 
-.new-research-options label,
-.new-research-workspace-option label {
-  display: grid;
-  gap: 5px;
-  color: #8f9893;
-  font-size: 11px;
+/* Positioning context for the overlaid controls: the footer sits below, so the
+   overlay anchors to the prompt area rather than the whole card. */
+.new-research-composer {
+  position: relative;
 }
 
-.new-research-options select,
-.new-research-options input,
-.new-research-workspace-option select {
-  min-width: 0;
-  width: 100%;
-  height: 31px;
-  border: 1px solid #34393c;
-  border-radius: 6px;
-  color: #edf0ec;
-  background: #202427;
+.new-research-composer .command-launcher-input {
+  min-height: 132px;
 }
 
-.new-research-options input {
-  padding: 0 9px;
-}
-
-.new-research-workspace-option {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 10px;
-}
-
-.new-research-workspace-option > div {
-  min-width: 0;
-}
-
-.new-research-workspace-option small {
-  display: block;
-  margin-top: 5px;
-  overflow: hidden;
-  color: #747d79;
-  font-size: 10px;
-  text-overflow: ellipsis;
+.new-research-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   white-space: nowrap;
 }
 
-.new-research-workspace-option > button {
+.new-research-send:disabled {
+  color: #77807b;
+  cursor: default;
+}
+
+.new-research-send:disabled:hover {
+  background: var(--control-bg);
+  border-color: var(--control-border);
+}
+
+.new-research-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 14px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.new-research-hint {
+  margin: 0;
+  color: #747d79;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.new-research-hint-path {
+  display: block;
+  overflow: hidden;
+  color: #8f9893;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -1099,12 +1101,31 @@
 }
 
 .new-research-advanced > summary {
-  padding: 4px 0;
+  width: max-content;
+  padding: 2px 0;
   cursor: pointer;
 }
 
 .new-research-advanced[open] > summary {
   margin-bottom: 8px;
+}
+
+.new-research-model {
+  display: grid;
+  gap: 5px;
+  max-width: 260px;
+  color: #8f9893;
+  font-size: 11px;
+}
+
+.new-research-model input {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  color: #f1f0e8;
+  background: #111315;
+  font-size: var(--fs-sm);
 }
 
 .new-research-unavailable {

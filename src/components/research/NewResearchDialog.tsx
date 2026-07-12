@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentAdapterMetadata, GroupInfo } from "../../types";
+import { LauncherSelect, type LauncherSelectOption } from "../LauncherSelect";
+import {
+  ComposerSubmitShortcutGlyph,
+  isComposerSubmitShortcut,
+} from "../ComposerSubmitShortcut";
+import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "../../lib/adapterIcons";
 
 interface NewResearchDialogProps {
   open: boolean;
   adapters: AgentAdapterMetadata[];
+  requireCmdEnterToSend: boolean;
   workspaces: GroupInfo[];
   initialWorkspaceId?: string | null;
   onClose: () => void;
@@ -17,10 +24,20 @@ interface NewResearchDialogProps {
 }
 
 const DEFAULT_RESEARCH_FOLDER = "__default_research_folder__";
+// Sentinel option value in the folder picker that opens the native folder
+// chooser instead of selecting; never stored as the workspace value.
+const CHOOSE_FOLDER_OPTION = "__choose_research_folder__";
+
+// Same folder glyph the launcher selects use as a select lead icon, encoded for
+// an <img src> so LauncherSelect options can carry it.
+const FOLDER_ICON_SRC = `data:image/svg+xml;utf8,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='#9ca6a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/></svg>",
+)}`;
 
 export default function NewResearchDialog({
   open,
   adapters: allAdapters,
+  requireCmdEnterToSend,
   workspaces,
   initialWorkspaceId,
   onClose,
@@ -37,6 +54,7 @@ export default function NewResearchDialog({
   // backdrop, so a failed launch (bad model name, missing folder…) looked
   // like an unresponsive Start button. Fields are kept for the retry.
   const [error, setError] = useState<string | null>(null);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
   // Research is built on branching follow-ups, which require the adapter's
   // native fork command; offering a non-forkable adapter here would only be
   // discovered when the first follow-up fails after a completed root run.
@@ -82,6 +100,22 @@ export default function NewResearchDialog({
     setAdapter(adapters.find((candidate) => candidate.default)?.id ?? adapters[0]?.id ?? "");
   }, [adapter, adapters, open]);
 
+  // Grow the textarea to fit its content, like the Home launcher: multi-line
+  // prompts expand the composer until the CSS max-height caps it.
+  const growPromptInput = useCallback(() => {
+    const textarea = promptRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, []);
+  useLayoutEffect(() => {
+    if (open) {
+      growPromptInput();
+    }
+  }, [growPromptInput, open]);
+
   if (!open) {
     return null;
   }
@@ -126,9 +160,34 @@ export default function NewResearchDialog({
 
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === workspaceId);
 
+  const folderOptions: LauncherSelectOption[] = [
+    {
+      value: DEFAULT_RESEARCH_FOLDER,
+      label: "Default research folder",
+      iconSrc: FOLDER_ICON_SRC,
+    },
+    ...workspaces.map((workspace) => ({
+      value: workspace.id,
+      label: workspace.nameOverride || workspace.name,
+      iconSrc: FOLDER_ICON_SRC,
+    })),
+    {
+      value: CHOOSE_FOLDER_OPTION,
+      label: choosingWorkspace ? "Choosing…" : "Choose folder…",
+      dividerBefore: true,
+    },
+  ];
+
+  const adapterOptions: LauncherSelectOption[] = adapters.map((candidate) => ({
+    value: candidate.id,
+    label: candidate.label,
+    iconSrc: ADAPTER_ICON_BY_ID[candidate.id],
+    iconClassName: adapterIconClassName(candidate.id),
+  }));
+
   return (
     <div
-      className="confirm-dialog-backdrop"
+      className="confirm-dialog-backdrop new-research-backdrop"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !submitting && !choosingWorkspace) {
@@ -137,78 +196,103 @@ export default function NewResearchDialog({
       }}
     >
       <form
-        className="confirm-dialog new-research-dialog"
+        className="command-launcher new-research-launcher"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="new-research-title"
+        aria-label="New research"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !submitting && !choosingWorkspace) {
+            onClose();
+          }
+        }}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <h2 id="new-research-title">New research</h2>
-        <textarea
-          autoFocus
-          value={prompt}
-          placeholder="What would you like to investigate?"
-          onChange={(event) => setPrompt(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && !submitting && !choosingWorkspace) {
-              onClose();
-            }
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-        />
-        <div className="new-research-workspace-option">
-          <div>
-            <label>
-              <span>Run in folder</span>
-              <select
-                value={workspaceId}
-                onChange={(event) => setWorkspaceId(event.currentTarget.value)}
+        <div className="new-research-composer">
+          <textarea
+            ref={promptRef}
+            autoFocus
+            className="command-launcher-input"
+            rows={2}
+            value={prompt}
+            placeholder="What would you like to investigate?"
+            onChange={(event) => {
+              setPrompt(event.currentTarget.value);
+              growPromptInput();
+            }}
+            onKeyDown={(event) => {
+              if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+          />
+          <div className="command-launcher-overlay">
+            <div className="command-launcher-overlay-group">
+              <div className="command-launcher-options">
+                <LauncherSelect
+                  value={workspaceId}
+                  options={folderOptions}
+                  ariaLabel="Run in folder"
+                  onChange={(value) => {
+                    if (value === CHOOSE_FOLDER_OPTION) {
+                      void chooseWorkspace();
+                      return;
+                    }
+                    setWorkspaceId(value);
+                  }}
+                />
+              </div>
+            </div>
+            <div className="command-launcher-controls">
+              <div className="command-launcher-adapter-select">
+                <LauncherSelect
+                  value={adapter}
+                  options={adapterOptions}
+                  ariaLabel="Agent"
+                  onChange={setAdapter}
+                />
+              </div>
+              <button
+                type="submit"
+                className="command-launcher-send new-research-send"
+                disabled={
+                  !prompt.trim() || !adapter || !workspaceId || submitting || choosingWorkspace
+                }
               >
-                <option value={DEFAULT_RESEARCH_FOLDER}>Default research folder</option>
-                {workspaces.map((workspace) => (
-                  <option key={workspace.id} value={workspace.id}>
-                    {workspace.nameOverride || workspace.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {selectedWorkspace ? (
-              <small title={selectedWorkspace.dir}>{selectedWorkspace.dir}</small>
-            ) : (
-              <small>An empty private qmux folder, created when you start.</small>
-            )}
+                <span>{submitting ? "Starting…" : "Start research"}</span>
+                <ComposerSubmitShortcutGlyph
+                  requireCmdEnter={requireCmdEnterToSend}
+                  ariaHidden
+                />
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            disabled={choosingWorkspace || submitting}
-            onClick={() => void chooseWorkspace()}
-          >
-            {choosingWorkspace ? "Choosing…" : "Choose folder…"}
-          </button>
         </div>
-        <p className="new-research-permissions">
-          The agent can access this folder using its normal permissions.
-        </p>
-        <details className="new-research-advanced">
-          <summary>Advanced</summary>
-          <div className="new-research-options">
-            <label>
-              <span>Agent</span>
-              <select value={adapter} onChange={(event) => setAdapter(event.currentTarget.value)}>
-                {adapters.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
+        <div className="new-research-footer">
+          {adapters.length === 0 ? (
+            <p className="new-research-unavailable" role="alert">
+              No installed agent supports research follow-ups.
+            </p>
+          ) : null}
+          {error ? (
+            <p className="new-research-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <p className="new-research-hint" title={selectedWorkspace?.dir}>
+            {selectedWorkspace ? (
+              <span className="new-research-hint-path">{selectedWorkspace.dir}</span>
+            ) : (
+              <span>An empty private qmux folder, created when you start.</span>
+            )}{" "}
+            The agent can access this folder using its normal permissions.
+          </p>
+          <details className="new-research-advanced">
+            <summary>Advanced</summary>
+            <label className="new-research-model">
               <span>Model (optional)</span>
               <input
                 type="text"
@@ -217,28 +301,7 @@ export default function NewResearchDialog({
                 onChange={(event) => setModel(event.currentTarget.value)}
               />
             </label>
-          </div>
-        </details>
-        {adapters.length === 0 ? (
-          <p className="new-research-unavailable" role="alert">
-            No installed agent supports research follow-ups.
-          </p>
-        ) : null}
-        {error ? (
-          <p className="new-research-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className="confirm-dialog-actions">
-          <button type="button" disabled={submitting || choosingWorkspace} onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={!prompt.trim() || !adapter || !workspaceId || submitting || choosingWorkspace}
-          >
-            {submitting ? "Starting…" : "Start research"}
-          </button>
+          </details>
         </div>
       </form>
     </div>
