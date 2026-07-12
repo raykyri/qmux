@@ -5381,6 +5381,10 @@ header + .turn-blocks {
   white-space: pre-wrap;
 }
 
+.long-user-message > .turn-text {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+}
+
 .turn-markdown > :first-child {
   margin-top: 0;
 }
