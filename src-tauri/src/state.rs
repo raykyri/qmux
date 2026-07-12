@@ -2164,6 +2164,7 @@ impl AppState {
             prompt_native_id: None,
             agent_id: None,
             pane_id: None,
+            thread_id: None,
             status: ResearchNodeStatus::Queued,
             error: None,
             response_snapshot_at: None,
@@ -2259,6 +2260,7 @@ impl AppState {
                 prompt_native_id: None,
                 agent_id: None,
                 pane_id: None,
+                thread_id: None,
                 status: ResearchNodeStatus::Queued,
                 error: None,
                 response_snapshot_at: None,
@@ -2325,6 +2327,10 @@ impl AppState {
                 .get_mut(node_id)
                 .expect("research node was checked above");
             node.agent_id = Some(agent.id.clone());
+            // Recorded whether or not the pane survived: the run's agent
+            // minted its thread record during launch either way, and tree
+            // removal reaps that record through this link.
+            node.thread_id = agent.thread_id.clone();
             node.native_session_id = agent.session_id.clone();
             node.transcript_path = agent.transcript_path.clone();
             let now = now_millis();
@@ -2755,7 +2761,7 @@ impl AppState {
     }
 
     pub fn remove_research_tree(&self, tree_id: &str) -> Result<(), String> {
-        let (removed, removed_node_ids) = {
+        let (removed, removed_node_ids, reaped_thread_records) = {
             let mut model = self
                 .inner
                 .model
@@ -2772,16 +2778,42 @@ impl AppState {
                 .filter(|node| node.tree_id == tree_id)
                 .map(|node| node.id.clone())
                 .collect::<Vec<_>>();
+            // Each run minted a thread record (and an on-disk graph snapshot)
+            // via the ordinary agent machinery, and nothing else ever reaps
+            // them once the run's agent is pruned — deleting the tree is the
+            // last point where the node still links run to record. Skip any
+            // record a live agent still references (a pane teardown may be
+            // settling concurrently); it is re-reaped only if its tree is
+            // removed again, so erring towards keeping is safe.
+            let thread_ids = model
+                .research_nodes
+                .values()
+                .filter(|node| node.tree_id == tree_id)
+                .filter_map(|node| node.thread_id.clone())
+                .filter(|thread_id| {
+                    !model
+                        .agents
+                        .values()
+                        .any(|agent| agent.thread_id.as_deref() == Some(thread_id))
+                })
+                .collect::<Vec<_>>();
             let removed = model.research_trees.remove(tree_id).is_some();
+            let mut reaped_records = Vec::new();
             if removed {
                 model
                     .research_nodes
                     .retain(|_, node| node.tree_id != tree_id);
+                for thread_id in &thread_ids {
+                    if let Some(record) = model.threads.remove(thread_id) {
+                        reaped_records.push(record);
+                    }
+                    model.thread_focus.remove(thread_id);
+                }
             }
             // A research tree references its durable workspace; it does not own
             // it. Other trees may use the same directory, so deleting a tree
             // never deletes the workspace record or anything in that directory.
-            (removed, node_ids)
+            (removed, node_ids, reaped_records)
         };
         if !removed {
             return Err(format!("research tree {tree_id} was not found"));
@@ -2798,6 +2830,19 @@ impl AppState {
                 research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id)
             {
                 eprintln!("qmux: failed to remove research response {node_id}: {err}");
+            }
+        }
+        // Best-effort: the graph snapshots are unreachable once their records
+        // are gone, and a leftover file is only clutter.
+        for record in reaped_thread_records {
+            let path = std::path::Path::new(&record.snapshot_path);
+            if let Err(err) = std::fs::remove_file(path)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "qmux: failed to remove research thread graph {}: {err}",
+                    record.snapshot_path
+                );
             }
         }
         Ok(())
@@ -3827,6 +3872,9 @@ impl AppState {
             let before = node.clone();
             node.native_session_id = agent.session_id.clone();
             node.transcript_path = agent.transcript_path.clone();
+            if agent.thread_id.is_some() {
+                node.thread_id = agent.thread_id.clone();
+            }
             // A sync is built from an agent snapshot taken under a previously
             // released lock, so it can land after pane teardown already ran
             // detach_research_pane. Rewriting pane_id would re-bind the dead
@@ -7314,6 +7362,7 @@ mod tests {
             prompt_native_id: None,
             agent_id: None,
             pane_id: None,
+            thread_id: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -7428,6 +7477,7 @@ mod tests {
             prompt_native_id: None,
             agent_id: Some(agent.id.clone()),
             pane_id: Some(research_pane.id.clone()),
+            thread_id: None,
             status: ResearchNodeStatus::Running,
             error: None,
             response_snapshot_at: None,
@@ -7516,6 +7566,7 @@ mod tests {
             prompt_native_id: None,
             agent_id: None,
             pane_id: None,
+            thread_id: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -7585,6 +7636,7 @@ mod tests {
             prompt_native_id: None,
             agent_id: None,
             pane_id: None,
+            thread_id: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -7663,6 +7715,7 @@ mod tests {
                     prompt_native_id: None,
                     agent_id: None,
                     pane_id: None,
+                    thread_id: None,
                     status: ResearchNodeStatus::Complete,
                     error: None,
                     response_snapshot_at: None,
@@ -7937,6 +7990,99 @@ mod tests {
         let node = state.research_node(&detail.tree.root_node_id).unwrap();
         assert!(node.pane_id.is_none());
         state.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn queue_wait_turn_is_rejected_for_research_runs() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        let mut target = sample_agent("target-agent");
+        target.pane_id = Some("pane-8".to_string());
+        state.insert_agent(target).unwrap();
+
+        // A research run never drains its queue, so a wait-for turn accepted
+        // here would park the agent as an orphaned-queue zombie at retirement.
+        let err = crate::turn_queue::queue_wait_agent_turn(
+            &state,
+            crate::turn_queue::QueueWaitAgentTurnRequest {
+                agent_id: "research-agent".to_string(),
+                data: "after the other agent".to_string(),
+                wait_for_agent_id: "target-agent".to_string(),
+                wait_for_pane_id: None,
+                wait_for_label: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("read-only"));
+        assert!(
+            state
+                .agent_queued_turns("research-agent")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn remove_research_tree_reaps_the_runs_thread_records() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        agent.thread_id = Some("thread-research".to_string());
+        agent.branch_id = Some("branch-research".to_string());
+        state.insert_agent(agent.clone()).unwrap();
+        // Mint the thread record and graph snapshot the way a live run does:
+        // the transcript tail appends turns through the thread store.
+        state
+            .append_turn(sample_user_turn("research-agent", "Root"))
+            .unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state.remove_pane("pane-7").unwrap();
+
+        let snapshot_path = {
+            let model = state.inner.model.lock().unwrap();
+            let record = model
+                .threads
+                .get("thread-research")
+                .expect("run minted a thread record");
+            record.snapshot_path.clone()
+        };
+
+        state.remove_research_tree(&detail.tree.id).unwrap();
+
+        let model = state.inner.model.lock().unwrap();
+        assert!(!model.threads.contains_key("thread-research"));
+        assert!(!model.thread_focus.contains_key("thread-research"));
+        drop(model);
+        assert!(!std::path::Path::new(&snapshot_path).exists());
     }
 
     #[test]

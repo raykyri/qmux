@@ -166,6 +166,8 @@ export interface ResearchNode {
   promptNativeId?: string | null;
   agentId?: string | null;
   paneId?: string | null;
+  /** The run agent's thread-graph record id, kept for backend reaping. */
+  threadId?: string | null;
   status: ResearchNodeStatus;
   error?: string | null;
   /** Set when the durable response snapshot lands — the viewer's signal to

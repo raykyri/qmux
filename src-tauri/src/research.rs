@@ -71,6 +71,13 @@ pub struct ResearchNode {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+    /// The run agent's thread-graph record id. The agent record itself is
+    /// pruned when the run's pane retires, so this is the only surviving link
+    /// from a node to its thread record — tree removal uses it to reap the
+    /// record and its on-disk graph snapshot, which would otherwise
+    /// accumulate one dead entry per run forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     pub status: ResearchNodeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -291,6 +298,22 @@ pub fn prune_response_snapshots(
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
+            // Scratch files stranded by a writer that died between
+            // write_synced and rename (`<node>.json.<pid>.tmp`) can never be
+            // renamed into place, and nothing else revisits them — at up to
+            // 16MB each they are worse than clutter. Same pid-liveness
+            // contract as persistence::remove_stale_tmp_files.
+            if let Some(rest) = name.strip_suffix(".tmp") {
+                if let Some((base, pid)) = rest.rsplit_once('.')
+                    && base.ends_with(".json")
+                    && let Ok(pid) = pid.parse::<u32>()
+                    && pid != std::process::id()
+                    && !crate::persistence::process_is_alive(pid)
+                {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
             let Some(node_id) = name.strip_suffix(".json") else {
                 continue;
             };
@@ -368,11 +391,14 @@ fn turn_native_id(turn: &crate::transcript::Turn) -> Option<&str> {
         .or(turn.native_id.as_deref())
 }
 
-fn turn_matches_prompt(turn: &crate::transcript::Turn, prompt: &str) -> bool {
+// Both matchers take the prompt already normalized: they run once per turn
+// while scanning a transcript, and normalizing the (potentially long) prompt
+// inside them re-allocated it for every turn scanned — on every hook-driven
+// agent event, under the model lock.
+fn turn_matches_normalized_prompt(turn: &crate::transcript::Turn, expected: &str) -> bool {
     if turn.role != "user" {
         return false;
     }
-    let expected = normalized_text(prompt);
     !expected.is_empty()
         && turn.blocks.iter().any(|block| {
             matches!(block, crate::transcript::TurnBlock::Text { text }
@@ -380,22 +406,22 @@ fn turn_matches_prompt(turn: &crate::transcript::Turn, prompt: &str) -> bool {
         })
 }
 
-fn turn_contains_prompt(turn: &crate::transcript::Turn, prompt: &str) -> bool {
+fn turn_contains_normalized_prompt(turn: &crate::transcript::Turn, expected: &str) -> bool {
     if turn.role != "user" {
         return false;
     }
-    let expected = normalized_text(prompt);
     !expected.is_empty()
         && turn.blocks.iter().any(|block| {
             matches!(block, crate::transcript::TurnBlock::Text { text }
-                if normalized_text(text).contains(&expected))
+                if normalized_text(text).contains(expected))
         })
 }
 
 pub fn prompt_native_id(turns: &[crate::transcript::Turn], prompt: &str) -> Option<String> {
+    let expected = normalized_text(prompt);
     turns
         .iter()
-        .rfind(|turn| turn_matches_prompt(turn, prompt))
+        .rfind(|turn| turn_matches_normalized_prompt(turn, &expected))
         .and_then(turn_native_id)
         .map(str::to_string)
 }
@@ -408,21 +434,24 @@ fn turn_has_prompt_text(turn: &crate::transcript::Turn) -> bool {
         })
 }
 
-pub fn response_turns(
+/// Index of the last turn that delimits this node's prompt, if any; the
+/// node's response is everything after it.
+fn response_boundary(
     turns: &[crate::transcript::Turn],
     prompt_native_id: Option<&str>,
     prompt: &str,
-) -> Vec<crate::transcript::Turn> {
-    let boundary = turns
+) -> Option<usize> {
+    let expected = normalized_text(prompt);
+    turns
         .iter()
         .rposition(|turn| {
             prompt_native_id.is_some_and(|id| turn_native_id(turn) == Some(id))
-                || turn_matches_prompt(turn, prompt)
+                || turn_matches_normalized_prompt(turn, &expected)
         })
         .or_else(|| {
             turns
                 .iter()
-                .rposition(|turn| turn_contains_prompt(turn, prompt))
+                .rposition(|turn| turn_contains_normalized_prompt(turn, &expected))
         })
         // Adapter prompt rewriting can defeat both text matches, and a forked
         // session's transcript replays every ancestor exchange, so "no match"
@@ -432,7 +461,15 @@ pub fn response_turns(
         // ends with this node's own prompt, and research runs accept no later
         // user prompts. Only a transcript with no user prompt at all — nothing
         // inherited to leak — falls through to the full transcript.
-        .or_else(|| turns.iter().rposition(turn_has_prompt_text));
+        .or_else(|| turns.iter().rposition(turn_has_prompt_text))
+}
+
+pub fn response_turns(
+    turns: &[crate::transcript::Turn],
+    prompt_native_id: Option<&str>,
+    prompt: &str,
+) -> Vec<crate::transcript::Turn> {
+    let boundary = response_boundary(turns, prompt_native_id, prompt);
     turns
         .iter()
         .skip(boundary.map_or(0, |index| index + 1))
@@ -445,12 +482,19 @@ pub fn response_preview(
     prompt_native_id: Option<&str>,
     prompt: &str,
 ) -> Option<String> {
-    let text = response_turns(turns, prompt_native_id, prompt)
-        .into_iter()
+    // Borrows rather than going through response_turns: this runs on every
+    // hook-driven agent event under the model lock, and cloning the whole
+    // response tail (tool-result payloads included) to extract a 220-char
+    // preview added lock-hold latency for the lifetime of a streaming run.
+    let start = response_boundary(turns, prompt_native_id, prompt).map_or(0, |index| index + 1);
+    let text = turns[start..]
+        .iter()
         .filter(|turn| turn.role != "user")
-        .flat_map(|turn| turn.blocks)
+        .flat_map(|turn| turn.blocks.iter())
         .find_map(|block| match block {
-            crate::transcript::TurnBlock::Text { text } if !text.trim().is_empty() => Some(text),
+            crate::transcript::TurnBlock::Text { text } if !text.trim().is_empty() => {
+                Some(text.as_str())
+            }
             _ => None,
         })?;
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");

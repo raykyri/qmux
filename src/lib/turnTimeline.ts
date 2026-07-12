@@ -98,9 +98,10 @@ export function timelineItemsAfterLastToolCall(items: MessageItem[]) {
 
 export function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageItem[] {
   const items: MessageItem[] = [];
-  // Tool calls awaiting a result, in arrival order. A result matches by tool-use
-  // id when both sides carry one, otherwise it falls back to the oldest pending
-  // call — either way the call and its result collapse into a single row.
+  // Tool calls awaiting a result, in arrival order. A result carrying a
+  // tool-use id collapses into its own call (even across a status boundary);
+  // an id-less result collapses into the oldest pending call; a keyed result
+  // whose call isn't pending renders as its own row.
   const pending: ToolEntry[] = [];
   // Keys derive from the originating turn id and block position, not a running
   // sequence number: when older turns are truncated (the per-agent cap) or a
@@ -226,21 +227,20 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
   ) => {
     const toolUseId = block.toolUseId ?? null;
 
-    // Prefer an exact tool-use id match; otherwise fall back to the oldest pending
-    // call so mismatched or absent ids still collapse the result into its call.
+    // A keyed result belongs to its own call: try id+status first, then id
+    // alone — a call/result pair can straddle a status boundary (a fork
+    // supersedes the call's turn but not the result's, an interruption marks
+    // only one side), and the id is authoritative across it. What a keyed
+    // result must never do is take over a DIFFERENT call: with no id match at
+    // all (its call fell out of the visible turn window), a status-only
+    // fallback would show the stray payload as that call's result and strand
+    // the call's real result as a duplicate orphan row below it. Only an
+    // id-less result falls back to the oldest same-status pending call.
     let index = toolUseId
       ? pending.findIndex((entry) => entry.id === toolUseId && entry.status === status)
-      : -1;
+      : pending.findIndex((entry) => entry.status === status);
     if (index === -1 && toolUseId) {
-      // A call/result pair can straddle a status boundary (a fork supersedes
-      // the call's turn but not the result's, an interruption marks only one
-      // side). The id is authoritative — pair with the mismatched-status call
-      // rather than letting the fallback below attach this result to an
-      // unrelated same-status call.
       index = pending.findIndex((entry) => entry.id === toolUseId);
-    }
-    if (index === -1 && pending.length > 0) {
-      index = pending.findIndex((entry) => entry.status === status);
     }
 
     if (index !== -1) {

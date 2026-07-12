@@ -38,6 +38,7 @@ pub const STATE_VERSION: u32 = 3;
 const MIN_MIGRATABLE_STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = "state.json";
 const PREFERENCES_FILE: &str = "preferences.json";
+const V2_BACKUP_FILE: &str = "state.v2.bak";
 pub(crate) const STATE_DIR: &str = ".qmux";
 
 /// Snapshot of everything a qmux restart needs to recreate panes, agents,
@@ -811,23 +812,42 @@ pub fn backup_v2_state_for_migration(workspace_root: &Path) -> Result<Option<Pat
     if !source.is_file() {
         return Ok(None);
     }
-    let backup = source.with_file_name("state.v2.bak");
+    let backup = source.with_file_name(V2_BACKUP_FILE);
     if backup.exists() {
         return Ok(Some(backup));
     }
-    fs::copy(&source, &backup).map_err(|err| {
+    let bytes = fs::read(&source).map_err(|err| {
+        format!(
+            "failed to read version-2 state {} for backup: {err}",
+            source.display()
+        )
+    })?;
+    // Same temp+fsync+rename discipline as `save`: the exists() short-circuit
+    // above trusts whatever bytes are at the backup path forever, so a crash
+    // mid-copy must not be able to leave a truncated state.v2.bak as the only
+    // preserved v2 snapshot. write_synced also keeps the backup owner-only,
+    // matching the file it copies.
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = source.with_file_name(format!("{V2_BACKUP_FILE}.{}.{seq}.tmp", std::process::id()));
+    write_synced(&tmp, &bytes).map_err(|err| {
         format!(
             "failed to preserve version-2 state {} at {}: {err}",
             source.display(),
-            backup.display()
+            tmp.display()
         )
     })?;
-    fs::set_permissions(&backup, fs::Permissions::from_mode(0o600)).map_err(|err| {
+    fs::rename(&tmp, &backup).map_err(|err| {
+        let _ = fs::remove_file(&tmp);
         format!(
-            "failed to restrict version-2 state backup {}: {err}",
+            "failed to commit version-2 state backup {}: {err}",
             backup.display()
         )
     })?;
+    if let Some(parent) = backup.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
     Ok(Some(backup))
 }
 
@@ -947,15 +967,16 @@ pub fn remove_stale_tmp_files(workspace_root: &Path) {
     }
 }
 
-/// Parses the writer pid out of a `<state or preferences file>.<pid>.<seq>.tmp`
-/// scratch name. Returns `None` for anything else (the live files themselves,
-/// `.bak` preserves, foreign files), which the cleanup then leaves alone.
+/// Parses the writer pid out of a `<state, preferences, or v2-backup
+/// file>.<pid>.<seq>.tmp` scratch name. Returns `None` for anything else (the
+/// live files themselves, `.bak` preserves, foreign files), which the cleanup
+/// then leaves alone.
 fn scratch_writer_pid(name: &str) -> Option<u32> {
     let rest = name.strip_suffix(".tmp")?;
     let (rest, seq) = rest.rsplit_once('.')?;
     seq.parse::<u64>().ok()?;
     let (base, pid) = rest.rsplit_once('.')?;
-    if base != STATE_FILE && base != PREFERENCES_FILE {
+    if base != STATE_FILE && base != PREFERENCES_FILE && base != V2_BACKUP_FILE {
         return None;
     }
     pid.parse().ok()
@@ -963,7 +984,7 @@ fn scratch_writer_pid(name: &str) -> Option<u32> {
 
 /// Probes pid liveness with `kill(pid, 0)`, which signals nothing. EPERM still
 /// means the pid exists (it belongs to another user), so only ESRCH counts as dead.
-fn process_is_alive(pid: u32) -> bool {
+pub(crate) fn process_is_alive(pid: u32) -> bool {
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }

@@ -1917,8 +1917,8 @@ export default function App() {
     [researchPanes, researchScope],
   );
   const cycleableResearchTabIds = useMemo(
-    () => researchCycleTabIds(panes, groups, activeResearchTreeId),
-    [activeResearchTreeId, groups, panes],
+    () => researchCycleTabIds(panes, groups, activeResearchTreeId, researchScope),
+    [activeResearchTreeId, groups, panes, researchScope],
   );
   const researchAttentionState = useMemo(() => researchAttention(researchTrees), [researchTrees]);
   const runningResearchCount = researchAttentionState.runningCount;
@@ -4391,8 +4391,21 @@ export default function App() {
                 }
               }
             }
-          } catch {
-            localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+          } catch (err) {
+            // Mirror selectResearchTree's failure path when booting into
+            // Research mode: keep the selection and surface the error inside
+            // the document (which has a working Retry) — silently dropping
+            // the key left the Research sidebar paired with a terminal pane
+            // on the stage and nothing able to recover. A later navigation
+            // refresh clears the selection if the tree is truly gone.
+            if (!cancelled && sidebarModeRef.current === "research") {
+              setActiveResearchTreeId(researchTreeToRestore.id);
+              localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, researchTreeToRestore.id);
+              setActiveResearchDetailError(err instanceof Error ? err.message : String(err));
+              setActiveSurface("research");
+            } else {
+              localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+            }
           }
         };
 
@@ -5207,6 +5220,20 @@ export default function App() {
   function focusHomeTab() {
     setActivePaneId(HOME_TAB_ID);
     focusLauncherInput();
+  }
+
+  function openResearchPaneTab(paneId: string) {
+    // The research detail that renders the "Open terminal" button trails
+    // pane.removed by a debounced refresh, so the pane can already be gone
+    // when the button is clicked. Falling through to focusPaneTab would
+    // classify the unknown id as a terminal-scope tab (setActivePaneId's
+    // recovery fallback) and evict the user from Research mode entirely;
+    // acknowledge and stay put instead.
+    if (!panesRef.current.some((pane) => pane.id === paneId)) {
+      showAppToast("That research terminal has already closed.", "warning");
+      return;
+    }
+    focusPaneTab(paneId);
   }
 
   // The prompt library's project scope follows the pane's group directory; a
@@ -7307,6 +7334,13 @@ export default function App() {
         localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
         return;
       }
+      // Mirror handlePaneTabClick: keep the durable document paired with the
+      // short-lived terminal, so viewing the pane clears its tree's badge and
+      // the fallback effect returns to this tree when the pane retires.
+      const researchNode = researchNodeByPaneIdRef.current.get(nextTabId);
+      if (researchNode && researchNode.treeId !== activeResearchTreeIdRef.current) {
+        void selectResearchTree(researchNode.treeId);
+      }
       focusPaneTab(nextTabId);
     };
 
@@ -7461,6 +7495,7 @@ export default function App() {
     paneSplits,
     changeSidebarMode,
     researchSurfaceActive,
+    selectResearchTree,
     sidebarMode,
   ]);
 
@@ -10122,7 +10157,7 @@ export default function App() {
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}
               onCancel={cancelResearchRun}
-              onOpenPane={focusPaneTab}
+              onOpenPane={openResearchPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}
               onError={setError}
               onToast={showAppToast}

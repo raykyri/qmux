@@ -196,9 +196,32 @@ test("switching to Terminal restores a valid prior tab without crossing scope", 
   assert.equal(terminalTabForMode([], groups, "missing", "home"), "home");
 });
 
+test("switching to Terminal prefers a pane whose group is expanded", () => {
+  const terminalA = group("terminal-a", "terminal");
+  const terminalB = group("terminal-b", "terminal");
+  terminalA.collapsed = true;
+  const groups = [terminalA, terminalB];
+  const panes = [
+    pane("terminal-a-pane", terminalA.id),
+    pane("terminal-b-pane", terminalB.id),
+  ];
+
+  // The stale-preference fallback must not activate a tab the sidebar hides.
+  assert.equal(terminalTabForMode(panes, groups, "missing", "home"), "terminal-b-pane");
+
+  // Every group collapsed: any pane beats the empty home screen.
+  terminalB.collapsed = true;
+  assert.equal(terminalTabForMode(panes, groups, "missing", "home"), "terminal-a-pane");
+});
+
 test("research cycling stays on the document when no research terminals are visible", () => {
   const groups = [group("terminal", "terminal")];
-  const ids = researchCycleTabIds([pane("terminal-pane", "terminal")], groups, "tree");
+  const ids = researchCycleTabIds(
+    [pane("terminal-pane", "terminal")],
+    groups,
+    "tree",
+    ALL_RESEARCH_SCOPE,
+  );
 
   assert.deepEqual(ids, [RESEARCH_DOCUMENT_TAB_ID]);
   assert.equal(cycleTabId(ids, RESEARCH_DOCUMENT_TAB_ID, 1), RESEARCH_DOCUMENT_TAB_ID);
@@ -219,6 +242,7 @@ test("research cycling wraps between the document and visible research terminals
     ],
     [terminal, researchA, researchB],
     "tree",
+    ALL_RESEARCH_SCOPE,
   );
 
   assert.deepEqual(ids, [RESEARCH_DOCUMENT_TAB_ID, "research-one", "research-two"]);
@@ -227,6 +251,26 @@ test("research cycling wraps between the document and visible research terminals
   assert.equal(cycleTabId(ids, "research-two", 1), RESEARCH_DOCUMENT_TAB_ID);
   assert.equal(cycleTabId(ids, RESEARCH_DOCUMENT_TAB_ID, -1), "research-two");
   assert.equal(cycleTabId(ids, "research-one", -1), RESEARCH_DOCUMENT_TAB_ID);
+});
+
+test("research cycling honours the folder scope the sidebar is filtered to", () => {
+  const researchA = group("research-a", "research");
+  const researchB = group("research-b", "research");
+  const panes = [
+    pane("pane-a", researchA.id),
+    pane("pane-b", researchB.id),
+  ];
+
+  // Scoped to A: B's live terminal has no sidebar row, so it must not be
+  // reachable by cycling either.
+  assert.deepEqual(
+    researchCycleTabIds(panes, [researchA, researchB], "tree", researchA.id),
+    [RESEARCH_DOCUMENT_TAB_ID, "pane-a"],
+  );
+  assert.deepEqual(
+    researchCycleTabIds(panes, [researchA, researchB], "tree", ALL_RESEARCH_SCOPE),
+    [RESEARCH_DOCUMENT_TAB_ID, "pane-a", "pane-b"],
+  );
 });
 
 test("a stored folder scope resolves to itself only while the workspace is live", () => {

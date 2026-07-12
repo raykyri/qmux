@@ -307,6 +307,13 @@ pub fn queue_wait_agent_turn(
     if matches!(agent.status, AgentStatus::Failed) {
         return Err(format!("Agent {} has failed", agent.id));
     }
+    // Same invariant as queue_agent_turn below: a research run never drains a
+    // queue, so a wait-for turn accepted here would sit forever and its
+    // non-empty queue would park the agent as an orphaned-queue zombie
+    // instead of letting retirement reclaim it.
+    if state.agent_is_research_run(&agent.id)? {
+        return Err("research runs are read-only; create a follow-up branch instead".to_string());
+    }
 
     let pending_turns = state.enqueue_agent_wait_turn_with_target_label(
         &agent.id,

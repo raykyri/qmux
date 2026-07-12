@@ -1377,6 +1377,7 @@ pub(crate) fn write_group_manifest(group: &GroupInfo) -> Result<(), String> {
             parent.display()
         )
     })?;
+    remove_stale_manifest_tmp_files(parent);
     let raw = serde_json::to_string_pretty(group)
         .map_err(|err| format!("failed to encode group manifest: {err}"))?;
     let seq = MANIFEST_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1402,6 +1403,38 @@ pub(crate) fn write_group_manifest(group: &GroupInfo) -> Result<(), String> {
         let _ = dir.sync_all();
     }
     Ok(())
+}
+
+/// Removes manifest scratch files (`.group.json.tmp-<pid>-<seq>`) stranded by
+/// a writer that died between creating its temp and renaming it into place —
+/// nothing else ever revisits them. Runs on the next manifest write for the
+/// group, with the same best-effort pid-liveness contract as
+/// `persistence::remove_stale_tmp_files`.
+fn remove_stale_manifest_tmp_files(parent: &Path) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(".group.json.tmp-") else {
+            continue;
+        };
+        let Some((pid, seq)) = rest.split_once('-') else {
+            continue;
+        };
+        if seq.parse::<u64>().is_err() {
+            continue;
+        }
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if pid != std::process::id() && !crate::persistence::process_is_alive(pid) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn now_millis() -> u128 {

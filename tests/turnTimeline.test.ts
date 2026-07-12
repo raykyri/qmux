@@ -282,6 +282,29 @@ test("an id match pairs a call and result even when their turn statuses differ",
   );
 });
 
+test("a result with an unmatched id does not steal a pending call's slot", () => {
+  nextIndex = 0;
+  // The visible turn window starts after the "truncated-away" call was
+  // dropped (per-agent turn cap), while "live" still awaits its own result.
+  const items = buildTimelineItems([
+    turn("assistant", [toolUse("live", "Bash", { command: "sleep 1" })]),
+    turn("user", [toolResult("truncated-away", "late result of a truncated call")]),
+    turn("user", [toolResult("live", "real result")]),
+  ]);
+  const group = items[0].activities[0];
+  assert.equal(group.type, "activityGroup");
+  if (group.type === "activityGroup") {
+    const tools = group.children.filter((item) => item.type === "tool");
+    assert.deepEqual(
+      tools.map((entry) => [entry.id, entry.name, entry.result]),
+      [
+        ["live", "Bash", "real result"],
+        ["truncated-away", "Tool result", "late result of a truncated call"],
+      ],
+    );
+  }
+});
+
 test("one activity stays a leaf while multiple activities form one disclosure group", () => {
   nextIndex = 0;
   const single = buildTimelineItems([turn("assistant", [toolUse("one")])]);

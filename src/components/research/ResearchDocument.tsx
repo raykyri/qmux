@@ -793,6 +793,22 @@ export default function ResearchDocument({
                     </div>
                   ) : (
                     <>
+                  {contentError ? (
+                    // A refetch failure with stale content on screen (the
+                    // final post-completion fetch, a mid-run poll) would
+                    // otherwise be invisible: the loading-branch error above
+                    // only renders while nothing is loaded, silently passing
+                    // off the last loaded response as current.
+                    <div className="research-response-stale" role="alert">
+                      <p>Refreshing this response failed: {contentError}</p>
+                      <button
+                        type="button"
+                        onClick={() => setContentLoadNonce((value) => value + 1)}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : null}
                   {displayNode.status === "failed" && content.turns.length > 0 ? (
                     <p className="research-response-error" role="alert">
                       {displayNode.error ?? "The research run failed."}
