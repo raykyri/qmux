@@ -43,15 +43,18 @@ interface ResearchDocumentProps {
 
 // The backend caps snapshots at 16MB, which is still far beyond what markdown
 // parsing and eager React element creation can absorb without freezing the
-// interface. Blocks past this size render as plain preformatted text, and
-// long transcripts render only their tail until expanded.
+// interface. Blocks past this size render as plain preformatted text — itself
+// display-capped, since laying out one 16MB text node freezes the interface
+// too — and long transcripts render only their tail until expanded.
 const MARKDOWN_CHAR_LIMIT = 100_000;
+const PLAINTEXT_DISPLAY_CHAR_LIMIT = 1_000_000;
 const ACTIVITY_PAYLOAD_CHAR_LIMIT = 200_000;
 const TIMELINE_ITEM_RENDER_WINDOW = 100;
 // Hoisted so the memoized markdown renderer sees a stable prop identity — an
 // inline object literal would defeat its render cache on every poll.
 const OVERSIZED_MARKDOWN_POLICY = {
   maxCharacters: MARKDOWN_CHAR_LIMIT,
+  maxDisplayCharacters: PLAINTEXT_DISPLAY_CHAR_LIMIT,
   fallbackClassName: "research-plaintext",
 } as const;
 
@@ -365,8 +368,12 @@ export default function ResearchDocument({
   useEffect(() => {
     if (treeId && selectedNodeId && detail?.nodes.some((node) => node.id === selectedNodeId)) {
       const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
-      navigation.selectedNodeId = selectedNodeId;
-      saveResearchNavigation();
+      // `detail.nodes` is a fresh array on every research event; without the
+      // guard a streaming run rewrote localStorage several times a second.
+      if (navigation.selectedNodeId !== selectedNodeId) {
+        navigation.selectedNodeId = selectedNodeId;
+        saveResearchNavigation();
+      }
     }
   }, [detail?.nodes, selectedNodeId, treeId]);
 
@@ -450,7 +457,10 @@ export default function ResearchDocument({
     () => assistantTextFromTimelineItems(answerTimelineItems),
     [answerTimelineItems],
   );
-  const answerWordCount = countWords(rawAnswer);
+  // Memoized because this component renders several times a second while a run
+  // streams (detail replacements, the duration tick, every composer keystroke),
+  // and the regex walks — and allocates a match array over — the entire answer.
+  const answerWordCount = useMemo(() => countWords(rawAnswer), [rawAnswer]);
 
   async function submitFollowup() {
     const prompt = followup.trim();

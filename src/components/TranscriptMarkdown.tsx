@@ -259,6 +259,10 @@ const researchMarkdownComponents: Components = {
 
 export interface OversizedMarkdownPolicy {
   maxCharacters: number;
+  /** Cap on what the plain-text fallback puts in the DOM. Laying out a single
+   * multi-megabyte text node freezes the interface as surely as parsing it,
+   * so text beyond the cap is elided with a truncation notice. */
+  maxDisplayCharacters?: number;
   fallbackClassName?: string;
 }
 
@@ -282,8 +286,13 @@ export default memo(function TranscriptMarkdown({
   oversizedContent,
 }: TranscriptMarkdownProps) {
   if (oversizedContent && text.length > oversizedContent.maxCharacters) {
+    const displayLimit = oversizedContent.maxDisplayCharacters;
+    const shown =
+      displayLimit !== undefined && text.length > displayLimit
+        ? `${text.slice(0, displayLimit)}\n… (truncated: showing ${displayLimit.toLocaleString()} of ${text.length.toLocaleString()} characters)`
+        : text;
     return (
-      <pre className={oversizedContent.fallbackClassName ?? "research-plaintext"}>{text}</pre>
+      <pre className={oversizedContent.fallbackClassName ?? "research-plaintext"}>{shown}</pre>
     );
   }
   return (

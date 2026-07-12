@@ -9944,7 +9944,13 @@ export default function App() {
           className={`terminal-stage${IS_MAC ? " is-native" : ""}${homeActive ? " is-home" : ""}${researchSurfaceActive ? " is-research" : ""}`}
         >
           {researchSurfaceActive && activeResearchTreeId ? (
+            // Keyed by tree: the document's per-tree state (selection, fetched
+            // content, follow-up draft) must not survive a tree switch. Without
+            // the remount, the new tree's detail landing paints one frame of the
+            // previous tree's node (selection/content only reset in effects,
+            // after paint) and the content loader refetches the departed node.
             <ResearchDocument
+              key={activeResearchTreeId}
               detail={activeResearchDetail}
               detailError={activeResearchDetailError}
               onRetryDetail={retryActiveResearchDetail}
