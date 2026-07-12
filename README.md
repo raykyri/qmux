@@ -134,6 +134,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
   launcher.
 - `Cmd-N`: focus Home.
 - `Cmd-Shift-R`: switch to Research.
+- `Cmd-backtick`: toggle between Terminal and Research.
 - `Cmd-=` / `Cmd-+`: increase terminal font size.
 - `Cmd--`: decrease terminal font size.
 - `Cmd-0`: reset terminal font size.

@@ -23,6 +23,7 @@ import {
 } from "../lib/api";
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
+import { growComposerTextarea } from "../lib/composerTextarea";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
@@ -46,9 +47,6 @@ import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
 } from "./ComposerSubmitShortcut";
-
-// The composer grows with its content up to this height, then scrolls.
-const MAX_INPUT_HEIGHT = 200;
 
 // Trailing debounce for pushing local composer edits to the app's draft store.
 // Long enough to keep steady typing from re-rendering the app per keystroke,
@@ -600,8 +598,7 @@ export default function NativeInput({
     if (!textarea) {
       return;
     }
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+    growComposerTextarea(textarea);
   }, [value]);
 
   // When a new turn is queued (appended to the bottom), scroll the stack down so

@@ -19,7 +19,7 @@
   min-height: 24px;
   padding: 0 6px;
   color: #7f8884;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -42,6 +42,7 @@
 }
 
 .research-sidebar-row {
+  position: relative;
   display: flex;
   align-items: center;
   width: 100%;
@@ -109,20 +110,43 @@
   color: #d98787;
 }
 
-.research-sidebar-row.is-renaming {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  padding: 5px 7px;
+.research-sidebar-menu-trigger {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  display: none;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #7f8884;
+  background: #1b1f21;
 }
 
-.research-sidebar-row.is-renaming input {
-  min-width: 0;
-  padding: 2px 5px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
+.research-sidebar-row:hover > .research-sidebar-menu-trigger,
+.research-sidebar-row.has-open-menu > .research-sidebar-menu-trigger {
+  display: grid;
+}
+
+.research-sidebar-row.is-selected .research-sidebar-menu-trigger {
+  background: var(--control-bg-hover);
+}
+
+.research-sidebar-menu-trigger:hover,
+.research-sidebar-menu-trigger:focus-visible {
   color: #edf0ec;
-  font: inherit;
-  background: #101214;
+  background: #303639;
+  box-shadow: none;
+}
+
+.research-sidebar-menu {
+  width: min(190px, calc(100vw - 16px));
+  padding: 4px;
+  user-select: none;
 }
 
 .research-sidebar-title {
@@ -216,13 +240,6 @@
   background: transparent;
 }
 
-.research-sidebar-empty {
-  margin: 3px 6px 8px;
-  color: #747d79;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
-  line-height: 1.4;
-}
-
 /* Live research terminal panes for the scoped folder(s). Anchored to the
    bottom of the sidebar like the Folders section it replaced. */
 .research-live-terminals {
@@ -231,7 +248,6 @@
   gap: 3px;
   margin-top: auto;
   padding: 12px 7px 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.075);
 }
 
 .research-workspace-total {
@@ -262,11 +278,11 @@
   gap: 7px;
   width: 100%;
   min-height: 28px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 7px;
   color: #b9c0bc;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
   background: rgba(255, 255, 255, 0.03);
 }
@@ -350,7 +366,7 @@
   border: 0;
   border-radius: 6px;
   color: #b9c0bc;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
   background: transparent;
 }
@@ -398,7 +414,7 @@
   min-width: 0;
   overflow: hidden;
   color: #6b736f;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   font-weight: 400;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -522,24 +538,52 @@
 .research-open-terminal,
 .research-cancel-run,
 .research-trace-toggle {
-  min-height: 27px;
+  height: 28px;
+  min-height: 0;
   padding: 0 8px;
-  font-size: 11px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  color: #8a938e;
+  background: rgba(20, 24, 26, 0.9);
+  font-family: var(--font-ui);
+  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-weight: 400;
 }
 
-.research-trace-toggle {
-  border-color: transparent;
-  color: #78817c;
-  background: transparent;
+.research-open-terminal:hover:not(:disabled),
+.research-cancel-run:hover:not(:disabled),
+.research-trace-toggle:hover:not(:disabled) {
+  background: rgba(32, 38, 40, 0.95);
+  color: #f1f0e8;
 }
 
-.research-trace-toggle:hover,
+.research-open-terminal:disabled,
+.research-cancel-run:disabled,
+.research-trace-toggle:disabled {
+  background: rgba(20, 24, 26, 0.65);
+  color: #6f7773;
+}
+
 .research-trace-toggle.is-active {
-  color: #c6ccc8;
-  background: rgba(255, 255, 255, 0.055);
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: #f1f0e8;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
-.research-cancel-run:hover {
+.research-trace-toggle.is-active:hover {
+  background: var(--accent-shadow);
+  color: #f1f0e8;
+}
+
+.research-open-terminal:focus-visible,
+.research-cancel-run:focus-visible,
+.research-trace-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.research-cancel-run:hover:not(:disabled) {
   color: #e8a1a1;
 }
 
@@ -770,24 +814,15 @@
   flex-direction: column;
   gap: 8px;
   margin: 0;
+  /* Mirror the right pane's zoom-aware type scale so its composer controls are
+     identical even though this composer lives outside .turn-pane. */
+  --fs-xs: calc(11.5px + var(--turn-font-delta, 0px));
+  --fs-sm: calc(12.5px + var(--turn-font-delta, 0px));
+  --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
 .research-followup-composer textarea {
   width: 100%;
-  min-height: 92px;
-  resize: vertical;
-  padding: 10px;
-  border: 1px solid #34393c;
-  border-radius: 7px;
-  color: #edf0ec;
-  background: #202427;
-}
-
-.research-followup-composer button {
-  align-self: flex-end;
-  min-height: 29px;
-  padding: 0 9px;
-  font-size: var(--fs-base);
 }
 
 .research-followup-composer small {
@@ -1244,7 +1279,7 @@ button:disabled {
   color: #818a85;
   font-family: var(--font-ui);
   /* Same size as the New shell/New agent buttons at the bottom of the sidebar. */
-  font-size: calc(13.5px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   font-weight: 400;
   background: transparent;
   cursor: pointer;
@@ -6139,7 +6174,8 @@ header + .turn-blocks {
   color: #ffd3c7;
 }
 
-.native-input textarea {
+.native-input textarea,
+.research-followup-composer textarea {
   flex: 0 0 auto;
   min-width: 0;
   /* Auto-grows with content (JS sets the height) up to a cap, then scrolls. */
@@ -6155,7 +6191,8 @@ header + .turn-blocks {
   padding: 8px 9px;
 }
 
-.native-input textarea::placeholder {
+.native-input textarea::placeholder,
+.research-followup-composer textarea::placeholder {
   color: var(--placeholder-color);
 }
 

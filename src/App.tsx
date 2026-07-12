@@ -7181,6 +7181,9 @@ export default function App() {
         case "focusResearchMode":
           changeSidebarMode("research");
           return;
+        case "toggleSidebarMode":
+          changeSidebarMode(sidebarMode === "terminal" ? "research" : "terminal");
+          return;
         case "cyclePaneTab":
           if (sidebarMode === "research") {
             cycleResearchTab(command.direction);

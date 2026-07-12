@@ -7,6 +7,7 @@ export type AppShortcutCommand =
   | { type: "focusHome" }
   | { type: "focusTerminalMode" }
   | { type: "focusResearchMode" }
+  | { type: "toggleSidebarMode" }
   | { type: "cyclePaneTab"; direction: -1 | 1 }
   | { type: "cycleAllTab"; direction: -1 | 1 }
   | { type: "openSettings" }
@@ -71,6 +72,9 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   }
   if (command && !control && !option && shift && key === "r") {
     return { type: "focusResearchMode" };
+  }
+  if (command && !control && !option && !shift && key === "`") {
+    return { type: "toggleSidebarMode" };
   }
   if (!command && control && !option && key === "tab") {
     return { type: "cyclePaneTab", direction: shift ? -1 : 1 };
@@ -146,6 +150,7 @@ export function parseAppShortcutCommand(
     case "focusHome":
     case "focusTerminalMode":
     case "focusResearchMode":
+    case "toggleSidebarMode":
     case "openSettings":
     case "toggleTranscriptOrBrowser":
     case "splitPaneBelow":

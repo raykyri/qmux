@@ -62,6 +62,7 @@ enum AppShortcutCommand {
     HomeOrCycleAdapter,
     FocusHome,
     FocusResearchMode,
+    ToggleSidebarMode,
     CyclePaneTab(i8),
     CycleAllTab(i8),
     OpenSettings,
@@ -83,6 +84,7 @@ impl AppShortcutCommand {
             Self::HomeOrCycleAdapter => ("homeOrCycleAdapter", None),
             Self::FocusHome => ("focusHome", None),
             Self::FocusResearchMode => ("focusResearchMode", None),
+            Self::ToggleSidebarMode => ("toggleSidebarMode", None),
             Self::CyclePaneTab(-1) => ("cyclePaneTabPrevious", None),
             Self::CyclePaneTab(_) => ("cyclePaneTabNext", None),
             Self::CycleAllTab(-1) => ("cycleAllTabPrevious", None),
@@ -139,6 +141,9 @@ fn classify_app_shortcut(
     }
     if command && !control && !option && shift && key == "r" {
         return Some(AppShortcutCommand::FocusResearchMode);
+    }
+    if command && !control && !option && !shift && key == "`" {
+        return Some(AppShortcutCommand::ToggleSidebarMode);
     }
     if !command && control && !option && key == "tab" {
         return Some(AppShortcutCommand::CyclePaneTab(if shift { -1 } else { 1 }));
@@ -979,6 +984,10 @@ mod tests {
         assert_eq!(
             super::classify_app_shortcut("r", true, false, false, true),
             Some(AppShortcutCommand::FocusResearchMode)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("`", false, false, false, true),
+            Some(AppShortcutCommand::ToggleSidebarMode)
         );
         for key in [";", "k", "a", "z", "Enter"] {
             assert_eq!(

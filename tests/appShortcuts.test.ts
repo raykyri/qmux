@@ -41,6 +41,9 @@ test("resolves qmux command and control shortcuts", () => {
     resolveAppShortcut(shortcut({ key: "r", metaKey: true, shiftKey: true })),
     { type: "focusResearchMode" },
   );
+  assert.deepEqual(resolveAppShortcut(shortcut({ key: "`", metaKey: true })), {
+    type: "toggleSidebarMode",
+  });
   assert.equal(resolveAppShortcut(shortcut({ key: ";", metaKey: true })), null);
   assert.equal(resolveAppShortcut(shortcut({ key: ";", ctrlKey: true })), null);
   assert.equal(
@@ -115,6 +118,9 @@ test("parses semantic commands from native payloads", () => {
   });
   assert.deepEqual(parseAppShortcutCommand("focusResearchMode", null), {
     type: "focusResearchMode",
+  });
+  assert.deepEqual(parseAppShortcutCommand("toggleSidebarMode", null), {
+    type: "toggleSidebarMode",
   });
   assert.equal(parseAppShortcutCommand("launcherOrCycleAdapter", null), null);
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { ArrowLeft, Copy, ExternalLink, LoaderCircle, X } from "lucide-react";
 import { getResearchNodeContent } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
+import { growComposerTextarea } from "../../lib/composerTextarea";
 import {
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
@@ -180,6 +181,7 @@ export default function ResearchDocument({
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
   const treeId = detail?.tree.id ?? null;
   const documentScrollRef = useRef<HTMLElement | null>(null);
+  const followupTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const navigationRef = useRef(researchNavigationStore());
   const navigationPersistTimerRef = useRef<number | null>(null);
   const selectedNodeIdRef = useRef(selectedNodeId);
@@ -191,6 +193,16 @@ export default function ResearchDocument({
   selectedNodeIdRef.current = selectedNodeId;
   treeIdRef.current = treeId;
   detailRef.current = detail;
+
+  // Match the right-pane composer: fit the textarea to its contents up to the
+  // shared cap, then let it scroll. The node dependency also sizes a newly
+  // mounted empty composer after its content finishes loading.
+  useEffect(() => {
+    const textarea = followupTextareaRef.current;
+    if (textarea) {
+      growComposerTextarea(textarea);
+    }
+  }, [followup, content?.node.id]);
   // Event-driven node metadata; fresher than content.node for anything that
   // does not require reparsing the transcript (status, checkpoint, children).
   const selectedDetailNode = useMemo(
@@ -544,7 +556,7 @@ export default function ResearchDocument({
                 className="research-open-terminal"
                 onClick={() => onOpenPane(displayNode.paneId!)}
               >
-                <ExternalLink size={13} aria-hidden="true" />
+                <ExternalLink size={14} aria-hidden="true" />
                 Open terminal
               </button>
             ) : null}
@@ -561,7 +573,7 @@ export default function ResearchDocument({
                     .finally(() => setCancelling(false));
                 }}
               >
-                <X size={13} aria-hidden="true" />
+                <X size={14} aria-hidden="true" />
                 {cancelling
                   ? "Cancelling…"
                   : cancellationNeedsRetry
@@ -692,6 +704,7 @@ export default function ResearchDocument({
                 <aside className="research-followups" aria-label="Follow-ups">
                   <div className="research-followup-composer">
                     <textarea
+                      ref={followupTextareaRef}
                       value={followup}
                       placeholder="Ask a follow-up from this response…"
                       aria-label="Follow-up question"
@@ -702,25 +715,28 @@ export default function ResearchDocument({
                           void submitFollowup();
                         }
                       }}
+                      rows={2}
                     />
-                    <button
-                      type="button"
-                      disabled={
-                        !followup.trim() ||
-                        submitting ||
-                        displayNode.status !== "complete" ||
-                        !displayNode.nativeSessionId
-                      }
-                      onClick={() => void submitFollowup()}
-                    >
-                      <span>{submitting ? "Creating…" : "Create follow-up"}</span>
-                      {!submitting ? (
-                        <ComposerSubmitShortcutGlyph
-                          requireCmdEnter
-                          className="shortcut-hint"
-                        />
-                      ) : null}
-                    </button>
+                    <div className="native-input-submit-actions">
+                      <button
+                        type="button"
+                        disabled={
+                          !followup.trim() ||
+                          submitting ||
+                          displayNode.status !== "complete" ||
+                          !displayNode.nativeSessionId
+                        }
+                        onClick={() => void submitFollowup()}
+                      >
+                        <span>{submitting ? "Creating…" : "Create follow-up"}</span>
+                        {!submitting ? (
+                          <ComposerSubmitShortcutGlyph
+                            requireCmdEnter
+                            className="shortcut-hint"
+                          />
+                        ) : null}
+                      </button>
+                    </div>
                     {displayNode.status === "complete" && !displayNode.nativeSessionId ? (
                       <small>Waiting for the native session checkpoint before branching.</small>
                     ) : displayNode.status !== "complete" ? (
