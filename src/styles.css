@@ -624,8 +624,7 @@
 }
 
 .research-response-message.is-status-superseded,
-.research-response-message.is-status-interrupted,
-.research-response-message.is-status-uncertain {
+.research-response-message.is-status-interrupted {
   opacity: 0.55;
 }
 
@@ -5053,8 +5052,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-card.is-status-superseded,
-.turn-card.is-status-interrupted,
-.turn-card.is-status-uncertain {
+.turn-card.is-status-interrupted {
   opacity: 0.55;
 }
 
@@ -5653,17 +5651,12 @@ header + .turn-blocks {
 .tool-block.is-status-superseded > .tool-payload,
 .tool-block.is-status-interrupted > summary,
 .tool-block.is-status-interrupted > .tool-payload,
-.tool-block.is-status-uncertain > summary,
-.tool-block.is-status-uncertain > .tool-payload,
 .thinking-block.is-status-superseded > summary,
 .thinking-block.is-status-superseded > pre,
 .thinking-block.is-status-interrupted > summary,
 .thinking-block.is-status-interrupted > pre,
-.thinking-block.is-status-uncertain > summary,
-.thinking-block.is-status-uncertain > pre,
 .activity-group-block.is-status-superseded > summary,
-.activity-group-block.is-status-interrupted > summary,
-.activity-group-block.is-status-uncertain > summary {
+.activity-group-block.is-status-interrupted > summary {
   opacity: 0.55;
 }
 
