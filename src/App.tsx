@@ -69,7 +69,6 @@ import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
 import ResearchSidebarSection from "./components/research/ResearchSidebarSection";
 import ResearchFolderSwitcher from "./components/research/ResearchFolderSwitcher";
 import {
-  ALL_RESEARCH_SCOPE,
   nextTreeInResearchScope,
   resolveResearchScope,
   treeForResearchScope,
@@ -315,7 +314,6 @@ const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 const HOME_TAB_ID = "__home__";
 const ACTIVE_RESEARCH_TREE_KEY = "qmux.active-research-tree.v1";
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
-const LAST_RESEARCH_WORKSPACE_KEY = "qmux.last-research-workspace.v1";
 const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
@@ -1336,19 +1334,17 @@ export default function App() {
   const archivedResearchTreesRef = useRef(archivedResearchTrees);
   researchTreesRef.current = researchTrees;
   archivedResearchTreesRef.current = archivedResearchTrees;
-  // Which folder the Research sidebar is scoped to. The raw stored value is
-  // kept as-is (groups load asynchronously); it is resolved against the live
-  // research workspaces wherever it is read, so a removed or never-loaded
-  // folder reads as "all" without clobbering the persisted choice.
+  // Which single folder the Research sidebar is scoped to. The raw stored
+  // value is resolved against live research workspaces wherever it is read.
   const [researchFolderScope, setResearchFolderScope] = useState<ResearchFolderScope>(
-    () => localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY) ?? ALL_RESEARCH_SCOPE,
+    () => localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY),
   );
   const changeResearchFolderScope = useCallback((scope: ResearchFolderScope) => {
     setResearchFolderScope(scope);
-    localStorage.setItem(RESEARCH_FOLDER_SCOPE_KEY, scope);
-    // A scoped sidebar also becomes the default filing target for new research.
-    if (scope !== ALL_RESEARCH_SCOPE) {
-      localStorage.setItem(LAST_RESEARCH_WORKSPACE_KEY, scope);
+    if (scope) {
+      localStorage.setItem(RESEARCH_FOLDER_SCOPE_KEY, scope);
+    } else {
+      localStorage.removeItem(RESEARCH_FOLDER_SCOPE_KEY);
     }
   }, []);
   const [researchActivity, setResearchActivity] = useState<ResearchNode[]>([]);
@@ -1900,10 +1896,7 @@ export default function App() {
     [groups, panes],
   );
   const scopedResearchPanes = useMemo(
-    () =>
-      researchScope === ALL_RESEARCH_SCOPE
-        ? researchPanes
-        : researchPanes.filter((pane) => pane.groupId === researchScope),
+    () => researchPanes.filter((pane) => pane.groupId === researchScope),
     [researchPanes, researchScope],
   );
   const cycleableResearchTabIds = useMemo(
@@ -4785,10 +4778,7 @@ export default function App() {
         // restore, a remembered tree on mode switch). Follow it with the
         // folder scope, or the document would show a tree the sidebar
         // doesn't list — with nothing highlighted anywhere.
-        if (
-          researchScopeRef.current !== ALL_RESEARCH_SCOPE &&
-          researchScopeRef.current !== detail.tree.workspaceId
-        ) {
+        if (researchScopeRef.current !== detail.tree.workspaceId) {
           changeResearchFolderScope(detail.tree.workspaceId);
         }
         void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
@@ -5045,18 +5035,11 @@ export default function App() {
       localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, detail.tree.id);
       setActiveResearchDetail(detail);
       setActiveResearchDetailError(null);
-      // The dialog offers every folder (plus the default and the native
-      // picker) regardless of the sidebar's current folder scope. Follow the
-      // new tree with the scope like selectResearchTree does, or the document
-      // opens on a tree the scoped sidebar doesn't list — with nothing
-      // highlighted anywhere.
-      if (
-        researchScopeRef.current !== ALL_RESEARCH_SCOPE &&
-        researchScopeRef.current !== detail.tree.workspaceId
-      ) {
+      // A first run creates its private default folder. Follow that new folder
+      // so the single-folder sidebar immediately lists the new tree.
+      if (researchScopeRef.current !== detail.tree.workspaceId) {
         changeResearchFolderScope(detail.tree.workspaceId);
       }
-      localStorage.setItem(LAST_RESEARCH_WORKSPACE_KEY, group.id);
       void refreshResearchNavigation().catch(() => undefined);
       void applyGeneratedResearchTreeTitle(detail.tree.id, input.prompt, detail.tree.title);
     },
@@ -6388,13 +6371,11 @@ export default function App() {
         setActiveResearchDetailError(null);
         localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
       }
-      if (localStorage.getItem(LAST_RESEARCH_WORKSPACE_KEY) === workspace.id) {
-        localStorage.removeItem(LAST_RESEARCH_WORKSPACE_KEY);
-      }
-      // The in-memory scope already resolves a dead folder to "all"; commit
-      // that resolution so the stored key doesn't keep naming the removed id.
       if (researchScopeRef.current === workspace.id) {
-        changeResearchFolderScope(ALL_RESEARCH_SCOPE);
+        const nextFolder = groups.find(
+          (group) => group.scope === "research" && group.id !== workspace.id,
+        );
+        changeResearchFolderScope(nextFolder?.id ?? null);
       }
       void refreshResearchNavigation().catch(() => undefined);
     } catch (err) {
@@ -8555,7 +8536,6 @@ export default function App() {
             folders={researchGroups}
             scope={researchScope}
             treeCounts={researchFolderTreeCounts}
-            totalTreeCount={researchTrees.length + archivedResearchTrees.length}
             folderPickerBusy={folderPickerStatus !== null}
             onSelectScope={(scope) => {
               changeResearchFolderScope(scope);
@@ -10496,20 +10476,8 @@ export default function App() {
         open={newResearchOpen}
         adapters={config?.adapters ?? []}
         requireCmdEnterToSend={settings.requireCmdEnterToSend}
-        workspaces={researchGroups}
-        initialWorkspaceId={
-          (researchScope !== ALL_RESEARCH_SCOPE ? researchScope : null) ??
-          (researchGroups.some(
-            (workspace) => workspace.id === localStorage.getItem(LAST_RESEARCH_WORKSPACE_KEY),
-          )
-            ? localStorage.getItem(LAST_RESEARCH_WORKSPACE_KEY)
-            : null) ??
-          researchTrees.find((tree) => tree.id === activeResearchTreeId)?.workspaceId ??
-          activeResearchDetail?.tree.workspaceId ??
-          null
-        }
+        workspaceId={researchScope}
         onClose={() => setNewResearchOpen(false)}
-        onChooseWorkspace={chooseResearchWorkspaceFolder}
         onCreate={submitNewResearch}
       />
 

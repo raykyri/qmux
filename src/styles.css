@@ -1115,21 +1115,6 @@
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.new-research-hint {
-  margin: 0;
-  color: #747d79;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.new-research-hint-path {
-  display: block;
-  overflow: hidden;
-  color: #8f9893;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .new-research-advanced {
   color: #8f9893;
   font-size: 11px;

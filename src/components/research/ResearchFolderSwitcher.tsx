@@ -4,13 +4,12 @@ import {
   ChevronDown,
   Folder,
   FolderPlus,
-  Folders,
   FolderSync,
   Pencil,
   Trash2,
 } from "lucide-react";
 import type { GroupInfo } from "../../types";
-import { ALL_RESEARCH_SCOPE, type ResearchFolderScope } from "../../lib/researchScope";
+import type { ResearchFolderScope } from "../../lib/researchScope";
 
 interface ResearchFolderSwitcherProps {
   folders: GroupInfo[];
@@ -18,7 +17,6 @@ interface ResearchFolderSwitcherProps {
   // Tree counts (active + archived) keyed by workspace id; used both for the
   // menu badges and the folder-replace dialog's messaging.
   treeCounts: Map<string, number>;
-  totalTreeCount: number;
   folderPickerBusy: boolean;
   onSelectScope: (scope: ResearchFolderScope) => void;
   onNewFolder: () => Promise<GroupInfo | null>;
@@ -35,7 +33,6 @@ export default function ResearchFolderSwitcher({
   folders,
   scope,
   treeCounts,
-  totalTreeCount,
   folderPickerBusy,
   onSelectScope,
   onNewFolder,
@@ -68,7 +65,7 @@ export default function ResearchFolderSwitcher({
     };
   }, [open]);
 
-  const scopedFolder = scope === ALL_RESEARCH_SCOPE ? null : folders.find((f) => f.id === scope);
+  const scopedFolder = folders.find((folder) => folder.id === scope);
   const folderName = (folder: GroupInfo) => folder.nameOverride || folder.name;
 
   function select(next: ResearchFolderScope) {
@@ -83,45 +80,27 @@ export default function ResearchFolderSwitcher({
         className="research-folder-trigger"
         aria-haspopup="menu"
         aria-expanded={open}
-        title={scopedFolder ? scopedFolder.dir : "Showing research from every folder"}
+        title={scopedFolder?.dir ?? "No research folder selected"}
         onClick={() => setOpen((current) => !current)}
       >
-        {scopedFolder ? (
-          <Folder size={13} aria-hidden="true" />
-        ) : (
-          <Folders size={13} aria-hidden="true" />
-        )}
+        <Folder size={13} aria-hidden="true" />
         <span className="research-folder-trigger-copy">
           <span className="research-folder-trigger-name">
-            {scopedFolder ? folderName(scopedFolder) : "All research"}
+            {scopedFolder ? folderName(scopedFolder) : "Research folders"}
           </span>
           {scopedFolder ? (
             <span className="research-folder-path">{scopedFolder.dir}</span>
           ) : null}
         </span>
         <span className="research-folder-count">
-          {scopedFolder ? (treeCounts.get(scopedFolder.id) ?? 0) : totalTreeCount}
+          {scopedFolder ? (treeCounts.get(scopedFolder.id) ?? 0) : 0}
         </span>
         <ChevronDown size={13} aria-hidden="true" className={open ? "is-open" : undefined} />
       </button>
       {open ? (
         <div className="research-folder-menu" role="menu" aria-label="Research folders">
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={scope === ALL_RESEARCH_SCOPE}
-            className={`research-folder-item${scope === ALL_RESEARCH_SCOPE ? " is-selected" : ""}`}
-            onClick={() => select(ALL_RESEARCH_SCOPE)}
-          >
-            <Folders size={13} aria-hidden="true" />
-            <span className="research-folder-item-name">All research</span>
-            {scope === ALL_RESEARCH_SCOPE ? <Check size={13} aria-hidden="true" /> : null}
-            <span className="research-folder-count">{totalTreeCount}</span>
-          </button>
           {folders.length > 0 ? (
-            <>
-              <div className="research-folder-menu-separator" role="separator" />
-              {folders.map((folder) => (
+            folders.map((folder) => (
                 <button
                   key={folder.id}
                   type="button"
@@ -139,8 +118,7 @@ export default function ResearchFolderSwitcher({
                   {scope === folder.id ? <Check size={13} aria-hidden="true" /> : null}
                   <span className="research-folder-count">{treeCounts.get(folder.id) ?? 0}</span>
                 </button>
-              ))}
-            </>
+              ))
           ) : null}
           <div className="research-folder-menu-separator" role="separator" />
           <button
