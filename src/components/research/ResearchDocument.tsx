@@ -706,7 +706,7 @@ export default function ResearchDocument({
                     Parent response
                   </button>
                 ) : null}
-                <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" />
+                <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" inline />
               </div>
               <div className="research-response-grid">
                 <section className="research-response" aria-label="Research response">

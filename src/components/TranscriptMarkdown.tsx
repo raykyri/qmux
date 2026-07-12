@@ -257,6 +257,30 @@ const researchMarkdownComponents: Components = {
   img: ({ node: _node, ...props }) => <BlockedMarkdownImage {...props} />,
 };
 
+// Block-level elements stripped (but their inline children kept) in inline
+// mode, so a stray heading/list/code fence in a one-line context like a title
+// renders as plain rich text instead of promoting to a full block.
+const INLINE_DISALLOWED_ELEMENTS = [
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "ul",
+  "ol",
+  "li",
+  "blockquote",
+  "pre",
+  "hr",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+];
+
 export interface OversizedMarkdownPolicy {
   maxCharacters: number;
   /** Cap on what the plain-text fallback puts in the DOM. Laying out a single
@@ -271,6 +295,10 @@ interface TranscriptMarkdownProps {
   className?: string;
   imageBehavior?: "render" | "open";
   oversizedContent?: OversizedMarkdownPolicy;
+  /** Strip block-level wrappers (headings, lists, code fences, tables) so only
+   * inline formatting — emphasis, links, inline code — survives. For one-line
+   * contexts like a title, where a promoted block would break the layout. */
+  inline?: boolean;
 }
 
 // Memoized because ReactMarkdown re-parses on every render and callers rerender
@@ -284,6 +312,7 @@ export default memo(function TranscriptMarkdown({
   className = "",
   imageBehavior = "render",
   oversizedContent,
+  inline = false,
 }: TranscriptMarkdownProps) {
   if (oversizedContent && text.length > oversizedContent.maxCharacters) {
     const displayLimit = oversizedContent.maxDisplayCharacters;
@@ -300,6 +329,8 @@ export default memo(function TranscriptMarkdown({
       <ReactMarkdown
         components={imageBehavior === "open" ? researchMarkdownComponents : markdownComponents}
         remarkPlugins={[remarkGfm, remarkBreaks]}
+        disallowedElements={inline ? INLINE_DISALLOWED_ELEMENTS : undefined}
+        unwrapDisallowed={inline}
       >
         {text}
       </ReactMarkdown>
