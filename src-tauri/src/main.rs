@@ -72,13 +72,17 @@ use workspace::{
     set_group_collapsed, set_group_dir, set_research_workspace_dir, validate_launch_workspace,
 };
 
-/// Menu id for the Quit item we substitute for the native predefined one (see
-/// `customize_app_menu`).
+/// Menu ids for the custom items installed by `customize_app_menu`.
 #[cfg(desktop)]
 const QUIT_MENU_ID: &str = "qmux-quit";
+#[cfg(desktop)]
+const NEW_WINDOW_MENU_ID: &str = "qmux-new-window";
 
-/// Reworks the default menu so close/quit requests reach our confirmation flow:
+/// Reworks the default menu for qmux's single-window behavior:
 ///
+/// - Adds "New Window" to the otherwise-empty File menu. Since qmux owns one shared
+///   session in one window, the action surfaces that window rather than constructing
+///   a second webview over the same state.
 /// - Strips the native "Close Window" items (⌘W on macOS, Alt+F4 elsewhere) so the
 ///   webview receives ⌘W itself; the frontend then routes ⌘W to close the active pane.
 /// - On macOS, replaces the predefined "Quit" item with our own ⌘Q item. The native
@@ -91,7 +95,6 @@ const QUIT_MENU_ID: &str = "qmux-quit";
 /// Every other default item is preserved — notably the Edit menu that wires up ⌘C/⌘V/⌘A.
 #[cfg(desktop)]
 fn customize_app_menu(app: &tauri::App) -> tauri::Result<()> {
-    #[cfg(target_os = "macos")]
     use tauri::menu::MenuItemBuilder;
     use tauri::menu::{Menu, MenuItemKind};
 
@@ -100,6 +103,13 @@ fn customize_app_menu(app: &tauri::App) -> tauri::Result<()> {
         let MenuItemKind::Submenu(submenu) = item else {
             continue;
         };
+        let submenu_label = submenu.text()?.replace('&', "");
+        if submenu_label == "File" {
+            let new_window = MenuItemBuilder::with_id(NEW_WINDOW_MENU_ID, "New Window")
+                .accelerator("CmdOrCtrl+N")
+                .build(app)?;
+            submenu.insert(&new_window, 0)?;
+        }
         for (index, sub_item) in submenu.items()?.into_iter().enumerate() {
             let MenuItemKind::Predefined(predefined) = &sub_item else {
                 continue;
@@ -126,10 +136,13 @@ fn customize_app_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Handles the custom Quit menu item, routing it through the same exit-confirmation
-/// flow as the window close button instead of terminating immediately.
+/// Handles the custom application menu items.
 #[cfg(desktop)]
 fn handle_app_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    if event.id().as_ref() == NEW_WINDOW_MENU_ID {
+        show_main_window(app);
+        return;
+    }
     if event.id().as_ref() != QUIT_MENU_ID {
         return;
     }
@@ -1508,6 +1521,7 @@ fn app_window_ready(app: tauri::AppHandle) -> Result<(), String> {
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
@@ -1554,11 +1568,7 @@ fn main() {
         // just surfaces the existing window. (CLI subcommands returned above and
         // never get here, so `qmux open` etc. are unaffected.)
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
