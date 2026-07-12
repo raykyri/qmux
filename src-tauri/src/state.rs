@@ -2950,7 +2950,7 @@ impl AppState {
             .persist_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (workspace, trees, nodes, group_order, recent_sessions) = {
+        let (workspace, trees, nodes, group_order, recent_sessions, reaped_thread_records) = {
             let mut model = self
                 .inner
                 .model
@@ -3042,6 +3042,29 @@ impl AppState {
                         .map(|node| (id.clone(), node))
                 })
                 .collect::<Vec<_>>();
+            // Folder detach bypasses remove_research_tree, so reap the same
+            // installation-local thread records here before the nodes carrying
+            // their ids disappear. Preserve anything a live agent still uses.
+            // Keep removed focus entries alongside the records so a failed
+            // persistence commit can restore the model exactly.
+            let thread_ids = nodes
+                .iter()
+                .filter_map(|(_, node)| node.thread_id.clone())
+                .filter(|thread_id| {
+                    !model
+                        .agents
+                        .values()
+                        .any(|agent| agent.thread_id.as_deref() == Some(thread_id))
+                })
+                .collect::<HashSet<_>>();
+            let reaped_thread_records = thread_ids
+                .into_iter()
+                .map(|thread_id| {
+                    let record = model.threads.remove(&thread_id);
+                    let focus = model.thread_focus.remove(&thread_id);
+                    (thread_id, record, focus)
+                })
+                .collect::<Vec<_>>();
             let agent_ids = nodes
                 .iter()
                 .filter_map(|(_, node)| node.agent_id.clone())
@@ -3072,7 +3095,14 @@ impl AppState {
             let group_order = model.group_order.clone();
             model.groups.remove(workspace_id);
             model.group_order.retain(|id| id != workspace_id);
-            (workspace, trees, nodes, group_order, recent_sessions)
+            (
+                workspace,
+                trees,
+                nodes,
+                group_order,
+                recent_sessions,
+                reaped_thread_records,
+            )
         };
 
         let persist_result = if self.inner.persist_enabled.load(Ordering::Relaxed) {
@@ -3090,6 +3120,14 @@ impl AppState {
                 for (id, node) in nodes {
                     model.research_nodes.insert(id, node);
                 }
+                for (thread_id, record, focus) in reaped_thread_records {
+                    if let Some(record) = record {
+                        model.threads.insert(thread_id.clone(), record);
+                    }
+                    if let Some(focus) = focus {
+                        model.thread_focus.insert(thread_id, focus);
+                    }
+                }
                 model.recent_sessions = recent_sessions;
             }
             return Err(format!("failed to commit global research detach: {err}"));
@@ -3101,6 +3139,22 @@ impl AppState {
             None,
             json!({ "groupId": workspace_id }),
         ));
+        // Best-effort after the durable commit: the records are unreachable,
+        // and a leftover graph file is only disk clutter.
+        for (_, record, _) in reaped_thread_records {
+            let Some(record) = record else {
+                continue;
+            };
+            let path = std::path::Path::new(&record.snapshot_path);
+            if let Err(err) = std::fs::remove_file(path)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "qmux: failed to remove detached research thread graph {}: {err}",
+                    record.snapshot_path
+                );
+            }
+        }
         Ok(node_ids)
     }
 
@@ -3192,6 +3246,11 @@ impl AppState {
             node.pane_id = None;
             node.agent_id = None;
             node.transcript_path = None;
+            // Thread records and their graph snapshots are installation-local
+            // and are not part of the portable archive. Retaining a foreign id
+            // could make later tree removal delete an unrelated local record
+            // whose generated id happens to collide.
+            node.thread_id = None;
         }
 
         let mut written_node_ids = Vec::new();
@@ -7000,6 +7059,7 @@ mod tests {
         imported_node.status = ResearchNodeStatus::Failed;
         imported_node.agent_id = Some("agent-colliding".to_string());
         imported_node.pane_id = None;
+        imported_node.thread_id = Some("thread-from-another-installation".to_string());
 
         state
             .import_detached_research(
@@ -7021,6 +7081,7 @@ mod tests {
         let detail = state.research_tree(&imported.id).unwrap();
         assert_ne!(detail.nodes[0].id, existing.nodes[0].id);
         assert!(detail.nodes[0].agent_id.is_none());
+        assert!(detail.nodes[0].thread_id.is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -8581,6 +8642,55 @@ mod tests {
         };
 
         state.remove_research_tree(&detail.tree.id).unwrap();
+
+        let model = state.inner.model.lock().unwrap();
+        assert!(!model.threads.contains_key("thread-research"));
+        assert!(!model.thread_focus.contains_key("thread-research"));
+        drop(model);
+        assert!(!std::path::Path::new(&snapshot_path).exists());
+    }
+
+    #[test]
+    fn research_workspace_detach_reaps_the_runs_thread_records() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        agent.thread_id = Some("thread-research".to_string());
+        agent.branch_id = Some("branch-research".to_string());
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .append_turn(sample_user_turn("research-agent", "Root"))
+            .unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        state.remove_pane("pane-7").unwrap();
+
+        let snapshot_path = {
+            let model = state.inner.model.lock().unwrap();
+            model
+                .threads
+                .get("thread-research")
+                .expect("run minted a thread record")
+                .snapshot_path
+                .clone()
+        };
+        let archive = state.detached_research_archive("group-1").unwrap();
+
+        state
+            .commit_research_workspace_detach("group-1", &archive)
+            .unwrap();
 
         let model = state.inner.model.lock().unwrap();
         assert!(!model.threads.contains_key("thread-research"));
