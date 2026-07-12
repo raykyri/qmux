@@ -1293,6 +1293,7 @@ export default function App() {
   const [activeResearchTreeId, setActiveResearchTreeId] = useState<string | null>(null);
   const activeResearchTreeIdRef = useRef(activeResearchTreeId);
   const researchDetailRequestSeqRef = useRef(0);
+  const researchNavRefreshSeqRef = useRef(0);
   activeResearchTreeIdRef.current = activeResearchTreeId;
   const [activeResearchPaneId, setActiveResearchPaneId] = useState<string | null>(() =>
     localStorage.getItem(ACTIVE_RESEARCH_PANE_KEY),
@@ -4617,7 +4618,19 @@ export default function App() {
     };
   }, [markVisibleResearchTreeViewed]);
   const refreshResearchNavigation = useCallback(async () => {
+    // Bump-and-check like every other refetch here (agents, panes, groups,
+    // the research detail): refreshes overlap — the debounced event refresh
+    // races the direct calls from archive/remove/submit — and the two list
+    // invokes below resolve independently, so without the guard a slower,
+    // older snapshot can be applied last and sit there (a stale "running"
+    // badge, a resurrected unseen flag, a re-listed removed tree) until the
+    // next research event.
+    const requestSeq = researchNavRefreshSeqRef.current + 1;
+    researchNavRefreshSeqRef.current = requestSeq;
     const [trees, activity] = await Promise.all([listResearchTrees(true), listResearchActivity()]);
+    if (researchNavRefreshSeqRef.current !== requestSeq) {
+      return;
+    }
     const partitioned = partitionResearchTrees(trees);
     setResearchTrees(partitioned.active);
     setArchivedResearchTrees(partitioned.archived);

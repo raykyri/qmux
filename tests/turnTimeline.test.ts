@@ -105,6 +105,27 @@ test("final answer view starts after the last tool call group", () => {
   assert.equal(assistantTextFromTimelineItems(answerItems), "Final **answer**.");
 });
 
+test("final answer survives when trailing tool activity attaches to the answer item", () => {
+  nextIndex = 0;
+  // The run ends with a wrap-up tool call after its final text (a TodoWrite,
+  // a post-answer check). The trailing call attaches to the same timeline
+  // item as the answer text, so the item after the last tool-bearing item
+  // does not exist — the boundary item IS the answer and must be kept.
+  const items = buildTimelineItems([
+    turn("user", [text("question")]),
+    turn("assistant", [toolUse("tool-1", "Read")]),
+    turn("user", [toolResult("tool-1", "research data")]),
+    turn("assistant", [text("# Final Report"), toolUse("tool-2", "TodoWrite")]),
+    turn("user", [toolResult("tool-2", "todos saved")]),
+  ]);
+
+  const answerItems = timelineItemsAfterLastToolCall(items);
+  assert.equal(assistantTextFromTimelineItems(answerItems), "# Final Report");
+  // The carried boundary copy sheds its activities: the wrap-up call stays
+  // out of the answer view (it is still visible in the full trace).
+  assert.ok(answerItems.every((item) => item.activities.length === 0));
+});
+
 test("keys derive from turn ids so truncating old turns keeps suffix keys stable", () => {
   nextIndex = 0;
   const turns = [

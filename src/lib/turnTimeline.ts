@@ -75,7 +75,22 @@ function containsToolActivity(item: ActivityItem) {
 export function timelineItemsAfterLastToolCall(items: MessageItem[]) {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (items[index].activities.some(containsToolActivity)) {
-      return items.slice(index + 1);
+      const after = items.slice(index + 1);
+      // Trailing tool activity with no text after it (a TodoWrite wrap-up, a
+      // post-answer verification) attaches to the same item as the final
+      // answer text, making the answer item itself the boundary. Slicing it
+      // away would present a completed response as unavailable, so carry the
+      // boundary item's message content forward — its activities remain
+      // visible in the full trace.
+      const boundary = items[index];
+      if (
+        boundary.role === "assistant" &&
+        messageItemText(boundary) !== null &&
+        !assistantTextFromTimelineItems(after)
+      ) {
+        return [{ ...boundary, activities: [] }, ...after];
+      }
+      return after;
     }
   }
   return items;

@@ -2444,16 +2444,24 @@ impl AppState {
         if let Some(pane_id) = pane_id {
             // The pane detach path clears the binding; a Cancelled node is
             // already settled, so detach leaves its status alone.
-            if let Err(err) = crate::pty::kill_pane(self, pane_id.clone())
-                && self.pane_exists(&pane_id).unwrap_or(false)
-            {
-                // Keep the Cancelled outcome monotonic, but report the partial
-                // failure. The UI keeps cancellation available while pane_id
-                // remains bound, so the user can retry instead of leaving an
-                // invisible process that pins the tree until restart.
-                return Err(format!(
-                    "research was cancelled, but its terminal could not be closed: {err}"
-                ));
+            if let Err(err) = crate::pty::kill_pane(self, pane_id.clone()) {
+                if self.pane_exists(&pane_id).unwrap_or(false) {
+                    // Keep the Cancelled outcome monotonic, but report the partial
+                    // failure. The UI keeps cancellation available while pane_id
+                    // remains bound, so the user can retry instead of leaving an
+                    // invisible process that pins the tree until restart.
+                    return Err(format!(
+                        "research was cancelled, but its terminal could not be closed: {err}"
+                    ));
+                }
+                // The pane record no longer exists, so no EOF/teardown is left
+                // to run the detach for us. Clear the binding here — this is
+                // the reclaim path the doc comment above promises — or the
+                // settled node keeps counting as an active run (blocking
+                // archive/remove and folder changes) until restart.
+                if let Err(err) = self.detach_research_pane(&pane_id) {
+                    eprintln!("qmux: failed to detach research pane {pane_id}: {err}");
+                }
             }
         }
         self.research_node(node_id)
@@ -2523,6 +2531,19 @@ impl AppState {
     }
 
     pub fn detach_research_pane(&self, pane_id: &str) -> Result<Option<ResearchNode>, String> {
+        self.detach_research_pane_inner(pane_id, None)
+    }
+
+    /// `removed_agent` carries the bound agent's id and status as captured by
+    /// `remove_pane` before it pruned the record: by the time the detach runs
+    /// on the teardown path the agent is already gone from the model (and on
+    /// the kept-for-queue path its status has been parked Idle), so reading
+    /// the live record here could never see the real end-of-turn status.
+    fn detach_research_pane_inner(
+        &self,
+        pane_id: &str,
+        removed_agent: Option<(&str, AgentStatus)>,
+    ) -> Result<Option<ResearchNode>, String> {
         let updated = {
             let mut model = self
                 .inner
@@ -2546,9 +2567,14 @@ impl AppState {
                     .research_nodes
                     .get(&node_id)
                     .and_then(|node| node.agent_id.as_deref())
-                    .and_then(|agent_id| model.agents.get(agent_id))
-                    .is_some_and(|agent| {
-                        matches!(agent.status, AgentStatus::Done | AgentStatus::Idle)
+                    .and_then(|agent_id| {
+                        removed_agent
+                            .filter(|(removed_id, _)| *removed_id == agent_id)
+                            .map(|(_, status)| status)
+                            .or_else(|| model.agents.get(agent_id).map(|agent| agent.status))
+                    })
+                    .is_some_and(|status| {
+                        matches!(status, AgentStatus::Done | AgentStatus::Idle)
                     });
                 let node = model.research_nodes.get_mut(&node_id)?;
                 node.pane_id = None;
@@ -3139,6 +3165,12 @@ impl AppState {
     }
 
     pub fn remove_pane(&self, pane_id: &str) -> Result<(), String> {
+        // The bound agent's identity and status at the moment the pane went
+        // away, captured before the pruning below rewrites or removes the
+        // record. The research detach at the end of this function needs it to
+        // tell a finished run (process exits at end of turn) from a crashed
+        // one; reading the model there is too late.
+        let mut departing_agent: Option<(String, AgentStatus)> = None;
         let removed_group_id = {
             let mut model = self
                 .inner
@@ -3167,6 +3199,7 @@ impl AppState {
                 .map(|agent| agent.id.clone())
             {
                 if let Some(agent) = model.agents.get(&agent_id).cloned() {
+                    departing_agent = Some((agent.id.clone(), agent.status));
                     upsert_recent_session_for_agent_locked(
                         &mut model,
                         &agent,
@@ -3262,7 +3295,12 @@ impl AppState {
         if let Ok(mut locks) = self.inner.pane_send_locks.lock() {
             locks.remove(pane_id);
         }
-        if let Err(err) = self.detach_research_pane(pane_id) {
+        if let Err(err) = self.detach_research_pane_inner(
+            pane_id,
+            departing_agent
+                .as_ref()
+                .map(|(agent_id, status)| (agent_id.as_str(), *status)),
+        ) {
             eprintln!("qmux: failed to detach research pane {pane_id}: {err}");
         }
         if let Err(err) = remove_pane_scrollback(&self.inner.config.workspace_root, pane_id) {
@@ -3764,7 +3802,18 @@ impl AppState {
             let before = node.clone();
             node.native_session_id = agent.session_id.clone();
             node.transcript_path = agent.transcript_path.clone();
-            node.pane_id = agent.pane_id.clone();
+            // A sync is built from an agent snapshot taken under a previously
+            // released lock, so it can land after pane teardown already ran
+            // detach_research_pane. Rewriting pane_id would re-bind the dead
+            // pane to a settled node — a state nothing clears until restart,
+            // and one that pins the tree (archive/remove/folder ops treat a
+            // bound pane as an active run). Terminal nodes keep whatever
+            // binding teardown left them; the checkpoint fields above still
+            // flow, since the native session id and transcript path trail the
+            // Complete status by design.
+            if !node.status.is_terminal() {
+                node.pane_id = agent.pane_id.clone();
+            }
             if prompt_id.is_some() {
                 node.prompt_native_id = prompt_id;
             }
@@ -7788,6 +7837,111 @@ mod tests {
                 .unwrap_or_default()
                 .contains("exited before completion")
         );
+    }
+
+    #[test]
+    fn remove_pane_settles_a_finished_agents_run_complete_not_failed() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        // The process exits right after finishing its turn: the Stop hook
+        // recorded Done on the agent record, but the node sync lost the race
+        // with the pane teardown. Unlike the direct-detach test above, the
+        // production path — remove_pane — prunes the agent record before the
+        // detach runs, so the detach must read the pre-removal status.
+        agent.status = AgentStatus::Done;
+        state.insert_agent(agent).unwrap();
+
+        state.remove_pane("pane-7").unwrap();
+
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Complete);
+        assert!(node.error.is_none());
+        assert!(node.pane_id.is_none());
+    }
+
+    #[test]
+    fn late_agent_sync_does_not_rebind_a_settled_nodes_removed_pane() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        // Teardown settles the node and clears the binding...
+        state.remove_pane("pane-7").unwrap();
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert!(node.status.is_terminal());
+        assert!(node.pane_id.is_none());
+        // ...then a hook-thread sync built from a snapshot taken before the
+        // teardown lands late. It must not re-bind the removed pane: nothing
+        // would ever clear it again, and the tree would count as having an
+        // active run (blocking removal) until restart.
+        state.sync_research_node_from_agent(&agent).unwrap();
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert!(node.pane_id.is_none());
+        state.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn cancel_clears_a_dangling_binding_when_the_pane_record_is_gone() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        agent.pane_id = Some("pane-ghost".to_string());
+        state.insert_agent(agent.clone()).unwrap();
+        // The node is bound to a pane whose record does not exist (the
+        // stuck-binding shape: a kill that failed after its pane was already
+        // torn down). Cancel must still reclaim the binding — there is no
+        // EOF/teardown left to do it — or the settled node pins the tree as
+        // an active run until restart.
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-ghost")
+            .unwrap();
+
+        let node = state
+            .cancel_research_node(&detail.tree.root_node_id)
+            .unwrap();
+        assert_eq!(node.status, ResearchNodeStatus::Cancelled);
+        assert!(node.pane_id.is_none());
+        state.remove_research_tree(&detail.tree.id).unwrap();
     }
 
     #[test]

@@ -190,9 +190,16 @@ export default function ResearchDocument({
   // detail replacement (every research event rebuilds the object) does not
   // restart the effect and refetch content that has not changed.
   const detailRef = useRef(detail);
+  // Which node's content the scroll container is actually showing. Scroll
+  // offsets must only be recorded while this matches the selection: a node
+  // switch clears `content`, the article collapses to the loading block, and
+  // the browser's clamp scroll event would otherwise overwrite the incoming
+  // node's saved offset (usually with 0) before the restore effect reads it.
+  const contentNodeIdRef = useRef<string | null>(null);
   selectedNodeIdRef.current = selectedNodeId;
   treeIdRef.current = treeId;
   detailRef.current = detail;
+  contentNodeIdRef.current = content?.node.id ?? null;
 
   // Match the right-pane composer: fit the textarea to its contents up to the
   // shared cap, then let it scroll. The node dependency also sizes a newly
@@ -269,7 +276,11 @@ export default function ResearchDocument({
         return;
       }
       const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
-      if (selectedNodeId && documentScrollRef.current) {
+      if (
+        selectedNodeId &&
+        documentScrollRef.current &&
+        contentNodeIdRef.current === selectedNodeId
+      ) {
         navigation.scrollByNode[selectedNodeId] = documentScrollRef.current.scrollTop;
       }
       navigation.selectedNodeId = nodeId;
@@ -366,7 +377,12 @@ export default function ResearchDocument({
       }
       const currentTreeId = treeIdRef.current;
       const currentNodeId = selectedNodeIdRef.current;
-      if (currentTreeId && currentNodeId && documentScrollRef.current) {
+      if (
+        currentTreeId &&
+        currentNodeId &&
+        documentScrollRef.current &&
+        contentNodeIdRef.current === currentNodeId
+      ) {
         const navigation = (navigationRef.current[currentTreeId] ??= { scrollByNode: {} });
         navigation.scrollByNode[currentNodeId] = documentScrollRef.current.scrollTop;
       }
@@ -377,6 +393,11 @@ export default function ResearchDocument({
 
   const recordScroll = useCallback(() => {
     if (!treeId || !selectedNodeId || !documentScrollRef.current) {
+      return;
+    }
+    // Loading/stale windows are not this node's scroll state (see the ref's
+    // comment) — without this, navigating to a node wipes its saved offset.
+    if (contentNodeIdRef.current !== selectedNodeId) {
       return;
     }
     const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });

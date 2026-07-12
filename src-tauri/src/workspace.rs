@@ -269,6 +269,11 @@ pub fn rename_research_workspace(
     workspace_id: &str,
     name: Option<String>,
 ) -> Result<GroupInfo, String> {
+    // Same read-modify-write shape as the dir/remove mutations above and
+    // below: without the guard, a set_research_workspace_dir committing
+    // between this read and the manifest write would have one side's update
+    // silently reverted — in the model and the durable manifest both.
+    let _guard = lock_research_workspace_mutations()?;
     let workspace = require_research_workspace(state, workspace_id)?;
     rename_group_record(state, workspace, name)
 }
