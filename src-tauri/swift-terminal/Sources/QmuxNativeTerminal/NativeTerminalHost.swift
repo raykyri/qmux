@@ -532,17 +532,8 @@ final class NativeTerminalHost {
             pane.requestPaste()
             return nil
         }
-        // Ask Rust to classify the chord into an exact qmux command. The event
-        // is consumed only when a semantic command was emitted; everything
-        // else stays in the native responder chain for Ghostty/AppKit.
-        let hasPrimaryModifier = modifiers.contains(.command) || modifiers.contains(.control)
-        let isNativeCommand = modifiers.contains(.command) && (key == "c" || key == "q")
-        if hasPrimaryModifier, !isNativeCommand, let key,
-           let shortcutKey = webShortcutKey(for: key)
-        {
-            if pane.reportShortcut(key: shortcutKey, event: event) {
-                return nil
-            }
+        if claimAppShortcut(event, for: pane) {
+            return nil
         }
         if key == "\u{1b}",
            !modifiers.contains(.command),
@@ -582,6 +573,26 @@ final class NativeTerminalHost {
         }
         pane.reportCommandModifier(active: event.modifierFlags.contains(.command))
         return event
+    }
+
+    /// Asks Rust to classify the chord into an exact qmux command. Returns true
+    /// (and consumes the chord) only when a semantic command was emitted;
+    /// everything else stays in the native responder chain for Ghostty/AppKit.
+    /// Called from two places that must agree: the local event monitor's
+    /// keyDown routing, and QmuxTerminalView.performKeyEquivalent — the
+    /// backstop for chords the monitor missed, which Ghostty's key-equivalent
+    /// handler would otherwise swallow (see that override for the mechanism).
+    func claimAppShortcut(_ event: NSEvent, for pane: NativeTerminalPane) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        let hasPrimaryModifier = modifiers.contains(.command) || modifiers.contains(.control)
+        let isNativeCommand = modifiers.contains(.command) && (key == "c" || key == "q")
+        guard hasPrimaryModifier, !isNativeCommand, let key,
+              let shortcutKey = webShortcutKey(for: key)
+        else {
+            return false
+        }
+        return pane.reportShortcut(key: shortcutKey, event: event)
     }
 
     /// Translates AppKit key characters into the key names shared by the Rust

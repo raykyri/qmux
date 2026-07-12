@@ -133,6 +133,14 @@ final class NativeTerminalPane: NSObject,
                 "super+zero",  // reset_font_size
                 "ctrl+tab",  // next_tab — qmux: cycle pane tab
                 "ctrl+shift+tab",  // previous_tab
+                // No Ghostty default action today, but qmux's terminal/research
+                // mode toggle — keep any future Ghostty binding from claiming
+                // it. Note unbinding alone can NOT reclaim a chord Ghostty has
+                // no binding for: upstream performKeyEquivalent swallows every
+                // unclaimed ⌘ chord regardless, which is why
+                // QmuxTerminalView.performKeyEquivalent offers chords to the
+                // qmux shortcut classifier first.
+                "super+backquote",
             ] {
                 builder.withCustom("keybind", "\(chord)=unbind")
             }
@@ -158,6 +166,10 @@ final class NativeTerminalPane: NSObject,
         view.setAccessibilityLabel("Terminal")
         view.setAccessibilityIdentifier("terminal.\(paneID)")
         view.onPasteRequest = { [weak self] in self?.requestPaste() }
+        view.onAppShortcutKeyEquivalent = { [weak self] event in
+            guard let self else { return false }
+            return NativeTerminalHost.shared.claimAppShortcut(event, for: self)
+        }
     }
 
     func terminalDidClose(processAlive: Bool) {

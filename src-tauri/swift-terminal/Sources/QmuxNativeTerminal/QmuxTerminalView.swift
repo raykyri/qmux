@@ -5,9 +5,35 @@ import GhosttyTerminal
 /// transparent React overlay above the Metal-backed terminal surface.
 final class QmuxTerminalView: TerminalView {
     var onPasteRequest: (() -> Void)?
+    /// Offers a ⌘ chord to qmux's shortcut layer (the same Rust classifier the
+    /// NativeTerminalHost key monitor uses). Returns true when qmux consumed it.
+    var onAppShortcutKeyEquivalent: ((NSEvent) -> Bool)?
 
     override func paste(_: Any?) {
         onPasteRequest?()
+    }
+
+    // The NativeTerminalHost key monitor normally claims qmux app shortcuts
+    // (⌘-backtick, ⌘T, ...) before AppKit dispatches the event at all. But
+    // upstream GhosttyTerminal's performKeyEquivalent is a catch-all: any
+    // command chord that reaches dispatch — every monitor missed path
+    // (keyboard-owner/first-responder desync, pre-init gaps) — is consumed on
+    // its second pass and fed to ghostty core, where a chord with no Ghostty
+    // binding (like ⌘-backtick, which has no default) silently dies. Keybind
+    // unbinds can't help there: they only remove bindings, not the catch-all.
+    // So before Ghostty gets a look, offer the chord to qmux's own shortcut
+    // classifier. The first-responder guard mirrors upstream: AppKit walks the
+    // whole view hierarchy for key equivalents, and a chord typed into a web
+    // dialog must not trigger terminal-scoped shortcuts.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           window?.firstResponder === self,
+           let onAppShortcutKeyEquivalent,
+           onAppShortcutKeyEquivalent(event)
+        {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     /// Key codes whose *unmodified* character is already a control byte
