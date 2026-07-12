@@ -206,6 +206,23 @@ fn group_dir_matches(group: &GroupInfo, canonical: &Path, requested: &Path) -> b
     }
 }
 
+/// Reads a user-picked folder's detached archive for open/repoint decisions.
+/// An unreadable archive (corrupted manifest, a version from a newer qmux, a
+/// damaged response file) must not strand the user with a bare decode error:
+/// these call sites are the only in-app way to use the folder at all, so the
+/// error has to say where the archive lives and how to proceed without it.
+fn read_detached_research_for_folder(
+    folder: &Path,
+) -> Result<Option<crate::research::DetachedResearchBundle>, String> {
+    crate::research::read_detached_research(folder).map_err(|err| {
+        format!(
+            "{} contains detached research that could not be read: {err}. To use the folder without restoring its history, move {} out of the folder and keep it somewhere safe.",
+            folder.display(),
+            crate::research::detached_research_archive_location(folder).display()
+        )
+    })
+}
+
 fn create_research_workspace_locked(
     state: &AppState,
     name: Option<String>,
@@ -229,7 +246,7 @@ fn create_research_workspace_locked(
     }) {
         return Ok(existing);
     }
-    if let Some(bundle) = crate::research::read_detached_research(&canonical)? {
+    if let Some(bundle) = read_detached_research_for_folder(&canonical)? {
         // A completed node whose response file is absent from the archive
         // (a partial copy between machines, a hand-deleted file) is already
         // damaged outside qmux — refusing the whole import here turned one
@@ -397,7 +414,7 @@ pub fn set_research_workspace_dir(
     require_research_workspace(state, workspace_id)?;
     let raw = PathBuf::from(&dir);
     let requested = canonical_dir(&dir)?;
-    if crate::research::read_detached_research(&requested)?.is_some() {
+    if read_detached_research_for_folder(&requested)?.is_some() {
         return Err(
             "the selected folder contains detached research; open it as a new Research folder instead"
                 .to_string(),
@@ -2076,6 +2093,63 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn sample_detached_manifest(folder: &Path) -> crate::research::DetachedResearchArchive {
+        crate::research::DetachedResearchArchive {
+            version: crate::research::DETACHED_RESEARCH_ARCHIVE_VERSION,
+            archive_id: "archive-test".to_string(),
+            workspace: GroupInfo {
+                id: "group-detached".to_string(),
+                name: "project".to_string(),
+                name_override: None,
+                dir: folder.display().to_string(),
+                managed_dir: String::new(),
+                base_repo: None,
+                base_ref: Some("HEAD".to_string()),
+                parent_id: None,
+                created_at: 1,
+                collapsed: false,
+                scope: WorkspaceScope::Research,
+                imported_research_archive_id: None,
+                agents: Vec::new(),
+            },
+            trees: Vec::new(),
+            nodes: Vec::new(),
+            exported_at: 1,
+        }
+    }
+
+    #[test]
+    fn opening_folder_with_unreadable_archive_names_the_archive_and_a_way_out() {
+        let root = temp_workspace("open-unreadable-archive");
+        let project = root.join("project");
+        let archive_dir = project.join(crate::persistence::STATE_DIR).join("research-v1");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(archive_dir.join("manifest.json"), b"{ not json").unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+
+        let error = create_research_workspace(&state, None, project.display().to_string())
+            .unwrap_err();
+
+        assert!(error.contains(&archive_dir.display().to_string()), "{error}");
+        assert!(error.contains("move"), "{error}");
+
+        // An archive from a newer qmux gets the same actionable framing plus
+        // the version hint.
+        let mut manifest = serde_json::to_value(sample_detached_manifest(&project)).unwrap();
+        manifest["version"] = serde_json::json!(999);
+        std::fs::write(
+            archive_dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = create_research_workspace(&state, None, project.display().to_string())
+            .unwrap_err();
+        assert!(error.contains("newer qmux"), "{error}");
+        assert!(error.contains(&archive_dir.display().to_string()), "{error}");
         std::fs::remove_dir_all(root).unwrap();
     }
 

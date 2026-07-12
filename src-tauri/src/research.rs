@@ -228,7 +228,7 @@ fn prepare_detached_archive_parent(folder: &Path) -> Result<PathBuf, String> {
 fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), String> {
     if archive.version != 1 && archive.version != DETACHED_RESEARCH_ARCHIVE_VERSION {
         return Err(format!(
-            "unsupported detached research archive version {}",
+            "unsupported detached research archive version {} (it may have been written by a newer qmux; upgrade this installation to restore it)",
             archive.version
         ));
     }
@@ -513,6 +513,22 @@ fn read_detached_research_from_path(
         responses,
         pending,
     })
+}
+
+/// Where the folder's detached research archive lives, for user-facing
+/// guidance when the archive cannot be read. Points at whichever form is
+/// actually present on disk so "move this directory aside" instructions
+/// name the right target.
+pub fn detached_research_archive_location(folder: &Path) -> PathBuf {
+    let final_path = detached_archive_path(folder, false);
+    if final_path.exists() {
+        return final_path;
+    }
+    let pending = detached_archive_path(folder, true);
+    if pending.exists() {
+        return pending;
+    }
+    final_path
 }
 
 pub fn read_detached_research(folder: &Path) -> Result<Option<DetachedResearchBundle>, String> {
