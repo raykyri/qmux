@@ -5,6 +5,15 @@ import { getResearchNodeContent } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { growComposerTextarea } from "../../lib/composerTextarea";
 import {
+  EMPTY_RESEARCH_HISTORY,
+  canGoBack as historyCanGoBack,
+  canGoForward as historyCanGoForward,
+  initResearchHistory,
+  pushResearchHistory,
+  researchHistoryBack,
+  researchHistoryForward,
+} from "../../lib/researchHistory";
+import {
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
   researchNavigationStore,
@@ -174,10 +183,9 @@ export default function ResearchDocument({
   onToast,
 }: ResearchDocumentProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  // Browser-style visit history for the header's back/forward controls. Reset
-  // per tree; `historyIndex` points at the currently displayed node within it.
-  const [history, setHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
+  // Browser-style visit history for the header's back/forward controls, reset
+  // per tree. Transitions live in ../../lib/researchHistory.
+  const [history, setHistory] = useState(EMPTY_RESEARCH_HISTORY);
   const [content, setContent] = useState<ResearchNodeContent | null>(null);
   const [followup, setFollowup] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -259,8 +267,7 @@ export default function ResearchDocument({
         : rootNodeId;
     setSelectedNodeId(selected);
     // A tree switch starts a fresh visit history rooted at the restored node.
-    setHistory(selected ? [selected] : []);
-    setHistoryIndex(selected ? 0 : -1);
+    setHistory(initResearchHistory(selected));
     setContent(null);
     setContentError(null);
     // Restore the expanded window with the selection: the saved scroll offset
@@ -314,32 +321,31 @@ export default function ResearchDocument({
         return;
       }
       applySelection(nodeId);
-      // Fresh navigation truncates any forward history and appends the new node,
-      // leaving the cursor at the end — matching browser back/forward semantics.
-      setHistory((prev) => [...prev.slice(0, historyIndex + 1), nodeId]);
-      setHistoryIndex((index) => index + 1);
+      setHistory((prev) => pushResearchHistory(prev, nodeId));
     },
-    [applySelection, contentError, historyIndex, selectedNodeId, treeId],
+    [applySelection, contentError, selectedNodeId, treeId],
   );
 
-  const canGoBack = historyIndex > 0;
-  const canGoForward = historyIndex < history.length - 1;
+  const canGoBack = historyCanGoBack(history);
+  const canGoForward = historyCanGoForward(history);
 
   const goBack = useCallback(() => {
-    if (historyIndex <= 0) {
+    const step = researchHistoryBack(history);
+    if (!step) {
       return;
     }
-    applySelection(history[historyIndex - 1]);
-    setHistoryIndex(historyIndex - 1);
-  }, [applySelection, history, historyIndex]);
+    applySelection(step.nodeId);
+    setHistory(step.history);
+  }, [applySelection, history]);
 
   const goForward = useCallback(() => {
-    if (historyIndex >= history.length - 1) {
+    const step = researchHistoryForward(history);
+    if (!step) {
       return;
     }
-    applySelection(history[historyIndex + 1]);
-    setHistoryIndex(historyIndex + 1);
-  }, [applySelection, history, historyIndex]);
+    applySelection(step.nodeId);
+    setHistory(step.history);
+  }, [applySelection, history]);
 
   // Browser-style navigation shortcuts, active only while the document is
   // mounted (research surface visible). Cmd/Ctrl+[ / ] and Alt+←/→ mirror the

@@ -1,0 +1,59 @@
+// Browser-style visit history for the research document's back/forward
+// controls. A pure, immutable reducer: the component holds one `ResearchHistory`
+// value and swaps it for the result of these transitions, so the branch/cursor
+// semantics live here (and are unit-tested) rather than inline in the view.
+
+export interface ResearchHistory {
+  /** Visited node ids, oldest first. */
+  entries: string[];
+  /** Cursor into `entries` for the currently displayed node, or -1 when empty. */
+  index: number;
+}
+
+export interface ResearchHistoryStep {
+  history: ResearchHistory;
+  nodeId: string;
+}
+
+export const EMPTY_RESEARCH_HISTORY: ResearchHistory = { entries: [], index: -1 };
+
+/** Starts a fresh history at the given entry node (e.g. on a tree switch). */
+export function initResearchHistory(nodeId: string | null): ResearchHistory {
+  return nodeId ? { entries: [nodeId], index: 0 } : EMPTY_RESEARCH_HISTORY;
+}
+
+/**
+ * Records fresh navigation to `nodeId`: any forward entries beyond the cursor
+ * are discarded and the node is appended, leaving the cursor at the end —
+ * exactly how a browser drops the forward stack when you follow a new link.
+ */
+export function pushResearchHistory(history: ResearchHistory, nodeId: string): ResearchHistory {
+  const entries = [...history.entries.slice(0, history.index + 1), nodeId];
+  return { entries, index: entries.length - 1 };
+}
+
+export function canGoBack(history: ResearchHistory): boolean {
+  return history.index > 0;
+}
+
+export function canGoForward(history: ResearchHistory): boolean {
+  return history.index < history.entries.length - 1;
+}
+
+/** Moves the cursor back one entry, or null if already at the start. */
+export function researchHistoryBack(history: ResearchHistory): ResearchHistoryStep | null {
+  if (!canGoBack(history)) {
+    return null;
+  }
+  const index = history.index - 1;
+  return { history: { entries: history.entries, index }, nodeId: history.entries[index] };
+}
+
+/** Moves the cursor forward one entry, or null if already at the end. */
+export function researchHistoryForward(history: ResearchHistory): ResearchHistoryStep | null {
+  if (!canGoForward(history)) {
+    return null;
+  }
+  const index = history.index + 1;
+  return { history: { entries: history.entries, index }, nodeId: history.entries[index] };
+}
