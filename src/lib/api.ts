@@ -102,11 +102,6 @@ export function deleteSavedPrompt(
   return invoke<void>("prompt_library_delete", { scope, name, projectDir: projectDir ?? null });
 }
 
-/** Opens a scope's prompts folder in Finder, creating it if needed. */
-export function revealSavedPrompts(scope: PromptScope, projectDir?: string | null) {
-  return invoke<void>("prompt_library_reveal", { scope, projectDir: projectDir ?? null });
-}
-
 export function getActiveTab() {
   return invoke<string | null>("active_tab_get");
 }

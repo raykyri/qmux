@@ -1,4 +1,4 @@
-import { BookMarked, FolderOpen, Pencil, Plus, Trash2 } from "lucide-react";
+import { BookMarked, Ellipsis, Plus } from "lucide-react";
 import {
   type DragEvent,
   useCallback,
@@ -8,12 +8,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  deleteSavedPrompt,
-  listSavedPrompts,
-  revealSavedPrompts,
-  saveSavedPrompt,
-} from "../lib/api";
+import { deleteSavedPrompt, listSavedPrompts, saveSavedPrompt } from "../lib/api";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import {
   discoverPlaceholders,
@@ -21,18 +16,28 @@ import {
   listenToSaveDraftAsPrompt,
 } from "../lib/promptLibrary";
 import type { PromptScope, SavedPrompt } from "../types";
+import ConfirmDialogActionButton from "./ConfirmDialogActionButton";
 
 const MENU_PREFERRED_WIDTH = 300;
+const ROW_MENU_PREFERRED_WIDTH = 140;
 // Custom MIME type so prompt rows only accept drops that started as prompt rows,
 // never stray text/file drags from elsewhere.
 const PROMPT_DRAG_TYPE = "application/x-qmux-prompt";
+// Filenames are derived from the prompt's first line (prompts have no visible
+// title); keep them comfortably shorter than the backend's 120-char limit.
+const DERIVED_NAME_CHARS = 60;
 
-// What the popover is currently showing: the searchable prompt list, the
-// placeholder fill-in form for one prompt, or the new/edit prompt editor.
+// What the popover is currently showing: the searchable prompt list or the
+// placeholder fill-in form for one prompt. Editing happens in a modal dialog.
 type View =
   | { kind: "list" }
-  | { kind: "fill"; prompt: SavedPrompt; placeholders: string[] }
-  | { kind: "edit"; original: SavedPrompt | null; lockedScope?: PromptScope };
+  | { kind: "fill"; prompt: SavedPrompt; placeholders: string[] };
+
+// Centered modal dialogs, portaled above everything (including the popover,
+// which stays open underneath so the list is fresh when the dialog closes).
+type Dialog =
+  | { kind: "editor"; original: SavedPrompt | null; lockedScope?: PromptScope }
+  | { kind: "delete"; prompt: SavedPrompt };
 
 interface PromptLibraryMenuProps {
   // Identifies the composer whose draft-save requests this menu handles.
@@ -43,37 +48,215 @@ interface PromptLibraryMenuProps {
   // The active pane's project directory (group dir, or base repo for
   // worktrees). Keys the Project scope; absent hides that section.
   projectDir?: string | null;
-  // Human label for the project section, e.g. the group name.
-  projectLabel?: string | null;
+  // Display form of projectDir (home-relative), shown under the Project heading.
+  projectPath?: string | null;
+}
+
+/** First non-empty line of a prompt, for previews and dialog snippets. */
+export function promptFirstLine(content: string): string {
+  return content.trim().split("\n", 1)[0] || "(empty)";
+}
+
+// Prompts have no user-facing title, but each one is still a markdown file whose
+// stem must be a valid, unique filename. Derive it from the first line of the
+// content: strip characters the backend rejects, bound the length, and suffix a
+// counter when the name is already taken in the target scope (case-insensitive,
+// since macOS filesystems usually are).
+function derivePromptName(content: string, takenNames: Iterable<string>): string {
+  const firstLine = content.trim().split("\n", 1)[0] ?? "";
+  const cleaned = Array.from(
+    firstLine
+      .replace(/[/\\:]/g, " ")
+      .replace(/[\u0000-\u001F\u007F]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  )
+    .slice(0, DERIVED_NAME_CHARS)
+    .join("")
+    .replace(/^[.\s]+/, "")
+    .trim();
+  const base = cleaned || "prompt";
+  const taken = new Set(Array.from(takenNames, (name) => name.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) {
+    return base;
+  }
+  for (let counter = 2; ; counter += 1) {
+    const candidate = `${base} ${counter}`;
+    if (!taken.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+}
+
+// The floating "…" menu on a prompt row, mirroring the message-title menu in the
+// right sidebar: a single hover-revealed trigger that overlays the row (no layout
+// shift) and opens a small portaled menu with Edit / Delete.
+function PromptRowMenu({
+  onEdit,
+  onDelete,
+}: {
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number;
+    maxWidth: number;
+  } | null>(null);
+
+  const position = useCallback(() => {
+    const trigger = triggerRef.current;
+    const popover = popoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const { height } = popover.getBoundingClientRect();
+    setPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width: ROW_MENU_PREFERRED_WIDTH, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "end",
+        prefer: "below",
+      }),
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+        setOpen(false);
+      }
+    };
+    // Registered on window (which captures before document) so this Escape
+    // closes only the row menu, not the prompt-library popover underneath —
+    // its own capture listener sits on document and is stopped here.
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    position();
+    const onReflow = () => position();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [open, position]);
+
+  const item = (label: string, action: () => void, danger = false) => (
+    <button
+      type="button"
+      role="menuitem"
+      className={`prompt-library-row-menu-item${danger ? " is-danger" : ""}`}
+      onClick={() => {
+        setOpen(false);
+        action();
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`prompt-library-item-menu-trigger${open ? " is-open" : ""}`}
+        title="Prompt options"
+        aria-label="Prompt options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
+      >
+        <Ellipsis size={14} aria-hidden="true" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="prompt-library-row-menu-popover"
+              role="menu"
+              aria-label="Prompt options"
+              style={
+                pos
+                  ? {
+                      left: pos.left,
+                      top: pos.top,
+                      maxHeight: pos.maxHeight,
+                      width: Math.min(ROW_MENU_PREFERRED_WIDTH, pos.maxWidth),
+                      maxWidth: pos.maxWidth,
+                    }
+                  : { left: -9999, top: -9999 }
+              }
+            >
+              {item("Edit", onEdit)}
+              {item("Delete", onDelete, true)}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
 }
 
 // The pane header's saved-prompt library: a bookmark button opening a portaled
 // popover with a searchable list of reusable messages, split into a Global
 // section (~/.qmux/prompts/, visible everywhere) and a Project section keyed
 // by the active pane's project directory (stored centrally under
-// ~/.qmux/projects/, so repos stay clean). Rows drag-and-drop between the
-// sections to move a prompt's home. `{placeholder}` slots discovered in a
-// prompt's text get a fill-in step before insertion, Smithers-style.
+// ~/.qmux/projects/, so repos stay clean). Prompts are titleless — each row is
+// just the prompt text, and the backing filename is derived from its first
+// line. Rows drag-and-drop between the sections to move a prompt's home.
+// Editing, creating, and deleting happen in centered modal dialogs;
+// `{placeholder}` slots discovered in a prompt's text get a fill-in step
+// before insertion, Smithers-style.
 export default function PromptLibraryMenu({
   agentId,
   onInsert,
   projectDir,
-  projectLabel,
+  projectPath,
 }: PromptLibraryMenuProps) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
+  const [dialog, setDialog] = useState<Dialog | null>(null);
   // Null while the first load is in flight, so "No saved prompts" can't flash
   // before the list arrives.
   const [prompts, setPrompts] = useState<SavedPrompt[] | null>(null);
   const [hasProjectScope, setHasProjectScope] = useState(Boolean(projectDir));
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Two-step delete: the first click arms this prompt's button, the second deletes.
-  const [deleteArmed, setDeleteArmed] = useState<SavedPrompt | null>(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   // The scope section a prompt row is currently dragged over, for drop highlighting.
   const [dropScope, setDropScope] = useState<PromptScope | null>(null);
   const [fillValues, setFillValues] = useState<Record<string, string>>({});
-  const [editName, setEditName] = useState("");
   const [editContent, setEditContent] = useState("");
   const [editScope, setEditScope] = useState<PromptScope>("global");
   const [busy, setBusy] = useState(false);
@@ -101,29 +284,30 @@ export default function PromptLibraryMenu({
     setView({ kind: "list" });
     setSearch("");
     setError(null);
-    setDeleteArmed(null);
     setDropScope(null);
     setOpen(true);
     void refresh();
   };
 
-  // Composer and sent-message menus can open this editor with reusable text.
-  // Composer drafts lock to Global; sent messages merely default there.
+  const openEditor = (original: SavedPrompt | null, scope?: PromptScope) => {
+    setEditContent(original?.content ?? "");
+    setEditScope(original?.scope ?? scope ?? "global");
+    setDialogError(null);
+    setDialog({ kind: "editor", original });
+  };
+
+  // Composer and sent-message menus can open the editor dialog with reusable
+  // text. Composer drafts lock to Global; sent messages merely default there.
   useEffect(() => {
     if (!agentId) {
       return;
     }
     return listenToSaveDraftAsPrompt(agentId, (text, lockToGlobal) => {
-      setOpen(true);
-      setSearch("");
-      setError(null);
-      setDeleteArmed(null);
-      setDropScope(null);
-      setEditName("");
       setEditContent(text);
       setEditScope("global");
-      setView({
-        kind: "edit",
+      setDialogError(null);
+      setDialog({
+        kind: "editor",
         original: null,
         ...(lockToGlobal ? { lockedScope: "global" as const } : {}),
       });
@@ -133,25 +317,33 @@ export default function PromptLibraryMenu({
 
   // A pane switch (e.g. ⌘1–9) can land on a different project while the popover
   // is open. The listed prompts would then belong to the old project while
-  // save/delete/reveal target the new one — close instead, so the next open
-  // loads the right store. Ref-compared so the effect only fires on a real
-  // project change, not on open/close or unrelated re-renders.
+  // save/delete target the new one — close instead, so the next open loads the
+  // right store. Ref-compared so the effect only fires on a real project
+  // change, not on open/close or unrelated re-renders.
   const openProjectDirRef = useRef(projectDir);
   useEffect(() => {
     if (openProjectDirRef.current !== projectDir) {
       openProjectDirRef.current = projectDir;
       setOpen(false);
+      setDialog(null);
     }
   }, [projectDir]);
 
-  // Close on an outside click. Escape steps back to the list from a subview
-  // (so a half-typed prompt isn't lost to a reflexive Escape) and closes from it.
+  // Close on an outside click. Escape steps back to the list from the fill view
+  // (so half-typed values aren't lost to a reflexive Escape) and closes from the
+  // list. Both handlers stand down while a modal dialog is up — the dialog owns
+  // pointer and Escape handling then.
   useEffect(() => {
-    if (!open) {
+    if (!open || dialog) {
       return;
     }
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
+      // A row's "…" menu is portaled to the body, so its clicks would otherwise
+      // read as outside the popover and close it before the menu item fires.
+      if (target instanceof Element && target.closest(".prompt-library-row-menu-popover")) {
+        return;
+      }
       if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
         setOpen(false);
       }
@@ -175,7 +367,7 @@ export default function PromptLibraryMenu({
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [open]);
+  }, [open, dialog]);
 
   const position = useCallback(() => {
     const trigger = triggerRef.current;
@@ -227,47 +419,55 @@ export default function PromptLibraryMenu({
     setView({ kind: "fill", prompt, placeholders });
   };
 
-  const startEdit = (original: SavedPrompt | null, scope?: PromptScope) => {
-    setEditName(original?.name ?? "");
-    setEditContent(original?.content ?? "");
-    setEditScope(original?.scope ?? scope ?? "global");
-    setError(null);
-    setView({ kind: "edit", original });
-  };
+  const namesInScope = (scope: PromptScope, excluding?: SavedPrompt) =>
+    (prompts ?? [])
+      .filter(
+        (prompt) =>
+          prompt.scope === scope &&
+          !(excluding && prompt.scope === excluding.scope && prompt.name === excluding.name),
+      )
+      .map((prompt) => prompt.name);
 
-  const saveEdit = async () => {
-    if (view.kind !== "edit" || busy) {
+  const saveEditor = async () => {
+    if (dialog?.kind !== "editor" || busy || editContent.trim().length === 0) {
       return;
     }
     setBusy(true);
     try {
+      const original = dialog.original;
+      // A content edit that stays in its scope keeps its backing filename; a new
+      // prompt (or one moving scopes) gets a fresh name derived from the content.
+      const name =
+        original && original.scope === editScope
+          ? original.name
+          : derivePromptName(editContent, namesInScope(editScope, original ?? undefined));
       await saveSavedPrompt(
         editScope,
-        editName,
+        name,
         editContent,
         projectDir,
-        view.original ? { scope: view.original.scope, name: view.original.name } : null,
+        original ? { scope: original.scope, name: original.name } : null,
       );
       await refresh();
-      setView({ kind: "list" });
+      setDialog(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setDialogError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
 
-  const removePrompt = async (prompt: SavedPrompt) => {
-    if (busy) {
+  const confirmDelete = async () => {
+    if (dialog?.kind !== "delete" || busy) {
       return;
     }
     setBusy(true);
     try {
-      await deleteSavedPrompt(prompt.scope, prompt.name, projectDir);
-      setDeleteArmed(null);
+      await deleteSavedPrompt(dialog.prompt.scope, dialog.prompt.name, projectDir);
       await refresh();
+      setDialog(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setDialogError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -283,15 +483,14 @@ export default function PromptLibraryMenu({
     if (!prompt) {
       return;
     }
-    // A same-named prompt in the target scope would be silently overwritten by
-    // the move; surface it instead and let the user rename first.
-    if ((prompts ?? []).some((other) => other.scope === target && other.name === prompt.name)) {
-      setError(`"${prompt.name}" already exists in ${target === "global" ? "Global" : "Project"}`);
-      return;
-    }
     setBusy(true);
     try {
-      await saveSavedPrompt(target, prompt.name, prompt.content, projectDir, {
+      // Filenames are invisible now, so a name collision in the target scope is
+      // resolved by deriving a fresh one instead of surfacing an error.
+      const taken = namesInScope(target);
+      const collides = taken.some((name) => name.toLowerCase() === prompt.name.toLowerCase());
+      const name = collides ? derivePromptName(prompt.content, taken) : prompt.name;
+      await saveSavedPrompt(target, name, prompt.content, projectDir, {
         scope: prompt.scope,
         name: prompt.name,
       });
@@ -304,18 +503,9 @@ export default function PromptLibraryMenu({
     }
   };
 
-  // Prefer the caller's label (group name); fall back to the directory's
-  // basename so the section always names a concrete place.
-  const projectSectionName =
-    projectLabel?.trim() ||
-    projectDir?.replace(/\/+$/, "").split("/").pop() ||
-    null;
-
   const query = search.trim().toLowerCase();
   const matchesQuery = (prompt: SavedPrompt) =>
-    query.length === 0 ||
-    prompt.name.toLowerCase().includes(query) ||
-    prompt.content.toLowerCase().includes(query);
+    query.length === 0 || prompt.content.toLowerCase().includes(query);
 
   const sectionDropHandlers = (scope: PromptScope) => ({
     onDragOver: (event: DragEvent) => {
@@ -369,49 +559,19 @@ export default function PromptLibraryMenu({
         title={onInsert ? "Insert into composer" : "No composer in this tab"}
         onClick={() => choosePrompt(prompt)}
       >
-        <span className="prompt-library-item-name">{prompt.name}</span>
-        <span className="prompt-library-item-preview">
-          {prompt.content.trim().split("\n", 1)[0] || "(empty)"}
-        </span>
+        <span className="prompt-library-item-text">{prompt.content.trim() || "(empty)"}</span>
       </button>
-      <div className="prompt-library-item-actions">
-        <button
-          type="button"
-          className="prompt-library-icon-button"
-          title="Edit prompt"
-          aria-label={`Edit ${prompt.name}`}
-          onClick={() => startEdit(prompt)}
-        >
-          <Pencil size={12} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className={`prompt-library-icon-button${
-            deleteArmed?.scope === prompt.scope && deleteArmed?.name === prompt.name
-              ? " is-danger"
-              : ""
-          }`}
-          title={
-            deleteArmed?.scope === prompt.scope && deleteArmed?.name === prompt.name
-              ? "Click again to delete"
-              : "Delete prompt"
-          }
-          aria-label={`Delete ${prompt.name}`}
-          onClick={() => {
-            if (deleteArmed?.scope === prompt.scope && deleteArmed?.name === prompt.name) {
-              void removePrompt(prompt);
-            } else {
-              setDeleteArmed(prompt);
-            }
-          }}
-        >
-          <Trash2 size={12} aria-hidden="true" />
-        </button>
-      </div>
+      <PromptRowMenu
+        onEdit={() => openEditor(prompt)}
+        onDelete={() => {
+          setDialogError(null);
+          setDialog({ kind: "delete", prompt });
+        }}
+      />
     </div>
   );
 
-  const section = (scope: PromptScope, label: string) => {
+  const section = (scope: PromptScope, label: string, pathHint?: string | null) => {
     const visible = (prompts ?? []).filter(
       (prompt) => prompt.scope === scope && matchesQuery(prompt),
     );
@@ -423,25 +583,20 @@ export default function PromptLibraryMenu({
         {...sectionDropHandlers(scope)}
       >
         <div className="prompt-library-section-header">
-          <span className="prompt-library-section-label">{label}</span>
+          <div className="prompt-library-section-heading">
+            <span className="prompt-library-section-label">{label}</span>
+            {pathHint ? (
+              <span className="prompt-library-section-path" title={pathHint}>
+                {pathHint}
+              </span>
+            ) : null}
+          </div>
           <button
             type="button"
             className="prompt-library-icon-button"
-            title={`Open ${label.toLowerCase()} prompts folder`}
-            aria-label={`Open ${label} prompts folder`}
-            onClick={() => {
-              setOpen(false);
-              void revealSavedPrompts(scope, projectDir).catch(() => undefined);
-            }}
-          >
-            <FolderOpen size={12} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="prompt-library-icon-button is-always-visible"
             title={`New ${label.toLowerCase()} prompt`}
             aria-label={`New ${label} prompt`}
-            onClick={() => startEdit(null, scope)}
+            onClick={() => openEditor(null, scope)}
           >
             <Plus size={12} aria-hidden="true" />
           </button>
@@ -467,16 +622,16 @@ export default function PromptLibraryMenu({
         placeholder="Search prompts…"
         value={search}
         autoFocus
-        onChange={(event) => {
-          setSearch(event.target.value);
-          setDeleteArmed(null);
-        }}
+        onChange={(event) => setSearch(event.target.value)}
       />
       <div className="prompt-library-list">
         {section("global", "Global")}
-        {hasProjectScope
-          ? section("project", projectSectionName ? `Project · ${projectSectionName}` : "Project")
-          : null}
+        {hasProjectScope ? (
+          <>
+            <div className="prompt-library-divider" role="separator" />
+            {section("project", "Project", projectPath ?? projectDir)}
+          </>
+        ) : null}
       </div>
     </>
   );
@@ -484,7 +639,9 @@ export default function PromptLibraryMenu({
   const fillView =
     view.kind === "fill" ? (
       <>
-        <div className="prompt-library-heading">{view.prompt.name}</div>
+        <div className="prompt-library-heading prompt-library-heading-snippet">
+          {promptFirstLine(view.prompt.content)}
+        </div>
         {view.placeholders.map((name, index) => (
           <label key={name} className="prompt-library-field">
             <span className="prompt-library-field-label">{name}</span>
@@ -524,31 +681,36 @@ export default function PromptLibraryMenu({
       </>
     ) : null;
 
-  const editView =
-    view.kind === "edit" ? (
-      <>
-        <div className="prompt-library-heading">
-          {view.original ? "Edit prompt" : "New prompt"}
-        </div>
-        <label className="prompt-library-field">
-          <span className="prompt-library-field-label">Name</span>
-          <input
-            type="text"
-            className="prompt-library-search"
-            value={editName}
-            autoFocus={!view.original}
-            placeholder="e.g. Review checklist"
-            onChange={(event) => setEditName(event.target.value)}
-          />
-        </label>
-        {hasProjectScope && !view.lockedScope ? (
+  const closeDialog = () => {
+    if (!busy) {
+      setDialog(null);
+    }
+  };
+
+  const editorDialog =
+    dialog?.kind === "editor" ? (
+      <div
+        className="confirm-dialog prompt-editor-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={dialog.original ? "Edit prompt" : "New prompt"}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            closeDialog();
+          }
+        }}
+      >
+        <h2>{dialog.original ? "Edit prompt" : "New prompt"}</h2>
+        {hasProjectScope && !dialog.lockedScope ? (
           <div className="prompt-library-field">
             <span className="prompt-library-field-label">Saved in</span>
             <div className="prompt-library-scope-picker" role="radiogroup" aria-label="Saved in">
               {(
                 [
                   ["global", "Global"],
-                  ["project", projectSectionName ? `Project · ${projectSectionName}` : "Project"],
+                  ["project", "Project"],
                 ] as const
               ).map(([scope, label]) => (
                 <button
@@ -559,6 +721,7 @@ export default function PromptLibraryMenu({
                   className={`prompt-library-scope-option${
                     editScope === scope ? " is-active" : ""
                   }`}
+                  title={scope === "project" ? (projectPath ?? projectDir ?? undefined) : undefined}
                   onClick={() => setEditScope(scope)}
                 >
                   {label}
@@ -566,42 +729,70 @@ export default function PromptLibraryMenu({
               ))}
             </div>
           </div>
-        ) : view.lockedScope ? (
-          <div className="prompt-library-field">
-            <span className="prompt-library-field-label">Saved in</span>
-            <div>Global</div>
-          </div>
         ) : null}
         <label className="prompt-library-field">
           <span className="prompt-library-field-label">
             Prompt · use {"{placeholders}"} for fill-ins
           </span>
           <textarea
-            className="prompt-library-editor"
+            className="prompt-library-editor prompt-editor-dialog-textarea"
             value={editContent}
-            rows={6}
+            rows={8}
+            autoFocus
             placeholder={"Review {target} for correctness bugs…"}
             onChange={(event) => setEditContent(event.target.value)}
           />
         </label>
-        <div className="prompt-library-actions">
-          <button
-            type="button"
-            className="prompt-library-button"
-            onClick={() => setView({ kind: "list" })}
-          >
+        {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
+        <div className="confirm-dialog-actions">
+          <button type="button" onClick={closeDialog}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="prompt-library-button is-primary"
-            disabled={busy || editName.trim().length === 0 || editContent.trim().length === 0}
-            onClick={() => void saveEdit()}
+          <ConfirmDialogActionButton
+            pending={busy}
+            pendingLabel="Saving…"
+            disabled={editContent.trim().length === 0 || prompts === null}
+            onClick={() => void saveEditor()}
           >
             Save
-          </button>
+          </ConfirmDialogActionButton>
         </div>
-      </>
+      </div>
+    ) : null;
+
+  const deleteDialog =
+    dialog?.kind === "delete" ? (
+      <div
+        className="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Delete prompt"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            closeDialog();
+          }
+        }}
+      >
+        <h2>Delete prompt?</h2>
+        <p className="prompt-delete-snippet">{promptFirstLine(dialog.prompt.content)}</p>
+        {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
+        <div className="confirm-dialog-actions">
+          <button type="button" onClick={closeDialog}>
+            Cancel
+          </button>
+          <ConfirmDialogActionButton
+            className="danger"
+            autoFocus
+            pending={busy}
+            pendingLabel="Deleting…"
+            onClick={() => void confirmDelete()}
+          >
+            Delete
+          </ConfirmDialogActionButton>
+        </div>
+      </div>
     ) : null;
 
   return (
@@ -638,7 +829,24 @@ export default function PromptLibraryMenu({
               }
             >
               {error ? <div className="prompt-library-error">{error}</div> : null}
-              {view.kind === "list" ? listView : view.kind === "fill" ? fillView : editView}
+              {view.kind === "list" ? listView : fillView}
+            </div>,
+            document.body,
+          )
+        : null}
+      {dialog
+        ? createPortal(
+            <div
+              className="confirm-dialog-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                  closeDialog();
+                }
+              }}
+            >
+              {editorDialog}
+              {deleteDialog}
             </div>,
             document.body,
           )

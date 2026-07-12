@@ -3319,6 +3319,23 @@ export default function App() {
     });
   }
 
+  // Normalizes an absolute path for display by anchoring home-relative paths
+  // with ~. Unlike formatPaneDir, the rest of the path is kept intact — used
+  // where the full location matters (e.g. the prompt library's Project hint).
+  function homeRelativePath(rawPath: string | null): string | null {
+    if (!rawPath) {
+      return null;
+    }
+    const homeDir = config?.homeDir;
+    if (homeDir && rawPath === homeDir) {
+      return "~";
+    }
+    if (homeDir && rawPath.startsWith(`${homeDir}/`)) {
+      return `~/${rawPath.slice(homeDir.length + 1)}`;
+    }
+    return rawPath;
+  }
+
   // Compact directory label for a pane tab. Worktrees under the workspace root
   // are shown relative to it (e.g. "group-1/agent-1"); home paths use ~/ and
   // other paths fall back to their last two segments so the meaningful tail stays
@@ -5366,8 +5383,9 @@ export default function App() {
         commands.push({
           id: `prompt:${prompt.scope}:${prompt.name}`,
           section: "Insert prompt",
-          title: prompt.name,
-          hint: prompt.content.trim().split("\n", 1)[0],
+          // Prompts are titleless; their first line stands in for a name.
+          title: prompt.content.trim().split("\n", 1)[0] || "(empty prompt)",
+          hint: prompt.scope === "global" ? "Global" : "Project",
           action: () => requestComposerInsert(activeAgent.id, prompt.content),
         });
       }
@@ -8350,7 +8368,7 @@ export default function App() {
                 agent ? (text) => requestComposerInsert(agent.id, text) : undefined
               }
               promptProjectDir={promptProjectDirForPane(surface.pane)}
-              promptProjectLabel={groupById.get(surface.pane.groupId)?.name ?? null}
+              promptProjectPath={homeRelativePath(promptProjectDirForPane(surface.pane))}
             />
           ) : undefined
         }

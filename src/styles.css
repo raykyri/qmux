@@ -4611,9 +4611,9 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-item {
+  position: relative;
   display: flex;
   align-items: stretch;
-  gap: 2px;
   min-width: 0;
 }
 
@@ -4621,8 +4621,6 @@ button.home-cascade-wait-pill:focus-visible {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
   padding: 5px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -4641,33 +4639,100 @@ button.home-cascade-wait-pill:focus-visible {
   cursor: default;
 }
 
-.prompt-library-item-name {
+/* Prompts are titleless: the row is the prompt text itself, clamped to two
+   physical lines so long prompts stay scannable. */
+.prompt-library-item-text {
+  display: -webkit-box;
   overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   font-size: var(--fs-base);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.prompt-library-item-preview {
-  overflow: hidden;
-  color: #8a938e;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Edit/delete affordances stay hidden until the row is hovered or focused, so
-   the resting list reads as plain menu items. */
-.prompt-library-item-actions {
-  display: none;
-  flex: none;
+/* The row's single action: a floating "…" trigger that overlays the row's right
+   edge (no layout shift) and appears only on hover/focus, like the message-title
+   menu in the right sidebar. Solid background keeps it legible over row text. */
+.prompt-library-item-menu-trigger {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: inline-flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #343b3e;
+  border-radius: 5px;
+  background: #2c3437;
+  color: #aab3ae;
+  transform: translateY(-50%);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.prompt-library-item:hover .prompt-library-item-actions,
-.prompt-library-item:focus-within .prompt-library-item-actions {
+.prompt-library-item:hover .prompt-library-item-menu-trigger,
+.prompt-library-item:focus-within .prompt-library-item-menu-trigger,
+.prompt-library-item-menu-trigger.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.prompt-library-item-menu-trigger:hover,
+.prompt-library-item-menu-trigger.is-open {
+  background: #374043;
+  color: #e7e7e2;
+}
+
+/* The row menu itself: portaled, mirroring .turn-title-menu-popover. */
+.prompt-library-row-menu-popover {
+  position: fixed;
+  z-index: 16;
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #1c1f22;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+  overflow-y: auto;
+}
+
+.prompt-library-row-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: var(--control-h-md);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e7e7e2;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.prompt-library-row-menu-item:hover {
+  background: #283032;
+}
+
+.prompt-library-row-menu-item.is-danger {
+  color: #e08a8a;
+}
+
+.prompt-library-row-menu-item.is-danger:hover {
+  background: #3a2022;
 }
 
 .prompt-library-icon-button {
@@ -4689,12 +4754,6 @@ button.home-cascade-wait-pill:focus-visible {
   color: #e7e7e2;
 }
 
-.prompt-library-icon-button.is-danger {
-  border-color: #7a3030;
-  background: #3a2022;
-  color: #e08a8a;
-}
-
 /* A scope section (Global / Project) doubles as the drag-and-drop target for
    moving prompts between scopes; the dashed accent border signals a live drop. */
 .prompt-library-section {
@@ -4713,13 +4772,20 @@ button.home-cascade-wait-pill:focus-visible {
 
 .prompt-library-section-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 2px;
   padding: 2px 5px 1px;
 }
 
-.prompt-library-section-label {
+.prompt-library-section-heading {
+  display: flex;
   flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.prompt-library-section-label {
   min-width: 0;
   overflow: hidden;
   color: #8a938e;
@@ -4729,19 +4795,23 @@ button.home-cascade-wait-pill:focus-visible {
   white-space: nowrap;
 }
 
-/* Keep secondary header actions subdued until hover, while the primary new-prompt
-   action remains discoverable at all times. */
-.prompt-library-section-header .prompt-library-icon-button {
-  visibility: hidden;
+/* The project's home-relative path, shown under the Project heading. */
+.prompt-library-section-path {
+  min-width: 0;
+  overflow: hidden;
+  color: #6f7773;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.prompt-library-section-header .prompt-library-icon-button.is-always-visible {
-  visibility: visible;
-}
-
-.prompt-library-section:hover .prompt-library-section-header .prompt-library-icon-button,
-.prompt-library-section:focus-within .prompt-library-section-header .prompt-library-icon-button {
-  visibility: visible;
+/* Separates the Global and Project sections. */
+.prompt-library-divider {
+  height: 1px;
+  flex: none;
+  margin: 4px 5px;
+  background: #2a2d2f;
 }
 
 .prompt-library-scope-picker {
@@ -4781,6 +4851,13 @@ button.home-cascade-wait-pill:focus-visible {
   color: #e7e7e2;
   font-size: var(--fs-base);
   font-weight: 600;
+}
+
+/* Fill-view heading is the prompt's first line, not a title — keep it one line. */
+.prompt-library-heading-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .prompt-library-field {
@@ -4861,6 +4938,27 @@ button.home-cascade-wait-pill:focus-visible {
   color: #e08a8a;
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+/* The centered new/edit prompt modal, reusing the confirm-dialog surface but
+   wider so multi-line prompts are comfortable to write. */
+.prompt-editor-dialog {
+  width: min(560px, 100%);
+}
+
+.prompt-editor-dialog-textarea {
+  min-height: 160px;
+}
+
+/* First line of the prompt being deleted, quoted in the confirm dialog. */
+.confirm-dialog .prompt-delete-snippet {
+  overflow: hidden;
+  padding: 6px 10px;
+  border-left: 2px solid #3b4447;
+  color: #8a938e;
+  font-style: italic;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .turn-pane-floating-controls {
