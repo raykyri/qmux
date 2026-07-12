@@ -3251,6 +3251,12 @@ impl AppState {
             // could make later tree removal delete an unrelated local record
             // whose generated id happens to collide.
             node.thread_id = None;
+            // Only responses that actually travelled in the archive get
+            // written back below; a node imported without one must not keep
+            // a snapshot stamp claiming a durable answer exists.
+            if !responses.contains_key(&old_id) {
+                node.response_snapshot_at = None;
+            }
         }
 
         let mut written_node_ids = Vec::new();

@@ -230,14 +230,24 @@ fn create_research_workspace_locked(
         return Ok(existing);
     }
     if let Some(bundle) = crate::research::read_detached_research(&canonical)? {
+        // A completed node whose response file is absent from the archive
+        // (a partial copy between machines, a hand-deleted file) is already
+        // damaged outside qmux — refusing the whole import here turned one
+        // missing file into a folder that could never be opened again,
+        // stranding every intact prompt and answer alongside it. Import
+        // everything that survived instead; import_detached_research clears
+        // the snapshot stamp on nodes that arrive without a response, so the
+        // node restores with its prompt and preview and never claims a
+        // durable answer it does not have.
         for node in &bundle.archive.nodes {
             if node.status == crate::research::ResearchNodeStatus::Complete
                 && !bundle.responses.contains_key(&node.id)
             {
-                return Err(format!(
-                    "detached research response {} is missing; refusing an incomplete import",
-                    node.id
-                ));
+                eprintln!(
+                    "qmux: detached research response {} is missing from {}; importing the node without it",
+                    node.id,
+                    canonical.display()
+                );
             }
         }
         let archive_name = bundle.archive.workspace.name_override.clone();
@@ -1966,6 +1976,106 @@ mod tests {
             crate::research::ResearchNodeStatus::Failed
         );
         assert_eq!(restored_detail.nodes[0].prompt, "Doomed question");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reopening_folder_with_missing_archive_response_still_imports_history() {
+        let root = temp_workspace("reopen-damaged-archive");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        let detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Answered question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: workspace.id.clone(),
+            })
+            .unwrap();
+        let mut agent = sample_agent("research-agent", None, AgentStatus::Done);
+        agent.group_id = workspace.id.clone();
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-never-existed")
+            .unwrap();
+        let node_id = detail.tree.root_node_id.clone();
+        assert_eq!(
+            state.research_node(&node_id).unwrap().status,
+            crate::research::ResearchNodeStatus::Complete
+        );
+        crate::research::write_response_snapshot(
+            &state.config().workspace_root,
+            &node_id,
+            &[crate::transcript::Turn {
+                id: "answer-1".to_string(),
+                agent_id: "research-agent".to_string(),
+                session_id: None,
+                role: "assistant".to_string(),
+                blocks: vec![crate::transcript::TurnBlock::Text {
+                    text: "The answer".to_string(),
+                }],
+                source_index: 0,
+                status: None,
+                status_reason: None,
+                native_id: None,
+                parent_native_id: None,
+                native_message_id: None,
+            }],
+        )
+        .unwrap();
+        remove_research_workspace(&state, &workspace.id).unwrap();
+
+        // A normally-detached Complete node carries its snapshot stamp; the
+        // helper-written snapshot above bypassed the stamping path, so stamp
+        // the archived record the way a real run would have.
+        let manifest_path = project
+            .join(crate::persistence::STATE_DIR)
+            .join("research-v1/manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["nodes"][0]["responseSnapshotAt"] = serde_json::json!(2);
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        // Simulate the archive losing the response file outside qmux — a
+        // partial copy between machines, or a hand-deleted file.
+        let response_file = project
+            .join(crate::persistence::STATE_DIR)
+            .join("research-v1/responses")
+            .join(format!("{node_id}.json"));
+        std::fs::remove_file(&response_file).unwrap();
+
+        let restored =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+
+        let restored_trees = state.list_research_trees_with_archived(true).unwrap();
+        assert_eq!(restored_trees.len(), 1);
+        let restored_detail = state.research_tree(&restored_trees[0].id).unwrap();
+        let restored_node = &restored_detail.nodes[0];
+        assert_eq!(restored_node.group_id, restored.id);
+        assert_eq!(
+            restored_node.status,
+            crate::research::ResearchNodeStatus::Complete
+        );
+        // The node must not claim a durable answer it no longer has.
+        assert!(restored_node.response_snapshot_at.is_none());
+        assert!(
+            crate::research::read_response_snapshot(
+                &state.config().workspace_root,
+                &restored_node.id,
+            )
+            .unwrap()
+            .is_none()
+        );
+        // The consumed archive is cleaned up like any successful import.
+        assert!(
+            crate::research::read_detached_research(&project)
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
