@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, ScrollText, X } from "lucide-react";
+import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { getResearchNodeContent } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { growComposerTextarea } from "../../lib/composerTextarea";
@@ -340,6 +341,60 @@ export default function ResearchDocument({
     setHistoryIndex(historyIndex + 1);
   }, [applySelection, history, historyIndex]);
 
+  // Browser-style navigation shortcuts, active only while the document is
+  // mounted (research surface visible). Cmd/Ctrl+[ / ] and Alt+←/→ mirror the
+  // header arrows; the dedicated mouse back/forward buttons (3/4) do too. Keys
+  // are ignored while typing so the follow-up composer keeps word-wise motion.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableTarget(event.target)) {
+        return;
+      }
+      const primary = event.metaKey || event.ctrlKey;
+      let handler: (() => void) | null = null;
+      if (primary && !event.altKey && !event.shiftKey && event.code === "BracketLeft") {
+        handler = goBack;
+      } else if (primary && !event.altKey && !event.shiftKey && event.code === "BracketRight") {
+        handler = goForward;
+      } else if (
+        event.altKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        event.key === "ArrowLeft"
+      ) {
+        handler = goBack;
+      } else if (
+        event.altKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        event.key === "ArrowRight"
+      ) {
+        handler = goForward;
+      }
+      if (handler) {
+        event.preventDefault();
+        handler();
+      }
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button === 3) {
+        event.preventDefault();
+        goBack();
+      } else if (event.button === 4) {
+        event.preventDefault();
+        goForward();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [goBack, goForward]);
+
   const expandAllTurns = useCallback(() => {
     setShowAllTurns(true);
     if (treeId && selectedNodeId) {
@@ -617,7 +672,7 @@ export default function ResearchDocument({
                 type="button"
                 className="research-history-button"
                 disabled={!canGoBack}
-                title="Back"
+                title={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
                 aria-label="Back"
                 onClick={goBack}
               >
@@ -627,7 +682,7 @@ export default function ResearchDocument({
                 type="button"
                 className="research-history-button"
                 disabled={!canGoForward}
-                title="Forward"
+                title={`Forward (${IS_MAC ? "⌘]" : "Ctrl+]"})`}
                 aria-label="Forward"
                 onClick={goForward}
               >
