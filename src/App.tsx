@@ -1786,18 +1786,19 @@ export default function App() {
     }
   }, [activePane, activeResearchPaneId, activeSurface, groupById, panes]);
   useEffect(() => {
-    if (
-      activeSurface !== "pane" ||
-      activePaneId === HOME_TAB_ID ||
-      selectedPane ||
-      panes.length === 0
-    ) {
+    if (activeSurface !== "pane" || activePaneId === HOME_TAB_ID || selectedPane) {
       return;
     }
     // A selected research terminal is intentionally short-lived. When it retires,
-    // return to its durable document instead of falling across into Terminal mode.
+    // return to its durable document instead of falling across into Terminal mode
+    // — including when it was the last pane of the session, where the empty-pane
+    // guard below would otherwise leave the surface on "pane" and the stage
+    // rendering the Home launcher against a Research sidebar.
     if (sidebarMode === "research" && activeResearchTreeId) {
       setActiveSurface("research");
+      return;
+    }
+    if (panes.length === 0) {
       return;
     }
     const fallback = terminalTabForMode(
@@ -1833,6 +1834,14 @@ export default function App() {
       const closedScope = closedPane
         ? (groupByIdRef.current.get(closedPane.groupId)?.scope ?? "terminal")
         : "terminal";
+      // A research pane is not a tab among tabs: it is the transient terminal
+      // view of one tree's run. Handing focus to the "nearest" research pane
+      // would land on an unrelated tree's hidden terminal while the sidebar
+      // still highlights the tree the user was watching. Return no successor;
+      // the surface fallback then restores the durable research document.
+      if (closedScope === "research") {
+        return null;
+      }
       const scopedPanes = panesForSelection.filter(
         (pane) =>
           (groupByIdRef.current.get(pane.groupId)?.scope ?? "terminal") === closedScope,
