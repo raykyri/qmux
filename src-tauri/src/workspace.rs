@@ -442,6 +442,16 @@ pub fn remove_research_workspace(
         .iter()
         .map(|tree| tree.id.clone())
         .collect::<Vec<_>>();
+    if archive.trees.is_empty() {
+        // A folder with no research history has nothing to preserve, so it
+        // must not gain a `.qmux` archive as a side effect of being removed.
+        // The archive write would also recreate a folder the user already
+        // deleted from disk, and fail outright on a read-only folder —
+        // leaving an *unused* folder impossible to remove.
+        state.commit_research_workspace_detach(workspace_id, &archive)?;
+        remove_research_workspace_manifest_dir(&workspace);
+        return Ok(detached_tree_ids);
+    }
     let mut responses = HashMap::new();
     for node in &archive.nodes {
         let turns = match crate::research::read_response_snapshot(
@@ -486,12 +496,17 @@ pub fn remove_research_workspace(
             eprintln!("qmux: failed to remove detached global response {node_id}: {err}");
         }
     }
-    // The manifest directory is qmux-internal bookkeeping for this group and
-    // nothing else: research runs never create worktrees under it, so once the
-    // record is gone it holds only the stale group.json. Deleting it here (and
-    // only here — Terminal groups may own worktrees) keeps removed folders
-    // from accumulating on disk forever. Best-effort, with a guard against a
-    // record that ever pointed managed_dir at the user's own folder.
+    remove_research_workspace_manifest_dir(&workspace);
+    Ok(detached_tree_ids)
+}
+
+/// The manifest directory is qmux-internal bookkeeping for this group and
+/// nothing else: research runs never create worktrees under it, so once the
+/// record is gone it holds only the stale group.json. Deleting it here (and
+/// only here — Terminal groups may own worktrees) keeps removed folders
+/// from accumulating on disk forever. Best-effort, with a guard against a
+/// record that ever pointed managed_dir at the user's own folder.
+fn remove_research_workspace_manifest_dir(workspace: &GroupInfo) {
     if workspace.managed_dir != workspace.dir
         && Path::new(&workspace.managed_dir).join(".qmux").is_dir()
         && let Err(err) = fs::remove_dir_all(&workspace.managed_dir)
@@ -502,7 +517,6 @@ pub fn remove_research_workspace(
             workspace.managed_dir
         );
     }
-    Ok(detached_tree_ids)
 }
 
 fn require_research_workspace(state: &AppState, workspace_id: &str) -> Result<GroupInfo, String> {
@@ -1861,6 +1875,33 @@ mod tests {
         assert!(
             set_research_workspace_dir(&state, &workspace.id, replacement.display().to_string())
                 .is_ok()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removing_unused_research_folder_writes_nothing_into_it() {
+        let root = temp_workspace("remove-empty-research");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        // Removal of a folder that never ran research must succeed even when
+        // the folder itself cannot be written to.
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let detached = remove_research_workspace(&state, &workspace.id).unwrap();
+
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(detached.is_empty());
+        assert!(state.group(&workspace.id).unwrap().is_none());
+        assert!(!project.join(crate::persistence::STATE_DIR).exists());
+        assert!(
+            crate::research::read_detached_research(&project)
+                .unwrap()
+                .is_none()
         );
         std::fs::remove_dir_all(root).unwrap();
     }
