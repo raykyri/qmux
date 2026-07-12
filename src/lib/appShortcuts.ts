@@ -21,6 +21,7 @@ export type AppShortcutCommand =
 
 export interface AppShortcutInput {
   key: string;
+  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
@@ -41,7 +42,10 @@ function normalizedKey(key: string): string {
 }
 
 export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand | null {
-  const key = normalizedKey(input.key);
+  // WebKit can expose the backquote key as "Dead" (or a composed character)
+  // after focus moves through web content. Use the physical code for this
+  // layout-independent app shortcut so it remains available on Research.
+  const key = input.code === "Backquote" ? "`" : normalizedKey(input.key);
   const command = input.metaKey;
   const control = input.ctrlKey;
   const option = input.altKey;

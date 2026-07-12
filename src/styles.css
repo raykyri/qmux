@@ -143,12 +143,6 @@
   box-shadow: none;
 }
 
-.research-sidebar-menu {
-  width: min(190px, calc(100vw - 16px));
-  padding: 4px;
-  user-select: none;
-}
-
 .research-sidebar-title {
   display: -webkit-box;
   overflow: hidden;
@@ -278,7 +272,7 @@
   gap: 7px;
   width: 100%;
   min-height: 28px;
-  padding: 6px 8px;
+  padding: 6px 8px 7px;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 7px;
   color: #b9c0bc;
@@ -414,9 +408,10 @@
   min-width: 0;
   overflow: hidden;
   color: #6b736f;
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   font-weight: 400;
-  line-height: 1.25;
+  line-height: 1;
+  padding-block: 0.1em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1955,6 +1950,11 @@ button:disabled {
   font-size: calc(12px + var(--turn-font-delta, 0px));
 }
 
+.pane-tab-path {
+  line-height: 1;
+  padding-block: 0.1em;
+}
+
 .pane-tab-row.is-selected .pane-tab-path,
 .pane-tab-row.is-selected .pane-tab-gitmeta,
 .pane-tab-row.is-selected .pane-tab small {
@@ -2126,7 +2126,8 @@ button:disabled {
   cursor: default;
 }
 
-.group-context-menu {
+.group-context-menu,
+.research-sidebar-menu {
   width: min(220px, calc(100vw - 16px));
   padding: 4px;
   user-select: none;

@@ -44,6 +44,10 @@ test("resolves qmux command and control shortcuts", () => {
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "`", metaKey: true })), {
     type: "toggleSidebarMode",
   });
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "Dead", code: "Backquote", metaKey: true })),
+    { type: "toggleSidebarMode" },
+  );
   assert.equal(resolveAppShortcut(shortcut({ key: ";", metaKey: true })), null);
   assert.equal(resolveAppShortcut(shortcut({ key: ";", ctrlKey: true })), null);
   assert.equal(

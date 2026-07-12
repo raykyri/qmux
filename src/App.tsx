@@ -7266,6 +7266,7 @@ export default function App() {
       }
       const command = resolveAppShortcut({
         key: event.key,
+        code: event.code,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
