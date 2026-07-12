@@ -212,6 +212,7 @@ import {
   createGroupWithFolder,
   createResearchWorkspaceWithFolder,
   renameResearchWorkspace,
+  replaceResearchWorkspaceFolder,
   removeResearchWorkspace,
   ensureDefaultResearchWorkspace,
   archiveResearchTree,
@@ -4812,6 +4813,32 @@ export default function App() {
       setFolderPickerStatus(null);
     }
   }, []);
+  // The recovery path the launch errors point at ("choose a replacement
+  // folder before launching another run"): trees cannot move between
+  // workspaces, so a folder that vanished otherwise blocks every future run
+  // in them for good. The backend refuses while the workspace has live panes
+  // or active runs and rejects directories already used by another research
+  // folder; that error surfaces in the banner.
+  const replaceResearchWorkspaceFolderFromSidebar = useCallback(
+    async (workspace: GroupInfo) => {
+      setError(null);
+      setFolderPickerStatus("Opening folder picker…");
+      try {
+        await waitForPaintedFrame();
+        const updated = await replaceResearchWorkspaceFolder(workspace.id);
+        if (updated) {
+          setGroups((current) =>
+            current.map((group) => (group.id === updated.id ? updated : group)),
+          );
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setFolderPickerStatus(null);
+      }
+    },
+    [],
+  );
   // A streaming run emits research events several times a second, and each
   // refresh is two IPC round-trips (navigation collections + active tree).
   // Coalesce bursts onto one trailing refresh instead of one per event.
@@ -8362,6 +8389,9 @@ export default function App() {
             }}
             onNewFolder={chooseResearchWorkspaceFolder}
             onRenameFolder={openGroupRenameDialog}
+            onReplaceFolder={(workspace) => {
+              void replaceResearchWorkspaceFolderFromSidebar(workspace);
+            }}
             onRemoveFolder={(workspace) => {
               setCloseDialog({ kind: "researchFolderRemove", workspace });
             }}
