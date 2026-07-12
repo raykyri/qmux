@@ -1330,6 +1330,7 @@ export default function App() {
   const activeResearchTreeIdRef = useRef(activeResearchTreeId);
   const researchDetailRequestSeqRef = useRef(0);
   const researchNavRefreshSeqRef = useRef(0);
+  const researchNavRefreshInFlightRef = useRef(0);
   activeResearchTreeIdRef.current = activeResearchTreeId;
   const [activeResearchPaneId, setActiveResearchPaneId] = useState<string | null>(() =>
     localStorage.getItem(ACTIVE_RESEARCH_PANE_KEY),
@@ -4649,29 +4650,37 @@ export default function App() {
     // next research event.
     const requestSeq = researchNavRefreshSeqRef.current + 1;
     researchNavRefreshSeqRef.current = requestSeq;
-    const [trees, activity] = await Promise.all([listResearchTrees(true), listResearchActivity()]);
-    if (researchNavRefreshSeqRef.current !== requestSeq) {
-      return;
+    researchNavRefreshInFlightRef.current += 1;
+    try {
+      const [trees, activity] = await Promise.all([
+        listResearchTrees(true),
+        listResearchActivity(),
+      ]);
+      if (researchNavRefreshSeqRef.current !== requestSeq) {
+        return;
+      }
+      const partitioned = partitionResearchTrees(trees);
+      setResearchTrees(partitioned.active);
+      setArchivedResearchTrees(partitioned.archived);
+      setResearchActivity(activity);
+      // The backend can remove the selected tree out from under the UI (a root
+      // launch that failed removes its never-launched tree). Left selected, the
+      // document would spin on a tree that no longer exists with nothing able to
+      // recover it — clear the selection so the empty state takes over.
+      const activeTreeId = activeResearchTreeIdRef.current;
+      if (activeTreeId && !trees.some((tree) => tree.id === activeTreeId)) {
+        activeResearchTreeIdRef.current = null;
+        setActiveResearchTreeId(null);
+        setActiveResearchDetail(null);
+        setActiveResearchDetailError(null);
+        localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+      }
+      // Navigation restoration state for trees that no longer exist would
+      // otherwise accumulate in localStorage forever.
+      pruneResearchNavigation(trees.map((tree) => tree.id));
+    } finally {
+      researchNavRefreshInFlightRef.current -= 1;
     }
-    const partitioned = partitionResearchTrees(trees);
-    setResearchTrees(partitioned.active);
-    setArchivedResearchTrees(partitioned.archived);
-    setResearchActivity(activity);
-    // The backend can remove the selected tree out from under the UI (a root
-    // launch that failed removes its never-launched tree). Left selected, the
-    // document would spin on a tree that no longer exists with nothing able to
-    // recover it — clear the selection so the empty state takes over.
-    const activeTreeId = activeResearchTreeIdRef.current;
-    if (activeTreeId && !trees.some((tree) => tree.id === activeTreeId)) {
-      activeResearchTreeIdRef.current = null;
-      setActiveResearchTreeId(null);
-      setActiveResearchDetail(null);
-      setActiveResearchDetailError(null);
-      localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-    }
-    // Navigation restoration state for trees that no longer exist would
-    // otherwise accumulate in localStorage forever.
-    pruneResearchNavigation(trees.map((tree) => tree.id));
   }, []);
   const markVisibleResearchTreeViewed = useCallback(
     async (treeId: string) => {
@@ -4703,16 +4712,21 @@ export default function App() {
         (tree) => tree.id === treeId && (tree.hasUnseenUpdate || tree.hasUnseenFailure),
       );
       await markResearchTreeViewed(treeId);
+      // A refresh can already hold a pre-view snapshot even when its unseen
+      // flag has not reached React state yet. Capture that after the mark
+      // completes: if the request finishes before this continuation, the
+      // local clear below corrects its result; if it is still running, the
+      // replacement refresh supersedes it by sequence number.
+      const staleNavigationMayStillLand = researchNavRefreshInFlightRef.current > 0;
       clearResearchUnseen(treeId);
       // A navigation refresh started before the view was recorded holds a
       // snapshot with the badges still lit; applied after the local clear it
       // would resurrect them — and with the run settled, no later event would
-      // ever correct it. When a badge was actually lit, refetch: the fresh
-      // request supersedes any in-flight pre-view snapshot (bump-and-check
-      // above) and carries the acknowledged flags. The local clear keeps the
-      // acknowledgment instant; the badge-lit condition keeps streaming
-      // traffic (which calls this every debounce tick) at one nav fetch.
-      if (hadUnseen) {
+      // ever correct it. Refetch when a badge was already lit or a navigation
+      // request can still land: the fresh request supersedes any pre-view
+      // snapshot (bump-and-check above) and carries the acknowledged flags.
+      // With neither condition, streaming traffic avoids a duplicate fetch.
+      if (hadUnseen || staleNavigationMayStillLand) {
         void refreshResearchNavigation().catch(() => undefined);
       }
     },
