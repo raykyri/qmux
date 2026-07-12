@@ -146,7 +146,6 @@
 }
 
 .research-sidebar-menu {
-  width: min(190px, calc(100vw - 16px));
   padding: 4px;
   user-select: none;
 }
@@ -653,7 +652,7 @@
 .research-document-scroll {
   width: 100%;
   min-height: 0;
-  padding: 44px clamp(24px, 5vw, 72px) 120px;
+  padding: 44px clamp(24px, 5vw, 72px) 60px;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -662,9 +661,13 @@
   width: min(100%, 1160px);
   min-width: 0;
   margin: 0 auto;
-  /* Match the answer body's type scale so the title and follow-up prompts
-     inherit the same rendered size/height (the answer's
-     .research-response-content-root re-declares these to the same values). */
+  --research-main-content-max-width: 780px;
+  --research-content-columns:
+    minmax(0, var(--research-main-content-max-width)) minmax(220px, 260px);
+  --research-content-column-gap: clamp(28px, 4vw, 52px);
+  --research-answer-font-delta: 0.5px;
+  /* Shared scale for secondary document text. The question and answer use the
+     matching answer delta above. */
   --transcript-font-delta: 1px;
   --transcript-line-height-delta: 0.12;
 }
@@ -672,6 +675,9 @@
 /* Full usable width so the divider spans the whole content column; the title
    text itself is capped to the answer column's width below. */
 .research-prompt {
+  display: grid;
+  grid-template-columns: var(--research-content-columns);
+  column-gap: var(--research-content-column-gap);
   width: 100%;
   margin-bottom: 34px;
   padding-bottom: 28px;
@@ -679,21 +685,22 @@
 }
 
 .research-prompt > * {
-  max-width: 780px;
+  grid-column: 1;
+  max-width: 100%;
 }
 
 .research-prompt .turn-markdown {
   color: #f0f2ef;
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: calc(14px + var(--research-answer-font-delta));
   font-weight: 400;
-  line-height: calc(1.5 + var(--transcript-line-height-delta, 0));
+  line-height: 1.5;
 }
 
 .research-response-grid {
   display: grid;
-  grid-template-columns: minmax(0, 780px) minmax(220px, 300px);
+  grid-template-columns: var(--research-content-columns);
   align-items: start;
-  gap: clamp(28px, 4vw, 52px);
+  gap: var(--research-content-column-gap);
   min-width: 0;
 }
 
@@ -702,7 +709,7 @@
 }
 
 .research-response-content-root {
-  --transcript-font-delta: 1px;
+  --transcript-font-delta: var(--research-answer-font-delta);
   --transcript-line-height-delta: 0.12;
   display: flex;
   min-width: 0;
@@ -723,6 +730,7 @@
   grid-template-columns: minmax(0, 1fr);
   gap: 7px;
   min-width: 0;
+  line-height: 1.5;
 }
 
 .research-response-item > *,
@@ -897,52 +905,50 @@
   background: #24282b;
 }
 
-/* The margin column pins to the viewport so the composer and follow-up cards
-   stay reachable while reading a long response; past the viewport it scrolls
-   on its own. The offset mirrors the document scroll's 44px top padding. */
+/* Follow-up controls remain in the document flow beside the response. */
 .research-followups {
-  position: sticky;
-  top: 0;
   display: flex;
   min-width: 0;
-  max-height: calc(100vh - 148px);
   flex-direction: column;
   gap: 16px;
   padding-right: 2px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .research-followup-composer {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 0;
-  padding: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-lg);
-  background: #1e2225;
-  /* Mirror the right pane's zoom-aware type scale so its composer controls are
-     identical even though this composer lives outside .turn-pane. */
-  --fs-xs: calc(11.5px + var(--turn-font-delta, 0px));
-  --fs-sm: calc(12.5px + var(--turn-font-delta, 0px));
-  --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
+  background: transparent;
+  font-size: var(--research-meta-font-size);
+  /* Keep shared composer controls on the research document's type scale. */
+  --fs-xs: calc(var(--research-meta-font-size) - 2.5px);
+  --fs-sm: calc(var(--research-meta-font-size) - 1.5px);
+  --fs-base: var(--research-meta-font-size);
 }
 
 /* Same control as the sidebar's Terminal/Research switch, resized to sit as
    the composer card's header row. */
-.research-followup-mode-toggle {
+.sidebar-mode-toggle.research-followup-mode-toggle {
+  box-sizing: border-box;
+  width: 100%;
   margin: 0;
-  grid-template-columns: auto auto;
-  justify-content: start;
 }
 
 .research-followup-mode-toggle button {
   padding: 0 10px;
+  font-size: calc(var(--research-meta-font-size) - 0.5px);
+}
+
+.research-followup-composer .native-input-submit-actions button {
+  font-size: calc(var(--research-meta-font-size) - 0.5px);
 }
 
 .research-followup-composer textarea {
+  box-sizing: border-box;
   width: 100%;
   /* Tall enough at rest to invite a real question, unlike the one-line pane
      composers; auto-grow still takes over past this. */
@@ -957,11 +963,11 @@
 .research-followup-cards {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 20px;
 }
 
 /* Rendered as plain link blocks rather than cards: no border, background, or
-   other card affordances — hovering just lightens the whole block's text. */
+   other card affordances. */
 .research-followup-card {
   display: flex;
   flex-direction: column;
@@ -975,15 +981,11 @@
 }
 
 .research-followup-card:hover strong {
-  color: #bcc4bf;
+  color: #f2f4f1;
 }
 
 .research-followup-card:hover span {
-  color: #99a19c;
-}
-
-.research-followup-card:hover small {
-  color: #8f9893;
+  color: #7d8580;
 }
 
 .research-followup-card strong,
@@ -998,12 +1000,12 @@
 /* Prompts are user text and can run long (or be a single stray character);
    clamping keeps every card scannable without capping what it can hold. The
    question is the card's primary content, so it reads near-white while the
-   preview below stays dim. Matches the answer body's size/height/weight. */
+   preview below stays dim. Its size matches the response preview below. */
 .research-followup-card strong {
   display: -webkit-box;
   overflow: hidden;
   color: #e6e9e5;
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: var(--research-meta-font-size);
   font-weight: 400;
   line-height: calc(1.3 + var(--transcript-line-height-delta, 0));
   -webkit-box-orient: vertical;
@@ -1021,7 +1023,7 @@
   font-size: var(--research-meta-font-size);
   line-height: 1.5;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
 }
 
 .research-followup-card small {
@@ -1044,6 +1046,7 @@
 }
 
 .research-parent-link {
+  justify-self: start;
   min-height: 0;
   margin: 0 0 8px;
   padding: 0;
@@ -1174,6 +1177,10 @@
 }
 
 @media (max-width: 900px) {
+  .research-document-content {
+    --research-content-columns: minmax(0, 1fr);
+  }
+
   .research-document-scroll {
     padding-inline: 28px;
   }
@@ -1183,12 +1190,9 @@
   }
 
   .research-followups {
-    position: static;
-    max-height: none;
     padding: 28px 0 0;
     border-top: 1px solid rgba(255, 255, 255, 0.075);
     border-left: 0;
-    overflow-y: visible;
   }
 }
 
@@ -1480,10 +1484,7 @@ button:disabled {
 }
 
 .sidebar-mode-toggle .sidebar-mode-shortcut-hint {
-  position: static;
-  flex: none;
   min-width: 28px;
-  transform: none;
   overflow: visible;
 }
 
@@ -2311,9 +2312,16 @@ button:disabled {
   cursor: default;
 }
 
+.group-context-menu {
+  width: min(220px, calc(100vw - 16px));
+}
+
+.research-sidebar-menu {
+  width: min(200px, calc(100vw - 16px));
+}
+
 .group-context-menu,
 .research-sidebar-menu {
-  width: min(220px, calc(100vw - 16px));
   padding: 4px;
   user-select: none;
 }
@@ -6546,6 +6554,10 @@ header + .turn-blocks {
   color: #f1f0e8;
   font-size: calc(var(--fs-base) + 1px);
   padding: 8px 9px;
+}
+
+.research-followup-composer textarea {
+  font-size: var(--research-meta-font-size);
 }
 
 .native-input textarea::placeholder,

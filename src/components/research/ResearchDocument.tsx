@@ -892,11 +892,11 @@ export default function ResearchDocument({
                       </span>
                       {generationDuration !== null ? (
                         <span>
-                          {generationActive
-                            ? "Generating for"
-                            : displayNode.status === "complete"
-                              ? "Generated in"
-                              : "Ran for"}{" "}
+                          {generationActive ? (
+                            <>Generating for{" "}</>
+                          ) : displayNode.status !== "complete" ? (
+                            <>Ran for{" "}</>
+                          ) : null}
                           {formatDuration(generationDuration)}
                         </span>
                       ) : generationActive ? (

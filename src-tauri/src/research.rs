@@ -895,16 +895,29 @@ pub fn response_preview(
     // response tail (tool-result payloads included) to extract a 220-char
     // preview added lock-hold latency for the lifetime of a streaming run.
     let start = response_boundary(turns, prompt_native_id, prompt).map_or(0, |index| index + 1);
-    let text = turns[start..]
-        .iter()
-        .filter(|turn| turn.role != "user")
-        .flat_map(|turn| turn.blocks.iter())
-        .find_map(|block| match block {
-            crate::transcript::TurnBlock::Text { text } if !text.trim().is_empty() => {
-                Some(text.as_str())
+    let mut fallback_text = None;
+    let mut text_after_last_activity = None;
+    for turn in &turns[start..] {
+        for block in &turn.blocks {
+            match block {
+                crate::transcript::TurnBlock::Text { text }
+                    if turn.role != "user" && !text.trim().is_empty() =>
+                {
+                    fallback_text.get_or_insert(text.as_str());
+                    text_after_last_activity.get_or_insert(text.as_str());
+                }
+                crate::transcript::TurnBlock::ToolUse { .. }
+                | crate::transcript::TurnBlock::ToolResult { .. } => {
+                    text_after_last_activity = None;
+                }
+                crate::transcript::TurnBlock::Raw { .. } if turn.role == "assistant" => {
+                    text_after_last_activity = None;
+                }
+                _ => {}
             }
-            _ => None,
-        })?;
+        }
+    }
+    let text = text_after_last_activity.or(fallback_text)?;
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = normalized.chars();
     let preview = chars.by_ref().take(220).collect::<String>();
@@ -1223,7 +1236,32 @@ mod tests {
         assert_eq!(visible[1].id, "tool-result");
         assert_eq!(
             response_preview(&turns, None, "New question").as_deref(),
-            Some("Working")
+            Some("New answer")
+        );
+
+        let mut thinking = turn("thinking", "assistant", "");
+        thinking.blocks = vec![TurnBlock::Raw {
+            value: serde_json::json!({ "type": "thinking", "text": "Reasoning" }),
+        }];
+        let turns_with_thinking = vec![
+            turn("user", "user", "Question"),
+            turn("draft", "assistant", "Draft answer"),
+            thinking.clone(),
+            turn("final", "assistant", "Final answer"),
+        ];
+        assert_eq!(
+            response_preview(&turns_with_thinking, None, "Question").as_deref(),
+            Some("Final answer")
+        );
+
+        let turns_with_trailing_thinking = vec![
+            turn("user", "user", "Question"),
+            turn("draft", "assistant", "Draft answer"),
+            thinking,
+        ];
+        assert_eq!(
+            response_preview(&turns_with_trailing_thinking, None, "Question").as_deref(),
+            Some("Draft answer")
         );
     }
 
