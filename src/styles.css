@@ -658,6 +658,7 @@
    Research answer text has no inset, so pull only the root activity toggles back
    to that edge while leaving expanded child calls nested beneath their group. */
 .research-response-content-root .tool-block.is-root-activity > summary,
+.research-response-content-root .thinking-block.is-root-activity > summary,
 .research-response-content-root .activity-group-block.is-root-activity > summary {
   padding-left: 0;
 }
