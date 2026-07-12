@@ -20,10 +20,6 @@ export type AppShortcutCommand =
 
 export interface AppShortcutInput {
   key: string;
-  /** KeyboardEvent.code (physical key). Needed to recognize Option chords on
-   * macOS, where `key` arrives as the composed character (Cmd-Opt-T → "†"),
-   * so a letter match on `key` alone never fires from web-focused surfaces. */
-  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
@@ -73,10 +69,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (command && !control && !option && shift && key === "h") {
     return { type: "focusHome" };
   }
-  if (command && !control && option && !shift && (key === "t" || input.code === "KeyT")) {
-    return { type: "focusTerminalMode" };
-  }
-  if (command && !control && option && !shift && (key === "r" || input.code === "KeyR")) {
+  if (command && !control && !option && shift && key === "r") {
     return { type: "focusResearchMode" };
   }
   if (!command && control && !option && key === "tab") {
@@ -119,6 +112,18 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   }
 
   return null;
+}
+
+// Cmd-Shift-T keeps its long-standing reopen behavior in Terminal, but acts as
+// the inverse of Cmd-Shift-R while the Research workspace is active.
+export function contextualizeAppShortcut(
+  command: AppShortcutCommand,
+  sidebarMode: "terminal" | "research",
+): AppShortcutCommand {
+  if (sidebarMode === "research" && command.type === "restoreClosedPane") {
+    return { type: "focusTerminalMode" };
+  }
+  return command;
 }
 
 export function appShortcutAllowsRepeat(command: AppShortcutCommand): boolean {

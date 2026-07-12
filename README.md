@@ -133,8 +133,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-T`: open a shell pane in code mode; outside code mode, open the agent
   launcher.
 - `Cmd-N`: focus Home.
-- `Cmd-Option-T`: switch to the Terminal tab.
-- `Cmd-Option-R`: switch to the Research tab.
+- `Cmd-Shift-R`: switch to Research.
 - `Cmd-=` / `Cmd-+`: increase terminal font size.
 - `Cmd--`: decrease terminal font size.
 - `Cmd-0`: reset terminal font size.
@@ -143,7 +142,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
   `Cmd-9` range.
 - `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through visible pane tabs across groups.
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
-- `Cmd-Shift-T`: restore the most recently closed pane.
+- `Cmd-Shift-T`: switch back to Terminal from Research; otherwise restore the
+  most recently closed pane.
 - `Cmd-Shift-H`: focus Home.
 - `Cmd-Shift-E` / `Ctrl-Shift-E`: expand or restore the active transcript pane,
   or toggle the browser overlay on shell-only panes.

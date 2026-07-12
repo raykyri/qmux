@@ -102,6 +102,7 @@ import {
 } from "./lib/appHelpers";
 import {
   appShortcutAllowsRepeat,
+  contextualizeAppShortcut,
   resolveAppShortcut,
   type AppShortcutCommand,
 } from "./lib/appShortcuts";
@@ -5174,7 +5175,7 @@ export default function App() {
       id: "action:restore-closed",
       section: "Actions",
       title: "Reopen closed tab",
-      hint: "⇧⌘T",
+      hint: sidebarMode === "research" ? undefined : "⇧⌘T",
       action: () => void restoreClosedPane(),
     });
     commands.push({
@@ -7138,7 +7139,8 @@ export default function App() {
       focusPaneTab(nextTabId);
     };
 
-    const executeShortcut = (command: AppShortcutCommand, repeat: boolean) => {
+    const executeShortcut = (rawCommand: AppShortcutCommand, repeat: boolean) => {
+      const command = contextualizeAppShortcut(rawCommand, sidebarMode);
       if (repeat && !appShortcutAllowsRepeat(command)) {
         return;
       }
@@ -7248,7 +7250,6 @@ export default function App() {
       }
       const command = resolveAppShortcut({
         key: event.key,
-        code: event.code,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,

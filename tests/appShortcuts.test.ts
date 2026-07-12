@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   appShortcutAllowsRepeat,
+  contextualizeAppShortcut,
   parseAppShortcutCommand,
   resolveAppShortcut,
   type AppShortcutInput,
@@ -37,30 +38,32 @@ test("resolves qmux command and control shortcuts", () => {
     tabIndex: 3,
   });
   assert.deepEqual(
-    resolveAppShortcut(shortcut({ key: "t", metaKey: true, altKey: true })),
-    { type: "focusTerminalMode" },
-  );
-  assert.deepEqual(
-    resolveAppShortcut(shortcut({ key: "r", metaKey: true, altKey: true })),
+    resolveAppShortcut(shortcut({ key: "r", metaKey: true, shiftKey: true })),
     { type: "focusResearchMode" },
   );
   assert.equal(resolveAppShortcut(shortcut({ key: ";", metaKey: true })), null);
   assert.equal(resolveAppShortcut(shortcut({ key: ";", ctrlKey: true })), null);
-  // macOS composes Option chords: the browser reports Cmd-Opt-T as key "†"
-  // (and Cmd-Opt-R as "®"), so the physical code must carry the match or the
-  // shortcut never fires from web-focused surfaces.
-  assert.deepEqual(
-    resolveAppShortcut(shortcut({ key: "†", code: "KeyT", metaKey: true, altKey: true })),
-    { type: "focusTerminalMode" },
-  );
-  assert.deepEqual(
-    resolveAppShortcut(shortcut({ key: "®", code: "KeyR", metaKey: true, altKey: true })),
-    { type: "focusResearchMode" },
+  assert.equal(
+    resolveAppShortcut(shortcut({ key: "r", metaKey: true, altKey: true })),
+    null,
   );
   // ⌘K opens the palette for web targets only; the terminal keeps it (clear
   // screen), matching the native classifier which never claims ⌘K.
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "k", metaKey: true })), {
     type: "openCommandPalette",
+  });
+});
+
+test("uses command-shift-t to leave Research and reopen tabs elsewhere", () => {
+  const command = resolveAppShortcut(
+    shortcut({ key: "t", metaKey: true, shiftKey: true }),
+  );
+  assert.deepEqual(command, { type: "restoreClosedPane" });
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "focusTerminalMode",
+  });
+  assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), {
+    type: "restoreClosedPane",
   });
 });
 
