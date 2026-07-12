@@ -157,6 +157,9 @@ export interface ResearchNode {
   treeId: string;
   parentNodeId?: string | null;
   prompt: string;
+  /** Short generated title for breadcrumbs and menus; the document body still
+   * shows the full prompt. */
+  title?: string | null;
   responsePreview?: string | null;
   adapter: string;
   model?: string | null;

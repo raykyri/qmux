@@ -83,6 +83,10 @@ pub struct ResearchNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_node_id: Option<String>,
     pub prompt: String,
+    /// Short generated title for breadcrumbs and menus. The full prompt stays
+    /// the document's displayed user query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_preview: Option<String>,
     pub adapter: String,
@@ -976,6 +980,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             prompt: "Question".to_string(),
+            title: None,
             response_preview: Some("Answer".to_string()),
             adapter: "claude".to_string(),
             model: None,

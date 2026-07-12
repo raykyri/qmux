@@ -2157,6 +2157,7 @@ impl AppState {
             tree_id: tree_id.clone(),
             parent_node_id: None,
             prompt,
+            title: None,
             response_preview: None,
             adapter: request.adapter,
             model: request.model,
@@ -2253,6 +2254,7 @@ impl AppState {
                 tree_id: parent.tree_id.clone(),
                 parent_node_id: Some(parent.id),
                 prompt,
+                title: None,
                 response_preview: None,
                 adapter: parent.adapter,
                 model: parent.model,
@@ -2670,6 +2672,38 @@ impl AppState {
             json!({ "tree": tree }),
         ));
         Ok(tree)
+    }
+
+    pub fn set_research_node_title(
+        &self,
+        node_id: &str,
+        title: String,
+    ) -> Result<ResearchNode, String> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err("research node title cannot be empty".to_string());
+        }
+        let node = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            node.title = Some(title);
+            node.clone()
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            None,
+            None,
+            json!({ "node": node }),
+        ));
+        Ok(node)
     }
 
     pub fn mark_research_tree_viewed(&self, tree_id: &str) -> Result<ResearchTree, String> {
@@ -7923,6 +7957,7 @@ mod tests {
             tree_id: tree_id.to_string(),
             parent_node_id: parent.map(str::to_string),
             prompt: "Q".to_string(),
+            title: None,
             response_preview: None,
             adapter: "claude".to_string(),
             model: None,
@@ -8038,6 +8073,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             prompt: "Question".to_string(),
+            title: None,
             response_preview: None,
             adapter: "claude".to_string(),
             model: None,
@@ -8127,6 +8163,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             prompt: "Question".to_string(),
+            title: None,
             response_preview: None,
             adapter: "claude".to_string(),
             model: None,
@@ -8197,6 +8234,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             prompt: "Question".to_string(),
+            title: None,
             response_preview: Some("Answer".to_string()),
             adapter: "claude".to_string(),
             model: None,
@@ -8276,6 +8314,7 @@ mod tests {
                     tree_id,
                     parent_node_id: None,
                     prompt: "Question".to_string(),
+                    title: None,
                     response_preview: None,
                     adapter: "claude".to_string(),
                     model: None,

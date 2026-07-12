@@ -929,6 +929,15 @@ fn rename_research_tree(
 }
 
 #[tauri::command]
+fn rename_research_node(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+    title: String,
+) -> Result<ResearchNode, String> {
+    state.set_research_node_title(&node_id, title)
+}
+
+#[tauri::command]
 fn mark_research_tree_viewed(
     state: tauri::State<'_, AppState>,
     tree_id: String,
@@ -1738,6 +1747,7 @@ fn main() {
             fork_research_node,
             cancel_research_node,
             rename_research_tree,
+            rename_research_node,
             mark_research_tree_viewed,
             archive_research_tree,
             restore_research_tree,

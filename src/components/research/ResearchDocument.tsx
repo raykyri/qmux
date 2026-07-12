@@ -733,7 +733,7 @@ export default function ResearchDocument({
                 <span key={node.id}>
                   {index > 0 ? <span className="research-breadcrumb-separator">/</span> : null}
                   <button type="button" onClick={() => selectNode(node.id)}>
-                    {index === 0 ? detail.tree.title : node.prompt}
+                    {index === 0 ? detail.tree.title : node.title ?? node.prompt}
                   </button>
                 </span>
               ))}

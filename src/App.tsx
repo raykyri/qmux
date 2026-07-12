@@ -215,6 +215,7 @@ import {
   createResearchTree,
   forkResearchNode,
   markResearchTreeViewed,
+  renameResearchNode,
   renameResearchTree,
   removeResearchTree,
   restoreResearchTree,
@@ -4948,6 +4949,61 @@ export default function App() {
       }
     }, 250);
   }, [markVisibleResearchTreeViewed, refreshResearchNavigation]);
+  // Research titles reuse the terminal tab-title pipeline: same provider
+  // config, source-message stripping, and sanitization. Returns null when
+  // generation is disabled, unavailable, or fails — the prompt-derived
+  // default title is already a reasonable fallback, so failures stay silent.
+  const generateResearchTitle = useCallback(async (prompt: string): Promise<string | null> => {
+    const titleConfig = firstMessageTitleConfig(settingsRef.current, configRef.current);
+    if (!titleConfig) {
+      return null;
+    }
+    const sourceMessage = firstMessageTitleSource(prompt);
+    if (!sourceMessage) {
+      return null;
+    }
+    try {
+      return await generateFirstMessageTitle(sourceMessage, titleConfig);
+    } catch {
+      return null;
+    }
+  }, []);
+  const applyGeneratedResearchTreeTitle = useCallback(
+    async (treeId: string, prompt: string, originalTitle: string) => {
+      const title = await generateResearchTitle(prompt);
+      if (!title || title === originalTitle) {
+        return;
+      }
+      try {
+        // Generation spans a network/model round trip; skip if the user
+        // renamed the tree in the meantime.
+        const current = await getResearchTree(treeId);
+        if (current.tree.title !== originalTitle) {
+          return;
+        }
+        await renameResearchTree(treeId, title);
+      } catch {
+        return;
+      }
+      scheduleResearchRefresh();
+    },
+    [generateResearchTitle, scheduleResearchRefresh],
+  );
+  const applyGeneratedResearchNodeTitle = useCallback(
+    async (nodeId: string, prompt: string) => {
+      const title = await generateResearchTitle(prompt);
+      if (!title) {
+        return;
+      }
+      try {
+        await renameResearchNode(nodeId, title);
+      } catch {
+        return;
+      }
+      scheduleResearchRefresh();
+    },
+    [generateResearchTitle, scheduleResearchRefresh],
+  );
   const submitNewResearch = useCallback(
     async (input: {
       prompt: string;
@@ -5002,8 +5058,15 @@ export default function App() {
       }
       localStorage.setItem(LAST_RESEARCH_WORKSPACE_KEY, group.id);
       void refreshResearchNavigation().catch(() => undefined);
+      void applyGeneratedResearchTreeTitle(detail.tree.id, input.prompt, detail.tree.title);
     },
-    [changeResearchFolderScope, groups, refreshResearchNavigation, setSidebarMode],
+    [
+      applyGeneratedResearchTreeTitle,
+      changeResearchFolderScope,
+      groups,
+      refreshResearchNavigation,
+      setSidebarMode,
+    ],
   );
   const cancelResearchRun = useCallback(
     async (nodeId: string) => {
@@ -5078,6 +5141,7 @@ export default function App() {
   const createResearchFollowup = useCallback(
     async (parentNodeId: string, prompt: string) => {
       const node = await forkResearchNode(parentNodeId, prompt);
+      void applyGeneratedResearchNodeTitle(node.id, prompt);
       void refreshResearchNavigation().catch(() => undefined);
       const treeId = activeResearchTreeIdRef.current;
       if (treeId) {
@@ -5096,7 +5160,7 @@ export default function App() {
       }
       return node;
     },
-    [refreshResearchNavigation],
+    [applyGeneratedResearchNodeTitle, refreshResearchNavigation],
   );
   const nativeTerminalShortcutHandlerRef = useRef<
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => void

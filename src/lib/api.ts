@@ -309,6 +309,10 @@ export function renameResearchTree(treeId: string, title: string) {
   return invoke<ResearchTree>("rename_research_tree", { treeId, title });
 }
 
+export function renameResearchNode(nodeId: string, title: string) {
+  return invoke<ResearchNode>("rename_research_node", { nodeId, title });
+}
+
 export function markResearchTreeViewed(treeId: string) {
   return invoke<ResearchTree>("mark_research_tree_viewed", { treeId });
 }
