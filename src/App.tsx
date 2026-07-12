@@ -4699,7 +4699,11 @@ export default function App() {
           lastTerminalTabIdRef.current,
           HOME_TAB_ID,
         );
-        setActivePaneId(target);
+        if (target === HOME_TAB_ID) {
+          focusHomeTab();
+        } else {
+          focusPaneTab(target);
+        }
         return;
       }
 
@@ -4711,7 +4715,7 @@ export default function App() {
         groupsRef.current.find((group) => group.id === researchPane.groupId)?.scope === "research" &&
         workspaceIsInResearchScope(researchPane.groupId, researchScopeRef.current)
       ) {
-        setActivePaneId(researchPane.id);
+        focusPaneTab(researchPane.id);
         return;
       }
       setActiveSurface("research");
@@ -5393,7 +5397,7 @@ export default function App() {
       // pane retires while selected, the fallback effect returns to this tree.
       void selectResearchTree(researchNode.treeId);
     }
-    setActivePaneId(paneId);
+    focusPaneTab(paneId);
     acknowledgePaneIfDone(paneId);
   }
 
@@ -9924,7 +9928,7 @@ export default function App() {
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}
               onCancel={cancelResearchRun}
-              onOpenPane={(paneId) => setActivePaneId(paneId)}
+              onOpenPane={focusPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}
               onError={setError}
               onToast={showAppToast}
@@ -9945,7 +9949,7 @@ export default function App() {
               <div className="home-launcher">{renderLauncher()}</div>
               <HomeCascades
                 workstreams={homeCascadeWorkstreams}
-                onActivatePane={setActivePaneId}
+                onActivatePane={focusPaneTab}
               />
             </div>
           ) : null}
