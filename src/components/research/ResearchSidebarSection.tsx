@@ -40,6 +40,11 @@ function followupCount(tree: ResearchTreeSummary) {
 
 function FollowupHint({ tree }: { tree: ResearchTreeSummary }) {
   const count = followupCount(tree);
+  // A fresh research has no follow-ups; "0 follow-ups" on every new row is
+  // noise, so the meta line only appears once the tree actually branches.
+  if (count === 0) {
+    return null;
+  }
   return (
     <span className="research-sidebar-followups">
       {count} {count === 1 ? "follow-up" : "follow-ups"}
@@ -170,6 +175,7 @@ export default function ResearchSidebarSection({
               type="button"
               className="research-sidebar-select"
               aria-current={activeTreeId === tree.id ? "page" : undefined}
+              title={tree.title}
               onClick={() => onSelect(tree.id)}
             >
               <span className="research-sidebar-copy">
@@ -215,7 +221,7 @@ export default function ResearchSidebarSection({
             </summary>
             {archivedTrees.map((tree) => (
               <div key={tree.id} className="research-sidebar-row is-archived">
-                <div className="research-sidebar-select">
+                <div className="research-sidebar-select" title={tree.title}>
                   <Archive size={13} aria-hidden="true" />
                   <span className="research-sidebar-copy">
                     <span className="research-sidebar-title">{tree.title}</span>
