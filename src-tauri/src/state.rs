@@ -2308,26 +2308,51 @@ impl AppState {
             if workspace.scope != WorkspaceScope::Research || agent.group_id != workspace.id {
                 return Err("research launch did not use the tree's current workspace".to_string());
             }
+            // An instantly-exiting process (missing binary, adapter arg error)
+            // can EOF and run the whole remove_pane teardown before the launch
+            // path gets here. That teardown's research detach found nothing
+            // bound — this bind hadn't happened — so binding the dead pane id
+            // now would create a run nothing ever settles or unbinds: a
+            // phantom "active" node that pins its tree (blocking
+            // archive/remove and folder changes) until the user cancels it by
+            // hand or restarts. Checked under the same model lock remove_pane
+            // takes, so either the pane is still present (and its later detach
+            // will observe this binding), or it is gone for good and the run
+            // must settle here.
+            let pane_exists = model.panes.contains_key(pane_id);
             let node = model
                 .research_nodes
                 .get_mut(node_id)
                 .expect("research node was checked above");
             node.agent_id = Some(agent.id.clone());
-            node.pane_id = Some(pane_id.to_string());
             node.native_session_id = agent.session_id.clone();
             node.transcript_path = agent.transcript_path.clone();
             let now = now_millis();
             node.started_at.get_or_insert(now);
-            // Launch and cancellation race: the user can settle a Queued node
-            // while its spawn is still in flight. Binding must still record the
-            // pane and agent — the caller reclaims them — but a settled outcome
-            // is monotonic and the bind must not resurrect the run.
-            if !node.status.is_terminal() {
-                node.status = research_status_for_agent(agent.status);
-                node.error = None;
-                if node.status.is_terminal() {
-                    node.completed_at.get_or_insert(now);
+            if pane_exists {
+                node.pane_id = Some(pane_id.to_string());
+                // Launch and cancellation race: the user can settle a Queued node
+                // while its spawn is still in flight. Binding must still record the
+                // pane and agent — the caller reclaims them — but a settled outcome
+                // is monotonic and the bind must not resurrect the run.
+                if !node.status.is_terminal() {
+                    node.status = research_status_for_agent(agent.status);
+                    node.error = None;
+                    if node.status.is_terminal() {
+                        node.completed_at.get_or_insert(now);
+                    }
                 }
+            } else if node.status.is_active() {
+                // Mirror detach_research_pane's settle for the teardown that
+                // already ran: the agent snapshot was captured after the spawn,
+                // so Done/Idle means the run finished before its pane closed.
+                if matches!(agent.status, AgentStatus::Done | AgentStatus::Idle) {
+                    node.status = ResearchNodeStatus::Complete;
+                } else {
+                    node.status = ResearchNodeStatus::Failed;
+                    node.error = Some("Research process exited before completion".to_string());
+                }
+                node.completed_at = Some(now);
             }
             let node = node.clone();
             touch_research_tree_locked(&mut model, &node.tree_id, now);
@@ -6709,6 +6734,7 @@ mod tests {
     fn research_node_tracks_agent_status_and_response_preview() {
         let state = AppState::new(test_config(PathBuf::from("/tmp/qmux-state-research-run")));
         state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let detail = state
             .create_research_tree(CreateResearchTreeRequest {
                 prompt: "Question".to_string(),
@@ -6751,6 +6777,7 @@ mod tests {
     fn research_child_inherits_parent_launch_context() {
         let state = AppState::new(test_config(PathBuf::from("/tmp/qmux-state-research-child")));
         state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let detail = state
             .create_research_tree(CreateResearchTreeRequest {
                 prompt: "Root".to_string(),
@@ -6814,6 +6841,7 @@ mod tests {
             "/tmp/qmux-state-research-detach",
         )));
         state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let detail = state
             .create_research_tree(CreateResearchTreeRequest {
                 prompt: "Root".to_string(),
@@ -6954,6 +6982,7 @@ mod tests {
         let state = AppState::new(test_config(workspace.clone()));
         assert!(state.restore_session().is_empty());
         state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let detail = state
             .create_research_tree(CreateResearchTreeRequest {
                 prompt: "Question".to_string(),
@@ -7927,20 +7956,91 @@ mod tests {
         agent.status = AgentStatus::Running;
         agent.pane_id = Some("pane-ghost".to_string());
         state.insert_agent(agent.clone()).unwrap();
-        // The node is bound to a pane whose record does not exist (the
-        // stuck-binding shape: a kill that failed after its pane was already
-        // torn down). Cancel must still reclaim the binding — there is no
-        // EOF/teardown left to do it — or the settled node pins the tree as
-        // an active run until restart.
+        state.insert_pane(sample_pane_runtime("pane-ghost")).unwrap();
         state
             .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-ghost")
             .unwrap();
+        // Leave the node bound to a pane whose record no longer exists (the
+        // stuck-binding shape: a teardown that lost its research detach, e.g.
+        // a kill that failed after the pane record was already pruned). Cancel
+        // must still reclaim the binding — there is no EOF/teardown left to do
+        // it — or the settled node pins the tree as an active run until
+        // restart. Dropped directly because every ordinary removal path now
+        // runs the detach itself.
+        state
+            .inner
+            .model
+            .lock()
+            .unwrap()
+            .panes
+            .remove("pane-ghost");
 
         let node = state
             .cancel_research_node(&detail.tree.root_node_id)
             .unwrap();
         assert_eq!(node.status, ResearchNodeStatus::Cancelled);
         assert!(node.pane_id.is_none());
+        state.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn binding_after_the_panes_teardown_settles_instead_of_pinning_the_tree() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        // An instantly-exiting process (missing binary, adapter arg error):
+        // the reader thread's EOF teardown ran the whole remove_pane —
+        // including its research detach, which found nothing bound — before
+        // the launch path could bind. The bind must not resurrect the dead
+        // pane id: nothing would ever settle or unbind the node again, and
+        // the phantom "active" run would pin the tree until a manual cancel
+        // or restart.
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Running;
+        let node = state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        assert!(node.pane_id.is_none());
+        assert_eq!(node.status, ResearchNodeStatus::Failed);
+        assert!(node.error.is_some());
+        // The launch context is still recorded for diagnostics/fallbacks.
+        assert_eq!(node.agent_id.as_deref(), Some("research-agent"));
+        // Not pinned: the settled tree can be removed without a restart.
+        state.remove_research_tree(&detail.tree.id).unwrap();
+    }
+
+    #[test]
+    fn binding_after_teardown_keeps_a_finished_agents_run_complete() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        // Same teardown-before-bind ordering, but the agent snapshot already
+        // carries end-of-turn: the run finished, so settling it Failed would
+        // brand a delivered answer (mirrors detach_research_pane's check).
+        let mut agent = sample_agent("research-agent");
+        agent.status = AgentStatus::Done;
+        let node = state
+            .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-7")
+            .unwrap();
+        assert!(node.pane_id.is_none());
+        assert_eq!(node.status, ResearchNodeStatus::Complete);
+        assert!(node.error.is_none());
         state.remove_research_tree(&detail.tree.id).unwrap();
     }
 
@@ -8019,6 +8119,7 @@ mod tests {
     fn research_snapshot_requires_a_stable_response_with_an_assistant_turn() {
         let state = AppState::new(test_config(temp_workspace()));
         state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
         let detail = state
             .create_research_tree(CreateResearchTreeRequest {
                 prompt: "Root".to_string(),
