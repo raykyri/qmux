@@ -179,6 +179,8 @@ export interface AppSettings {
   showTabDirectories: boolean;
   /** show tool calls and other activity detail in agent transcripts */
   showToolCalls: boolean;
+  /** pin the latest user message to the top of the transcript while its reply scrolls */
+  stickyUserMessages: boolean;
   /** require Command+Enter instead of bare Enter for composer submit shortcuts */
   requireCmdEnterToSend: boolean;
 }
@@ -208,6 +210,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   codeMode: true,
   showTabDirectories: true,
   showToolCalls: true,
+  stickyUserMessages: true,
   requireCmdEnterToSend: true,
 };
 
@@ -380,6 +383,10 @@ export function loadSettings(): AppSettings {
       typeof parsed.showTabDirectories === "boolean" ? parsed.showTabDirectories : codeMode;
     const showToolCalls =
       typeof parsed.showToolCalls === "boolean" ? parsed.showToolCalls : codeMode;
+    const stickyUserMessages =
+      typeof parsed.stickyUserMessages === "boolean"
+        ? parsed.stickyUserMessages
+        : DEFAULT_SETTINGS.stickyUserMessages;
     const requireCmdEnterToSend =
       typeof parsed.requireCmdEnterToSend === "boolean"
         ? parsed.requireCmdEnterToSend
@@ -417,6 +424,7 @@ export function loadSettings(): AppSettings {
       codeMode,
       showTabDirectories,
       showToolCalls,
+      stickyUserMessages,
       requireCmdEnterToSend,
     };
   } catch {

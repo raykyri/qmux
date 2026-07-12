@@ -8129,6 +8129,7 @@ export default function App() {
             : "Working…"
         }
         showActivityDetail={settings.showToolCalls}
+        stickyUserMessages={settings.stickyUserMessages}
         agentId={agent?.id ?? surface.pane.id}
         searchHotkeyActive={surface.pane.id === activePane?.id}
         assistantLabel={surface.assistantLabel}
@@ -9230,6 +9231,19 @@ export default function App() {
                 onChange={(event) => {
                   const requireCmdEnterToSend = event.currentTarget.checked;
                   setSettings((current) => ({ ...current, requireCmdEnterToSend }));
+                }}
+              />
+            </label>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Pin latest message atop transcripts</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.stickyUserMessages}
+                onChange={(event) => {
+                  const stickyUserMessages = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, stickyUserMessages }));
                 }}
               />
             </label>

@@ -94,6 +94,9 @@ interface TurnOverlayProps {
   // Code-mode transcript detail: when false, hide historical tool/thinking
   // activity from the visible transcript while keeping normal messages.
   showActivityDetail?: boolean;
+  // When false, the latest user message never pins to the top of the pane —
+  // it scrolls with the rest of the transcript (Settings → sticky messages).
+  stickyUserMessages?: boolean;
   // When supplied, user-message headers get a small action that asks App to
   // regenerate the tab title from that message.
   onRegenerateTitleFromUserMessage?: (message: string) => void;
@@ -146,6 +149,7 @@ export default function TurnOverlay({
   thinking = false,
   thinkingLabel = "Working…",
   showActivityDetail = true,
+  stickyUserMessages = true,
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy = false,
   searchHotkeyActive = false,
@@ -406,6 +410,11 @@ export default function TurnOverlay({
   // the turn beneath it scrolls, and releases as the view scrolls back up to
   // its original slot.
   const stickyUserKey = useMemo(() => {
+    // A null key disables the whole pipeline downstream: no candidate class on
+    // the card, no fit measurement, no stuck tracking.
+    if (!stickyUserMessages) {
+      return null;
+    }
     for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
       const item = timelineItems[index];
       if (
@@ -418,7 +427,7 @@ export default function TurnOverlay({
       }
     }
     return null;
-  }, [timelineItems]);
+  }, [stickyUserMessages, timelineItems]);
   const [stickyUserFits, setStickyUserFits] = useState(false);
   const [stickyUserStuck, setStickyUserStuck] = useState(false);
   const stickyUserEnabled = Boolean(stickyUserKey) && stickyUserFits;
