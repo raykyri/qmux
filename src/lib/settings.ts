@@ -386,7 +386,7 @@ export function loadSettings(): AppSettings {
     const stickyUserMessages =
       typeof parsed.stickyUserMessages === "boolean"
         ? parsed.stickyUserMessages
-        : DEFAULT_SETTINGS.stickyUserMessages;
+        : codeMode;
     const requireCmdEnterToSend =
       typeof parsed.requireCmdEnterToSend === "boolean"
         ? parsed.requireCmdEnterToSend

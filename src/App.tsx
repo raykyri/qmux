@@ -8948,30 +8948,6 @@ export default function App() {
             {settingsTab === "basic" ? (
               <div className="settings-content" role="tabpanel">
             <div className="settings-row">
-              <label htmlFor="settings-font" className="settings-label">
-                Font
-              </label>
-              <select
-                id="settings-font"
-                className="settings-select"
-                value={settings.fontId}
-                onChange={(event) => {
-                  // Read the value synchronously: the setSettings updater runs
-                  // during render, by which point React has reset currentTarget
-                  // to null, so it must close over the value, not the event.
-                  const fontId = event.currentTarget.value;
-                  setSettings((current) => ({ ...current, fontId }));
-                }}
-              >
-                {FONT_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="settings-row">
               <label htmlFor="settings-theme" className="settings-label">
                 Theme
               </label>
@@ -8988,7 +8964,7 @@ export default function App() {
                   className="settings-select"
                   value={settings.themeId}
                   onChange={(event) => {
-                    // Read the value synchronously: see the font select above.
+                    // Read the value synchronously before React resets currentTarget.
                     const themeId = event.currentTarget.value;
                     setSettings((current) => ({ ...current, themeId }));
                   }}
@@ -9020,6 +8996,30 @@ export default function App() {
                   ) : null}
                 </select>
               </div>
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="settings-font" className="settings-label">
+                Terminal font
+              </label>
+              <select
+                id="settings-font"
+                className="settings-select"
+                value={settings.fontId}
+                onChange={(event) => {
+                  // Read the value synchronously: the setSettings updater runs
+                  // during render, by which point React has reset currentTarget
+                  // to null, so it must close over the value, not the event.
+                  const fontId = event.currentTarget.value;
+                  setSettings((current) => ({ ...current, fontId }));
+                }}
+              >
+                {FONT_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="settings-row">
@@ -9057,40 +9057,6 @@ export default function App() {
 
             <div className="settings-divider" role="separator" />
 
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Use login shell</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.useLoginShell}
-                onChange={(event) => {
-                  // Capture before the updater: see the font select above, where
-                  // currentTarget is nulled out by the time the updater runs.
-                  const useLoginShell = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, useLoginShell }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Code mode</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.codeMode}
-                onChange={(event) => {
-                  const codeMode = event.currentTarget.checked;
-                  setSettings((current) => ({
-                    ...current,
-                    codeMode,
-                    showTabDirectories: codeMode,
-                    showToolCalls: codeMode,
-                    requireCmdEnterToSend: codeMode,
-                  }));
-                }}
-              />
-            </label>
-
             <div className="settings-row">
               <label htmlFor="settings-worktree-location" className="settings-label">
                 Worktree location
@@ -9114,12 +9080,33 @@ export default function App() {
             </div>
             <p className="settings-hint">
               {settings.worktreeLocation === "localQmux"
-                ? "New worktrees are stored in <project>/.qmux/worktrees/<name>."
+                ? "New worktrees stored in <project>/.qmux/worktrees/<name>."
                 : settings.worktreeLocation === "localClaude"
-                  ? "New worktrees are stored in <project>/.claude/worktrees/<name>."
-                  : "New worktrees are stored in qmux’s global workspace directory."}
-              {" Existing worktrees are not moved."}
+                  ? "New worktrees stored in <project>/.claude/worktrees/<name>."
+                  : "New worktrees stored in qmux’s global workspace directory."}
             </p>
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">
+                Code mode (enables worktrees, extra shell UI, etc.)
+              </span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.codeMode}
+                onChange={(event) => {
+                  const codeMode = event.currentTarget.checked;
+                  setSettings((current) => ({
+                    ...current,
+                    codeMode,
+                    showTabDirectories: codeMode,
+                    showToolCalls: codeMode,
+                    stickyUserMessages: codeMode,
+                    requireCmdEnterToSend: codeMode,
+                  }));
+                }}
+              />
+            </label>
 
             <label className="settings-row settings-toggle">
               <span className="settings-label settings-label-indented">Show tab directories</span>
@@ -9163,7 +9150,9 @@ export default function App() {
             </label>
 
             <label className="settings-row settings-toggle">
-              <span className="settings-label">Pin latest message atop transcripts</span>
+              <span className="settings-label settings-label-indented">
+                Pin latest user message on top of transcripts
+              </span>
               <input
                 type="checkbox"
                 className="settings-checkbox"
@@ -9400,6 +9389,21 @@ export default function App() {
               </div>
             ) : (
               <div className="settings-content" role="tabpanel">
+                <label className="settings-row settings-toggle">
+                  <span className="settings-label">Use login shell</span>
+                  <input
+                    type="checkbox"
+                    className="settings-checkbox"
+                    checked={settings.useLoginShell}
+                    onChange={(event) => {
+                      const useLoginShell = event.currentTarget.checked;
+                      setSettings((current) => ({ ...current, useLoginShell }));
+                    }}
+                  />
+                </label>
+
+                <div className="settings-divider" role="separator" />
+
                 <label className="settings-row settings-toggle">
                   <span className="settings-label">Cursor blink</span>
                   <input
