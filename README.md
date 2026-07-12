@@ -135,7 +135,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `Cmd-N`: focus Home.
 - `Cmd-Option-T`: switch to the Terminal tab.
 - `Cmd-Option-R`: switch to the Research tab.
-- `Cmd-;` / `Ctrl-;`: open the agent launcher.
 - `Cmd-=` / `Cmd-+`: increase terminal font size.
 - `Cmd--`: decrease terminal font size.
 - `Cmd-0`: reset terminal font size.

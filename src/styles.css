@@ -2297,53 +2297,17 @@ button:disabled {
   white-space: nowrap;
 }
 
-.command-launcher-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 18px;
-  background: rgba(8, 10, 12, 0.58);
-}
-
 .command-launcher {
   position: relative;
   width: min(680px, 100%);
-  border: 1px solid var(--accent-color);
+  border: 1px solid var(--control-border);
   border-radius: 14px;
   /* Faint top-lit gradient — a touch lighter at the very top, settling to the
      base surface by ~40% down — so the bar reads as a lifted panel. */
   background: linear-gradient(180deg, #1f2426, #1b2022 40%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 26px 80px rgba(0, 0, 0, 0.55);
-  overflow: hidden;
-  /* Only the border eases; the focus ring (box-shadow) snaps in so clicking the
-     bar doesn't pulse the shadow. */
-  transition: border-color 120ms ease;
-}
-
-/* The whole bar — not the inner field — carries the focus highlight, so it reads
-   as one integrated Spotlight surface rather than a textarea in a box. */
-.command-launcher:focus-within {
-  border-color: var(--accent-color);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 0 1px var(--accent-shadow),
-    0 26px 80px rgba(0, 0, 0, 0.55);
-}
-
-/* Inline (content-pane placeholder) launcher: same surface and controls as the
-   modal, but a plain border and no accent focus ring, since it's a resting
-   placeholder rather than a summoned overlay. */
-.command-launcher--inline,
-.command-launcher--inline:focus-within {
-  border-color: var(--control-border);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
 }
-
 .confirm-dialog-backdrop {
   position: fixed;
   inset: 0;

@@ -9,7 +9,6 @@ export type AppShortcutCommand =
   | { type: "focusResearchMode" }
   | { type: "cyclePaneTab"; direction: -1 | 1 }
   | { type: "cycleAllTab"; direction: -1 | 1 }
-  | { type: "launcherOrCycleAdapter" }
   | { type: "openSettings" }
   | { type: "openCommandPalette" }
   | { type: "toggleTranscriptOrBrowser" }
@@ -86,9 +85,6 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (command && !control && !option && shift && (key === "[" || key === "]")) {
     return { type: "cycleAllTab", direction: key === "[" ? -1 : 1 };
   }
-  if (onePrimaryModifier && !option && !shift && key === ";") {
-    return { type: "launcherOrCycleAdapter" };
-  }
   if (onePrimaryModifier && !option && !shift && key === ",") {
     return { type: "openSettings" };
   }
@@ -145,7 +141,6 @@ export function parseAppShortcutCommand(
     case "focusHome":
     case "focusTerminalMode":
     case "focusResearchMode":
-    case "launcherOrCycleAdapter":
     case "openSettings":
     case "toggleTranscriptOrBrowser":
     case "splitPaneBelow":

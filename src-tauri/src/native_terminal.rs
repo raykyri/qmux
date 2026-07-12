@@ -65,7 +65,6 @@ enum AppShortcutCommand {
     FocusResearchMode,
     CyclePaneTab(i8),
     CycleAllTab(i8),
-    LauncherOrCycleAdapter,
     OpenSettings,
     ToggleTranscriptOrBrowser,
     SplitPaneBelow,
@@ -90,7 +89,6 @@ impl AppShortcutCommand {
             Self::CyclePaneTab(_) => ("cyclePaneTabNext", None),
             Self::CycleAllTab(-1) => ("cycleAllTabPrevious", None),
             Self::CycleAllTab(_) => ("cycleAllTabNext", None),
-            Self::LauncherOrCycleAdapter => ("launcherOrCycleAdapter", None),
             Self::OpenSettings => ("openSettings", None),
             Self::ToggleTranscriptOrBrowser => ("toggleTranscriptOrBrowser", None),
             Self::SplitPaneBelow => ("splitPaneBelow", None),
@@ -156,9 +154,6 @@ fn classify_app_shortcut(
         } else {
             1
         }));
-    }
-    if one_primary_modifier && !option && !shift && key == ";" {
-        return Some(AppShortcutCommand::LauncherOrCycleAdapter);
     }
     if one_primary_modifier && !option && !shift && key == "," {
         return Some(AppShortcutCommand::OpenSettings);
@@ -994,7 +989,7 @@ mod tests {
             super::classify_app_shortcut("r", false, false, true, true),
             Some(AppShortcutCommand::FocusResearchMode)
         );
-        for key in ["k", "a", "z", "Enter"] {
+        for key in [";", "k", "a", "z", "Enter"] {
             assert_eq!(
                 super::classify_app_shortcut(key, false, false, false, true),
                 None,

@@ -44,6 +44,8 @@ test("resolves qmux command and control shortcuts", () => {
     resolveAppShortcut(shortcut({ key: "r", metaKey: true, altKey: true })),
     { type: "focusResearchMode" },
   );
+  assert.equal(resolveAppShortcut(shortcut({ key: ";", metaKey: true })), null);
+  assert.equal(resolveAppShortcut(shortcut({ key: ";", ctrlKey: true })), null);
   // macOS composes Option chords: the browser reports Cmd-Opt-T as key "†"
   // (and Cmd-Opt-R as "®"), so the physical code must carry the match or the
   // shortcut never fires from web-focused surfaces.
@@ -111,6 +113,7 @@ test("parses semantic commands from native payloads", () => {
   assert.deepEqual(parseAppShortcutCommand("focusResearchMode", null), {
     type: "focusResearchMode",
   });
+  assert.equal(parseAppShortcutCommand("launcherOrCycleAdapter", null), null);
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);
 });

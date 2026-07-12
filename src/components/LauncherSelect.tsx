@@ -23,8 +23,8 @@ const iconClass = (option?: LauncherSelectOption) =>
   ["launcher-select-icon", option?.iconClassName].filter(Boolean).join(" ");
 
 /* A native <select> can't tint a single option, so this is a custom listbox styled
-   like the launcher's controls. The popover is portaled to <body> (the launcher modal
-   and its options row both clip overflow) and pinned below the trigger like the
+   like the launcher's controls. The popover is portaled to <body> because the launcher
+   and its options row both clip overflow, then pinned below the trigger like the
    composer menu. */
 export function LauncherSelect({ value, options, onChange, ariaLabel }: LauncherSelectProps) {
   const [open, setOpen] = useState(false);

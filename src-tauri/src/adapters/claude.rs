@@ -1335,7 +1335,7 @@ pub fn list_skills(config: &QmuxConfig) -> Vec<ClaudeSkill> {
             // Skills are inline-only by default — invoked mid-conversation as a slash
             // command (fork, open-in-browser, …), which makes no sense as a "New agent"
             // launch. Only skills that explicitly opt in with `qmux-launcher: true`
-            // appear in the cmd-; launcher. Filtering here does not affect Claude's own
+            // appear in the new-agent launcher. Filtering here does not affect Claude's own
             // ability to run any skill inline; it loads the plugin dir independently.
             if !skill_shows_in_launcher(&skill_md) {
                 return None;
@@ -1410,7 +1410,7 @@ fn skill_frontmatter_name(skill_md: &Path) -> Option<String> {
     None
 }
 
-/// Whether a skill opts into the cmd-; launcher via a top-level `qmux-launcher: true`
+/// Whether a skill opts into the new-agent launcher via a top-level `qmux-launcher: true`
 /// frontmatter key. Skills are inline-only (invoked mid-conversation) by default, so a
 /// skill is hidden from the "New agent" launcher unless it explicitly opts in. Scans
 /// the same leading `---` block as `skill_frontmatter_name` and, like it, matches only

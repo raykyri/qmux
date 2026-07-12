@@ -1130,7 +1130,6 @@ export default function App() {
   // which unmounts the composer) restores where each queue was left. Ephemeral: a ref
   // so scroll updates never re-render, and the whole thing is dropped on app restart.
   const queueScrollByAgentRef = useRef<Record<string, number>>({});
-  const wasLauncherOpenRef = useRef(false);
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Keep active-tab actions reachable from the global keydown listener without
   // re-registering it on every state change.
@@ -1468,10 +1467,8 @@ export default function App() {
   // The launcher prompt is deliberately NOT React state: as app-root state it
   // re-rendered the entire component tree on every keystroke (the composer had
   // the same problem and got a component-local draft). The textarea runs
-  // uncontrolled; this ref tracks the live text for submit, and remounts (the
-  // modal/inline variant switch) reseed from it via defaultValue.
+  // uncontrolled; this ref tracks the live text for submit.
   const promptRef = useRef("");
-  const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherAdapterId, setLauncherAdapterId] = useState<string | null>(null);
   const [launcherOptionsByAdapter, setLauncherOptionsByAdapter] = useState<
     Record<string, Record<string, unknown>>
@@ -1486,9 +1483,9 @@ export default function App() {
   // of the composer so typed text starts after the immutable command.
   const [skillPrefixWidth, setSkillPrefixWidth] = useState(0);
   const skillPrefixRef = useRef<HTMLSpanElement | null>(null);
-  // Guard for the new-agent launcher: addAgentPane awaits spawnAgent before it
-  // closes the launcher, so a held Enter or double submit would otherwise spawn
-  // several agents (and worktrees) from one intended launch.
+  // Guard for the new-agent launcher: addAgentPane awaits spawnAgent, so a held
+  // Enter or double submit would otherwise spawn several agents (and worktrees)
+  // from one intended launch.
   const launchingAgentRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [appToast, setAppToast] = useState<{
@@ -2588,12 +2585,6 @@ export default function App() {
     }
     focusLauncherInput();
   }
-  // The launcher renders in two places: the modal (Cmd-; / sidebar button) and,
-  // when there are no panes, inline as the content-pane placeholder. Only one is
-  // ever mounted at a time (the inline one yields to the modal), so they can share
-  // the launcher refs/state and the focus/auto-grow effects below.
-  const launcherVisible = launcherOpen || homeActive;
-
   // Called on each keystroke in an agent's composer or terminal. Sets a backend
   // "typing" hold (so a finishing turn won't auto-drain into what the user is typing)
   // and schedules its release INPUT_DEQUEUE_HOLD_MS after the last keystroke; the
@@ -3790,17 +3781,6 @@ export default function App() {
     void acknowledgeAgentStatuses(agentsForSplitStatusGroup(paneId));
   }
 
-  function focusActiveTerminal() {
-    const paneId = activePane?.id;
-    if (!paneId) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      terminalPaneRefs.current.get(paneId)?.focus();
-    });
-  }
-
   function maxTurnPaneWidth() {
     const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
     const available = Math.floor(appWidth - sidebarWidth - TERMINAL_MIN_WIDTH);
@@ -4582,7 +4562,6 @@ export default function App() {
   }, []);
   const activateTerminalPane = useCallback((paneId: string) => {
     setActivePaneId(paneId);
-    setLauncherOpen(false);
   }, []);
   const clearResearchUnseen = useCallback((treeId: string) => {
     const clear = (trees: ResearchTreeSummary[]) =>
@@ -4671,7 +4650,6 @@ export default function App() {
     localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, treeId);
     setActiveResearchDetail(null);
     setActiveResearchDetailError(null);
-    setLauncherOpen(false);
     try {
       const detail = await getResearchTree(treeId);
       if (
@@ -4714,7 +4692,6 @@ export default function App() {
       setPaneContextMenu(null);
       setGroupMenu(null);
       setSettingsMenu(null);
-      setLauncherOpen(false);
       if (mode === "terminal") {
         const target = terminalTabForMode(
           panesRef.current,
@@ -5072,7 +5049,6 @@ export default function App() {
 
   function focusPaneTab(paneId: string) {
     setActivePaneId(paneId);
-    setLauncherOpen(false);
     requestAnimationFrame(() => {
       terminalPaneRefs.current.get(paneId)?.focus();
     });
@@ -5080,7 +5056,6 @@ export default function App() {
 
   function focusHomeTab() {
     setActivePaneId(HOME_TAB_ID);
-    setLauncherOpen(false);
     focusLauncherInput();
   }
 
@@ -5133,8 +5108,8 @@ export default function App() {
       id: "action:new-tab",
       section: "Actions",
       title: "New agent",
-      hint: settings.codeMode ? "⌘;" : "⌘; / ⌘T",
-      action: () => openAgentLauncher(),
+      hint: settings.codeMode ? undefined : "⌘T",
+      action: () => focusHomeTab(),
     });
     commands.push({
       id: "action:new-research",
@@ -5247,14 +5222,6 @@ export default function App() {
     // setters, so it should be registered once for the app lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  function openAgentLauncher() {
-    if (homeActive) {
-      focusHomeTab();
-      return;
-    }
-    setLauncherOpen(true);
-  }
 
   function handleGroupHeaderPointerDown(event: ReactPointerEvent<HTMLDivElement>, groupId: string) {
     if (event.button !== 0) {
@@ -6565,7 +6532,6 @@ export default function App() {
       }
       clearLauncherPrompt();
       setSelectedSkillId(null);
-      setLauncherOpen(false);
       const [latestAgents] = await Promise.all([listAgents(), refreshGroups()]);
       setAgents(latestAgents);
     } catch (err) {
@@ -7163,7 +7129,6 @@ export default function App() {
         activeResearchPaneIdRef.current = null;
         setActiveResearchPaneId(null);
         localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
-        setLauncherOpen(false);
         return;
       }
       focusPaneTab(nextTabId);
@@ -7220,13 +7185,6 @@ export default function App() {
         case "cycleAllTab":
           cycleTab(command.direction, true, cycleableSidebarPanes);
           return;
-        case "launcherOrCycleAdapter":
-          if (launcherOpen) {
-            cycleLauncherAdapter();
-          } else {
-            setLauncherOpen(true);
-          }
-          return;
         case "openSettings":
           setSettingsMenu(null);
           setSettingsOpen(true);
@@ -7266,7 +7224,7 @@ export default function App() {
           return;
         case "newPane":
           if (!settingsRef.current.codeMode) {
-            setLauncherOpen(true);
+            focusHomeTab();
           } else {
             void addShellPane();
           }
@@ -7318,7 +7276,6 @@ export default function App() {
     lastActiveGroupId,
     groupById,
     homeActive,
-    launcherOpen,
     launcherAdapterOptions,
     launchAdapter.id,
     paneSplits,
@@ -7337,7 +7294,7 @@ export default function App() {
   }, [commandPaletteOpen, activePane, groupById]);
 
   useEffect(() => {
-    if (!launcherVisible) {
+    if (!homeActive) {
       return;
     }
 
@@ -7353,10 +7310,7 @@ export default function App() {
       launcherInputRef.current?.focus();
       launcherInputRef.current?.select();
     });
-    // Depend on launcherOpen too: on Home the launcher is already visible inline, so
-    // opening the modal (e.g. ⌘;) doesn't flip launcherVisible. Without this the modal's
-    // freshly-mounted textarea — a different node than the inline one — never gets focus.
-  }, [launcherVisible, launcherOpen]);
+  }, [homeActive]);
 
   // Selecting a non-Claude adapter clears any chosen skill; measure the faint
   // command prefix so the composer's first line is indented past it.
@@ -7372,7 +7326,7 @@ export default function App() {
       return;
     }
     setSkillPrefixWidth(skillPrefixRef.current?.getBoundingClientRect().width ?? 0);
-  }, [selectedSkill, launcherVisible]);
+  }, [selectedSkill, homeActive]);
 
   // Grow the launcher textarea to fit its content so a multi-line prompt expands the
   // whole launcher (the CSS max-height caps it, after which the field scrolls). Runs
@@ -7396,11 +7350,11 @@ export default function App() {
     growLauncherInput();
   }, [growLauncherInput]);
   useLayoutEffect(() => {
-    if (!launcherVisible) {
+    if (!homeActive) {
       return;
     }
     growLauncherInput();
-  }, [growLauncherInput, launcherVisible, skillPrefixWidth]);
+  }, [growLauncherInput, homeActive, skillPrefixWidth]);
 
   useEffect(() => {
     const runtimeAdapterIds = config?.adapters.map((adapter) => adapter.id) ?? [];
@@ -7411,13 +7365,6 @@ export default function App() {
       current && runtimeAdapterIds.includes(current) ? current : null,
     );
   }, [config]);
-
-  useEffect(() => {
-    if (wasLauncherOpenRef.current && !launcherOpen) {
-      focusActiveTerminal();
-    }
-    wasLauncherOpenRef.current = launcherOpen;
-  }, [launcherOpen, activePane?.id]);
 
   useEffect(() => {
     if (!hasVisibleRightBar) {
@@ -7595,23 +7542,13 @@ export default function App() {
     );
   }
 
-  // The launcher form, shared by the modal overlay and the inline content-pane
-  // placeholder. The inline variant drops the modal semantics (no Escape-to-close,
-  // no aria-modal) and wears a plain border instead of the accent ring.
-  const renderLauncher = (variant: "modal" | "inline") => (
+  // The launcher form lives on Home and creates a new agent in the selected group.
+  const renderLauncher = () => (
     <form
-      className={`command-launcher${variant === "inline" ? " command-launcher--inline" : ""}`}
+      className="command-launcher"
       role="dialog"
-      aria-modal={variant === "modal" ? true : undefined}
       aria-label="New agent"
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          if (variant === "modal") {
-            event.preventDefault();
-            setLauncherOpen(false);
-          }
-          return;
-        }
         // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is
         // cleared programmatically on launch (outside the WebView's undo
         // history), so native undo could resurrect a sent prompt — or, with no
@@ -8585,16 +8522,16 @@ export default function App() {
                 </div>
               ) : null}
               <div className="sidebar-action-with-hint">
-                <button type="button" onClick={openAgentLauncher}>
+                <button type="button" onClick={focusHomeTab}>
                   <MessageSquareText size={14} aria-hidden="true" />
                   <span>New agent</span>
                 </button>
-                {shortcutHintsShown ? (
+                {shortcutHintsShown && !settings.codeMode ? (
                   <span
                     className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
                     aria-hidden="true"
                   >
-                    {settings.codeMode ? "⌘;" : "⌘; / ⌘T"}
+                    ⌘T
                   </span>
                 ) : null}
               </div>
@@ -8735,7 +8672,7 @@ export default function App() {
                 setGroupMenu(null);
                 setActivePaneId(HOME_TAB_ID);
                 setLastActiveGroupId(groupMenuGroup.id);
-                setLauncherOpen(true);
+                focusLauncherInput();
               }}
             >
               <MessageSquareText size={13} aria-hidden="true" />
@@ -8946,20 +8883,6 @@ export default function App() {
               <span>Close tab</span>
             </button>
           </div>
-        </div>
-      ) : null}
-
-      {launcherOpen ? (
-        <div
-          className="command-launcher-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setLauncherOpen(false);
-            }
-          }}
-        >
-          {renderLauncher("modal")}
         </div>
       ) : null}
 
@@ -10017,9 +9940,9 @@ export default function App() {
               </button>
             </div>
           ) : null}
-          {homeActive && !launcherOpen ? (
+          {homeActive ? (
             <div className="terminal-empty-state">
-              <div className="home-launcher">{renderLauncher("inline")}</div>
+              <div className="home-launcher">{renderLauncher()}</div>
               <HomeCascades
                 workstreams={homeCascadeWorkstreams}
                 onActivatePane={setActivePaneId}
@@ -10062,7 +9985,6 @@ export default function App() {
                 visibleTerminalPaneIdSet.has(pane.id) &&
                 (settingsOpen ||
                   newResearchOpen ||
-                  launcherOpen ||
                   Boolean(activeBrowserOverlay?.open) ||
                   Boolean(closeDialog) ||
                   Boolean(exitDialog) ||
