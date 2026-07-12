@@ -231,6 +231,14 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
     let index = toolUseId
       ? pending.findIndex((entry) => entry.id === toolUseId && entry.status === status)
       : -1;
+    if (index === -1 && toolUseId) {
+      // A call/result pair can straddle a status boundary (a fork supersedes
+      // the call's turn but not the result's, an interruption marks only one
+      // side). The id is authoritative — pair with the mismatched-status call
+      // rather than letting the fallback below attach this result to an
+      // unrelated same-status call.
+      index = pending.findIndex((entry) => entry.id === toolUseId);
+    }
     if (index === -1 && pending.length > 0) {
       index = pending.findIndex((entry) => entry.status === status);
     }

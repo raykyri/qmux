@@ -50,6 +50,7 @@ import TranscriptPickerLink from "./TranscriptPickerLink";
 import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
   type LinkActions,
+  type OversizedMarkdownPolicy,
 } from "./TranscriptMarkdown";
 import {
   DisclosureChevron,
@@ -119,6 +120,15 @@ const QUEUE_SPLIT_RESIZER_HALF_HEIGHT = 5;
 const SPLIT_KEYBOARD_STEP = 16;
 const LONG_USER_MESSAGE_COLLAPSE_THRESHOLD = 12_000;
 const LONG_USER_MESSAGE_PREVIEW_CHARS = 1_200;
+// Assistant messages past this size render as plain preformatted text instead
+// of markdown (same limit as research documents): react-markdown re-parses the
+// whole message on every streamed append, so a pathological multi-hundred-KB
+// message would otherwise stall the stream per event batch. Hoisted so the
+// memoized renderer sees a stable prop identity.
+const OVERSIZED_ASSISTANT_MARKDOWN: OversizedMarkdownPolicy = {
+  maxCharacters: 100_000,
+  fallbackClassName: "turn-text",
+};
 // A pinned last-user-message taller than this share of the pane would blanket
 // the reply scrolling beneath it, so sticking is disabled for tall bubbles.
 const STICKY_USER_MAX_HEIGHT_RATIO = 0.4;
@@ -157,6 +167,8 @@ export default function TurnOverlay({
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  // Zero-height marker after the last timeline row; see the observer effect below.
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
   const regenerateTitleFromUserMessageRef = useRef(onRegenerateTitleFromUserMessage);
   regenerateTitleFromUserMessageRef.current = onRegenerateTitleFromUserMessage;
   const titleGenerationEnabled = Boolean(onRegenerateTitleFromUserMessage);
@@ -321,6 +333,68 @@ export default function TurnOverlay({
       scrollToBottom();
     }
   }, [turns, composerHeight, effectiveQueueSplitHeight, queueSplit, thinking]);
+
+  // Re-pin outside React commits too. Content grows asynchronously — diagrams
+  // render once their chunk loads, images decode late — and the scroller
+  // itself resizes with the window and pane dividers; none of that passes
+  // through the layout effects above, so a pinned view drifted off the
+  // bottom. The sentinel observer fires whenever the timeline's bottom edge
+  // crosses the viewport, but re-pins only when scrollHeight actually changed:
+  // plain user scrolling flips the sentinel's visibility too and must never
+  // be fought. Growth right after a pointer/key interaction inside the
+  // timeline is also left alone — that shape is a disclosure being expanded
+  // (a details toggle, a long-message reveal), and yanking to the bottom
+  // would pull the view off the content the user just opened. Scroller
+  // resizes re-pin on stickiness alone — a resize isn't a scroll gesture, so
+  // being pinned beforehand is the only signal that matters. Timeline and
+  // sentinel are rendered unconditionally, so the empty deps are safe.
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    const sentinel = bottomSentinelRef.current;
+    if (!timeline) {
+      return;
+    }
+    let lastScrollHeight = timeline.scrollHeight;
+    let suppressAutoPinUntil = 0;
+    const noteUserInteraction = () => {
+      suppressAutoPinUntil = performance.now() + 250;
+    };
+    timeline.addEventListener("pointerdown", noteUserInteraction, true);
+    timeline.addEventListener("keydown", noteUserInteraction, true);
+    const contentObserver =
+      sentinel && typeof IntersectionObserver !== "undefined"
+        ? new IntersectionObserver(
+            () => {
+              const grew = timeline.scrollHeight !== lastScrollHeight;
+              lastScrollHeight = timeline.scrollHeight;
+              if (
+                grew &&
+                stickToBottomRef.current &&
+                performance.now() >= suppressAutoPinUntil
+              ) {
+                scrollToBottom();
+              }
+            },
+            { root: timeline },
+          )
+        : null;
+    if (sentinel && contentObserver) {
+      contentObserver.observe(sentinel);
+    }
+    const resizeObserver = new ResizeObserver(() => {
+      lastScrollHeight = timeline.scrollHeight;
+      if (stickToBottomRef.current) {
+        scrollToBottom();
+      }
+    });
+    resizeObserver.observe(timeline);
+    return () => {
+      timeline.removeEventListener("pointerdown", noteUserInteraction, true);
+      timeline.removeEventListener("keydown", noteUserInteraction, true);
+      contentObserver?.disconnect();
+      resizeObserver.disconnect();
+    };
+  }, []);
 
   // The composer normally floats over the transcript, so reserve scroll room
   // beneath the last message equal to the live input height. In split mode, also
@@ -772,13 +846,24 @@ export default function TurnOverlay({
         {timelineItems.length === 0 && !thinking ? (
           <div className="empty-state turn-empty-state">
             <span>No activity yet</span>
-            {notice === "Transcript unavailable" && onSelectTranscript ? (
+            {/* Adapters emit both the bare "Transcript unavailable" and
+                detailed variants ("Transcript unavailable: <reason>"), and
+                transcript.error relays arbitrary failure text. Show the
+                diagnostic whenever it says more than the picker already
+                does, and offer the session picker for every
+                transcript-unavailable flavor — an exact-string match here
+                used to swallow the detailed ones and misleadingly render
+                "Send a message to continue" over a broken transcript. */}
+            {notice && notice !== "Transcript unavailable" ? (
+              <span className="turn-empty-notice">{notice}</span>
+            ) : null}
+            {notice?.startsWith("Transcript unavailable") && onSelectTranscript ? (
               <TranscriptPickerLink
                 options={transcriptOptions}
                 activePath={transcriptPath}
                 onSelect={onSelectTranscript}
               />
-            ) : (
+            ) : notice ? null : (
               <span className="turn-empty-notice">Send a message to continue</span>
             )}
           </div>
@@ -824,6 +909,7 @@ export default function TurnOverlay({
             <span className="turn-thinking-label">{thinkingLabel}</span>
           </div>
         ) : null}
+        <div ref={bottomSentinelRef} className="turn-timeline-sentinel" aria-hidden="true" />
         </div>
       </TranscriptLinkActionsProvider>
       {input ? (
@@ -873,7 +959,14 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
         />
       ) : null}
       {item.activities.map((activity) => (
-        <TranscriptActivityItem key={activity.key} item={activity} isRootActivity />
+        // deferPayloads keeps collapsed thinking bodies out of the DOM until
+        // opened (tool entries already defer their payloads internally). A
+        // long transcript carries megabytes of thinking text, and mounting it
+        // all inside closed <details> made tab switches pay for content
+        // nobody had asked to see. Collapsed payloads were never findable by
+        // Cmd-F anyway (unrendered ranges have no client rects), so search
+        // behavior is unchanged.
+        <TranscriptActivityItem key={activity.key} item={activity} isRootActivity deferPayloads />
       ))}
     </>
   );
@@ -1157,9 +1250,9 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
       }
       return <p className="turn-text">{block.text}</p>;
     }
-    return <TranscriptMarkdown text={block.text} />;
+    return <TranscriptMarkdown text={block.text} oversizedContent={OVERSIZED_ASSISTANT_MARKDOWN} />;
   }
-  return <RawTranscriptDisclosure value={block.value} />;
+  return <RawTranscriptDisclosure value={block.value} deferPayload />;
 }
 
 function CollapsedTaggedUserInstruction({ label, text }: { label: string; text: string }) {

@@ -251,6 +251,37 @@ test("exact ids win, missing ids use the oldest call, and unmatched results rema
   }
 });
 
+test("an id match pairs a call and result even when their turn statuses differ", () => {
+  nextIndex = 0;
+  // A fork/interruption can mark the call's turn but not the result's (or vice
+  // versa). The id must still win over the oldest same-status pending call, or
+  // the result renders under an unrelated tool row.
+  const items = buildTimelineItems([
+    turn("assistant", [toolUse("live", "Read", { file_path: "live" })]),
+    turn("assistant", [toolUse("cut", "Bash", { command: "make" })], {
+      status: "interrupted",
+    }),
+    turn("user", [toolResult("cut", "cut-result")]),
+    turn("user", [toolResult("live", "live-result")]),
+  ]);
+  const results = items.flatMap((item) =>
+    item.activities.flatMap((activity) =>
+      activity.type === "activityGroup"
+        ? activity.children.filter((child) => child.type === "tool")
+        : activity.type === "tool"
+          ? [activity]
+          : [],
+    ),
+  );
+  assert.deepEqual(
+    results.map((entry) => [entry.id, entry.result]),
+    [
+      ["live", "live-result"],
+      ["cut", "cut-result"],
+    ],
+  );
+});
+
 test("one activity stays a leaf while multiple activities form one disclosure group", () => {
   nextIndex = 0;
   const single = buildTimelineItems([turn("assistant", [toolUse("one")])]);

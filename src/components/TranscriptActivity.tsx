@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type {
   ActivityGroupItem,
@@ -411,6 +411,30 @@ export function DisclosureChevron() {
   return <ChevronRight className="disclosure-chevron" size={12} aria-hidden="true" />;
 }
 
+// Serialized lengths for the collapsed rows' "N chars" labels. The label is
+// visible without expanding, so it can't be deferred — but stringifying a large
+// result object costs O(result) and the timeline re-mounts on every tab
+// switch, repaying it for every entry each time. Result objects are immutable
+// and identity-stable across resets (turn reconciliation reuses turn objects),
+// so the length is cached per object for the app's lifetime; strings are their
+// own length.
+const serializedLengthByValue = new WeakMap<object, number>();
+
+function serializedActivityLength(value: unknown): number {
+  if (typeof value === "string") {
+    return value.length;
+  }
+  if (typeof value === "object" && value !== null) {
+    let length = serializedLengthByValue.get(value);
+    if (length === undefined) {
+      length = serializeActivityValue(value).length;
+      serializedLengthByValue.set(value, length);
+    }
+    return length;
+  }
+  return serializeActivityValue(value).length;
+}
+
 function ToolEntryStatus({
   entry,
   showCharCount,
@@ -418,19 +442,13 @@ function ToolEntryStatus({
   entry: ToolEntry;
   showCharCount: boolean;
 }) {
-  const charCount = useMemo(
-    () =>
-      showCharCount && entry.result !== undefined
-        ? `${serializeActivityValue(entry.result).length} chars`
-        : null,
-    [entry.result, showCharCount],
-  );
   if (entry.result === undefined) {
     return <span className="tool-summary-meta">running</span>;
   }
-  if (!showCharCount || charCount === null) {
+  if (!showCharCount) {
     return entry.isError ? <span className="tool-summary-meta">error</span> : null;
   }
+  const charCount = `${serializedActivityLength(entry.result)} chars`;
   if (entry.isError) {
     return <span className="tool-summary-meta">error, {charCount}</span>;
   }

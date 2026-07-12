@@ -10120,17 +10120,30 @@ export default function App() {
         </div>
       </section>
 
-      {hasVisibleRightBar && activeTranscriptVisibleExpanded && activeTurnPaneSurface ? (
+      {/* One aside serves both the expanded overlay and the docked right pane,
+          with stable child positions, so toggling Expand transcript restyles
+          the same TurnOverlay instance instead of remounting it — a remount
+          reset the scroll position to the bottom and dropped the find bar and
+          every open tool/thinking disclosure. (In split mode the docked
+          transcripts live in the split cells above, so entering/leaving the
+          expanded overlay still remounts there.) showHeader is
+          !splitRightPaneMode for both variants: the docked pane only renders
+          in single-pane mode, where that is always true. */}
+      {activeTurnPaneSurface &&
+      hasVisibleRightBar &&
+      (activeTranscriptVisibleExpanded || !splitRightPaneMode) ? (
         <aside
-          className={`turn-pane is-expanded${splitRightPaneMode ? " is-headerless-expanded" : ""}`}
+          className={
+            activeTranscriptVisibleExpanded
+              ? `turn-pane is-expanded${splitRightPaneMode ? " is-headerless-expanded" : ""}`
+              : "turn-pane"
+          }
         >
+          {activeTranscriptVisibleExpanded ? null : renderTurnPaneResizer()}
           {renderTurnPaneSurface(activeTurnPaneSurface, !splitRightPaneMode)}
-          {splitRightPaneMode ? renderFloatingTurnPaneControls(activeTurnPaneSurface) : null}
-        </aside>
-      ) : hasGlobalTurnSidebar && activeTurnPaneSurface ? (
-        <aside className="turn-pane">
-          {renderTurnPaneResizer()}
-          {renderTurnPaneSurface(activeTurnPaneSurface, true)}
+          {activeTranscriptVisibleExpanded && splitRightPaneMode
+            ? renderFloatingTurnPaneControls(activeTurnPaneSurface)
+            : null}
         </aside>
       ) : null}
       {renderFloatingRightBarRestoreButton()}

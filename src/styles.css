@@ -4829,6 +4829,17 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 24px;
 }
 
+/* Zero-height marker after the last timeline row, watched by TurnOverlay's
+   intersection observer to keep a pinned view at the bottom through content
+   that grows outside React commits (late-rendering diagrams, decoding
+   images). The negative margin cancels the column's flex gap so the marker
+   adds no visible height anywhere, including the centered empty state. */
+.turn-timeline-sentinel {
+  flex: 0 0 auto;
+  height: 0;
+  margin-top: -5px;
+}
+
 .turn-pane-split-cell .turn-timeline,
 .turn-pane.is-headerless-expanded .turn-timeline {
   padding-top: 44px;
