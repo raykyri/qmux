@@ -953,11 +953,14 @@
   -webkit-line-clamp: 2;
 }
 
+/* Dimmer than the question above so the card keeps a clear two-tier
+   hierarchy — the follow-up prompt reads as primary, its preview as secondary
+   — rather than the two sitting at nearly the same tone. */
 .research-followup-card span {
   display: -webkit-box;
   margin-top: 6px;
   overflow: hidden;
-  color: #98a19c;
+  color: #767e79;
   font-size: 11.5px;
   line-height: 1.5;
   -webkit-box-orient: vertical;
