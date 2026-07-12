@@ -5510,16 +5510,53 @@ header + .turn-blocks {
   margin: 0 0 8px;
 }
 
+/* Heading scale. Without an explicit size per level react-markdown's h1–h6 all
+   inherited one flat size (smaller than body), so a report's section structure
+   was invisible. These give each level a distinct, semibold step while keeping
+   the top level modest enough for dense answers. Top margin exceeds bottom so a
+   heading binds to the content beneath it and separates from the block above. */
 .turn-markdown h1,
 .turn-markdown h2,
 .turn-markdown h3,
 .turn-markdown h4,
 .turn-markdown h5,
 .turn-markdown h6 {
-  margin: 10px 0 5px;
+  margin: 22px 0 7px;
   color: #f4f3ec;
-  font-size: calc(13.5px + var(--transcript-font-delta, 0px));
-  line-height: calc(1.35 + var(--transcript-line-height-delta, 0));
+  font-weight: 600;
+  line-height: calc(1.3 + var(--transcript-line-height-delta, 0));
+  letter-spacing: -0.01em;
+}
+
+.turn-markdown h1 {
+  font-size: calc(21px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown h2 {
+  font-size: calc(17.5px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown h3 {
+  font-size: calc(15.5px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown h4 {
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
+}
+
+/* Below h4 the size floor is body text; separation comes from weight, a muted
+   tone, and (at the deepest level) uppercase rather than an ever-smaller size. */
+.turn-markdown h5 {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  color: #d9ddd9;
+}
+
+.turn-markdown h6 {
+  margin-bottom: 5px;
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a7b0ab;
 }
 
 .turn-markdown ul,
@@ -5632,25 +5669,46 @@ header + .turn-blocks {
   outline-offset: 2px;
 }
 
+/* Framed, rounded container. overflow-x stays a scroll fallback for content that
+   genuinely cannot wrap (long tokens, code), but the table below now fits the
+   column width and wraps its cells instead of forcing every wide table to
+   scroll — matching how research answers read top to bottom. */
 .turn-markdown-table-wrap {
   max-width: 100%;
-  margin: 0 0 8px;
-  overflow: auto;
+  margin: 0 0 12px;
+  border: 1px solid #2f3639;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
 }
 
 .turn-markdown-table-wrap table {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
   margin: 0;
   border-collapse: collapse;
+  font-size: calc(13.5px + var(--transcript-font-delta, 0px));
 }
 
 .turn-markdown th,
 .turn-markdown td {
-  border: 1px solid #30383b;
-  padding: 4px 6px;
+  padding: 8px 12px;
+  border-right: 1px solid #262d2f;
+  border-bottom: 1px solid #262d2f;
   text-align: left;
   vertical-align: top;
+  /* Override the ambient `anywhere` so columns size to words and only long
+     unbreakable tokens break, keeping wrapping at sensible boundaries. */
+  overflow-wrap: break-word;
+}
+
+/* Drop the frame-adjacent edges so cell separators never double up against the
+   wrapper's rounded border. */
+.turn-markdown th:last-child,
+.turn-markdown td:last-child {
+  border-right: 0;
+}
+
+.turn-markdown tr:last-child td {
+  border-bottom: 0;
 }
 
 .turn-diagram {
@@ -5749,9 +5807,13 @@ header + .turn-blocks {
   white-space: pre;
 }
 
+/* Header row: a surface a step lighter than the pane (the old #15191b was
+   indistinguishable from it) plus a stronger divider, so it reads as a header. */
 .turn-markdown th {
-  background: #15191b;
+  background: #1d2325;
   color: #f4f3ec;
+  font-weight: 600;
+  border-bottom-color: #38403f;
 }
 
 .turn-markdown hr {
