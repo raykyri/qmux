@@ -1302,6 +1302,13 @@ export default function App() {
   activeResearchPaneIdRef.current = activeResearchPaneId;
   const [researchTrees, setResearchTrees] = useState<ResearchTreeSummary[]>([]);
   const [archivedResearchTrees, setArchivedResearchTrees] = useState<ResearchTreeSummary[]>([]);
+  // Read by mark-viewed acknowledgment (a stable callback) to decide whether
+  // any attention badge was actually lit without threading the lists through
+  // its dependencies.
+  const researchTreesRef = useRef(researchTrees);
+  const archivedResearchTreesRef = useRef(archivedResearchTrees);
+  researchTreesRef.current = researchTrees;
+  archivedResearchTreesRef.current = archivedResearchTrees;
   // Which folder the Research sidebar is scoped to. The raw stored value is
   // kept as-is (groups load asynchronously); it is resolved against the live
   // research workspaces wherever it is read, so a removed or never-loaded
@@ -4322,7 +4329,7 @@ export default function App() {
                       setResearchTrees((current) =>
                         current.map((tree) =>
                           tree.id === researchTreeToRestore.id
-                            ? { ...tree, hasUnseenUpdate: false }
+                            ? { ...tree, hasUnseenUpdate: false, hasUnseenFailure: false }
                             : tree,
                         ),
                       );
@@ -4566,57 +4573,20 @@ export default function App() {
     setActivePaneId(paneId);
   }, []);
   const clearResearchUnseen = useCallback((treeId: string) => {
+    // Both attention flags: viewing acknowledges failures exactly like
+    // ordinary settlements (the backend clears both by advancing
+    // last_viewed_at). Clearing only the update dot left the sidebar and
+    // mode-toggle "!" lit forever — mark_research_tree_viewed emits no
+    // event, so no refetch ever corrected the local copy.
     const clear = (trees: ResearchTreeSummary[]) =>
       trees.map((tree) =>
-        tree.id === treeId && tree.hasUnseenUpdate
-          ? { ...tree, hasUnseenUpdate: false }
+        tree.id === treeId && (tree.hasUnseenUpdate || tree.hasUnseenFailure)
+          ? { ...tree, hasUnseenUpdate: false, hasUnseenFailure: false }
           : tree,
       );
     setResearchTrees(clear);
     setArchivedResearchTrees(clear);
   }, []);
-  const markVisibleResearchTreeViewed = useCallback(
-    async (treeId: string) => {
-      const documentVisible = researchDocumentIsVisible(
-        treeId,
-        sidebarModeRef.current,
-        activeSurfaceRef.current,
-        activeResearchTreeIdRef.current,
-      );
-      // Watching the run's own terminal counts as viewing the tree: the user
-      // reached that pane from this document and is looking at the same run,
-      // so the unseen badge must not survive it.
-      const activePaneId = activePaneIdRef.current;
-      const paneVisible =
-        sidebarModeRef.current === "research" &&
-        activeSurfaceRef.current === "pane" &&
-        activeResearchTreeIdRef.current === treeId &&
-        document.visibilityState === "visible" &&
-        document.hasFocus() &&
-        activePaneId !== null &&
-        researchNodeByPaneIdRef.current.get(activePaneId)?.treeId === treeId;
-      if (!documentVisible && !paneVisible) {
-        return;
-      }
-      await markResearchTreeViewed(treeId);
-      clearResearchUnseen(treeId);
-    },
-    [clearResearchUnseen],
-  );
-  useEffect(() => {
-    const markCurrent = () => {
-      const treeId = activeResearchTreeIdRef.current;
-      if (treeId) {
-        void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
-      }
-    };
-    window.addEventListener("focus", markCurrent);
-    document.addEventListener("visibilitychange", markCurrent);
-    return () => {
-      window.removeEventListener("focus", markCurrent);
-      document.removeEventListener("visibilitychange", markCurrent);
-    };
-  }, [markVisibleResearchTreeViewed]);
   const refreshResearchNavigation = useCallback(async () => {
     // Bump-and-check like every other refetch here (agents, panes, groups,
     // the research detail): refreshes overlap — the debounced event refresh
@@ -4651,6 +4621,65 @@ export default function App() {
     // otherwise accumulate in localStorage forever.
     pruneResearchNavigation(trees.map((tree) => tree.id));
   }, []);
+  const markVisibleResearchTreeViewed = useCallback(
+    async (treeId: string) => {
+      const documentVisible = researchDocumentIsVisible(
+        treeId,
+        sidebarModeRef.current,
+        activeSurfaceRef.current,
+        activeResearchTreeIdRef.current,
+      );
+      // Watching the run's own terminal counts as viewing the tree: the user
+      // reached that pane from this document and is looking at the same run,
+      // so the unseen badge must not survive it.
+      const activePaneId = activePaneIdRef.current;
+      const paneVisible =
+        sidebarModeRef.current === "research" &&
+        activeSurfaceRef.current === "pane" &&
+        activeResearchTreeIdRef.current === treeId &&
+        document.visibilityState === "visible" &&
+        document.hasFocus() &&
+        activePaneId !== null &&
+        researchNodeByPaneIdRef.current.get(activePaneId)?.treeId === treeId;
+      if (!documentVisible && !paneVisible) {
+        return;
+      }
+      const hadUnseen = [
+        ...researchTreesRef.current,
+        ...archivedResearchTreesRef.current,
+      ].some(
+        (tree) => tree.id === treeId && (tree.hasUnseenUpdate || tree.hasUnseenFailure),
+      );
+      await markResearchTreeViewed(treeId);
+      clearResearchUnseen(treeId);
+      // A navigation refresh started before the view was recorded holds a
+      // snapshot with the badges still lit; applied after the local clear it
+      // would resurrect them — and with the run settled, no later event would
+      // ever correct it. When a badge was actually lit, refetch: the fresh
+      // request supersedes any in-flight pre-view snapshot (bump-and-check
+      // above) and carries the acknowledged flags. The local clear keeps the
+      // acknowledgment instant; the badge-lit condition keeps streaming
+      // traffic (which calls this every debounce tick) at one nav fetch.
+      if (hadUnseen) {
+        void refreshResearchNavigation().catch(() => undefined);
+      }
+    },
+    [clearResearchUnseen, refreshResearchNavigation],
+  );
+  useEffect(() => {
+    const markCurrent = () => {
+      const treeId = activeResearchTreeIdRef.current;
+      if (treeId) {
+        void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
+      }
+    };
+    window.addEventListener("focus", markCurrent);
+    document.addEventListener("visibilitychange", markCurrent);
+    return () => {
+      window.removeEventListener("focus", markCurrent);
+      document.removeEventListener("visibilitychange", markCurrent);
+    };
+  }, [markVisibleResearchTreeViewed]);
   const selectResearchTree = useCallback(async (treeId: string) => {
     const requestSeq = researchDetailRequestSeqRef.current + 1;
     researchDetailRequestSeqRef.current = requestSeq;
