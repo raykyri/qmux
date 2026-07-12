@@ -802,11 +802,21 @@
   background: #24282b;
 }
 
+/* The margin column pins to the viewport so the composer and follow-up cards
+   stay reachable while reading a long response; past the viewport it scrolls
+   on its own. The offset mirrors the document scroll's 44px top padding. */
 .research-followups {
+  position: sticky;
+  top: 0;
   display: flex;
   min-width: 0;
+  max-height: calc(100vh - 148px);
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+  padding-right: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .research-followup-composer {
@@ -833,7 +843,16 @@
 .research-followup-cards {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 10px;
+}
+
+.research-followup-cards-label {
+  margin: 0 0 -2px;
+  color: #69716d;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .research-followup-card {
@@ -841,15 +860,17 @@
   flex-direction: column;
   align-items: stretch;
   min-height: 0;
-  padding: 12px;
-  border-color: rgba(255, 255, 255, 0.075);
+  padding: 11px 13px 12px;
+  border-color: rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-lg);
   text-align: left;
-  background: #202427;
+  background: #1e2225;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 .research-followup-card:hover {
   border-color: #4a5d56;
-  background: #252a2d;
+  background: #24292c;
 }
 
 .research-followup-card strong,
@@ -857,27 +878,35 @@
 .research-followup-card small {
   display: block;
   width: 100%;
+  overflow-wrap: anywhere;
 }
 
+/* Prompts are user text and can run long (or be a single stray character);
+   clamping keeps every card scannable without capping what it can hold. */
 .research-followup-card strong {
-  color: #e9ece8;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.research-followup-card span {
   display: -webkit-box;
-  margin-top: 7px;
   overflow: hidden;
-  color: #8f9893;
-  font-size: 11px;
+  color: #edf0ec;
+  font-size: 12.5px;
+  font-weight: 600;
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
 
+.research-followup-card span {
+  display: -webkit-box;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #98a19c;
+  font-size: 11.5px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .research-followup-card small {
-  margin-top: 9px;
+  margin-top: 8px;
   color: #707975;
 }
 
@@ -1014,9 +1043,12 @@
   }
 
   .research-followups {
+    position: static;
+    max-height: none;
     padding: 28px 0 0;
     border-top: 1px solid rgba(255, 255, 255, 0.075);
     border-left: 0;
+    overflow-y: visible;
   }
 }
 

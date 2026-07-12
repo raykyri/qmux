@@ -775,6 +775,13 @@ export default function ResearchDocument({
                     ) : null}
                   </div>
                   <div className="research-followup-cards">
+                    {childNodes.length > 0 ? (
+                      <h3 className="research-followup-cards-label">
+                        {childNodes.length === 1
+                          ? "1 follow-up"
+                          : `${childNodes.length} follow-ups`}
+                      </h3>
+                    ) : null}
                     {childNodes.map((child) => (
                       <button
                         key={child.id}
