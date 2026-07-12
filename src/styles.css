@@ -1426,6 +1426,14 @@ button:disabled {
   white-space: nowrap;
 }
 
+.sidebar-mode-toggle .sidebar-mode-shortcut-hint {
+  position: static;
+  flex: none;
+  min-width: 28px;
+  transform: none;
+  overflow: visible;
+}
+
 .sidebar-mode-attention {
   display: inline-grid;
   min-width: 16px;

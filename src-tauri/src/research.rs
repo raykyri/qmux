@@ -1,8 +1,37 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub const MAX_RESPONSE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_RESPONSE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 2;
+const DETACHED_RESEARCH_DIR: &str = "research-v1";
+const DETACHED_RESEARCH_PENDING_DIR: &str = "research-v1.pending";
+const DETACHED_RESEARCH_MANIFEST: &str = "manifest.json";
+const MAX_DETACHED_RESEARCH_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetachedResearchArchive {
+    pub version: u32,
+    #[serde(default)]
+    pub archive_id: String,
+    pub workspace: crate::workspace::GroupInfo,
+    pub trees: Vec<ResearchTree>,
+    pub nodes: Vec<ResearchNode>,
+    pub exported_at: u128,
+}
+
+#[derive(Clone, Debug)]
+pub struct DetachedResearchBundle {
+    pub archive: DetachedResearchArchive,
+    pub responses: HashMap<String, Vec<crate::transcript::Turn>>,
+    pub pending: bool,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,6 +188,365 @@ pub struct ResearchNodeContent {
 }
 
 const RESPONSE_SNAPSHOT_DIR: &str = "research-responses";
+
+fn detached_archive_parent(folder: &Path) -> PathBuf {
+    folder.join(crate::persistence::STATE_DIR)
+}
+
+fn detached_archive_path(folder: &Path, pending: bool) -> PathBuf {
+    detached_archive_parent(folder).join(if pending {
+        DETACHED_RESEARCH_PENDING_DIR
+    } else {
+        DETACHED_RESEARCH_DIR
+    })
+}
+
+fn reject_symlink(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "refusing to use symlinked research archive path {}",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("failed to inspect {}: {err}", path.display())),
+    }
+}
+
+fn prepare_detached_archive_parent(folder: &Path) -> Result<PathBuf, String> {
+    let parent = detached_archive_parent(folder);
+    reject_symlink(&parent)?;
+    let existed = parent.exists();
+    fs::create_dir_all(&parent)
+        .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    if !existed {
+        let _ = fs::set_permissions(&parent, fs::Permissions::from_mode(0o700));
+    }
+    Ok(parent)
+}
+
+fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), String> {
+    if archive.version != 1 && archive.version != DETACHED_RESEARCH_ARCHIVE_VERSION {
+        return Err(format!(
+            "unsupported detached research archive version {}",
+            archive.version
+        ));
+    }
+    if archive.workspace.scope != crate::workspace::WorkspaceScope::Research {
+        return Err("detached research archive does not contain a Research workspace".to_string());
+    }
+    if archive.archive_id.is_empty()
+        || !archive
+            .archive_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("detached research archive has an invalid archive id".to_string());
+    }
+    let tree_by_id = archive
+        .trees
+        .iter()
+        .map(|tree| (tree.id.as_str(), tree))
+        .collect::<HashMap<_, _>>();
+    if tree_by_id.len() != archive.trees.len() {
+        return Err("detached research archive contains duplicate tree ids".to_string());
+    }
+    let node_by_id = archive
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<HashMap<_, _>>();
+    if node_by_id.len() != archive.nodes.len() {
+        return Err("detached research archive contains duplicate node ids".to_string());
+    }
+    for tree in &archive.trees {
+        if tree.workspace_id != archive.workspace.id {
+            return Err(format!(
+                "research tree {} belongs to a different workspace",
+                tree.id
+            ));
+        }
+        let root = node_by_id
+            .get(tree.root_node_id.as_str())
+            .ok_or_else(|| format!("research tree {} has no root node", tree.id))?;
+        if root.tree_id != tree.id || root.parent_node_id.is_some() {
+            return Err(format!(
+                "research tree {} has an invalid root node",
+                tree.id
+            ));
+        }
+    }
+    for node in &archive.nodes {
+        let Some(tree) = tree_by_id.get(node.tree_id.as_str()) else {
+            return Err(format!("research node {} has no owning tree", node.id));
+        };
+        if node.group_id != archive.workspace.id {
+            return Err(format!(
+                "research node {} belongs to a different workspace",
+                node.id
+            ));
+        }
+        if node.status.is_active() || node.pane_id.is_some() {
+            return Err(format!(
+                "research node {} still contains live runtime state",
+                node.id
+            ));
+        }
+        if let Some(parent_id) = node.parent_node_id.as_deref() {
+            let parent = node_by_id
+                .get(parent_id)
+                .ok_or_else(|| format!("research node {} has no parent", node.id))?;
+            if parent.tree_id != node.tree_id {
+                return Err(format!("research node {} has a cross-tree parent", node.id));
+            }
+        }
+        let mut cursor = node;
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(cursor.id.as_str()) {
+                return Err(format!(
+                    "research node {} belongs to a parent cycle",
+                    node.id
+                ));
+            }
+            if cursor.id == tree.root_node_id {
+                break;
+            }
+            let parent_id = cursor.parent_node_id.as_deref().ok_or_else(|| {
+                format!(
+                    "research node {} is not connected to tree {} root",
+                    node.id, tree.id
+                )
+            })?;
+            cursor = node_by_id.get(parent_id).ok_or_else(|| {
+                format!("research node {} has no parent", cursor.id)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+pub fn write_detached_research_pending(
+    folder: &Path,
+    archive: &DetachedResearchArchive,
+    responses: &HashMap<String, Vec<crate::transcript::Turn>>,
+) -> Result<(), String> {
+    validate_detached_archive(archive)?;
+    let parent = prepare_detached_archive_parent(folder)?;
+    let final_path = detached_archive_path(folder, false);
+    let pending_path = detached_archive_path(folder, true);
+    reject_symlink(&final_path)?;
+    reject_symlink(&pending_path)?;
+    if final_path.exists() {
+        return Err(format!(
+            "{} already contains a detached research archive",
+            folder.display()
+        ));
+    }
+    if pending_path.exists() {
+        if let Ok(existing) = read_detached_research_from_path(&pending_path, true)
+            && existing.archive.workspace.id != archive.workspace.id
+        {
+            return Err(format!(
+                "{} contains pending research for a different workspace",
+                folder.display()
+            ));
+        }
+        fs::remove_dir_all(&pending_path).map_err(|err| {
+            format!(
+                "failed to replace incomplete research archive {}: {err}",
+                pending_path.display()
+            )
+        })?;
+    }
+    let responses_dir = pending_path.join("responses");
+    fs::create_dir_all(&responses_dir)
+        .map_err(|err| format!("failed to create {}: {err}", responses_dir.display()))?;
+    let _ = fs::set_permissions(&pending_path, fs::Permissions::from_mode(0o700));
+    let _ = fs::set_permissions(&responses_dir, fs::Permissions::from_mode(0o700));
+    let valid_node_ids = archive
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<HashSet<_>>();
+    for (node_id, turns) in responses {
+        if !valid_node_ids.contains(node_id.as_str()) {
+            return Err(format!(
+                "response {node_id} has no node in the research archive"
+            ));
+        }
+        let raw = serde_json::to_vec(turns)
+            .map_err(|err| format!("failed to encode response {node_id}: {err}"))?;
+        if raw.len() > MAX_RESPONSE_SNAPSHOT_BYTES {
+            return Err(format!(
+                "research response {node_id} is too large to detach safely"
+            ));
+        }
+        let path = responses_dir.join(validated_snapshot_file_name(node_id)?);
+        crate::persistence::write_synced(&path, &raw)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    }
+    let manifest = serde_json::to_vec_pretty(archive)
+        .map_err(|err| format!("failed to encode detached research archive: {err}"))?;
+    if manifest.len() as u64 > MAX_DETACHED_RESEARCH_MANIFEST_BYTES {
+        return Err("detached research manifest is too large to write safely".to_string());
+    }
+    let manifest_path = pending_path.join(DETACHED_RESEARCH_MANIFEST);
+    crate::persistence::write_synced(&manifest_path, &manifest)
+        .map_err(|err| format!("failed to write {}: {err}", manifest_path.display()))?;
+    if let Ok(dir) = fs::File::open(&pending_path) {
+        let _ = dir.sync_all();
+    }
+    if let Ok(dir) = fs::File::open(&parent) {
+        let _ = dir.sync_all();
+    }
+    // Read the complete pending bundle back before global state is allowed to change.
+    let verified = read_detached_research_from_path(&pending_path, true)?;
+    if verified.archive != *archive || verified.responses != *responses {
+        return Err("detached research archive verification failed".to_string());
+    }
+    Ok(())
+}
+
+pub fn new_detached_research_archive_id() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    let mut last_error = None;
+    for _ in 0..3 {
+        match getrandom::getrandom(&mut bytes) {
+            Ok(()) => {
+                return Ok(bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect())
+            }
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(format!(
+        "OS CSPRNG unavailable; cannot identify detached research archive: {}",
+        last_error
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+pub fn commit_detached_research(folder: &Path) -> Result<(), String> {
+    let parent = prepare_detached_archive_parent(folder)?;
+    let pending = detached_archive_path(folder, true);
+    let final_path = detached_archive_path(folder, false);
+    reject_symlink(&pending)?;
+    reject_symlink(&final_path)?;
+    if final_path.exists() {
+        return Err(format!(
+            "research archive {} already exists",
+            final_path.display()
+        ));
+    }
+    fs::rename(&pending, &final_path).map_err(|err| {
+        format!(
+            "failed to commit detached research archive {}: {err}",
+            final_path.display()
+        )
+    })?;
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+fn read_detached_research_from_path(
+    archive_path: &Path,
+    pending: bool,
+) -> Result<DetachedResearchBundle, String> {
+    reject_symlink(archive_path)?;
+    let manifest_path = archive_path.join(DETACHED_RESEARCH_MANIFEST);
+    reject_symlink(&manifest_path)?;
+    let file = fs::File::open(&manifest_path)
+        .map_err(|err| format!("failed to open {}: {err}", manifest_path.display()))?;
+    if file
+        .metadata()
+        .map_err(|err| format!("failed to inspect {}: {err}", manifest_path.display()))?
+        .len()
+        > MAX_DETACHED_RESEARCH_MANIFEST_BYTES
+    {
+        return Err(format!(
+            "detached research manifest {} is too large",
+            manifest_path.display()
+        ));
+    }
+    let mut raw = Vec::new();
+    file.take(MAX_DETACHED_RESEARCH_MANIFEST_BYTES + 1)
+        .read_to_end(&mut raw)
+        .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
+    if raw.len() as u64 > MAX_DETACHED_RESEARCH_MANIFEST_BYTES {
+        return Err(format!(
+            "detached research manifest {} is too large",
+            manifest_path.display()
+        ));
+    }
+    let mut archive: DetachedResearchArchive = serde_json::from_slice(&raw)
+        .map_err(|err| format!("failed to decode {}: {err}", manifest_path.display()))?;
+    if archive.version == 1 && archive.archive_id.is_empty() {
+        let digest = Sha256::digest(&raw);
+        archive.archive_id = format!(
+            "legacy-{}",
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
+    validate_detached_archive(&archive)?;
+    let mut responses = HashMap::new();
+    let responses_dir = archive_path.join("responses");
+    reject_symlink(&responses_dir)?;
+    for node in &archive.nodes {
+        let path = responses_dir.join(validated_snapshot_file_name(&node.id)?);
+        reject_symlink(&path)?;
+        let Some(turns) = read_snapshot_file(&path)? else {
+            continue;
+        };
+        responses.insert(node.id.clone(), turns);
+    }
+    Ok(DetachedResearchBundle {
+        archive,
+        responses,
+        pending,
+    })
+}
+
+pub fn read_detached_research(folder: &Path) -> Result<Option<DetachedResearchBundle>, String> {
+    let parent = detached_archive_parent(folder);
+    reject_symlink(&parent)?;
+    let final_path = detached_archive_path(folder, false);
+    if final_path.exists() {
+        return read_detached_research_from_path(&final_path, false).map(Some);
+    }
+    let pending = detached_archive_path(folder, true);
+    if pending.exists() {
+        return read_detached_research_from_path(&pending, true).map(Some);
+    }
+    Ok(None)
+}
+
+pub fn remove_detached_research(folder: &Path, pending: bool) -> Result<(), String> {
+    let archive_path = detached_archive_path(folder, pending);
+    reject_symlink(&archive_path)?;
+    match fs::remove_dir_all(&archive_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(format!(
+                "failed to remove imported research archive {}: {err}",
+                archive_path.display()
+            ));
+        }
+    }
+    if let Ok(dir) = fs::File::open(detached_archive_parent(folder)) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
 
 fn validated_snapshot_file_name(node_id: &str) -> Result<String, String> {
     if node_id.is_empty()
@@ -554,6 +942,155 @@ mod tests {
             parent_native_id: None,
             native_message_id: None,
         }
+    }
+
+    fn sample_detached_archive(folder: &Path) -> DetachedResearchArchive {
+        let tree = ResearchTree {
+            id: "research-1".to_string(),
+            title: "Portable research".to_string(),
+            root_node_id: "research-node-1".to_string(),
+            workspace_id: "group-1".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            archived_at: None,
+            last_viewed_at: Some(2),
+        };
+        let node = ResearchNode {
+            id: "research-node-1".to_string(),
+            tree_id: tree.id.clone(),
+            parent_node_id: None,
+            prompt: "Question".to_string(),
+            response_preview: Some("Answer".to_string()),
+            adapter: "claude".to_string(),
+            model: None,
+            group_id: "group-1".to_string(),
+            worktree_dir: folder.display().to_string(),
+            native_session_id: Some("session-1".to_string()),
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: Some("agent-1".to_string()),
+            pane_id: None,
+            thread_id: None,
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: Some(2),
+            created_at: 1,
+            started_at: Some(1),
+            completed_at: Some(2),
+        };
+        DetachedResearchArchive {
+            version: DETACHED_RESEARCH_ARCHIVE_VERSION,
+            archive_id: "archive-1".to_string(),
+            workspace: crate::workspace::GroupInfo {
+                id: "group-1".to_string(),
+                name: "project".to_string(),
+                name_override: None,
+                dir: folder.display().to_string(),
+                managed_dir: String::new(),
+                base_repo: None,
+                base_ref: Some("HEAD".to_string()),
+                parent_id: None,
+                created_at: 1,
+                collapsed: false,
+                scope: crate::workspace::WorkspaceScope::Research,
+                imported_research_archive_id: None,
+                agents: Vec::new(),
+            },
+            trees: vec![tree],
+            nodes: vec![node],
+            exported_at: 3,
+        }
+    }
+
+    #[test]
+    fn detached_archive_pending_and_committed_forms_round_trip() {
+        let folder = temp_workspace();
+        let archive = sample_detached_archive(&folder);
+        let responses =
+            HashMap::from([("research-node-1".to_string(), vec![sample_turn("turn-1")])]);
+
+        write_detached_research_pending(&folder, &archive, &responses).unwrap();
+        let pending = read_detached_research(&folder).unwrap().unwrap();
+        assert!(pending.pending);
+        assert_eq!(pending.archive.trees.len(), 1);
+        assert_eq!(pending.responses["research-node-1"][0].id, "turn-1");
+
+        commit_detached_research(&folder).unwrap();
+        let committed = read_detached_research(&folder).unwrap().unwrap();
+        assert!(!committed.pending);
+        assert_eq!(committed.archive.nodes.len(), 1);
+        remove_detached_research(&folder, false).unwrap();
+        assert!(read_detached_research(&folder).unwrap().is_none());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn detached_archive_rejects_disconnected_and_cyclic_nodes() {
+        let folder = temp_workspace();
+        let mut archive = sample_detached_archive(&folder);
+        let mut disconnected = archive.nodes[0].clone();
+        disconnected.id = "research-node-2".to_string();
+        disconnected.parent_node_id = None;
+        archive.nodes.push(disconnected);
+        let error = validate_detached_archive(&archive).unwrap_err();
+        assert!(error.contains("not connected"), "{error}");
+
+        archive.nodes[1].parent_node_id = Some("research-node-3".to_string());
+        let mut cyclic = archive.nodes[1].clone();
+        cyclic.id = "research-node-3".to_string();
+        cyclic.parent_node_id = Some("research-node-2".to_string());
+        archive.nodes.push(cyclic);
+        let error = validate_detached_archive(&archive).unwrap_err();
+        assert!(error.contains("parent cycle"), "{error}");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn detached_archive_retry_preserves_foreign_pending_archive() {
+        let folder = temp_workspace();
+        let first = sample_detached_archive(&folder);
+        let responses = HashMap::from([(
+            first.nodes[0].id.clone(),
+            vec![sample_turn("turn-1")],
+        )]);
+        write_detached_research_pending(&folder, &first, &responses).unwrap();
+
+        let mut second = first.clone();
+        second.archive_id = "archive-2".to_string();
+        second.workspace.id = "group-2".to_string();
+        second.trees[0].workspace_id = "group-2".to_string();
+        second.nodes[0].group_id = "group-2".to_string();
+        let error = write_detached_research_pending(&folder, &second, &responses).unwrap_err();
+
+        assert!(error.contains("different workspace"), "{error}");
+        let preserved = read_detached_research(&folder).unwrap().unwrap();
+        assert_eq!(preserved.archive.archive_id, first.archive_id);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn detached_archive_version_one_without_id_gets_stable_legacy_identity() {
+        let folder = temp_workspace();
+        let mut archive = sample_detached_archive(&folder);
+        archive.version = 1;
+        let mut manifest = serde_json::to_value(&archive).unwrap();
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .remove("archiveId");
+        let pending = detached_archive_path(&folder, true);
+        std::fs::create_dir_all(pending.join("responses")).unwrap();
+        crate::persistence::write_synced(
+            &pending.join(DETACHED_RESEARCH_MANIFEST),
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let first = read_detached_research(&folder).unwrap().unwrap();
+        let second = read_detached_research(&folder).unwrap().unwrap();
+        assert!(first.archive.archive_id.starts_with("legacy-"));
+        assert_eq!(first.archive.archive_id, second.archive.archive_id);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

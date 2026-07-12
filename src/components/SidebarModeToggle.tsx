@@ -3,6 +3,7 @@ import type { SidebarMode } from "../lib/sidebarMode";
 
 interface SidebarModeToggleProps {
   mode: SidebarMode;
+  shortcutHintsShown: boolean;
   runningResearchCount: number;
   unseenResearchCount: number;
   failedResearchCount: number;
@@ -11,6 +12,7 @@ interface SidebarModeToggleProps {
 
 export default function SidebarModeToggle({
   mode,
+  shortcutHintsShown,
   runningResearchCount,
   unseenResearchCount,
   failedResearchCount,
@@ -27,6 +29,14 @@ export default function SidebarModeToggle({
       >
         <SquareTerminal size={14} aria-hidden="true" />
         <span>Terminal</span>
+        {shortcutHintsShown && mode !== "terminal" ? (
+          <span
+            className="pane-tab-shortcut-hint sidebar-mode-shortcut-hint"
+            aria-hidden="true"
+          >
+            ⌘`
+          </span>
+        ) : null}
       </button>
       <button
         type="button"
@@ -37,6 +47,14 @@ export default function SidebarModeToggle({
       >
         <BookOpen size={14} aria-hidden="true" />
         <span>Research</span>
+        {shortcutHintsShown && mode !== "research" ? (
+          <span
+            className="pane-tab-shortcut-hint sidebar-mode-shortcut-hint"
+            aria-hidden="true"
+          >
+            ⌘`
+          </span>
+        ) : null}
         {runningResearchCount > 0 ? (
           <span
             className="sidebar-mode-attention is-running"

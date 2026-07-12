@@ -2567,6 +2567,7 @@ mod tests {
                     created_at: 1,
                     collapsed: false,
                     scope: WorkspaceScope::Terminal,
+                    imported_research_archive_id: None,
                     agents: vec!["agent-1".to_string()],
                 },
                 None,

@@ -540,7 +540,7 @@ async fn research_workspace_pick_dir(
 fn research_workspace_remove(
     state: tauri::State<'_, AppState>,
     workspace_id: String,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     remove_research_workspace(&state, &workspace_id)
 }
 
@@ -1668,6 +1668,7 @@ fn main() {
                 // panes into fresh PTYs before the command handlers go live so the
                 // webview's first list_panes() already sees the recovered session.
                 let recovered_panes = state.restore_session();
+                workspace::reconcile_imported_research_archives(&state);
                 // Recovery fell back to an empty session (state discarded to a .bak)
                 // or dropped entries: say so in a dialog, since a Finder launch never
                 // shows stderr and silent session loss looks like qmux ate the tabs.

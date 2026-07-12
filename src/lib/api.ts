@@ -209,7 +209,7 @@ export function renameResearchWorkspace(workspaceId: string, name: string | null
 }
 
 export function removeResearchWorkspace(workspaceId: string) {
-  return invoke<void>("research_workspace_remove", { workspaceId });
+  return invoke<string[]>("research_workspace_remove", { workspaceId });
 }
 
 /** Opens the native picker and repoints the workspace at the chosen folder.

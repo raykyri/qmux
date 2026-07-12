@@ -1,6 +1,7 @@
 use crate::persistence::{self, WorktreeLocation};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -74,7 +75,7 @@ pub fn validate_launch_workspace(
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupInfo {
     pub id: String,
@@ -93,6 +94,11 @@ pub struct GroupInfo {
     pub collapsed: bool,
     #[serde(default)]
     pub scope: WorkspaceScope,
+    /// Identifies the exact portable archive whose import committed this
+    /// workspace. Kept until that archive is removed so startup can safely
+    /// finish cleanup after a crash without touching an unrelated archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_research_archive_id: Option<String>,
     pub agents: Vec<String>,
 }
 
@@ -223,6 +229,56 @@ fn create_research_workspace_locked(
     }) {
         return Ok(existing);
     }
+    if let Some(bundle) = crate::research::read_detached_research(&canonical)? {
+        for node in &bundle.archive.nodes {
+            if node.status == crate::research::ResearchNodeStatus::Complete
+                && !bundle.responses.contains_key(&node.id)
+            {
+                return Err(format!(
+                    "detached research response {} is missing; refusing an incomplete import",
+                    node.id
+                ));
+            }
+        }
+        let archive_name = bundle.archive.workspace.name_override.clone();
+        let mut group = create_group_record(
+            state,
+            CreateGroupRequest {
+                name: name.or(archive_name),
+                dir: Some(canonical.display().to_string()),
+                after_group_id: None,
+                base_repo: None,
+                base_ref: Some("HEAD".to_string()),
+            },
+            WorkspaceScope::Research,
+        )?;
+        group.imported_research_archive_id = Some(bundle.archive.archive_id.clone());
+        if let Err(err) = write_group_manifest(&group) {
+            let _ = fs::remove_dir_all(&group.managed_dir);
+            return Err(err);
+        }
+        let imported = match state.import_detached_research(
+            group.clone(),
+            bundle.archive.trees,
+            bundle.archive.nodes,
+            bundle.responses,
+        ) {
+            Ok(imported) => imported,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&group.managed_dir);
+                return Err(err);
+            }
+        };
+        if let Err(err) = reconcile_imported_research_archive(state, &imported) {
+            // The global import and its cleanup receipt are already durable.
+            // Startup retries this exact archive instead of risking deletion
+            // of some other archive later placed in the folder.
+            eprintln!("qmux: {err}");
+        }
+        return state
+            .group(&imported.id)?
+            .ok_or_else(|| format!("imported research workspace {} disappeared", imported.id));
+    }
     create_scoped_group(
         state,
         CreateGroupRequest {
@@ -234,6 +290,47 @@ fn create_research_workspace_locked(
         },
         WorkspaceScope::Research,
     )
+}
+
+pub fn reconcile_imported_research_archives(state: &AppState) {
+    let groups = match state.list_groups() {
+        Ok(groups) => groups,
+        Err(err) => {
+            eprintln!("qmux: failed to list imported research cleanup receipts: {err}");
+            return;
+        }
+    };
+    for group in groups.into_iter().filter(|group| {
+        group.scope == WorkspaceScope::Research && group.imported_research_archive_id.is_some()
+    }) {
+        if let Err(err) = reconcile_imported_research_archive(state, &group) {
+            eprintln!("qmux: {err}");
+        }
+    }
+}
+
+fn reconcile_imported_research_archive(
+    state: &AppState,
+    group: &GroupInfo,
+) -> Result<(), String> {
+    let Some(expected_archive_id) = group.imported_research_archive_id.as_deref() else {
+        return Ok(());
+    };
+    let folder = Path::new(&group.dir);
+    match crate::research::read_detached_research(folder)? {
+        Some(bundle) if bundle.archive.archive_id == expected_archive_id => {
+            crate::research::remove_detached_research(folder, bundle.pending)?;
+        }
+        Some(_) => {
+            // The receipt belongs to an older import. Preserve the different
+            // archive now in the folder and merely retire the stale receipt.
+        }
+        None => {}
+    }
+    let mut updated = group.clone();
+    updated.imported_research_archive_id = None;
+    write_group_manifest(&updated)?;
+    state.update_group(updated)
 }
 
 pub fn ensure_default_research_workspace(state: &AppState) -> Result<GroupInfo, String> {
@@ -290,6 +387,12 @@ pub fn set_research_workspace_dir(
     require_research_workspace(state, workspace_id)?;
     let raw = PathBuf::from(&dir);
     let requested = canonical_dir(&dir)?;
+    if crate::research::read_detached_research(&requested)?.is_some() {
+        return Err(
+            "the selected folder contains detached research; open it as a new Research folder instead"
+                .to_string(),
+        );
+    }
     if let Some(existing) = state.list_groups()?.into_iter().find(|group| {
         group.scope == WorkspaceScope::Research
             && group.id != workspace_id
@@ -308,9 +411,16 @@ pub fn set_research_workspace_dir(
     set_group_dir_record(state, workspace_id, requested)
 }
 
-pub fn remove_research_workspace(state: &AppState, workspace_id: &str) -> Result<(), String> {
+pub fn remove_research_workspace(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<Vec<String>, String> {
     let _guard = lock_research_workspace_mutations()?;
-    let workspace = require_research_workspace(state, workspace_id)?;
+    let mut workspace = require_research_workspace(state, workspace_id)?;
+    if workspace.imported_research_archive_id.is_some() {
+        reconcile_imported_research_archive(state, &workspace)?;
+        workspace = require_research_workspace(state, workspace_id)?;
+    }
     let dependencies = state.research_workspace_dependencies(workspace_id)?;
     let display_name = workspace
         .name_override
@@ -326,20 +436,56 @@ pub fn remove_research_workspace(state: &AppState, workspace_id: &str) -> Result
             "research folder '{display_name}' cannot be removed while it has active runs"
         ));
     }
-    if dependencies.tree_count > 0 {
-        let noun = if dependencies.tree_count == 1 {
-            "research item"
-        } else {
-            "research items"
+    let archive = state.detached_research_archive(workspace_id)?;
+    let detached_tree_ids = archive
+        .trees
+        .iter()
+        .map(|tree| tree.id.clone())
+        .collect::<Vec<_>>();
+    let mut responses = HashMap::new();
+    for node in &archive.nodes {
+        let turns = match crate::research::read_response_snapshot(
+            &state.config().workspace_root,
+            &node.id,
+        ) {
+            Ok(Some(turns)) => Some(turns),
+            Ok(None) | Err(_) => {
+                crate::research::load_transcript_response(state.config(), node).ok()
+            }
         };
-        // Trees cannot move between folders, so deletion (of the trees or, for
-        // archived ones, their archive entries) is the only unblock to offer.
-        return Err(format!(
-            "research folder '{display_name}' is still used by {} {noun}; delete them (including archived ones) before removing the folder",
-            dependencies.tree_count
-        ));
+        if let Some(turns) = turns.filter(|turns| {
+            node.status != crate::research::ResearchNodeStatus::Complete
+                || turns.iter().any(|turn| turn.role == "assistant")
+        }) {
+            responses.insert(node.id.clone(), turns);
+        } else if node.status == crate::research::ResearchNodeStatus::Complete
+            || node.transcript_path.is_some()
+        {
+            return Err(format!(
+                "research item '{}' has no durable response to detach",
+                node.prompt.chars().take(80).collect::<String>()
+            ));
+        }
     }
-    state.remove_group(workspace_id)?;
+    let folder = Path::new(&workspace.dir);
+    crate::research::write_detached_research_pending(folder, &archive, &responses)?;
+    let node_ids = state.commit_research_workspace_detach(workspace_id, &archive)?;
+    // The pending archive is already complete and importable. Promotion is the
+    // second phase; if it fails, reopening the folder deliberately recovers it.
+    if let Err(err) = crate::research::commit_detached_research(folder) {
+        // The verified pending form is intentionally importable: after the
+        // global commit there is no data-loss reason to report removal as a
+        // failure merely because the final directory rename did not land.
+        eprintln!("qmux: detached research remains in recoverable pending form: {err}");
+    }
+    for node_id in node_ids {
+        if let Err(err) = crate::research::remove_response_snapshot(
+            &state.config().workspace_root,
+            &node_id,
+        ) {
+            eprintln!("qmux: failed to remove detached global response {node_id}: {err}");
+        }
+    }
     // The manifest directory is qmux-internal bookkeeping for this group and
     // nothing else: research runs never create worktrees under it, so once the
     // record is gone it holds only the stale group.json. Deleting it here (and
@@ -356,7 +502,7 @@ pub fn remove_research_workspace(state: &AppState, workspace_id: &str) -> Result
             workspace.managed_dir
         );
     }
-    Ok(())
+    Ok(detached_tree_ids)
 }
 
 fn require_research_workspace(state: &AppState, workspace_id: &str) -> Result<GroupInfo, String> {
@@ -424,6 +570,7 @@ pub(crate) fn create_group_record(
         created_at: now_millis(),
         collapsed: false,
         scope,
+        imported_research_archive_id: None,
         agents: Vec::new(),
     };
 
@@ -466,6 +613,7 @@ pub(crate) fn clone_group_record_for_scope(
         created_at: now_millis(),
         collapsed: false,
         scope,
+        imported_research_archive_id: None,
         agents: Vec::new(),
     };
     if let Err(err) = write_group_manifest(&group) {
@@ -1718,11 +1866,12 @@ mod tests {
     }
 
     #[test]
-    fn removing_research_folder_names_active_and_durable_dependencies() {
+    fn removing_research_folder_detaches_and_reopening_imports_its_history() {
         let root = temp_workspace("remove-research");
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
         let workspace =
             create_research_workspace(&state, None, project.display().to_string()).unwrap();
         let detail = state
@@ -1743,14 +1892,109 @@ mod tests {
         state
             .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
             .unwrap();
-        assert!(
-            remove_research_workspace(&state, &workspace.id)
-                .unwrap_err()
-                .contains("research item")
-        );
-        state.remove_research_tree(&detail.tree.id).unwrap();
+        crate::research::write_response_snapshot(
+            &state.config().workspace_root,
+            &detail.tree.root_node_id,
+            &[crate::transcript::Turn {
+                id: "answer-1".to_string(),
+                agent_id: "research-agent".to_string(),
+                session_id: None,
+                role: "assistant".to_string(),
+                blocks: vec![crate::transcript::TurnBlock::Text {
+                    text: "Portable answer".to_string(),
+                }],
+                source_index: 0,
+                status: None,
+                status_reason: None,
+                native_id: None,
+                parent_native_id: None,
+                native_message_id: None,
+            }],
+        )
+        .unwrap();
         remove_research_workspace(&state, &workspace.id).unwrap();
         assert!(state.group(&workspace.id).unwrap().is_none());
+        assert!(state.list_research_trees_with_archived(true).unwrap().is_empty());
+        let detached_state = persistence::load_with_diagnostics(&state.config().workspace_root).state;
+        assert!(
+            detached_state
+                .groups
+                .iter()
+                .all(|group| group.id != workspace.id)
+        );
+        assert!(detached_state.research_trees.is_empty());
+        assert!(detached_state.research_nodes.is_empty());
+        assert!(crate::research::read_response_snapshot(
+            &state.config().workspace_root,
+            &detail.tree.root_node_id,
+        )
+        .unwrap()
+        .is_none());
+        let archive = crate::research::read_detached_research(&project)
+            .unwrap()
+            .expect("detached archive");
+        assert_eq!(archive.archive.trees.len(), 1);
+        assert_eq!(archive.archive.nodes.len(), 1);
+        assert_eq!(archive.responses[&detail.tree.root_node_id][0].id, "answer-1");
+
+        // Simulate a crash after the checked global commit but before the
+        // pending archive was promoted. Opening the folder must recover this
+        // form exactly like the final archive.
+        let archive_parent = project.join(crate::persistence::STATE_DIR);
+        std::fs::rename(
+            archive_parent.join("research-v1"),
+            archive_parent.join("research-v1.pending"),
+        )
+        .unwrap();
+
+        let restored =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap();
+        assert_ne!(restored.id, workspace.id);
+        assert!(restored.imported_research_archive_id.is_none());
+        let restored_trees = state.list_research_trees_with_archived(true).unwrap();
+        assert_eq!(restored_trees.len(), 1);
+        assert_eq!(restored_trees[0].title, detail.tree.title);
+        let restored_detail = state.research_tree(&restored_trees[0].id).unwrap();
+        let restored_response = crate::research::read_response_snapshot(
+            &state.config().workspace_root,
+            &restored_detail.tree.root_node_id,
+        )
+        .unwrap()
+        .expect("restored response");
+        assert_eq!(restored_response[0].id, "answer-1");
+        let imported_state = persistence::load_with_diagnostics(&state.config().workspace_root).state;
+        assert_eq!(imported_state.research_trees.len(), 1);
+        assert_eq!(imported_state.research_nodes.len(), 1);
+        assert!(crate::research::read_detached_research(&project)
+            .unwrap()
+            .is_none());
+
+        // Simulate a crash after the global import committed but before its
+        // matching folder archive was deleted. The persisted receipt lets the
+        // next startup remove exactly that duplicate and then retire itself.
+        crate::research::write_detached_research_pending(
+            &project,
+            &archive.archive,
+            &archive.responses,
+        )
+        .unwrap();
+        crate::research::commit_detached_research(&project).unwrap();
+        let mut cleanup_receipt = restored.clone();
+        cleanup_receipt.imported_research_archive_id = Some(archive.archive.archive_id.clone());
+        write_group_manifest(&cleanup_receipt).unwrap();
+        state.update_group(cleanup_receipt).unwrap();
+        reconcile_imported_research_archives(&state);
+        assert!(crate::research::read_detached_research(&project)
+            .unwrap()
+            .is_none());
+        assert!(
+            state
+                .group(&restored.id)
+                .unwrap()
+                .unwrap()
+                .imported_research_archive_id
+                .is_none()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2124,6 +2368,7 @@ mod tests {
             created_at: 1,
             collapsed: false,
             scope: WorkspaceScope::Terminal,
+            imported_research_archive_id: None,
             agents: Vec::new(),
         }
     }

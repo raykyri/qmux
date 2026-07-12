@@ -142,6 +142,7 @@ export default function ResearchFolderSwitcher({
               ))}
             </>
           ) : null}
+          <div className="research-folder-menu-separator" role="separator" />
           <button
             type="button"
             role="menuitem"
@@ -157,11 +158,10 @@ export default function ResearchFolderSwitcher({
             }}
           >
             <FolderPlus size={13} aria-hidden="true" />
-            <span className="research-folder-item-name">New folder…</span>
+            <span className="research-folder-item-name">Open new folder…</span>
           </button>
           {scopedFolder ? (
             <>
-              <div className="research-folder-menu-separator" role="separator" />
               <button
                 type="button"
                 role="menuitem"

@@ -4873,6 +4873,7 @@ export default function App() {
         setGroups((current) =>
           current.some((group) => group.id === workspace.id) ? current : [...current, workspace],
         );
+        void refreshResearchNavigation().catch(() => undefined);
       }
       return workspace;
     } catch (err) {
@@ -4881,7 +4882,7 @@ export default function App() {
     } finally {
       setFolderPickerStatus(null);
     }
-  }, []);
+  }, [refreshResearchNavigation]);
   // The recovery path the launch errors point at ("choose a replacement
   // folder before launching another run"): trees cannot move between
   // workspaces, so a folder that vanished otherwise blocks every future run
@@ -6302,8 +6303,25 @@ export default function App() {
   async function removeResearchWorkspaceFromSidebar(workspace: GroupInfo) {
     setError(null);
     try {
-      await removeResearchWorkspace(workspace.id);
+      const detachedTreeIds = new Set(await removeResearchWorkspace(workspace.id));
       setGroups((current) => current.filter((group) => group.id !== workspace.id));
+      setResearchTrees((current) => current.filter((tree) => !detachedTreeIds.has(tree.id)));
+      setArchivedResearchTrees((current) =>
+        current.filter((tree) => !detachedTreeIds.has(tree.id)),
+      );
+      setResearchActivity((current) =>
+        current.filter((node) => !detachedTreeIds.has(node.treeId)),
+      );
+      if (
+        activeResearchTreeIdRef.current &&
+        detachedTreeIds.has(activeResearchTreeIdRef.current)
+      ) {
+        activeResearchTreeIdRef.current = null;
+        setActiveResearchTreeId(null);
+        setActiveResearchDetail(null);
+        setActiveResearchDetailError(null);
+        localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+      }
       if (localStorage.getItem(LAST_RESEARCH_WORKSPACE_KEY) === workspace.id) {
         localStorage.removeItem(LAST_RESEARCH_WORKSPACE_KEY);
       }
@@ -6312,6 +6330,7 @@ export default function App() {
       if (researchScopeRef.current === workspace.id) {
         changeResearchFolderScope(ALL_RESEARCH_SCOPE);
       }
+      void refreshResearchNavigation().catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -8459,6 +8478,7 @@ export default function App() {
         <div className="titlebar-drag" data-tauri-drag-region aria-hidden="true" />
         <SidebarModeToggle
           mode={sidebarMode}
+          shortcutHintsShown={shortcutHintsShown}
           runningResearchCount={runningResearchCount}
           unseenResearchCount={unseenResearchCount}
           failedResearchCount={failedResearchCount}
@@ -9844,8 +9864,9 @@ export default function App() {
             {closeDialog.kind === "researchFolderRemove" ? (
               <>
                 <p>
-                  Remove this folder from qmux? The folder and its files will remain on disk.
-                  Folders containing research items or active work cannot be removed.
+                  Remove this folder from qmux? The folder and its files will remain on disk. Its
+                  research history will be stored in the folder’s .qmux directory and restored if
+                  you open the folder again. Active work must finish or be cancelled first.
                 </p>
                 <div className="confirm-dialog-actions">
                   <button type="button" onClick={() => setCloseDialog(null)}>

@@ -1533,18 +1533,22 @@ impl AppState {
             return;
         }
 
-        self.persist_snapshot_locked();
+        if let Err(err) = self.persist_snapshot_locked() {
+            eprintln!("qmux: failed to persist session state: {err}");
+        }
     }
 
     /// Snapshots the model and writes it to disk. Assumes the caller holds
     /// `persist_lock`; does not consult `persist_enabled`. Shared by `persist` (which
     /// gates on the flag) and `finalize_persistence_for_exit` (which writes the final
     /// snapshot before clearing the flag, both under the lock).
-    fn persist_snapshot_locked(&self) {
+    fn persist_snapshot_locked(&self) -> Result<(), String> {
         let snapshot = {
-            let Ok(model) = self.inner.model.lock() else {
-                return;
-            };
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
             PersistedState {
                 version: STATE_VERSION,
                 next_id: self.inner.next_id.load(Ordering::Relaxed),
@@ -1569,10 +1573,7 @@ impl AppState {
                 research_nodes: model.research_nodes.clone(),
             }
         };
-
-        if let Err(err) = persistence::save(&self.inner.config.workspace_root, &snapshot) {
-            eprintln!("qmux: failed to persist session state: {err}");
-        }
+        persistence::save(&self.inner.config.workspace_root, &snapshot)
     }
 
     /// Called once when the process is really exiting, before exit-time pane
@@ -1592,7 +1593,9 @@ impl AppState {
             .persist_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.persist_snapshot_locked();
+        if let Err(err) = self.persist_snapshot_locked() {
+            eprintln!("qmux: failed to persist final session state: {err}");
+        }
         self.inner.persist_enabled.store(false, Ordering::Relaxed);
         // Thread-graph writes are debounced the same way state.json is; commit
         // anything still buffered so a clean quit never loses graph updates.
@@ -2885,6 +2888,399 @@ impl AppState {
         })
     }
 
+    pub fn detached_research_archive(
+        &self,
+        workspace_id: &str,
+    ) -> Result<research::DetachedResearchArchive, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let mut workspace = model
+            .groups
+            .get(workspace_id)
+            .filter(|group| group.scope == WorkspaceScope::Research)
+            .cloned()
+            .ok_or_else(|| format!("research workspace {workspace_id} was not found"))?;
+        // managed_dir is installation-local bookkeeping and is deleted after
+        // detach. Runtime agent membership must not cross an import boundary.
+        workspace.managed_dir.clear();
+        workspace.agents.clear();
+        workspace.imported_research_archive_id = None;
+        let mut trees = model
+            .research_trees
+            .values()
+            .filter(|tree| tree.workspace_id == workspace_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        trees.sort_by_key(|tree| (tree.created_at, tree.id.clone()));
+        let tree_ids = trees
+            .iter()
+            .map(|tree| tree.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut nodes = model
+            .research_nodes
+            .values()
+            .filter(|node| tree_ids.contains(node.tree_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
+        Ok(research::DetachedResearchArchive {
+            version: research::DETACHED_RESEARCH_ARCHIVE_VERSION,
+            archive_id: research::new_detached_research_archive_id()?,
+            workspace,
+            trees,
+            nodes,
+            exported_at: now_millis(),
+        })
+    }
+
+    /// Removes a Research workspace and all of its durable records after its
+    /// portable archive has been verified. The checked persistence barrier is
+    /// the commit point: on failure the in-memory records are restored and the
+    /// caller leaves the pending folder archive in place for a safe retry.
+    pub fn commit_research_workspace_detach(
+        &self,
+        workspace_id: &str,
+        expected: &research::DetachedResearchArchive,
+    ) -> Result<Vec<String>, String> {
+        let _persist_guard = self
+            .inner
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (workspace, trees, nodes, group_order, recent_sessions) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model
+                .panes
+                .values()
+                .any(|pane| pane.info.group_id == workspace_id)
+            {
+                return Err("research folder still has live terminals".to_string());
+            }
+            let workspace = model
+                .groups
+                .get(workspace_id)
+                .filter(|group| group.scope == WorkspaceScope::Research)
+                .cloned()
+                .ok_or_else(|| format!("research workspace {workspace_id} was not found"))?;
+            let tree_ids = model
+                .research_trees
+                .values()
+                .filter(|tree| tree.workspace_id == workspace_id)
+                .map(|tree| tree.id.clone())
+                .collect::<HashSet<_>>();
+            let active = model.research_nodes.values().any(|node| {
+                tree_ids.contains(&node.tree_id)
+                    && (node.status.is_active() || node.pane_id.is_some())
+            });
+            if active {
+                return Err("research folder still has active runs".to_string());
+            }
+            if model
+                .agents
+                .values()
+                .any(|agent| agent.group_id == workspace_id)
+            {
+                return Err("research folder still has a live agent record".to_string());
+            }
+            let mut current_workspace = workspace.clone();
+            current_workspace.managed_dir.clear();
+            current_workspace.agents.clear();
+            current_workspace.imported_research_archive_id = None;
+            let mut current_trees = tree_ids
+                .iter()
+                .filter_map(|id| model.research_trees.get(id).cloned())
+                .collect::<Vec<_>>();
+            current_trees.sort_by_key(|tree| (tree.created_at, tree.id.clone()));
+            let current_tree_ids = current_trees
+                .iter()
+                .map(|tree| tree.id.as_str())
+                .collect::<HashSet<_>>();
+            let mut current_nodes = model
+                .research_nodes
+                .values()
+                .filter(|node| current_tree_ids.contains(node.tree_id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            current_nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
+            if current_workspace != expected.workspace
+                || current_trees != expected.trees
+                || current_nodes != expected.nodes
+            {
+                return Err(
+                    "research changed while its folder archive was being prepared; try removing the folder again"
+                        .to_string(),
+                );
+            }
+            let trees = tree_ids
+                .iter()
+                .filter_map(|id| {
+                    model
+                        .research_trees
+                        .remove(id)
+                        .map(|tree| (id.clone(), tree))
+                })
+                .collect::<Vec<_>>();
+            let node_ids = model
+                .research_nodes
+                .values()
+                .filter(|node| tree_ids.contains(&node.tree_id))
+                .map(|node| node.id.clone())
+                .collect::<HashSet<_>>();
+            let nodes = node_ids
+                .iter()
+                .filter_map(|id| {
+                    model
+                        .research_nodes
+                        .remove(id)
+                        .map(|node| (id.clone(), node))
+                })
+                .collect::<Vec<_>>();
+            let agent_ids = nodes
+                .iter()
+                .filter_map(|(_, node)| node.agent_id.clone())
+                .collect::<HashSet<_>>();
+            let session_ids = nodes
+                .iter()
+                .filter_map(|(_, node)| node.native_session_id.clone())
+                .collect::<HashSet<_>>();
+            let transcript_paths = nodes
+                .iter()
+                .filter_map(|(_, node)| node.transcript_path.clone())
+                .collect::<HashSet<_>>();
+            let recent_sessions = model.recent_sessions.clone();
+            model.recent_sessions.retain(|_, session| {
+                !session
+                    .agent_id
+                    .as_ref()
+                    .is_some_and(|id| agent_ids.contains(id))
+                    && !session
+                        .session_id
+                        .as_ref()
+                        .is_some_and(|id| session_ids.contains(id))
+                    && !session
+                        .transcript_path
+                        .as_ref()
+                        .is_some_and(|path| transcript_paths.contains(path))
+            });
+            let group_order = model.group_order.clone();
+            model.groups.remove(workspace_id);
+            model.group_order.retain(|id| id != workspace_id);
+            (workspace, trees, nodes, group_order, recent_sessions)
+        };
+
+        let persist_result = if self.inner.persist_enabled.load(Ordering::Relaxed) {
+            self.persist_snapshot_locked()
+        } else {
+            Ok(())
+        };
+        if let Err(err) = persist_result {
+            if let Ok(mut model) = self.inner.model.lock() {
+                model.groups.insert(workspace.id.clone(), workspace);
+                model.group_order = group_order;
+                for (id, tree) in trees {
+                    model.research_trees.insert(id, tree);
+                }
+                for (id, node) in nodes {
+                    model.research_nodes.insert(id, node);
+                }
+                model.recent_sessions = recent_sessions;
+            }
+            return Err(format!("failed to commit global research detach: {err}"));
+        }
+        let node_ids = nodes.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        self.emit(QmuxEvent::new(
+            "group.removed",
+            None,
+            None,
+            json!({ "groupId": workspace_id }),
+        ));
+        Ok(node_ids)
+    }
+
+    pub fn import_detached_research(
+        &self,
+        workspace: GroupInfo,
+        mut trees: Vec<ResearchTree>,
+        mut nodes: Vec<ResearchNode>,
+        responses: HashMap<String, Vec<Turn>>,
+    ) -> Result<GroupInfo, String> {
+        let (tree_ids_in_use, mut node_ids_in_use) = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            (
+                model.research_trees.keys().cloned().collect::<HashSet<_>>(),
+                model.research_nodes.keys().cloned().collect::<HashSet<_>>(),
+            )
+        };
+        for node in &nodes {
+            if !matches!(
+                research::read_response_snapshot(&self.inner.config.workspace_root, &node.id),
+                Ok(None)
+            ) {
+                node_ids_in_use.insert(node.id.clone());
+            }
+        }
+        let mut tree_map = HashMap::new();
+        let mut reserved_tree_ids = tree_ids_in_use;
+        for tree in &trees {
+            let id = if reserved_tree_ids.insert(tree.id.clone()) {
+                tree.id.clone()
+            } else {
+                loop {
+                    let candidate = self.next_id("research");
+                    if reserved_tree_ids.insert(candidate.clone()) {
+                        break candidate;
+                    }
+                }
+            };
+            tree_map.insert(tree.id.clone(), id);
+        }
+        let mut node_map = HashMap::new();
+        let mut reserved_node_ids = node_ids_in_use;
+        for node in &nodes {
+            let id = if reserved_node_ids.insert(node.id.clone()) {
+                node.id.clone()
+            } else {
+                loop {
+                    let candidate = self.next_id("research-node");
+                    if reserved_node_ids.insert(candidate.clone()) {
+                        break candidate;
+                    }
+                }
+            };
+            node_map.insert(node.id.clone(), id);
+        }
+        for tree in &mut trees {
+            tree.id = tree_map[&tree.id].clone();
+            tree.root_node_id = node_map
+                .get(&tree.root_node_id)
+                .cloned()
+                .ok_or_else(|| "research archive root node mapping is incomplete".to_string())?;
+            tree.workspace_id = workspace.id.clone();
+        }
+        for node in &mut nodes {
+            let old_id = node.id.clone();
+            node.id = node_map[&old_id].clone();
+            node.tree_id = tree_map
+                .get(&node.tree_id)
+                .cloned()
+                .ok_or_else(|| "research archive tree mapping is incomplete".to_string())?;
+            node.parent_node_id =
+                node.parent_node_id
+                    .as_ref()
+                    .map(|id| {
+                        node_map.get(id).cloned().ok_or_else(|| {
+                            "research archive parent mapping is incomplete".to_string()
+                        })
+                    })
+                    .transpose()?;
+            node.group_id = workspace.id.clone();
+            node.worktree_dir = workspace.dir.clone();
+            // Runtime bindings never survive a detach/import boundary. Keeping
+            // an old agent id could accidentally bind a restored follow-up to
+            // an unrelated live agent whose installation-local id collides.
+            node.pane_id = None;
+            node.agent_id = None;
+            node.transcript_path = None;
+        }
+
+        let mut written_node_ids = Vec::new();
+        let write_result = (|| -> Result<(), String> {
+            for (old_id, turns) in responses {
+                let Some(new_id) = node_map.get(&old_id) else {
+                    continue;
+                };
+                research::write_response_snapshot(
+                    &self.inner.config.workspace_root,
+                    new_id,
+                    &turns,
+                )?;
+                written_node_ids.push(new_id.clone());
+            }
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            for node_id in written_node_ids {
+                let _ = research::remove_response_snapshot(
+                    &self.inner.config.workspace_root,
+                    &node_id,
+                );
+            }
+            return Err(err);
+        }
+        let _persist_guard = self
+            .inner
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let insert_result = (|| -> Result<(), String> {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.groups.contains_key(&workspace.id) {
+                return Err(format!("workspace {} already exists", workspace.id));
+            }
+            model.group_order.push(workspace.id.clone());
+            model.groups.insert(workspace.id.clone(), workspace.clone());
+            for tree in &trees {
+                model.research_trees.insert(tree.id.clone(), tree.clone());
+            }
+            for node in &nodes {
+                model.research_nodes.insert(node.id.clone(), node.clone());
+            }
+            Ok(())
+        })();
+        if let Err(err) = insert_result {
+            for node_id in written_node_ids {
+                let _ = research::remove_response_snapshot(
+                    &self.inner.config.workspace_root,
+                    &node_id,
+                );
+            }
+            return Err(err);
+        }
+        let persist_result = if self.inner.persist_enabled.load(Ordering::Relaxed) {
+            self.persist_snapshot_locked()
+        } else {
+            Ok(())
+        };
+        if let Err(err) = persist_result {
+            if let Ok(mut model) = self.inner.model.lock() {
+                model.groups.remove(&workspace.id);
+                model.group_order.retain(|id| id != &workspace.id);
+                for tree in &trees {
+                    model.research_trees.remove(&tree.id);
+                }
+                for node in &nodes {
+                    model.research_nodes.remove(&node.id);
+                }
+            }
+            for node_id in written_node_ids {
+                let _ = research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
+            }
+            return Err(format!("failed to commit imported research: {err}"));
+        }
+        self.emit(QmuxEvent::new(
+            "group.created",
+            None,
+            None,
+            json!({ "group": workspace.clone() }),
+        ));
+        Ok(workspace)
+    }
+
     pub fn pane_group_id(&self, pane_id: &str) -> Result<Option<String>, String> {
         let model = self
             .inner
@@ -4108,7 +4504,13 @@ impl AppState {
                 turns.drain(..overflow);
             }
             let agent_for_graph = model.agents.get(&agent_id).cloned();
-            let should_persist_recent = if is_user_turn {
+            let agent_is_research = agent_for_graph.as_ref().is_some_and(|agent| {
+                model
+                    .groups
+                    .get(&agent.group_id)
+                    .is_some_and(|group| group.scope == WorkspaceScope::Research)
+            });
+            let should_persist_recent = if is_user_turn && !agent_is_research {
                 agent_for_graph.clone().is_some_and(|agent| {
                     // CacheOnly: the turn just appended supplies the in-memory
                     // preview/line-count, so the disk fallback has nothing to add
@@ -4127,7 +4529,7 @@ impl AppState {
             };
             let mut graph_store = None;
             let mut created_thread_record = false;
-            if let Some(agent) = agent_for_graph.as_ref() {
+            if let Some(agent) = agent_for_graph.as_ref().filter(|_| !agent_is_research) {
                 let (store, created) = thread_store_for_agent_locked(
                     &mut model,
                     agent,
@@ -4176,19 +4578,26 @@ impl AppState {
             bump_agent_activity_locked(&mut model, agent_id);
             model.turns.insert(agent_id.to_string(), turns);
             let agent_for_graph = model.agents.get(agent_id).cloned();
-            let should_persist_recent = agent_for_graph.clone().is_some_and(|agent| {
-                upsert_recent_session_for_agent_locked(
-                    &mut model,
-                    &agent,
-                    now_millis(),
-                    true,
-                    RecentSessionMeta::CacheOnly,
-                )
-                .changed
+            let agent_is_research = agent_for_graph.as_ref().is_some_and(|agent| {
+                model
+                    .groups
+                    .get(&agent.group_id)
+                    .is_some_and(|group| group.scope == WorkspaceScope::Research)
             });
+            let should_persist_recent = !agent_is_research
+                && agent_for_graph.clone().is_some_and(|agent| {
+                    upsert_recent_session_for_agent_locked(
+                        &mut model,
+                        &agent,
+                        now_millis(),
+                        true,
+                        RecentSessionMeta::CacheOnly,
+                    )
+                    .changed
+                });
             let mut graph_store = None;
             let mut created_thread_record = false;
-            if let Some(agent) = agent_for_graph.as_ref() {
+            if let Some(agent) = agent_for_graph.as_ref().filter(|_| !agent_is_research) {
                 let (store, created) = thread_store_for_agent_locked(
                     &mut model,
                     agent,
@@ -5937,6 +6346,7 @@ fn migrate_legacy_research_workspaces(
                     created_at: now_millis(),
                     collapsed: false,
                     scope: WorkspaceScope::Terminal,
+                    imported_research_archive_id: None,
                     agents: Vec::new(),
                 }
             });
@@ -6545,6 +6955,7 @@ mod tests {
             created_at: 1,
             collapsed: false,
             scope: WorkspaceScope::Research,
+            imported_research_archive_id: None,
             agents: vec!["agent-1".to_string()],
         }
     }
@@ -6557,6 +6968,99 @@ mod tests {
         group.managed_dir = format!("/tmp/qmux-workspaces/{id}");
         group.agents.clear();
         group
+    }
+
+    #[test]
+    fn detached_research_import_remaps_tree_and_node_id_collisions() {
+        let root = temp_workspace();
+        let state = AppState::new(test_config(root.clone()));
+        let mut existing_group = sample_group();
+        existing_group.dir = root.display().to_string();
+        existing_group.managed_dir = root.join("managed-existing").display().to_string();
+        existing_group.agents.clear();
+        state.insert_group_after(existing_group.clone(), None).unwrap();
+        let existing = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Existing".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: existing_group.id.clone(),
+            })
+            .unwrap();
+        let mut imported_group = sample_group();
+        imported_group.id = "group-imported".to_string();
+        imported_group.dir = root.display().to_string();
+        imported_group.managed_dir = root.join("managed-imported").display().to_string();
+        imported_group.agents.clear();
+        let mut imported_tree = existing.tree.clone();
+        imported_tree.title = "Imported".to_string();
+        let mut imported_node = existing.nodes[0].clone();
+        imported_node.prompt = "Imported".to_string();
+        imported_node.status = ResearchNodeStatus::Failed;
+        imported_node.agent_id = Some("agent-colliding".to_string());
+        imported_node.pane_id = None;
+
+        state
+            .import_detached_research(
+                imported_group.clone(),
+                vec![imported_tree],
+                vec![imported_node],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let imported = state
+            .list_research_trees_with_archived(true)
+            .unwrap()
+            .into_iter()
+            .find(|tree| tree.title == "Imported")
+            .expect("imported tree");
+        assert_ne!(imported.id, existing.tree.id);
+        assert_eq!(imported.workspace_id, imported_group.id);
+        let detail = state.research_tree(&imported.id).unwrap();
+        assert_ne!(detail.nodes[0].id, existing.nodes[0].id);
+        assert!(detail.nodes[0].agent_id.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn research_detach_rejects_records_changed_after_archive_snapshot() {
+        let root = temp_workspace();
+        let state = AppState::new(test_config(root.clone()));
+        let mut group = sample_group();
+        group.dir = root.display().to_string();
+        group.managed_dir = root.join("managed").display().to_string();
+        group.agents.clear();
+        state.insert_group_after(group.clone(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: group.id.clone(),
+            })
+            .unwrap();
+        state
+            .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+        let archive = state.detached_research_archive(&group.id).unwrap();
+        state
+            .rename_research_tree(&detail.tree.id, "Changed title".to_string())
+            .unwrap();
+
+        let error = state
+            .commit_research_workspace_detach(&group.id, &archive)
+            .unwrap_err();
+
+        assert!(error.contains("changed while"), "{error}");
+        assert!(state.group(&group.id).unwrap().is_some());
+        assert_eq!(
+            state.research_tree(&detail.tree.id).unwrap().tree.title,
+            "Changed title"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn sample_terminal_group() -> GroupInfo {

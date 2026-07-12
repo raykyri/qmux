@@ -98,6 +98,7 @@ export interface GroupInfo {
   createdAt: number;
   collapsed: boolean;
   scope: "terminal" | "research";
+  importedResearchArchiveId?: string | null;
   agents: string[];
 }
 
