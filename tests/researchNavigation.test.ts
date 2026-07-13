@@ -3,9 +3,17 @@ import test from "node:test";
 import {
   isResearchNodeSelectionChange,
   isResearchTreeSelectionChange,
+  recordResearchScrollPosition,
+  RESEARCH_SCROLL_POSITION_TTL_MS,
+  restoreResearchScrollPosition,
+  type SavedResearchNavigation,
 } from "../src/lib/researchNavigation";
 import { researchBranchInfo } from "../src/lib/researchBranches";
-import { resolveResearchHighlightOffset } from "../src/lib/researchHighlights";
+import {
+  intersectingResearchHighlightIds,
+  isResearchHighlightActionShortcut,
+  resolveResearchHighlightOffset,
+} from "../src/lib/researchHighlights";
 import type { ResearchHighlight, ResearchNode, ResearchNodeStatus } from "../src/types";
 
 function node(
@@ -63,6 +71,34 @@ test("a research tree remains selectable when its document is not displayed", ()
   assert.equal(isResearchTreeSelectionChange("tree", true, "other-tree"), true);
 });
 
+test("research scroll positions remain available for 15 minutes", () => {
+  const navigation: SavedResearchNavigation = { scrollByNode: {} };
+  recordResearchScrollPosition(navigation, "root-node", 480, 1_000);
+
+  assert.equal(
+    restoreResearchScrollPosition(
+      navigation,
+      "root-node",
+      1_000 + RESEARCH_SCROLL_POSITION_TTL_MS - 1,
+    ),
+    480,
+  );
+});
+
+test("research scroll positions expire at 15 minutes", () => {
+  const navigation: SavedResearchNavigation = { scrollByNode: {} };
+  recordResearchScrollPosition(navigation, "root-node", 480, 1_000);
+
+  assert.equal(
+    restoreResearchScrollPosition(
+      navigation,
+      "root-node",
+      1_000 + RESEARCH_SCROLL_POSITION_TTL_MS,
+    ),
+    0,
+  );
+});
+
 test("branch info includes every descendant but not siblings", () => {
   const nodes = [
     node("root", null),
@@ -104,4 +140,54 @@ test("research highlights do not cross snapshot revisions", () => {
     resolveResearchHighlightOffset("before target after", "b".repeat(64), highlight()),
     null,
   );
+});
+
+test("research highlight removal targets every whole highlight touched by a selection", () => {
+  const highlights = [
+    { id: "first", start: 2, end: 8 },
+    { id: "second", start: 10, end: 20 },
+    { id: "third", start: 24, end: 30 },
+  ];
+
+  assert.deepEqual(
+    intersectingResearchHighlightIds({ start: 5, end: 12 }, highlights),
+    ["first", "second"],
+  );
+  assert.deepEqual(
+    intersectingResearchHighlightIds({ start: 12, end: 14 }, highlights),
+    ["second"],
+  );
+});
+
+test("research highlight removal ignores ranges that only touch an edge", () => {
+  const highlights = [{ id: "highlight", start: 10, end: 20 }];
+
+  assert.deepEqual(
+    intersectingResearchHighlightIds({ start: 5, end: 10 }, highlights),
+    [],
+  );
+  assert.deepEqual(
+    intersectingResearchHighlightIds({ start: 20, end: 25 }, highlights),
+    [],
+  );
+});
+
+test("H confirms a research highlight action without modifiers or repeat", () => {
+  const input = {
+    key: "h",
+    defaultPrevented: false,
+    repeat: false,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+  };
+
+  assert.equal(isResearchHighlightActionShortcut(input), true);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, key: "H" }), true);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, key: "a" }), false);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, repeat: true }), false);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, metaKey: true }), false);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, ctrlKey: true }), false);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, altKey: true }), false);
+  assert.equal(isResearchHighlightActionShortcut({ ...input, defaultPrevented: true }), false);
 });

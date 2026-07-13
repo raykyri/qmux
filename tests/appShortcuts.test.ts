@@ -78,10 +78,21 @@ test("uses command-n for Research Home and the launcher elsewhere", () => {
   const command = resolveAppShortcut(shortcut({ key: "n", metaKey: true }));
   assert.deepEqual(command, { type: "homeOrCycleAdapter" });
   assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
-    type: "openNewResearch",
+    type: "focusResearchHome",
   });
   assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), {
     type: "homeOrCycleAdapter",
+  });
+});
+
+test("uses command-t for new research and new panes elsewhere", () => {
+  const command = resolveAppShortcut(shortcut({ key: "t", metaKey: true }));
+  assert.deepEqual(command, { type: "newPane" });
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "openNewResearch",
+  });
+  assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), {
+    type: "newPane",
   });
 });
 

@@ -4,9 +4,14 @@
 // deleted trees) mutate the same object — pruning localStorage behind a
 // separate in-memory copy would just get resurrected by the next save.
 
+export interface SavedResearchScrollPosition {
+  top: number;
+  updatedAt: number;
+}
+
 export interface SavedResearchNavigation {
   selectedNodeId?: string;
-  scrollByNode: Record<string, number>;
+  scrollByNode: Record<string, SavedResearchScrollPosition>;
   /** Nodes whose "Show earlier" window the user expanded. Restored together
    * with the scroll offset — an offset captured against the expanded list
    * would land in the wrong place in the collapsed one. */
@@ -14,6 +19,7 @@ export interface SavedResearchNavigation {
 }
 
 const RESEARCH_NAVIGATION_KEY = "qmux.research-navigation.v1";
+export const RESEARCH_SCROLL_POSITION_TTL_MS = 15 * 60 * 1000;
 
 let store: Record<string, SavedResearchNavigation> | null = null;
 
@@ -37,6 +43,7 @@ export function isResearchTreeSelectionChange(
 
 function load(): Record<string, SavedResearchNavigation> {
   try {
+    const now = Date.now();
     const parsed = JSON.parse(localStorage.getItem(RESEARCH_NAVIGATION_KEY) ?? "{}") as unknown;
     if (!parsed || typeof parsed !== "object") {
       return {};
@@ -48,10 +55,22 @@ function load(): Record<string, SavedResearchNavigation> {
         }
         const candidate = value as Partial<SavedResearchNavigation>;
         const scrollByNode = Object.fromEntries(
-          Object.entries(candidate.scrollByNode ?? {}).filter(
-            (entry): entry is [string, number] =>
-              typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0,
-          ),
+          Object.entries(candidate.scrollByNode ?? {}).flatMap(([nodeId, value]) => {
+            if (!value || typeof value !== "object") {
+              // The previous schema stored a bare number, which has no age and
+              // therefore cannot safely be carried into the expiring cache.
+              return [];
+            }
+            const position = value as Partial<SavedResearchScrollPosition>;
+            return typeof position.top === "number" &&
+              Number.isFinite(position.top) &&
+              position.top >= 0 &&
+              typeof position.updatedAt === "number" &&
+              Number.isFinite(position.updatedAt) &&
+              now - position.updatedAt < RESEARCH_SCROLL_POSITION_TTL_MS
+              ? [[nodeId, { top: position.top, updatedAt: position.updatedAt }]]
+              : [];
+          }),
         );
         const expandedByNode = Object.fromEntries(
           Object.entries(candidate.expandedByNode ?? {}).filter(
@@ -81,6 +100,27 @@ export function saveResearchNavigation(): void {
   } catch {
     // Navigation restoration is a convenience; storage denial must not break research.
   }
+}
+
+export function recordResearchScrollPosition(
+  navigation: SavedResearchNavigation,
+  nodeId: string,
+  top: number,
+  now = Date.now(),
+): void {
+  navigation.scrollByNode[nodeId] = { top, updatedAt: now };
+}
+
+export function restoreResearchScrollPosition(
+  navigation: SavedResearchNavigation | undefined,
+  nodeId: string,
+  now = Date.now(),
+): number {
+  const position = navigation?.scrollByNode[nodeId];
+  if (!position || now - position.updatedAt >= RESEARCH_SCROLL_POSITION_TTL_MS) {
+    return 0;
+  }
+  return position.top;
 }
 
 /** Drops navigation state for trees that no longer exist. */

@@ -1064,6 +1064,20 @@ async fn remove_research_highlight(
 }
 
 #[tauri::command]
+async fn remove_research_highlights(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+    highlight_ids: Vec<String>,
+) -> Result<Vec<ResearchHighlight>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.remove_research_highlights(&node_id, &highlight_ids)
+    })
+    .await
+    .map_err(|err| format!("research highlight task failed: {err}"))?
+}
+
+#[tauri::command]
 fn mark_research_tree_viewed(
     state: tauri::State<'_, AppState>,
     tree_id: String,
@@ -1887,6 +1901,7 @@ fn main() {
             rename_research_node,
             create_research_highlight,
             remove_research_highlight,
+            remove_research_highlights,
             mark_research_tree_viewed,
             archive_research_tree,
             restore_research_tree,

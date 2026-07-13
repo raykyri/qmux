@@ -7,7 +7,7 @@ import {
   createResearchHighlight,
   getResearchNodeContent,
   listClaudeSkills,
-  removeResearchHighlight,
+  removeResearchHighlights,
 } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { growComposerTextarea } from "../../lib/composerTextarea";
@@ -24,11 +24,17 @@ import {
 } from "../../lib/researchHistory";
 import { researchBranchInfo } from "../../lib/researchBranches";
 import { countResearchDocumentWords } from "../../lib/researchDocuments";
-import { resolveResearchHighlightOffset } from "../../lib/researchHighlights";
+import {
+  intersectingResearchHighlightIds,
+  isResearchHighlightActionShortcut,
+  resolveResearchHighlightOffset,
+} from "../../lib/researchHighlights";
 import {
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
+  recordResearchScrollPosition,
   researchNavigationStore,
+  restoreResearchScrollPosition,
   saveResearchNavigation,
 } from "../../lib/researchNavigation";
 import {
@@ -122,7 +128,7 @@ interface FollowupMenu {
 
 interface HighlightAction {
   anchor: ResearchHighlightAnchor;
-  highlightId: string | null;
+  highlightIds: string[];
   left: number;
   top: number;
 }
@@ -706,7 +712,11 @@ export default function ResearchDocument({
         documentScrollRef.current &&
         contentNodeIdRef.current === selectedNodeId
       ) {
-        navigation.scrollByNode[selectedNodeId] = documentScrollRef.current.scrollTop;
+        recordResearchScrollPosition(
+          navigation,
+          selectedNodeId,
+          documentScrollRef.current.scrollTop,
+        );
       }
       navigation.selectedNodeId = nodeId;
       saveResearchNavigation();
@@ -972,7 +982,10 @@ export default function ResearchDocument({
     if (!treeId || !content || !documentScrollRef.current) {
       return;
     }
-    const saved = navigationRef.current[treeId]?.scrollByNode?.[content.node.id] ?? 0;
+    const saved = restoreResearchScrollPosition(
+      navigationRef.current[treeId],
+      content.node.id,
+    );
     documentScrollRef.current.scrollTop = saved;
   }, [content?.node.id, treeId]);
 
@@ -1002,7 +1015,11 @@ export default function ResearchDocument({
         contentNodeIdRef.current === currentNodeId
       ) {
         const navigation = (navigationRef.current[currentTreeId] ??= { scrollByNode: {} });
-        navigation.scrollByNode[currentNodeId] = documentScrollRef.current.scrollTop;
+        recordResearchScrollPosition(
+          navigation,
+          currentNodeId,
+          documentScrollRef.current.scrollTop,
+        );
       }
       saveResearchNavigation();
     },
@@ -1019,7 +1036,11 @@ export default function ResearchDocument({
       return;
     }
     const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
-    navigation.scrollByNode[selectedNodeId] = documentScrollRef.current.scrollTop;
+    recordResearchScrollPosition(
+      navigation,
+      selectedNodeId,
+      documentScrollRef.current.scrollTop,
+    );
     if (navigationPersistTimerRef.current !== null) {
       window.clearTimeout(navigationPersistTimerRef.current);
     }
@@ -1198,13 +1219,20 @@ export default function ResearchDocument({
     }
     const projection = root.textContent ?? "";
     const exact = projection.slice(offsets.start, offsets.end);
-    if (!exact.trim()) {
+    const highlightIds = intersectingResearchHighlightIds(
+      offsets,
+      resolvedHighlightsRef.current.map(({ highlight, start, end }) => ({
+        id: highlight.id,
+        start,
+        end,
+      })),
+    );
+    // Whitespace cannot form a useful new highlight, but it can still be a
+    // selected subset of an existing annotation that the user wants removed.
+    if (!exact.trim() && highlightIds.length === 0) {
       setHighlightAction(null);
       return;
     }
-    const existing = resolvedHighlightsRef.current.find(
-      ({ start, end }) => offsets.start < end && offsets.end > start,
-    );
     const rect = range.getBoundingClientRect();
     setHighlightAction({
       anchor: {
@@ -1225,54 +1253,33 @@ export default function ResearchDocument({
           offsets.end + RESEARCH_HIGHLIGHT_CONTEXT_LENGTH,
         ),
       },
-      highlightId: existing?.highlight.id ?? null,
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - 150)),
+      highlightIds,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 180)),
       top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
     });
   }, [content?.responseRevision]);
 
-  useEffect(() => {
-    if (!highlightAction) {
-      return;
-    }
-    const dismiss = (event: MouseEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest(".research-highlight-action")) {
-        setHighlightAction(null);
-      }
-    };
-    const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setHighlightAction(null);
-      }
-    };
-    const dismissOnReflow = () => setHighlightAction(null);
-    document.addEventListener("mousedown", dismiss);
-    document.addEventListener("keydown", dismissOnEscape);
-    window.addEventListener("resize", dismissOnReflow);
-    window.addEventListener("scroll", dismissOnReflow, true);
-    return () => {
-      document.removeEventListener("mousedown", dismiss);
-      document.removeEventListener("keydown", dismissOnEscape);
-      window.removeEventListener("resize", dismissOnReflow);
-      window.removeEventListener("scroll", dismissOnReflow, true);
-    };
-  }, [highlightAction]);
-
-  async function applyHighlightAction() {
+  const applyHighlightAction = useCallback(async () => {
     if (!highlightAction || !content || savingHighlight) {
       return;
     }
     setSavingHighlight(true);
     try {
-      if (highlightAction.highlightId) {
-        const removed = await removeResearchHighlight(content.node.id, highlightAction.highlightId);
+      if (highlightAction.highlightIds.length > 0) {
+        const removed = await removeResearchHighlights(
+          content.node.id,
+          highlightAction.highlightIds,
+        );
+        const removedIds = new Set(removed.map(({ id }) => id));
         setContent((current) =>
           current?.node.id === content.node.id
             ? {
                 ...current,
                 node: {
                   ...current.node,
-                  highlights: (current.node.highlights ?? []).filter(({ id }) => id !== removed.id),
+                  highlights: (current.node.highlights ?? []).filter(
+                    ({ id }) => !removedIds.has(id),
+                  ),
                 },
               }
             : current,
@@ -1298,7 +1305,46 @@ export default function ResearchDocument({
     } finally {
       setSavingHighlight(false);
     }
-  }
+  }, [content, highlightAction, onError, savingHighlight]);
+
+  useEffect(() => {
+    if (!highlightAction) {
+      return;
+    }
+    const dismiss = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".research-highlight-action")) {
+        setHighlightAction(null);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHighlightAction(null);
+        return;
+      }
+      if (
+        savingHighlight ||
+        isEditableTarget(event.target) ||
+        !isResearchHighlightActionShortcut(event)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      void applyHighlightAction();
+    };
+    const dismissOnReflow = () => setHighlightAction(null);
+    document.addEventListener("mousedown", dismiss);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", dismissOnReflow);
+    window.addEventListener("scroll", dismissOnReflow, true);
+    return () => {
+      document.removeEventListener("mousedown", dismiss);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", dismissOnReflow);
+      window.removeEventListener("scroll", dismissOnReflow, true);
+    };
+  }, [applyHighlightAction, highlightAction, savingHighlight]);
 
   async function submitFollowup() {
     const prompt = followup.trim();
@@ -1950,14 +1996,22 @@ export default function ResearchDocument({
                 className="research-highlight-action"
                 style={{ left: highlightAction.left, top: highlightAction.top }}
                 disabled={savingHighlight}
+                aria-keyshortcuts="H"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => void applyHighlightAction()}
               >
-                {savingHighlight
-                  ? "Saving…"
-                  : highlightAction.highlightId
-                    ? "Remove highlight"
-                    : "Highlight"}
+                <span>
+                  {savingHighlight
+                    ? "Saving…"
+                    : highlightAction.highlightIds.length > 1
+                      ? "Remove highlights"
+                      : highlightAction.highlightIds.length === 1
+                        ? "Remove highlight"
+                        : "Highlight"}
+                </span>
+                <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
+                  H
+                </kbd>
               </button>,
               document.body,
             )

@@ -1239,7 +1239,9 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
     let Some(root_pid) = root_pid else {
         return Ok(PaneActivity::idle());
     };
-    let processes = running_descendant_processes(root_pid);
+    // The qmux bridge is implementation plumbing, not user work. Do not make
+    // it inflate the close-warning count or trigger a warning on its own.
+    let processes = user_running_processes(running_descendant_processes(root_pid));
     if processes.is_empty() {
         Ok(PaneActivity::idle())
     } else {
@@ -1623,6 +1625,13 @@ struct RunningProcess {
 
 fn running_descendant_processes(pid: u32) -> Vec<RunningProcess> {
     running_processes(&descendant_process_ids(pid))
+}
+
+fn user_running_processes(processes: Vec<RunningProcess>) -> Vec<RunningProcess> {
+    processes
+        .into_iter()
+        .filter(|process| !process.name.eq_ignore_ascii_case("qmux"))
+        .collect()
 }
 
 /// Filters `pids` down to live, non-zombie processes with a single `ps`
@@ -2363,6 +2372,28 @@ mod tests {
 
         assert_eq!(descendants_from_parent_pairs(9, &pairs), vec![10]);
         assert!(descendants_from_parent_pairs(42, &pairs).is_empty());
+    }
+
+    #[test]
+    fn pane_activity_process_filter_excludes_qmux() {
+        let processes = user_running_processes(vec![
+            RunningProcess {
+                name: "qmux".to_string(),
+            },
+            RunningProcess {
+                name: "QMUX".to_string(),
+            },
+            RunningProcess {
+                name: "node".to_string(),
+            },
+        ]);
+
+        assert_eq!(
+            processes,
+            vec![RunningProcess {
+                name: "node".to_string(),
+            }]
+        );
     }
 
     #[test]

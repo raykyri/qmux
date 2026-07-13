@@ -1228,6 +1228,10 @@ mod tests {
             Some(AppShortcutCommand::NewPane)
         );
         assert_eq!(
+            super::classify_app_shortcut("n", false, false, false, true),
+            Some(AppShortcutCommand::HomeOrCycleAdapter)
+        );
+        assert_eq!(
             super::classify_app_shortcut("n", true, false, false, true),
             Some(AppShortcutCommand::NewGroup)
         );

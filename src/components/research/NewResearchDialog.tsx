@@ -25,7 +25,6 @@ function modelPresetsFor(adapter: string): string[] {
 interface NewResearchDialogProps {
   open: boolean;
   inline?: boolean;
-  adapterCycleNonce?: number;
   adapters: AgentAdapterMetadata[];
   requireCmdEnterToSend: boolean;
   workspaceId: string | null;
@@ -41,7 +40,6 @@ interface NewResearchDialogProps {
 export default function NewResearchDialog({
   open,
   inline = false,
-  adapterCycleNonce = 0,
   adapters: allAdapters,
   requireCmdEnterToSend,
   workspaceId,
@@ -58,7 +56,6 @@ export default function NewResearchDialog({
   // like an unresponsive Start button. Fields are kept for the retry.
   const [error, setError] = useState<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
-  const adapterCycleNonceRef = useRef(adapterCycleNonce);
   // Research is built on branching follow-ups, which require the adapter's
   // native fork command; offering a non-forkable adapter here would only be
   // discovered when the first follow-up fails after a completed root run.
@@ -84,18 +81,6 @@ export default function NewResearchDialog({
     }
     setAdapter(adapters.find((candidate) => candidate.default)?.id ?? adapters[0]?.id ?? "");
   }, [adapter, adapters, open]);
-
-  useEffect(() => {
-    const previous = adapterCycleNonceRef.current;
-    adapterCycleNonceRef.current = adapterCycleNonce;
-    if (!open || adapterCycleNonce === previous || adapters.length < 2) {
-      return;
-    }
-    setAdapter((current) => {
-      const currentIndex = adapters.findIndex((candidate) => candidate.id === current);
-      return adapters[(currentIndex + 1 + adapters.length) % adapters.length].id;
-    });
-  }, [adapterCycleNonce, adapters, open]);
 
   // Grow the textarea to fit its content, like the Home launcher: multi-line
   // prompts expand the composer until the CSS max-height caps it.

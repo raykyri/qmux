@@ -5,6 +5,46 @@ export interface ResearchHighlightOffsets {
   end: number;
 }
 
+export interface ResolvedResearchHighlightRange extends ResearchHighlightOffsets {
+  id: string;
+}
+
+// A selection removes stored highlights as whole annotations. Any positive
+// overlap counts, including a selection contained inside one highlight or a
+// range crossing parts of several; merely touching an edge does not.
+export function intersectingResearchHighlightIds(
+  selection: ResearchHighlightOffsets,
+  highlights: ResolvedResearchHighlightRange[],
+) {
+  return highlights
+    .filter(
+      ({ start, end }) => selection.start < end && selection.end > start,
+    )
+    .map(({ id }) => id);
+}
+
+interface ResearchHighlightShortcutInput {
+  key: string;
+  defaultPrevented: boolean;
+  repeat: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+}
+
+export function isResearchHighlightActionShortcut(
+  input: ResearchHighlightShortcutInput,
+) {
+  return (
+    !input.defaultPrevented &&
+    !input.repeat &&
+    !input.metaKey &&
+    !input.ctrlKey &&
+    !input.altKey &&
+    input.key.toLowerCase() === "h"
+  );
+}
+
 function contextMatchesAt(
   projection: string,
   start: number,

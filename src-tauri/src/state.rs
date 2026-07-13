@@ -3201,6 +3201,63 @@ impl AppState {
         Ok(removed)
     }
 
+    pub fn remove_research_highlights(
+        &self,
+        node_id: &str,
+        highlight_ids: &[String],
+    ) -> Result<Vec<ResearchHighlight>, String> {
+        if highlight_ids.len() > research::MAX_RESEARCH_HIGHLIGHTS_PER_NODE {
+            return Err(format!(
+                "cannot remove more than {} research highlights at once",
+                research::MAX_RESEARCH_HIGHLIGHTS_PER_NODE
+            ));
+        }
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
+        let requested = highlight_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let removed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let mut removed = Vec::new();
+            node.highlights.retain(|highlight| {
+                if requested.contains(highlight.id.as_str()) {
+                    removed.push(highlight.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            removed
+        };
+        if removed.is_empty() {
+            return Ok(removed);
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.highlights.removed",
+            None,
+            None,
+            json!({
+                "nodeId": node_id,
+                "highlightIds": removed.iter().map(|highlight| &highlight.id).collect::<Vec<_>>(),
+            }),
+        ));
+        Ok(removed)
+    }
+
     pub fn mark_research_tree_viewed(&self, tree_id: &str) -> Result<ResearchTree, String> {
         let (tree, changed) = {
             let mut model = self
@@ -9777,19 +9834,38 @@ mod tests {
         let saved_node = reloaded.research_node(&node_id).unwrap();
         assert_eq!(saved_node.highlights, vec![highlight.clone()]);
 
-        let removed = reloaded
-            .remove_research_highlight(&node_id, &highlight.id)
+        let second = reloaded
+            .create_research_highlight(&node_id, anchor.clone())
             .unwrap();
-        assert_eq!(removed, highlight);
+        let preserved = reloaded
+            .create_research_highlight(&node_id, anchor.clone())
+            .unwrap();
+        let removed = reloaded
+            .remove_research_highlights(
+                &node_id,
+                &[
+                    highlight.id.clone(),
+                    second.id.clone(),
+                    highlight.id.clone(),
+                    "already-removed".to_string(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(removed, vec![highlight, second]);
+        assert_eq!(
+            reloaded.research_node(&node_id).unwrap().highlights,
+            vec![preserved.clone()]
+        );
         let reloaded = AppState::new(test_config(workspace.clone()));
         reloaded.restore_session();
-        assert!(
-            reloaded
-                .research_node(&node_id)
-                .unwrap()
-                .highlights
-                .is_empty()
+        assert_eq!(
+            reloaded.research_node(&node_id).unwrap().highlights,
+            vec![preserved.clone()]
         );
+        let removed = reloaded
+            .remove_research_highlight(&node_id, &preserved.id)
+            .unwrap();
+        assert_eq!(removed, preserved);
 
         std::fs::remove_dir_all(workspace).unwrap();
     }

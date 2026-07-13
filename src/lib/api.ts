@@ -358,6 +358,13 @@ export function removeResearchHighlight(nodeId: string, highlightId: string) {
   });
 }
 
+export function removeResearchHighlights(nodeId: string, highlightIds: string[]) {
+  return invoke<ResearchHighlight[]>("remove_research_highlights", {
+    nodeId,
+    highlightIds,
+  });
+}
+
 export function markResearchTreeViewed(treeId: string) {
   return invoke<ResearchTree>("mark_research_tree_viewed", { treeId });
 }

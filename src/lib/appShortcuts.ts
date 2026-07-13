@@ -125,13 +125,16 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   return null;
 }
 
-// Cmd-Shift-T keeps its long-standing reopen behavior in Terminal, but acts as
-// the inverse of Cmd-Shift-R while the Research workspace is active.
+// Commands whose meaning follows the active workspace are resolved here so
+// both DOM and native-terminal shortcut paths share the same behavior.
 export function contextualizeAppShortcut(
   command: AppShortcutCommand,
   sidebarMode: "terminal" | "research",
 ): AppShortcutCommand {
   if (sidebarMode === "research" && command.type === "homeOrCycleAdapter") {
+    return { type: "focusResearchHome" };
+  }
+  if (sidebarMode === "research" && command.type === "newPane") {
     return { type: "openNewResearch" };
   }
   if (sidebarMode === "research" && command.type === "focusTab") {

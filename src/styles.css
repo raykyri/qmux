@@ -65,7 +65,6 @@
 }
 
 .research-sidebar-row.is-selected {
-  border-color: var(--control-border);
   color: #ffffff;
   background: var(--control-bg-hover);
 }
@@ -78,7 +77,7 @@
   min-width: 0;
   flex: 1;
   min-height: 30px;
-  padding: 6px 4px 6px 8px;
+  padding: 5px 4px 5px 8px;
   border: 0;
   border-radius: 6px;
   color: inherit;
@@ -684,6 +683,7 @@
 .research-highlight-action {
   position: fixed;
   z-index: 1000;
+  gap: 7px;
   width: max-content;
   min-height: 27px;
   padding: 0 8px;
@@ -706,6 +706,10 @@
 .research-highlight-action:disabled {
   color: #929994;
   cursor: default;
+}
+
+.research-highlight-action:disabled .context-menu-shortcut.is-keycap {
+  opacity: 0.55;
 }
 
 .research-response-item {
@@ -1497,12 +1501,20 @@ input::placeholder {
 
 button:focus-visible,
 textarea:focus,
-input:focus,
-select:focus {
+input:focus {
   border-width: 1px;
   border-color: var(--focus-ring);
   outline: none;
   box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+/* Native dropdowns already have a crisp 1px edge, so changing that border is
+   enough to show focus without doubling it with an inset ring. */
+select:focus {
+  border-width: 1px;
+  border-color: var(--focus-ring);
+  outline: none;
+  box-shadow: none;
 }
 
 /* Neutral button — the shared baseline skin for every control, left pane and
@@ -5996,6 +6008,11 @@ header + .turn-blocks {
   margin-bottom: 0;
 }
 
+.turn-markdown strong,
+.turn-markdown b {
+  font-weight: 600;
+}
+
 .turn-markdown p,
 .turn-markdown ul,
 .turn-markdown ol,
@@ -6132,6 +6149,7 @@ header + .turn-blocks {
 }
 
 .turn-markdown-code-menu-trigger {
+  appearance: none;
   position: absolute;
   top: 5px;
   right: 5px;
@@ -6139,12 +6157,15 @@ header + .turn-blocks {
   align-items: center;
   justify-content: center;
   width: 20px;
+  min-height: 0;
   height: 20px;
-  border: 1px solid #323a3d;
+  padding: 2px;
+  border: 0;
   border-radius: 4px;
-  background: #191e21;
-  color: #8d968f;
+  background: transparent;
+  color: var(--accent-color);
   cursor: pointer;
+  opacity: 0.68;
 }
 
 .turn-markdown-code-menu-trigger svg {
@@ -6156,13 +6177,16 @@ header + .turn-blocks {
 .turn-markdown-code-menu-trigger:hover,
 .turn-markdown-code-menu-trigger:focus-visible,
 .turn-markdown-code-menu-trigger[aria-expanded="true"] {
-  background: #232a2d;
-  color: #f1f0e8;
+  border: 0;
+  background: transparent;
+  color: var(--accent-color);
+  opacity: 1;
 }
 
 .turn-markdown-code-menu-trigger:focus-visible {
   outline: 1px solid var(--focus-ring);
   outline-offset: 2px;
+  box-shadow: none;
 }
 
 /* Framed, rounded container. overflow-x stays a scroll fallback for content that

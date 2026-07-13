@@ -1479,7 +1479,6 @@ export default function App() {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const markdownImportRequestSeqRef = useRef(0);
   const markdownDropBlockedRef = useRef(false);
-  const [researchAdapterCycleNonce, setResearchAdapterCycleNonce] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   // Saved prompts shown in the palette's "Insert prompt" section, refreshed on
   // each open so edits made in the library menu or on disk show up.
@@ -5896,13 +5895,14 @@ export default function App() {
       id: "action:new-tab",
       section: "Actions",
       title: "New agent",
-      hint: settings.codeMode ? undefined : "⌘T",
+      hint: !settings.codeMode && sidebarMode === "terminal" ? "⌘T" : undefined,
       action: () => focusHomeTab(),
     });
     commands.push({
       id: "action:new-research",
       section: "Actions",
       title: "New research",
+      hint: sidebarMode === "research" ? "⌘T" : undefined,
       action: () => void createResearchFromSidebar(),
     });
     commands.push({
@@ -5915,7 +5915,7 @@ export default function App() {
       id: "action:new-terminal",
       section: "Actions",
       title: "New shell",
-      hint: settings.codeMode ? "⌘T" : undefined,
+      hint: settings.codeMode && sidebarMode === "terminal" ? "⌘T" : undefined,
       action: () => void addShellPane(),
     });
     if (
@@ -8068,14 +8068,7 @@ export default function App() {
           }
           return;
         case "openNewResearch":
-          if (
-            activeSurfaceRef.current === "research" &&
-            activeResearchTreeIdRef.current === null
-          ) {
-            setResearchAdapterCycleNonce((current) => current + 1);
-          } else {
-            focusResearchHome();
-          }
+          createResearchFromSidebar();
           return;
         case "focusHome":
           focusHomeTab();
@@ -8216,6 +8209,7 @@ export default function App() {
     researchHomeActive,
     activeResearchTreeId,
     focusResearchHome,
+    createResearchFromSidebar,
     selectResearchTree,
     sidebarMode,
   ]);
@@ -9530,7 +9524,7 @@ export default function App() {
                     className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
                     aria-hidden="true"
                   >
-                    ⌘N
+                    ⌘T
                   </span>
                 ) : null}
               </div>
@@ -10841,9 +10835,7 @@ export default function App() {
                     ? closeDialog.processSummary
                       ? `This tab has a running process: ${closeDialog.processSummary}.`
                       : "This tab has a running process."
-                    : closeDialog.processSummary
-                      ? `This tab has ${closeDialog.processCount} running processes, including ${closeDialog.processSummary}.`
-                      : `This tab has ${closeDialog.processCount} running processes.`}
+                    : `This tab has ${closeDialog.processCount} running processes.`}
                 </p>
                 <p>Closing this tab will terminate running processes in it.</p>
                 <div className="confirm-dialog-actions">
@@ -11049,7 +11041,6 @@ export default function App() {
               <NewResearchDialog
                 open
                 inline
-                adapterCycleNonce={researchAdapterCycleNonce}
                 adapters={config?.adapters ?? []}
                 requireCmdEnterToSend={settings.requireCmdEnterToSend}
                 workspaceId={researchScope}
