@@ -554,7 +554,7 @@ final class NativeTerminalHost {
 
     private func routeKeyEvent(_ event: NSEvent) -> NSEvent? {
         guard let pane = keyboardPane(for: event) else {
-            if claimStrandedWebAppShortcut(event) {
+            if claimWebAppShortcut(event) {
                 return nil
             }
             return event
@@ -610,20 +610,22 @@ final class NativeTerminalHost {
         return nil
     }
 
-    /// WKWebView can leave its outer view as first responder after Escape.
-    /// That responder is inside the webview hierarchy, so the normal terminal
-    /// recovery deliberately leaves it alone, but it does not deliver keyDown
-    /// to the DOM. Recognized qmux shortcuts would consequently reach neither
-    /// the React listener nor a terminal classifier until the next web click
-    /// focuses WebKit's private content view. Claim only this exact stranded
-    /// state; descendants still represent real DOM/editable focus and keep the
-    /// ordinary WebKit path.
-    private func claimStrandedWebAppShortcut(_ event: NSEvent) -> Bool {
+    /// When no terminal can accept this event, claim recognized qmux shortcuts
+    /// before AppKit dispatches them. Terminal teardown can replace its first
+    /// responder while React's ownership update crosses the bridge, leaving
+    /// nil, the window, the outer WKWebView, or a hidden terminal as responder.
+    /// Checking one exact responder misses those states and strands shortcuts
+    /// until the user clicks the webview. Unrecognized keys still continue
+    /// through the ordinary responder chain, including text input and native
+    /// Command-C/Command-Q behavior.
+    private func claimWebAppShortcut(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown,
-              event.window === window,
               let window,
-              let webView = window.contentView.flatMap({ findWebView(in: $0) }),
-              window.firstResponder === webView,
+              event.window === window,
+              shouldClaimWebAppShortcut(
+                  hasTerminalKeyboardOwner: keyboardOwnerPane != nil,
+                  responderState: webAppShortcutResponderState(in: window)
+              ),
               let shortcutKey = appShortcutKey(for: event)
         else {
             return false
@@ -642,6 +644,18 @@ final class NativeTerminalHost {
             consumedAppShortcutKeyCodes.insert(event.keyCode)
         }
         return handled
+    }
+
+    private func webAppShortcutResponderState(
+        in window: NSWindow
+    ) -> WebAppShortcutResponderState {
+        guard let responder = window.firstResponder as? NSView else {
+            return .outsideWebView
+        }
+        if responder is WKWebView {
+            return .outerWebView
+        }
+        return isInWebView(responder) ? .webViewDescendant : .outsideWebView
     }
 
     private func routeFlagsChangedEvent(_ event: NSEvent) -> NSEvent? {

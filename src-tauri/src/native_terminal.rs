@@ -187,9 +187,9 @@ fn classify_app_shortcut(
     None
 }
 
-/// The stranded WKWebView fallback has web-target semantics. In particular,
-/// Cmd-K opens qmux's palette there, while the terminal classifier above must
-/// leave the same chord to Ghostty's clear-screen binding.
+/// Native shortcut routing without a live terminal has web-target semantics.
+/// In particular, Cmd-K opens qmux's palette there, while the terminal
+/// classifier above must leave the same chord to Ghostty's clear-screen binding.
 fn classify_web_app_shortcut(
     key: &str,
     shift: bool,
@@ -216,6 +216,10 @@ mod imp {
 
     unsafe extern "C" {
         fn qmux_native_terminal_bridge_available() -> i32;
+        fn qmux_native_terminal_should_claim_web_app_shortcut(
+            has_terminal_keyboard_owner: i32,
+            responder_state: i32,
+        ) -> i32;
         fn qmux_native_terminal_initialize(native_view: *mut c_void) -> i32;
         fn qmux_native_terminal_create(
             pane_id: *const c_char,
@@ -292,6 +296,21 @@ mod imp {
         // SAFETY: the function has no arguments or borrowed state and is linked
         // from the pinned QmuxNativeTerminal Swift package in build.rs.
         unsafe { qmux_native_terminal_bridge_available() == 1 }
+    }
+
+    pub fn should_claim_web_app_shortcut(
+        has_terminal_keyboard_owner: bool,
+        responder_state: i32,
+    ) -> bool {
+        // SAFETY: both arguments are scalar values. Swift validates the
+        // responder-state discriminant before exercising the pure routing
+        // helper linked from the same package as the terminal bridge.
+        unsafe {
+            qmux_native_terminal_should_claim_web_app_shortcut(
+                i32::from(has_terminal_keyboard_owner),
+                responder_state,
+            ) == 1
+        }
     }
 
     pub fn initialize(native_view: *mut c_void, state: AppState) -> Result<(), String> {
@@ -970,9 +989,9 @@ pub extern "C" fn qmux_native_terminal_did_receive_shortcut(
     i32::from(emitted)
 }
 
-/// A possible application shortcut typed while WKWebView's outer view is the
-/// first responder. In that stranded AppKit state the DOM receives no keyDown,
-/// so emit the same semantic command without tying it to a terminal pane.
+/// A possible application shortcut typed while web keyboard ownership is
+/// stranded outside a healthy WebKit content responder. Emit the same semantic
+/// command without tying it to a terminal pane.
 #[unsafe(no_mangle)]
 pub extern "C" fn qmux_native_terminal_did_receive_app_shortcut(
     key: *const std::ffi::c_char,
@@ -1115,6 +1134,32 @@ mod tests {
     }
 
     #[test]
+    fn swift_web_app_shortcut_routing_preserves_terminal_and_dom_ownership() {
+        const OUTSIDE_WEB_VIEW: i32 = 0;
+        const OUTER_WEB_VIEW: i32 = 1;
+        const WEB_VIEW_DESCENDANT: i32 = 2;
+
+        for responder_state in [OUTSIDE_WEB_VIEW, OUTER_WEB_VIEW, WEB_VIEW_DESCENDANT] {
+            assert!(!super::imp::should_claim_web_app_shortcut(
+                true,
+                responder_state
+            ));
+        }
+        assert!(super::imp::should_claim_web_app_shortcut(
+            false,
+            OUTSIDE_WEB_VIEW
+        ));
+        assert!(super::imp::should_claim_web_app_shortcut(
+            false,
+            OUTER_WEB_VIEW
+        ));
+        assert!(!super::imp::should_claim_web_app_shortcut(
+            false,
+            WEB_VIEW_DESCENDANT
+        ));
+    }
+
+    #[test]
     fn rejects_invalid_layout_geometry_before_ffi() {
         let result = super::set_layout(super::NativeTerminalLayout {
             pane_id: "pane-1".to_string(),
@@ -1181,6 +1226,14 @@ mod tests {
         assert_eq!(
             super::classify_web_app_shortcut("k", false, false, false, true),
             Some(AppShortcutCommand::OpenCommandPalette)
+        );
+        assert_eq!(
+            super::classify_web_app_shortcut("`", false, false, false, true),
+            Some(AppShortcutCommand::ToggleSidebarMode)
+        );
+        assert_eq!(
+            super::classify_web_app_shortcut(",", false, false, false, true),
+            Some(AppShortcutCommand::OpenSettings)
         );
         assert_eq!(
             super::classify_app_shortcut("w", false, true, false, false),
