@@ -84,6 +84,11 @@ final class NativeTerminalPane: NSObject,
     var acceptsPointerInput = true
     var acceptsKeyboardInput = false
     var isFocused = false
+    /// True once the view has been fitted to a real (nonzero) frame. Until
+    /// then the surface still has its zero-frame default grid, and replaying
+    /// restored scrollback into it would be reflowed — and scrambled — by the
+    /// first real fit; the host gates replay on this flag.
+    var hasCommittedGeometry = false
     var consumedShortcutKeyCodes: Set<UInt16> = []
     private var lastUserInputReport = Date.distantPast
 

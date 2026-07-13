@@ -231,6 +231,7 @@ mod imp {
             bytes: *const u8,
             bytes_len: usize,
         ) -> i32;
+        fn qmux_native_terminal_is_ready_for_replay(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_remove(pane_id: *const c_char);
         fn qmux_native_terminal_terminate(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_set_stage_backstop(x: f64, y: f64, width: f64, height: f64) -> i32;
@@ -377,6 +378,15 @@ mod imp {
         } else {
             Err("host-managed native terminal surface was not found".to_string())
         }
+    }
+
+    /// True once the pane's surface exists and has been fitted to a real
+    /// (nonzero) frame, so replayed scrollback renders at the width the pane
+    /// will actually keep instead of the zero-frame default grid.
+    pub fn is_ready_for_replay(pane_id: &str) -> Result<bool, String> {
+        let pane_id = cstring(pane_id, "pane id")?;
+        // SAFETY: Swift copies the string synchronously before returning.
+        Ok(unsafe { qmux_native_terminal_is_ready_for_replay(pane_id.as_ptr()) } == 1)
     }
 
     pub fn remove(pane_id: &str) -> Result<(), String> {
@@ -659,6 +669,12 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
+    pub fn is_ready_for_replay(_pane_id: &str) -> Result<bool, String> {
+        // The portable renderer replays through the webview, which has no
+        // pre-layout default grid to protect; never defer.
+        Ok(true)
+    }
+
     pub fn remove(_pane_id: &str) -> Result<(), String> {
         Ok(())
     }
@@ -718,9 +734,9 @@ mod imp {
 
 #[allow(unused_imports)]
 pub use imp::{
-    action, available, create, create_host_managed, focus, initialize, paste_approved_text,
-    receive, remove, send_text, set_layout, set_stage_backstop, set_web_overlay_region,
-    set_web_pointer_claimed, shutdown, submit, terminate, update_settings,
+    action, available, create, create_host_managed, focus, initialize, is_ready_for_replay,
+    paste_approved_text, receive, remove, send_text, set_layout, set_stage_backstop,
+    set_web_overlay_region, set_web_pointer_claimed, shutdown, submit, terminate, update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {
@@ -817,7 +833,24 @@ pub extern "C" fn qmux_native_terminal_did_resize(
         if let Err(err) = crate::pty::resize_native_host_pane(state, &pane_id, columns, rows) {
             eprintln!("qmux: failed to resize native pane {pane_id}: {err}");
         }
+        // A grid resize is also the surest sign the surface can replay at its
+        // real width now; finish any attach that was parked waiting for it.
+        // Cheap when nothing is parked (a set lookup), and safe on the main
+        // thread — the flush itself is handed to a worker.
+        crate::pty::complete_pending_attach(state, &pane_id);
     });
+}
+
+/// Fired once per pane, from the first `applyGeometry` that fits the surface
+/// to a real (nonzero) frame. Completes an attach that `pane_attach` parked
+/// because replaying scrollback into the pre-layout default grid would be
+/// reflowed — and scrambled — by this very fit.
+#[unsafe(no_mangle)]
+pub extern "C" fn qmux_native_terminal_did_commit_geometry(pane_id: *const std::ffi::c_char) {
+    let Some(pane_id) = callback_string(pane_id) else {
+        return;
+    };
+    with_app_state(|state| crate::pty::complete_pending_attach(state, &pane_id));
 }
 
 #[unsafe(no_mangle)]

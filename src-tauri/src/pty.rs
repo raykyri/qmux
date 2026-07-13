@@ -73,6 +73,18 @@ static NATIVE_PROCESS_TREES: OnceLock<Mutex<HashMap<String, NativeProcessTree>>>
 
 static CLOSING_NATIVE_PANES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
+/// Panes whose attach was requested before their native surface had committed
+/// real geometry. Replaying durable scrollback into a surface that still has
+/// its zero-frame default grid renders history at the wrong width; the fit
+/// that follows the first real layout then reflows those rows and scatters
+/// restored lines mid-row (most visibly zsh's PROMPT_SP full-width padding,
+/// which turns every restored prompt into a diagonal staircase). Attaches are
+/// parked here and finished by `complete_pending_attach` once Swift reports
+/// the surface fitted to a real frame. This set's lock is only ever held for
+/// an insert/remove — never across FFI or another lock.
+static DEFERRED_ATTACHES: std::sync::LazyLock<Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitialPaneSize {
@@ -962,7 +974,10 @@ fn spawn_portable_pty(
 /// before it attached. Called once per pane, after the webview registers its
 /// `qmux-event` listener, so the cold-start prompt is never lost to a startup
 /// race. The buffered bytes are emitted before `ready` releases the reader to
-/// emit live, preserving output order.
+/// emit live, preserving output order. For native surfaces the flush also
+/// waits for the surface's first real geometry fit (see `DEFERRED_ATTACHES`);
+/// a call that arrives earlier returns Ok and is finished later by
+/// `complete_pending_attach`.
 pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     let native_surface = state.pane_is_native(&pane_id)? == Some(true);
     if native_surface && state.pane_has_host_pty(&pane_id)? != Some(true) {
@@ -976,6 +991,22 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         .map_err(|_| format!("pane {pane_id} backlog lock poisoned"))?;
     if !backlog.ready {
         if native_surface {
+            // Never replay into a surface that still has its pre-layout
+            // default grid: the fit after the first real layout would reflow
+            // the replayed rows at a different width and scramble restored
+            // history. Park the attach instead; the geometry-commit callback
+            // finishes it. Register the deferral before probing readiness so
+            // a commit landing between the probe and the return still finds
+            // this pane parked.
+            if let Ok(mut deferred) = DEFERRED_ATTACHES.lock() {
+                deferred.insert(pane_id.clone());
+            }
+            if !crate::native_terminal::is_ready_for_replay(&pane_id)? {
+                return Ok(());
+            }
+            if let Ok(mut deferred) = DEFERRED_ATTACHES.lock() {
+                deferred.remove(&pane_id);
+            }
             let restored = read_pane_scrollback(&state.config().workspace_root, &pane_id)?;
             if !restored.is_empty() {
                 let restored = sanitize_scrollback_replay(&restored);
@@ -1011,6 +1042,30 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         backlog.ready = true;
     }
     Ok(())
+}
+
+/// Finishes an attach that `attach_pane` parked while the native surface still
+/// had its pre-layout default grid. Called from native callbacks (geometry
+/// commit, grid resize) that fire on the main thread, so it only touches the
+/// deferral set inline; the flush itself runs on a worker because it reads
+/// scrollback from disk and hops back to the main thread to hand Ghostty the
+/// bytes. If the surface is still not ready, the re-run of `attach_pane`
+/// re-parks the pane, so a premature trigger loses nothing.
+pub fn complete_pending_attach(state: &AppState, pane_id: &str) {
+    let registered = DEFERRED_ATTACHES
+        .lock()
+        .map(|mut deferred| deferred.remove(pane_id))
+        .unwrap_or(false);
+    if !registered {
+        return;
+    }
+    let state = state.clone();
+    let pane_id = pane_id.to_string();
+    std::thread::spawn(move || {
+        if let Err(err) = attach_pane(&state, pane_id.clone()) {
+            eprintln!("qmux: failed to complete deferred attach for pane {pane_id}: {err}");
+        }
+    });
 }
 
 pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), String> {

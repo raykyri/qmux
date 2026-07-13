@@ -12,6 +12,9 @@ private func nativeTerminalDidReceiveAppShortcut(
     _ repeat: Int32
 ) -> Int32
 
+@_silgen_name("qmux_native_terminal_did_commit_geometry")
+private func nativeTerminalDidCommitGeometry(_ paneID: UnsafePointer<CChar>)
+
 @MainActor
 final class NativeTerminalHost {
     static let shared = NativeTerminalHost()
@@ -142,6 +145,14 @@ final class NativeTerminalHost {
         panes[id]?.terminalSession
     }
 
+    /// True once the pane's surface is live and has been fitted to a real
+    /// frame, i.e. replayed scrollback would render at the width the pane
+    /// actually keeps rather than the zero-frame default grid.
+    func paneIsReadyForReplay(id: String) -> Bool {
+        guard let pane = panes[id] else { return false }
+        return pane.hasCommittedGeometry && pane.view.isSurfaceLive
+    }
+
     func removePane(id: String) {
         guard let pane = panes.removeValue(forKey: id) else { return }
         if keyboardOwnerPane === pane {
@@ -256,6 +267,14 @@ final class NativeTerminalHost {
         }
         if !pane.view.isHidden, frameChanged || forceFit {
             pane.view.fitToSize()
+            // First fit to a real frame: the surface's grid now matches the
+            // pane's actual size, so restored scrollback can replay without
+            // being scrambled by a later reflow. Tell Rust, which parks
+            // replay (pane_attach) until this moment.
+            if !pane.hasCommittedGeometry, frame.width > 0, frame.height > 0 {
+                pane.hasCommittedGeometry = true
+                pane.paneID.withCString { nativeTerminalDidCommitGeometry($0) }
+            }
         }
     }
 

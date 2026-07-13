@@ -98,6 +98,16 @@ public func qmuxNativeTerminalReceive(
     return session.receive(data) ? 1 : 0
 }
 
+@_cdecl("qmux_native_terminal_is_ready_for_replay")
+public func qmuxNativeTerminalIsReadyForReplay(
+    _ paneID: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let paneID = terminalString(paneID) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID) ? 1 : 0
+    }
+}
+
 @_cdecl("qmux_native_terminal_remove")
 public func qmuxNativeTerminalRemove(_ paneID: UnsafePointer<CChar>?) {
     guard let paneID = terminalString(paneID) else { return }
