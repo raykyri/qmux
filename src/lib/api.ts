@@ -208,12 +208,6 @@ export function removeResearchWorkspace(workspaceId: string) {
   return invoke<string[]>("research_workspace_remove", { workspaceId });
 }
 
-/** Opens the native picker and repoints the workspace at the chosen folder.
- * Resolves null when the picker is dismissed. */
-export function replaceResearchWorkspaceFolder(workspaceId: string) {
-  return invoke<GroupInfo | null>("research_workspace_pick_dir", { workspaceId });
-}
-
 export function createGroup(request?: {
   name?: string | null;
   dir?: string | null;

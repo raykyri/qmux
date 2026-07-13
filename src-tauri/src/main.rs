@@ -69,7 +69,7 @@ use workspace::{
     WorktreeStatus, acknowledge_agent, agent_worktree_status, clear_agent_working_status,
     create_group, create_research_workspace, ensure_default_research_workspace,
     remove_agent_worktree, remove_research_workspace, rename_group, rename_research_workspace,
-    set_group_collapsed, set_group_dir, set_research_workspace_dir, validate_launch_workspace,
+    set_group_collapsed, set_group_dir, validate_launch_workspace,
 };
 
 /// Menu ids for the custom items installed by `customize_app_menu`.
@@ -520,23 +520,6 @@ fn research_workspace_rename(
 }
 
 #[tauri::command]
-async fn research_workspace_pick_dir(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    workspace_id: String,
-) -> Result<Option<GroupInfo>, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        match pick_folder_dialog(&app, "Select a replacement research folder")? {
-            Some(path) => set_research_workspace_dir(&state, &workspace_id, path).map(Some),
-            None => Ok(None),
-        }
-    })
-    .await
-    .map_err(|err| format!("research_workspace_pick_dir task failed: {err}"))?
-}
-
-#[tauri::command]
 fn research_workspace_remove(
     state: tauri::State<'_, AppState>,
     workspace_id: String,
@@ -657,7 +640,7 @@ async fn create_research_tree(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Admission holds the workspace-mutation guard so a concurrent folder
-        // replace/remove can't slip between validation and the node insert —
+        // removal can't slip between validation and the node insert —
         // the spawn itself runs unguarded (it's slow, and the Queued node
         // already marks the workspace busy).
         let detail = {
@@ -822,8 +805,7 @@ async fn fork_research_node(
     tauri::async_runtime::spawn_blocking(move || {
         // Same admission guard as create_research_tree: the Queued child must
         // be admitted atomically with the workspace checks, or a concurrent
-        // folder replace could commit between them and the fork would run in
-        // the old directory.
+        // folder removal could invalidate its workspace before the fork.
         let (parent, workspace, child) = {
             let _guard = workspace::lock_research_workspace_mutations()?;
             let parent = state.research_node(&parent_node_id)?;
@@ -1739,7 +1721,6 @@ fn main() {
             ensure_default_research_workspace_command,
             research_workspace_create_pick,
             research_workspace_rename,
-            research_workspace_pick_dir,
             research_workspace_remove,
             list_agents,
             list_recent_sessions,

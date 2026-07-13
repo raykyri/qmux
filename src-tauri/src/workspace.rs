@@ -68,7 +68,7 @@ pub fn validate_launch_workspace(
             Err("research requires a Research-scoped workspace".to_string())
         }
         LaunchOrigin::Research if !Path::new(&group.dir).is_dir() => Err(format!(
-            "research folder '{}' is unavailable; choose a replacement folder before launching another run",
+            "research folder '{}' is unavailable; restore it at that path before launching another run",
             group.dir
         )),
         _ => Ok(Some(group)),
@@ -393,49 +393,11 @@ pub fn rename_research_workspace(
     workspace_id: &str,
     name: Option<String>,
 ) -> Result<GroupInfo, String> {
-    // Same read-modify-write shape as the dir/remove mutations above and
-    // below: without the guard, a set_research_workspace_dir committing
-    // between this read and the manifest write would have one side's update
-    // silently reverted — in the model and the durable manifest both.
+    // Keep rename and removal serialized so their read-modify-write updates
+    // cannot silently revert one another in the model or durable manifest.
     let _guard = lock_research_workspace_mutations()?;
     let workspace = require_research_workspace(state, workspace_id)?;
     rename_group_record(state, workspace, name)
-}
-
-/// Changes the folder represented by a Research workspace without changing its
-/// durable id. Settled node paths remain historical provenance; future launches
-/// resolve the new directory through the tree's workspace.
-pub fn set_research_workspace_dir(
-    state: &AppState,
-    workspace_id: &str,
-    dir: String,
-) -> Result<GroupInfo, String> {
-    let _guard = lock_research_workspace_mutations()?;
-    require_research_workspace(state, workspace_id)?;
-    let raw = PathBuf::from(&dir);
-    let requested = canonical_dir(&dir)?;
-    if read_detached_research_for_folder(&requested)?.is_some() {
-        return Err(
-            "the selected folder contains detached research; open it as a new Research folder instead"
-                .to_string(),
-        );
-    }
-    if let Some(existing) = state.list_groups()?.into_iter().find(|group| {
-        group.scope == WorkspaceScope::Research
-            && group.id != workspace_id
-            && group_dir_matches(group, &requested, &raw)
-    }) {
-        return Err(format!(
-            "{} is already used by research workspace '{}'",
-            requested.display(),
-            existing.name_override.as_deref().unwrap_or(&existing.name)
-        ));
-    }
-    let dependencies = state.research_workspace_dependencies(workspace_id)?;
-    if dependencies.has_live_panes || dependencies.has_active_runs {
-        return Err("cannot change a research folder while it has an active run".to_string());
-    }
-    set_group_dir_record(state, workspace_id, requested)
 }
 
 pub fn remove_research_workspace(
@@ -1838,78 +1800,6 @@ mod tests {
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(ids.len(), 1);
         assert_eq!(state.list_research_workspaces().unwrap().len(), 1);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn replacing_research_folder_preserves_id_and_rejects_collisions() {
-        let root = temp_workspace("replace-research");
-        let first_dir = root.join("first");
-        let second_dir = root.join("second");
-        let replacement_dir = root.join("replacement");
-        for dir in [&first_dir, &second_dir, &replacement_dir] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        let state = test_state_with_workspace(root.join("managed"));
-        let first = create_research_workspace(
-            &state,
-            Some("First".to_string()),
-            first_dir.display().to_string(),
-        )
-        .unwrap();
-        let second = create_research_workspace(
-            &state,
-            Some("Second".to_string()),
-            second_dir.display().to_string(),
-        )
-        .unwrap();
-
-        let moved =
-            set_research_workspace_dir(&state, &first.id, replacement_dir.display().to_string())
-                .unwrap();
-        assert_eq!(moved.id, first.id);
-        assert_eq!(
-            std::fs::canonicalize(moved.dir).unwrap(),
-            std::fs::canonicalize(&replacement_dir).unwrap()
-        );
-        let error = set_research_workspace_dir(&state, &first.id, second_dir.display().to_string())
-            .unwrap_err();
-        assert!(error.contains("already used"));
-        assert_eq!(state.group(&second.id).unwrap().unwrap().dir, second.dir);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn replacing_research_folder_is_blocked_by_an_active_tree() {
-        let root = temp_workspace("active-research-replacement");
-        let original = root.join("original");
-        let replacement = root.join("replacement");
-        std::fs::create_dir_all(&original).unwrap();
-        std::fs::create_dir_all(&replacement).unwrap();
-        let state = test_state_with_workspace(root.join("managed"));
-        let workspace =
-            create_research_workspace(&state, None, original.display().to_string()).unwrap();
-        let detail = state
-            .create_research_tree(crate::research::CreateResearchTreeRequest {
-                prompt: "Question".to_string(),
-                title: None,
-                adapter: "claude".to_string(),
-                model: None,
-                group_id: workspace.id.clone(),
-            })
-            .unwrap();
-
-        let error =
-            set_research_workspace_dir(&state, &workspace.id, replacement.display().to_string())
-                .unwrap_err();
-        assert!(error.contains("active run"));
-        state
-            .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
-            .unwrap();
-        assert!(
-            set_research_workspace_dir(&state, &workspace.id, replacement.display().to_string())
-                .is_ok()
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -4,7 +4,6 @@ import {
   ChevronDown,
   Folder,
   FolderPlus,
-  FolderSync,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -14,18 +13,12 @@ import type { ResearchFolderScope } from "../../lib/researchScope";
 interface ResearchFolderSwitcherProps {
   folders: GroupInfo[];
   scope: ResearchFolderScope;
-  // Tree counts (active + archived) keyed by workspace id; used both for the
-  // menu badges and the folder-replace dialog's messaging.
+  // Tree counts (active + archived) keyed by workspace id for the menu badges.
   treeCounts: Map<string, number>;
   folderPickerBusy: boolean;
   onSelectScope: (scope: ResearchFolderScope) => void;
   onNewFolder: () => Promise<GroupInfo | null>;
   onRenameFolder: (folder: GroupInfo) => void;
-  /** Repoints the folder's workspace at a different directory (native picker).
-   * The recovery path for a folder that moved or vanished: trees cannot move
-   * between workspaces, so without this a missing directory permanently
-   * blocks every future run in them. */
-  onReplaceFolder: (folder: GroupInfo) => void;
   onRemoveFolder: (folder: GroupInfo) => void;
 }
 
@@ -37,7 +30,6 @@ export default function ResearchFolderSwitcher({
   onSelectScope,
   onNewFolder,
   onRenameFolder,
-  onReplaceFolder,
   onRemoveFolder,
 }: ResearchFolderSwitcherProps) {
   const [open, setOpen] = useState(false);
@@ -153,20 +145,6 @@ export default function ResearchFolderSwitcher({
                 <span className="research-folder-item-name">
                   Rename “{folderName(scopedFolder)}”
                 </span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="research-folder-item"
-                disabled={folderPickerBusy}
-                title={scopedFolder.dir}
-                onClick={() => {
-                  setOpen(false);
-                  onReplaceFolder(scopedFolder);
-                }}
-              >
-                <FolderSync size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">Replace folder…</span>
               </button>
               <button
                 type="button"

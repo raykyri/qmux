@@ -210,7 +210,6 @@ import {
   createGroupWithFolder,
   createResearchWorkspaceWithFolder,
   renameResearchWorkspace,
-  replaceResearchWorkspaceFolder,
   removeResearchWorkspace,
   ensureDefaultResearchWorkspace,
   archiveResearchTree,
@@ -1532,12 +1531,15 @@ export default function App() {
   } | null>(null);
   const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
+  const [researchFolderRemovalError, setResearchFolderRemovalError] = useState<string | null>(null);
   // Monotonic id for worktree-dialog git-status probes (see closeDialogForPane).
   const worktreeProbeNonceRef = useRef(0);
   const closeConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
-  // Which worktree-dialog action is mid-flight, so the dialog stays open (and its
-  // buttons disabled) until the close/delete actually finishes.
-  const [resolvingClose, setResolvingClose] = useState<"keep" | "delete" | null>(null);
+  // Which destructive close-dialog action is mid-flight, so the dialog stays
+  // open (and its buttons disabled) until the operation actually finishes.
+  const [resolvingClose, setResolvingClose] = useState<
+    "keep" | "delete" | "removeResearchFolder" | null
+  >(null);
   const [exitDialog, setExitDialog] = useState<ExitDialogState | null>(null);
   const [quitting, setQuitting] = useState(false);
   const quittingRef = useRef(false);
@@ -4881,32 +4883,6 @@ export default function App() {
       setFolderPickerStatus(null);
     }
   }, [refreshResearchNavigation]);
-  // The recovery path the launch errors point at ("choose a replacement
-  // folder before launching another run"): trees cannot move between
-  // workspaces, so a folder that vanished otherwise blocks every future run
-  // in them for good. The backend refuses while the workspace has live panes
-  // or active runs and rejects directories already used by another research
-  // folder; that error surfaces in the banner.
-  const replaceResearchWorkspaceFolderFromSidebar = useCallback(
-    async (workspace: GroupInfo) => {
-      setError(null);
-      setFolderPickerStatus("Opening folder picker…");
-      try {
-        await waitForPaintedFrame();
-        const updated = await replaceResearchWorkspaceFolder(workspace.id);
-        if (updated) {
-          setGroups((current) =>
-            current.map((group) => (group.id === updated.id ? updated : group)),
-          );
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setFolderPickerStatus(null);
-      }
-    },
-    [],
-  );
   // A streaming run emits research events several times a second, and each
   // refresh is two IPC round-trips (navigation collections + active tree).
   // Coalesce bursts onto one trailing refresh instead of one per event.
@@ -5136,34 +5112,46 @@ export default function App() {
     },
     [refreshResearchNavigation, selectResearchTree],
   );
+  // Both delete entry points must reconcile the active document identically.
+  // Keeping this in one path prevents the document menu from falling to an
+  // empty state while the sidebar menu selects the next tree (or vice versa).
+  const removeResearchTreeAndSelectFallback = useCallback(
+    async (treeId: string) => {
+      setError(null);
+      await removeResearchTree(treeId);
+      if (activeResearchTreeIdRef.current === treeId) {
+        const nextTree = nextTreeInResearchScope(
+          researchTreesRef.current,
+          researchScopeRef.current,
+          treeId,
+        );
+        if (nextTree) {
+          await selectResearchTree(nextTree.id);
+        } else {
+          activeResearchTreeIdRef.current = null;
+          setActiveResearchTreeId(null);
+          setActiveResearchDetail(null);
+          setActiveResearchDetailError(null);
+          localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+          setSidebarMode("research");
+          setActiveSurface("research");
+        }
+      }
+      await refreshResearchNavigation().catch(() => undefined);
+    },
+    [refreshResearchNavigation, selectResearchTree, setSidebarMode],
+  );
   const removeResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
+      setError(null);
       try {
-        await removeResearchTree(treeId);
-        if (activeResearchTreeIdRef.current === treeId) {
-          const nextTree = nextTreeInResearchScope(
-            researchTrees,
-            researchScopeRef.current,
-            treeId,
-          );
-          if (nextTree) {
-            await selectResearchTree(nextTree.id);
-          } else {
-            activeResearchTreeIdRef.current = null;
-            setActiveResearchTreeId(null);
-            setActiveResearchDetail(null);
-            setActiveResearchDetailError(null);
-            localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-            setSidebarMode("research");
-            setActiveSurface("research");
-          }
-        }
+        await removeResearchTreeAndSelectFallback(treeId);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+        throw err;
       }
-      void refreshResearchNavigation().catch(() => undefined);
     },
-    [refreshResearchNavigation, researchTrees, selectResearchTree, setSidebarMode],
+    [removeResearchTreeAndSelectFallback],
   );
   const createResearchFollowup = useCallback(
     async (parentNodeId: string, prompt: string) => {
@@ -5191,9 +5179,22 @@ export default function App() {
   );
   const removeResearchBranchFromDocument = useCallback(
     async (nodeId: string) => {
+      setError(null);
       const removal = await removeResearchBranch(nodeId);
       const treeId = activeResearchTreeIdRef.current;
       if (treeId === removal.treeId) {
+        // The delete already committed. Prune the live detail immediately so a
+        // failed follow-up refetch cannot leave clickable, already-deleted
+        // cards on screen until the next unrelated research event.
+        const removedNodeIds = new Set(removal.removedNodeIds);
+        setActiveResearchDetail((current) =>
+          current?.tree.id === removal.treeId
+            ? {
+                ...current,
+                nodes: current.nodes.filter((node) => !removedNodeIds.has(node.id)),
+              }
+            : current,
+        );
         const requestSeq = researchDetailRequestSeqRef.current + 1;
         researchDetailRequestSeqRef.current = requestSeq;
         try {
@@ -5213,22 +5214,6 @@ export default function App() {
       return removal;
     },
     [refreshResearchNavigation],
-  );
-  const removeResearchTreeFromDocument = useCallback(
-    async (treeId: string) => {
-      await removeResearchTree(treeId);
-      if (activeResearchTreeIdRef.current === treeId) {
-        activeResearchTreeIdRef.current = null;
-        setActiveResearchTreeId(null);
-        setActiveResearchDetail(null);
-        setActiveResearchDetailError(null);
-        localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-        setSidebarMode("research");
-        setActiveSurface("research");
-      }
-      await refreshResearchNavigation().catch(() => undefined);
-    },
-    [refreshResearchNavigation, setSidebarMode],
   );
   const nativeTerminalShortcutHandlerRef = useRef<
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => void
@@ -6446,45 +6431,72 @@ export default function App() {
 
   async function removeResearchWorkspaceFromSidebar(workspace: GroupInfo) {
     setError(null);
-    try {
-      const detachedTreeIds = new Set(await removeResearchWorkspace(workspace.id));
-      setGroups((current) => current.filter((group) => group.id !== workspace.id));
-      setResearchTrees((current) => current.filter((tree) => !detachedTreeIds.has(tree.id)));
-      setArchivedResearchTrees((current) =>
-        current.filter((tree) => !detachedTreeIds.has(tree.id)),
+    const detachedTreeIds = new Set(await removeResearchWorkspace(workspace.id));
+    const remainingGroups = groupsRef.current.filter((group) => group.id !== workspace.id);
+    const remainingTrees = researchTreesRef.current.filter(
+      (tree) => !detachedTreeIds.has(tree.id),
+    );
+    setGroups(remainingGroups);
+    setResearchTrees(remainingTrees);
+    setArchivedResearchTrees((current) =>
+      current.filter((tree) => !detachedTreeIds.has(tree.id)),
+    );
+    setResearchActivity((current) =>
+      current.filter((node) => !detachedTreeIds.has(node.treeId)),
+    );
+    const activeTreeId = activeResearchTreeIdRef.current;
+    const activeTreeWasRemoved = Boolean(activeTreeId && detachedTreeIds.has(activeTreeId));
+    const scopeWasRemoved = researchScopeRef.current === workspace.id;
+    const nextScope = scopeWasRemoved
+      ? (remainingGroups.find(
+          (group) => group.scope === "research" && group.id !== workspace.id,
+        )?.id ?? null)
+      : researchScopeRef.current;
+    if (scopeWasRemoved) {
+      changeResearchFolderScope(nextScope);
+      activeResearchPaneIdRef.current = null;
+      setActiveResearchPaneId(null);
+      localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
+    }
+    // Removing the selected folder/tree should land on an available research
+    // item in the surviving scope, not leave an unexplained empty document.
+    if (scopeWasRemoved || activeTreeWasRemoved) {
+      const nextTree = treeForResearchScope(
+        remainingTrees,
+        nextScope,
+        activeTreeWasRemoved ? null : activeTreeId,
       );
-      setResearchActivity((current) =>
-        current.filter((node) => !detachedTreeIds.has(node.treeId)),
-      );
-      if (
-        activeResearchTreeIdRef.current &&
-        detachedTreeIds.has(activeResearchTreeIdRef.current)
-      ) {
+      if (nextTree) {
+        await selectResearchTree(nextTree.id);
+      } else {
         activeResearchTreeIdRef.current = null;
         setActiveResearchTreeId(null);
         setActiveResearchDetail(null);
         setActiveResearchDetailError(null);
         localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+        setActiveSurface("research");
       }
-      if (researchScopeRef.current === workspace.id) {
-        const nextFolder = groups.find(
-          (group) => group.scope === "research" && group.id !== workspace.id,
-        );
-        changeResearchFolderScope(nextFolder?.id ?? null);
-      }
-      void refreshResearchNavigation().catch(() => undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
     }
+    void refreshResearchNavigation().catch(() => undefined);
   }
 
   async function confirmResearchFolderRemoval() {
     const dialog = closeDialog;
-    if (!dialog || dialog.kind !== "researchFolderRemove") {
+    if (!dialog || dialog.kind !== "researchFolderRemove" || resolvingClose) {
       return;
     }
-    setCloseDialog(null);
-    await removeResearchWorkspaceFromSidebar(dialog.workspace);
+    setResearchFolderRemovalError(null);
+    setResolvingClose("removeResearchFolder");
+    try {
+      await removeResearchWorkspaceFromSidebar(dialog.workspace);
+      setCloseDialog(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setResearchFolderRemovalError(message);
+      setError(message);
+    } finally {
+      setResolvingClose(null);
+    }
   }
 
   async function expandGroup(group: GroupInfo) {
@@ -8676,10 +8688,8 @@ export default function App() {
             }}
             onNewFolder={chooseResearchWorkspaceFolder}
             onRenameFolder={openGroupRenameDialog}
-            onReplaceFolder={(workspace) => {
-              void replaceResearchWorkspaceFolderFromSidebar(workspace);
-            }}
             onRemoveFolder={(workspace) => {
+              setResearchFolderRemovalError(null);
               setCloseDialog({ kind: "researchFolderRemove", workspace });
             }}
           />
@@ -10032,13 +10042,19 @@ export default function App() {
             ) : null}
             {closeDialog.kind === "researchFolderRemove" ? (
               <>
-                <p>
-                  Remove this folder from qmux? The folder and its files will remain on disk. Its
-                  research history will be stored in the folder’s .qmux directory and restored if
-                  you open the folder again. Active work must finish or be cancelled first.
-                </p>
+                <p>Remove this folder from qmux?</p>
+                <p>The folder and its files will remain on disk, with history in the .qmux directory.</p>
+                {researchFolderRemovalError ? (
+                  <p className="confirm-dialog-error" role="alert">
+                    {researchFolderRemovalError}
+                  </p>
+                ) : null}
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setCloseDialog(null)}>
+                  <button
+                    type="button"
+                    disabled={resolvingClose !== null}
+                    onClick={() => setCloseDialog(null)}
+                  >
                     Cancel
                   </button>
                   <button
@@ -10046,9 +10062,10 @@ export default function App() {
                     type="button"
                     className="danger"
                     autoFocus
+                    disabled={resolvingClose !== null}
                     onClick={() => void confirmResearchFolderRemoval()}
                   >
-                    Remove folder
+                    {resolvingClose === "removeResearchFolder" ? "Removing…" : "Remove folder"}
                   </button>
                 </div>
               </>
@@ -10347,7 +10364,7 @@ export default function App() {
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}
               onRemoveBranch={removeResearchBranchFromDocument}
-              onRemoveTree={removeResearchTreeFromDocument}
+              onRemoveTree={removeResearchTreeAndSelectFallback}
               onCancel={cancelResearchRun}
               onOpenPane={openResearchPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}

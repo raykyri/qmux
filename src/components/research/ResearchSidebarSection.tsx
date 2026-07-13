@@ -49,6 +49,8 @@ export default function ResearchSidebarSection({
   const [renamingTree, setRenamingTree] = useState<ResearchTreeSummary | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deletingTree, setDeletingTree] = useState<ResearchTreeSummary | null>(null);
+  const [removingTreeId, setRemovingTreeId] = useState<string | null>(null);
+  const [treeRemovalError, setTreeRemovalError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const menuTree = menu
@@ -139,6 +141,7 @@ export default function ResearchSidebarSection({
 
   function openDeleteDialog(tree: ResearchTreeSummary) {
     setMenu(null);
+    setTreeRemovalError(null);
     setDeletingTree(tree);
   }
 
@@ -146,6 +149,25 @@ export default function ResearchSidebarSection({
     setMenu(null);
     setRenameDraft(tree.title);
     setRenamingTree(tree);
+  }
+
+  async function confirmTreeRemoval() {
+    if (!deletingTree || removingTreeId) {
+      return;
+    }
+    const treeId = deletingTree.id;
+    setTreeRemovalError(null);
+    setRemovingTreeId(treeId);
+    try {
+      await onRemove(treeId);
+      setDeletingTree(null);
+    } catch (err) {
+      // The app shell surfaces the backend error. Keep the confirmation open so
+      // the user does not have to reopen the menu after a transient rejection.
+      setTreeRemovalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemovingTreeId(null);
+    }
   }
 
   function submitRename() {
@@ -363,7 +385,7 @@ export default function ResearchSidebarSection({
               className="confirm-dialog-backdrop"
               role="presentation"
               onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
+                if (event.target === event.currentTarget && !removingTreeId) {
                   setDeletingTree(null);
                 }
               }}
@@ -373,8 +395,9 @@ export default function ResearchSidebarSection({
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="delete-research-dialog-title"
+                aria-busy={removingTreeId === deletingTree.id}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  if (event.key === "Escape" && !removingTreeId) {
                     event.preventDefault();
                     setDeletingTree(null);
                   }
@@ -385,21 +408,27 @@ export default function ResearchSidebarSection({
                   This permanently deletes this research and its completed work and follow-up
                   history. This can’t be undone.
                 </p>
+                {treeRemovalError ? (
+                  <p className="confirm-dialog-error" role="alert">
+                    {treeRemovalError}
+                  </p>
+                ) : null}
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setDeletingTree(null)}>
+                  <button
+                    type="button"
+                    disabled={removingTreeId !== null}
+                    onClick={() => setDeletingTree(null)}
+                  >
                     Cancel
                   </button>
                   <button
                     type="button"
                     className="danger"
                     autoFocus
-                    onClick={() => {
-                      const treeId = deletingTree.id;
-                      setDeletingTree(null);
-                      void onRemove(treeId);
-                    }}
+                    disabled={removingTreeId !== null}
+                    onClick={() => void confirmTreeRemoval()}
                   >
-                    Delete research
+                    {removingTreeId === deletingTree.id ? "Deleting…" : "Delete research"}
                   </button>
                 </div>
               </div>

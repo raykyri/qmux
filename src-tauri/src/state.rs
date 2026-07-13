@@ -6997,7 +6997,7 @@ fn validate_research_workspace_available(workspace: &GroupInfo) -> Result<(), St
     let dir = std::path::Path::new(&workspace.dir);
     if !dir.is_dir() {
         return Err(format!(
-            "research folder '{}' is unavailable; choose a replacement folder for '{}' before launching another run",
+            "research folder '{}' is unavailable; restore it at that path before launching another run for '{}'",
             workspace.dir,
             workspace
                 .name_override

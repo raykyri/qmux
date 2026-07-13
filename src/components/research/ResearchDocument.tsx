@@ -246,6 +246,7 @@ export default function ResearchDocument({
   const [followupMenu, setFollowupMenu] = useState<FollowupMenu | null>(null);
   const [deletingBranchId, setDeletingBranchId] = useState<string | null>(null);
   const [removingBranch, setRemovingBranch] = useState(false);
+  const [branchRemovalError, setBranchRemovalError] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
   const [contentLoadNonce, setContentLoadNonce] = useState(0);
   const [showAllTurns, setShowAllTurns] = useState(false);
@@ -419,6 +420,7 @@ export default function ResearchDocument({
     if (!deletingBranch?.node || !deletingBranch.info || deletingBranch.info.hasActiveRuns) {
       return;
     }
+    setBranchRemovalError(null);
     setRemovingBranch(true);
     try {
       if (deletingBranch.node.id === detail?.tree.rootNodeId) {
@@ -427,6 +429,13 @@ export default function ResearchDocument({
         return;
       }
       const removal = await onRemoveBranch(deletingBranch.node.id);
+      // The backend call and detail refresh can outlive this document's tree.
+      // Never let a deletion started in the previous tree overwrite the new
+      // tree's history or live node selection when it eventually resolves.
+      if (treeIdRef.current !== removal.treeId) {
+        setDeletingBranchId(null);
+        return;
+      }
       const removedNodeIds = new Set(removal.removedNodeIds);
       const validNodeIds = new Set(
         (detail?.nodes ?? [])
@@ -439,10 +448,18 @@ export default function ResearchDocument({
           ? pruned
           : pushResearchHistory(pruned, removal.parentNodeId);
       });
-      applySelection(removal.parentNodeId);
+      // Deleting a child from the currently displayed parent's follow-up list
+      // already leaves us on the right node. Clearing its content without
+      // changing the selected id would not restart the content loader, leaving
+      // the response body on its loading spinner indefinitely.
+      if (isResearchNodeSelectionChange(selectedNodeIdRef.current, removal.parentNodeId)) {
+        applySelection(removal.parentNodeId);
+      }
       setDeletingBranchId(null);
     } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setBranchRemovalError(message);
+      onError(message);
     } finally {
       setRemovingBranch(false);
     }
@@ -1322,6 +1339,7 @@ export default function ResearchDocument({
                       }
                       onClick={() => {
                         setFollowupMenu(null);
+                        setBranchRemovalError(null);
                         setDeletingBranchId(node.id);
                       }}
                     >
@@ -1365,7 +1383,7 @@ export default function ResearchDocument({
                       ? "Delete this research branch?"
                       : "Delete this follow-up?"}
                   </h2>
-                  <p>{deletingBranch.node.title ?? deletingBranch.node.prompt}</p>
+                  <p>Delete "{deletingBranch.node.title ?? deletingBranch.node.prompt}"?</p>
                   <p>
                     {deletingBranch.node.id === detail.tree.rootNodeId
                       ? deletingBranch.info.descendantCount > 0
@@ -1376,6 +1394,11 @@ export default function ResearchDocument({
                       : "This permanently deletes the follow-up and its response."} {" "}
                     This can’t be undone.
                   </p>
+                  {branchRemovalError ? (
+                    <p className="confirm-dialog-error" role="alert">
+                      {branchRemovalError}
+                    </p>
+                  ) : null}
                   <div className="confirm-dialog-actions">
                     <button
                       type="button"
