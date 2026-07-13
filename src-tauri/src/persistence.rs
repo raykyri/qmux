@@ -95,6 +95,10 @@ pub struct PersistedState {
     /// Durable research documents and their one-prompt native-session nodes.
     #[serde(default)]
     pub research_trees: HashMap<String, ResearchTree>,
+    /// Stable sidebar order for research trees. The ids form one master order;
+    /// folder and archived filters preserve their relative subsequences.
+    #[serde(default)]
+    pub research_tree_order: Vec<String>,
     #[serde(default)]
     pub research_nodes: HashMap<String, ResearchNode>,
 }
@@ -117,6 +121,7 @@ impl Default for PersistedState {
             threads: HashMap::new(),
             thread_focus: HashMap::new(),
             research_trees: HashMap::new(),
+            research_tree_order: Vec::new(),
             research_nodes: HashMap::new(),
         }
     }
@@ -659,6 +664,7 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.threads = take_typed_map(&mut map, "threads", "thread", &mut dropped);
     state.thread_focus = take_string_map(&mut map, "threadFocus");
     state.research_trees = take_typed_map(&mut map, "researchTrees", "research tree", &mut dropped);
+    state.research_tree_order = take_string_vec(&mut map, "researchTreeOrder");
     state.research_nodes = take_typed_map(&mut map, "researchNodes", "research node", &mut dropped);
     state.active_tab_id = map
         .get("activeTabId")

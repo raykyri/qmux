@@ -88,6 +88,7 @@ enum AppShortcutCommand {
     ToggleSidebarMode,
     CyclePaneTab(i8),
     CycleAllTab(i8),
+    MoveResearchTree(i8),
     OpenSettings,
     OpenCommandPalette,
     ToggleTranscriptOrBrowser,
@@ -113,6 +114,8 @@ impl AppShortcutCommand {
             Self::CyclePaneTab(_) => ("cyclePaneTabNext", None),
             Self::CycleAllTab(-1) => ("cycleAllTabPrevious", None),
             Self::CycleAllTab(_) => ("cycleAllTabNext", None),
+            Self::MoveResearchTree(-1) => ("moveResearchTreeUp", None),
+            Self::MoveResearchTree(_) => ("moveResearchTreeDown", None),
             Self::OpenSettings => ("openSettings", None),
             Self::OpenCommandPalette => ("openCommandPalette", None),
             Self::ToggleTranscriptOrBrowser => ("toggleTranscriptOrBrowser", None),
@@ -139,6 +142,14 @@ fn classify_app_shortcut(
         other => other,
     };
     let one_primary_modifier = command != control;
+
+    if !command && !control && option && !shift && (key == "arrowup" || key == "arrowdown") {
+        return Some(AppShortcutCommand::MoveResearchTree(if key == "arrowup" {
+            -1
+        } else {
+            1
+        }));
+    }
 
     if command && !control && !option {
         if key == "+" || key == "=" {
@@ -1250,6 +1261,18 @@ mod tests {
         assert_eq!(
             super::classify_app_shortcut("`", false, false, false, true),
             Some(AppShortcutCommand::ToggleSidebarMode)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("ArrowUp", false, false, true, false),
+            Some(AppShortcutCommand::MoveResearchTree(-1))
+        );
+        assert_eq!(
+            super::classify_app_shortcut("ArrowDown", false, false, true, false),
+            Some(AppShortcutCommand::MoveResearchTree(1))
+        );
+        assert_eq!(
+            AppShortcutCommand::MoveResearchTree(-1).event_fields(),
+            ("moveResearchTreeUp", None)
         );
         for key in [";", "k", "a", "z", "Enter"] {
             assert_eq!(

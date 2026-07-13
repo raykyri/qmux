@@ -612,6 +612,16 @@ fn list_research_trees(
 }
 
 #[tauri::command]
+fn reorder_research_trees(
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+    archived: bool,
+    tree_ids: Vec<String>,
+) -> Result<(), String> {
+    state.reorder_research_trees(&workspace_id, archived, tree_ids)
+}
+
+#[tauri::command]
 fn list_research_activity(state: tauri::State<'_, AppState>) -> Result<Vec<ResearchNode>, String> {
     state.list_research_activity()
 }
@@ -1888,6 +1898,7 @@ fn main() {
             list_thread_graphs,
             get_thread_graph,
             list_research_trees,
+            reorder_research_trees,
             list_research_activity,
             get_research_tree,
             create_research_tree,

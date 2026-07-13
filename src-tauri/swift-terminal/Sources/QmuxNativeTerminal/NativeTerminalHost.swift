@@ -665,9 +665,11 @@ final class NativeTerminalHost {
     func claimAppShortcut(_ event: NSEvent, for pane: NativeTerminalPane) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = event.charactersIgnoringModifiers?.lowercased()
-        let hasPrimaryModifier = modifiers.contains(.command) || modifiers.contains(.control)
+        let hasShortcutModifier = modifiers.contains(.command)
+            || modifiers.contains(.control)
+            || modifiers.contains(.option)
         let isNativeCommand = modifiers.contains(.command) && (key == "c" || key == "q")
-        guard hasPrimaryModifier, !isNativeCommand,
+        guard hasShortcutModifier, !isNativeCommand,
               let shortcutKey = appShortcutKey(for: event)
         else {
             return false

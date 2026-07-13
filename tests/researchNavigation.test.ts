@@ -10,11 +10,21 @@ import {
 } from "../src/lib/researchNavigation";
 import { researchBranchInfo } from "../src/lib/researchBranches";
 import {
+  moveResearchTreeIdBy,
+  moveResearchTreeIdToGap,
+  replaceResearchTreeScopeOrder,
+} from "../src/lib/researchOrder";
+import {
   intersectingResearchHighlightIds,
   isResearchHighlightActionShortcut,
   resolveResearchHighlightOffset,
 } from "../src/lib/researchHighlights";
-import type { ResearchHighlight, ResearchNode, ResearchNodeStatus } from "../src/types";
+import type {
+  ResearchHighlight,
+  ResearchNode,
+  ResearchNodeStatus,
+  ResearchTreeSummary,
+} from "../src/types";
 
 function node(
   id: string,
@@ -52,6 +62,48 @@ function highlight(overrides: Partial<ResearchHighlight["anchor"]> = {}): Resear
     },
   };
 }
+
+function tree(id: string, workspaceId: string): ResearchTreeSummary {
+  return {
+    id,
+    title: id,
+    rootNodeId: `${id}-root`,
+    kind: "run",
+    workspaceId,
+    runningCount: 0,
+    failedCount: 0,
+    completedCount: 1,
+    cancelledCount: 0,
+    updatedAt: 1,
+    hasUnseenUpdate: false,
+    hasUnseenFailure: false,
+  };
+}
+
+test("research pointer gaps reorder without off-by-one moves", () => {
+  const ids = ["a", "b", "c", "d"];
+  assert.deepEqual(moveResearchTreeIdToGap(ids, "b", 4), ["a", "c", "d", "b"]);
+  assert.deepEqual(moveResearchTreeIdToGap(ids, "d", 1), ["a", "d", "b", "c"]);
+  assert.equal(moveResearchTreeIdToGap(ids, "b", 1), ids);
+  assert.equal(moveResearchTreeIdToGap(ids, "b", 2), ids);
+});
+
+test("research keyboard moves stop at section boundaries", () => {
+  const ids = ["a", "b", "c"];
+  assert.deepEqual(moveResearchTreeIdBy(ids, "b", -1), ["b", "a", "c"]);
+  assert.deepEqual(moveResearchTreeIdBy(ids, "b", 1), ["a", "c", "b"]);
+  assert.equal(moveResearchTreeIdBy(ids, "a", -1), ids);
+  assert.equal(moveResearchTreeIdBy(ids, "c", 1), ids);
+});
+
+test("research reorder replaces only the selected folder subsequence", () => {
+  const trees = [tree("a", "one"), tree("x", "two"), tree("b", "one")];
+  assert.deepEqual(
+    replaceResearchTreeScopeOrder(trees, "one", ["b", "a"]).map((item) => item.id),
+    ["b", "x", "a"],
+  );
+  assert.equal(replaceResearchTreeScopeOrder(trees, "one", ["a"]), trees);
+});
 
 test("clicking the currently selected research breadcrumb is a no-op", () => {
   assert.equal(isResearchNodeSelectionChange("root-node", "root-node"), false);

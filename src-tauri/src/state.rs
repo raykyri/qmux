@@ -196,6 +196,7 @@ struct Model {
     threads: HashMap<String, thread_graph::ThreadRecord>,
     thread_focus: HashMap<String, String>,
     research_trees: HashMap<String, ResearchTree>,
+    research_tree_order: Vec<String>,
     research_nodes: HashMap<String, ResearchNode>,
     /// Pane ids with a backend retirement worker in flight. Transient and deduplicated.
     research_retiring_panes: HashSet<String>,
@@ -1374,6 +1375,12 @@ impl AppState {
             model.threads = persisted.threads;
             model.thread_focus = persisted.thread_focus;
             model.research_trees = persisted.research_trees;
+            model.research_tree_order = persisted.research_tree_order;
+            let normalized_research_order = ordered_research_tree_ids(&model);
+            if normalized_research_order != model.research_tree_order {
+                research_reconciled = true;
+                model.research_tree_order = normalized_research_order;
+            }
             model.research_nodes = persisted.research_nodes;
             for mut agent in persisted.agents {
                 ensure_agent_thread_metadata(self, &mut model, &mut agent);
@@ -1604,6 +1611,7 @@ impl AppState {
                 threads: model.threads.clone(),
                 thread_focus: model.thread_focus.clone(),
                 research_trees: model.research_trees.clone(),
+                research_tree_order: ordered_research_tree_ids(&model),
                 research_nodes: model.research_nodes.clone(),
             }
         };
@@ -2058,13 +2066,71 @@ impl AppState {
                 }
             })
             .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then(left.id.cmp(&right.id))
-        });
+        let order = ordered_research_tree_ids(&model)
+            .into_iter()
+            .enumerate()
+            .map(|(index, tree_id)| (tree_id, index))
+            .collect::<HashMap<_, _>>();
+        summaries.sort_by_key(|summary| order.get(&summary.id).copied().unwrap_or(usize::MAX));
         Ok(summaries)
+    }
+
+    /// Reorders exactly one visible Research sidebar section. Replacing only
+    /// that folder/status subsequence leaves hidden archived trees and other
+    /// folders at their existing positions in the master order.
+    pub fn reorder_research_trees(
+        &self,
+        workspace_id: &str,
+        archived: bool,
+        tree_ids: Vec<String>,
+    ) -> Result<(), String> {
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let expected = ordered_research_tree_ids(&model)
+                .into_iter()
+                .filter(|tree_id| {
+                    model.research_trees.get(tree_id).is_some_and(|tree| {
+                        tree.workspace_id == workspace_id && tree.archived_at.is_some() == archived
+                    })
+                })
+                .collect::<Vec<_>>();
+            if tree_ids.len() != expected.len() {
+                return Err("research tree order is stale; refresh before reordering".to_string());
+            }
+            let expected_ids = expected.iter().cloned().collect::<HashSet<_>>();
+            let mut seen = HashSet::with_capacity(tree_ids.len());
+            for tree_id in &tree_ids {
+                if !seen.insert(tree_id.clone()) {
+                    return Err("research tree order contains a duplicate tree".to_string());
+                }
+                if !expected_ids.contains(tree_id) {
+                    return Err(format!(
+                        "research tree {tree_id} is not in the requested sidebar section"
+                    ));
+                }
+            }
+            if tree_ids == expected {
+                return Ok(());
+            }
+
+            let mut replacements = tree_ids.into_iter();
+            let mut next_order = ordered_research_tree_ids(&model);
+            for tree_id in &mut next_order {
+                let replace = model.research_trees.get(tree_id).is_some_and(|tree| {
+                    tree.workspace_id == workspace_id && tree.archived_at.is_some() == archived
+                });
+                if replace {
+                    *tree_id = replacements.next().expect("validated replacement count");
+                }
+            }
+            model.research_tree_order = next_order;
+        }
+        self.persist();
+        Ok(())
     }
 
     pub fn list_research_activity(&self) -> Result<Vec<ResearchNode>, String> {
@@ -2242,6 +2308,8 @@ impl AppState {
                 return Err("research requires a Research-scoped workspace".to_string());
             }
             node.worktree_dir = workspace.dir.clone();
+            model.research_tree_order.retain(|id| id != &tree_id);
+            model.research_tree_order.insert(0, tree_id.clone());
             model.research_trees.insert(tree_id.clone(), tree.clone());
             model.research_nodes.insert(node_id, node.clone());
         }
@@ -2336,6 +2404,8 @@ impl AppState {
                 return Err("research requires a Research-scoped workspace".to_string());
             }
             node.worktree_dir = workspace.dir.clone();
+            model.research_tree_order.retain(|id| id != &tree_id);
+            model.research_tree_order.insert(0, tree_id.clone());
             model.research_trees.insert(tree_id.clone(), tree.clone());
             model.research_nodes.insert(node_id.clone(), node.clone());
             Ok(())
@@ -3404,6 +3474,7 @@ impl AppState {
             let removed = model.research_trees.remove(tree_id).is_some();
             let mut reaped_records = Vec::new();
             if removed {
+                model.research_tree_order.retain(|id| id != tree_id);
                 model
                     .research_nodes
                     .retain(|_, node| node.tree_id != tree_id);
@@ -3643,6 +3714,10 @@ impl AppState {
             .iter()
             .map(|tree| tree.id.as_str())
             .collect::<HashSet<_>>();
+        let tree_order = ordered_research_tree_ids(&model)
+            .into_iter()
+            .filter(|tree_id| tree_ids.contains(tree_id.as_str()))
+            .collect::<Vec<_>>();
         let mut nodes = model
             .research_nodes
             .values()
@@ -3655,6 +3730,7 @@ impl AppState {
             archive_id: research::new_detached_research_archive_id()?,
             workspace,
             trees,
+            tree_order,
             nodes,
             exported_at: now_millis(),
         })
@@ -3674,7 +3750,15 @@ impl AppState {
             .persist_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (workspace, trees, nodes, group_order, recent_sessions, reaped_thread_records) = {
+        let (
+            workspace,
+            trees,
+            nodes,
+            group_order,
+            research_tree_order,
+            recent_sessions,
+            reaped_thread_records,
+        ) = {
             let mut model = self
                 .inner
                 .model
@@ -3726,6 +3810,10 @@ impl AppState {
                 .iter()
                 .map(|tree| tree.id.as_str())
                 .collect::<HashSet<_>>();
+            let current_tree_order = ordered_research_tree_ids(&model)
+                .into_iter()
+                .filter(|tree_id| current_tree_ids.contains(tree_id.as_str()))
+                .collect::<Vec<_>>();
             let mut current_nodes = model
                 .research_nodes
                 .values()
@@ -3735,6 +3823,8 @@ impl AppState {
             current_nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
             if current_workspace != expected.workspace
                 || current_trees != expected.trees
+                || (!expected.tree_order.is_empty()
+                    && current_tree_order != expected.tree_order)
                 || current_nodes != expected.nodes
             {
                 return Err(
@@ -3751,6 +3841,10 @@ impl AppState {
                         .map(|tree| (id.clone(), tree))
                 })
                 .collect::<Vec<_>>();
+            let research_tree_order = model.research_tree_order.clone();
+            model
+                .research_tree_order
+                .retain(|tree_id| !tree_ids.contains(tree_id));
             let node_ids = model
                 .research_nodes
                 .values()
@@ -3824,6 +3918,7 @@ impl AppState {
                 trees,
                 nodes,
                 group_order,
+                research_tree_order,
                 recent_sessions,
                 reaped_thread_records,
             )
@@ -3838,6 +3933,7 @@ impl AppState {
             if let Ok(mut model) = self.inner.model.lock() {
                 model.groups.insert(workspace.id.clone(), workspace);
                 model.group_order = group_order;
+                model.research_tree_order = research_tree_order;
                 for (id, tree) in trees {
                     model.research_trees.insert(id, tree);
                 }
@@ -3885,6 +3981,7 @@ impl AppState {
     pub fn import_detached_research(
         &self,
         workspace: GroupInfo,
+        tree_order: Vec<String>,
         mut trees: Vec<ResearchTree>,
         mut nodes: Vec<ResearchNode>,
         responses: HashMap<String, Vec<Turn>>,
@@ -3940,6 +4037,21 @@ impl AppState {
                 node_ids_in_use.insert(node.id.clone());
             }
         }
+        let source_tree_order = if tree_order.is_empty() {
+            let mut legacy_order = trees.iter().collect::<Vec<_>>();
+            legacy_order.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then(left.id.cmp(&right.id))
+            });
+            legacy_order
+                .into_iter()
+                .map(|tree| tree.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            tree_order
+        };
         let mut tree_map = HashMap::new();
         let mut reserved_tree_ids = tree_ids_in_use;
         for tree in &trees {
@@ -3955,6 +4067,10 @@ impl AppState {
             };
             tree_map.insert(tree.id.clone(), id);
         }
+        let imported_tree_order = source_tree_order
+            .iter()
+            .filter_map(|tree_id| tree_map.get(tree_id).cloned())
+            .collect::<Vec<_>>();
         let mut node_map = HashMap::new();
         let mut reserved_node_ids = node_ids_in_use;
         for node in &nodes {
@@ -4053,6 +4169,9 @@ impl AppState {
             }
             model.group_order.push(workspace.id.clone());
             model.groups.insert(workspace.id.clone(), workspace.clone());
+            model
+                .research_tree_order
+                .extend(imported_tree_order.iter().cloned());
             for tree in &trees {
                 model.research_trees.insert(tree.id.clone(), tree.clone());
             }
@@ -4077,6 +4196,9 @@ impl AppState {
             if let Ok(mut model) = self.inner.model.lock() {
                 model.groups.remove(&workspace.id);
                 model.group_order.retain(|id| id != &workspace.id);
+                model
+                    .research_tree_order
+                    .retain(|id| !imported_tree_order.contains(id));
                 for tree in &trees {
                     model.research_trees.remove(&tree.id);
                 }
@@ -7055,6 +7177,34 @@ fn ordered_group_ids(model: &Model) -> Vec<String> {
     ids
 }
 
+/// The durable Research sidebar order. Older state files have no explicit
+/// vector, so missing ids fall back to the legacy updated-at order once, then
+/// hydration persists that normalized result.
+fn ordered_research_tree_ids(model: &Model) -> Vec<String> {
+    let mut ids = Vec::with_capacity(model.research_trees.len());
+    let mut seen = HashSet::with_capacity(model.research_trees.len());
+
+    for tree_id in &model.research_tree_order {
+        if model.research_trees.contains_key(tree_id) && seen.insert(tree_id.clone()) {
+            ids.push(tree_id.clone());
+        }
+    }
+
+    let mut missing = model
+        .research_trees
+        .values()
+        .filter(|tree| !seen.contains(&tree.id))
+        .collect::<Vec<_>>();
+    missing.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then(left.id.cmp(&right.id))
+    });
+    ids.extend(missing.into_iter().map(|tree| tree.id.clone()));
+    ids
+}
+
 fn ordered_groups(model: &Model) -> Vec<GroupInfo> {
     ordered_group_ids(model)
         .into_iter()
@@ -7923,6 +8073,7 @@ mod tests {
         state
             .import_detached_research(
                 imported_group.clone(),
+                Vec::new(),
                 vec![imported_tree],
                 vec![imported_node],
                 HashMap::new(),
@@ -8041,6 +8192,158 @@ mod tests {
         state.remove_research_tree(&detail.tree.id).unwrap();
         assert!(state.list_research_trees().unwrap().is_empty());
         assert!(state.research_tree(&detail.tree.id).is_err());
+    }
+
+    #[test]
+    fn research_tree_order_is_scoped_stable_and_persisted() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+        let expected_order = {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            let mut group = sample_group();
+            group.dir = workspace.display().to_string();
+            group.managed_dir = workspace.join("managed").display().to_string();
+            group.agents.clear();
+            state.insert_group_after(group.clone(), None).unwrap();
+            let create = |prompt: &str| {
+                state
+                    .create_research_tree(CreateResearchTreeRequest {
+                        prompt: prompt.to_string(),
+                        title: Some(prompt.to_string()),
+                        adapter: "claude".to_string(),
+                        model: None,
+                        group_id: group.id.clone(),
+                    })
+                    .unwrap()
+            };
+            let first = create("First");
+            let second = create("Second");
+            let third = create("Third");
+            assert_eq!(
+                state
+                    .list_research_trees()
+                    .unwrap()
+                    .into_iter()
+                    .map(|tree| tree.id)
+                    .collect::<Vec<_>>(),
+                vec![
+                    third.tree.id.clone(),
+                    second.tree.id.clone(),
+                    first.tree.id.clone()
+                ],
+                "new research defaults to the top"
+            );
+
+            let expected = vec![
+                first.tree.id.clone(),
+                third.tree.id.clone(),
+                second.tree.id.clone(),
+            ];
+            state
+                .reorder_research_trees(&group.id, false, expected.clone())
+                .unwrap();
+            state
+                .fail_research_node(&first.tree.root_node_id, "settled later".to_string())
+                .unwrap();
+            assert_eq!(
+                state
+                    .list_research_trees()
+                    .unwrap()
+                    .into_iter()
+                    .map(|tree| tree.id)
+                    .collect::<Vec<_>>(),
+                expected,
+                "activity does not overwrite manual order"
+            );
+            assert_eq!(
+                state.detached_research_archive(&group.id).unwrap().tree_order,
+                expected,
+                "folder archives preserve the custom order"
+            );
+            assert!(
+                state
+                    .reorder_research_trees(
+                        &group.id,
+                        false,
+                        vec![
+                            first.tree.id.clone(),
+                            first.tree.id.clone(),
+                            second.tree.id.clone()
+                        ]
+                    )
+                    .unwrap_err()
+                    .contains("duplicate")
+            );
+            expected
+        };
+
+        let restored = AppState::new(config);
+        restored.restore_session();
+        assert_eq!(
+            restored
+                .list_research_trees()
+                .unwrap()
+                .into_iter()
+                .map(|tree| tree.id)
+                .collect::<Vec<_>>(),
+            expected_order
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn missing_research_tree_order_migrates_from_legacy_recency() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+        let (older_id, newer_id) = {
+            let state = AppState::new(config.clone());
+            state.restore_session();
+            let mut group = sample_group();
+            group.dir = workspace.display().to_string();
+            group.managed_dir = workspace.join("managed").display().to_string();
+            group.agents.clear();
+            state.insert_group_after(group.clone(), None).unwrap();
+            let create = |title: &str| {
+                state
+                    .create_research_tree(CreateResearchTreeRequest {
+                        prompt: title.to_string(),
+                        title: Some(title.to_string()),
+                        adapter: "claude".to_string(),
+                        model: None,
+                        group_id: group.id.clone(),
+                    })
+                    .unwrap()
+            };
+            let older = create("Older");
+            let newer = create("Newer");
+            (older.tree.id, newer.tree.id)
+        };
+
+        let path = persistence::state_path(&workspace);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("researchTreeOrder");
+        value["researchTrees"][&older_id]["updatedAt"] = serde_json::json!(10);
+        value["researchTrees"][&newer_id]["updatedAt"] = serde_json::json!(20);
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let restored = AppState::new(config);
+        restored.restore_session();
+        let expected = vec![newer_id, older_id];
+        assert_eq!(
+            restored
+                .list_research_trees()
+                .unwrap()
+                .into_iter()
+                .map(|tree| tree.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let migrated: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(migrated["researchTreeOrder"], serde_json::json!(expected));
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

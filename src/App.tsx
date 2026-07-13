@@ -86,6 +86,10 @@ import ResearchDocument from "./components/research/ResearchDocument";
 import NewDocumentDialog from "./components/research/NewDocumentDialog";
 import NewResearchDialog from "./components/research/NewResearchDialog";
 import { isMarkdownDocumentPath } from "./lib/researchDocuments";
+import {
+  moveResearchTreeIdBy,
+  replaceResearchTreeScopeOrder,
+} from "./lib/researchOrder";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
   agentStatusLabel,
@@ -236,6 +240,7 @@ import {
   markResearchTreeViewed,
   renameResearchNode,
   renameResearchTree,
+  reorderResearchTrees,
   removeResearchTree,
   removeResearchBranch,
   restoreResearchTree,
@@ -1222,6 +1227,8 @@ export default function App() {
   const paneReorderRequestSeqRef = useRef(0);
   const groupReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
   const groupReorderRequestSeqRef = useRef(0);
+  const researchTreeReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
+  const researchTreeReorderRequestSeqRef = useRef(0);
   const pendingFirstTitleByAgentRef = useRef<Map<string, PendingFirstMessageTitle>>(new Map());
   const titleRegenerationSeqByPaneRef = useRef<Record<string, number>>({});
   // Per-agent write generation for the queued-turns list. Bumped on every write (a
@@ -4889,6 +4896,79 @@ export default function App() {
       researchNavRefreshInFlightRef.current -= 1;
     }
   }, []);
+  const applyResearchTreeOrder = useCallback(
+    (archived: boolean, workspaceId: string, orderedTreeIds: string[]) => {
+      const current = archived
+        ? archivedResearchTreesRef.current
+        : researchTreesRef.current;
+      const currentScopedIds = current
+        .filter((tree) => tree.workspaceId === workspaceId)
+        .map((tree) => tree.id);
+      if (sameStringList(currentScopedIds, orderedTreeIds)) {
+        return;
+      }
+      const next = replaceResearchTreeScopeOrder(current, workspaceId, orderedTreeIds);
+      if (next === current) {
+        return;
+      }
+      if (archived) {
+        archivedResearchTreesRef.current = next;
+        setArchivedResearchTrees(next);
+      } else {
+        researchTreesRef.current = next;
+        setResearchTrees(next);
+      }
+
+      const requestSeq = researchTreeReorderRequestSeqRef.current + 1;
+      researchTreeReorderRequestSeqRef.current = requestSeq;
+      // Invalidate a navigation refresh that started before this optimistic
+      // move; its pre-reorder list must not snap the row back mid-drag.
+      researchNavRefreshSeqRef.current += 1;
+      const persist = researchTreeReorderPersistChainRef.current
+        .catch(() => undefined)
+        .then(() => reorderResearchTrees(workspaceId, archived, orderedTreeIds));
+      researchTreeReorderPersistChainRef.current = persist
+        .then(() => {
+          if (researchTreeReorderRequestSeqRef.current === requestSeq) {
+            void refreshResearchNavigation().catch(() => undefined);
+          }
+        })
+        .catch(() => {
+          if (researchTreeReorderRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          void refreshResearchNavigation().catch(() => undefined);
+        });
+    },
+    [refreshResearchNavigation],
+  );
+  const moveActiveResearchTree = useCallback(
+    (direction: -1 | 1) => {
+      if (sidebarModeRef.current !== "research") {
+        return;
+      }
+      const treeId = activeResearchTreeIdRef.current;
+      if (!treeId) {
+        return;
+      }
+      const archived = archivedResearchTreesRef.current.some((tree) => tree.id === treeId);
+      const current = archived
+        ? archivedResearchTreesRef.current
+        : researchTreesRef.current;
+      const tree = current.find((candidate) => candidate.id === treeId);
+      if (!tree) {
+        return;
+      }
+      const scopedIds = current
+        .filter((candidate) => candidate.workspaceId === tree.workspaceId)
+        .map((candidate) => candidate.id);
+      const nextIds = moveResearchTreeIdBy(scopedIds, treeId, direction);
+      if (nextIds !== scopedIds) {
+        applyResearchTreeOrder(archived, tree.workspaceId, nextIds);
+      }
+    },
+    [applyResearchTreeOrder],
+  );
   const markVisibleResearchTreeViewed = useCallback(
     async (treeId: string) => {
       const documentVisible = researchDocumentIsVisible(
@@ -8095,6 +8175,9 @@ export default function App() {
         case "cycleAllTab":
           cycleTab(command.direction, true, cycleableSidebarPanes);
           return;
+        case "moveResearchTree":
+          moveActiveResearchTree(command.direction);
+          return;
         case "openSettings":
           setSettingsMenu(null);
           setSettingsOpen(true);
@@ -8210,6 +8293,7 @@ export default function App() {
     activeResearchTreeId,
     focusResearchHome,
     createResearchFromSidebar,
+    moveActiveResearchTree,
     selectResearchTree,
     sidebarMode,
   ]);
@@ -9318,6 +9402,11 @@ export default function App() {
               onRegenerateTitle={regenerateResearchTreeTitle}
               onRestore={restoreResearchTreeFromSidebar}
               onRemove={removeResearchTreeFromSidebar}
+              onReorder={(archived, orderedTreeIds) => {
+                if (researchScope) {
+                  applyResearchTreeOrder(archived, researchScope, orderedTreeIds);
+                }
+              }}
             />
           ) : null}
           {sidebarMode === "terminal" ? terminalGroups.map((group, groupIndex) => {

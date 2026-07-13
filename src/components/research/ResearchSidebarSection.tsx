@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -10,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ResearchTreeSummary } from "../../types";
+import { moveResearchTreeIdToGap } from "../../lib/researchOrder";
 
 const RESEARCH_MENU_WIDTH = 190;
 const RESEARCH_MENU_HEIGHT_ESTIMATE = 132;
@@ -29,6 +31,7 @@ interface ResearchSidebarSectionProps {
   onRegenerateTitle: (treeId: string) => Promise<void>;
   onRestore: (treeId: string) => Promise<void>;
   onRemove: (treeId: string) => Promise<void>;
+  onReorder: (archived: boolean, orderedTreeIds: string[]) => void;
 }
 
 type ResearchMenu = {
@@ -37,6 +40,23 @@ type ResearchMenu = {
   left: number;
   top: number;
 };
+
+type ResearchPointerDrag = {
+  pointerId: number;
+  treeId: string;
+  archived: boolean;
+  startX: number;
+  startY: number;
+  active: boolean;
+};
+
+type ResearchDropTarget = {
+  archived: boolean;
+  index: number;
+};
+
+const RESEARCH_DRAG_START_THRESHOLD = 4;
+const RESEARCH_DRAG_CLICK_SUPPRESS_MS = 100;
 
 function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
   return (
@@ -60,6 +80,7 @@ export default function ResearchSidebarSection({
   onRegenerateTitle,
   onRestore,
   onRemove,
+  onReorder,
 }: ResearchSidebarSectionProps) {
   const [menu, setMenu] = useState<ResearchMenu | null>(null);
   const [renamingTree, setRenamingTree] = useState<ResearchTreeSummary | null>(null);
@@ -69,6 +90,14 @@ export default function ResearchSidebarSection({
   const [treeRemovalError, setTreeRemovalError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const pointerDragRef = useRef<ResearchPointerDrag | null>(null);
+  const dropTargetRef = useRef<ResearchDropTarget | null>(null);
+  const suppressClickRef = useRef(false);
+  const [draggingTreeId, setDraggingTreeId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<ResearchDropTarget | null>(null);
+  const visibleTrees = visibilityFilter === "archived" ? [] : trees;
+  const visibleArchivedTrees = visibilityFilter === "active" ? [] : archivedTrees;
   const menuTree = menu
     ? (menu.archived ? archivedTrees : trees).find((tree) => tree.id === menu.treeId) ?? null
     : null;
@@ -222,15 +251,153 @@ export default function ResearchSidebarSection({
     void onRename(tree.id, title);
   }
 
+  function clearPointerDrag() {
+    pointerDragRef.current = null;
+    dropTargetRef.current = null;
+    setDraggingTreeId(null);
+    setDropTarget(null);
+  }
+
+  function computeDropTarget(
+    clientY: number,
+    treeId: string,
+    archived: boolean,
+  ): ResearchDropTarget | null {
+    const section = sectionRef.current;
+    const sectionTrees = archived ? visibleArchivedTrees : visibleTrees;
+    const dragIndex = sectionTrees.findIndex((tree) => tree.id === treeId);
+    if (!section || dragIndex < 0) {
+      return null;
+    }
+    const rows = Array.from(
+      section.querySelectorAll<HTMLElement>(
+        `.research-sidebar-row[data-research-archived="${archived}"]`,
+      ),
+    );
+    const gapTarget = (index: number): ResearchDropTarget | null =>
+      index === dragIndex || index === dragIndex + 1 ? null : { archived, index };
+    for (const [index, row] of rows.entries()) {
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        return gapTarget(index);
+      }
+    }
+    return gapTarget(rows.length);
+  }
+
+  function handlePointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+    treeId: string,
+    archived: boolean,
+  ) {
+    if (
+      event.button !== 0 ||
+      (event.target instanceof Element && event.target.closest("[data-research-menu-trigger]"))
+    ) {
+      return;
+    }
+    pointerDragRef.current = {
+      pointerId: event.pointerId,
+      treeId,
+      archived,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < RESEARCH_DRAG_START_THRESHOLD) {
+        return;
+      }
+      drag.active = true;
+      setMenu(null);
+      setDraggingTreeId(drag.treeId);
+    }
+    event.preventDefault();
+    const target = computeDropTarget(event.clientY, drag.treeId, drag.archived);
+    dropTargetRef.current = target;
+    setDropTarget(target);
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The platform may already have released capture.
+    }
+    if (!drag.active) {
+      pointerDragRef.current = null;
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    suppressClickRef.current = true;
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, RESEARCH_DRAG_CLICK_SUPPRESS_MS);
+    const target =
+      dropTargetRef.current ?? computeDropTarget(event.clientY, drag.treeId, drag.archived);
+    clearPointerDrag();
+    if (!target) {
+      return;
+    }
+    const sectionTrees = drag.archived ? visibleArchivedTrees : visibleTrees;
+    const currentIds = sectionTrees.map((tree) => tree.id);
+    const nextIds = moveResearchTreeIdToGap(currentIds, drag.treeId, target.index);
+    if (nextIds !== currentIds) {
+      onReorder(drag.archived, nextIds);
+    }
+  }
+
+  function handlePointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    if (pointerDragRef.current?.pointerId === event.pointerId) {
+      clearPointerDrag();
+    }
+  }
+
+  function dragClasses(treeId: string, archived: boolean, index: number, length: number) {
+    return `${draggingTreeId === treeId ? " is-dragging" : ""}${
+      dropTarget?.archived === archived && dropTarget.index === index
+        ? " is-drop-before"
+        : ""
+    }${
+      dropTarget?.archived === archived && dropTarget.index === length && index === length - 1
+        ? " is-drop-after"
+        : ""
+    }`;
+  }
+
   return (
     <>
-      <section className="research-sidebar-section" aria-label="Research">
-        {(visibilityFilter === "archived" ? [] : trees).map((tree) => (
+      <section
+        ref={sectionRef}
+        className={`research-sidebar-section${draggingTreeId ? " is-dragging" : ""}`}
+        aria-label="Research"
+      >
+        {visibleTrees.map((tree, index) => (
           <div
             key={tree.id}
             className={`research-sidebar-row${activeTreeId === tree.id ? " is-selected" : ""}${
               menu?.treeId === tree.id ? " has-open-menu" : ""
-            }`}
+            }${dragClasses(tree.id, false, index, visibleTrees.length)}`}
+            data-research-tree-id={tree.id}
+            data-research-archived="false"
+            onPointerDown={(event) => handlePointerDown(event, tree.id, false)}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -244,6 +411,9 @@ export default function ResearchSidebarSection({
               aria-current={activeTreeId === tree.id ? "page" : undefined}
               title={tree.title}
               onClick={(event) => {
+                if (suppressClickRef.current) {
+                  return;
+                }
                 // A double-click still selects the research on its first click,
                 // but does not start a second redundant detail fetch before the
                 // rename dialog opens.
@@ -292,14 +462,20 @@ export default function ResearchSidebarSection({
           </div>
         ))}
         {visibilityFilter !== "active"
-          ? archivedTrees.map((tree) => (
+          ? visibleArchivedTrees.map((tree, index) => (
               <div
                 key={tree.id}
                 className={`research-sidebar-row is-archived${
                   activeTreeId === tree.id ? " is-selected" : ""
                 }${
                   menu?.archived && menu.treeId === tree.id ? " has-open-menu" : ""
-                }`}
+                }${dragClasses(tree.id, true, index, visibleArchivedTrees.length)}`}
+                data-research-tree-id={tree.id}
+                data-research-archived="true"
+                onPointerDown={(event) => handlePointerDown(event, tree.id, true)}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerCancel}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -311,7 +487,11 @@ export default function ResearchSidebarSection({
                   className="research-sidebar-select"
                   aria-current={activeTreeId === tree.id ? "page" : undefined}
                   title={tree.title}
-                  onClick={() => onSelect(tree.id)}
+                  onClick={() => {
+                    if (!suppressClickRef.current) {
+                      onSelect(tree.id);
+                    }
+                  }}
                 >
                   <span className="research-sidebar-copy">
                     <ResearchSidebarTitle tree={tree} />

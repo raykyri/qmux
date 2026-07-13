@@ -44,6 +44,18 @@ test("resolves qmux command and control shortcuts", () => {
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "`", metaKey: true })), {
     type: "toggleSidebarMode",
   });
+  assert.deepEqual(resolveAppShortcut(shortcut({ key: "ArrowUp", altKey: true })), {
+    type: "moveResearchTree",
+    direction: -1,
+  });
+  assert.deepEqual(resolveAppShortcut(shortcut({ key: "ArrowDown", altKey: true })), {
+    type: "moveResearchTree",
+    direction: 1,
+  });
+  assert.equal(
+    resolveAppShortcut(shortcut({ key: "ArrowUp", altKey: true, editableTarget: true })),
+    null,
+  );
   assert.deepEqual(
     resolveAppShortcut(shortcut({ key: "Dead", code: "Backquote", metaKey: true })),
     { type: "toggleSidebarMode" },
@@ -153,8 +165,12 @@ test("leaves terminal command chords and control editing keys alone", () => {
   assert.equal(resolveAppShortcut(shortcut({ key: "t", ctrlKey: true })), null);
 });
 
-test("only font commands repeat", () => {
+test("continuous adjustment commands repeat", () => {
   assert.equal(appShortcutAllowsRepeat({ type: "fontZoomIn" }), true);
+  assert.equal(
+    appShortcutAllowsRepeat({ type: "moveResearchTree", direction: -1 }),
+    true,
+  );
   assert.equal(appShortcutAllowsRepeat({ type: "newPane" }), false);
 });
 
@@ -178,6 +194,14 @@ test("parses semantic commands from native payloads", () => {
   });
   assert.deepEqual(parseAppShortcutCommand("toggleSidebarMode", null), {
     type: "toggleSidebarMode",
+  });
+  assert.deepEqual(parseAppShortcutCommand("moveResearchTreeUp", null), {
+    type: "moveResearchTree",
+    direction: -1,
+  });
+  assert.deepEqual(parseAppShortcutCommand("moveResearchTreeDown", null), {
+    type: "moveResearchTree",
+    direction: 1,
   });
   // Emitted by the native stranded-WKWebView fallback for Cmd+K; Swift has
   // already consumed the keyDown by then, so dropping it kills the chord.

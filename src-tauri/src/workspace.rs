@@ -286,6 +286,7 @@ fn create_research_workspace_locked(
         }
         let imported = match state.import_detached_research(
             group.clone(),
+            bundle.archive.tree_order,
             bundle.archive.trees,
             bundle.archive.nodes,
             bundle.responses,
@@ -2000,6 +2001,7 @@ mod tests {
                 agents: Vec::new(),
             },
             trees: Vec::new(),
+            tree_order: Vec::new(),
             nodes: Vec::new(),
             exported_at: 1,
         }

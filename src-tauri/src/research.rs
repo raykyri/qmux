@@ -35,6 +35,10 @@ pub struct DetachedResearchArchive {
     pub archive_id: String,
     pub workspace: crate::workspace::GroupInfo,
     pub trees: Vec<ResearchTree>,
+    /// Sidebar order for the trees in this folder. Optional so archives written
+    /// before custom ordering remain importable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tree_order: Vec<String>,
     pub nodes: Vec<ResearchNode>,
     pub exported_at: u128,
 }
@@ -364,6 +368,17 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
         .collect::<HashMap<_, _>>();
     if tree_by_id.len() != archive.trees.len() {
         return Err("detached research archive contains duplicate tree ids".to_string());
+    }
+    if !archive.tree_order.is_empty() {
+        let ordered_ids = archive.tree_order.iter().collect::<HashSet<_>>();
+        if ordered_ids.len() != archive.tree_order.len()
+            || ordered_ids.len() != tree_by_id.len()
+            || ordered_ids
+                .iter()
+                .any(|tree_id| !tree_by_id.contains_key(tree_id.as_str()))
+        {
+            return Err("detached research archive has an invalid tree order".to_string());
+        }
     }
     let node_by_id = archive
         .nodes
@@ -1429,6 +1444,7 @@ mod tests {
                 agents: Vec::new(),
             },
             trees: vec![tree],
+            tree_order: vec!["research-1".to_string()],
             nodes: vec![node],
             exported_at: 3,
         }
@@ -1703,6 +1719,7 @@ mod tests {
         document_tree.id = "research-2".to_string();
         document_tree.root_node_id = document.id.clone();
         document.tree_id = document_tree.id.clone();
+        archive.tree_order.push(document_tree.id.clone());
         archive.trees.push(document_tree);
         archive.nodes.push(document);
         assert_eq!(
@@ -1715,6 +1732,7 @@ mod tests {
         archive.nodes[1].tree_id = archive.trees[0].id.clone();
         archive.nodes[1].parent_node_id = Some(archive.nodes[0].id.clone());
         archive.trees.pop();
+        archive.tree_order.pop();
         let error = validate_detached_archive(&archive).unwrap_err();
         assert!(error.contains("not a root node"), "{error}");
         std::fs::remove_dir_all(folder).unwrap();
