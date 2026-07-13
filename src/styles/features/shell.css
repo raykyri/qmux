@@ -59,41 +59,6 @@
   user-select: none;
 }
 
-/* Native Finder drops are reported at the window level, so this overlay is
-   purely presentational. It covers the complete Research sidebar without
-   intercepting the drop and makes the active target unmistakable. */
-.research-markdown-drop-overlay {
-  position: absolute;
-  inset: 30px 5px 5px;
-  z-index: var(--z-toast);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 2px dashed rgba(111, 211, 190, 0.82);
-  border-radius: 12px;
-  color: #dff8f1;
-  background: rgba(15, 25, 25, 0.92);
-  box-shadow: inset 0 0 0 1px rgba(215, 255, 246, 0.06);
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-
-.research-markdown-drop-overlay svg {
-  color: #80d9c6;
-}
-
-.research-markdown-drop-overlay strong {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.research-markdown-drop-overlay span {
-  color: #91a59f;
-  font-size: var(--fs-sm);
-}
-
 /* Draggable strip over the cleared area at the top of the sidebar so the
    frameless window can still be moved. Sits below the resizer's stacking layer so
    the top-right resize grab keeps working, and below the native traffic-light
@@ -650,7 +615,7 @@
 }
 
 .pane-tab-dot {
-  --pane-tab-active-dot-color: #d7a84f;
+  --pane-tab-active-dot-color: var(--status-active-fg);
   grid-column: 1;
   justify-self: start;
   align-self: center;
@@ -984,6 +949,18 @@
   cursor: default;
 }
 
+/* Action menus reuse the .pane-context-menu chrome but hold buttons rather
+   than copyable details, so they tighten the padding and drop text selection.
+   They tie with .pane-context-menu on specificity and must stay after it in
+   this file to win the cascade. */
+.group-context-menu,
+.research-sidebar-menu,
+.research-followup-menu,
+.settings-context-menu {
+  padding: 4px;
+  user-select: none;
+}
+
 .group-context-menu {
   width: min(220px, calc(100vw - 16px));
 }
@@ -994,20 +971,10 @@
 
 .research-followup-menu {
   width: min(190px, calc(100vw - 16px));
-  padding: 4px;
-  user-select: none;
-}
-
-.group-context-menu,
-.research-sidebar-menu {
-  padding: 4px;
-  user-select: none;
 }
 
 .settings-context-menu {
   width: min(180px, calc(100vw - 16px));
-  padding: 4px;
-  user-select: none;
 }
 
 /* Unchecked research filters intentionally have no icon; keep their labels in
@@ -1279,7 +1246,7 @@
   border: 1px solid #3b4447;
   border-radius: 10px;
   background: var(--panel-bg);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--dialog-shadow);
   padding: 16px;
 }
 
@@ -1503,7 +1470,7 @@
   border: 1px solid #3b4447;
   border-radius: 10px;
   background: var(--panel-bg);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--dialog-shadow);
   padding: 16px 16px 20px;
 }
 
@@ -1665,7 +1632,7 @@
   font-size: var(--fs-base);
   cursor: pointer;
   outline: none;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .settings-select:hover {
@@ -1847,7 +1814,7 @@
   border-radius: 0;
   background: transparent;
   color: var(--control-fg-muted);
-  transition: background 120ms ease, color 120ms ease;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .settings-stepper button:hover:not(:disabled) {
@@ -1968,7 +1935,7 @@
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .command-launcher-worktree input:checked,
@@ -2074,7 +2041,10 @@
   color: var(--accent-color);
   font-size: var(--fs-base);
   font-weight: 600;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .command-launcher-send:hover {
@@ -2112,7 +2082,7 @@
   /* Matches the launcher controls (--fs-base), as does .launcher-select-item. */
   font-size: var(--fs-base);
   cursor: pointer;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .launcher-select-trigger:hover {
@@ -2447,7 +2417,7 @@
 }
 
 .home-cascade-card--current.tone-active {
-  border-color: rgba(215, 168, 79, 0.42);
+  border-color: var(--status-active-border);
 }
 
 .home-cascade-card--current.tone-pending {
@@ -2708,10 +2678,10 @@ button.home-cascade-wait-pill:focus-visible {
   height: 22px;
   flex: none;
   margin-left: 12px;
-  border: 1px solid rgba(215, 168, 79, 0.62);
+  border: 1px solid var(--status-active-border-strong);
   border-radius: 50%;
   background: #1c1812;
-  color: #d7a84f;
+  color: var(--status-active-fg);
   font-size: 9px;
 }
 

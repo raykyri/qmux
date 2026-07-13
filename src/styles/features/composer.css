@@ -261,7 +261,7 @@
   background: transparent;
   color: var(--control-fg-muted);
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color var(--transition-fast);
 }
 
 .composer-menu-trigger:hover {

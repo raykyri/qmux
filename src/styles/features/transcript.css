@@ -111,7 +111,7 @@
   font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color var(--transition-fast);
 }
 
 .turn-empty-picker-trigger:hover {
@@ -966,7 +966,7 @@ header + .turn-blocks {
 
 .disclosure-chevron {
   color: var(--text-activity);
-  transition: transform 120ms ease;
+  transition: transform var(--transition-fast);
 }
 
 .tool-block[open] > summary .disclosure-chevron,

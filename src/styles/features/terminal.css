@@ -26,11 +26,11 @@
   left: 0;
   right: 0;
   z-index: 5;
-  border: 1px solid rgba(215, 168, 79, 0.74);
-  background: rgba(215, 168, 79, 0.12);
+  border: 1px solid var(--split-drop-border);
+  background: var(--split-drop-bg);
   box-shadow:
     inset 0 0 0 1px rgba(255, 239, 197, 0.12),
-    0 0 18px rgba(215, 168, 79, 0.12);
+    0 0 18px var(--split-drop-bg);
   pointer-events: none;
 }
 
@@ -42,7 +42,7 @@
   top: 50%;
   height: 2px;
   transform: translateY(-1px);
-  background: rgba(255, 220, 143, 0.78);
+  background: var(--split-border-active);
 }
 
 .terminal-split-resizer,
