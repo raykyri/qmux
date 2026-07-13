@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   RESEARCH_DOCUMENT_BYTE_LIMIT,
   RESEARCH_DOCUMENT_WORD_LIMIT,
+  ResearchDocumentWordLimitExceeded,
   countResearchDocumentWords,
   deriveResearchDocumentTitle,
 } from "../../lib/researchDocuments";
@@ -12,6 +13,7 @@ import {
 
 interface NewDocumentDialogProps {
   open: boolean;
+  initialMarkdown?: string;
   workspaceId: string | null;
   onClose: () => void;
   onCreate: (input: {
@@ -28,6 +30,7 @@ interface NewDocumentDialogProps {
  * explicit button. */
 export default function NewDocumentDialog({
   open,
+  initialMarkdown = "",
   workspaceId,
   onClose,
   onCreate,
@@ -43,28 +46,38 @@ export default function NewDocumentDialog({
     if (!open) {
       return;
     }
-    setMarkdown("");
+    setMarkdown(initialMarkdown);
     setTitle("");
     setSubmitting(false);
     setError(null);
-  }, [open]);
+  }, [initialMarkdown, open]);
 
-  // Memoized on the body: these walk the whole document (up to hundreds of
-  // KB), and without the memo every title-field keystroke re-scanned it.
-  const { wordCount, byteCount, derivedTitle } = useMemo(
-    () => ({
-      wordCount: countResearchDocumentWords(markdown),
+  // Memoized on the body: these walk the whole document (up to 10 MB), and
+  // without the memo every title-field keystroke re-scanned it.
+  const { wordCount, byteCount, derivedTitle, overWordLimit } = useMemo(() => {
+    let wordCount: number;
+    let overWordLimit = false;
+    try {
+      wordCount = countResearchDocumentWords(markdown, RESEARCH_DOCUMENT_WORD_LIMIT);
+    } catch (error) {
+      if (!(error instanceof ResearchDocumentWordLimitExceeded)) {
+        throw error;
+      }
+      wordCount = error.count;
+      overWordLimit = true;
+    }
+    return {
+      wordCount,
+      overWordLimit,
       byteCount: new TextEncoder().encode(markdown).length,
       derivedTitle: markdown.trim() ? deriveResearchDocumentTitle(markdown) : "",
-    }),
-    [markdown],
-  );
+    };
+  }, [markdown]);
 
   if (!open) {
     return null;
   }
 
-  const overWordLimit = wordCount > RESEARCH_DOCUMENT_WORD_LIMIT;
   const overByteLimit = byteCount > RESEARCH_DOCUMENT_BYTE_LIMIT;
   const pristine = !markdown.trim() && !title.trim();
   const canSubmit = Boolean(markdown.trim()) && !overWordLimit && !overByteLimit && !submitting;
@@ -156,7 +169,7 @@ export default function NewDocumentDialog({
             }
           >
             {wordCount.toLocaleString()} / {RESEARCH_DOCUMENT_WORD_LIMIT.toLocaleString()} words
-            {overByteLimit ? " · over the 2 MB size limit" : ""}
+            {overByteLimit ? " · over the 10 MB size limit" : ""}
           </span>
           {error ? (
             <p className="new-document-error" role="alert">

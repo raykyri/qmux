@@ -23,6 +23,7 @@ import {
   EyeOff,
   Expand,
   FileText,
+  FileUp,
   Folder,
   Globe,
   GitBranch,
@@ -44,6 +45,7 @@ import {
   SquareTerminal,
   X,
 } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import { CODEX_ADAPTER_ID } from "./adapters/codex";
@@ -83,6 +85,7 @@ import {
 import ResearchDocument from "./components/research/ResearchDocument";
 import NewDocumentDialog from "./components/research/NewDocumentDialog";
 import NewResearchDialog from "./components/research/NewResearchDialog";
+import { isMarkdownDocumentPath } from "./lib/researchDocuments";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
   agentStatusLabel,
@@ -268,6 +271,7 @@ import {
   renameGroup,
   renamePane,
   reorderGroups,
+  readMarkdownDocumentFile,
   restoreLastClosedPane,
   setLauncherAdapterPreference,
   setActiveTab,
@@ -1460,6 +1464,11 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newResearchOpen, setNewResearchOpen] = useState(false);
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
+  const [newDocumentInitialMarkdown, setNewDocumentInitialMarkdown] = useState("");
+  const [markdownDropTargetActive, setMarkdownDropTargetActive] = useState(false);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const markdownImportRequestSeqRef = useRef(0);
+  const markdownDropBlockedRef = useRef(false);
   const [researchAdapterCycleNonce, setResearchAdapterCycleNonce] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   // Saved prompts shown in the palette's "Insert prompt" section, refreshed on
@@ -4955,8 +4964,170 @@ export default function App() {
   }, [setSidebarMode]);
   const createDocumentFromSidebar = useCallback(() => {
     setSidebarMode("research");
+    setNewDocumentInitialMarkdown("");
     setNewDocumentOpen(true);
   }, [setSidebarMode]);
+
+  // Native drag events bypass DOM modal backdrops. Keep the always-on listener
+  // from stacking a document composer over another modal or replacing a draft
+  // that is already being edited.
+  const markdownDropBlocked =
+    settingsOpen ||
+    newResearchOpen ||
+    newDocumentOpen ||
+    commandPaletteOpen ||
+    Boolean(
+      closeDialog ||
+        exitDialog ||
+        exitPreflightRequest ||
+        renamePaneId ||
+        renameGroupId ||
+        settingsMenu ||
+        groupMenu ||
+        paneContextMenu ||
+        linkMenu,
+    );
+  markdownDropBlockedRef.current = markdownDropBlocked;
+
+  useEffect(() => {
+    if (!markdownDropBlocked && sidebarMode === "research") {
+      return;
+    }
+    // Cancel a read even if the intervening modal/mode switch closes before
+    // its backend work finishes; that stale completion must not reopen a
+    // composer after the user has moved on.
+    markdownImportRequestSeqRef.current += 1;
+    setMarkdownDropTargetActive(false);
+  }, [markdownDropBlocked, sidebarMode]);
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let unlistenDrop: (() => void) | null = null;
+    let unlistenScale: (() => void) | null = null;
+    let markdownDragEligible = false;
+    let scaleFactor = globalThis.devicePixelRatio || 1;
+    let scaleFactorRevision = 0;
+
+    const isOverSidebar = (position: { x: number; y: number }) => {
+      const bounds = sidebarRef.current?.getBoundingClientRect();
+      if (!bounds) {
+        return false;
+      }
+      const x = position.x / scaleFactor;
+      const y = position.y / scaleFactor;
+      return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
+    };
+    const showDropTarget = (position: { x: number; y: number }) => {
+      const active =
+        markdownDragEligible &&
+        !markdownDropBlockedRef.current &&
+        sidebarModeRef.current === "research" &&
+        isOverSidebar(position);
+      setMarkdownDropTargetActive(active);
+      return active;
+    };
+
+    const initialScaleFactorRevision = scaleFactorRevision;
+    void appWindow
+      .scaleFactor()
+      .then((factor) => {
+        if (!disposed && factor > 0 && scaleFactorRevision === initialScaleFactorRevision) {
+          scaleFactor = factor;
+        }
+      })
+      .catch(() => undefined);
+    void appWindow
+      .onScaleChanged(({ payload }) => {
+        if (disposed) {
+          return;
+        }
+        scaleFactorRevision += 1;
+        scaleFactor = payload.scaleFactor;
+        // Wait for the next native `over` event to re-evaluate the physical
+        // pointer against the CSS bounds using the new display scale.
+        setMarkdownDropTargetActive(false);
+      })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlistenScale = stopListening;
+        }
+      })
+      .catch(() => undefined);
+    void appWindow
+      .onDragDropEvent(({ payload }) => {
+        if (disposed) {
+          return;
+        }
+        if (payload.type === "leave") {
+          markdownDragEligible = false;
+          setMarkdownDropTargetActive(false);
+          return;
+        }
+        if (payload.type === "enter") {
+          markdownDragEligible =
+            payload.paths.length === 1 && isMarkdownDocumentPath(payload.paths[0]);
+          showDropTarget(payload.position);
+          return;
+        }
+        if (payload.type === "over") {
+          showDropTarget(payload.position);
+          return;
+        }
+
+        const droppedPath = payload.paths.length === 1 ? payload.paths[0] : null;
+        const shouldImport =
+          Boolean(droppedPath && isMarkdownDocumentPath(droppedPath)) &&
+          !markdownDropBlockedRef.current &&
+          sidebarModeRef.current === "research" &&
+          isOverSidebar(payload.position);
+        markdownDragEligible = false;
+        setMarkdownDropTargetActive(false);
+        if (!shouldImport || !droppedPath) {
+          return;
+        }
+        const requestSeq = ++markdownImportRequestSeqRef.current;
+        setError(null);
+        void readMarkdownDocumentFile(droppedPath)
+          .then((markdown) => {
+            if (
+              disposed ||
+              requestSeq !== markdownImportRequestSeqRef.current ||
+              markdownDropBlockedRef.current ||
+              sidebarModeRef.current !== "research"
+            ) {
+              return;
+            }
+            setNewDocumentInitialMarkdown(markdown);
+            setNewDocumentOpen(true);
+          })
+          .catch((err) => {
+            if (
+              !disposed &&
+              requestSeq === markdownImportRequestSeqRef.current &&
+              !markdownDropBlockedRef.current
+            ) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          });
+      })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlistenDrop = stopListening;
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unlistenDrop?.();
+      unlistenScale?.();
+    };
+  }, []);
   const chooseResearchWorkspaceFolder = useCallback(async (): Promise<GroupInfo | null> => {
     setError(null);
     setFolderPickerStatus("Opening folder picker…");
@@ -8858,6 +9029,7 @@ export default function App() {
         onKeyDown={resizeSidebarWithKeyboard}
       />
       <aside
+        ref={sidebarRef}
         className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}${
           settings.codeMode ? " is-code-mode" : ""
         }`}
@@ -9235,6 +9407,13 @@ export default function App() {
             <Settings size={14} aria-hidden="true" />
           </button>
         </div>
+        {markdownDropTargetActive ? (
+          <div className="research-markdown-drop-overlay" role="status" aria-live="polite">
+            <FileUp size={34} strokeWidth={1.5} aria-hidden="true" />
+            <strong>Drop Markdown file</strong>
+            <span>Open it in a new document</span>
+          </div>
+        ) : null}
       </aside>
 
       {settingsMenu ? (
@@ -10933,8 +11112,12 @@ export default function App() {
 
       <NewDocumentDialog
         open={newDocumentOpen}
+        initialMarkdown={newDocumentInitialMarkdown}
         workspaceId={researchScope}
-        onClose={() => setNewDocumentOpen(false)}
+        onClose={() => {
+          setNewDocumentOpen(false);
+          setNewDocumentInitialMarkdown("");
+        }}
         onCreate={submitNewDocument}
       />
 

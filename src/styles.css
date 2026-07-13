@@ -1518,6 +1518,41 @@ button:disabled {
   user-select: none;
 }
 
+/* Native Finder drops are reported at the window level, so this overlay is
+   purely presentational. It covers the complete Research sidebar without
+   intercepting the drop and makes the active target unmistakable. */
+.research-markdown-drop-overlay {
+  position: absolute;
+  inset: 30px 5px 5px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 2px dashed rgba(111, 211, 190, 0.82);
+  border-radius: 12px;
+  color: #dff8f1;
+  background: rgba(15, 25, 25, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(215, 255, 246, 0.06);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.research-markdown-drop-overlay svg {
+  color: #80d9c6;
+}
+
+.research-markdown-drop-overlay strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.research-markdown-drop-overlay span {
+  color: #91a59f;
+  font-size: 12px;
+}
+
 /* Draggable strip over the cleared area at the top of the sidebar so the
    frameless window can still be moved. Sits below the resizer's stacking layer so
    the top-right resize grab keeps working, and below the native traffic-light

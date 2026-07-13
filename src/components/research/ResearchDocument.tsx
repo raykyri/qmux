@@ -1022,7 +1022,7 @@ export default function ResearchDocument({
   );
   // Memoized because this component renders several times a second while a run
   // streams (detail replacements, the duration tick, every composer keystroke),
-  // and the regex walks — and allocates a match array over — the entire answer.
+  // and the word scanner walks the entire answer.
   const answerWordCount = useMemo(() => countResearchDocumentWords(rawAnswer), [rawAnswer]);
 
   // Diagram rendering and other child-owned Markdown controls can replace text

@@ -302,6 +302,13 @@ export function createResearchDocument(request: {
   return invoke<ResearchTreeDetail>("create_research_document", { request });
 }
 
+/** Reads a Markdown file selected through the native window drop API. The
+ * backend enforces the extension, UTF-8 encoding, regular-file requirement,
+ * and document byte cap before returning any content to the webview. */
+export function readMarkdownDocumentFile(path: string) {
+  return invoke<string>("read_markdown_document_file", { path });
+}
+
 export function getResearchNodeContent(nodeId: string) {
   return invoke<ResearchNodeContent>("get_research_node_content", { nodeId });
 }

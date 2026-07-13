@@ -7,16 +7,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub const MAX_RESPONSE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
-pub const MAX_RESPONSE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+/// A 10 MB document can expand to almost 60 MB when JSON escapes control
+/// characters, so snapshots need enough encoded headroom to honor the document
+/// admission limit even for unusual but valid UTF-8 Markdown files.
+pub const MAX_RESPONSE_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_RESEARCH_HIGHLIGHTS_PER_NODE: usize = 500;
 pub const MAX_RESEARCH_HIGHLIGHT_BYTES_PER_NODE: usize = 512 * 1024;
 pub const MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL: usize = 4 * 1024 * 1024;
 pub const MAX_RESEARCH_DOCUMENT_WORDS: usize = 10_000;
-/// Backstop for word-sparse pastes (one giant token counts as one word):
-/// far above any real 10k-word document, comfortably under the 16MB snapshot
-/// cap even at worst-case JSON escaping, and cheap to name in an error —
-/// unlike the snapshot writer's "too large to render safely".
-pub const MAX_RESEARCH_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
+/// Backstop for word-sparse documents (one giant token counts as one word).
+/// Imports and the composer both advertise this exact limit.
+pub const MAX_RESEARCH_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 4;
 /// Written for archives that contain no document nodes, so they stay readable
 /// by pre-documents builds (which accept versions 1–3).
@@ -1142,6 +1143,48 @@ pub fn document_word_count(markdown: &str) -> usize {
     markdown.split_whitespace().count()
 }
 
+/// Reads one native file drop without ever buffering more than the advertised
+/// document limit. Checking both metadata and the limited stream handles a
+/// file that grows between inspection and reading (and avoids unbounded reads
+/// from special files).
+pub fn read_markdown_document_file(path: &Path) -> Result<String, String> {
+    let is_markdown = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        });
+    if !is_markdown {
+        return Err("only .md and .markdown files can be imported".to_string());
+    }
+
+    let metadata =
+        fs::metadata(path).map_err(|err| format!("failed to inspect {}: {err}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    if metadata.len() > MAX_RESEARCH_DOCUMENT_BYTES as u64 {
+        return Err(format!(
+            "Markdown files are limited to {} MB",
+            MAX_RESEARCH_DOCUMENT_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let file =
+        fs::File::open(path).map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_RESEARCH_DOCUMENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    if bytes.len() > MAX_RESEARCH_DOCUMENT_BYTES {
+        return Err(format!(
+            "Markdown files are limited to {} MB",
+            MAX_RESEARCH_DOCUMENT_BYTES / (1024 * 1024)
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| "Markdown files must be valid UTF-8".to_string())
+}
+
 pub fn validate_document_markdown(markdown: &str) -> Result<(), String> {
     if markdown.trim().is_empty() {
         return Err("document content cannot be empty".to_string());
@@ -1566,6 +1609,35 @@ mod tests {
         // (tests/researchDocuments.test.ts): NEL separates, FEFF does not.
         assert_eq!(document_word_count("a\u{85}b"), 2);
         assert_eq!(document_word_count("a\u{FEFF}b"), 1);
+    }
+
+    #[test]
+    fn markdown_file_import_is_bounded_and_requires_utf8_markdown() {
+        let folder = temp_workspace();
+        let markdown = folder.join("notes.MD");
+        fs::write(&markdown, "# Imported\n\nBody").unwrap();
+        assert_eq!(
+            read_markdown_document_file(&markdown).unwrap(),
+            "# Imported\n\nBody"
+        );
+
+        let wrong_extension = folder.join("notes.txt");
+        fs::write(&wrong_extension, "text").unwrap();
+        assert!(read_markdown_document_file(&wrong_extension).is_err());
+
+        let invalid_utf8 = folder.join("invalid.markdown");
+        fs::write(&invalid_utf8, [0xff]).unwrap();
+        let error = read_markdown_document_file(&invalid_utf8).unwrap_err();
+        assert!(error.contains("UTF-8"), "{error}");
+
+        let oversized = folder.join("oversized.md");
+        let file = fs::File::create(&oversized).unwrap();
+        file.set_len(MAX_RESEARCH_DOCUMENT_BYTES as u64 + 1)
+            .unwrap();
+        let error = read_markdown_document_file(&oversized).unwrap_err();
+        assert!(error.contains("10 MB"), "{error}");
+
+        fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

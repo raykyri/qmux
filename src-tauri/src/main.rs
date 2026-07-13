@@ -794,6 +794,15 @@ async fn create_research_document(
     .map_err(|err| format!("create_research_document task failed: {err}"))?
 }
 
+#[tauri::command]
+async fn read_markdown_document_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        research::read_markdown_document_file(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|err| format!("read_markdown_document_file task failed: {err}"))?
+}
+
 /// The tree is committed before its root run launches so a crash mid-launch is
 /// recoverable, but a root that never launched holds nothing durable. Leaving
 /// it behind on a launch failure accumulated dead entries the caller could not
@@ -1857,6 +1866,7 @@ fn main() {
             get_research_tree,
             create_research_tree,
             create_research_document,
+            read_markdown_document_file,
             get_research_node_content,
             fork_research_node,
             cancel_research_node,
