@@ -252,6 +252,23 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
     let mut alternate_screen = false;
 
     while index < bytes.len() {
+        // Multi-byte UTF-8 text must be consumed whole: its continuation bytes
+        // share 0x80-0x9f with raw C1 controls, so scanning them individually
+        // would open a phantom string control inside e.g. an emoji and swallow
+        // everything after it. `c1_control_at` is checked first only so that a
+        // C2-prefixed C1 (a real control character in UTF-8) keeps its control
+        // handling below.
+        if c1_control_at(bytes, index).is_none() {
+            let utf8_len = valid_utf8_sequence_len(bytes, index);
+            if utf8_len > 1 {
+                if !alternate_screen {
+                    output.extend_from_slice(&bytes[index..index + utf8_len]);
+                }
+                index += utf8_len;
+                continue;
+            }
+        }
+
         let (code, prefix_len) = c1_control_at(bytes, index)
             .map(|control| (control.0, control.1))
             .unwrap_or((bytes[index], 1));
@@ -566,6 +583,27 @@ mod tests {
     fn replay_sanitizer_preserves_sgr_cursor_and_utf8() {
         let input = "\x1b[38;2;10;20;30mhello\x1b[6G世界\x1b[39m\r\n".as_bytes();
         assert_eq!(sanitize_scrollback_replay(input), input);
+    }
+
+    // Continuation bytes of these characters fall in 0x80-0x9f: 😀 ends in
+    // 0x9f 0x98 0x80 (APC/SOS), ” ends in 0x9d (OSC), ⠛ ends in 0x9b (CSI),
+    // ם ends in 0x9d. None may be read as a raw C1 control.
+    #[test]
+    fn replay_sanitizer_preserves_utf8_with_c1_valued_continuation_bytes() {
+        let input = "before 😀 “quoted” ⠛ שלום after\r\nmore output\r\n".as_bytes();
+        assert_eq!(sanitize_scrollback_replay(input), input);
+    }
+
+    #[test]
+    fn replay_sanitizer_still_strips_c2_prefixed_c1_string_controls() {
+        let input = b"before\xc2\x9d0;secret title\x07after";
+        assert_eq!(sanitize_scrollback_replay(input), b"beforeafter");
+    }
+
+    #[test]
+    fn replay_sanitizer_drops_utf8_text_inside_alternate_screen() {
+        let input = "before\r\n\x1b[?1049h😀 hidden\r\n\x1b[?1049lafter\r\n".as_bytes();
+        assert_eq!(sanitize_scrollback_replay(input), b"before\r\nafter\r\n");
     }
 
     #[test]
