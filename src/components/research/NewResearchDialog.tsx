@@ -52,7 +52,6 @@ export default function NewResearchDialog({
   const [adapter, setAdapter] = useState("");
   const [modelChoice, setModelChoice] = useState<string | null>(null);
   const [customModel, setCustomModel] = useState("");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // Shown inside the dialog: a global banner renders behind the modal
   // backdrop, so a failed launch (bad model name, missing folder…) looked
@@ -75,7 +74,6 @@ export default function NewResearchDialog({
     setPrompt("");
     setModelChoice(null);
     setCustomModel("");
-    setAdvancedOpen(false);
     setError(null);
     setAdapter(adapters.find((candidate) => candidate.default)?.id ?? adapters[0]?.id ?? "");
   }, [open]);
@@ -124,13 +122,8 @@ export default function NewResearchDialog({
   const modelPresets = modelPresetsFor(adapter);
   const selectedModel =
     modelChoice && modelPresets.includes(modelChoice) ? modelChoice : modelPresets[0];
-  // The model only applies while the "Select model" section is open; unchecked
-  // launches keep the agent default, as before.
-  const resolvedModel = !advancedOpen
-    ? null
-    : selectedModel === CUSTOM_MODEL
-      ? customModel.trim() || null
-      : selectedModel;
+  const resolvedModel =
+    selectedModel === CUSTOM_MODEL ? customModel.trim() || null : selectedModel;
 
   async function submit() {
     if (!prompt.trim() || !adapter || submitting) {
@@ -199,14 +192,23 @@ export default function NewResearchDialog({
         />
         <div className="command-launcher-overlay">
           <div className="command-launcher-overlay-group">
-            <label className="command-launcher-worktree new-research-advanced-toggle">
-              <input
-                type="checkbox"
-                checked={advancedOpen}
-                onChange={(event) => setAdvancedOpen(event.currentTarget.checked)}
+            <div className="command-launcher-options new-research-model-controls">
+              <LauncherSelect
+                value={selectedModel}
+                options={modelPresets.map((preset) => ({ value: preset, label: preset }))}
+                ariaLabel="Model"
+                onChange={setModelChoice}
               />
-              <span>Select model</span>
-            </label>
+              {selectedModel === CUSTOM_MODEL ? (
+                <input
+                  type="text"
+                  value={customModel}
+                  placeholder="Model name"
+                  aria-label="Custom model"
+                  onChange={(event) => setCustomModel(event.currentTarget.value)}
+                />
+              ) : null}
+            </div>
           </div>
           <div className="command-launcher-controls">
             <div className="command-launcher-adapter-select">
@@ -232,7 +234,7 @@ export default function NewResearchDialog({
           </div>
         </div>
       </div>
-      {adapters.length === 0 || error || advancedOpen ? (
+      {adapters.length === 0 || error ? (
         <div className="new-research-footer">
           {adapters.length === 0 ? (
             <p className="new-research-unavailable" role="alert">
@@ -243,28 +245,6 @@ export default function NewResearchDialog({
             <p className="new-research-error" role="alert">
               {error}
             </p>
-          ) : null}
-          {advancedOpen ? (
-            <div className="new-research-model">
-              <span>Model</span>
-              <div className="new-research-model-controls">
-                <LauncherSelect
-                  value={selectedModel}
-                  options={modelPresets.map((preset) => ({ value: preset, label: preset }))}
-                  ariaLabel="Model"
-                  onChange={setModelChoice}
-                />
-                {selectedModel === CUSTOM_MODEL ? (
-                  <input
-                    type="text"
-                    value={customModel}
-                    placeholder="Model name"
-                    aria-label="Custom model"
-                    onChange={(event) => setCustomModel(event.currentTarget.value)}
-                  />
-                ) : null}
-              </div>
-            </div>
           ) : null}
         </div>
       ) : null}

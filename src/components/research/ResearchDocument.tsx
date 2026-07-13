@@ -1654,7 +1654,7 @@ export default function ResearchDocument({
                               : ["queued", "starting", "running"].includes(displayNode.status)
                                 ? timelineItems.length > 0
                                   ? "Waiting for the final response…"
-                                  : "Waiting for the response…"
+                                  : "Working..."
                                 : "No response is available."}
                     </p>
                   ) : (

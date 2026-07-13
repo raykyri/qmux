@@ -1150,30 +1150,31 @@
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.new-research-model {
-  display: grid;
-  gap: 5px;
-  max-width: 360px;
-  color: #8f9893;
-  font-size: 11px;
-}
-
 .new-research-model-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-wrap: nowrap;
 }
 
-.new-research-model input {
-  flex: 1;
+.new-research-model-controls input {
+  flex: 1 1 150px;
   min-width: 0;
-  height: 28px;
-  padding: 0 9px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
+  width: 150px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: var(--radius-lg);
   color: #f1f0e8;
-  background: #111315;
-  font-size: var(--fs-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.new-research-model-controls input:hover,
+.new-research-model-controls input:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.new-research-model-controls input::placeholder {
+  color: var(--placeholder-color);
 }
 
 .new-research-unavailable {
