@@ -4892,7 +4892,7 @@ button.home-cascade-wait-pill:focus-visible {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 8px;
+  padding: 6px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -4911,16 +4911,26 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 /* Prompts are titleless: the row is the prompt text itself, clamped to two
-   physical lines so long prompts stay scannable. */
+   physical lines so long prompts stay scannable. Slightly dimmed from full
+   foreground so a list of multi-line rows doesn't read as one wall of text. */
 .prompt-library-item-text {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  color: #c9cfc9;
   font-size: var(--fs-base);
   line-height: 1.35;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.prompt-library-item-main:hover:not(:disabled) .prompt-library-item-text {
+  color: #e7e7e2;
+}
+
+.prompt-library-item-main:disabled .prompt-library-item-text {
+  color: inherit;
 }
 
 /* The row's single action: a floating "…" trigger that overlays the row's right
@@ -4935,10 +4945,11 @@ button.home-cascade-wait-pill:focus-visible {
   justify-content: center;
   width: 22px;
   height: 22px;
-  border: 1px solid #343b3e;
+  border: 1px solid #3a4245;
   border-radius: 5px;
-  background: #2c3437;
-  color: #aab3ae;
+  background: #2f383b;
+  color: #b6bfba;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   transform: translateY(-50%);
   cursor: pointer;
   opacity: 0;
@@ -5038,7 +5049,9 @@ button.home-cascade-wait-pill:focus-visible {
 
 .prompt-library-section.is-drop-target {
   border-color: var(--accent-color);
-  background: var(--accent-shadow);
+  /* A light wash, not the full accent-shadow flood: the dashed border already
+     marks the target, the tint just confirms the whole section is live. */
+  background: rgba(143, 214, 199, 0.08);
 }
 
 .prompt-library-section-header {
@@ -5081,8 +5094,16 @@ button.home-cascade-wait-pill:focus-visible {
 .prompt-library-divider {
   height: 1px;
   flex: none;
-  margin: 4px 5px;
+  margin: 7px 5px;
   background: #2a2d2f;
+}
+
+/* Names the fill-in step above the prompt's first-line heading. */
+.prompt-library-kicker {
+  padding: 0 2px;
+  color: #8a938e;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .prompt-library-scope-picker {
@@ -5221,15 +5242,18 @@ button.home-cascade-wait-pill:focus-visible {
   min-height: 160px;
 }
 
-/* First line of the prompt being deleted, quoted in the confirm dialog. */
+/* The prompt being deleted, quoted in the confirm dialog. Two clamped lines:
+   enough to recognize the prompt without the dialog growing unbounded. */
 .confirm-dialog .prompt-delete-snippet {
+  display: -webkit-box;
   overflow: hidden;
-  padding: 6px 10px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  padding: 2px 10px;
   border-left: 2px solid #3b4447;
   color: #8a938e;
   font-style: italic;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .turn-pane-floating-controls {

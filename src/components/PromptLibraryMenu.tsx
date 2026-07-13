@@ -600,6 +600,9 @@ export default function PromptLibraryMenu({
     const visible = (prompts ?? []).filter(
       (prompt) => prompt.scope === scope && matchesQuery(prompt),
     );
+    // Mention drag-and-drop only when the other scope actually has something to
+    // drag; an entirely empty library gets plain copy instead of a dead hint.
+    const otherScopeHasPrompts = (prompts ?? []).some((prompt) => prompt.scope !== scope);
     return (
       <div
         className={`prompt-library-section${dropScope === scope ? " is-drop-target" : ""}`}
@@ -630,7 +633,11 @@ export default function PromptLibraryMenu({
           <div className="prompt-library-empty">Loading…</div>
         ) : visible.length === 0 ? (
           <div className="prompt-library-empty">
-            {query.length > 0 ? "No matches" : "No prompts — drop one here"}
+            {query.length > 0
+              ? "No matches"
+              : otherScopeHasPrompts
+                ? "No prompts — drop one here"
+                : "No prompts yet"}
           </div>
         ) : (
           visible.map(promptRow)
@@ -665,6 +672,7 @@ export default function PromptLibraryMenu({
   const fillView =
     view.kind === "fill" ? (
       <>
+        <div className="prompt-library-kicker">Insert prompt</div>
         <div className="prompt-library-heading prompt-library-heading-snippet">
           {promptFirstLine(view.prompt.content)}
         </div>
@@ -802,7 +810,7 @@ export default function PromptLibraryMenu({
         }}
       >
         <h2>Delete prompt?</h2>
-        <p className="prompt-delete-snippet">{promptFirstLine(dialog.prompt.content)}</p>
+        <p className="prompt-delete-snippet">{dialog.prompt.content.trim() || "(empty)"}</p>
         {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
         <div className="confirm-dialog-actions">
           <button type="button" onClick={closeDialog}>
