@@ -34,7 +34,7 @@ matching UI adapter on the frontend.
 - Saved prompt library: prompts as Markdown files with global and
   per-project scopes, `{placeholder}` fill-in, and a `Cmd-K` command
   palette covering prompts, tab navigation, and pane actions.
-- App settings: terminal font, size, and theme (the qmux default plus
+- App settings: body font, terminal font and size, and theme (the qmux default plus
   the bundled Ghostty color schemes), mouse wheel sensitivity, and a
   macOS wake lock that keeps the machine awake while agents are running
   (skipped on battery below 10%).

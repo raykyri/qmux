@@ -182,6 +182,7 @@ import {
 } from "./lib/sidebarMode";
 import { stripTaggedUserInstructionBlocks } from "./lib/taggedInstructions";
 import {
+  bodyFontStackFor,
   clampConfirmPasteOverChars,
   clampFontSize,
   clampLineHeight,
@@ -190,6 +191,8 @@ import {
   CONFIRM_PASTE_OVER_CHARS_MIN,
   CURSOR_STYLE_OPTIONS,
   DEFAULT_THEME_ID,
+  DEFAULT_BODY_FONT_ID,
+  detectAvailableBodyFonts,
   FONT_OPTIONS,
   fontStackFor,
   nativeFontFamilyFor,
@@ -204,9 +207,11 @@ import {
   SCROLLBACK_ROWS_MAX,
   SCROLLBACK_ROWS_MIN,
   scrollSensitivityFor,
+  SYSTEM_BODY_FONT_ID,
   TAB_TITLE_PROVIDER_OPTIONS,
   WORKTREE_LOCATION_OPTIONS,
   type AppSettings,
+  type BodyFontOption,
 } from "./lib/settings";
 import {
   acknowledgeAgent,
@@ -1461,6 +1466,7 @@ export default function App() {
   // persisted on every change. Shared by every pane. Font size is also adjustable
   // in-session with Cmd-=/Cmd--.
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [availableBodyFonts, setAvailableBodyFonts] = useState<BodyFontOption[] | null>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1504,11 +1510,38 @@ export default function App() {
     !showHideShortcutSetting.captureActive
       ? "Shortcut is saved but not active."
       : null);
+  const bodyFontFamily = bodyFontStackFor(settings.bodyFontId);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
   const terminalNativeFontFamily = nativeFontFamilyFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
+
+  useEffect(() => {
+    let disposed = false;
+    void detectAvailableBodyFonts().then((availableFonts) => {
+      if (disposed) {
+        return;
+      }
+
+      setAvailableBodyFonts(availableFonts);
+      setSettings((current) => {
+        if (availableFonts.some((option) => option.id === current.bodyFontId)) {
+          return current;
+        }
+        const fallbackBodyFontId =
+          availableFonts.find((option) => option.id === DEFAULT_BODY_FONT_ID)?.id ??
+          availableFonts.find((option) => option.id === SYSTEM_BODY_FONT_ID)?.id ??
+          DEFAULT_BODY_FONT_ID;
+        return { ...current, bodyFontId: fallbackBodyFontId };
+      });
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   // Seed the native host with the current terminal settings so a pane created
   // later can build its Ghostty surface at creation time instead of waiting
   // for its own mount-time settings round-trip (which trails pane spawn by a
@@ -4033,6 +4066,7 @@ export default function App() {
   const transcriptExpandedLineHeightDelta = activeTranscriptVisibleExpanded ? 0.1 : 0;
 
   const appStyle = {
+    "--font-ui": bodyFontFamily,
     "--sidebar-width": `${sidebarWidth}px`,
     "--browser-overlay-left": `${BROWSER_OVERLAY_LEFT_MARGIN}px`,
     "--turn-font-delta": `${turnFontDelta}px`,
@@ -9969,6 +10003,32 @@ export default function App() {
                   ) : null}
                 </select>
               </div>
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="settings-body-font" className="settings-label">
+                Body font
+              </label>
+              <select
+                id="settings-body-font"
+                className="settings-select"
+                value={availableBodyFonts === null ? "" : settings.bodyFontId}
+                disabled={availableBodyFonts === null}
+                onChange={(event) => {
+                  const bodyFontId = event.currentTarget.value;
+                  setSettings((current) => ({ ...current, bodyFontId }));
+                }}
+              >
+                {availableBodyFonts === null ? (
+                  <option value="">Detecting installed fonts…</option>
+                ) : (
+                  availableBodyFonts.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div className="settings-row">

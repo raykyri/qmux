@@ -1378,7 +1378,7 @@
   --control-fg-muted: #b9c0bc;
   --focus-ring: #6cae9d;
 
-  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+  --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", monospace;
@@ -1483,6 +1483,7 @@ button:disabled {
   min-height: 0;
   overflow: hidden;
   border-top: 1px solid #2a2d2f;
+  font-family: var(--font-ui);
   /* Paint the content opaque but leave the sidebar column transparent, so the
      window's vibrancy material shows through only behind the sidebar. The hard
      stop tracks the same --sidebar-width the grid uses. */

@@ -24,6 +24,76 @@ export interface FontOption {
   letterSpacing?: number;
 }
 
+export interface BodyFontOption {
+  id: string;
+  label: string;
+  /** Full CSS font-family stack applied to non-terminal app UI. */
+  stack: string;
+  /** Full/PostScript local face names used to verify an optional installed font. */
+  localNames?: readonly string[];
+}
+
+const SYSTEM_BODY_FONT_STACK =
+  'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+export const BODY_FONT_OPTIONS: BodyFontOption[] = [
+  {
+    id: "inter",
+    label: "Inter",
+    stack: `"Inter", ${SYSTEM_BODY_FONT_STACK}`,
+    localNames: ["Inter Regular", "Inter-Regular"],
+  },
+  {
+    id: "anthropic-sans-text",
+    label: "Anthropic Sans Text",
+    // Personal-use font referenced from the host system; do not bundle its files.
+    stack: `"Anthropic Sans Text", ${SYSTEM_BODY_FONT_STACK}`,
+    localNames: ["Anthropic Sans Text Regular", "AnthropicSansText-Regular"],
+  },
+  {
+    id: "system",
+    label: "System",
+    stack: SYSTEM_BODY_FONT_STACK,
+  },
+];
+
+export const DEFAULT_BODY_FONT_ID = BODY_FONT_OPTIONS[0].id;
+export const SYSTEM_BODY_FONT_ID = "system";
+
+function localFontSource(localName: string): string {
+  const escapedName = localName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `local("${escapedName}")`;
+}
+
+async function localFontIsAvailable(localName: string): Promise<boolean> {
+  try {
+    const probe = new FontFace("__qmux_local_font_probe__", localFontSource(localName));
+    await probe.load();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns generic fonts plus locally installed optional faces, in menu order. */
+export async function detectAvailableBodyFonts(): Promise<BodyFontOption[]> {
+  if (typeof FontFace === "undefined") {
+    return BODY_FONT_OPTIONS.filter((option) => option.localNames === undefined);
+  }
+
+  const availability = await Promise.all(
+    BODY_FONT_OPTIONS.map(async (option) => {
+      if (option.localNames === undefined) {
+        return true;
+      }
+      const matches = await Promise.all(option.localNames.map(localFontIsAvailable));
+      return matches.some(Boolean);
+    }),
+  );
+
+  return BODY_FONT_OPTIONS.filter((_option, index) => availability[index]);
+}
+
 // Shared fallback chain so a face that is missing on the host degrades to the
 // platform monospace rather than a proportional font.
 const MONO_FALLBACK =
@@ -114,6 +184,8 @@ export const CONFIRM_PASTE_OVER_CHARS_MIN = 1;
 export const CONFIRM_PASTE_OVER_CHARS_MAX = 5_000_000;
 
 export interface AppSettings {
+  /** id into BODY_FONT_OPTIONS */
+  bodyFontId: string;
   /** id into FONT_OPTIONS */
   fontId: string;
   /** terminal color theme: DEFAULT_THEME_ID or a catalog scheme name */
@@ -185,6 +257,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  bodyFontId: DEFAULT_BODY_FONT_ID,
   fontId: DEFAULT_FONT_ID,
   themeId: DEFAULT_THEME_ID,
   fontSize: TERMINAL_FONT_SIZE,
@@ -212,6 +285,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   stickyUserMessages: true,
   requireCmdEnterToSend: true,
 };
+
+/** Resolves a stored body font id to its CSS stack, falling back to the default. */
+export function bodyFontStackFor(bodyFontId: string): string {
+  return (
+    BODY_FONT_OPTIONS.find((option) => option.id === bodyFontId) ?? BODY_FONT_OPTIONS[0]
+  ).stack;
+}
 
 /** Resolves a stored font id to its CSS stack, falling back to the default. */
 export function fontStackFor(fontId: string): string {
@@ -294,6 +374,11 @@ export function loadSettings(): AppSettings {
     const parsed = JSON.parse(raw) as Partial<AppSettings> & {
       openRouterTitlesEnabled?: boolean;
     };
+    const bodyFontId =
+      typeof parsed.bodyFontId === "string" &&
+      BODY_FONT_OPTIONS.some((option) => option.id === parsed.bodyFontId)
+        ? parsed.bodyFontId
+        : DEFAULT_BODY_FONT_ID;
     const fontId =
       typeof parsed.fontId === "string" && FONT_OPTIONS.some((option) => option.id === parsed.fontId)
         ? parsed.fontId
@@ -399,6 +484,7 @@ export function loadSettings(): AppSettings {
         ? parsed.openRouterModel
         : DEFAULT_SETTINGS.openRouterModel;
     return {
+      bodyFontId,
       fontId,
       themeId,
       fontSize,
