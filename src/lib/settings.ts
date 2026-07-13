@@ -85,11 +85,10 @@ export const MOUSE_WHEEL_SENSITIVITY_OPTIONS: {
   label: string;
   value: number;
 }[] = [
-  { id: "low", label: "Low", value: 0.65 },
-  { id: "normal", label: "Standard", value: 1 },
-  { id: "high", label: "High", value: 1.75 },
-  // Keeps roughly the same ratio over High as High has over Standard.
-  { id: "veryHigh", label: "Very high", value: 3 },
+  { id: "low", label: "Low", value: 1 },
+  { id: "normal", label: "Standard", value: 1.75 },
+  { id: "high", label: "High", value: 3 },
+  { id: "veryHigh", label: "Very high", value: 5 },
 ];
 
 export const TAB_TITLE_PROVIDER_OPTIONS: { id: TabTitleProvider; label: string }[] = [
