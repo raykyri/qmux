@@ -653,11 +653,6 @@
   min-width: 0;
 }
 
-/* A document has no follow-up rail (yet): let its body take the full width. */
-.research-response-grid.is-document {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .research-response {
   min-width: 0;
 }

@@ -5151,6 +5151,13 @@ export default function App() {
     },
     [adoptCreatedResearchTree, refreshResearchNavigation, resolveResearchComposerWorkspace],
   );
+  // Mirrors the backend's adapters::default_fork_adapter — the adapter that
+  // document follow-ups launch on — so adapter-specific composer affordances
+  // (the deep-research skill command) resolve against the right adapter.
+  const defaultForkAdapterId = useMemo(() => {
+    const forkable = (config?.adapters ?? []).filter((adapter) => adapter.supportsFork);
+    return (forkable.find((adapter) => adapter.default) ?? forkable[0])?.id ?? null;
+  }, [config?.adapters]);
   const cancelResearchRun = useCallback(
     async (nodeId: string) => {
       await cancelResearchNode(nodeId);
@@ -10621,6 +10628,7 @@ export default function App() {
               onCancel={cancelResearchRun}
               onOpenPane={openResearchPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}
+              defaultForkAdapterId={defaultForkAdapterId}
               onError={setError}
               onToast={showAppToast}
             />

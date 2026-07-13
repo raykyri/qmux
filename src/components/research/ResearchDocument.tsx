@@ -73,6 +73,10 @@ interface ResearchDocumentProps {
   onCancel: (nodeId: string) => Promise<void>;
   onOpenPane: (paneId: string) => void;
   linkActions: LinkActions;
+  /** The adapter the backend launches document follow-ups on (documents have
+   * no adapter of their own) — mirrors adapters::default_fork_adapter, so
+   * adapter-specific composer affordances resolve the same way. */
+  defaultForkAdapterId?: string | null;
   onError: (message: string) => void;
   onToast: (message: string, tone?: "normal" | "warning") => void;
 }
@@ -357,6 +361,7 @@ export default function ResearchDocument({
   onCancel,
   onOpenPane,
   linkActions,
+  defaultForkAdapterId,
   onError,
   onToast,
 }: ResearchDocumentProps) {
@@ -1236,25 +1241,31 @@ export default function ResearchDocument({
 
   async function submitFollowup() {
     const prompt = followup.trim();
+    const followupNodeIsDocument = followupNode?.kind === "document";
     // Mirrors the submit button's disabled conditions: Cmd+Enter must not
     // reach the backend (and bounce with an error) from a state the button
     // presents as unavailable — a running node already has a session id.
+    // Documents never have a session: their follow-ups launch fresh runs.
     if (
       archived ||
       !followupNode ||
       !prompt ||
       submitting ||
       followupNode.status !== "complete" ||
-      !followupNode.nativeSessionId
+      (!followupNodeIsDocument && !followupNode.nativeSessionId)
     ) {
       return;
     }
     setSubmitting(true);
     // Deep research is a submit-time prefix, never shown in the composer: the
     // plugin's namespaced skill command when the node runs on Claude, a plain
-    // `/deep-research` otherwise.
+    // `/deep-research` otherwise. A document follow-up runs on the backend's
+    // default fork adapter rather than the (absent) node adapter.
+    const followupAdapter = followupNodeIsDocument
+      ? defaultForkAdapterId
+      : followupNode.adapter;
     const deepCommand =
-      followupNode.adapter === CLAUDE_ADAPTER_ID && deepResearchSkillCommand
+      followupAdapter === CLAUDE_ADAPTER_ID && deepResearchSkillCommand
         ? deepResearchSkillCommand
         : "/deep-research";
     const finalPrompt = followupMode === "deep" ? `${deepCommand} ${prompt}` : prompt;
@@ -1377,10 +1388,13 @@ export default function ResearchDocument({
   const cancellationNeedsRetry = displayNode.status === "cancelled" && Boolean(displayNode.paneId);
   const followupCount = Math.max(0, detail.nodes.length - 1);
   // A document node is authored content, not a run: no prompt to show above
-  // the body, and no session to branch from (yet), so the run chrome and the
-  // follow-up rail stay hidden. Everything else — the snapshot-backed
-  // timeline, word count, copy, highlights — behaves identically.
+  // the body, and no session checkpoint — its follow-ups launch fresh runs
+  // that carry the document as context instead of forking. Everything else —
+  // the snapshot-backed timeline, word count, copy, highlights, the follow-up
+  // rail — behaves identically.
   const isDocument = displayNode.kind === "document";
+  const awaitingCheckpoint =
+    !isDocument && displayNode.status === "complete" && !displayNode.nativeSessionId;
 
   return (
     <TranscriptLinkActionsProvider actions={linkActions}>
@@ -1491,7 +1505,7 @@ export default function ResearchDocument({
                   <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" inline />
                 </div>
               ) : null}
-              <div className={`research-response-grid${isDocument ? " is-document" : ""}`}>
+              <div className="research-response-grid">
                 <section className="research-response" aria-label="Research response">
                   {!content ? (
                     <div className="research-response-loading">
@@ -1623,7 +1637,6 @@ export default function ResearchDocument({
                   ) : null}
                 </section>
 
-                {!isDocument ? (
                 <aside className="research-followups" aria-label="Follow-ups">
                   <div
                     className={`research-followup-composer${
@@ -1662,7 +1675,9 @@ export default function ResearchDocument({
                       placeholder={
                         followupMode === "deep"
                           ? "Type your research query…"
-                          : "Type your query…"
+                          : isDocument
+                            ? "Ask about this document…"
+                            : "Type your query…"
                       }
                       aria-label="Follow-up question"
                       disabled={archived || displayNode.status !== "complete"}
@@ -1683,7 +1698,7 @@ export default function ResearchDocument({
                           !followup.trim() ||
                           submitting ||
                           displayNode.status !== "complete" ||
-                          !displayNode.nativeSessionId
+                          awaitingCheckpoint
                         }
                         onClick={() => void submitFollowup()}
                       >
@@ -1696,9 +1711,7 @@ export default function ResearchDocument({
                         ) : null}
                       </button>
                     </div>
-                    {!archived &&
-                    displayNode.status === "complete" &&
-                    !displayNode.nativeSessionId ? (
+                    {!archived && awaitingCheckpoint ? (
                       <small>Waiting for the native session checkpoint before branching.</small>
                     ) : null}
                   </div>
@@ -1731,7 +1744,6 @@ export default function ResearchDocument({
                     ))}
                   </div>
                 </aside>
-                ) : null}
               </div>
             </div>
           </article>

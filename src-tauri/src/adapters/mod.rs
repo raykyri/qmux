@@ -584,6 +584,21 @@ pub fn adapter_supports_fork(adapter_id: &str) -> bool {
     matches!(adapter_id, "claude" | "codex" | "opencode" | "grok")
 }
 
+/// The adapter used when research must launch a run without an explicit
+/// choice — a follow-up on a document, which has no adapter of its own. The
+/// default adapter when it can fork (the new run's own follow-ups branch from
+/// its session), else the first fork-capable adapter. The frontend mirrors
+/// this preference to resolve adapter-specific composer affordances.
+pub fn default_fork_adapter(config: &QmuxConfig) -> Result<String, String> {
+    let metadata = adapter_registry(config).metadata();
+    metadata
+        .iter()
+        .find(|adapter| adapter.default && adapter.supports_fork)
+        .or_else(|| metadata.iter().find(|adapter| adapter.supports_fork))
+        .map(|adapter| adapter.id.clone())
+        .ok_or_else(|| "no installed agent supports research follow-ups".to_string())
+}
+
 pub const FORK_UNSUPPORTED_ERROR: &str = "Fork is not supported for this agent adapter";
 
 /// The agent-scoped core of [`agent_fork`], also used by the queue engine to

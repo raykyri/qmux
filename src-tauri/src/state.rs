@@ -2390,9 +2390,23 @@ impl AppState {
             if parent.status != ResearchNodeStatus::Complete {
                 return Err("research follow-ups require a completed parent response".to_string());
             }
-            if parent.native_session_id.is_none() {
-                return Err("research follow-ups require a recorded parent checkpoint".to_string());
-            }
+            // A document has no session to fork — its follow-ups launch fresh
+            // runs on the default adapter, so only run parents need the
+            // checkpoint (and only they carry an adapter to inherit).
+            let (adapter, parent_model) = match parent.kind {
+                ResearchNodeKind::Document => (
+                    crate::adapters::default_fork_adapter(&self.inner.config)?,
+                    None,
+                ),
+                ResearchNodeKind::Run => {
+                    if parent.native_session_id.is_none() {
+                        return Err(
+                            "research follow-ups require a recorded parent checkpoint".to_string()
+                        );
+                    }
+                    (parent.adapter, parent.model)
+                }
+            };
             let workspace = model
                 .groups
                 .get(&tree.workspace_id)
@@ -2407,8 +2421,8 @@ impl AppState {
                 prompt,
                 title: None,
                 response_preview: None,
-                adapter: parent.adapter,
-                model: parent.model,
+                adapter,
+                model: parent_model,
                 group_id: workspace.id.clone(),
                 worktree_dir: workspace.dir.clone(),
                 native_session_id: None,

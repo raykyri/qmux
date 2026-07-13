@@ -1179,6 +1179,57 @@ pub fn document_default_title(markdown: &str) -> String {
         .unwrap_or_else(|| "Untitled document".to_string())
 }
 
+/// The markdown body a document node's response snapshot carries: the first
+/// text block, which `document_turn` writes as the only block.
+pub fn document_markdown_from_turns(turns: &[crate::transcript::Turn]) -> Option<&str> {
+    turns.iter().find_map(|turn| {
+        turn.blocks.iter().find_map(|block| match block {
+            crate::transcript::TurnBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+    })
+}
+
+/// The launch prompt for a follow-up run on a document: the document rides
+/// along as context so a fresh session (there is no parent session to fork)
+/// can answer questions about it. Refused above the document word cap —
+/// possible only for imported archives, since creation enforces the same cap.
+///
+/// A question that begins with a slash command (deep-research mode prefixes
+/// one at submit time) must keep it at the very start of the message or the
+/// adapter will not recognize it, so the document context follows the
+/// question in that form; otherwise the question comes last, adjacent to the
+/// answer the agent produces.
+pub fn document_followup_prompt(
+    title: &str,
+    markdown: &str,
+    question: &str,
+) -> Result<String, String> {
+    let words = document_word_count(markdown);
+    if words > MAX_RESEARCH_DOCUMENT_WORDS {
+        return Err(format!(
+            "this document is too large to include in a follow-up prompt ({words} words; the limit is {MAX_RESEARCH_DOCUMENT_WORDS})"
+        ));
+    }
+    // The title lands inside a quoted attribute: strip quotes and collapse
+    // whitespace so it cannot break out of the tag.
+    let title = title
+        .replace(['"', '\n', '\r'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let document = format!("<document title=\"{title}\">\n{markdown}\n</document>");
+    Ok(if question.starts_with('/') {
+        format!(
+            "{question}\n\nThe document below is provided as context for the request above.\n\n{document}"
+        )
+    } else {
+        format!(
+            "The user has shared the document below as context. Read it, then answer the question that follows it.\n\n{document}\n\n{question}"
+        )
+    })
+}
+
 /// The synthetic turn that carries a document's markdown through the response
 /// snapshot pipeline. One assistant text turn: `get_research_node_content`
 /// returns it unchanged, the viewer's timeline renders it as markdown, and
@@ -1543,6 +1594,31 @@ mod tests {
         let error = validate_detached_archive(&archive).unwrap_err();
         assert!(error.contains("not a root node"), "{error}");
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn document_followup_prompts_embed_the_document_and_keep_slash_commands_first() {
+        let prompt =
+            document_followup_prompt("My \"Doc\"\ntitle", "# Body", "What does it say?").unwrap();
+        assert!(prompt.starts_with("The user has shared"), "{prompt}");
+        assert!(
+            prompt.contains("<document title=\"My Doc title\">\n# Body\n</document>"),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("What does it say?"), "{prompt}");
+
+        // Deep-research mode prefixes a slash command; it only registers at
+        // the start of the message, so the document context follows it.
+        let deep = document_followup_prompt("Doc", "Body", "/qmux:deep-research What?").unwrap();
+        assert!(deep.starts_with("/qmux:deep-research What?"), "{deep}");
+        assert!(deep.contains("<document title=\"Doc\">"), "{deep}");
+
+        let oversized = vec!["word"; MAX_RESEARCH_DOCUMENT_WORDS + 1].join(" ");
+        let error = document_followup_prompt("Doc", &oversized, "Q").unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+
+        let turns = vec![document_turn("node-1", "# Body")];
+        assert_eq!(document_markdown_from_turns(&turns), Some("# Body"));
     }
 
     #[test]

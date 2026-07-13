@@ -662,65 +662,16 @@ async fn create_research_tree(
                 return Err(err);
             }
         };
-        let spawn = SpawnAgentRequest {
-            adapter_id: root.adapter.clone(),
-            prompt: root.prompt.clone(),
-            group_id: Some(workspace.id.clone()),
-            base_repo: Some(workspace.dir.clone()),
-            base_ref: Some("HEAD".to_string()),
-            cwd: None,
-            model: root.model.clone(),
-            initial_size: None,
-            use_worktree: Some(false),
-            options: serde_json::Value::Null,
-        };
-        match spawn_agent_pane(&state, spawn) {
-            Ok(pane) => {
-                let association = pane
-                    .agent_id
-                    .as_deref()
-                    .and_then(|agent_id| state.agent(agent_id).ok().flatten())
-                    .ok_or_else(|| "research agent was not recorded after launch".to_string())
-                    .and_then(|agent| {
-                        state
-                            .bind_research_node_run(&root.id, &agent, &pane.id)
-                            .map(|node| (agent, node))
-                    });
-                match association {
-                    Ok((agent, node)) => {
-                        if node.status.is_terminal() {
-                            // Cancelled while the spawn was in flight: the
-                            // outcome stands and the pane is reclaimed, so
-                            // there is nothing to announce.
-                            reclaim_settled_research_launch(&state, &node, &pane.id);
-                        } else {
-                            // Root spawns go through launch(), which emits no event
-                            // (launcher spawns assume a frontend caller holds the
-                            // pane). Nothing holds this one, so announce it or the
-                            // pane never enters the frontend list: Background
-                            // activity can't show it and "Open terminal" misses.
-                            state.emit(events::QmuxEvent::new(
-                                "agent.spawned",
-                                Some(pane.id.clone()),
-                                Some(agent.id.clone()),
-                                serde_json::json!({
-                                    "agent": agent,
-                                    "pane": pane,
-                                    "source": "research",
-                                }),
-                            ));
-                        }
-                        state.research_tree(&detail.tree.id)
-                    }
-                    Err(err) => {
-                        let err = fail_research_launch(&state, &root.id, &pane.id, err);
-                        remove_unlaunched_research_tree(&state, &detail.tree.id);
-                        Err(err)
-                    }
-                }
-            }
+        match launch_fresh_research_run(
+            &state,
+            &root.id,
+            &workspace,
+            &root.adapter,
+            root.model.clone(),
+            root.prompt.clone(),
+        ) {
+            Ok(_) => state.research_tree(&detail.tree.id),
             Err(err) => {
-                let _ = state.fail_research_node(&root.id, err.clone());
                 remove_unlaunched_research_tree(&state, &detail.tree.id);
                 Err(err)
             }
@@ -728,6 +679,78 @@ async fn create_research_tree(
     })
     .await
     .map_err(|err| format!("create_research_tree task failed: {err}"))?
+}
+
+/// Launches a fresh (non-forked) agent run for an admitted research node and
+/// binds the resulting pane. Shared by root-run creation and document
+/// follow-ups. On failure the node is failed and any spawned pane reclaimed;
+/// tree-level rollback stays with the caller.
+fn launch_fresh_research_run(
+    state: &AppState,
+    node_id: &str,
+    workspace: &workspace::GroupInfo,
+    adapter: &str,
+    model: Option<String>,
+    prompt: String,
+) -> Result<research::ResearchNode, String> {
+    let spawn = SpawnAgentRequest {
+        adapter_id: adapter.to_string(),
+        prompt,
+        group_id: Some(workspace.id.clone()),
+        base_repo: Some(workspace.dir.clone()),
+        base_ref: Some("HEAD".to_string()),
+        cwd: None,
+        model,
+        initial_size: None,
+        use_worktree: Some(false),
+        options: serde_json::Value::Null,
+    };
+    match spawn_agent_pane(state, spawn) {
+        Ok(pane) => {
+            let association = pane
+                .agent_id
+                .as_deref()
+                .and_then(|agent_id| state.agent(agent_id).ok().flatten())
+                .ok_or_else(|| "research agent was not recorded after launch".to_string())
+                .and_then(|agent| {
+                    state
+                        .bind_research_node_run(node_id, &agent, &pane.id)
+                        .map(|node| (agent, node))
+                });
+            match association {
+                Ok((agent, node)) => {
+                    if node.status.is_terminal() {
+                        // Cancelled while the spawn was in flight: the
+                        // outcome stands and the pane is reclaimed, so
+                        // there is nothing to announce.
+                        reclaim_settled_research_launch(state, &node, &pane.id);
+                    } else {
+                        // Fresh spawns go through launch(), which emits no event
+                        // (launcher spawns assume a frontend caller holds the
+                        // pane). Nothing holds this one, so announce it or the
+                        // pane never enters the frontend list: Background
+                        // activity can't show it and "Open terminal" misses.
+                        state.emit(events::QmuxEvent::new(
+                            "agent.spawned",
+                            Some(pane.id.clone()),
+                            Some(agent.id.clone()),
+                            serde_json::json!({
+                                "agent": agent,
+                                "pane": pane,
+                                "source": "research",
+                            }),
+                        ));
+                    }
+                    state.research_node(node_id)
+                }
+                Err(err) => Err(fail_research_launch(state, node_id, &pane.id, err)),
+            }
+        }
+        Err(err) => {
+            let _ = state.fail_research_node(node_id, err.clone());
+            Err(err)
+        }
+    }
 }
 
 #[tauri::command]
@@ -840,6 +863,43 @@ async fn fork_research_node(
             let child = state.create_research_child(&parent_node_id, prompt)?;
             (parent, workspace, child)
         };
+        if parent.kind == research::ResearchNodeKind::Document {
+            // A document has no session to fork. Its follow-up launches a
+            // fresh run whose prompt carries the document as context; the
+            // child's displayed prompt stays the bare question (the response
+            // boundary still matches it as a substring of the sent prompt).
+            let launch_prompt = state
+                .research_tree(&parent.tree_id)
+                .and_then(|detail| {
+                    let turns = research::read_response_snapshot(
+                        &state.config().workspace_root,
+                        &parent.id,
+                    )?
+                    .ok_or_else(|| "the document's content is unavailable".to_string())?;
+                    let markdown = research::document_markdown_from_turns(&turns)
+                        .ok_or_else(|| "the document's content is unavailable".to_string())?;
+                    research::document_followup_prompt(
+                        &detail.tree.title,
+                        markdown,
+                        &child.prompt,
+                    )
+                });
+            let launch_prompt = match launch_prompt {
+                Ok(launch_prompt) => launch_prompt,
+                Err(err) => {
+                    let _ = state.fail_research_node(&child.id, err.clone());
+                    return Err(err);
+                }
+            };
+            return launch_fresh_research_run(
+                &state,
+                &child.id,
+                &workspace,
+                &child.adapter,
+                child.model.clone(),
+                launch_prompt,
+            );
+        }
         let live_source = parent
             .agent_id
             .as_deref()
