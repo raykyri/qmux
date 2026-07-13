@@ -6,12 +6,13 @@ import {
   Check,
   MoreHorizontal,
   Pencil,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import type { ResearchTreeSummary } from "../../types";
 
 const RESEARCH_MENU_WIDTH = 190;
-const RESEARCH_MENU_HEIGHT_ESTIMATE = 68;
+const RESEARCH_MENU_HEIGHT_ESTIMATE = 98;
 const RESEARCH_MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
 
@@ -22,6 +23,7 @@ interface ResearchSidebarSectionProps {
   onSelect: (treeId: string) => void;
   onRename: (treeId: string, title: string) => Promise<void>;
   onArchive: (treeId: string) => Promise<void>;
+  onRegenerateTitle: (treeId: string) => Promise<void>;
   onRestore: (treeId: string) => Promise<void>;
   onRemove: (treeId: string) => Promise<void>;
 }
@@ -59,6 +61,7 @@ export default function ResearchSidebarSection({
   onSelect,
   onRename,
   onArchive,
+  onRegenerateTitle,
   onRestore,
   onRemove,
 }: ResearchSidebarSectionProps) {
@@ -318,6 +321,17 @@ export default function ResearchSidebarSection({
                 >
                   <Archive size={13} aria-hidden="true" />
                   <span>Archive research</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(null);
+                    void onRegenerateTitle(menuTree.id);
+                  }}
+                >
+                  <RefreshCw size={13} aria-hidden="true" />
+                  <span>Regenerate title</span>
                 </button>
               </div>
             </div>,

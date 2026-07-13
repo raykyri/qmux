@@ -5069,6 +5069,26 @@ export default function App() {
     },
     [scheduleResearchRefresh],
   );
+  const regenerateResearchTreeTitle = useCallback(
+    async (treeId: string) => {
+      try {
+        const detail = await getResearchTree(treeId);
+        const rootNode = detail.nodes.find((node) => node.id === detail.tree.rootNodeId);
+        if (!rootNode) {
+          throw new Error("The research's original query is unavailable.");
+        }
+        const title = await generateResearchTitle(rootNode.prompt);
+        if (!title) {
+          throw new Error("Unable to generate a research title.");
+        }
+        await renameResearchTree(treeId, title);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      scheduleResearchRefresh();
+    },
+    [generateResearchTitle, scheduleResearchRefresh],
+  );
   const archiveResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
       try {
@@ -8632,6 +8652,7 @@ export default function App() {
               onSelect={(treeId) => void selectResearchTree(treeId)}
               onRename={renameResearchTreeTitle}
               onArchive={archiveResearchTreeFromSidebar}
+              onRegenerateTitle={regenerateResearchTreeTitle}
               onRestore={restoreResearchTreeFromSidebar}
               onRemove={removeResearchTreeFromSidebar}
             />
