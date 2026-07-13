@@ -517,7 +517,7 @@ export default function ResearchSidebarSection({
         ? createPortal(
             <div
               ref={menuRef}
-              className="pane-context-menu research-sidebar-menu"
+              className="popover-surface popover-surface--context pane-context-menu research-sidebar-menu"
               role="menu"
               aria-label={`Actions for ${menuTree.title}`}
               style={{ left: menu.left, top: menu.top }}

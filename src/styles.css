@@ -1367,6 +1367,7 @@
      to use small integers inside their own stacking contexts. */
   --z-browser-overlay: 8;
   --z-popover: 15;
+  --z-select-popover: 50;
   --z-dialog: 20;
   --z-toast: 30;
   --z-context-menu: 1000;
@@ -1591,10 +1592,10 @@ select:focus {
   box-shadow: none;
 }
 
-/* Neutral button — the shared baseline skin for every control, left pane and
-   right. Variants (sidebar actions, the filled Queue/Launch CTAs, icon buttons)
-   layer on top of this rather than re-declaring the whole box. */
-button {
+/* Compatibility baseline for existing controls. New controls should opt into
+   .control-button, .icon-button, .link-button, or .menu-item so their intended
+   interaction shape is explicit. :where() keeps the baseline easy to override. */
+:where(button, .control-button) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1613,6 +1614,90 @@ button {
 button:disabled {
   color: #797d80;
   cursor: default;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  min-height: 0;
+  padding: 0;
+}
+
+.link-button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.popover-surface {
+  position: fixed;
+  z-index: var(--z-popover);
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  border: 1px solid var(--surface-divider);
+  border-radius: var(--radius-lg);
+  background: var(--popover-bg);
+  box-shadow: var(--popover-shadow);
+}
+
+.popover-surface--context {
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  background: var(--context-menu-bg);
+  box-shadow: var(--context-menu-shadow);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item.is-selected {
+  background: var(--popover-item-hover-bg);
+}
+
+.menu-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.menu-item--compact {
+  min-height: 0;
+  padding-block: 5px;
+}
+
+.menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--surface-divider);
+}
+
+.form-field {
+  min-width: 0;
+  min-height: var(--control-h-md);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
 }
 
 .shortcut-hint {
@@ -2498,21 +2583,11 @@ button:disabled {
 }
 
 .pane-context-menu {
-  position: fixed;
-  z-index: var(--z-popover);
   width: min(320px, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow: auto;
   padding: 6px;
-  /* Native menu chrome: a hairline edge + a soft drop shadow, instead of a
-     bright accent border and a heavy 48px shadow. */
-  border: 0.5px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: var(--context-menu-bg);
   color: var(--text-body-soft);
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.45),
-    0 12px 32px rgba(0, 0, 0, 0.3);
   font-size: 13.5px;
   user-select: text;
 }
@@ -3832,44 +3907,24 @@ button:disabled {
 }
 
 .launcher-select-popover {
-  position: fixed;
-  z-index: 50;
-  display: flex;
-  flex-direction: column;
+  z-index: var(--z-select-popover);
   gap: 2px;
   width: max-content;
   max-width: calc(100vw - 24px);
   padding: 4px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
   user-select: none;
 }
 
 .launcher-select-item {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
   flex-wrap: nowrap;
   gap: 8px;
-  width: 100%;
-  min-width: 0;
   /* min-height lowered alongside the padding so the tighter top/bottom padding
      actually shrinks the row instead of being held open by the 30px control height. */
   min-height: 28px;
   padding: 5px 10px;
   border-color: transparent;
   border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-primary);
-  font-size: var(--fs-base);
-  text-align: left;
   white-space: nowrap;
-}
-
-.launcher-select-item:hover:not(:disabled) {
-  background: var(--popover-item-hover-bg);
 }
 
 .launcher-select-separator {
@@ -4879,17 +4934,8 @@ button.home-cascade-wait-pill:focus-visible {
 /* Portaled to <body>; left/top/width/max-height come from placePanePopover so the
    menu stays inside the right pane and opens downward from the session control. */
 .turn-pane-session-menu {
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
   gap: 2px;
   padding: 4px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
   overflow: hidden;
 }
 
@@ -4904,34 +4950,9 @@ button.home-cascade-wait-pill:focus-visible {
   overscroll-behavior: contain;
 }
 
-.turn-pane-session-menu-item {
-  justify-content: flex-start;
-  width: 100%;
-  min-width: 0;
-  min-height: var(--control-h-md);
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: var(--fs-base);
-  text-align: left;
-  cursor: pointer;
-}
-
-.turn-pane-session-menu-item:hover:not(:disabled) {
-  background: var(--popover-item-hover-bg);
-}
-
 .turn-pane-session-menu-item:disabled {
   color: #6f7773;
   cursor: default;
-}
-
-.turn-pane-session-menu-divider {
-  height: 1px;
-  margin: 4px 0;
-  background: var(--surface-divider);
 }
 
 .turn-pane-session-menu-label {
@@ -5006,17 +5027,8 @@ button.home-cascade-wait-pill:focus-visible {
 /* Portaled; right-aligned to its trigger like the fork menu, but taller: it hosts
    a search field, a scrolling prompt list, and small inline fill/edit forms. */
 .prompt-library-menu {
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-  min-width: 0;
   padding: 8px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
   overflow: hidden;
 }
 
@@ -5149,42 +5161,14 @@ button.home-cascade-wait-pill:focus-visible {
 
 /* The row menu itself: portaled, mirroring .turn-title-menu-popover. */
 .prompt-library-row-menu-popover {
-  position: fixed;
-  z-index: 16;
-  display: flex;
-  flex-direction: column;
+  z-index: calc(var(--z-popover) + 1);
   gap: 2px;
-  min-width: 0;
   padding: 4px;
-  border: 0.5px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: var(--context-menu-bg);
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.45),
-    0 12px 32px rgba(0, 0, 0, 0.3);
   overflow-y: auto;
 }
 
 .prompt-library-row-menu-item {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  width: 100%;
-  min-height: var(--control-h-md);
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: var(--fs-base);
-  text-align: left;
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.prompt-library-row-menu-item:hover {
-  background: var(--popover-item-hover-bg);
 }
 
 .prompt-library-row-menu-item.is-danger {
@@ -5463,41 +5447,13 @@ button.home-cascade-wait-pill:focus-visible {
 
 /* Portaled; right-aligned to the fork button so it grows toward the pane center. */
 .turn-pane-fork-menu {
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-  min-width: 0;
   padding: 4px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
   overflow-y: auto;
 }
 
 .turn-pane-fork-item {
-  /* Left-align the label: the shared button skin centers flex content, so
-     text-align alone isn't enough. min-height:0 drops the 30px control floor
-     that otherwise pads the rows taller than their text needs. */
-  justify-content: flex-start;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  padding: 5px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: var(--fs-base);
-  text-align: left;
-  cursor: pointer;
-}
-
-.turn-pane-fork-item:hover {
-  background: var(--popover-item-hover-bg);
+  padding-inline: 10px;
 }
 
 /* Make room for the top bar (40px + its 1px border). */
@@ -5632,35 +5588,16 @@ button.home-cascade-wait-pill:focus-visible {
 
 /* Portaled; left/top/width/max-height from placePanePopover (clamped to the pane). */
 .turn-empty-picker-popover {
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-  min-width: 0;
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
 }
 
 .turn-empty-picker-popover .session-menu-item {
   display: block;
-  width: 100%;
   min-height: 48px;
   padding: 7px 10px;
   border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-primary);
-  text-align: left;
-  cursor: pointer;
-}
-
-.turn-empty-picker-popover .session-menu-item:hover {
-  background: var(--popover-item-hover-bg);
 }
 
 .turn-sidebar-input {
@@ -5918,51 +5855,17 @@ button.home-cascade-wait-pill:focus-visible {
 /* Portaled so the scrollable timeline cannot clip it; right-aligned to the "..."
    button (grows left / toward the pane center). left/top/width from placement. */
 .turn-title-menu-popover {
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-  min-width: 0;
   padding: 4px;
-  border: 0.5px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: var(--context-menu-bg);
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.45),
-    0 12px 32px rgba(0, 0, 0, 0.3);
   overflow-y: auto;
 }
 
 .turn-title-menu-item {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  width: 100%;
-  min-height: var(--control-h-md);
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: var(--fs-base);
   /* Reset the bold uppercase inherited from the turn-card header — these
      should read as normal menu items. */
   font-weight: 400;
   text-transform: none;
-  text-align: left;
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.turn-title-menu-item:hover:not(:disabled) {
-  background: var(--popover-item-hover-bg);
-}
-
-.turn-title-menu-item:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
 .turn-title-menu-item:disabled {
@@ -7034,43 +6937,11 @@ header + .turn-blocks {
   /* Portaled to <body> and positioned by placePanePopover: opens upward from the
      ⋮ trigger, right-aligned (grows toward the pane center), width/height
      clamped to the right pane. left/top/max-height/max-width from inline style. */
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
   width: 220px;
-  flex-direction: column;
   gap: 2px;
-  min-width: 0;
   box-sizing: border-box;
   padding: 4px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
   overflow-y: auto;
-}
-
-.composer-menu-item {
-  justify-content: flex-start;
-  width: 100%;
-  min-width: 0;
-  min-height: var(--control-h-md);
-  padding: 6px 10px;
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: var(--fs-base);
-  text-align: left;
-}
-
-.composer-menu-item:hover:not(:disabled) {
-  background: var(--popover-item-hover-bg);
-}
-
-.composer-menu-divider {
-  height: 1px;
-  margin: 4px 0;
-  background: var(--surface-divider);
 }
 
 .composer-menu-label {
@@ -7244,19 +7115,10 @@ header + .turn-blocks {
 
 .wait-target-popover {
   /* Same placement rules as .composer-menu-popover (upward, right-aligned, pane-clamped). */
-  position: fixed;
-  z-index: var(--z-popover);
-  display: flex;
   width: 260px;
-  flex-direction: column;
   gap: 2px;
-  min-width: 0;
   box-sizing: border-box;
   padding: 4px;
-  border: 1px solid var(--surface-divider);
-  border-radius: 8px;
-  background: var(--popover-bg);
-  box-shadow: var(--popover-shadow);
   overflow-y: auto;
 }
 
@@ -7274,21 +7136,8 @@ header + .turn-blocks {
   grid-template-rows: auto auto;
   align-items: center;
   column-gap: 8px;
-  width: 100%;
-  min-width: 0;
   min-height: 0;
   padding: 7px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  border-color: transparent;
-  background: transparent;
-  font-family: var(--font-ui);
-  text-align: left;
-  cursor: pointer;
-}
-
-.wait-target-item:hover:not(:disabled) {
-  background: var(--popover-item-hover-bg);
 }
 
 .wait-target-status-dot {
@@ -7522,38 +7371,16 @@ header + .turn-blocks {
 /* Right-click chooser for a transcript/terminal link. Positioned at the pointer
    (viewport coords), above the browser overlay and other chrome. */
 .link-context-menu {
-  position: fixed;
   z-index: var(--z-context-menu);
-  display: flex;
-  flex-direction: column;
   gap: 2px;
   min-width: 200px;
   max-width: calc(100vw - 16px);
   padding: 4px;
-  border: 0.5px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: var(--context-menu-bg);
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.45),
-    0 12px 32px rgba(0, 0, 0, 0.3);
 }
 
 .link-context-menu-item {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  width: 100%;
-  min-height: var(--control-h-md);
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: var(--fs-base);
-  text-align: left;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 /* Keep the icon at full size so the label stays on the same line beside it
@@ -7562,13 +7389,4 @@ header + .turn-blocks {
   flex: none;
   width: 14px;
   height: 14px;
-}
-
-.link-context-menu-item:hover {
-  background: var(--popover-item-hover-bg);
-}
-
-.link-context-menu-item:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-shadow);
 }

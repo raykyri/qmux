@@ -9067,7 +9067,7 @@ export default function App() {
         </button>
         <button
           type="button"
-          className="turn-pane-header-button turn-pane-floating-collapse-button"
+          className="icon-button turn-pane-header-button turn-pane-floating-collapse-button"
           title="Collapse right bar"
           aria-label="Collapse right bar"
           onPointerDown={(event) => event.stopPropagation()}
@@ -9092,7 +9092,7 @@ export default function App() {
       <button
         ref={floatingRestoreButtonRef}
         type="button"
-        className="turn-pane-header-button turn-pane-floating-restore-button"
+        className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
         title="Show right bar"
         aria-label="Show right bar"
         onClick={() => setRightBarCollapsed(false)}
@@ -9692,7 +9692,7 @@ export default function App() {
 
       {settingsMenu ? (
         <div
-          className="pane-context-menu settings-context-menu"
+          className="popover-surface popover-surface--context pane-context-menu settings-context-menu"
           role="menu"
           aria-label="Settings menu"
           style={{ left: settingsMenu.x, top: settingsMenu.y }}
@@ -9755,7 +9755,7 @@ export default function App() {
 
       {groupMenu && groupMenuGroup ? (
         <div
-          className="pane-context-menu group-context-menu"
+          className="popover-surface popover-surface--context pane-context-menu group-context-menu"
           role="menu"
           aria-label="Group options"
           style={{ left: groupMenu.x, top: groupMenu.y }}
@@ -9870,7 +9870,7 @@ export default function App() {
 
       {paneContextMenu && contextMenuPane ? (
         <div
-          className="pane-context-menu"
+          className="popover-surface popover-surface--context pane-context-menu"
           role="dialog"
           aria-label={`${contextMenuDisplayTitle} details`}
           style={{ left: paneContextMenu.x, top: paneContextMenu.y }}
@@ -10389,7 +10389,7 @@ export default function App() {
               <div className="settings-shortcut-control">
                 <input
                   id="settings-show-hide-shortcut"
-                  className="settings-input settings-shortcut-input"
+                  className="form-field settings-input settings-shortcut-input"
                   data-shortcut-capture="show-hide"
                   value={showHideShortcutValue}
                   placeholder="e.g. Option+Space"
@@ -10501,7 +10501,7 @@ export default function App() {
                   <div className="settings-secret-input">
                     <input
                       id="settings-openrouter-key"
-                      className="settings-input"
+                      className="form-field settings-input"
                       type={openRouterKeyVisible ? "text" : "password"}
                       value={settings.openRouterKey}
                       placeholder="sk-or-v1-..."
@@ -10536,7 +10536,7 @@ export default function App() {
                   </label>
                   <input
                     id="settings-openrouter-model"
-                    className="settings-input"
+                    className="form-field settings-input"
                     type="text"
                     value={settings.openRouterModel}
                     placeholder="google/gemma-4-31b-it:free"
@@ -10647,7 +10647,7 @@ export default function App() {
                   </label>
                   <input
                     id="settings-scrollback-rows"
-                    className="settings-input settings-number-input"
+                    className="form-field settings-input settings-number-input"
                     type="number"
                     min={SCROLLBACK_ROWS_MIN}
                     max={SCROLLBACK_ROWS_MAX}
@@ -10779,7 +10779,7 @@ export default function App() {
                   </label>
                   <input
                     id="settings-confirm-paste-over"
-                    className="settings-input settings-number-input"
+                    className="form-field settings-input settings-number-input"
                     type="number"
                     min={CONFIRM_PASTE_OVER_CHARS_MIN}
                     max={CONFIRM_PASTE_OVER_CHARS_MAX}

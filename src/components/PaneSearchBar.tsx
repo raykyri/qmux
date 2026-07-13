@@ -109,7 +109,7 @@ export default function PaneSearchBar({
       <input
         ref={inputRef}
         type="text"
-        className="pane-search-input"
+        className="form-field pane-search-input"
         value={term}
         placeholder={placeholder}
         spellCheck={false}
@@ -150,7 +150,7 @@ export default function PaneSearchBar({
       <div className="pane-search-nav">
         <button
           type="button"
-          className="pane-search-button"
+          className="icon-button pane-search-button"
           title="Previous match (Shift+Enter)"
           aria-label="Previous match"
           disabled={!hasMatches}
@@ -163,7 +163,7 @@ export default function PaneSearchBar({
         </button>
         <button
           type="button"
-          className="pane-search-button"
+          className="icon-button pane-search-button"
           title="Next match (Enter)"
           aria-label="Next match"
           disabled={!hasMatches}
@@ -176,7 +176,7 @@ export default function PaneSearchBar({
         </button>
         <button
           type="button"
-          className="pane-search-button"
+          className="icon-button pane-search-button"
           title="Close (Esc)"
           aria-label="Close search"
           onClick={onClose}

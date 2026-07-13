@@ -118,7 +118,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
         <input
           ref={inputRef}
           type="text"
-          className="command-palette-input"
+          className="form-field command-palette-input"
           placeholder="Type a command or search…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}

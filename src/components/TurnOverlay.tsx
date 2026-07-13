@@ -1148,7 +1148,7 @@ function MessageTitleMenu({
         ? createPortal(
             <div
               ref={popoverRef}
-              className="turn-title-menu-popover"
+              className="popover-surface popover-surface--context turn-title-menu-popover"
               role="menu"
               style={
                 pos
@@ -1166,7 +1166,7 @@ function MessageTitleMenu({
                 <button
                   type="button"
                   role="menuitem"
-                  className="turn-title-menu-item"
+                  className="menu-item turn-title-menu-item"
                   disabled={titleGenerationBusy}
                   onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
@@ -1181,7 +1181,7 @@ function MessageTitleMenu({
               <button
                 type="button"
                 role="menuitem"
-                className="turn-title-menu-item"
+                className="menu-item turn-title-menu-item"
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -1195,7 +1195,7 @@ function MessageTitleMenu({
                 <button
                   type="button"
                   role="menuitem"
-                  className="turn-title-menu-item"
+                  className="menu-item turn-title-menu-item"
                   onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();

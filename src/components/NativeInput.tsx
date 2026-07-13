@@ -1345,7 +1345,7 @@ export default function NativeInput({
             <button
               ref={menuTriggerRef}
               type="button"
-              className="composer-menu-trigger"
+              className="link-button composer-menu-trigger"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               aria-label="More actions"
@@ -1357,7 +1357,7 @@ export default function NativeInput({
               ? createPortal(
                   <div
                     ref={menuPopoverRef}
-                    className="composer-menu-popover"
+                    className="popover-surface composer-menu-popover"
                     role="menu"
                     // Offscreen until measured so it doesn't flash at the origin.
                     style={
@@ -1376,7 +1376,7 @@ export default function NativeInput({
                     <button
                       type="button"
                       role="menuitem"
-                      className="composer-menu-item"
+                      className="menu-item composer-menu-item"
                       disabled={submitting}
                       onClick={() => {
                         setMenuOpen(false);
@@ -1388,7 +1388,7 @@ export default function NativeInput({
                     <button
                       type="button"
                       role="menuitem"
-                      className="composer-menu-item"
+                      className="menu-item composer-menu-item"
                       disabled={submitting}
                       onClick={() => {
                         setMenuOpen(false);
@@ -1400,13 +1400,13 @@ export default function NativeInput({
                         ? "Remove pause after top queued item"
                         : "Pause after top queued item"}
                     </button>
-                    <div className="composer-menu-divider" role="separator" />
+                    <div className="menu-divider composer-menu-divider" role="separator" />
                   </>
                 ) : null}
                 <button
                   type="button"
                   role="menuitem"
-                  className="composer-menu-item"
+                  className="menu-item composer-menu-item"
                   disabled={value.trim().length === 0}
                   onClick={() => {
                     setMenuOpen(false);
@@ -1419,7 +1419,7 @@ export default function NativeInput({
                 <button
                   type="button"
                   role="menuitem"
-                  className="composer-menu-item"
+                  className="menu-item composer-menu-item"
                   disabled={queuedTurns.length === 0}
                   onClick={() => {
                     setMenuOpen(false);
@@ -1431,7 +1431,7 @@ export default function NativeInput({
                 <button
                   type="button"
                   role="menuitem"
-                  className="composer-menu-item"
+                  className="menu-item composer-menu-item"
                   disabled={!hasTranscript}
                   onClick={() => {
                     setMenuOpen(false);
@@ -1449,7 +1449,7 @@ export default function NativeInput({
                         key={`${index}-${message}`}
                         type="button"
                         role="menuitem"
-                        className="composer-menu-item composer-menu-recent"
+                        className="menu-item composer-menu-item composer-menu-recent"
                         title={message}
                         onClick={() => {
                           setMenuOpen(false);
@@ -1548,7 +1548,7 @@ export default function NativeInput({
                 ? createPortal(
                     <div
                       ref={waitPopoverRef}
-                      className="wait-target-popover"
+                      className="popover-surface wait-target-popover"
                       role="menu"
                       style={
                         waitPos
@@ -1566,7 +1566,7 @@ export default function NativeInput({
                           key={option.label}
                           type="button"
                           role="menuitem"
-                          className="composer-menu-item"
+                          className="menu-item composer-menu-item"
                           disabled={option.needsFork && !canQueueFork}
                           title={
                             option.needsFork && !canQueueFork
@@ -1591,7 +1591,7 @@ export default function NativeInput({
                           key={target.agentId}
                           type="button"
                           role="menuitem"
-                          className="wait-target-item"
+                          className="menu-item wait-target-item"
                           title={waitLabelWithShortcut(target.label, target.shortcutLabel)}
                           onPointerEnter={() => onWaitTargetHover(target.agentId)}
                           onPointerLeave={() => onWaitTargetHover(null)}

@@ -108,7 +108,7 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
         ? createPortal(
             <div
               ref={popoverRef}
-              className="launcher-select-popover"
+              className="popover-surface launcher-select-popover"
               role="listbox"
               aria-label={ariaLabel}
               style={{ left: anchor.left, top: anchor.top, minWidth: anchor.width }}
@@ -128,7 +128,7 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
                       type="button"
                       role="option"
                       aria-selected={active}
-                      className={`launcher-select-item${toneClass(option.tone)}${
+                      className={`menu-item launcher-select-item${toneClass(option.tone)}${
                         active ? " is-active" : ""
                       }`}
                       onClick={() => {

@@ -172,7 +172,7 @@ function PromptRowMenu({
     <button
       type="button"
       role="menuitem"
-      className={`prompt-library-row-menu-item${danger ? " is-danger" : ""}`}
+      className={`menu-item prompt-library-row-menu-item${danger ? " is-danger" : ""}`}
       onClick={() => {
         setOpen(false);
         action();
@@ -203,7 +203,7 @@ function PromptRowMenu({
         ? createPortal(
             <div
               ref={popoverRef}
-              className="prompt-library-row-menu-popover"
+              className="popover-surface popover-surface--context prompt-library-row-menu-popover"
               role="menu"
               aria-label="Prompt options"
               style={
@@ -621,7 +621,7 @@ export default function PromptLibraryMenu({
           </div>
           <button
             type="button"
-            className="prompt-library-icon-button"
+            className="icon-button prompt-library-icon-button"
             title={`New ${label.toLowerCase()} prompt`}
             aria-label={`New ${label} prompt`}
             onClick={() => openEditor(null, scope)}
@@ -651,7 +651,7 @@ export default function PromptLibraryMenu({
       <input
         ref={searchInputRef}
         type="text"
-        className="prompt-library-search"
+        className="form-field prompt-library-search"
         placeholder="Search prompts…"
         value={search}
         autoFocus
@@ -681,7 +681,7 @@ export default function PromptLibraryMenu({
             <span className="prompt-library-field-label">{name}</span>
             <input
               type="text"
-              className="prompt-library-search"
+              className="form-field prompt-library-search"
               value={fillValues[name] ?? ""}
               autoFocus={index === 0}
               onChange={(event) =>
@@ -769,7 +769,7 @@ export default function PromptLibraryMenu({
             Prompt · use {"{placeholders}"} for fill-ins
           </span>
           <textarea
-            className="prompt-library-editor prompt-editor-dialog-textarea"
+            className="form-field prompt-library-editor prompt-editor-dialog-textarea"
             value={editContent}
             rows={8}
             autoFocus
@@ -847,7 +847,7 @@ export default function PromptLibraryMenu({
         ? createPortal(
             <div
               ref={popoverRef}
-              className="prompt-library-menu"
+              className="popover-surface prompt-library-menu"
               role="menu"
               aria-label="Prompt library"
               style={

@@ -175,7 +175,7 @@ export default function BrowserOverlay({
         >
           <input
             type="text"
-            className="browser-overlay-url"
+            className="form-field browser-overlay-url"
             value={draft}
             onChange={(event) => setDraft(event.currentTarget.value)}
             onKeyDown={(event) => {
@@ -194,7 +194,7 @@ export default function BrowserOverlay({
         <div className="browser-overlay-nav-controls">
           <button
             type="button"
-            className="browser-overlay-button"
+            className="icon-button browser-overlay-button"
             title="Refresh browser"
             aria-label="Refresh browser"
             onClick={onRefresh}
@@ -203,7 +203,7 @@ export default function BrowserOverlay({
           </button>
           <button
             type="button"
-            className="browser-overlay-button"
+            className="icon-button browser-overlay-button"
             title={
               sandbox
                 ? "Can't open file content externally (would leak the access token)"
@@ -220,7 +220,7 @@ export default function BrowserOverlay({
           </button>
           <button
             type="button"
-            className="browser-overlay-button"
+            className="icon-button browser-overlay-button"
             title={closeTitle}
             aria-label="Hide browser"
             onClick={onClose}

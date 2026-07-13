@@ -104,7 +104,7 @@ export default function TranscriptPickerLink({
       <button
         ref={triggerRef}
         type="button"
-        className="turn-empty-picker-trigger"
+        className="link-button turn-empty-picker-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
@@ -116,7 +116,7 @@ export default function TranscriptPickerLink({
         ? createPortal(
             <div
               ref={popoverRef}
-              className="turn-empty-picker-popover"
+              className="popover-surface turn-empty-picker-popover"
               role="listbox"
               aria-label="Available transcripts"
               style={
@@ -142,7 +142,7 @@ export default function TranscriptPickerLink({
                     type="button"
                     role="option"
                     aria-selected={active}
-                    className={`session-menu-item${active ? " is-active" : ""}`}
+                    className={`menu-item session-menu-item${active ? " is-active" : ""}`}
                     onClick={() => {
                       setOpen(false);
                       onSelect(active ? null : option.path);

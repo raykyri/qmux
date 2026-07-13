@@ -283,7 +283,7 @@ export default function TurnPaneHeader({
           <button
             ref={sessionTriggerRef}
             type="button"
-            className="turn-pane-session turn-pane-session-trigger"
+            className="link-button turn-pane-session turn-pane-session-trigger"
             title="Session actions"
             aria-haspopup="menu"
             aria-expanded={sessionMenuOpen}
@@ -301,7 +301,7 @@ export default function TurnPaneHeader({
           ? createPortal(
               <div
                 ref={sessionPopoverRef}
-                className="turn-pane-session-menu"
+                className="popover-surface turn-pane-session-menu"
                 role="menu"
                 style={
                   sessionPos
@@ -318,7 +318,7 @@ export default function TurnPaneHeader({
                 <button
                   type="button"
                   role="menuitem"
-                  className="turn-pane-session-menu-item"
+                  className="menu-item turn-pane-session-menu-item"
                   disabled={!sessionId}
                   onClick={() => {
                     setSessionMenuOpen(false);
@@ -329,7 +329,7 @@ export default function TurnPaneHeader({
                 </button>
                 {sessionOptions.length > 0 ? (
                   <>
-                    <div className="turn-pane-session-menu-divider" role="separator" />
+                    <div className="menu-divider turn-pane-session-menu-divider" role="separator" />
                     <div className="turn-pane-session-menu-label">Select Session</div>
                     <div
                       className="turn-pane-session-list"
@@ -344,7 +344,7 @@ export default function TurnPaneHeader({
                             type="button"
                             role="menuitemcheckbox"
                             aria-checked={active}
-                            className={`turn-pane-session-menu-item session-menu-item${
+                            className={`menu-item turn-pane-session-menu-item session-menu-item${
                               active ? " is-active" : ""
                             }`}
                             onClick={() => selectTranscript(active ? null : option.path)}
@@ -376,7 +376,7 @@ export default function TurnPaneHeader({
           <button
             ref={menuTriggerRef}
             type="button"
-            className="turn-pane-header-button"
+            className="icon-button turn-pane-header-button"
             disabled={!canFork}
             title={
               canFork
@@ -399,7 +399,7 @@ export default function TurnPaneHeader({
             ? createPortal(
                 <div
                   ref={menuPopoverRef}
-                  className="turn-pane-fork-menu"
+                  className="popover-surface turn-pane-fork-menu"
                   role="menu"
                   style={
                     menuPos
@@ -416,7 +416,7 @@ export default function TurnPaneHeader({
                   <button
                     type="button"
                     role="menuitem"
-                    className="turn-pane-fork-item"
+                    className="menu-item menu-item--compact turn-pane-fork-item"
                     onClick={() => fork({ nest: true, useWorktree: false })}
                   >
                     Fork session
@@ -424,7 +424,7 @@ export default function TurnPaneHeader({
                   <button
                     type="button"
                     role="menuitem"
-                    className="turn-pane-fork-item"
+                    className="menu-item menu-item--compact turn-pane-fork-item"
                     onClick={() => fork({ nest: true, useWorktree: true })}
                   >
                     Fork session in worktree
@@ -474,7 +474,7 @@ export default function TurnPaneHeader({
         </button>
         <button
           type="button"
-          className="turn-pane-header-button"
+          className="icon-button turn-pane-header-button"
           title="Collapse right bar"
           aria-label="Collapse right bar"
           onClick={onCollapseRightBar}

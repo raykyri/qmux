@@ -1900,7 +1900,7 @@ export default function ResearchDocument({
               return createPortal(
                 <div
                   ref={followupMenuRef}
-                  className="pane-context-menu research-followup-menu"
+                  className="popover-surface popover-surface--context pane-context-menu research-followup-menu"
                   role="menu"
                   aria-label={`Actions for ${nodeName}`}
                   style={{ left: followupMenu.left, top: followupMenu.top }}

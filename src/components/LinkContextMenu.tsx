@@ -45,12 +45,17 @@ export default function LinkContextMenu({
   }, [onClose]);
 
   return (
-    <div ref={ref} className="link-context-menu" style={{ left: x, top: y }} role="menu">
+    <div
+      ref={ref}
+      className="popover-surface popover-surface--context link-context-menu"
+      style={{ left: x, top: y }}
+      role="menu"
+    >
       {canOpenInternal ? (
         <button
           type="button"
           role="menuitem"
-          className="link-context-menu-item"
+          className="menu-item link-context-menu-item"
           onClick={onOpenInternal}
         >
           <Globe size={14} aria-hidden="true" />
@@ -60,7 +65,7 @@ export default function LinkContextMenu({
       <button
         type="button"
         role="menuitem"
-        className="link-context-menu-item"
+        className="menu-item link-context-menu-item"
         onClick={onOpenExternal}
       >
         <ExternalLink size={14} aria-hidden="true" />
