@@ -3,9 +3,11 @@ export type AppShortcutCommand =
   | { type: "fontZoomOut" }
   | { type: "fontZoomReset" }
   | { type: "focusTab"; tabIndex: number }
+  | { type: "focusResearchTab"; tabIndex: number }
   | { type: "homeOrCycleAdapter" }
   | { type: "openNewResearch" }
   | { type: "focusHome" }
+  | { type: "focusResearchHome" }
   | { type: "focusTerminalMode" }
   | { type: "focusResearchMode" }
   | { type: "toggleSidebarMode" }
@@ -132,8 +134,17 @@ export function contextualizeAppShortcut(
   if (sidebarMode === "research" && command.type === "homeOrCycleAdapter") {
     return { type: "openNewResearch" };
   }
+  if (sidebarMode === "research" && command.type === "focusTab") {
+    return { type: "focusResearchTab", tabIndex: command.tabIndex };
+  }
+  if (sidebarMode === "research" && command.type === "focusHome") {
+    return { type: "focusResearchHome" };
+  }
   if (sidebarMode === "research" && command.type === "restoreClosedPane") {
     return { type: "focusTerminalMode" };
+  }
+  if (sidebarMode === "research" && command.type === "cycleAllTab") {
+    return { type: "cyclePaneTab", direction: command.direction };
   }
   return command;
 }
@@ -157,6 +168,7 @@ export function parseAppShortcutCommand(
     case "homeOrCycleAdapter":
     case "openNewResearch":
     case "focusHome":
+    case "focusResearchHome":
     case "focusTerminalMode":
     case "focusResearchMode":
     case "toggleSidebarMode":
@@ -171,6 +183,10 @@ export function parseAppShortcutCommand(
     case "focusTab":
       return typeof tabIndex === "number" && Number.isInteger(tabIndex) && tabIndex >= 0
         ? { type: "focusTab", tabIndex }
+        : null;
+    case "focusResearchTab":
+      return typeof tabIndex === "number" && Number.isInteger(tabIndex) && tabIndex >= 0
+        ? { type: "focusResearchTab", tabIndex }
         : null;
     case "cyclePaneTabPrevious":
       return { type: "cyclePaneTab", direction: -1 };

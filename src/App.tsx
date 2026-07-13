@@ -1394,12 +1394,20 @@ export default function App() {
         setActivePaneIdState((current) => {
           const resolved = next(current);
           activePaneIdRef.current = resolved;
+          activePaneRef.current =
+            resolved && resolved !== HOME_TAB_ID
+              ? panesRef.current.find((candidate) => candidate.id === resolved)
+              : undefined;
           return resolved;
         });
         return;
       }
       setActiveSurface("pane");
       activePaneIdRef.current = next;
+      activePaneRef.current =
+        next && next !== HOME_TAB_ID
+          ? panesRef.current.find((candidate) => candidate.id === next)
+          : undefined;
       setActivePaneIdState(next);
       if (!next) {
         return;
@@ -1922,8 +1930,23 @@ export default function App() {
     [researchPanes, researchScope],
   );
   const cycleableResearchTabIds = useMemo(
-    () => researchCycleTabIds(panes, groups, researchTrees, researchScope),
-    [groups, panes, researchScope, researchTrees],
+    () =>
+      researchCycleTabIds(
+        panes,
+        groups,
+        showArchivedResearch
+          ? [...researchTrees, ...archivedResearchTrees]
+          : researchTrees,
+        researchScope,
+      ),
+    [
+      archivedResearchTrees,
+      groups,
+      panes,
+      researchScope,
+      researchTrees,
+      showArchivedResearch,
+    ],
   );
   const researchAttentionState = useMemo(() => researchAttention(researchTrees), [researchTrees]);
   const runningResearchCount = researchAttentionState.runningCount;
@@ -5279,7 +5302,10 @@ export default function App() {
   );
   const handleNativeTerminalCommandModifier = useCallback(
     (paneId: string, active: boolean) => {
-      if (!active || activePaneRef.current?.id === paneId) {
+      if (
+        !active ||
+        (activeSurfaceRef.current === "pane" && activePaneRef.current?.id === paneId)
+      ) {
         setShortcutHintsVisible(active);
       }
     },
@@ -5429,12 +5455,20 @@ export default function App() {
   // and saved prompts that insert into the active agent's composer.
   function buildPaletteCommands(): PaletteCommand[] {
     const commands: PaletteCommand[] = [];
+    const visiblePane = researchSurfaceActive ? undefined : activePane;
+    const visibleAgent = researchSurfaceActive ? undefined : activeAgent;
     commands.push({
       id: "nav:home",
       section: "Go to",
       title: "Home",
       hint: "⇧⌘H",
-      action: () => focusHomeTab(),
+      action: () => {
+        if (sidebarMode === "research") {
+          focusResearchHome();
+        } else {
+          focusHomeTab();
+        }
+      },
     });
     for (const tree of researchTrees) {
       commands.push({
@@ -5475,9 +5509,9 @@ export default function App() {
       action: () => void addShellPane(),
     });
     if (
-      agentCanFork(activeAgent) &&
-      activePane &&
-      groupById.get(activePane.groupId)?.scope === "terminal"
+      agentCanFork(visibleAgent) &&
+      visiblePane &&
+      groupById.get(visiblePane.groupId)?.scope === "terminal"
     ) {
       commands.push({
         id: "action:fork",
@@ -5492,22 +5526,24 @@ export default function App() {
         action: () => void forkActivePane({ nest: true, useWorktree: true }),
       });
     }
-    if (activePane) {
+    if (activeBrowserOwnerId) {
       commands.push({
         id: "action:toggle-browser",
         section: "Actions",
         title: "Toggle browser overlay",
         action: () => toggleActiveBrowserOverlay(),
       });
+    }
+    if (visiblePane) {
       commands.push({
         id: "action:close-pane",
         section: "Actions",
         title: "Close tab",
         hint: "⌘W",
-        action: () => requestClosePaneRef.current(activePane),
+        action: () => requestClosePaneRef.current(visiblePane),
       });
     }
-    if (activeAgent) {
+    if (visibleAgent) {
       commands.push({
         id: "action:toggle-transcript",
         section: "Actions",
@@ -5533,7 +5569,7 @@ export default function App() {
         setSettingsOpen(true);
       },
     });
-    if (activeAgent) {
+    if (visibleAgent) {
       for (const prompt of paletteSavedPrompts) {
         commands.push({
           id: `prompt:${prompt.scope}:${prompt.name}`,
@@ -5541,7 +5577,7 @@ export default function App() {
           // Prompts are titleless; their first line stands in for a name.
           title: prompt.content.trim().split("\n", 1)[0] || "(empty prompt)",
           hint: prompt.scope === "global" ? "Global" : "Project",
-          action: () => requestComposerInsert(activeAgent.id, prompt.content),
+          action: () => requestComposerInsert(visibleAgent.id, prompt.content),
         });
       }
     }
@@ -7010,7 +7046,7 @@ export default function App() {
     requestClosePaneRef.current = requestClosePane;
     splitPaneBelowRef.current = splitPaneBelow;
     canToggleActiveTranscriptExpandedRef.current = Boolean(
-      activePane && activePaneHasTurnSidebar,
+      activeSurfaceRef.current === "pane" && activePane && activePaneHasTurnSidebar,
     );
     toggleActiveTranscriptExpandedRef.current = toggleActiveTranscriptExpanded;
   });
@@ -7509,7 +7545,8 @@ export default function App() {
       if (tabIds.length === 0) {
         return;
       }
-      const listedIndex = tabIds.indexOf(activePaneId ?? "");
+      const currentActivePaneId = activePaneIdRef.current;
+      const listedIndex = tabIds.indexOf(currentActivePaneId ?? "");
       let fallbackIndex: number;
       if (listedIndex !== -1) {
         fallbackIndex = listedIndex;
@@ -7520,7 +7557,7 @@ export default function App() {
       }
       const nextTabId = cycleTabId(
         tabIds,
-        activePaneId,
+        currentActivePaneId,
         direction,
         paneSplits,
         fallbackIndex,
@@ -7530,13 +7567,38 @@ export default function App() {
       }
     };
 
+    const focusResearchTabById = (tabId: string) => {
+      if (tabId === RESEARCH_HOME_TAB_ID) {
+        focusResearchHome();
+        return;
+      }
+      const treeId = researchTreeIdFromTabId(tabId);
+      if (treeId) {
+        void selectResearchTree(treeId);
+        return;
+      }
+      // Mirror handlePaneTabClick: keep the durable document paired with the
+      // short-lived terminal, so viewing the pane clears its tree's badge and
+      // the fallback effect returns to this tree when the pane retires.
+      const researchNode = researchNodeByPaneIdRef.current.get(tabId);
+      if (
+        researchNode &&
+        researchNode.treeId !== activeResearchTreeIdRef.current
+      ) {
+        void selectResearchTree(researchNode.treeId);
+      }
+      focusPaneTab(tabId);
+    };
+
     const cycleResearchTab = (direction: -1 | 1) => {
+      const currentResearchTreeId = activeResearchTreeIdRef.current;
+      const currentResearchSurfaceActive = activeSurfaceRef.current === "research";
       const activeTabId =
-        researchSurfaceActive && activeResearchTreeId
-          ? researchTreeTabId(activeResearchTreeId)
-          : researchSurfaceActive
+        currentResearchSurfaceActive && currentResearchTreeId
+          ? researchTreeTabId(currentResearchTreeId)
+          : currentResearchSurfaceActive
             ? RESEARCH_HOME_TAB_ID
-            : activePaneId;
+            : activePaneIdRef.current;
       const researchTabIds = [RESEARCH_HOME_TAB_ID, ...cycleableResearchTabIds];
       const nextTabId = cycleTabId(
         researchTabIds,
@@ -7547,27 +7609,12 @@ export default function App() {
       if (!nextTabId || nextTabId === activeTabId) {
         return;
       }
-      if (nextTabId === RESEARCH_HOME_TAB_ID) {
-        focusResearchHome();
-        return;
-      }
-      const nextTreeId = researchTreeIdFromTabId(nextTabId);
-      if (nextTreeId) {
-        void selectResearchTree(nextTreeId);
-        return;
-      }
-      // Mirror handlePaneTabClick: keep the durable document paired with the
-      // short-lived terminal, so viewing the pane clears its tree's badge and
-      // the fallback effect returns to this tree when the pane retires.
-      const researchNode = researchNodeByPaneIdRef.current.get(nextTabId);
-      if (researchNode && researchNode.treeId !== activeResearchTreeIdRef.current) {
-        void selectResearchTree(researchNode.treeId);
-      }
-      focusPaneTab(nextTabId);
+      focusResearchTabById(nextTabId);
     };
 
     const executeShortcut = (rawCommand: AppShortcutCommand, repeat: boolean) => {
-      const command = contextualizeAppShortcut(rawCommand, sidebarMode);
+      const currentSidebarMode = sidebarModeRef.current;
+      const command = contextualizeAppShortcut(rawCommand, currentSidebarMode);
       if (repeat && !appShortcutAllowsRepeat(command)) {
         return;
       }
@@ -7592,15 +7639,28 @@ export default function App() {
           }
           return;
         }
+        case "focusResearchTab": {
+          const tabId = cycleableResearchTabIds[command.tabIndex];
+          if (tabId) {
+            focusResearchTabById(tabId);
+          }
+          return;
+        }
         case "homeOrCycleAdapter":
-          if (homeActive) {
+          if (
+            activeSurfaceRef.current === "pane" &&
+            activePaneIdRef.current === HOME_TAB_ID
+          ) {
             cycleLauncherAdapter();
           } else {
             focusHomeTab();
           }
           return;
         case "openNewResearch":
-          if (researchHomeActive) {
+          if (
+            activeSurfaceRef.current === "research" &&
+            activeResearchTreeIdRef.current === null
+          ) {
             setResearchAdapterCycleNonce((current) => current + 1);
           } else {
             focusResearchHome();
@@ -7609,6 +7669,9 @@ export default function App() {
         case "focusHome":
           focusHomeTab();
           return;
+        case "focusResearchHome":
+          focusResearchHome();
+          return;
         case "focusTerminalMode":
           changeSidebarMode("terminal");
           return;
@@ -7616,10 +7679,10 @@ export default function App() {
           changeSidebarMode("research");
           return;
         case "toggleSidebarMode":
-          changeSidebarMode(sidebarMode === "terminal" ? "research" : "terminal");
+          changeSidebarMode(currentSidebarMode === "terminal" ? "research" : "terminal");
           return;
         case "cyclePaneTab":
-          if (sidebarMode === "research") {
+          if (currentSidebarMode === "research") {
             cycleResearchTab(command.direction);
           } else {
             cycleTab(command.direction, false, cycleableSidebarPanes);
@@ -7636,14 +7699,26 @@ export default function App() {
           setCommandPaletteOpen(true);
           return;
         case "toggleTranscriptOrBrowser":
-          if (canToggleActiveTranscriptExpandedRef.current) {
+          if (
+            activeSurfaceRef.current === "pane" &&
+            canToggleActiveTranscriptExpandedRef.current
+          ) {
             toggleActiveTranscriptExpandedRef.current();
-          } else if (activePaneRef.current) {
-            toggleActiveBrowserOverlayRef.current();
+          } else {
+            const browserOwnerId =
+              activeSurfaceRef.current === "research"
+                ? activeResearchTreeIdRef.current
+                  ? researchBrowserOwnerId(activeResearchTreeIdRef.current)
+                  : null
+                : (activePaneRef.current?.id ?? null);
+            if (browserOwnerId) {
+              toggleBrowserOverlay(browserOwnerId);
+            }
           }
           return;
         case "splitPaneBelow": {
-          const pane = activePaneRef.current;
+          const pane =
+            activeSurfaceRef.current === "pane" ? activePaneRef.current : undefined;
           if (
             pane &&
             groupsRef.current.find((group) => group.id === pane.groupId)?.scope === "terminal"
@@ -7656,7 +7731,8 @@ export default function App() {
           void restoreClosedPane();
           return;
         case "closePane": {
-          const pane = activePaneRef.current;
+          const pane =
+            activeSurfaceRef.current === "pane" ? activePaneRef.current : undefined;
           if (pane) {
             requestClosePaneRef.current(pane);
           }
@@ -10465,6 +10541,11 @@ export default function App() {
             <ResearchDocument
               key={activeResearchTreeId}
               detail={activeResearchDetail}
+              treeTitle={
+                activeResearchDetail?.tree.title ??
+                researchTrees.find((tree) => tree.id === activeResearchTreeId)?.title ??
+                archivedResearchTrees.find((tree) => tree.id === activeResearchTreeId)?.title
+              }
               archived={Boolean(activeResearchDetail?.tree.archivedAt)}
               detailError={activeResearchDetailError}
               onRetryDetail={retryActiveResearchDetail}

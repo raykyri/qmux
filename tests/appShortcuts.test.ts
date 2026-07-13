@@ -85,15 +85,46 @@ test("uses command-n for Research Home and the launcher elsewhere", () => {
   });
 });
 
+test("keeps the Home shortcut within the active mode", () => {
+  const command = resolveAppShortcut(
+    shortcut({ key: "h", metaKey: true, shiftKey: true }),
+  );
+  assert.deepEqual(command, { type: "focusHome" });
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "focusResearchHome",
+  });
+  assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), command);
+});
+
+test("keeps numbered tab shortcuts within the active mode", () => {
+  const command = resolveAppShortcut(shortcut({ key: "4", metaKey: true }));
+  assert.deepEqual(command, { type: "focusTab", tabIndex: 3 });
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "focusResearchTab",
+    tabIndex: 3,
+  });
+  assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), command);
+});
+
 test("normalizes shifted bracket shortcuts", () => {
-  assert.deepEqual(
-    resolveAppShortcut(shortcut({ key: "{", metaKey: true, shiftKey: true })),
-    { type: "cycleAllTab", direction: -1 },
+  const previous = resolveAppShortcut(
+    shortcut({ key: "{", metaKey: true, shiftKey: true }),
   );
-  assert.deepEqual(
-    resolveAppShortcut(shortcut({ key: "}", metaKey: true, shiftKey: true })),
-    { type: "cycleAllTab", direction: 1 },
+  const next = resolveAppShortcut(
+    shortcut({ key: "}", metaKey: true, shiftKey: true }),
   );
+  assert.deepEqual(previous, { type: "cycleAllTab", direction: -1 });
+  assert.deepEqual(next, { type: "cycleAllTab", direction: 1 });
+  assert.deepEqual(contextualizeAppShortcut(previous!, "research"), {
+    type: "cyclePaneTab",
+    direction: -1,
+  });
+  assert.deepEqual(contextualizeAppShortcut(next!, "research"), {
+    type: "cyclePaneTab",
+    direction: 1,
+  });
+  assert.deepEqual(contextualizeAppShortcut(previous!, "terminal"), previous);
+  assert.deepEqual(contextualizeAppShortcut(next!, "terminal"), next);
 });
 
 test("leaves terminal command chords and control editing keys alone", () => {

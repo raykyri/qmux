@@ -50,6 +50,8 @@ import TranscriptMarkdown, {
 
 interface ResearchDocumentProps {
   detail: ResearchTreeDetail | null;
+  /** Durable sidebar title shown in the header while tree detail is loading. */
+  treeTitle?: string;
   /** Archived trees remain browsable, but cannot be branched. */
   archived: boolean;
   /** Why `detail` is null, when the tree fetch itself failed. */
@@ -222,6 +224,7 @@ const ResearchTimelineItem = memo(function ResearchTimelineItem({ item }: { item
 
 export default function ResearchDocument({
   detail,
+  treeTitle,
   archived,
   detailError,
   onRetryDetail,
@@ -958,22 +961,54 @@ export default function ResearchDocument({
     const retry = detail
       ? () => setContentLoadNonce((value) => value + 1)
       : onRetryDetail;
+    const headerTitle = detail?.tree.title ?? treeTitle ?? "Loading research…";
     return (
-      <div className="research-placeholder">
-        {placeholderError ? null : (
-          <LoaderCircle className="research-spinner" size={24} aria-hidden="true" />
-        )}
-        <h1>{detail?.tree.title ?? (placeholderError ? "Research unavailable" : "Loading research…")}</h1>
-        {placeholderError ? (
-          <>
-            <p role="alert">{placeholderError}</p>
-            {retry ? (
-              <button type="button" onClick={retry}>
-                Retry
+      <div className="research-workspace">
+        <main className="research-document">
+          <header className="research-document-header">
+            <div className="research-history-nav" aria-label="Research history">
+              <button
+                type="button"
+                className="research-history-button"
+                disabled
+                aria-label="Back"
+              >
+                <ArrowLeft size={16} aria-hidden="true" />
               </button>
+              <button
+                type="button"
+                className="research-history-button"
+                disabled
+                aria-label="Forward"
+              >
+                <ArrowRight size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <div className="research-breadcrumb" aria-label="Research path">
+              <span>
+                <button type="button" disabled>
+                  {headerTitle}
+                </button>
+              </span>
+            </div>
+          </header>
+          <div className="research-placeholder">
+            {placeholderError ? null : (
+              <LoaderCircle className="research-spinner" size={24} aria-hidden="true" />
+            )}
+            <h1>{placeholderError ? "Research unavailable" : "Loading research…"}</h1>
+            {placeholderError ? (
+              <>
+                <p role="alert">{placeholderError}</p>
+                {retry ? (
+                  <button type="button" onClick={retry}>
+                    Retry
+                  </button>
+                ) : null}
+              </>
             ) : null}
-          </>
-        ) : null}
+          </div>
+        </main>
       </div>
     );
   }
@@ -1217,7 +1252,9 @@ export default function ResearchDocument({
 
                 <aside className="research-followups" aria-label="Follow-ups">
                   <div
-                    className={`research-followup-composer${archived ? " is-disabled" : ""}`}
+                    className={`research-followup-composer${
+                      archived || displayNode.status !== "complete" ? " is-disabled" : ""
+                    }`}
                   >
                     <div
                       className="sidebar-mode-toggle research-followup-mode-toggle"
@@ -1229,7 +1266,7 @@ export default function ResearchDocument({
                         role="tab"
                         aria-selected={followupMode === "ask"}
                         className={followupMode === "ask" ? "is-selected" : undefined}
-                        disabled={archived}
+                        disabled={archived || displayNode.status !== "complete"}
                         onClick={() => setFollowupMode("ask")}
                       >
                         <span>Ask about</span>
@@ -1239,7 +1276,7 @@ export default function ResearchDocument({
                         role="tab"
                         aria-selected={followupMode === "deep"}
                         className={followupMode === "deep" ? "is-selected" : undefined}
-                        disabled={archived}
+                        disabled={archived || displayNode.status !== "complete"}
                         onClick={() => setFollowupMode("deep")}
                       >
                         <span>Deep research</span>
@@ -1254,7 +1291,7 @@ export default function ResearchDocument({
                           : "Type your query…"
                       }
                       aria-label="Follow-up question"
-                      disabled={archived}
+                      disabled={archived || displayNode.status !== "complete"}
                       onChange={(event) => setFollowup(event.currentTarget.value)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -1289,8 +1326,6 @@ export default function ResearchDocument({
                     displayNode.status === "complete" &&
                     !displayNode.nativeSessionId ? (
                       <small>Waiting for the native session checkpoint before branching.</small>
-                    ) : !archived && displayNode.status !== "complete" ? (
-                      <small>Follow-ups become available when this response completes.</small>
                     ) : null}
                   </div>
                   <div className="research-followup-cards">

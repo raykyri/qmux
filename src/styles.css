@@ -512,8 +512,12 @@
   background: transparent;
 }
 
-.research-breadcrumb button:hover {
+.research-breadcrumb button:hover:not(:disabled) {
   color: #f0f2ef;
+}
+
+.research-breadcrumb button:disabled {
+  cursor: default;
 }
 
 .research-breadcrumb-separator {
