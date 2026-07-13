@@ -45,7 +45,13 @@ fn build_native_terminal_bridge() {
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("target"));
     let native_build_root = target_dir.join("native-terminal");
-    let scratch = native_build_root.join("swiftpm");
+    let deployment_target = swift_deployment_target();
+    let target = swift_target_triple(&deployment_target);
+    let arch = target.split('-').next().unwrap_or("arm64");
+    // SwiftPM keeps build-plan metadata at the scratch root. Sharing that root
+    // across the two universal-build architectures can leave one architecture
+    // with the other's stale source list after a Swift file is added.
+    let scratch = native_build_root.join(format!("swiftpm-{arch}"));
     let cache = native_build_root.join("cache");
     let module_cache = native_build_root.join("module-cache");
     let config = native_build_root.join("config");
@@ -66,8 +72,6 @@ fn build_native_terminal_bridge() {
         &dependency_patch,
     );
 
-    let deployment_target = swift_deployment_target();
-    let target = swift_target_triple(&deployment_target);
     let swift = xcrun_path(&["--find", "swift"])
         .or_else(|| Some(PathBuf::from("swift")))
         .expect("Swift is required to build the native terminal bridge");
@@ -98,7 +102,6 @@ fn build_native_terminal_bridge() {
 
         match output {
             Ok(output) if output.status.success() => {
-                let arch = target.split('-').next().unwrap_or("arm64");
                 let products = scratch.join(format!("{arch}-apple-macosx/release"));
                 let bridge = products.join("libQmuxNativeTerminal.a");
                 let ghostty = products.join("libghostty.a");
@@ -197,6 +200,8 @@ fn prepare_patched_ghostty_dependency(source: &Path, destination: &Path, patch: 
         .current_dir(destination)
         .arg("-p1")
         .arg("--forward")
+        .arg("-V")
+        .arg("none")
         .arg("--input")
         .arg(patch)
         .output()
