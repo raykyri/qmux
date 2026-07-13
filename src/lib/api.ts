@@ -708,6 +708,16 @@ export function updateNativeTerminalSettings(settings: NativeTerminalSettings) {
 }
 
 /**
+ * Hands the native host a pane-independent settings snapshot to cache, so a
+ * pane created later builds its Ghostty surface at creation time instead of
+ * waiting for its own mount-time settings round-trip. Called at startup and
+ * whenever terminal settings change.
+ */
+export function seedNativeTerminalSettings(settings: Omit<NativeTerminalSettings, "paneId">) {
+  return invoke<void>("native_terminal_seed_settings", { settings });
+}
+
+/**
  * The terminal theme catalog: the qmux default first, then every Ghostty
  * color scheme bundled with libghostty-spm. Empty on platforms without
  * native terminals.

@@ -283,23 +283,64 @@ public func qmuxNativeTerminalUpdateSettings(
     else {
         return 0
     }
+    let settings = TerminalPaneSettings(
+        fontSize: fontSize,
+        fontFamily: fontFamily,
+        letterSpacing: letterSpacing,
+        lineHeight: lineHeight,
+        cursorBlink: cursorBlink == 1,
+        cursorStyle: cursorStyle,
+        scrollbackRows: scrollbackRows,
+        scrollOnUserInput: scrollOnUserInput == 1,
+        scrollSensitivity: scrollSensitivity,
+        copyOnSelect: copyOnSelect == 1,
+        selectionClearOnCopy: selectionClearOnCopy == 1,
+        themeName: themeName
+    )
     return onTerminalMain {
-        NativeTerminalHost.shared.updateSettings(
-            id: paneID,
-            fontSize: fontSize,
-            fontFamily: fontFamily,
-            letterSpacing: letterSpacing,
-            lineHeight: lineHeight,
-            cursorBlink: cursorBlink == 1,
-            cursorStyle: cursorStyle,
-            scrollbackRows: scrollbackRows,
-            scrollOnUserInput: scrollOnUserInput == 1,
-            scrollSensitivity: scrollSensitivity,
-            copyOnSelect: copyOnSelect == 1,
-            selectionClearOnCopy: selectionClearOnCopy == 1,
-            themeName: themeName
-        ) ? 1 : 0
+        NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings) ? 1 : 0
     }
+}
+
+@_cdecl("qmux_native_terminal_seed_settings")
+public func qmuxNativeTerminalSeedSettings(
+    _ fontSize: Double,
+    _ fontFamily: UnsafePointer<CChar>?,
+    _ letterSpacing: Double,
+    _ lineHeight: Double,
+    _ cursorBlink: Int32,
+    _ cursorStyle: UnsafePointer<CChar>?,
+    _ scrollbackRows: UInt32,
+    _ scrollOnUserInput: Int32,
+    _ scrollSensitivity: Double,
+    _ copyOnSelect: Int32,
+    _ selectionClearOnCopy: Int32,
+    _ themeName: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let fontFamily = terminalString(fontFamily),
+          let cursorStyle = terminalString(cursorStyle),
+          let themeName = terminalString(themeName)
+    else {
+        return 0
+    }
+    let settings = TerminalPaneSettings(
+        fontSize: fontSize,
+        fontFamily: fontFamily,
+        letterSpacing: letterSpacing,
+        lineHeight: lineHeight,
+        cursorBlink: cursorBlink == 1,
+        cursorStyle: cursorStyle,
+        scrollbackRows: scrollbackRows,
+        scrollOnUserInput: scrollOnUserInput == 1,
+        scrollSensitivity: scrollSensitivity,
+        copyOnSelect: copyOnSelect == 1,
+        selectionClearOnCopy: selectionClearOnCopy == 1,
+        themeName: themeName
+    )
+    onTerminalMain {
+        NativeTerminalHost.shared.seedSettings(settings)
+    }
+    return 1
 }
 
 /// One process-lifetime allocation: the catalog is static data, and Rust

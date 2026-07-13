@@ -53,6 +53,14 @@ final class NativeTerminalHost {
     /// frontend sends one theme for all of them; new panes and the stage
     /// backstop read this instead of waiting for their first settings update.
     private var currentThemeName = QmuxTerminalTheme.defaultName
+    /// The most recent full settings snapshot, seeded by the frontend at
+    /// startup and refreshed by every per-pane settings update. A pane created
+    /// while a snapshot exists applies it immediately, which assigns its
+    /// view's controller and creates the Ghostty surface at creation time —
+    /// concurrent with the webview's mount/layout work — instead of after
+    /// that pane's own settings round-trip. Panes created before any snapshot
+    /// arrives keep the original deferred-controller behavior.
+    private var currentSettings: TerminalPaneSettings?
 
     private init() {}
 
@@ -138,6 +146,13 @@ final class NativeTerminalHost {
         pane.view.setSurfaceVisible(false)
         container.addSubview(pane.view)
         panes[id] = pane
+        // Applying the cached snapshot assigns the view's controller, creating
+        // the Ghostty surface now rather than after this pane's mount-time
+        // settings round-trip. A failure is not a creation failure: the pane's
+        // first settings update retries the same assignment.
+        if let currentSettings {
+            _ = pane.applySettings(currentSettings)
+        }
         return true
     }
 
@@ -357,42 +372,28 @@ final class NativeTerminalHost {
         return pane.view.performBindingAction(action)
     }
 
-    func updateSettings(
-        id: String,
-        fontSize: Double,
-        fontFamily: String,
-        letterSpacing: Double,
-        lineHeight: Double,
-        cursorBlink: Bool,
-        cursorStyle: String,
-        scrollbackRows: UInt32,
-        scrollOnUserInput: Bool,
-        scrollSensitivity: Double,
-        copyOnSelect: Bool,
-        selectionClearOnCopy: Bool,
-        themeName: String
-    ) -> Bool {
+    /// Caches `settings` without touching any pane, so panes created later can
+    /// build their surface immediately. Called by the frontend at startup and
+    /// whenever terminal settings change; deliberately independent of pane or
+    /// container state so a seed can never fail.
+    func seedSettings(_ settings: TerminalPaneSettings) {
+        rememberSettings(settings)
+    }
+
+    func updateSettings(id: String, settings: TerminalPaneSettings) -> Bool {
         guard let pane = panes[id] else { return false }
-        if themeName != currentThemeName {
-            currentThemeName = themeName
+        rememberSettings(settings)
+        return pane.applySettings(settings)
+    }
+
+    private func rememberSettings(_ settings: TerminalPaneSettings) {
+        currentSettings = settings
+        if settings.themeName != currentThemeName {
+            currentThemeName = settings.themeName
             backstop?.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
-                named: themeName
+                named: settings.themeName
             )
         }
-        return pane.updateSettings(
-            fontSize: fontSize,
-            fontFamily: fontFamily,
-            letterSpacing: letterSpacing,
-            lineHeight: lineHeight,
-            cursorBlink: cursorBlink,
-            cursorStyle: cursorStyle,
-            scrollbackRows: scrollbackRows,
-            scrollOnUserInput: scrollOnUserInput,
-            scrollSensitivity: scrollSensitivity,
-            copyOnSelect: copyOnSelect,
-            selectionClearOnCopy: selectionClearOnCopy,
-            themeName: themeName
-        )
     }
 
     func shutdown() {

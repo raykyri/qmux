@@ -35,7 +35,7 @@ use native_terminal::{
     native_terminal_action, native_terminal_focus, native_terminal_paste_approved_text,
     native_terminal_set_layout, native_terminal_set_stage_backstop,
     native_terminal_set_web_overlay_region, native_terminal_set_web_pointer_claimed,
-    native_terminal_theme_catalog, native_terminal_update_settings,
+    native_terminal_seed_settings, native_terminal_theme_catalog, native_terminal_update_settings,
 };
 use pty::{
     InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
@@ -1931,6 +1931,7 @@ fn main() {
             native_terminal_action,
             native_terminal_paste_approved_text,
             native_terminal_update_settings,
+            native_terminal_seed_settings,
             native_terminal_theme_catalog,
             agent_submit_turn,
             agent_queue_wait_turn,

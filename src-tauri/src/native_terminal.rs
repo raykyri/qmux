@@ -55,6 +55,27 @@ pub struct NativeTerminalSettings {
     pub theme_name: String,
 }
 
+/// A settings snapshot not bound to any pane. Seeded by the frontend at
+/// startup and on every settings change so Swift can create a new pane's
+/// Ghostty surface immediately at creation time instead of holding it back
+/// until that pane's first per-pane settings update arrives.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTerminalSeedSettings {
+    pub font_size: f64,
+    pub font_family: String,
+    pub letter_spacing: f64,
+    pub line_height: f64,
+    pub cursor_blink: bool,
+    pub cursor_style: String,
+    pub scrollback_rows: u32,
+    pub scroll_on_user_input: bool,
+    pub scroll_sensitivity: f64,
+    pub copy_on_select: bool,
+    pub selection_clear_on_copy: bool,
+    pub theme_name: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppShortcutCommand {
     FontZoomIn,
@@ -208,6 +229,7 @@ fn classify_web_app_shortcut(
 mod imp {
     use super::APP_STATE;
     use super::NativeTerminalLayout;
+    use super::NativeTerminalSeedSettings;
     use super::NativeTerminalSettings;
     use super::NativeWebOverlayRegion;
     use crate::state::AppState;
@@ -271,6 +293,20 @@ mod imp {
         fn qmux_native_terminal_action(pane_id: *const c_char, action: *const c_char) -> i32;
         fn qmux_native_terminal_update_settings(
             pane_id: *const c_char,
+            font_size: f64,
+            font_family: *const c_char,
+            letter_spacing: f64,
+            line_height: f64,
+            cursor_blink: i32,
+            cursor_style: *const c_char,
+            scrollback_rows: u32,
+            scroll_on_user_input: i32,
+            scroll_sensitivity: f64,
+            copy_on_select: i32,
+            selection_clear_on_copy: i32,
+            theme_name: *const c_char,
+        ) -> i32;
+        fn qmux_native_terminal_seed_settings(
             font_size: f64,
             font_family: *const c_char,
             letter_spacing: f64,
@@ -623,6 +659,47 @@ mod imp {
         }
     }
 
+    /// Hands Swift a pane-independent settings snapshot to cache, so panes
+    /// created later can build their Ghostty surface at creation time instead
+    /// of waiting for their first per-pane settings update.
+    pub fn seed_settings(settings: NativeTerminalSeedSettings) -> Result<(), String> {
+        if !settings.font_size.is_finite()
+            || settings.font_size <= 0.0
+            || !settings.letter_spacing.is_finite()
+            || !settings.line_height.is_finite()
+            || settings.line_height <= 0.0
+            || !settings.scroll_sensitivity.is_finite()
+            || settings.scroll_sensitivity <= 0.0
+        {
+            return Err("native terminal settings contain invalid numeric values".to_string());
+        }
+        let font_family = cstring(&settings.font_family, "font family")?;
+        let cursor_style = cstring(&settings.cursor_style, "cursor style")?;
+        let theme_name = cstring(&settings.theme_name, "theme name")?;
+        // SAFETY: Swift copies strings and scalar settings synchronously.
+        if unsafe {
+            qmux_native_terminal_seed_settings(
+                settings.font_size,
+                font_family.as_ptr(),
+                settings.letter_spacing,
+                settings.line_height,
+                i32::from(settings.cursor_blink),
+                cursor_style.as_ptr(),
+                settings.scrollback_rows,
+                i32::from(settings.scroll_on_user_input),
+                settings.scroll_sensitivity,
+                i32::from(settings.copy_on_select),
+                i32::from(settings.selection_clear_on_copy),
+                theme_name.as_ptr(),
+            )
+        } == 1
+        {
+            Ok(())
+        } else {
+            Err("native terminal host rejected the settings seed".to_string())
+        }
+    }
+
     /// Returns the theme catalog as JSON: the qmux default plus every bundled
     /// Ghostty color scheme, with the colors the settings UI needs for
     /// previews.
@@ -656,6 +733,7 @@ mod imp {
 #[allow(dead_code)]
 mod imp {
     use super::NativeTerminalLayout;
+    use super::NativeTerminalSeedSettings;
     use super::NativeTerminalSettings;
     use super::NativeWebOverlayRegion;
     use crate::state::AppState;
@@ -742,6 +820,10 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
+    pub fn seed_settings(_settings: NativeTerminalSeedSettings) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
     pub fn theme_catalog() -> Result<String, String> {
         // No native themes off macOS; the settings UI treats an empty catalog
         // as "only the built-in default is available".
@@ -754,8 +836,9 @@ mod imp {
 #[allow(unused_imports)]
 pub use imp::{
     action, available, create, create_host_managed, focus, initialize, is_ready_for_replay,
-    paste_approved_text, receive, remove, send_text, set_layout, set_stage_backstop,
-    set_web_overlay_region, set_web_pointer_claimed, shutdown, submit, terminate, update_settings,
+    paste_approved_text, receive, remove, seed_settings, send_text, set_layout,
+    set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown, submit,
+    terminate, update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {
@@ -1119,6 +1202,11 @@ pub fn native_terminal_paste_approved_text(pane_id: String, text: String) -> Res
 #[tauri::command]
 pub fn native_terminal_update_settings(settings: NativeTerminalSettings) -> Result<(), String> {
     imp::update_settings(settings)
+}
+
+#[tauri::command]
+pub fn native_terminal_seed_settings(settings: NativeTerminalSeedSettings) -> Result<(), String> {
+    imp::seed_settings(settings)
 }
 
 #[tauri::command]

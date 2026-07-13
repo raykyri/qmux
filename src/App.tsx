@@ -274,6 +274,7 @@ import {
   reorderGroups,
   readMarkdownDocumentFile,
   restoreLastClosedPane,
+  seedNativeTerminalSettings,
   setLauncherAdapterPreference,
   setActiveTab,
   setGroupCollapsed,
@@ -1508,6 +1509,41 @@ export default function App() {
   const terminalNativeFontFamily = nativeFontFamilyFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
+  // Seed the native host with the current terminal settings so a pane created
+  // later can build its Ghostty surface at creation time instead of waiting
+  // for its own mount-time settings round-trip (which trails pane spawn by a
+  // render, a paint, and an IPC hop). Re-seeded on every settings change so
+  // the cached snapshot never goes stale; failures are ignored because every
+  // pane still applies its own settings on mount.
+  useEffect(() => {
+    void seedNativeTerminalSettings({
+      fontSize: terminalFontSize,
+      fontFamily: terminalNativeFontFamily,
+      letterSpacing: terminalLetterSpacing,
+      lineHeight: settings.lineHeight,
+      cursorBlink: settings.cursorBlink,
+      cursorStyle: settings.cursorStyle,
+      scrollbackRows: settings.scrollbackRows,
+      scrollOnUserInput: settings.scrollOnUserInput,
+      scrollSensitivity: terminalScrollSensitivity,
+      copyOnSelect: settings.copyOnSelect,
+      selectionClearOnCopy: settings.selectionClearOnCopy,
+      themeName: settings.themeId,
+    }).catch(() => undefined);
+  }, [
+    settings.copyOnSelect,
+    settings.cursorBlink,
+    settings.cursorStyle,
+    settings.lineHeight,
+    settings.scrollOnUserInput,
+    settings.scrollbackRows,
+    settings.selectionClearOnCopy,
+    settings.themeId,
+    terminalFontSize,
+    terminalLetterSpacing,
+    terminalNativeFontFamily,
+    terminalScrollSensitivity,
+  ]);
   // The theme catalog (qmux default first, then every bundled Ghostty scheme).
   // Loaded once at startup: the theme select needs it when settings open, and
   // --terminal-bg below needs the selected theme's background right away.

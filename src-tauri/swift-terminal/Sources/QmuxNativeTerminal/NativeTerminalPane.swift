@@ -317,57 +317,44 @@ final class NativeTerminalPane: NSObject,
         view.pasteApprovedText(text)
     }
 
-    func updateSettings(
-        fontSize: Double,
-        fontFamily: String,
-        letterSpacing: Double,
-        lineHeight: Double,
-        cursorBlink: Bool,
-        cursorStyle: String,
-        scrollbackRows: UInt32,
-        scrollOnUserInput: Bool,
-        scrollSensitivity: Double,
-        copyOnSelect: Bool,
-        selectionClearOnCopy: Bool,
-        themeName: String
-    ) -> Bool {
-        let style = TerminalCursorStyle(rawValue: cursorStyle) ?? .block
-        let scrollbackBytes = max(UInt64(scrollbackRows) * 1024, 1_048_576)
+    func applySettings(_ settings: TerminalPaneSettings) -> Bool {
+        let style = TerminalCursorStyle(rawValue: settings.cursorStyle) ?? .block
+        let scrollbackBytes = max(UInt64(settings.scrollbackRows) * 1024, 1_048_576)
         let configuration = TerminalConfiguration { builder in
-            builder.withFontSize(Float(fontSize))
-            builder.withFontFamily(fontFamily)
+            builder.withFontSize(Float(settings.fontSize))
+            builder.withFontFamily(settings.fontFamily)
             builder.withCustom(
                 "adjust-cell-width",
-                "\(letterSpacing / fontSize * 100)%"
+                "\(settings.letterSpacing / settings.fontSize * 100)%"
             )
             builder.withCustom(
                 "adjust-cell-height",
-                "\((lineHeight - 1) * 100)%"
+                "\((settings.lineHeight - 1) * 100)%"
             )
             builder.withCursorStyle(style)
-            builder.withCursorStyleBlink(cursorBlink)
+            builder.withCursorStyleBlink(settings.cursorBlink)
             builder.withCustom("scrollback-limit", "\(scrollbackBytes)")
             builder.withCustom(
                 "scroll-to-bottom",
-                scrollOnUserInput ? "keystroke" : "no-keystroke"
+                settings.scrollOnUserInput ? "keystroke" : "no-keystroke"
             )
-            builder.withCustom("mouse-scroll-multiplier", "\(scrollSensitivity)")
-            builder.withCustom("copy-on-select", copyOnSelect ? "clipboard" : "false")
+            builder.withCustom("mouse-scroll-multiplier", "\(settings.scrollSensitivity)")
+            builder.withCustom("copy-on-select", settings.copyOnSelect ? "clipboard" : "false")
             builder.withCustom(
                 "selection-clear-on-copy",
-                selectionClearOnCopy ? "true" : "false"
+                settings.selectionClearOnCopy ? "true" : "false"
             )
         }
         // setTheme and setTerminalConfiguration decline no-op updates with
         // false, but an unchanged Ghostty config is success here; reporting
         // failure for a no-op would surface a spurious settings error in the
         // frontend.
-        let theme = QmuxTerminalTheme.theme(named: themeName)
+        let theme = QmuxTerminalTheme.theme(named: settings.themeName)
         if theme != controller.theme, !controller.setTheme(theme) {
             return false
         }
         view.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
-            named: themeName
+            named: settings.themeName
         )
         if configuration != controller.terminalConfiguration,
            !controller.setTerminalConfiguration(configuration)
@@ -375,9 +362,9 @@ final class NativeTerminalPane: NSObject,
             return false
         }
         // Settings such as scrollback-limit only affect newly-created Ghostty
-        // surfaces. Hold the controller back until the frontend has supplied the
-        // pane's initial settings, regardless of whether layout or settings wins
-        // the React-to-native scheduling race.
+        // surfaces. Hold the controller back until a real settings snapshot has
+        // been applied — at creation from the host's cached snapshot when one
+        // exists, else from the pane's first mount-time settings update.
         if view.controller == nil {
             view.controller = controller
         }
