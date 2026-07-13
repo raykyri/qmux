@@ -451,15 +451,24 @@ fn valid_utf8_sequence_len(bytes: &[u8], index: usize) -> usize {
     let Some(first) = bytes.get(index).copied() else {
         return 0;
     };
-    let continuation = |offset: usize| {
+    let byte_in = |offset: usize, range: std::ops::RangeInclusive<u8>| {
         bytes
             .get(index + offset)
-            .is_some_and(|byte| (0x80..=0xbf).contains(byte))
+            .is_some_and(|byte| range.contains(byte))
     };
+    let continuation = |offset: usize| byte_in(offset, 0x80..=0xbf);
     match first {
         0xc2..=0xdf if continuation(1) => 2,
-        0xe0..=0xef if continuation(1) && continuation(2) => 3,
-        0xf0..=0xf4 if continuation(1) && continuation(2) && continuation(3) => 4,
+        // E0 must not encode an overlong value; ED must not encode a UTF-16
+        // surrogate. The middle range has no special second-byte constraint.
+        0xe0 if byte_in(1, 0xa0..=0xbf) && continuation(2) => 3,
+        0xe1..=0xec | 0xee..=0xef if continuation(1) && continuation(2) => 3,
+        0xed if byte_in(1, 0x80..=0x9f) && continuation(2) => 3,
+        // F0 must not encode an overlong value, while F4 is capped at
+        // U+10FFFF. F1-F3 accept the full continuation-byte range.
+        0xf0 if byte_in(1, 0x90..=0xbf) && continuation(2) && continuation(3) => 4,
+        0xf1..=0xf3 if continuation(1) && continuation(2) && continuation(3) => 4,
+        0xf4 if byte_in(1, 0x80..=0x8f) && continuation(2) && continuation(3) => 4,
         _ => 0,
     }
 }
@@ -598,6 +607,45 @@ mod tests {
     fn replay_sanitizer_still_strips_c2_prefixed_c1_string_controls() {
         let input = b"before\xc2\x9d0;secret title\x07after";
         assert_eq!(sanitize_scrollback_replay(input), b"beforeafter");
+    }
+
+    #[test]
+    fn replay_sanitizer_does_not_hide_c1_controls_in_invalid_utf8() {
+        for invalid_prefix in [
+            &[0xe0, 0x80][..],       // Overlong three-byte sequence.
+            &[0xed, 0xa0][..],       // UTF-16 surrogate.
+            &[0xf0, 0x80, 0x80][..], // Overlong four-byte sequence.
+        ] {
+            let mut input = invalid_prefix.to_vec();
+            input.extend_from_slice(b"\x9d0;secret title\x07after");
+
+            let mut expected = invalid_prefix.to_vec();
+            expected.extend_from_slice(b"after");
+            assert_eq!(sanitize_scrollback_replay(&input), expected);
+        }
+    }
+
+    #[test]
+    fn utf8_sequence_length_enforces_scalar_value_boundaries() {
+        for valid in [
+            &[0xc2, 0xa0][..],
+            &[0xe0, 0xa0, 0x80][..],
+            &[0xed, 0x9f, 0xbf][..],
+            &[0xf0, 0x90, 0x80, 0x80][..],
+            &[0xf4, 0x8f, 0xbf, 0xbf][..],
+        ] {
+            assert_eq!(valid_utf8_sequence_len(valid, 0), valid.len());
+        }
+        for invalid in [
+            &[0xc0, 0x80][..],
+            &[0xe0, 0x9f, 0xbf][..],
+            &[0xed, 0xa0, 0x80][..],
+            &[0xf0, 0x8f, 0xbf, 0xbf][..],
+            &[0xf4, 0x90, 0x80, 0x80][..],
+            &[0xf5, 0x80, 0x80, 0x80][..],
+        ] {
+            assert_eq!(valid_utf8_sequence_len(invalid, 0), 0);
+        }
     }
 
     #[test]
