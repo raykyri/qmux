@@ -893,7 +893,10 @@ impl ClaudeAdapter {
             "SubagentStop" => {
                 if let Some(agent) = agent.as_mut() {
                     let tracked = state
-                        .agent_subagent_stopped(&agent.id, super::subagent_id(&notification.payload))?
+                        .agent_subagent_stopped(
+                            &agent.id,
+                            super::subagent_id(&notification.payload),
+                        )?
                         .is_some();
                     // A late or duplicate stop with nothing tracked must not
                     // drag a settled agent back to Running.

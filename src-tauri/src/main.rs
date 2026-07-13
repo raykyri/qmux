@@ -529,6 +529,26 @@ fn research_workspace_remove(
 }
 
 #[tauri::command]
+fn research_workspace_reveal(
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let workspace = state
+        .list_research_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .ok_or_else(|| format!("research workspace {workspace_id} was not found"))?;
+    let path = std::path::Path::new(&workspace.dir);
+    if !path.is_dir() {
+        return Err(format!(
+            "research folder '{}' is unavailable",
+            workspace.dir
+        ));
+    }
+    open_path_in_file_manager(path)
+}
+
+#[tauri::command]
 fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
     state.list_agents()
 }
@@ -797,22 +817,21 @@ async fn get_research_node_content(
         // A corrupt or oversized snapshot must not wedge the node: fall back to
         // the transcript exactly as if no snapshot existed, keeping the read
         // failure only as diagnostic context if nothing else is viewable.
-        let snapshot_error =
-            match research::read_response_snapshot_with_revision(
-                &state.config().workspace_root,
-                &node_id,
-            ) {
-                Ok(Some(snapshot)) => {
-                    content.response_revision = Some(snapshot.revision);
-                    content.turns = snapshot.turns;
-                    return Ok(content);
-                }
-                Ok(None) => None,
-                Err(err) => {
-                    eprintln!("qmux: unreadable research response snapshot {node_id}: {err}");
-                    Some(err)
-                }
-            };
+        let snapshot_error = match research::read_response_snapshot_with_revision(
+            &state.config().workspace_root,
+            &node_id,
+        ) {
+            Ok(Some(snapshot)) => {
+                content.response_revision = Some(snapshot.revision);
+                content.turns = snapshot.turns;
+                return Ok(content);
+            }
+            Ok(None) => None,
+            Err(err) => {
+                eprintln!("qmux: unreadable research response snapshot {node_id}: {err}");
+                Some(err)
+            }
+        };
         if content.node.transcript_path.is_some()
             && matches!(
                 content.node.status,
@@ -868,22 +887,14 @@ async fn fork_research_node(
             // fresh run whose prompt carries the document as context; the
             // child's displayed prompt stays the bare question (the response
             // boundary still matches it as a substring of the sent prompt).
-            let launch_prompt = state
-                .research_tree(&parent.tree_id)
-                .and_then(|detail| {
-                    let turns = research::read_response_snapshot(
-                        &state.config().workspace_root,
-                        &parent.id,
-                    )?
-                    .ok_or_else(|| "the document's content is unavailable".to_string())?;
-                    let markdown = research::document_markdown_from_turns(&turns)
+            let launch_prompt = state.research_tree(&parent.tree_id).and_then(|detail| {
+                let turns =
+                    research::read_response_snapshot(&state.config().workspace_root, &parent.id)?
                         .ok_or_else(|| "the document's content is unavailable".to_string())?;
-                    research::document_followup_prompt(
-                        &detail.tree.title,
-                        markdown,
-                        &child.prompt,
-                    )
-                });
+                let markdown = research::document_markdown_from_turns(&turns)
+                    .ok_or_else(|| "the document's content is unavailable".to_string())?;
+                research::document_followup_prompt(&detail.tree.title, markdown, &child.prompt)
+            });
             let launch_prompt = match launch_prompt {
                 Ok(launch_prompt) => launch_prompt,
                 Err(err) => {
@@ -1834,6 +1845,7 @@ fn main() {
             research_workspace_create_pick,
             research_workspace_rename,
             research_workspace_remove,
+            research_workspace_reveal,
             list_agents,
             list_recent_sessions,
             recent_session_resume,

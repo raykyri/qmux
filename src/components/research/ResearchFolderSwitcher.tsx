@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   Folder,
+  FolderOpen,
   FolderPlus,
   Pencil,
   Trash2,
@@ -18,6 +19,7 @@ interface ResearchFolderSwitcherProps {
   folderPickerBusy: boolean;
   onSelectScope: (scope: ResearchFolderScope) => void;
   onNewFolder: () => Promise<GroupInfo | null>;
+  onOpenFolder: (folder: GroupInfo) => Promise<void>;
   onRenameFolder: (folder: GroupInfo) => void;
   onRemoveFolder: (folder: GroupInfo) => void;
 }
@@ -29,6 +31,7 @@ export default function ResearchFolderSwitcher({
   folderPickerBusy,
   onSelectScope,
   onNewFolder,
+  onOpenFolder,
   onRenameFolder,
   onRemoveFolder,
 }: ResearchFolderSwitcherProps) {
@@ -129,6 +132,19 @@ export default function ResearchFolderSwitcher({
           </button>
           {scopedFolder ? (
             <>
+              <div className="research-folder-menu-separator" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="research-folder-item"
+                onClick={() => {
+                  setOpen(false);
+                  void onOpenFolder(scopedFolder);
+                }}
+              >
+                <FolderOpen size={13} aria-hidden="true" />
+                <span className="research-folder-item-name">Open selected folder</span>
+              </button>
               <button
                 type="button"
                 role="menuitem"

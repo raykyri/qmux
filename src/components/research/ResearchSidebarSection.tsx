@@ -16,10 +16,12 @@ const RESEARCH_MENU_HEIGHT_ESTIMATE = 132;
 const RESEARCH_MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
 
+export type ResearchVisibilityFilter = "active" | "archived" | "all";
+
 interface ResearchSidebarSectionProps {
   trees: ResearchTreeSummary[];
   archivedTrees: ResearchTreeSummary[];
-  showArchived: boolean;
+  visibilityFilter: ResearchVisibilityFilter;
   activeTreeId: string | null;
   onSelect: (treeId: string) => void;
   onRename: (treeId: string, title: string) => Promise<void>;
@@ -42,7 +44,7 @@ function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
       {tree.kind === "document" ? (
         <FileText className="research-sidebar-doc-icon" size={12} aria-hidden="true" />
       ) : null}
-      {tree.title}
+      <span className="research-sidebar-title-text">{tree.title}</span>
     </span>
   );
 }
@@ -50,7 +52,7 @@ function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
 export default function ResearchSidebarSection({
   trees,
   archivedTrees,
-  showArchived,
+  visibilityFilter,
   activeTreeId,
   onSelect,
   onRename,
@@ -87,7 +89,30 @@ export default function ResearchSidebarSection({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMenu(null);
+        return;
       }
+      if (!menuTree || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key !== "d" && (key !== "a" || menu.archived)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (menuTree.runningCount > 0) {
+        return;
+      }
+      if (key === "d") {
+        openDeleteDialog(menuTree);
+        return;
+      }
+
+      setMenu(null);
+      void onArchive(menuTree.id);
     };
     const closeOnReflow = () => setMenu(null);
     document.addEventListener("mousedown", closeMenu);
@@ -100,7 +125,7 @@ export default function ResearchSidebarSection({
       window.removeEventListener("resize", closeOnReflow);
       window.removeEventListener("scroll", closeOnReflow, true);
     };
-  }, [menu]);
+  }, [menu, menuTree, onArchive]);
 
   useEffect(() => {
     if (renamingTree) {
@@ -200,7 +225,7 @@ export default function ResearchSidebarSection({
   return (
     <>
       <section className="research-sidebar-section" aria-label="Research">
-        {trees.map((tree) => (
+        {(visibilityFilter === "archived" ? [] : trees).map((tree) => (
           <div
             key={tree.id}
             className={`research-sidebar-row${activeTreeId === tree.id ? " is-selected" : ""}${
@@ -266,7 +291,7 @@ export default function ResearchSidebarSection({
             </button>
           </div>
         ))}
-        {showArchived
+        {visibilityFilter !== "active"
           ? archivedTrees.map((tree) => (
               <div
                 key={tree.id}
@@ -330,7 +355,7 @@ export default function ResearchSidebarSection({
                     }}
                   >
                     <ArchiveRestore size={13} aria-hidden="true" />
-                    <span>Restore research</span>
+                    <span>Unarchive research</span>
                   </button>
                 ) : (
                   <>
@@ -359,30 +384,34 @@ export default function ResearchSidebarSection({
                     ) : null}
                   </>
                 )}
-                <div className="context-menu-divider" role="separator" />
                 {!menu.archived ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={menuTree.runningCount > 0}
-                    title={
-                      menuTree.runningCount > 0
-                        ? "Research with active runs cannot be archived"
-                        : undefined
-                    }
-                    onClick={() => {
-                      setMenu(null);
-                      void onArchive(menuTree.id);
-                    }}
-                  >
-                    <Archive size={13} aria-hidden="true" />
-                    <span>Archive</span>
-                  </button>
+                  <>
+                    <div className="context-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="context-menu-has-shortcut"
+                      disabled={menuTree.runningCount > 0}
+                      title={
+                        menuTree.runningCount > 0
+                          ? "Research with active runs cannot be archived"
+                          : undefined
+                      }
+                      onClick={() => {
+                        setMenu(null);
+                        void onArchive(menuTree.id);
+                      }}
+                    >
+                      <Archive size={13} aria-hidden="true" />
+                      <span>Archive</span>
+                      <kbd className="context-menu-shortcut is-keycap">A</kbd>
+                    </button>
+                  </>
                 ) : null}
                 <button
                   type="button"
                   role="menuitem"
-                  className="context-menu-danger"
+                  className="context-menu-danger context-menu-has-shortcut"
                   disabled={menuTree.runningCount > 0}
                   title={
                     menuTree.runningCount > 0
@@ -392,7 +421,8 @@ export default function ResearchSidebarSection({
                   onClick={() => openDeleteDialog(menuTree)}
                 >
                   <Trash2 size={13} aria-hidden="true" />
-                  <span>Delete permanently</span>
+                  <span>Delete</span>
+                  <kbd className="context-menu-shortcut is-keycap">D</kbd>
                 </button>
               </div>
             </div>,

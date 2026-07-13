@@ -336,10 +336,7 @@ pub fn reconcile_imported_research_archives(state: &AppState) {
     }
 }
 
-fn reconcile_imported_research_archive(
-    state: &AppState,
-    group: &GroupInfo,
-) -> Result<(), String> {
+fn reconcile_imported_research_archive(state: &AppState, group: &GroupInfo) -> Result<(), String> {
     let Some(expected_archive_id) = group.imported_research_archive_id.as_deref() else {
         return Ok(());
     };
@@ -443,15 +440,14 @@ pub fn remove_research_workspace(
     }
     let mut responses = HashMap::new();
     for node in &archive.nodes {
-        let turns = match crate::research::read_response_snapshot(
-            &state.config().workspace_root,
-            &node.id,
-        ) {
-            Ok(Some(turns)) => Some(turns),
-            Ok(None) | Err(_) => {
-                crate::research::load_transcript_response(state.config(), node).ok()
-            }
-        };
+        let turns =
+            match crate::research::read_response_snapshot(&state.config().workspace_root, &node.id)
+            {
+                Ok(Some(turns)) => Some(turns),
+                Ok(None) | Err(_) => {
+                    crate::research::load_transcript_response(state.config(), node).ok()
+                }
+            };
         if let Some(turns) = turns.filter(|turns| {
             node.status != crate::research::ResearchNodeStatus::Complete
                 || turns.iter().any(|turn| turn.role == "assistant")
@@ -485,10 +481,9 @@ pub fn remove_research_workspace(
         eprintln!("qmux: detached research remains in recoverable pending form: {err}");
     }
     for node_id in node_ids {
-        if let Err(err) = crate::research::remove_response_snapshot(
-            &state.config().workspace_root,
-            &node_id,
-        ) {
+        if let Err(err) =
+            crate::research::remove_response_snapshot(&state.config().workspace_root, &node_id)
+        {
             eprintln!("qmux: failed to remove detached global response {node_id}: {err}");
         }
     }
@@ -1853,8 +1848,7 @@ mod tests {
         // resolves to anything readable.
         let mut agent = sample_agent("research-agent", None, AgentStatus::Failed);
         agent.group_id = workspace.id.clone();
-        agent.transcript_path =
-            Some(root.join("pruned/session-gone.jsonl").display().to_string());
+        agent.transcript_path = Some(root.join("pruned/session-gone.jsonl").display().to_string());
         state
             .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-never-existed")
             .unwrap();
@@ -2015,16 +2009,21 @@ mod tests {
     fn opening_folder_with_unreadable_archive_names_the_archive_and_a_way_out() {
         let root = temp_workspace("open-unreadable-archive");
         let project = root.join("project");
-        let archive_dir = project.join(crate::persistence::STATE_DIR).join("research-v1");
+        let archive_dir = project
+            .join(crate::persistence::STATE_DIR)
+            .join("research-v1");
         std::fs::create_dir_all(&archive_dir).unwrap();
         std::fs::write(archive_dir.join("manifest.json"), b"{ not json").unwrap();
         let state = test_state_with_workspace(root.join("managed"));
         state.restore_session();
 
-        let error = create_research_workspace(&state, None, project.display().to_string())
-            .unwrap_err();
+        let error =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap_err();
 
-        assert!(error.contains(&archive_dir.display().to_string()), "{error}");
+        assert!(
+            error.contains(&archive_dir.display().to_string()),
+            "{error}"
+        );
         assert!(error.contains("move"), "{error}");
 
         // An archive from a newer qmux gets the same actionable framing plus
@@ -2036,10 +2035,13 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        let error = create_research_workspace(&state, None, project.display().to_string())
-            .unwrap_err();
+        let error =
+            create_research_workspace(&state, None, project.display().to_string()).unwrap_err();
         assert!(error.contains("newer qmux"), "{error}");
-        assert!(error.contains(&archive_dir.display().to_string()), "{error}");
+        assert!(
+            error.contains(&archive_dir.display().to_string()),
+            "{error}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2092,8 +2094,14 @@ mod tests {
         .unwrap();
         remove_research_workspace(&state, &workspace.id).unwrap();
         assert!(state.group(&workspace.id).unwrap().is_none());
-        assert!(state.list_research_trees_with_archived(true).unwrap().is_empty());
-        let detached_state = persistence::load_with_diagnostics(&state.config().workspace_root).state;
+        assert!(
+            state
+                .list_research_trees_with_archived(true)
+                .unwrap()
+                .is_empty()
+        );
+        let detached_state =
+            persistence::load_with_diagnostics(&state.config().workspace_root).state;
         assert!(
             detached_state
                 .groups
@@ -2102,18 +2110,23 @@ mod tests {
         );
         assert!(detached_state.research_trees.is_empty());
         assert!(detached_state.research_nodes.is_empty());
-        assert!(crate::research::read_response_snapshot(
-            &state.config().workspace_root,
-            &detail.tree.root_node_id,
-        )
-        .unwrap()
-        .is_none());
+        assert!(
+            crate::research::read_response_snapshot(
+                &state.config().workspace_root,
+                &detail.tree.root_node_id,
+            )
+            .unwrap()
+            .is_none()
+        );
         let archive = crate::research::read_detached_research(&project)
             .unwrap()
             .expect("detached archive");
         assert_eq!(archive.archive.trees.len(), 1);
         assert_eq!(archive.archive.nodes.len(), 1);
-        assert_eq!(archive.responses[&detail.tree.root_node_id][0].id, "answer-1");
+        assert_eq!(
+            archive.responses[&detail.tree.root_node_id][0].id,
+            "answer-1"
+        );
 
         // Simulate a crash after the checked global commit but before the
         // pending archive was promoted. Opening the folder must recover this
@@ -2140,12 +2153,15 @@ mod tests {
         .unwrap()
         .expect("restored response");
         assert_eq!(restored_response[0].id, "answer-1");
-        let imported_state = persistence::load_with_diagnostics(&state.config().workspace_root).state;
+        let imported_state =
+            persistence::load_with_diagnostics(&state.config().workspace_root).state;
         assert_eq!(imported_state.research_trees.len(), 1);
         assert_eq!(imported_state.research_nodes.len(), 1);
-        assert!(crate::research::read_detached_research(&project)
-            .unwrap()
-            .is_none());
+        assert!(
+            crate::research::read_detached_research(&project)
+                .unwrap()
+                .is_none()
+        );
 
         // Simulate a crash after the global import committed but before its
         // matching folder archive was deleted. The persisted receipt lets the
@@ -2162,9 +2178,11 @@ mod tests {
         write_group_manifest(&cleanup_receipt).unwrap();
         state.update_group(cleanup_receipt).unwrap();
         reconcile_imported_research_archives(&state);
-        assert!(crate::research::read_detached_research(&project)
-            .unwrap()
-            .is_none());
+        assert!(
+            crate::research::read_detached_research(&project)
+                .unwrap()
+                .is_none()
+        );
         assert!(
             state
                 .group(&restored.id)

@@ -828,9 +828,7 @@ fn queue_agent_turn(
     // prompt at launch), so an accepted turn would sit forever and its non-empty
     // queue would park the agent instead of letting retirement reclaim it.
     if state.agent_is_research_run(&agent.id)? {
-        return Err(
-            "research runs are read-only; create a follow-up branch instead".to_string(),
-        );
+        return Err("research runs are read-only; create a follow-up branch instead".to_string());
     }
     let pending_turns = state.enqueue_agent_queued_turn(&agent.id, turn)?;
     let queued_turns = state.agent_queued_turns(&agent.id)?;

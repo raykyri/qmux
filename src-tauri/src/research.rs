@@ -388,10 +388,7 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
         if node.kind == ResearchNodeKind::Document && node.parent_node_id.is_some() {
             // Documents are root-level items; the create path is the only
             // writer and never nests them, so a nested one is corruption.
-            return Err(format!(
-                "research document {} is not a root node",
-                node.id
-            ));
+            return Err(format!("research document {} is not a root node", node.id));
         }
         if let Some(parent_id) = node.parent_node_id.as_deref() {
             let parent = node_by_id
@@ -419,9 +416,9 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
                     node.id, tree.id
                 )
             })?;
-            cursor = node_by_id.get(parent_id).ok_or_else(|| {
-                format!("research node {} has no parent", cursor.id)
-            })?;
+            cursor = node_by_id
+                .get(parent_id)
+                .ok_or_else(|| format!("research node {} has no parent", cursor.id))?;
         }
     }
     Ok(())
@@ -529,12 +526,7 @@ pub fn new_detached_research_archive_id() -> Result<String, String> {
     let mut last_error = None;
     for _ in 0..3 {
         match getrandom::getrandom(&mut bytes) {
-            Ok(()) => {
-                return Ok(bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect())
-            }
+            Ok(()) => return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
             Err(err) => last_error = Some(err),
         }
     }
@@ -768,8 +760,10 @@ pub fn read_response_snapshot(
     workspace_root: &Path,
     node_id: &str,
 ) -> Result<Option<Vec<crate::transcript::Turn>>, String> {
-    Ok(read_response_snapshot_with_revision(workspace_root, node_id)?
-        .map(|snapshot| snapshot.turns))
+    Ok(
+        read_response_snapshot_with_revision(workspace_root, node_id)?
+            .map(|snapshot| snapshot.turns),
+    )
 }
 
 pub fn write_response_snapshot(
@@ -1411,10 +1405,7 @@ mod tests {
     fn detached_archive_retry_preserves_foreign_pending_archive() {
         let folder = temp_workspace();
         let first = sample_detached_archive(&folder);
-        let responses = HashMap::from([(
-            first.nodes[0].id.clone(),
-            vec![sample_turn("turn-1")],
-        )]);
+        let responses = HashMap::from([(first.nodes[0].id.clone(), vec![sample_turn("turn-1")])]);
         write_detached_research_pending(&folder, &first, &responses).unwrap();
 
         let mut second = first.clone();
@@ -1436,10 +1427,7 @@ mod tests {
         let mut archive = sample_detached_archive(&folder);
         archive.version = 1;
         let mut manifest = serde_json::to_value(&archive).unwrap();
-        manifest
-            .as_object_mut()
-            .unwrap()
-            .remove("archiveId");
+        manifest.as_object_mut().unwrap().remove("archiveId");
         let pending = detached_archive_path(&folder, true);
         std::fs::create_dir_all(pending.join("responses")).unwrap();
         crate::persistence::write_synced(
@@ -1474,7 +1462,9 @@ mod tests {
             assert_eq!(file_mode & 0o077, 0, "snapshot must be owner-only");
         }
 
-        let turns = read_response_snapshot(&workspace, "node-1").unwrap().unwrap();
+        let turns = read_response_snapshot(&workspace, "node-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].id, "turn-1");
         let snapshot = read_response_snapshot_with_revision(&workspace, "node-1")
@@ -1483,7 +1473,11 @@ mod tests {
         assert_eq!(snapshot.revision, response_revision(&expected).unwrap());
 
         remove_response_snapshot(&workspace, "node-1").unwrap();
-        assert!(read_response_snapshot(&workspace, "node-1").unwrap().is_none());
+        assert!(
+            read_response_snapshot(&workspace, "node-1")
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
@@ -1498,11 +1492,17 @@ mod tests {
         )
         .unwrap();
 
-        let turns = read_response_snapshot(&workspace, "node-1").unwrap().unwrap();
+        let turns = read_response_snapshot(&workspace, "node-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(turns[0].id, "legacy-turn");
 
         remove_response_snapshot(&workspace, "node-1").unwrap();
-        assert!(read_response_snapshot(&workspace, "node-1").unwrap().is_none());
+        assert!(
+            read_response_snapshot(&workspace, "node-1")
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
@@ -1515,7 +1515,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // A sparse file over the cap: only its size matters to the guard.
         let file = std::fs::File::create(dir.join("node-1.json")).unwrap();
-        file.set_len(MAX_RESPONSE_SNAPSHOT_BYTES as u64 + 1).unwrap();
+        file.set_len(MAX_RESPONSE_SNAPSHOT_BYTES as u64 + 1)
+            .unwrap();
         drop(file);
 
         let err = read_response_snapshot(&workspace, "node-1").unwrap_err();
@@ -1537,7 +1538,10 @@ mod tests {
             document_default_title("\n\n## Quarterly Report\n\nBody text"),
             "Quarterly Report"
         );
-        assert_eq!(document_default_title("plain first line\nsecond"), "plain first line");
+        assert_eq!(
+            document_default_title("plain first line\nsecond"),
+            "plain first line"
+        );
         // A heading-marker-only line has no content; the next line wins.
         assert_eq!(document_default_title("#\nReal title"), "Real title");
         assert_eq!(document_default_title("   \n\t"), "Untitled document");
@@ -1626,7 +1630,9 @@ mod tests {
         let workspace = temp_workspace();
         let turn = document_turn("node-1", "# Title\n\nBody **bold**.");
         write_response_snapshot(&workspace, "node-1", std::slice::from_ref(&turn)).unwrap();
-        let turns = read_response_snapshot(&workspace, "node-1").unwrap().unwrap();
+        let turns = read_response_snapshot(&workspace, "node-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(turns, vec![turn]);
         assert_eq!(
             response_preview(&turns, None, "").as_deref(),

@@ -127,8 +127,16 @@
 /* Titles are raw prompts (often with URLs); two clamped lines keep the list
    scannable, and the row's tooltip carries the full text. */
 .research-sidebar-title {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.research-sidebar-title-text {
   display: -webkit-box;
+  min-width: 0;
   overflow: hidden;
+  flex: 1;
   line-height: 1.4;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
@@ -137,8 +145,9 @@
 
 /* Marks document items apart from research runs in the shared list. */
 .research-sidebar-doc-icon {
+  flex: none;
+  margin-top: 2px;
   margin-right: 5px;
-  vertical-align: -1px;
   color: #8f9893;
 }
 
@@ -2437,6 +2446,12 @@ button:disabled {
   user-select: none;
 }
 
+/* Unchecked research filters intentionally have no icon; keep their labels in
+   the same text column as the checked option's label. */
+.group-context-actions button.settings-research-filter-option span {
+  grid-column: 2;
+}
+
 .group-context-actions {
   margin: 0;
   padding: 0;
@@ -2484,6 +2499,37 @@ button:disabled {
   color: #8a938e;
   font: inherit;
   white-space: nowrap;
+}
+
+.context-menu-shortcut.is-keycap {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  justify-self: end;
+  padding: 0 4px;
+  border: 1px solid rgba(170, 180, 174, 0.4);
+  border-radius: 4px;
+  color: #aeb7b2;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.context-menu-shortcut-options {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 3px;
+  overflow: visible;
+}
+
+.context-menu-shortcut-options > span {
+  overflow: visible;
+  color: #68716d;
+  font-size: 9px;
 }
 
 /* The close affordance is a plain linkified glyph that sits directly over the
@@ -2563,10 +2609,6 @@ button:disabled {
 }
 
 .sidebar-actions.is-agent-only {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.sidebar-actions.is-research-mode {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 

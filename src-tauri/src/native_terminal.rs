@@ -1060,7 +1060,9 @@ pub fn native_terminal_set_web_pointer_claimed(claimed: bool) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn native_terminal_set_web_overlay_region(region: NativeWebOverlayRegion) -> Result<(), String> {
+pub fn native_terminal_set_web_overlay_region(
+    region: NativeWebOverlayRegion,
+) -> Result<(), String> {
     set_web_overlay_region(region)
 }
 

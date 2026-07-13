@@ -2341,10 +2341,7 @@ impl AppState {
         if let Err(err) = inserted {
             // Nothing references the snapshot yet; reclaim it now rather than
             // waiting for the next structural prune.
-            let _ = research::remove_response_snapshot(
-                &self.inner.config.workspace_root,
-                &node_id,
-            );
+            let _ = research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
             return Err(err);
         }
         self.persist();
@@ -2800,8 +2797,7 @@ impl AppState {
                         node.status = ResearchNodeStatus::Complete;
                     } else {
                         node.status = ResearchNodeStatus::Failed;
-                        node.error =
-                            Some("Research process exited before completion".to_string());
+                        node.error = Some("Research process exited before completion".to_string());
                     }
                     node.completed_at = Some(now);
                 }
@@ -2898,9 +2894,9 @@ impl AppState {
             &self.inner.config.workspace_root,
             node_id,
         )?
-            .ok_or_else(|| {
-                "research highlights require a durable full response snapshot".to_string()
-            })?;
+        .ok_or_else(|| {
+            "research highlights require a durable full response snapshot".to_string()
+        })?;
         if snapshot.revision != anchor.response_revision {
             return Err("the research response changed; select the text again".to_string());
         }
@@ -3637,7 +3633,9 @@ impl AppState {
             if existing_highlight_bytes.saturating_add(incoming_highlight_bytes)
                 > research::MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL
             {
-                return Err("import would exceed qmux's research highlight storage limit".to_string());
+                return Err(
+                    "import would exceed qmux's research highlight storage limit".to_string(),
+                );
             }
             (
                 model.research_trees.keys().cloned().collect::<HashSet<_>>(),
@@ -3744,10 +3742,8 @@ impl AppState {
         })();
         if let Err(err) = write_result {
             for node_id in written_node_ids {
-                let _ = research::remove_response_snapshot(
-                    &self.inner.config.workspace_root,
-                    &node_id,
-                );
+                let _ =
+                    research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
             }
             return Err(err);
         }
@@ -3777,10 +3773,8 @@ impl AppState {
         })();
         if let Err(err) = insert_result {
             for node_id in written_node_ids {
-                let _ = research::remove_response_snapshot(
-                    &self.inner.config.workspace_root,
-                    &node_id,
-                );
+                let _ =
+                    research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
             }
             return Err(err);
         }
@@ -3801,7 +3795,8 @@ impl AppState {
                 }
             }
             for node_id in written_node_ids {
-                let _ = research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
+                let _ =
+                    research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
             }
             return Err(format!("failed to commit imported research: {err}"));
         }
@@ -7662,7 +7657,9 @@ mod tests {
         existing_group.dir = root.display().to_string();
         existing_group.managed_dir = root.join("managed-existing").display().to_string();
         existing_group.agents.clear();
-        state.insert_group_after(existing_group.clone(), None).unwrap();
+        state
+            .insert_group_after(existing_group.clone(), None)
+            .unwrap();
         let existing = state
             .create_research_tree(CreateResearchTreeRequest {
                 prompt: "Existing".to_string(),
@@ -8214,7 +8211,10 @@ mod tests {
         );
         // A stop with nothing tracked reports as such so callers leave the
         // parent's status alone.
-        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), None);
+        assert_eq!(
+            state.agent_subagent_stopped("parent-1", None).unwrap(),
+            None
+        );
         assert!(!state.agent_has_active_subagents("parent-1").unwrap());
     }
 
@@ -8945,7 +8945,11 @@ mod tests {
         // The migrated run cannot resume across the restart: its pane is
         // dropped from recovery (research panes never respawn) and the node
         // settles Failed instead of resurrecting as a live run.
-        assert!(recovered_panes.iter().all(|pane| pane.id != "pane-research"));
+        assert!(
+            recovered_panes
+                .iter()
+                .all(|pane| pane.id != "pane-research")
+        );
         assert_eq!(detail.nodes[0].status, ResearchNodeStatus::Failed);
         assert!(detail.nodes[0].pane_id.is_none());
         assert_eq!(
@@ -9356,11 +9360,13 @@ mod tests {
         assert_eq!(highlight.anchor, anchor);
         // The snapshot file itself is the durability authority. Creation must
         // still work after a crash between committing it and stamping the node.
-        assert!(state
-            .research_node(&node_id)
-            .unwrap()
-            .response_snapshot_at
-            .is_none());
+        assert!(
+            state
+                .research_node(&node_id)
+                .unwrap()
+                .response_snapshot_at
+                .is_none()
+        );
 
         {
             let mut model = state.inner.model.lock().unwrap();
@@ -9683,7 +9689,9 @@ mod tests {
         agent.status = AgentStatus::Running;
         agent.pane_id = Some("pane-ghost".to_string());
         state.insert_agent(agent.clone()).unwrap();
-        state.insert_pane(sample_pane_runtime("pane-ghost")).unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-ghost"))
+            .unwrap();
         state
             .bind_research_node_run(&detail.tree.root_node_id, &agent, "pane-ghost")
             .unwrap();
@@ -9694,13 +9702,7 @@ mod tests {
         // it — or the settled node pins the tree as an active run until
         // restart. Dropped directly because every ordinary removal path now
         // runs the detach itself.
-        state
-            .inner
-            .model
-            .lock()
-            .unwrap()
-            .panes
-            .remove("pane-ghost");
+        state.inner.model.lock().unwrap().panes.remove("pane-ghost");
 
         let node = state
             .cancel_research_node(&detail.tree.root_node_id)

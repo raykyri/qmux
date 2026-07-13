@@ -210,6 +210,10 @@ export function removeResearchWorkspace(workspaceId: string) {
   return invoke<string[]>("research_workspace_remove", { workspaceId });
 }
 
+export function revealResearchWorkspace(workspaceId: string) {
+  return invoke<void>("research_workspace_reveal", { workspaceId });
+}
+
 export function createGroup(request?: {
   name?: string | null;
   dir?: string | null;

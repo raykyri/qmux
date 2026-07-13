@@ -14,6 +14,7 @@ import type {
   SetStateAction,
 } from "react";
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
   ChevronsDownUp,
@@ -67,7 +68,9 @@ import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
 import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TranscriptMarkdown";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
-import ResearchSidebarSection from "./components/research/ResearchSidebarSection";
+import ResearchSidebarSection, {
+  type ResearchVisibilityFilter,
+} from "./components/research/ResearchSidebarSection";
 import ResearchFolderSwitcher from "./components/research/ResearchFolderSwitcher";
 import {
   nextTreeInResearchScope,
@@ -213,6 +216,7 @@ import {
   createResearchWorkspaceWithFolder,
   renameResearchWorkspace,
   removeResearchWorkspace,
+  revealResearchWorkspace,
   ensureDefaultResearchWorkspace,
   archiveResearchTree,
   cancelResearchNode,
@@ -321,7 +325,16 @@ const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 const HOME_TAB_ID = "__home__";
 const RESEARCH_HOME_TAB_ID = "__research_home__";
 const ACTIVE_RESEARCH_TREE_KEY = "qmux.active-research-tree.v1";
-const SHOW_ARCHIVED_RESEARCH_KEY = "qmux.show-archived-research.v1";
+const RESEARCH_VISIBILITY_FILTER_KEY = "qmux.research-visibility-filter.v1";
+const LEGACY_SHOW_ARCHIVED_RESEARCH_KEY = "qmux.show-archived-research.v1";
+const RESEARCH_VISIBILITY_FILTER_OPTIONS: ReadonlyArray<{
+  id: ResearchVisibilityFilter;
+  label: string;
+}> = [
+  { id: "active", label: "Show active" },
+  { id: "archived", label: "Show archived" },
+  { id: "all", label: "Show all" },
+];
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
 const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
@@ -443,7 +456,7 @@ const GROUP_CONTEXT_MENU_WIDTH = 220;
 const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
 const SETTINGS_CONTEXT_MENU_WIDTH = 180;
 const SETTINGS_CONTEXT_MENU_TERMINAL_HEIGHT = 66;
-const SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT = 66;
+const SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT = 134;
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
@@ -1337,15 +1350,19 @@ export default function App() {
   activeResearchPaneIdRef.current = activeResearchPaneId;
   const [researchTrees, setResearchTrees] = useState<ResearchTreeSummary[]>([]);
   const [archivedResearchTrees, setArchivedResearchTrees] = useState<ResearchTreeSummary[]>([]);
-  const [showArchivedResearch, setShowArchivedResearch] = useState(
-    () => localStorage.getItem(SHOW_ARCHIVED_RESEARCH_KEY) === "true",
-  );
-  const toggleArchivedResearchVisibility = useCallback(() => {
-    setShowArchivedResearch((current) => {
-      const next = !current;
-      localStorage.setItem(SHOW_ARCHIVED_RESEARCH_KEY, String(next));
-      return next;
+  const [researchVisibilityFilter, setResearchVisibilityFilter] =
+    useState<ResearchVisibilityFilter>(() => {
+      const stored = localStorage.getItem(RESEARCH_VISIBILITY_FILTER_KEY);
+      if (stored === "active" || stored === "archived" || stored === "all") {
+        return stored;
+      }
+      return localStorage.getItem(LEGACY_SHOW_ARCHIVED_RESEARCH_KEY) === "true"
+        ? "all"
+        : "active";
     });
+  const changeResearchVisibilityFilter = useCallback((filter: ResearchVisibilityFilter) => {
+    setResearchVisibilityFilter(filter);
+    localStorage.setItem(RESEARCH_VISIBILITY_FILTER_KEY, filter);
   }, []);
   // Read by mark-viewed acknowledgment (a stable callback) to decide whether
   // any attention badge was actually lit without threading the lists through
@@ -1938,9 +1955,11 @@ export default function App() {
       researchCycleTabIds(
         panes,
         groups,
-        showArchivedResearch
-          ? [...researchTrees, ...archivedResearchTrees]
-          : researchTrees,
+        researchVisibilityFilter === "active"
+          ? researchTrees
+          : researchVisibilityFilter === "archived"
+            ? archivedResearchTrees
+            : [...researchTrees, ...archivedResearchTrees],
         researchScope,
       ),
     [
@@ -1949,7 +1968,7 @@ export default function App() {
       panes,
       researchScope,
       researchTrees,
-      showArchivedResearch,
+      researchVisibilityFilter,
     ],
   );
   const researchAttentionState = useMemo(() => researchAttention(researchTrees), [researchTrees]);
@@ -4958,6 +4977,14 @@ export default function App() {
       setFolderPickerStatus(null);
     }
   }, [refreshResearchNavigation]);
+  const openResearchWorkspaceFolder = useCallback(async (workspace: GroupInfo) => {
+    setError(null);
+    try {
+      await revealResearchWorkspace(workspace.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
   // A streaming run emits research events several times a second, and each
   // refresh is two IPC round-trips (navigation collections + active tree).
   // Coalesce bursts onto one trailing refresh instead of one per event.
@@ -8915,6 +8942,7 @@ export default function App() {
               }
             }}
             onNewFolder={chooseResearchWorkspaceFolder}
+            onOpenFolder={openResearchWorkspaceFolder}
             onRenameFolder={openGroupRenameDialog}
             onRemoveFolder={(workspace) => {
               setResearchFolderRemovalError(null);
@@ -8958,7 +8986,7 @@ export default function App() {
             <ResearchSidebarSection
               trees={scopedResearchTrees}
               archivedTrees={scopedArchivedResearchTrees}
-              showArchived={showArchivedResearch}
+              visibilityFilter={researchVisibilityFilter}
               activeTreeId={activeResearchTreeId}
               onSelect={(treeId) => {
                 if (
@@ -9134,11 +9162,7 @@ export default function App() {
 
         <div
           className={`sidebar-actions${
-            sidebarMode === "research"
-              ? " is-research-mode"
-              : settings.codeMode
-                ? ""
-                : " is-agent-only"
+            sidebarMode === "terminal" && !settings.codeMode ? " is-agent-only" : ""
           }`}
         >
           {sidebarMode === "terminal" ? (
@@ -9239,21 +9263,27 @@ export default function App() {
               </button>
             ) : null}
             {sidebarMode === "research" ? (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setSettingsMenu(null);
-                  toggleArchivedResearchVisibility();
-                }}
-              >
-                {showArchivedResearch ? (
-                  <EyeOff size={13} aria-hidden="true" />
-                ) : (
-                  <Eye size={13} aria-hidden="true" />
-                )}
-                <span>{showArchivedResearch ? "Hide archived" : "Show archived"}</span>
-              </button>
+              <>
+                {RESEARCH_VISIBILITY_FILTER_OPTIONS.map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="menuitemradio"
+                    className="settings-research-filter-option"
+                    aria-checked={researchVisibilityFilter === id}
+                    onClick={() => {
+                      setSettingsMenu(null);
+                      changeResearchVisibilityFilter(id);
+                    }}
+                  >
+                    {researchVisibilityFilter === id ? (
+                      <Check size={13} aria-hidden="true" />
+                    ) : null}
+                    <span>{label}</span>
+                  </button>
+                ))}
+                <div className="context-menu-divider" role="separator" />
+              </>
             ) : null}
             <button
               type="button"
@@ -9302,7 +9332,7 @@ export default function App() {
             >
               <Pencil size={13} aria-hidden="true" />
               <span>Rename group</span>
-              <kbd className="context-menu-shortcut">R</kbd>
+              <kbd className="context-menu-shortcut is-keycap">R</kbd>
             </button>
             <button
               type="button"
@@ -9318,9 +9348,15 @@ export default function App() {
                 <ChevronsDownUp size={13} aria-hidden="true" />
               )}
               <span>{groupMenuGroup.collapsed ? "Expand group" : "Collapse group"}</span>
-              <kbd className="context-menu-shortcut">
-                {groupMenuGroup.collapsed ? "C/E" : "C"}
-              </kbd>
+              {groupMenuGroup.collapsed ? (
+                <span className="context-menu-shortcut-options" aria-label="C or E">
+                  <kbd className="context-menu-shortcut is-keycap">C</kbd>
+                  <span aria-hidden="true">/</span>
+                  <kbd className="context-menu-shortcut is-keycap">E</kbd>
+                </span>
+              ) : (
+                <kbd className="context-menu-shortcut is-keycap">C</kbd>
+              )}
             </button>
             <div className="context-menu-divider" role="separator" />
             {settings.codeMode ? (
