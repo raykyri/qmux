@@ -187,6 +187,7 @@ import {
   clampFontSize,
   clampLineHeight,
   clampScrollbackRows,
+  COLOR_THEME_OPTIONS,
   CONFIRM_PASTE_OVER_CHARS_MAX,
   CONFIRM_PASTE_OVER_CHARS_MIN,
   CURSOR_STYLE_OPTIONS,
@@ -348,6 +349,7 @@ const RESEARCH_VISIBILITY_FILTER_OPTIONS: ReadonlyArray<{
 ];
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
 const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
+const WARM_QMUX_TERMINAL_THEME_ID = "qmux-warm";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
 // into another tree (each tree keeps its own overlay, like panes do).
@@ -1516,6 +1518,22 @@ export default function App() {
   const terminalNativeFontFamily = nativeFontFamilyFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
+  // The application color theme only adjusts qmux's built-in terminal palette;
+  // explicitly selected Ghostty themes keep their authored backgrounds.
+  const terminalThemeName =
+    settings.themeId === DEFAULT_THEME_ID && settings.colorTheme === "orange-blob"
+      ? WARM_QMUX_TERMINAL_THEME_ID
+      : settings.themeId;
+
+  // Apply the app accent before paint so switching (and restoring) color themes
+  // does not flash the default green palette.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.colorTheme = settings.colorTheme;
+    return () => {
+      delete root.dataset.colorTheme;
+    };
+  }, [settings.colorTheme]);
 
   useEffect(() => {
     let disposed = false;
@@ -1561,7 +1579,7 @@ export default function App() {
       scrollSensitivity: terminalScrollSensitivity,
       copyOnSelect: settings.copyOnSelect,
       selectionClearOnCopy: settings.selectionClearOnCopy,
-      themeName: settings.themeId,
+      themeName: terminalThemeName,
     }).catch(() => undefined);
   }, [
     settings.copyOnSelect,
@@ -1571,7 +1589,7 @@ export default function App() {
     settings.scrollOnUserInput,
     settings.scrollbackRows,
     settings.selectionClearOnCopy,
-    settings.themeId,
+    terminalThemeName,
     terminalFontSize,
     terminalLetterSpacing,
     terminalNativeFontFamily,
@@ -1610,16 +1628,21 @@ export default function App() {
     };
   }, [themeCatalog]);
   // Chrome that sits flush against terminal pixels (the stage, split gutters,
-  // the empty state) follows the terminal theme's background so pane spawn and
-  // resize gaps show theme-colored pixels instead of the qmux default.
+  // the empty state) follows a selected Ghostty theme. The built-in qmux theme
+  // removes the inline override so the application surface token can tint it.
   useEffect(() => {
-    const background = selectedTheme ? themeCssColor(selectedTheme.background) : null;
+    const background =
+      settings.themeId === DEFAULT_THEME_ID
+        ? null
+        : selectedTheme
+          ? themeCssColor(selectedTheme.background)
+          : null;
     if (background) {
       document.documentElement.style.setProperty("--terminal-bg", background);
     } else {
       document.documentElement.style.removeProperty("--terminal-bg");
     }
-  }, [selectedTheme]);
+  }, [selectedTheme, settings.themeId]);
   const pasteProtection = useMemo(() => pasteProtectionFor(settings), [settings]);
   const shortcutHintsShown = settings.showShortcutHints && shortcutHintsVisible;
   // The launcher prompt is deliberately NOT React state: as app-root state it
@@ -9955,8 +9978,29 @@ export default function App() {
             {settingsTab === "basic" ? (
               <div className="settings-content" role="tabpanel">
             <div className="settings-row">
+              <label htmlFor="settings-color-theme" className="settings-label">
+                Color theme
+              </label>
+              <select
+                id="settings-color-theme"
+                className="settings-select"
+                value={settings.colorTheme}
+                onChange={(event) => {
+                  const colorTheme = event.currentTarget.value as AppSettings["colorTheme"];
+                  setSettings((current) => ({ ...current, colorTheme }));
+                }}
+              >
+                {COLOR_THEME_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="settings-row">
               <label htmlFor="settings-theme" className="settings-label">
-                Theme
+                Terminal theme
               </label>
               <div className="settings-theme-field">
                 {selectedTheme ? (
@@ -11048,7 +11092,7 @@ export default function App() {
               lineHeight={settings.lineHeight}
               copyOnSelect={settings.copyOnSelect}
               selectionClearOnCopy={settings.selectionClearOnCopy}
-              themeName={settings.themeId}
+              themeName={terminalThemeName}
               pasteProtection={pasteProtection}
               deferGeometryUpdates={terminalGeometryResizing}
               readOnly={

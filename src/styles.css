@@ -61,7 +61,7 @@
    as one control set. */
 .research-sidebar-row:hover {
   color: #edf0ec;
-  background: #1b1f21;
+  background: var(--pane-hover-bg);
 }
 
 .research-sidebar-row.is-selected {
@@ -100,7 +100,7 @@
   border: 0;
   border-radius: 5px;
   color: #7f8884;
-  background: #1b1f21;
+  background: var(--pane-hover-bg);
 }
 
 .research-sidebar-row:hover > .research-sidebar-menu-trigger,
@@ -177,7 +177,7 @@
 .research-sidebar-count {
   color: var(--accent-color);
   font-weight: 600;
-  background: rgba(143, 214, 199, 0.13);
+  background: var(--accent-soft);
 }
 
 .research-sidebar-failed {
@@ -406,7 +406,7 @@
   color: #8a938e;
   font-size: 13px;
   text-align: center;
-  background: #151719;
+  background: var(--research-workspace-bg);
 }
 
 .research-placeholder h1 {
@@ -428,7 +428,7 @@
   display: grid;
   place-items: center;
   padding: 40px;
-  background: #151719;
+  background: var(--research-workspace-bg);
 }
 
 .research-spinner {
@@ -444,7 +444,7 @@
   height: 100%;
   min-height: 0;
   color: #dfe3df;
-  background: #151719;
+  background: var(--research-workspace-bg);
   /* Shared size for the answer meta line, the parent-response link, and
      follow-up card body text, so the document's secondary text stays uniform. */
   --research-meta-font-size: calc(13px + var(--transcript-font-delta, 0px));
@@ -466,7 +466,7 @@
   min-height: 48px;
   padding: 8px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.075);
-  background: #1a1d1f;
+  background: var(--chrome-header-bg);
 }
 
 /* Browser-style back/forward, left of the breadcrumbs. Link styling — no
@@ -558,7 +558,7 @@
   border: 1px solid var(--control-border);
   border-radius: 6px;
   color: #8a938e;
-  background: rgba(20, 24, 26, 0.9);
+  background: var(--chrome-control-bg);
   font-family: var(--font-ui);
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
   font-weight: 400;
@@ -567,14 +567,14 @@
 .research-open-terminal:hover:not(:disabled),
 .research-cancel-run:hover:not(:disabled),
 .research-trace-toggle:hover:not(:disabled) {
-  background: rgba(32, 38, 40, 0.95);
+  background: var(--chrome-control-bg-hover);
   color: #f1f0e8;
 }
 
 .research-open-terminal:disabled,
 .research-cancel-run:disabled,
 .research-trace-toggle:disabled {
-  background: rgba(20, 24, 26, 0.65);
+  background: var(--chrome-control-bg-disabled);
   color: #6f7773;
 }
 
@@ -640,7 +640,7 @@
   margin-bottom: 26px;
   padding: 10px 14px;
   border-radius: 10px;
-  background: #1d2224;
+  background: var(--content-card-bg);
 }
 
 .research-prompt > * {
@@ -1065,7 +1065,7 @@
 .research-followup-card small.is-running,
 .research-followup-card small.is-starting,
 .research-followup-card small.is-queued {
-  color: #8fd6c7;
+  color: var(--accent-color);
 }
 
 .research-followup-card small.is-failed {
@@ -1201,7 +1201,7 @@
   padding: 16px;
   border: 1px solid var(--control-border);
   border-radius: 14px;
-  background: linear-gradient(180deg, #1f2426, #1b2022 40%);
+  background: linear-gradient(180deg, var(--panel-highlight-bg), var(--panel-bg) 40%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 22px 70px rgba(0, 0, 0, 0.5);
 }
 
@@ -1216,7 +1216,7 @@
   padding: 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #f1f0e8;
   font-size: var(--fs-base);
 }
@@ -1227,7 +1227,7 @@
   padding: 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #f1f0e8;
   font-size: var(--fs-base);
   line-height: 1.5;
@@ -1338,8 +1338,45 @@
 }
 
 :root {
+  /* Primary pane surfaces. Keep these separate from control backgrounds so
+     application color themes can tint the workspace without flattening the
+     contrast hierarchy inside inputs, menus, and buttons. */
+  --left-pane-bg: rgba(14, 16, 17, 0.72);
+  --terminal-pane-bg: #111315;
+  --right-pane-bg: #171b1d;
+  --right-pane-bg-transparent: rgba(23, 27, 29, 0);
+  --right-pane-active-bg: #181d1f;
+
+  /* Secondary surfaces. These preserve the existing depth hierarchy while
+     giving application themes one place to tint chrome beyond the main panes. */
+  --workspace-bg: #17191b;
+  --research-workspace-bg: #151719;
+  --field-bg: #111315;
+  --field-bg-hover: #16191b;
+  --panel-bg: #1b2022;
+  --panel-highlight-bg: #1f2426;
+  --popover-bg: #1d2224;
+  --content-card-bg: #1d2224;
+  --context-menu-bg: #1c1f22;
+  --popover-item-hover-bg: #283032;
+  --chrome-header-bg: #14171a;
+  --pane-hover-bg: #1b1f21;
+  --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
+  --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
+  --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
+  --sidebar-group-bg: rgba(255, 255, 255, 0.013);
+  --transcript-code-bg: #111416;
+  --surface-divider: #2a2d2f;
+  --surface-border-strong: #30383b;
+  --chrome-control-bg: rgba(20, 24, 26, 0.9);
+  --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
+  --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
+
   --accent-color: #8fd6c7;
   --accent-shadow: rgba(143, 214, 199, 0.35);
+  --accent-soft: rgba(143, 214, 199, 0.13);
+  --accent-subtle: rgba(143, 214, 199, 0.08);
+  --accent-active-bg: #243430;
   /* Stronger, less-pastel accent used for solid filled CTAs (Queue, Launch). */
   --accent-strong: #6cae9d;
   --accent-strong-hover: #7cc0ae;
@@ -1391,6 +1428,31 @@
   font-synthesis: none;
   line-height: 1.5;
   text-rendering: optimizeLegibility;
+}
+
+:root[data-color-theme="orange-blob"] {
+  --left-pane-bg: #171716;
+  --terminal-pane-bg: #151515;
+  --right-pane-bg: #1b1c1c;
+  --right-pane-bg-transparent: rgba(27, 28, 28, 0);
+  --right-pane-active-bg: #1a1b1c;
+  --research-workspace-bg: var(--right-pane-bg);
+  --chrome-header-bg: #171716;
+  --content-card-bg: #212220;
+  --surface-divider: #2d2d2c;
+  --surface-border-strong: #363735;
+  --control-bg: #282827;
+  --control-bg-hover: #313130;
+  --control-border: #3d3d3c;
+  --accent-color: #33adff;
+  --accent-shadow: rgba(51, 173, 255, 0.35);
+  --accent-soft: rgba(51, 173, 255, 0.13);
+  --accent-subtle: rgba(51, 173, 255, 0.08);
+  --accent-active-bg: #263a49;
+  --accent-strong: #268fd6;
+  --accent-strong-hover: #339fe6;
+  --control-border-hover-accent: #4d6173;
+  --focus-ring: #33adff;
 }
 
 * {
@@ -1482,7 +1544,7 @@ button:disabled {
   max-height: 100vh;
   min-height: 0;
   overflow: hidden;
-  border-top: 1px solid #2a2d2f;
+  border-top: 1px solid var(--surface-divider);
   font-family: var(--font-ui);
   /* Paint the content opaque but leave the sidebar column transparent, so the
      window's vibrancy material shows through only behind the sidebar. The hard
@@ -1491,7 +1553,7 @@ button:disabled {
     to right,
     transparent 0,
     transparent var(--sidebar-width, 268px),
-    #17191b var(--sidebar-width, 268px)
+    var(--workspace-bg) var(--sidebar-width, 268px)
   );
 }
 
@@ -1522,7 +1584,7 @@ button:disabled {
      translucency so it reads as a native source list without the desktop
      bleeding through. Degrades to a plain dark panel if vibrancy is
      unavailable. Lower the alpha for a stronger see-through effect. */
-  background: rgba(14, 16, 17, 0.72);
+  background: var(--left-pane-bg);
   /* Top padding clears the macOS traffic-light buttons, which the Overlay
      title bar draws over the top-left of the window (i.e. over the sidebar).
      Horizontal padding is trimmed 10→6px and handed to the group cards' interior
@@ -1591,7 +1653,7 @@ button:disabled {
   padding: 3px 3px 2.5px;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--sidebar-switcher-bg);
 }
 
 .sidebar-mode-toggle button {
@@ -1616,12 +1678,12 @@ button:disabled {
 
 .sidebar-mode-toggle button:hover {
   color: #d6dbd6;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--sidebar-switcher-hover-bg);
 }
 
 .sidebar-mode-toggle button.is-selected {
   color: #edf0ec;
-  background: rgba(255, 255, 255, 0.105);
+  background: var(--sidebar-switcher-active-bg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
@@ -1690,7 +1752,7 @@ button:disabled {
      wider, invisible drag target centered across the column boundary. */
   left: 5px;
   width: 1px;
-  background: #2a2d2f;
+  background: var(--surface-divider);
   content: "";
 }
 
@@ -1768,7 +1830,7 @@ button:disabled {
   /* A touch lighter than the sidebar rather than darker, so hover lifts off the
      panel — but kept below the selected fill so the two stay distinct. */
   --pane-tab-status-bg: rgba(27, 31, 33, 0.7);
-  background: #1b1f21;
+  background: var(--pane-hover-bg);
 }
 
 /* Hovering a queue-menu item previews its target tab: brighten close to the
@@ -1913,7 +1975,7 @@ button:disabled {
   padding: 6px;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.013);
+  background: var(--sidebar-group-bg);
 }
 
 .pane-group.is-group-dragging {
@@ -2156,7 +2218,7 @@ button:disabled {
 }
 
 .pane-tab-dot.status-done {
-  background: #6cae9d;
+  background: var(--accent-strong);
 }
 
 .pane-tab-dot.status-error {
@@ -2342,7 +2404,7 @@ button:disabled {
      bright accent border and a heavy 48px shadow. */
   border: 0.5px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
-  background: #1c1f22;
+  background: var(--context-menu-bg);
   color: #d9ddd9;
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
@@ -2384,7 +2446,7 @@ button:disabled {
 }
 
 .pane-context-status-row.status-done dd::before {
-  background: #6cae9d;
+  background: var(--accent-strong);
 }
 
 .pane-context-status-row.status-error dd::before {
@@ -2735,7 +2797,7 @@ button:disabled {
   border-radius: 14px;
   /* Faint top-lit gradient — a touch lighter at the very top, settling to the
      base surface by ~40% down — so the bar reads as a lifted panel. */
-  background: linear-gradient(180deg, #1f2426, #1b2022 40%);
+  background: linear-gradient(180deg, var(--panel-highlight-bg), var(--panel-bg) 40%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   overflow: hidden;
 }
@@ -2757,7 +2819,7 @@ button:disabled {
   gap: 10px;
   border: 1px solid #3b4447;
   border-radius: 10px;
-  background: #1b2022;
+  background: var(--panel-bg);
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
   padding: 16px;
 }
@@ -2790,7 +2852,7 @@ button:disabled {
   padding: 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #f1f0e8;
   font-size: var(--fs-input);
 }
@@ -2873,9 +2935,9 @@ button:disabled {
   width: min(520px, 100%);
   max-height: min(420px, 100%);
   padding: 8px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 10px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
 }
 
@@ -2885,7 +2947,7 @@ button:disabled {
   padding: 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #e7e7e2;
   font-family: var(--font-ui);
   font-size: var(--fs-base);
@@ -2941,7 +3003,7 @@ button:disabled {
 /* Selection follows the keyboard (and mouse hover via onMouseMove), so only the
    is-selected row highlights — no separate :hover style fighting the arrows. */
 .command-palette-item.is-selected {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .command-palette-item-title {
@@ -2981,7 +3043,7 @@ button:disabled {
   gap: 14px;
   border: 1px solid #3b4447;
   border-radius: 10px;
-  background: #1b2022;
+  background: var(--panel-bg);
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
   padding: 16px 16px 20px;
 }
@@ -3022,7 +3084,7 @@ button:disabled {
   overflow: hidden;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
 }
 
 .settings-tabs button {
@@ -3117,7 +3179,7 @@ button:disabled {
 .settings-divider {
   height: 1px;
   margin: 2px 0;
-  background: #30383b;
+  background: var(--surface-border-strong);
 }
 
 /* A whole-row label whose checkbox sits at the trailing edge. */
@@ -3135,7 +3197,7 @@ button:disabled {
   padding: 0 28px 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background-color: #111315;
+  background-color: var(--field-bg);
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   background-repeat: no-repeat;
   background-position: right 9px center;
@@ -3149,7 +3211,7 @@ button:disabled {
 
 .settings-select:hover {
   border-color: var(--control-border-hover);
-  background-color: #16191b;
+  background-color: var(--field-bg-hover);
 }
 
 .settings-theme-field {
@@ -3182,7 +3244,7 @@ button:disabled {
   padding: 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #e7e7e2;
   font-family: var(--font-ui);
   font-size: var(--fs-base);
@@ -3277,7 +3339,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   border-left: 0;
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  background: #111315;
+  background: var(--field-bg);
   color: var(--control-fg-muted);
   outline: none;
 }
@@ -3288,7 +3350,7 @@ button:disabled {
 }
 
 .settings-secret-toggle:hover {
-  background: #16191b;
+  background: var(--field-bg-hover);
   color: #e7e7e2;
 }
 
@@ -3434,7 +3496,7 @@ button:disabled {
 
 /* Custom checkbox so the unchecked box reads as quiet launcher chrome (dark fill,
    hairline border) instead of a bright native control, and the checked state
-   matches the launcher's teal accent. Shared by the worktree + option toggles. */
+   matches the launcher's accent. Shared by the worktree + option toggles. */
 .command-launcher-worktree input,
 .command-launcher-option-toggle input,
 .settings-checkbox {
@@ -3586,7 +3648,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   /* Pill, matching the launcher controls. */
   border-radius: 999px;
-  background: #111315;
+  background: var(--field-bg);
   color: #e7e7e2;
   /* Matches the launcher controls (--fs-base), as does .launcher-select-item. */
   font-size: var(--fs-base);
@@ -3596,7 +3658,7 @@ button:disabled {
 
 .launcher-select-trigger:hover {
   border-color: var(--control-border-hover);
-  background: #16191b;
+  background: var(--field-bg-hover);
 }
 
 .launcher-select-value {
@@ -3665,9 +3727,9 @@ button:disabled {
   width: max-content;
   max-width: calc(100vw - 24px);
   padding: 4px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   user-select: none;
 }
@@ -3694,7 +3756,7 @@ button:disabled {
 }
 
 .launcher-select-item:hover:not(:disabled) {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .launcher-select-separator {
@@ -3785,15 +3847,16 @@ button:disabled {
   height: 14px;
 }
 
-/* --terminal-bg is set on :root by App.tsx from the selected terminal theme's
-   background; chrome that sits flush against terminal pixels uses it so pane
-   gaps and empty states match the panes instead of the qmux default. */
+/* App.tsx sets --terminal-bg for named Ghostty themes. The built-in qmux theme
+   falls back to --terminal-pane-bg, allowing application themes to tint it.
+   Chrome that sits flush against terminal pixels uses the same resolved color
+   so pane gaps and empty states match the native surfaces. */
 .terminal-stage {
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  background: var(--terminal-bg, #111315);
+  background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
 .terminal-stage.is-native {
@@ -3805,11 +3868,11 @@ button:disabled {
    launcher dialog replaces the inline empty state, which would otherwise expose
    the window's vibrancy material. */
 .terminal-stage.is-native.is-home {
-  background: var(--terminal-bg, #111315);
+  background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
 .terminal-stage.is-native .terminal-empty-state {
-  background: var(--terminal-bg, #111315);
+  background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
 .terminal-empty-state {
@@ -4127,7 +4190,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .home-cascade-lane-head:hover {
-  background: #1b1f21;
+  background: var(--pane-hover-bg);
 }
 
 .home-cascade-lane-head:focus-visible {
@@ -4336,7 +4399,7 @@ button.home-cascade-wait-pill:focus-visible {
    reserved gutter between splits must paint itself or the window vibrancy
    material shows through it. */
 .terminal-stage.is-native .terminal-split-resizer {
-  background: var(--terminal-bg, #111315);
+  background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
 .terminal-split-resizer:hover::before,
@@ -4372,7 +4435,7 @@ button.home-cascade-wait-pill:focus-visible {
   gap: 8px;
   border: 1px solid #3a3d3f;
   border-radius: 8px;
-  background: #1b1f21;
+  background: var(--pane-hover-bg);
   padding: 6px 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
@@ -4396,7 +4459,7 @@ button.home-cascade-wait-pill:focus-visible {
   min-width: 0;
   border: 1px solid #3a3d3f;
   border-radius: 6px;
-  background: #111315;
+  background: var(--field-bg);
   color: #f1f0e8;
   padding: 5px 8px;
   font-size: 13px;
@@ -4404,7 +4467,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .pane-search-input:focus {
   outline: none;
-  border-color: #6cae9d;
+  border-color: var(--focus-ring);
 }
 
 .pane-search-count {
@@ -4450,8 +4513,8 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .pane-search-toggle.is-active {
-  border-color: #6cae9d;
-  background: #243430;
+  border-color: var(--accent-strong);
+  background: var(--accent-active-bg);
   color: #e7e7e2;
 }
 
@@ -4478,7 +4541,7 @@ button.home-cascade-wait-pill:focus-visible {
   display: flex;
   min-width: 0;
   min-height: 0;
-  background: #171b1d;
+  background: var(--right-pane-bg);
   /* Add the terminal-zoom delta (set on the app shell, 0 by default) to the type
      scale so every right-pane element sized off these vars — composer, queue,
      etc. — grows with the terminal. Hard-coded px sizes add the delta directly. */
@@ -4519,16 +4582,16 @@ button.home-cascade-wait-pill:focus-visible {
   width: var(--inline-turn-pane-width, var(--turn-pane-width, 420px));
   min-width: 0;
   min-height: 0;
-  background: #171b1d;
-  box-shadow: inset 1px 0 0 #2a2d2f;
+  background: var(--right-pane-bg);
+  box-shadow: inset 1px 0 0 var(--surface-divider);
 }
 
 .turn-pane-split-cell.is-active {
-  background: #181d1f;
+  background: var(--right-pane-active-bg);
 }
 
 .turn-pane-split-cell.is-active .turn-sidebar {
-  background: #181d1f;
+  background: var(--right-pane-active-bg);
 }
 
 /* A queued card dragged from another split hovers this cell: read as the drop
@@ -4536,7 +4599,7 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-pane-split-cell.is-queue-drop-target {
   box-shadow:
     inset 0 0 0 2px var(--accent-color),
-    inset 1px 0 0 #2a2d2f;
+    inset 1px 0 0 var(--surface-divider);
 }
 
 .turn-pane-stack .turn-pane-resizer {
@@ -4554,8 +4617,8 @@ button.home-cascade-wait-pill:focus-visible {
   /* Cover the native terminal-colored split gutter under the inline right
      pane. This divider is pointer-transparent via .turn-pane-split-divider,
      so the full-width terminal resize handle remains draggable underneath. */
-  background: #171b1d;
-  box-shadow: inset 1px 0 0 #2a2d2f;
+  background: var(--right-pane-bg);
+  box-shadow: inset 1px 0 0 var(--surface-divider);
 }
 
 .turn-pane.is-expanded {
@@ -4566,7 +4629,7 @@ button.home-cascade-wait-pill:focus-visible {
   left: var(--sidebar-width, 268px);
   z-index: 7;
   width: auto;
-  box-shadow: inset 1px 0 0 #2a2d2f;
+  box-shadow: inset 1px 0 0 var(--surface-divider);
 }
 
 /* The pane's left edge is drawn solely by the resizer's ::before line so there's
@@ -4588,7 +4651,7 @@ button.home-cascade-wait-pill:focus-visible {
   bottom: 0;
   left: 0;
   width: 1px;
-  background: #2a2d2f;
+  background: var(--surface-divider);
   content: "";
 }
 
@@ -4603,7 +4666,7 @@ button.home-cascade-wait-pill:focus-visible {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #171b1d;
+  background: var(--right-pane-bg);
 }
 
 .turn-queue-resizer {
@@ -4622,7 +4685,7 @@ button.home-cascade-wait-pill:focus-visible {
   right: 0;
   left: 0;
   height: 1px;
-  background: #2a2d2f;
+  background: var(--surface-divider);
   content: "";
 }
 
@@ -4648,8 +4711,8 @@ button.home-cascade-wait-pill:focus-visible {
   gap: 8px;
   height: 40px;
   padding: 0 10px;
-  border-bottom: 1px solid #2a2d2f;
-  background: #14171a;
+  border-bottom: 1px solid var(--surface-divider);
+  background: var(--chrome-header-bg);
 }
 
 /* The session label/dropdown anchor fills the space before the header controls.
@@ -4710,9 +4773,9 @@ button.home-cascade-wait-pill:focus-visible {
   flex-direction: column;
   gap: 2px;
   padding: 4px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
@@ -4744,7 +4807,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-pane-session-menu-item:hover:not(:disabled) {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .turn-pane-session-menu-item:disabled {
@@ -4755,7 +4818,7 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-pane-session-menu-divider {
   height: 1px;
   margin: 4px 0;
-  background: #2a2d2f;
+  background: var(--surface-divider);
 }
 
 .turn-pane-session-menu-label {
@@ -4781,7 +4844,7 @@ button.home-cascade-wait-pill:focus-visible {
   height: 28px;
   border: 1px solid var(--control-border);
   border-radius: 6px;
-  background: rgba(20, 24, 26, 0.9);
+  background: var(--chrome-control-bg);
   color: #c4cbc6;
   cursor: pointer;
 }
@@ -4793,12 +4856,12 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-pane-header-button:hover:not(:disabled) {
-  background: rgba(32, 38, 40, 0.95);
+  background: var(--chrome-control-bg-hover);
   color: #f1f0e8;
 }
 
 .turn-pane-header-button:disabled {
-  background: rgba(20, 24, 26, 0.65);
+  background: var(--chrome-control-bg-disabled);
   color: #6f7773;
 }
 
@@ -4837,9 +4900,9 @@ button.home-cascade-wait-pill:focus-visible {
   gap: 6px;
   min-width: 0;
   padding: 8px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
@@ -4850,7 +4913,7 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #e7e7e2;
   font-family: var(--font-ui);
   font-size: var(--fs-base);
@@ -4904,7 +4967,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-item-main:hover:not(:disabled) {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .prompt-library-item-main:disabled {
@@ -4982,7 +5045,7 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 4px;
   border: 0.5px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
-  background: #1c1f22;
+  background: var(--context-menu-bg);
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
@@ -5008,7 +5071,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-row-menu-item:hover {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .prompt-library-row-menu-item.is-danger {
@@ -5034,7 +5097,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-icon-button:hover {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
   color: #e7e7e2;
 }
 
@@ -5053,7 +5116,7 @@ button.home-cascade-wait-pill:focus-visible {
   border-color: var(--accent-color);
   /* A light wash, not the full accent-shadow flood: the dashed border already
      marks the target, the tint just confirms the whole section is live. */
-  background: rgba(143, 214, 199, 0.08);
+  background: var(--accent-subtle);
 }
 
 .prompt-library-section-header {
@@ -5097,7 +5160,7 @@ button.home-cascade-wait-pill:focus-visible {
   height: 1px;
   flex: none;
   margin: 7px 5px;
-  background: #2a2d2f;
+  background: var(--surface-divider);
 }
 
 /* Names the fill-in step above the prompt's first-line heading. */
@@ -5121,7 +5184,7 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: rgba(20, 24, 26, 0.9);
+  background: var(--chrome-control-bg);
   color: #c4cbc6;
   font-size: var(--fs-base);
   text-overflow: ellipsis;
@@ -5130,7 +5193,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-scope-option:hover {
-  background: rgba(32, 38, 40, 0.95);
+  background: var(--chrome-control-bg-hover);
   color: #f1f0e8;
 }
 
@@ -5173,7 +5236,7 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 6px 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #e7e7e2;
   font-family: var(--font-ui);
   font-size: var(--fs-base);
@@ -5202,14 +5265,14 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 0 12px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: rgba(20, 24, 26, 0.9);
+  background: var(--chrome-control-bg);
   color: #c4cbc6;
   font-size: var(--fs-base);
   cursor: pointer;
 }
 
 .prompt-library-button:hover:not(:disabled) {
-  background: rgba(32, 38, 40, 0.95);
+  background: var(--chrome-control-bg-hover);
   color: #f1f0e8;
 }
 
@@ -5294,9 +5357,9 @@ button.home-cascade-wait-pill:focus-visible {
   gap: 2px;
   min-width: 0;
   padding: 4px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
 }
@@ -5321,7 +5384,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-pane-fork-item:hover {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 /* Make room for the top bar (40px + its 1px border). */
@@ -5464,9 +5527,9 @@ button.home-cascade-wait-pill:focus-visible {
   min-width: 0;
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
 }
 
@@ -5484,7 +5547,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-empty-picker-popover .session-menu-item:hover {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .turn-sidebar-input {
@@ -5506,7 +5569,11 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 10px 13px 10px 12px;
   /* Mostly opaque so the unwrapped queue/composer stay legible over the
      transcript, with only a short fade at the very top. */
-  background: linear-gradient(to top, #171b1d 88%, rgba(23, 27, 29, 0));
+  background: linear-gradient(
+    to top,
+    var(--right-pane-bg) 88%,
+    var(--right-pane-bg-transparent)
+  );
 }
 
 .turn-sidebar.has-header .turn-sidebar-input:not(.is-split) {
@@ -5526,7 +5593,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .turn-sidebar-input.is-split {
   overflow: hidden;
-  background: #171b1d;
+  background: var(--right-pane-bg);
   /* The split divider already separates the queue from the transcript, so drop the
      floating composer's top padding that otherwise leaves a gap below the
      splitter. */
@@ -5552,9 +5619,9 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-card {
-  border: 1px solid #30383b;
+  border: 1px solid var(--surface-border-strong);
   border-radius: 6px;
-  background: #1d2224;
+  background: var(--content-card-bg);
   padding: 8px 9px;
 }
 
@@ -5622,7 +5689,7 @@ button.home-cascade-wait-pill:focus-visible {
      -1px: 48px - 1px. A 44px strip stopped at -4px, leaving a 3px unmasked
      band where scrolled text stayed visible above the pinned card. */
   height: 47px;
-  background: #171b1d;
+  background: var(--right-pane-bg);
 }
 
 .turn-card.is-status-superseded,
@@ -5681,7 +5748,7 @@ button.home-cascade-wait-pill:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #96e0cf;
+  color: var(--accent-color);
   font-size: calc(11.5px + var(--transcript-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
@@ -5747,7 +5814,7 @@ button.home-cascade-wait-pill:focus-visible {
   padding: 4px;
   border: 0.5px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
-  background: #1c1f22;
+  background: var(--context-menu-bg);
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
@@ -5777,7 +5844,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-title-menu-item:hover:not(:disabled) {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .turn-title-menu-item:focus-visible {
@@ -5953,11 +6020,12 @@ header + .turn-blocks {
   color: #f4f3ec;
   font-weight: 600;
   line-height: calc(1.3 + var(--transcript-line-height-delta, 0));
-  letter-spacing: -0.01em;
+  letter-spacing: -0.007em;
 }
 
 .turn-markdown h1 {
   font-size: calc(21px + var(--transcript-font-delta, 0px));
+  line-height: 1.25;
 }
 
 .turn-markdown h2 {
@@ -6021,9 +6089,9 @@ header + .turn-blocks {
 }
 
 .turn-markdown code {
-  border: 1px solid #323a3d;
+  border: 1px solid var(--surface-border-strong);
   border-radius: 4px;
-  background: #111416;
+  background: var(--transcript-code-bg);
   padding: 1px 4px;
   color: #e7e7e2;
   font-family: var(--font-mono);
@@ -6032,9 +6100,9 @@ header + .turn-blocks {
 
 .turn-markdown pre {
   overflow: auto;
-  border: 1px solid #30383b;
+  border: 1px solid var(--surface-border-strong);
   border-radius: 6px;
-  background: #111416;
+  background: var(--transcript-code-bg);
   padding: 8px;
 }
 
@@ -6141,7 +6209,7 @@ header + .turn-blocks {
 
 .turn-diagram {
   margin: 0 0 8px;
-  border: 1px solid #30383b;
+  border: 1px solid var(--surface-border-strong);
   border-radius: 6px;
   overflow: hidden;
   background: #111416;
@@ -6221,7 +6289,7 @@ header + .turn-blocks {
 .turn-diagram-source {
   margin: 0;
   overflow: auto;
-  border: 1px solid #30383b;
+  border: 1px solid var(--surface-border-strong);
   border-radius: 6px;
   background: #0d1012;
   padding: 8px;
@@ -6248,7 +6316,7 @@ header + .turn-blocks {
   height: 1px;
   margin: 10px 0;
   border: 0;
-  background: #30383b;
+  background: var(--surface-border-strong);
 }
 
 .turn-markdown input[type="checkbox"] {
@@ -6350,7 +6418,7 @@ header + .turn-blocks {
 
 .tool-block.tool-pair > summary:hover,
 .activity-group-block > summary:hover {
-  background: #1b1f21;
+  background: var(--pane-hover-bg);
 }
 
 /* Errors lost their red box along with every other border; a red left rule on the
@@ -6406,7 +6474,7 @@ header + .turn-blocks {
    beneath their tool row. */
 .tool-payload {
   margin: 6px 0 0 14px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 6px;
   background: #15191b;
   overflow: hidden;
@@ -6435,7 +6503,7 @@ header + .turn-blocks {
 .tool-block > pre,
 .thinking-block > pre {
   margin: 6px 0 0 14px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 6px;
   background: #15191b;
 }
@@ -6658,7 +6726,7 @@ header + .turn-blocks {
 .queued-turn-toggle:focus-visible {
   border: 0;
   outline: none;
-  box-shadow: 0 0 0 1px #6cae9d;
+  box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
 .queued-turn-text {
@@ -6786,7 +6854,7 @@ header + .turn-blocks {
   resize: none;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  background: #111315;
+  background: var(--field-bg);
   color: #f1f0e8;
   font-size: calc(var(--fs-base) + 1px);
   padding: 8px 9px;
@@ -6850,9 +6918,9 @@ header + .turn-blocks {
   min-width: 0;
   box-sizing: border-box;
   padding: 4px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
 }
@@ -6871,13 +6939,13 @@ header + .turn-blocks {
 }
 
 .composer-menu-item:hover:not(:disabled) {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .composer-menu-divider {
   height: 1px;
   margin: 4px 0;
-  background: #2a2d2f;
+  background: var(--surface-divider);
 }
 
 .composer-menu-label {
@@ -6948,9 +7016,9 @@ header + .turn-blocks {
   z-index: 30;
   transform: translateX(-50%);
   padding: 6px 12px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 999px;
-  background: #1d2224;
+  background: var(--popover-bg);
   color: #e7e7e2;
   font-size: var(--fs-sm);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -7060,9 +7128,9 @@ header + .turn-blocks {
   min-width: 0;
   box-sizing: border-box;
   padding: 4px;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 8px;
-  background: #1d2224;
+  background: var(--popover-bg);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
 }
@@ -7095,7 +7163,7 @@ header + .turn-blocks {
 }
 
 .wait-target-item:hover:not(:disabled) {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .wait-target-status-dot {
@@ -7148,7 +7216,7 @@ header + .turn-blocks {
   flex-direction: column;
   overflow: hidden;
   background: #0e1011;
-  border: 1px solid #2a2d2f;
+  border: 1px solid var(--surface-divider);
   border-radius: 12px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
 }
@@ -7171,8 +7239,8 @@ header + .turn-blocks {
   gap: 8px;
   height: 40px;
   padding: 0 10px;
-  border-bottom: 1px solid #2a2d2f;
-  background: #14171a;
+  border-bottom: 1px solid var(--surface-divider);
+  background: var(--chrome-header-bg);
 }
 
 .browser-overlay-nav-form {
@@ -7292,7 +7360,7 @@ header + .turn-blocks {
   height: 28px;
   border: 1px solid var(--control-border);
   border-radius: 6px;
-  background: rgba(20, 24, 26, 0.9);
+  background: var(--chrome-control-bg);
   color: #c4cbc6;
   cursor: pointer;
   backdrop-filter: blur(6px);
@@ -7307,7 +7375,7 @@ header + .turn-blocks {
 }
 
 .browser-overlay-button:hover:not(:disabled) {
-  background: rgba(32, 38, 40, 0.95);
+  background: var(--chrome-control-bg-hover);
   color: #f1f0e8;
 }
 
@@ -7339,7 +7407,7 @@ header + .turn-blocks {
   padding: 4px;
   border: 0.5px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
-  background: #1c1f22;
+  background: var(--context-menu-bg);
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
@@ -7372,7 +7440,7 @@ header + .turn-blocks {
 }
 
 .link-context-menu-item:hover {
-  background: #283032;
+  background: var(--popover-item-hover-bg);
 }
 
 .link-context-menu-item:focus-visible {

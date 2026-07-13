@@ -139,10 +139,16 @@ export const DEFAULT_FONT_ID = FONT_OPTIONS[0].id;
  */
 export const DEFAULT_THEME_ID = "qmux";
 
+export type ColorTheme = "green-blob" | "orange-blob";
 export type CursorStyle = "block" | "underline" | "bar";
 export type MouseWheelSensitivity = "low" | "normal" | "high" | "veryHigh";
 export type TabTitleProvider = "appleFoundationModels" | "openRouter" | "disabled";
 export type WorktreeLocation = "global" | "localQmux" | "localClaude";
+
+export const COLOR_THEME_OPTIONS: { id: ColorTheme; label: string }[] = [
+  { id: "green-blob", label: "Cool" },
+  { id: "orange-blob", label: "Warm" },
+];
 
 export const CURSOR_STYLE_OPTIONS: { id: CursorStyle; label: string }[] = [
   { id: "block", label: "Block" },
@@ -184,6 +190,8 @@ export const CONFIRM_PASTE_OVER_CHARS_MIN = 1;
 export const CONFIRM_PASTE_OVER_CHARS_MAX = 5_000_000;
 
 export interface AppSettings {
+  /** color theme for application chrome and active states */
+  colorTheme: ColorTheme;
   /** id into BODY_FONT_OPTIONS */
   bodyFontId: string;
   /** id into FONT_OPTIONS */
@@ -257,6 +265,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  colorTheme: "green-blob",
   bodyFontId: DEFAULT_BODY_FONT_ID,
   fontId: DEFAULT_FONT_ID,
   themeId: DEFAULT_THEME_ID,
@@ -371,9 +380,14 @@ export function loadSettings(): AppSettings {
     if (!raw) {
       return { ...DEFAULT_SETTINGS };
     }
-    const parsed = JSON.parse(raw) as Partial<AppSettings> & {
+    const parsed = JSON.parse(raw) as Omit<Partial<AppSettings>, "colorTheme"> & {
+      colorTheme?: unknown;
       openRouterTitlesEnabled?: boolean;
     };
+    const storedColorTheme = typeof parsed.colorTheme === "string" ? parsed.colorTheme : null;
+    const colorTheme =
+      COLOR_THEME_OPTIONS.find((option) => option.id === storedColorTheme)?.id ??
+      DEFAULT_SETTINGS.colorTheme;
     const bodyFontId =
       typeof parsed.bodyFontId === "string" &&
       BODY_FONT_OPTIONS.some((option) => option.id === parsed.bodyFontId)
@@ -484,6 +498,7 @@ export function loadSettings(): AppSettings {
         ? parsed.openRouterModel
         : DEFAULT_SETTINGS.openRouterModel;
     return {
+      colorTheme,
       bodyFontId,
       fontId,
       themeId,

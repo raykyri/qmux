@@ -11,6 +11,9 @@ enum QmuxTerminalTheme {
     /// Settings value naming the built-in qmux colors. Kept out of the
     /// catalog namespace: no iTerm2 scheme is called "qmux".
     static let defaultName = "qmux"
+    /// Internal variant used when Warm blob is active with the built-in qmux
+    /// terminal theme. It stays out of the user-facing terminal theme catalog.
+    static let warmName = "qmux-warm"
 
     /// The default colors qmux shipped with before named themes existed. Also
     /// the fallback for stale settings naming a theme the catalog no longer has.
@@ -24,9 +27,22 @@ enum QmuxTerminalTheme {
         selectionForeground: "f4f4ef"
     )
 
+    static let warmDefinition = GhosttyThemeDefinition(
+        name: warmName,
+        background: "151515",
+        foreground: "e7e7e2",
+        cursorColor: "f2d37b",
+        cursorText: "151515",
+        selectionBackground: "3d4a52",
+        selectionForeground: "f4f4ef"
+    )
+
     static func definition(named name: String) -> GhosttyThemeDefinition {
         if name == defaultName {
             return defaultDefinition
+        }
+        if name == warmName {
+            return warmDefinition
         }
         return GhosttyThemeCatalog.theme(named: name) ?? defaultDefinition
     }
