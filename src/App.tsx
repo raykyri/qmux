@@ -10689,7 +10689,7 @@ export default function App() {
                 ? `Remove ${displayGroupName(closeDialog.workspace)}?`
                 : closeDialog.groupClose
                 ? `Close ${closeDialog.groupClose.groupName}?`
-                : `Close ${closeDialog.pane.title}?`}
+                : `Close "${closeDialog.pane.title}?"`}
             </h2>
             {closeDialog.kind !== "researchFolderRemove" && closeDialog.groupClose ? (
               <p>
