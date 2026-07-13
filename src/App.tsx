@@ -3546,15 +3546,40 @@ export default function App() {
     return currentPane.id;
   }
 
-  async function panesWithNewTabInLaunchPosition(
+  function panesWithNewTabInLaunchPosition(
     pane: PaneInfo,
     targetGroupId: string | null,
-  ): Promise<PaneInfo[]> {
+  ): PaneInfo[] {
     const siblingPaneId = insertionSiblingForNewTab(targetGroupId);
+    return placePaneAfterOptimistically(pane, siblingPaneId);
+  }
+
+  // Computes the spawned pane's position locally and returns the reordered
+  // list without waiting for the backend to persist that order, so the new
+  // pane mounts — and its terminal becomes visible — one IPC round-trip
+  // sooner. The backend's authoritative result reconciles the list when it
+  // arrives; if persisting fails (e.g. the pane already closed), the backend
+  // keeps spawn (append) order and the next authoritative pane update applies
+  // it here too, so the failure is deliberately not surfaced as a spawn error.
+  function placePaneAfterOptimistically(
+    pane: PaneInfo,
+    siblingPaneId: string | null,
+  ): PaneInfo[] {
+    const current = panesRef.current.filter((existing) => existing.id !== pane.id);
     if (!siblingPaneId || siblingPaneId === pane.id) {
-      return [...panesRef.current.filter((existing) => existing.id !== pane.id), pane];
+      return [...current, pane];
     }
-    return placePaneAfter(pane.id, siblingPaneId);
+    const siblingIndex = current.findIndex((existing) => existing.id === siblingPaneId);
+    if (siblingIndex === -1) {
+      return [...current, pane];
+    }
+    void placePaneAfter(pane.id, siblingPaneId)
+      .then((orderedPanes) => setPanesPreservingRecoveredDismissals(orderedPanes))
+      .catch(() => undefined);
+    // Mirror the backend's placement: directly after the sibling, at the
+    // sibling's nesting depth.
+    const placed = { ...pane, depth: current[siblingIndex].depth };
+    return [...current.slice(0, siblingIndex + 1), placed, ...current.slice(siblingIndex + 1)];
   }
 
   async function refreshGroups() {
@@ -3580,7 +3605,7 @@ export default function App() {
 
   async function createInitialShellForGroup(groupId: string) {
     const pane = await spawnShell(estimateInitialPaneSize(false), null, groupId);
-    const orderedPanes = await panesWithNewTabInLaunchPosition(pane, groupId);
+    const orderedPanes = panesWithNewTabInLaunchPosition(pane, groupId);
     setPanesPreservingRecoveredDismissals(orderedPanes);
     setActivePaneId(pane.id);
     setLastActiveGroupId(pane.groupId);
@@ -3634,7 +3659,7 @@ export default function App() {
       const sourcePaneId =
         activePane?.kind === "shell" && activePane.groupId === groupId ? activePane.id : null;
       const pane = await spawnShell(estimateInitialPaneSize(false), sourcePaneId, groupId);
-      const orderedPanes = await panesWithNewTabInLaunchPosition(pane, groupId);
+      const orderedPanes = panesWithNewTabInLaunchPosition(pane, groupId);
       setPanesPreservingRecoveredDismissals(orderedPanes);
       setActivePaneId(pane.id);
       setLastActiveGroupId(pane.groupId);
@@ -3667,7 +3692,7 @@ export default function App() {
         sourcePane.kind === "shell" ? sourcePane.id : null,
         sourcePane.groupId,
       );
-      const orderedPanes = await placePaneAfter(pane.id, sourcePane.id);
+      const orderedPanes = placePaneAfterOptimistically(pane, sourcePane.id);
       setPanesPreservingRecoveredDismissals(orderedPanes);
       savePaneSplits(
         joinPaneSplit(paneSplits, orderedPanes, sourcePane.id, pane.id, {
@@ -7281,7 +7306,7 @@ export default function App() {
         useWorktree: createInWorktree,
         options: launcherOptions,
       });
-      const orderedPanes = await panesWithNewTabInLaunchPosition(pane, targetGroupId);
+      const orderedPanes = panesWithNewTabInLaunchPosition(pane, targetGroupId);
       setPanesPreservingRecoveredDismissals(orderedPanes);
       setActivePaneId(pane.id);
       setLastActiveGroupId(pane.groupId);
