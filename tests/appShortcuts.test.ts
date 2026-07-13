@@ -168,6 +168,11 @@ test("parses semantic commands from native payloads", () => {
   assert.deepEqual(parseAppShortcutCommand("toggleSidebarMode", null), {
     type: "toggleSidebarMode",
   });
+  // Emitted by the native stranded-WKWebView fallback for Cmd+K; Swift has
+  // already consumed the keyDown by then, so dropping it kills the chord.
+  assert.deepEqual(parseAppShortcutCommand("openCommandPalette", null), {
+    type: "openCommandPalette",
+  });
   assert.equal(parseAppShortcutCommand("launcherOrCycleAdapter", null), null);
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);

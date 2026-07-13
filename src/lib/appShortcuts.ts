@@ -173,6 +173,7 @@ export function parseAppShortcutCommand(
     case "focusResearchMode":
     case "toggleSidebarMode":
     case "openSettings":
+    case "openCommandPalette":
     case "toggleTranscriptOrBrowser":
     case "splitPaneBelow":
     case "restoreClosedPane":
