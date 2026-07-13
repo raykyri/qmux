@@ -71,6 +71,10 @@ function containsToolActivity(item: ActivityItem) {
   );
 }
 
+export function timelineItemsContainToolCall(items: MessageItem[]) {
+  return items.some((item) => item.activities.some(containsToolActivity));
+}
+
 /** The user-facing answer begins after the final tool-bearing timeline item. */
 export function timelineItemsAfterLastToolCall(items: MessageItem[]) {
   for (let index = items.length - 1; index >= 0; index -= 1) {

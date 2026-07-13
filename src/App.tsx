@@ -10373,13 +10373,16 @@ export default function App() {
             />
           ) : null}
           {researchSurfaceActive && !activeResearchTreeId ? (
-            <div className="research-placeholder research-empty-state">
-              <h1>No open research</h1>
-              <p>Start a new question or restore one from the archive.</p>
-              <button type="button" onClick={() => void createResearchFromSidebar()}>
-                <Plus size={14} aria-hidden="true" />
-                New research
-              </button>
+            <div className="research-empty-state">
+              <NewResearchDialog
+                open
+                inline
+                adapters={config?.adapters ?? []}
+                requireCmdEnterToSend={settings.requireCmdEnterToSend}
+                workspaceId={researchScope}
+                onClose={() => undefined}
+                onCreate={submitNewResearch}
+              />
             </div>
           ) : null}
           {homeActive ? (

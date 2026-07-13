@@ -28,6 +28,7 @@ import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
   timelineItemsAfterLastToolCall,
+  timelineItemsContainToolCall,
 } from "../../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../../lib/turnTimeline";
 import type {
@@ -851,7 +852,7 @@ export default function ResearchDocument({
     () => timelineItemsAfterLastToolCall(timelineItems),
     [timelineItems],
   );
-  const hasHiddenTrace = answerTimelineItems.length < timelineItems.length;
+  const hasToolCalls = timelineItemsContainToolCall(timelineItems);
   const displayedTimelineItems = showFullTrace ? timelineItems : answerTimelineItems;
   const visibleTimelineItems =
     showAllTurns || displayedTimelineItems.length <= TIMELINE_ITEM_RENDER_WINDOW
@@ -1020,7 +1021,7 @@ export default function ResearchDocument({
                 {followupCount} {followupCount === 1 ? "follow-up" : "follow-ups"}
               </span>
             ) : null}
-            {hasHiddenTrace ? (
+            {hasToolCalls ? (
               <button
                 type="button"
                 className={`research-trace-toggle${showFullTrace ? " is-active" : ""}`}
@@ -1294,7 +1295,14 @@ export default function ResearchDocument({
                         }}
                       >
                         <strong>{child.prompt}</strong>
-                        {child.responsePreview ? <span>{child.responsePreview}</span> : null}
+                        {child.responsePreview ? (
+                          <TranscriptMarkdown
+                            text={child.responsePreview}
+                            className="research-followup-preview"
+                            imageBehavior="open"
+                            inline
+                          />
+                        ) : null}
                         {child.status !== "complete" ? (
                           <small className={`is-${child.status}`}>{statusLabel(child.status)}</small>
                         ) : null}

@@ -436,8 +436,13 @@
   line-height: 1.4;
 }
 
-.research-empty-state button {
-  margin-top: 14px;
+.research-empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  background: #151719;
 }
 
 .research-spinner {
@@ -974,12 +979,12 @@
   color: #f2f4f1;
 }
 
-.research-followup-card:hover span {
+.research-followup-card:hover .research-followup-preview {
   color: #7d8580;
 }
 
 .research-followup-card strong,
-.research-followup-card span,
+.research-followup-card .research-followup-preview,
 .research-followup-card small {
   display: block;
   width: 100%;
@@ -1005,7 +1010,7 @@
 /* Dimmer than the question above so the card keeps a clear two-tier
    hierarchy — the follow-up prompt reads as primary, its preview as secondary
    — rather than the two sitting at nearly the same tone. */
-.research-followup-card span {
+.research-followup-card .research-followup-preview {
   display: -webkit-box;
   margin-top: 4px;
   overflow: hidden;
@@ -1014,6 +1019,9 @@
   line-height: 1.5;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  /* The card itself owns navigation; Markdown links are formatting-only in
+     this compact preview and must not compete with the card button. */
+  pointer-events: none;
 }
 
 .research-followup-card small {
@@ -1078,6 +1086,10 @@
 
 .new-research-composer .command-launcher-input {
   min-height: 132px;
+}
+
+.new-research-composer .command-launcher-overlay {
+  justify-content: flex-end;
 }
 
 .new-research-send {

@@ -9,6 +9,7 @@ import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "../../lib/adapterIcons
 
 interface NewResearchDialogProps {
   open: boolean;
+  inline?: boolean;
   adapters: AgentAdapterMetadata[];
   requireCmdEnterToSend: boolean;
   workspaceId: string | null;
@@ -23,6 +24,7 @@ interface NewResearchDialogProps {
 
 export default function NewResearchDialog({
   open,
+  inline = false,
   adapters: allAdapters,
   requireCmdEnterToSend,
   workspaceId,
@@ -113,6 +115,96 @@ export default function NewResearchDialog({
     iconClassName: adapterIconClassName(candidate.id),
   }));
 
+  const launcher = (
+    <form
+      className="command-launcher new-research-launcher"
+      role={inline ? undefined : "dialog"}
+      aria-modal={inline ? undefined : true}
+      aria-label="New research"
+      onKeyDown={(event) => {
+        if (!inline && event.key === "Escape" && !submitting) {
+          onClose();
+        }
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="new-research-composer">
+        <textarea
+          ref={promptRef}
+          autoFocus
+          className="command-launcher-input"
+          rows={2}
+          value={prompt}
+          placeholder="What would you like to investigate?"
+          onChange={(event) => {
+            setPrompt(event.currentTarget.value);
+            growPromptInput();
+          }}
+          onKeyDown={(event) => {
+            if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+        />
+        <div className="command-launcher-overlay">
+          <div className="command-launcher-controls">
+            <div className="command-launcher-adapter-select">
+              <LauncherSelect
+                value={adapter}
+                options={adapterOptions}
+                ariaLabel="Agent"
+                onChange={setAdapter}
+              />
+            </div>
+            <button
+              type="submit"
+              className="command-launcher-send new-research-send"
+              disabled={!prompt.trim() || !adapter || submitting}
+            >
+              <span>{submitting ? "Starting…" : "Start research"}</span>
+              <ComposerSubmitShortcutGlyph
+                requireCmdEnter={requireCmdEnterToSend}
+                ariaHidden
+              />
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="new-research-footer">
+        {adapters.length === 0 ? (
+          <p className="new-research-unavailable" role="alert">
+            No installed agent supports research follow-ups.
+          </p>
+        ) : null}
+        {error ? (
+          <p className="new-research-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <details className="new-research-advanced">
+          <summary>Advanced</summary>
+          <label className="new-research-model">
+            <span>Model (optional)</span>
+            <input
+              type="text"
+              value={model}
+              placeholder="Agent default"
+              onChange={(event) => setModel(event.currentTarget.value)}
+            />
+          </label>
+        </details>
+      </div>
+    </form>
+  );
+
+  if (inline) {
+    return launcher;
+  }
+
   return (
     <div
       className="confirm-dialog-backdrop new-research-backdrop"
@@ -123,91 +215,7 @@ export default function NewResearchDialog({
         }
       }}
     >
-      <form
-        className="command-launcher new-research-launcher"
-        role="dialog"
-        aria-modal="true"
-        aria-label="New research"
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && !submitting) {
-            onClose();
-          }
-        }}
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <div className="new-research-composer">
-          <textarea
-            ref={promptRef}
-            autoFocus
-            className="command-launcher-input"
-            rows={2}
-            value={prompt}
-            placeholder="What would you like to investigate?"
-            onChange={(event) => {
-              setPrompt(event.currentTarget.value);
-              growPromptInput();
-            }}
-            onKeyDown={(event) => {
-              if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-          />
-          <div className="command-launcher-overlay">
-            <div className="command-launcher-controls">
-              <div className="command-launcher-adapter-select">
-                <LauncherSelect
-                  value={adapter}
-                  options={adapterOptions}
-                  ariaLabel="Agent"
-                  onChange={setAdapter}
-                />
-              </div>
-              <button
-                type="submit"
-                className="command-launcher-send new-research-send"
-                disabled={
-                  !prompt.trim() || !adapter || submitting
-                }
-              >
-                <span>{submitting ? "Starting…" : "Start research"}</span>
-                <ComposerSubmitShortcutGlyph
-                  requireCmdEnter={requireCmdEnterToSend}
-                  ariaHidden
-                />
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="new-research-footer">
-          {adapters.length === 0 ? (
-            <p className="new-research-unavailable" role="alert">
-              No installed agent supports research follow-ups.
-            </p>
-          ) : null}
-          {error ? (
-            <p className="new-research-error" role="alert">
-              {error}
-            </p>
-          ) : null}
-          <details className="new-research-advanced">
-            <summary>Advanced</summary>
-            <label className="new-research-model">
-              <span>Model (optional)</span>
-              <input
-                type="text"
-                value={model}
-                placeholder="Agent default"
-                onChange={(event) => setModel(event.currentTarget.value)}
-              />
-            </label>
-          </details>
-        </div>
-      </form>
+      {launcher}
     </div>
   );
 }

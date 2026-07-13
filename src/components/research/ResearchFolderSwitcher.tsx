@@ -84,9 +84,6 @@ export default function ResearchFolderSwitcher({
             <span className="research-folder-path">{scopedFolder.dir}</span>
           ) : null}
         </span>
-        <span className="research-folder-count">
-          {scopedFolder ? (treeCounts.get(scopedFolder.id) ?? 0) : 0}
-        </span>
         <ChevronDown size={13} aria-hidden="true" className={open ? "is-open" : undefined} />
       </button>
       {open ? (

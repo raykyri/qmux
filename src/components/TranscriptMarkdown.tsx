@@ -257,6 +257,25 @@ const researchMarkdownComponents: Components = {
   img: ({ node: _node, ...props }) => <BlockedMarkdownImage {...props} />,
 };
 
+// Paragraphs and Markdown hard breaks are block boundaries in the source, but
+// inline contexts (titles, prompts, compact answer previews) need them to flow
+// as ordinary spaces. Keeping the inline formatting children preserves links,
+// emphasis, and code without stacking every short paragraph on its own line.
+const inlineComponentOverrides: Components = {
+  p: ({ node: _node, children }) => <span>{children} </span>,
+  br: () => <span> </span>,
+};
+
+const inlineMarkdownComponents: Components = {
+  ...markdownComponents,
+  ...inlineComponentOverrides,
+};
+
+const inlineResearchMarkdownComponents: Components = {
+  ...researchMarkdownComponents,
+  ...inlineComponentOverrides,
+};
+
 // Block-level elements stripped (but their inline children kept) in inline
 // mode, so a stray heading/list/code fence in a one-line context like a title
 // renders as plain rich text instead of promoting to a full block.
@@ -327,7 +346,15 @@ export default memo(function TranscriptMarkdown({
   return (
     <div className={`turn-markdown${className ? ` ${className}` : ""}`}>
       <ReactMarkdown
-        components={imageBehavior === "open" ? researchMarkdownComponents : markdownComponents}
+        components={
+          inline
+            ? imageBehavior === "open"
+              ? inlineResearchMarkdownComponents
+              : inlineMarkdownComponents
+            : imageBehavior === "open"
+              ? researchMarkdownComponents
+              : markdownComponents
+        }
         remarkPlugins={[remarkGfm, remarkBreaks]}
         disallowedElements={inline ? INLINE_DISALLOWED_ELEMENTS : undefined}
         unwrapDisallowed={inline}

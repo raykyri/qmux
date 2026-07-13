@@ -4,6 +4,7 @@ import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
   timelineItemsAfterLastToolCall,
+  timelineItemsContainToolCall,
 } from "../src/lib/turnTimeline";
 import type { Turn, TurnBlock } from "../src/types";
 
@@ -100,6 +101,7 @@ test("final answer view starts after the last tool call group", () => {
   ]);
 
   assert.equal(items[0].activities[0]?.type, "activityGroup");
+  assert.equal(timelineItemsContainToolCall(items), true);
   const answerItems = timelineItemsAfterLastToolCall(items);
   assert.equal(answerItems.length, 1);
   assert.equal(assistantTextFromTimelineItems(answerItems), "Final **answer**.");
@@ -124,6 +126,13 @@ test("final answer survives when trailing tool activity attaches to the answer i
   // The carried boundary copy sheds its activities: the wrap-up call stays
   // out of the answer view (it is still visible in the full trace).
   assert.ok(answerItems.every((item) => item.activities.length === 0));
+  assert.equal(timelineItemsContainToolCall(items), true);
+});
+
+test("tool-call detection stays false for answer-only timelines", () => {
+  nextIndex = 0;
+  const items = buildTimelineItems([turn("assistant", [text("Answer only")])]);
+  assert.equal(timelineItemsContainToolCall(items), false);
 });
 
 test("keys derive from turn ids so truncating old turns keeps suffix keys stable", () => {
