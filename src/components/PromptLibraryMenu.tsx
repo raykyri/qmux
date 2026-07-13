@@ -262,6 +262,7 @@ export default function PromptLibraryMenu({
   const [busy, setBusy] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [pos, setPos] = useState<{
     left: number;
     top: number;
@@ -368,6 +369,30 @@ export default function PromptLibraryMenu({
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [open, dialog]);
+
+  // Dismissing a dialog (Escape, Save, Cancel) unmounts its focused editor
+  // with no focusout, which would leave the app's editable-focus tracking
+  // wedged true and the active terminal keyboard-dead — App's modal re-sample
+  // backstop cannot see this component-local dialog. Hand focus somewhere
+  // real so a focusin re-samples: the popover's search field when it is
+  // still up, else the trigger that owns the whole flow. A project change is
+  // different: the effect above closes stale UI while a pane switch is moving
+  // focus to the new terminal, so never steal focus back in that case.
+  const dialogWasOpenRef = useRef(false);
+  const dialogProjectDirRef = useRef(projectDir);
+  useEffect(() => {
+    const wasOpen = dialogWasOpenRef.current;
+    const isOpen = dialog !== null;
+    dialogWasOpenRef.current = isOpen;
+    if (!wasOpen && isOpen) {
+      dialogProjectDirRef.current = projectDir;
+      return;
+    }
+    if (!wasOpen || isOpen || dialogProjectDirRef.current !== projectDir) {
+      return;
+    }
+    (searchInputRef.current ?? triggerRef.current)?.focus();
+  }, [dialog, projectDir]);
 
   const position = useCallback(() => {
     const trigger = triggerRef.current;
@@ -617,6 +642,7 @@ export default function PromptLibraryMenu({
   const listView = (
     <>
       <input
+        ref={searchInputRef}
         type="text"
         className="prompt-library-search"
         placeholder="Search prompts…"
