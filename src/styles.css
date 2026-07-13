@@ -103,6 +103,7 @@
 }
 
 .research-sidebar-row:hover > .research-sidebar-menu-trigger,
+.research-sidebar-row:focus-within > .research-sidebar-menu-trigger,
 .research-sidebar-row.has-open-menu > .research-sidebar-menu-trigger {
   display: grid;
 }
@@ -180,7 +181,7 @@
 }
 
 .research-sidebar-failed {
-  color: #d98787;
+  color: var(--status-failed-fg);
   font-weight: 700;
   background: rgba(217, 135, 135, 0.13);
 }
@@ -392,7 +393,7 @@
 
 .research-folder-item.is-remove:hover,
 .research-folder-item.is-remove:hover svg {
-  color: #d98787;
+  color: var(--status-failed-fg);
 }
 
 .research-placeholder {
@@ -402,7 +403,7 @@
   width: 100%;
   height: 100%;
   padding: 40px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 13px;
   text-align: center;
   background: var(--research-workspace-bg);
@@ -556,7 +557,7 @@
   padding: 0 8px;
   border: 1px solid var(--control-border);
   border-radius: 6px;
-  color: #8a938e;
+  color: var(--text-muted);
   background: var(--chrome-control-bg);
   font-family: var(--font-ui);
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
@@ -567,7 +568,7 @@
 .research-cancel-run:hover:not(:disabled),
 .research-trace-toggle:hover:not(:disabled) {
   background: var(--chrome-control-bg-hover);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .research-open-terminal:disabled,
@@ -589,13 +590,13 @@
 .research-trace-toggle.is-active {
   border-color: var(--accent-color);
   background: var(--accent-shadow);
-  color: #f1f0e8;
+  color: var(--text-strong);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
 .research-trace-toggle.is-active:hover {
   background: var(--accent-shadow);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .research-open-terminal:focus-visible,
@@ -682,7 +683,7 @@
 
 .research-highlight-action {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-context-menu);
   gap: 7px;
   width: max-content;
   min-height: 27px;
@@ -759,7 +760,7 @@
   min-width: 0;
   padding: 8px 10px;
   border-left: 2px solid #3d4a4d;
-  color: #8f9994;
+  color: var(--text-activity);
   background: rgba(255, 255, 255, 0.018);
 }
 
@@ -803,7 +804,7 @@
 
 .research-response-loading p {
   margin: 0;
-  color: #d98787;
+  color: var(--status-failed-fg);
   line-height: 1.5;
 }
 
@@ -819,7 +820,7 @@
 
 .research-response-error {
   margin: 0 0 18px;
-  color: #d98787;
+  color: var(--status-failed-fg);
   line-height: 1.5;
 }
 
@@ -832,7 +833,7 @@
 
 .research-response-stale p {
   margin: 0;
-  color: #d98787;
+  color: var(--status-failed-fg);
   line-height: 1.5;
 }
 
@@ -944,6 +945,7 @@
   --fs-xs: calc(var(--research-meta-font-size) - 2.5px);
   --fs-sm: calc(var(--research-meta-font-size) - 1.5px);
   --fs-base: var(--research-meta-font-size);
+  --composer-min-height: 96px;
 }
 
 /* Same control as the sidebar's Terminal/Research switch, resized to sit as
@@ -968,9 +970,6 @@
 .research-followup-composer textarea {
   box-sizing: border-box;
   width: 100%;
-  /* Tall enough at rest to invite a real question, unlike the one-line pane
-     composers; auto-grow still takes over past this. */
-  min-height: 96px;
 }
 
 .research-followup-composer small {
@@ -1073,7 +1072,7 @@
 }
 
 .research-followup-card small.is-failed {
-  color: #d98787;
+  color: var(--status-failed-fg);
 }
 
 .research-followup-card small.is-cancelled {
@@ -1165,7 +1164,7 @@
   padding: 5px 7px;
   border: 0;
   border-radius: var(--radius-lg);
-  color: #f1f0e8;
+  color: var(--text-strong);
   background: transparent;
   font: inherit;
   font-size: 12.5px;
@@ -1183,13 +1182,13 @@
 
 .new-research-unavailable {
   margin: 0;
-  color: #d98787;
+  color: var(--status-failed-fg);
   font-size: 11px;
 }
 
 .new-research-error {
   margin: 0;
-  color: #d98787;
+  color: var(--status-failed-fg);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1221,7 +1220,7 @@
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #f1f0e8;
+  color: var(--text-strong);
   font-size: var(--fs-base);
 }
 
@@ -1232,7 +1231,7 @@
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #f1f0e8;
+  color: var(--text-strong);
   font-size: var(--fs-base);
   line-height: 1.5;
   resize: none;
@@ -1260,7 +1259,7 @@
 .edit-document-highlight-warning {
   width: 100%;
   margin: 0;
-  color: #d8b878;
+  color: var(--status-warning-fg);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -1272,14 +1271,14 @@
 }
 
 .new-document-wordcount.is-over {
-  color: #d98787;
+  color: var(--status-failed-fg);
 }
 
 .new-document-error {
   flex: 1;
   min-width: 0;
   margin: 0;
-  color: #d98787;
+  color: var(--status-failed-fg);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -1342,50 +1341,6 @@
 }
 
 :root {
-  /* Primary pane surfaces. Keep these separate from control backgrounds so
-     application color themes can tint the workspace without flattening the
-     contrast hierarchy inside inputs, menus, and buttons. */
-  --left-pane-bg: rgba(14, 16, 17, 0.72);
-  --terminal-pane-bg: #111315;
-  --right-pane-bg: #171b1d;
-  --right-pane-bg-transparent: rgba(23, 27, 29, 0);
-  --right-pane-active-bg: #181d1f;
-
-  /* Secondary surfaces. These preserve the existing depth hierarchy while
-     giving application themes one place to tint chrome beyond the main panes. */
-  --workspace-bg: #17191b;
-  --research-workspace-bg: #151719;
-  --field-bg: #111315;
-  --field-bg-hover: #16191b;
-  --panel-bg: #1b2022;
-  --panel-highlight-bg: #1f2426;
-  --popover-bg: #1d2224;
-  --content-card-bg: #1d2224;
-  --context-menu-bg: #1c1f22;
-  --popover-item-hover-bg: #283032;
-  --chrome-header-bg: #14171a;
-  --pane-hover-bg: #1b1f21;
-  --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
-  --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
-  --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
-  --sidebar-group-bg: rgba(255, 255, 255, 0.013);
-  --transcript-code-bg: #111416;
-  --surface-divider: #2a2d2f;
-  --surface-border-strong: #30383b;
-  --chrome-control-bg: rgba(20, 24, 26, 0.9);
-  --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
-  --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
-
-  --accent-color: #8fd6c7;
-  --accent-shadow: rgba(143, 214, 199, 0.35);
-  --accent-soft: rgba(143, 214, 199, 0.13);
-  --accent-subtle: rgba(143, 214, 199, 0.08);
-  --accent-active-bg: #243430;
-  /* Stronger, less-pastel accent used for solid filled CTAs (Queue, Launch). */
-  --accent-strong: #6cae9d;
-  --accent-strong-hover: #7cc0ae;
-  --placeholder-color: #6b726d;
-
   /* Type scale. Controls and body share --fs-base; the two main typing surfaces
      (composer + launcher) use --fs-input; xs/sm are for hints, badges, meta. */
   --fs-xs: 11px;
@@ -1403,28 +1358,20 @@
   --radius-md: 6px;
   --radius-lg: 8px;
 
-  /* Neutral control surface (the default button skin, shared left and right). */
-  --control-bg: #24282b;
-  --control-bg-hover: #2c3134;
-  --control-border: #3a3d3f;
-  --control-border-hover: #474b4e;
-  /* Button/resizer hover edge: a touch brighter than the base border and lightly
-     tinted toward the accent, without the loud full-accent outline. */
-  --control-border-hover-accent: #4a5d56;
-  --split-border-hover: rgba(215, 168, 79, 0.65);
-  --split-border-active: rgba(255, 220, 143, 0.78);
-  --split-border-active-muted: rgba(255, 220, 143, 0.28);
-  --split-active-indicator: rgba(215, 168, 79, 0.32);
-  --control-fg: #f1f0e8;
-  --control-fg-muted: #b9c0bc;
-  --focus-ring: #6cae9d;
-
   --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", monospace;
 
-  color: #e7e7e2;
+  /* Shared stacking levels for portaled chrome. Local component layers continue
+     to use small integers inside their own stacking contexts. */
+  --z-browser-overlay: 8;
+  --z-popover: 15;
+  --z-dialog: 20;
+  --z-toast: 30;
+  --z-context-menu: 1000;
+
+  color: var(--text-primary);
   /* Transparent so the macOS window vibrancy (NSVisualEffectView) composites
      through the webview. The opaque app background is painted by .app-shell. */
   background: transparent;
@@ -1434,24 +1381,137 @@
   text-rendering: optimizeLegibility;
 }
 
+:root,
+:root[data-color-theme="green-blob"] {
+  /* Primary pane surfaces. Keep these separate from control backgrounds so
+     application color themes can tint the workspace without flattening the
+     contrast hierarchy inside inputs, menus, and buttons. */
+  --left-pane-bg: rgba(14, 16, 17, 0.72);
+  --terminal-pane-bg: #111315;
+  --right-pane-bg: #171b1d;
+  --right-pane-bg-transparent: rgba(23, 27, 29, 0);
+  --right-pane-active-bg: #181d1f;
+
+  /* Secondary surfaces. Equal values remain separate when their visual roles
+     may diverge in a future theme. */
+  --workspace-bg: #17191b;
+  --research-workspace-bg: #151719;
+  --field-bg: #111315;
+  --field-bg-hover: #16191b;
+  --panel-bg: #1b2022;
+  --panel-highlight-bg: #1f2426;
+  --popover-bg: #1d2224;
+  --content-card-bg: #1d2224;
+  --content-inset-bg: #15191b;
+  --context-menu-bg: #1c1f22;
+  --popover-item-hover-bg: #283032;
+  --chrome-header-bg: #14171a;
+  --pane-hover-bg: #1b1f21;
+  --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
+  --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
+  --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
+  --sidebar-group-bg: rgba(255, 255, 255, 0.013);
+  --transcript-code-bg: #111416;
+  --transcript-code-header-bg: #0d1012;
+  --surface-divider: #2a2d2f;
+  --surface-border-strong: #30383b;
+  --chrome-control-bg: rgba(20, 24, 26, 0.9);
+  --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
+  --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
+
+  /* Text and status roles are shared by controls, transcript content, and
+     research surfaces. */
+  --text-primary: #e7e7e2;
+  --text-strong: #f1f0e8;
+  --text-secondary: #c4cbc6;
+  --text-body-soft: #d9ddd9;
+  --text-muted: #8a938e;
+  --text-activity: #8f9994;
+  --status-failed-fg: #d98787;
+  --status-attention-fg: #e0796d;
+  --status-warning-fg: #d8b878;
+  --status-info-fg: #6da7ec;
+  --status-success-fg: #81c784;
+  --status-error-fg: #e08a5f;
+
+  --accent-color: #8fd6c7;
+  --accent-shadow: rgba(143, 214, 199, 0.35);
+  --accent-soft: rgba(143, 214, 199, 0.13);
+  --accent-subtle: rgba(143, 214, 199, 0.08);
+  --accent-active-bg: #243430;
+  --accent-strong: #6cae9d;
+  --accent-strong-hover: #7cc0ae;
+  --placeholder-color: #6b726d;
+
+  --control-bg: #24282b;
+  --control-bg-hover: #2c3134;
+  --control-border: #3a3d3f;
+  --control-border-hover: #474b4e;
+  --control-border-hover-accent: #4a5d56;
+  --control-fg: var(--text-strong);
+  --control-fg-muted: #b9c0bc;
+  --focus-ring: #6cae9d;
+  --split-border-hover: rgba(215, 168, 79, 0.65);
+  --split-border-active: rgba(255, 220, 143, 0.78);
+  --split-border-active-muted: rgba(255, 220, 143, 0.28);
+  --split-active-indicator: rgba(215, 168, 79, 0.32);
+
+  --popover-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --context-menu-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+}
+
 :root[data-color-theme="orange-blob"] {
   --left-pane-bg: #171716;
   --terminal-pane-bg: #151515;
   --right-pane-bg: #1b1c1c;
   --right-pane-bg-transparent: rgba(27, 28, 28, 0);
   --right-pane-active-bg: #1a1b1c;
+  --workspace-bg: #1b1c1c;
   --research-workspace-bg: var(--right-pane-bg);
+  --field-bg: #171615;
+  --field-bg-hover: #1e1d1a;
+  --panel-bg: #211f1c;
+  --panel-highlight-bg: #27241f;
   --chrome-header-bg: #171716;
   --content-card-bg: #212220;
-  /* Rotate the cool popover charcoal toward the same low-chroma amber used by
-     the warm chrome. Keep its hover state in that hue family as well. */
+  --content-inset-bg: #1d1c19;
   --popover-bg: #24211d;
   --popover-item-hover-bg: #322e28;
+  --context-menu-bg: #231f1b;
+  --pane-hover-bg: #23211e;
+  --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
+  --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
+  --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
+  --sidebar-group-bg: rgba(255, 255, 255, 0.013);
+  --transcript-code-bg: #171512;
+  --transcript-code-header-bg: #12110f;
   --surface-divider: #2d2d2c;
   --surface-border-strong: #363735;
+  --chrome-control-bg: rgba(31, 29, 26, 0.9);
+  --chrome-control-bg-hover: rgba(44, 40, 35, 0.95);
+  --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);
+
+  --text-primary: #e7e7e2;
+  --text-strong: #f1f0e8;
+  --text-secondary: #c4cbc6;
+  --text-body-soft: #d9ddd9;
+  --text-muted: #8a938e;
+  --text-activity: #8f9994;
+  --status-failed-fg: #d98787;
+  --status-attention-fg: #e0796d;
+  --status-warning-fg: #d8b878;
+  --status-info-fg: #6da7ec;
+  --status-success-fg: #81c784;
+  --status-error-fg: #e08a5f;
+
   --control-bg: #282827;
   --control-bg-hover: #313130;
   --control-border: #3d3d3c;
+  --control-border-hover: #4a4946;
+  --control-fg: var(--text-strong);
+  --control-fg-muted: #b9c0bc;
   --accent-color: #33adff;
   --accent-shadow: rgba(51, 173, 255, 0.35);
   --accent-soft: rgba(51, 173, 255, 0.13);
@@ -1461,6 +1521,16 @@
   --accent-strong-hover: #339fe6;
   --control-border-hover-accent: #4d6173;
   --focus-ring: #33adff;
+  --placeholder-color: #6b726d;
+  --split-border-hover: rgba(215, 168, 79, 0.65);
+  --split-border-active: rgba(255, 220, 143, 0.78);
+  --split-border-active-muted: rgba(255, 220, 143, 0.28);
+  --split-active-indicator: rgba(215, 168, 79, 0.32);
+
+  --popover-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --context-menu-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
 }
 
 * {
@@ -1619,7 +1689,7 @@ button:disabled {
 .research-markdown-drop-overlay {
   position: absolute;
   inset: 30px 5px 5px;
-  z-index: 30;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1918,8 +1988,8 @@ button:disabled {
   transform: translateY(-50%);
   border: 1px solid #3a4245;
   border-radius: 6px;
-  background: #111416;
-  color: #c4cbc6;
+  background: var(--transcript-code-bg);
+  color: var(--text-secondary);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   font-size: 11px;
   font-weight: 600;
@@ -1931,7 +2001,7 @@ button:disabled {
 
 .pane-tab-row.is-selected .pane-tab-shortcut-hint {
   border-color: #566165;
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .pane-tab-row.is-dragging,
@@ -1973,7 +2043,7 @@ button:disabled {
 .pane-home-row .pane-tab svg {
   justify-self: center;
   flex: none;
-  color: #8a938e;
+  color: var(--text-muted);
   transform: translateX(0);
 }
 
@@ -2098,7 +2168,7 @@ button:disabled {
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: #8a938e;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
@@ -2232,7 +2302,7 @@ button:disabled {
 }
 
 .pane-tab-dot.status-attention {
-  background: #e0796d;
+  background: var(--status-attention-fg);
   animation: status-dot-pulse 1s ease-in-out infinite;
 }
 
@@ -2245,7 +2315,7 @@ button:disabled {
 }
 
 .pane-tab-dot.status-error {
-  background: #e08a5f;
+  background: var(--status-error-fg);
 }
 
 .pane-tab-dot.is-waiting-on-pane {
@@ -2318,6 +2388,17 @@ button:disabled {
   transform: translateY(var(--status-dot-y, 0));
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .pane-tab-dot.status-active,
+  .pane-tab-dot.status-pending,
+  .pane-tab-dot.status-attention,
+  .turn-thinking-dot {
+    animation: none;
+    opacity: 1;
+    transform: translateY(var(--status-dot-y, 0));
+  }
+}
+
 .pane-tab small,
 .pane-tab-path,
 .pane-tab-gitmeta {
@@ -2372,7 +2453,7 @@ button:disabled {
 
 .pane-tab-status-clickable:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 1px #e08a5f;
+  box-shadow: 0 0 0 1px var(--status-error-fg);
 }
 
 .pane-tab-path,
@@ -2418,7 +2499,7 @@ button:disabled {
 
 .pane-context-menu {
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   width: min(320px, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow: auto;
@@ -2428,7 +2509,7 @@ button:disabled {
   border: 0.5px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   background: var(--context-menu-bg);
-  color: #d9ddd9;
+  color: var(--text-body-soft);
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
@@ -2437,7 +2518,7 @@ button:disabled {
 }
 
 .pane-context-details dt {
-  color: #8a938e;
+  color: var(--text-muted);
 }
 
 /* Agent status is just another row now; a small status dot sits before its value. */
@@ -2452,7 +2533,7 @@ button:disabled {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #8a938e;
+  background: var(--text-muted);
   content: "";
 }
 
@@ -2461,7 +2542,7 @@ button:disabled {
 }
 
 .pane-context-status-row.status-pending dd::before {
-  background: #d8b878;
+  background: var(--status-warning-fg);
 }
 
 .pane-context-status-row.status-attention dd::before {
@@ -2473,7 +2554,7 @@ button:disabled {
 }
 
 .pane-context-status-row.status-error dd::before {
-  background: #e0796d;
+  background: var(--status-attention-fg);
 }
 
 .pane-context-details {
@@ -2498,7 +2579,7 @@ button:disabled {
 .pane-context-details dd {
   min-width: 0;
   margin: 0;
-  color: #f1f0e8;
+  color: var(--text-strong);
   overflow-wrap: anywhere;
 }
 
@@ -2529,7 +2610,7 @@ button:disabled {
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: #d9ddd9;
+  color: var(--text-body-soft);
   font-size: inherit;
   line-height: 1.2;
   text-align: left;
@@ -2633,7 +2714,7 @@ button:disabled {
 
 .context-menu-shortcut {
   min-width: 0;
-  color: #8a938e;
+  color: var(--text-muted);
   font: inherit;
   white-space: nowrap;
 }
@@ -2710,6 +2791,7 @@ button:disabled {
 }
 
 .pane-tab-row:hover .pane-tab-close,
+.pane-tab-row:focus-within .pane-tab-close,
 .pane-tab-row.is-wait-target-preview .pane-tab-close {
   opacity: 1;
   visibility: visible;
@@ -2726,13 +2808,21 @@ button:disabled {
 /* Hide the status dot while hovering so the × takes its place. Use visibility
    (not opacity) so it wins over the status-dot-pulse opacity animation. */
 .pane-tab-row:hover .pane-tab-dot,
+.pane-tab-row:focus-within .pane-tab-dot,
 .pane-tab-row.is-wait-target-preview .pane-tab-dot {
   visibility: hidden;
 }
 
 .pane-tab-row.has-clearable-status:hover .pane-tab-clear-status .pane-tab-dot,
+.pane-tab-row.has-clearable-status:focus-within .pane-tab-clear-status .pane-tab-dot,
 .pane-tab-row.has-clearable-status.is-wait-target-preview .pane-tab-clear-status .pane-tab-dot {
   visibility: visible;
+}
+
+.pane-tab-close:focus-visible {
+  z-index: 3;
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 3px;
 }
 
 .sidebar-actions {
@@ -2827,7 +2917,7 @@ button:disabled {
 .confirm-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: var(--z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2857,7 +2947,7 @@ button:disabled {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
-  color: #c4cbc6;
+  color: var(--text-secondary);
 }
 
 .confirm-dialog .confirm-dialog-error {
@@ -2876,7 +2966,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #f1f0e8;
+  color: var(--text-strong);
   font-size: var(--fs-input);
 }
 
@@ -2943,7 +3033,7 @@ button:disabled {
 .command-palette-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: var(--z-dialog);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -2971,7 +3061,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   outline: none;
@@ -2994,14 +3084,14 @@ button:disabled {
 
 .command-palette-empty {
   padding: 14px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: var(--fs-base);
   text-align: center;
 }
 
 .command-palette-section {
   padding: 6px 10px 2px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
 }
@@ -3017,7 +3107,7 @@ button:disabled {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   text-align: left;
   cursor: pointer;
@@ -3041,7 +3131,7 @@ button:disabled {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3050,7 +3140,7 @@ button:disabled {
 .settings-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: var(--z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3098,7 +3188,7 @@ button:disabled {
 
 .settings-close:hover {
   background: var(--control-bg-hover);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .settings-tabs {
@@ -3126,7 +3216,7 @@ button:disabled {
 
 .settings-tabs button:hover {
   background: var(--control-bg-hover);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .settings-tabs button.is-active {
@@ -3225,7 +3315,7 @@ button:disabled {
   background-repeat: no-repeat;
   background-position: right 9px center;
   background-size: 10px;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   cursor: pointer;
   outline: none;
@@ -3268,7 +3358,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   outline: none;
@@ -3320,7 +3410,7 @@ button:disabled {
 
 .settings-link-button:hover:not(:disabled),
 .settings-link-button:focus-visible:not(:disabled) {
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .settings-link-button:disabled {
@@ -3374,7 +3464,7 @@ button:disabled {
 
 .settings-secret-toggle:hover {
   background: var(--field-bg-hover);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .settings-secret-input:focus-within .settings-input,
@@ -3416,7 +3506,7 @@ button:disabled {
 
 .settings-stepper button:hover:not(:disabled) {
   background: var(--control-bg-hover);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .settings-stepper button:disabled {
@@ -3431,7 +3521,7 @@ button:disabled {
   padding: 0 4px;
   border-left: 1px solid var(--control-border);
   border-right: 1px solid var(--control-border);
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   font-variant-numeric: tabular-nums;
 }
@@ -3446,7 +3536,7 @@ button:disabled {
   resize: none;
   border: none;
   background: transparent;
-  color: #f1f0e8;
+  color: var(--text-strong);
   font-size: var(--fs-input);
   line-height: 1.5;
   /* Extra bottom padding reserves room for the overlaid controls so typed text
@@ -3504,7 +3594,7 @@ button:disabled {
   pointer-events: auto;
   padding: 5px 7px;
   border-radius: var(--radius-lg);
-  color: #c4cbc6;
+  color: var(--text-secondary);
   /* Sits between --fs-sm and --fs-base so it matches the link-style option
      selectors next to it (which step down to the same size). */
   font-size: 12.5px;
@@ -3514,7 +3604,7 @@ button:disabled {
 
 .command-launcher-worktree:hover {
   background: rgba(255, 255, 255, 0.05);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 /* Custom checkbox so the unchecked box reads as quiet launcher chrome (dark fill,
@@ -3610,7 +3700,7 @@ button:disabled {
 
 .command-launcher-option-toggle:hover {
   background: rgba(255, 255, 255, 0.05);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .command-launcher-controls {
@@ -3672,7 +3762,7 @@ button:disabled {
   /* Pill, matching the launcher controls. */
   border-radius: 999px;
   background: var(--field-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
   /* Matches the launcher controls (--fs-base), as does .launcher-select-item. */
   font-size: var(--fs-base);
   cursor: pointer;
@@ -3719,7 +3809,7 @@ button:disabled {
 }
 
 .launcher-select-trigger.is-danger {
-  color: #e0796d;
+  color: var(--status-attention-fg);
 }
 
 /* Inline launcher selects — adapter/model, sandbox mode, permission/approval level,
@@ -3753,7 +3843,7 @@ button:disabled {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
   user-select: none;
 }
 
@@ -3772,7 +3862,7 @@ button:disabled {
   border-color: transparent;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   text-align: left;
   white-space: nowrap;
@@ -3799,7 +3889,7 @@ button:disabled {
 }
 
 .launcher-select-item.is-danger {
-  color: #e0796d;
+  color: var(--status-attention-fg);
 }
 
 .workspace {
@@ -4016,8 +4106,8 @@ button:disabled {
   min-width: 0;
   border: 1px solid #2b3235;
   border-radius: 6px;
-  background: #15191b;
-  color: #d9ddd9;
+  background: var(--content-inset-bg);
+  color: var(--text-body-soft);
   font-size: var(--fs-sm);
   line-height: 1.4;
 }
@@ -4109,7 +4199,7 @@ button:disabled {
 
 /* Collapsed image paste marker — muted like the right pane's collapsed tag blocks. */
 .home-cascade-image-chip {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .home-cascade-card--current.is-empty .home-cascade-card-text {
@@ -4130,7 +4220,7 @@ button:disabled {
   border: 1px solid rgba(109, 167, 236, 0.25);
   border-radius: 999px;
   background: rgba(109, 167, 236, 0.08);
-  color: #6da7ec;
+  color: var(--status-info-fg);
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: 17px;
@@ -4483,7 +4573,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid #3a3d3f;
   border-radius: 6px;
   background: var(--field-bg);
-  color: #f1f0e8;
+  color: var(--text-strong);
   padding: 5px 8px;
   font-size: 13px;
 }
@@ -4524,7 +4614,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #c4cbc6;
+  color: var(--text-secondary);
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -4538,7 +4628,7 @@ button.home-cascade-wait-pill:focus-visible {
 .pane-search-toggle.is-active {
   border-color: var(--accent-strong);
   background: var(--accent-active-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .pane-search-button:disabled {
@@ -4757,7 +4847,7 @@ button.home-cascade-wait-pill:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #8a938e;
+  color: var(--text-muted);
   font-family: var(--font-ui);
   font-size: calc(12.5px + var(--turn-font-delta, 0px));
 }
@@ -4777,7 +4867,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .turn-pane-session-trigger:hover,
 .turn-pane-session-trigger:focus-visible {
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .turn-pane-session-trigger:focus-visible {
@@ -4790,7 +4880,7 @@ button.home-cascade-wait-pill:focus-visible {
    menu stays inside the right pane and opens downward from the session control. */
 .turn-pane-session-menu {
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -4799,7 +4889,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
   overflow: hidden;
 }
 
@@ -4823,7 +4913,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   text-align: left;
   cursor: pointer;
@@ -4846,7 +4936,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .turn-pane-session-menu-label {
   padding: 2px 10px 3px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
   line-height: 1.2;
@@ -4868,7 +4958,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--control-border);
   border-radius: 6px;
   background: var(--chrome-control-bg);
-  color: #c4cbc6;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
@@ -4880,7 +4970,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .turn-pane-header-button:hover:not(:disabled) {
   background: var(--chrome-control-bg-hover);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .turn-pane-header-button:disabled {
@@ -4894,13 +4984,13 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-pane-header-button.is-active {
   border-color: var(--accent-color);
   background: var(--accent-shadow);
-  color: #f1f0e8;
+  color: var(--text-strong);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
 .turn-pane-header-button.is-active:hover {
   background: var(--accent-shadow);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .turn-pane-header-button:focus-visible {
@@ -4917,7 +5007,7 @@ button.home-cascade-wait-pill:focus-visible {
    a search field, a scrolling prompt list, and small inline fill/edit forms. */
 .prompt-library-menu {
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -4926,7 +5016,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
   overflow: hidden;
 }
 
@@ -4937,7 +5027,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   outline: none;
@@ -4964,7 +5054,7 @@ button.home-cascade-wait-pill:focus-visible {
 
 .prompt-library-empty {
   padding: 10px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: var(--fs-base);
   text-align: center;
 }
@@ -4984,7 +5074,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   text-align: left;
   cursor: pointer;
 }
@@ -5014,7 +5104,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-item-main:hover:not(:disabled) .prompt-library-item-text {
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .prompt-library-item-main:disabled .prompt-library-item-text {
@@ -5054,7 +5144,7 @@ button.home-cascade-wait-pill:focus-visible {
 .prompt-library-item-menu-trigger:hover,
 .prompt-library-item-menu-trigger.is-open {
   background: #374043;
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 /* The row menu itself: portaled, mirroring .turn-title-menu-popover. */
@@ -5085,7 +5175,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   text-align: left;
@@ -5115,13 +5205,13 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #8a938e;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .prompt-library-icon-button:hover {
   background: var(--popover-item-hover-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 /* A scope section (Global / Project) doubles as the drag-and-drop target for
@@ -5160,7 +5250,7 @@ button.home-cascade-wait-pill:focus-visible {
 .prompt-library-section-label {
   min-width: 0;
   overflow: hidden;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -5189,7 +5279,7 @@ button.home-cascade-wait-pill:focus-visible {
 /* Names the fill-in step above the prompt's first-line heading. */
 .prompt-library-kicker {
   padding: 0 2px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
 }
@@ -5208,7 +5298,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--chrome-control-bg);
-  color: #c4cbc6;
+  color: var(--text-secondary);
   font-size: var(--fs-base);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5217,18 +5307,18 @@ button.home-cascade-wait-pill:focus-visible {
 
 .prompt-library-scope-option:hover {
   background: var(--chrome-control-bg-hover);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .prompt-library-scope-option.is-active {
   border-color: var(--accent-color);
   background: var(--accent-shadow);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .prompt-library-heading {
   padding: 0 2px;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   font-weight: 600;
 }
@@ -5248,7 +5338,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .prompt-library-field-label {
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
 }
@@ -5260,7 +5350,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   line-height: 1.4;
@@ -5289,14 +5379,14 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--chrome-control-bg);
-  color: #c4cbc6;
+  color: var(--text-secondary);
   font-size: var(--fs-base);
   cursor: pointer;
 }
 
 .prompt-library-button:hover:not(:disabled) {
   background: var(--chrome-control-bg-hover);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .prompt-library-button:disabled {
@@ -5307,7 +5397,7 @@ button.home-cascade-wait-pill:focus-visible {
 .prompt-library-button.is-primary {
   border-color: var(--accent-color);
   background: var(--accent-shadow);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .prompt-library-error {
@@ -5339,7 +5429,7 @@ button.home-cascade-wait-pill:focus-visible {
   -webkit-line-clamp: 2;
   padding: 2px 10px;
   border-left: 2px solid #3b4447;
-  color: #8a938e;
+  color: var(--text-muted);
   font-style: italic;
   overflow-wrap: anywhere;
 }
@@ -5374,7 +5464,7 @@ button.home-cascade-wait-pill:focus-visible {
 /* Portaled; right-aligned to the fork button so it grows toward the pane center. */
 .turn-pane-fork-menu {
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -5383,7 +5473,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
   overflow-y: auto;
 }
 
@@ -5399,7 +5489,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   text-align: left;
@@ -5489,7 +5579,7 @@ button.home-cascade-wait-pill:focus-visible {
   align-items: center;
   gap: 7px;
   padding: 4px 10px 2px;
-  color: #8f9994;
+  color: var(--text-activity);
   font-size: calc(13px + var(--transcript-font-delta, 0px));
   user-select: none;
 }
@@ -5532,7 +5622,7 @@ button.home-cascade-wait-pill:focus-visible {
 }
 
 .turn-empty-picker-trigger:hover {
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .turn-empty-picker-chevron {
@@ -5543,7 +5633,7 @@ button.home-cascade-wait-pill:focus-visible {
 /* Portaled; left/top/width/max-height from placePanePopover (clamped to the pane). */
 .turn-empty-picker-popover {
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -5553,7 +5643,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
 }
 
 .turn-empty-picker-popover .session-menu-item {
@@ -5564,7 +5654,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   text-align: left;
   cursor: pointer;
 }
@@ -5811,7 +5901,7 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-title-regenerate-button:hover:not(:disabled),
 .turn-title-regenerate-button:focus-visible:not(:disabled) {
   background: transparent;
-  color: #d9ddd9;
+  color: var(--text-body-soft);
 }
 
 .turn-title-regenerate-button:focus-visible {
@@ -5829,7 +5919,7 @@ button.home-cascade-wait-pill:focus-visible {
    button (grows left / toward the pane center). left/top/width from placement. */
 .turn-title-menu-popover {
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -5854,7 +5944,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   /* Reset the bold uppercase inherited from the turn-card header — these
@@ -5883,7 +5973,7 @@ button.home-cascade-wait-pill:focus-visible {
 .turn-card.role-system header,
 .turn-card.role-system .turn-text,
 .turn-card.role-system .turn-markdown {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .turn-blocks {
@@ -5903,7 +5993,7 @@ header + .turn-blocks {
 .turn-text,
 .turn-markdown {
   min-width: 0;
-  color: #f1f0e8;
+  color: var(--text-strong);
   font-size: calc(14px + var(--transcript-font-delta, 0px));
   overflow-wrap: anywhere;
 }
@@ -5914,7 +6004,7 @@ header + .turn-blocks {
 }
 
 .turn-text.is-tagged-instruction {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .tagged-user-instruction {
@@ -5933,7 +6023,7 @@ header + .turn-blocks {
   border-radius: 3px;
   background: transparent;
   padding: 0 1px;
-  color: #8f9994;
+  color: var(--text-activity);
   font: inherit;
   font-size: calc(14px + var(--transcript-font-delta, 0px));
   line-height: 1.35;
@@ -5974,7 +6064,7 @@ header + .turn-blocks {
   border-radius: 6px;
   background: transparent;
   padding: 3px 6px;
-  color: #d9ddd9;
+  color: var(--text-body-soft);
   font: inherit;
   font-size: calc(12.5px + var(--transcript-font-delta, 0px));
   cursor: pointer;
@@ -5991,7 +6081,7 @@ header + .turn-blocks {
 .long-user-message-size {
   min-width: 0;
   overflow: hidden;
-  color: #8f9994;
+  color: var(--text-activity);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6072,7 +6162,7 @@ header + .turn-blocks {
    tone, and (at the deepest level) uppercase rather than an ever-smaller size. */
 .turn-markdown h5 {
   font-size: calc(13px + var(--transcript-font-delta, 0px));
-  color: #d9ddd9;
+  color: var(--text-body-soft);
 }
 
 .turn-markdown h6 {
@@ -6113,7 +6203,7 @@ header + .turn-blocks {
 .turn-markdown blockquote {
   border-left: 2px solid #3d4a4d;
   padding-left: 9px;
-  color: #c4cbc6;
+  color: var(--text-secondary);
 }
 
 .turn-markdown code {
@@ -6121,7 +6211,7 @@ header + .turn-blocks {
   border-radius: 4px;
   background: var(--transcript-code-bg);
   padding: 1px 4px;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: calc(12.5px + var(--transcript-font-delta, 0px));
 }
@@ -6247,7 +6337,7 @@ header + .turn-blocks {
   border: 1px solid var(--surface-border-strong);
   border-radius: 6px;
   overflow: hidden;
-  background: #111416;
+  background: var(--transcript-code-bg);
 }
 
 .turn-diagram-bar {
@@ -6256,7 +6346,7 @@ header + .turn-blocks {
   justify-content: space-between;
   padding: 3px 8px;
   border-bottom: 1px solid #262d30;
-  background: #0d1012;
+  background: var(--transcript-code-header-bg);
 }
 
 .turn-diagram-lang {
@@ -6326,7 +6416,7 @@ header + .turn-blocks {
   overflow: auto;
   border: 1px solid var(--surface-border-strong);
   border-radius: 6px;
-  background: #0d1012;
+  background: var(--transcript-code-header-bg);
   padding: 8px;
 }
 
@@ -6365,7 +6455,7 @@ header + .turn-blocks {
 .thinking-block,
 .activity-group-block {
   background: transparent;
-  color: #d9ddd9;
+  color: var(--text-body-soft);
   font-size: calc(12px + var(--transcript-font-delta, 0px));
   overflow: visible;
 }
@@ -6435,7 +6525,7 @@ header + .turn-blocks {
 }
 
 .disclosure-chevron {
-  color: #8f9994;
+  color: var(--text-activity);
   transition: transform 120ms ease;
 }
 
@@ -6448,7 +6538,7 @@ header + .turn-blocks {
 /* Borderless rows still need a click affordance, so highlight on hover. */
 .tool-block > summary:hover,
 .thinking-block > summary:hover {
-  background: #15191b;
+  background: var(--content-inset-bg);
 }
 
 .tool-block.tool-pair > summary:hover,
@@ -6479,29 +6569,29 @@ header + .turn-blocks {
 }
 
 .tool-summary-main {
-  color: #8f9994;
+  color: var(--text-activity);
   font-size: calc(13px + var(--transcript-font-delta, 0px));
   font-weight: 400;
 }
 
 .activity-group-label.is-tool-group {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .activity-group-label.is-thinking-group {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .tool-summary-arg {
-  color: #d9ddd9;
+  color: var(--text-body-soft);
 }
 
 .tool-block.is-root-activity .tool-summary-arg {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .tool-summary-meta {
-  color: #8f9994;
+  color: var(--text-activity);
   font-size: calc(13px + var(--transcript-font-delta, 0px));
 }
 
@@ -6511,13 +6601,13 @@ header + .turn-blocks {
   margin: 6px 0 0 14px;
   border: 1px solid var(--surface-divider);
   border-radius: 6px;
-  background: #15191b;
+  background: var(--content-inset-bg);
   overflow: hidden;
 }
 
 .tool-payload-label {
   padding: 6px 8px 0;
-  color: #8f9994;
+  color: var(--text-activity);
   font-size: calc(11px + var(--transcript-font-delta, 0px));
   font-weight: 700;
   text-transform: uppercase;
@@ -6540,15 +6630,15 @@ header + .turn-blocks {
   margin: 6px 0 0 14px;
   border: 1px solid var(--surface-divider);
   border-radius: 6px;
-  background: #15191b;
+  background: var(--content-inset-bg);
 }
 
 .thinking-block {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .thinking-block summary {
-  color: #8f9994;
+  color: var(--text-activity);
 }
 
 .thinking-block > summary > span {
@@ -6608,7 +6698,7 @@ header + .turn-blocks {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #d9ddd9;
+  color: var(--text-body-soft);
 }
 
 .recovered-queue-panel h2 {
@@ -6690,8 +6780,8 @@ header + .turn-blocks {
   min-width: 0;
   border: 1px solid #384246;
   border-radius: 6px;
-  background: #15191b;
-  color: #d9ddd9;
+  background: var(--content-inset-bg);
+  color: var(--text-body-soft);
   padding: 7px 8px;
   font-size: var(--fs-base);
   line-height: 1.4;
@@ -6755,7 +6845,7 @@ header + .turn-blocks {
 }
 
 .queued-turn-toggle:hover {
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .queued-turn-toggle:focus-visible {
@@ -6834,7 +6924,7 @@ header + .turn-blocks {
   border: 1px solid rgba(109, 167, 236, 0.25);
   border-radius: 999px;
   background: rgba(109, 167, 236, 0.08);
-  color: #6da7ec;
+  color: var(--status-info-fg);
   font-size: var(--fs-xs);
   line-height: 17px;
   white-space: nowrap;
@@ -6851,7 +6941,7 @@ header + .turn-blocks {
 .queued-turn-delivery-label {
   border-color: rgba(129, 199, 132, 0.25);
   background: rgba(129, 199, 132, 0.08);
-  color: #81c784;
+  color: var(--status-success-fg);
 }
 
 .queued-turn-delivery-label::before {
@@ -6862,7 +6952,7 @@ header + .turn-blocks {
    composer-menu's margin-left:auto pushes the controls to the right of it). */
 .composer-paused-label {
   align-self: center;
-  color: #d8b878;
+  color: var(--status-warning-fg);
   font-size: var(--fs-sm);
 }
 
@@ -6883,14 +6973,14 @@ header + .turn-blocks {
   flex: 0 0 auto;
   min-width: 0;
   /* Auto-grows with content (JS sets the height) up to a cap, then scrolls. */
-  min-height: 40px;
+  min-height: var(--composer-min-height, 40px);
   max-height: 200px;
   overflow-y: auto;
   resize: none;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: #f1f0e8;
+  color: var(--text-strong);
   font-size: calc(var(--fs-base) + 1px);
   padding: 8px 9px;
 }
@@ -6945,7 +7035,7 @@ header + .turn-blocks {
      ⋮ trigger, right-aligned (grows toward the pane center), width/height
      clamped to the right pane. left/top/max-height/max-width from inline style. */
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   width: 220px;
   flex-direction: column;
@@ -6956,7 +7046,7 @@ header + .turn-blocks {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
   overflow-y: auto;
 }
 
@@ -6968,7 +7058,7 @@ header + .turn-blocks {
   padding: 6px 10px;
   border-color: transparent;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
   text-align: left;
 }
@@ -6985,7 +7075,7 @@ header + .turn-blocks {
 
 .composer-menu-label {
   padding: 4px 10px 2px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -7004,7 +7094,7 @@ header + .turn-blocks {
 }
 
 .composer-menu-recent:hover:not(:disabled) {
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 /* Stack the session title over its gray last-modified subtext as plain block
@@ -7026,7 +7116,7 @@ header + .turn-blocks {
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.35;
-  color: #e7e7e2;
+  color: var(--text-primary);
 }
 
 .session-menu-item.is-active .session-menu-title {
@@ -7040,7 +7130,7 @@ header + .turn-blocks {
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.25;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -7048,13 +7138,13 @@ header + .turn-blocks {
   position: fixed;
   left: 50%;
   bottom: 42px;
-  z-index: 30;
+  z-index: var(--z-toast);
   transform: translateX(-50%);
   padding: 6px 12px;
   border: 1px solid var(--surface-divider);
   border-radius: 999px;
   background: var(--popover-bg);
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-sm);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   pointer-events: none;
@@ -7086,7 +7176,7 @@ header + .turn-blocks {
   border: 1px solid #364245;
   border-radius: 999px;
   background: #1d2325;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-sm);
   line-height: 1;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -7155,7 +7245,7 @@ header + .turn-blocks {
 .wait-target-popover {
   /* Same placement rules as .composer-menu-popover (upward, right-aligned, pane-clamped). */
   position: fixed;
-  z-index: 15;
+  z-index: var(--z-popover);
   display: flex;
   width: 260px;
   flex-direction: column;
@@ -7166,7 +7256,7 @@ header + .turn-blocks {
   border: 1px solid var(--surface-divider);
   border-radius: 8px;
   background: var(--popover-bg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
   overflow-y: auto;
 }
 
@@ -7218,13 +7308,13 @@ header + .turn-blocks {
 }
 
 .wait-target-title {
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-size: var(--fs-base);
 }
 
 .wait-target-status {
   margin-top: 2px;
-  color: #8a938e;
+  color: var(--text-muted);
   font-size: var(--fs-sm);
 }
 
@@ -7396,7 +7486,7 @@ header + .turn-blocks {
   border: 1px solid var(--control-border);
   border-radius: 6px;
   background: var(--chrome-control-bg);
-  color: #c4cbc6;
+  color: var(--text-secondary);
   cursor: pointer;
   backdrop-filter: blur(6px);
 }
@@ -7411,7 +7501,7 @@ header + .turn-blocks {
 
 .browser-overlay-button:hover:not(:disabled) {
   background: var(--chrome-control-bg-hover);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .browser-overlay-button:disabled {
@@ -7421,7 +7511,7 @@ header + .turn-blocks {
 
 .browser-overlay-button.is-active {
   border-color: var(--accent-color);
-  color: #f1f0e8;
+  color: var(--text-strong);
 }
 
 .browser-overlay-button:focus-visible {
@@ -7433,7 +7523,7 @@ header + .turn-blocks {
    (viewport coords), above the browser overlay and other chrome. */
 .link-context-menu {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-context-menu);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -7458,7 +7548,7 @@ header + .turn-blocks {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e7e7e2;
+  color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--fs-base);
   text-align: left;
