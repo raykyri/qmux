@@ -88,7 +88,7 @@ enum AppShortcutCommand {
     ToggleSidebarMode,
     CyclePaneTab(i8),
     CycleAllTab(i8),
-    MoveResearchTree(i8),
+    MoveSidebarItem(i8),
     OpenSettings,
     OpenCommandPalette,
     ToggleTranscriptOrBrowser,
@@ -114,8 +114,8 @@ impl AppShortcutCommand {
             Self::CyclePaneTab(_) => ("cyclePaneTabNext", None),
             Self::CycleAllTab(-1) => ("cycleAllTabPrevious", None),
             Self::CycleAllTab(_) => ("cycleAllTabNext", None),
-            Self::MoveResearchTree(-1) => ("moveResearchTreeUp", None),
-            Self::MoveResearchTree(_) => ("moveResearchTreeDown", None),
+            Self::MoveSidebarItem(-1) => ("moveSidebarItemUp", None),
+            Self::MoveSidebarItem(_) => ("moveSidebarItemDown", None),
             Self::OpenSettings => ("openSettings", None),
             Self::OpenCommandPalette => ("openCommandPalette", None),
             Self::ToggleTranscriptOrBrowser => ("toggleTranscriptOrBrowser", None),
@@ -144,7 +144,7 @@ fn classify_app_shortcut(
     let one_primary_modifier = command != control;
 
     if !command && !control && option && !shift && (key == "arrowup" || key == "arrowdown") {
-        return Some(AppShortcutCommand::MoveResearchTree(if key == "arrowup" {
+        return Some(AppShortcutCommand::MoveSidebarItem(if key == "arrowup" {
             -1
         } else {
             1
@@ -1264,15 +1264,15 @@ mod tests {
         );
         assert_eq!(
             super::classify_app_shortcut("ArrowUp", false, false, true, false),
-            Some(AppShortcutCommand::MoveResearchTree(-1))
+            Some(AppShortcutCommand::MoveSidebarItem(-1))
         );
         assert_eq!(
             super::classify_app_shortcut("ArrowDown", false, false, true, false),
-            Some(AppShortcutCommand::MoveResearchTree(1))
+            Some(AppShortcutCommand::MoveSidebarItem(1))
         );
         assert_eq!(
-            AppShortcutCommand::MoveResearchTree(-1).event_fields(),
-            ("moveResearchTreeUp", None)
+            AppShortcutCommand::MoveSidebarItem(-1).event_fields(),
+            ("moveSidebarItemUp", None)
         );
         for key in [";", "k", "a", "z", "Enter"] {
             assert_eq!(

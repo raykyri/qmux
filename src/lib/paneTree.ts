@@ -139,6 +139,49 @@ export function moveToGap(panes: PaneInfo[], dragId: string, gap: number): PaneI
   return normalizeDepths(placeBlock(rest, block, insertAt, rootDepth));
 }
 
+/** Moves a pane and its descendants by one sibling position without changing
+ * nesting. At a nesting boundary this is a no-op, so keyboard reordering never
+ * reparents a pane or crosses out of its group. */
+export function movePaneSubtreeBy(
+  panes: PaneInfo[],
+  paneId: string,
+  direction: -1 | 1,
+): PaneInfo[] {
+  const from = panes.findIndex((pane) => pane.id === paneId);
+  if (from < 0) {
+    return panes;
+  }
+  const rootDepth = depthOf(panes[from]);
+  const end = subtreeEnd(panes, from);
+
+  if (direction === -1) {
+    let previousSibling = from - 1;
+    while (previousSibling >= 0 && depthOf(panes[previousSibling]) > rootDepth) {
+      previousSibling -= 1;
+    }
+    if (previousSibling < 0 || depthOf(panes[previousSibling]) !== rootDepth) {
+      return panes;
+    }
+    return [
+      ...panes.slice(0, previousSibling),
+      ...panes.slice(from, end),
+      ...panes.slice(previousSibling, from),
+      ...panes.slice(end),
+    ];
+  }
+
+  if (end >= panes.length || depthOf(panes[end]) !== rootDepth) {
+    return panes;
+  }
+  const nextSiblingEnd = subtreeEnd(panes, end);
+  return [
+    ...panes.slice(0, from),
+    ...panes.slice(end, nextSiblingEnd),
+    ...panes.slice(from, end),
+    ...panes.slice(nextSiblingEnd),
+  ];
+}
+
 export function isLeafPane(panes: PaneInfo[], paneId: string): boolean {
   const index = panes.findIndex((pane) => pane.id === paneId);
   return index >= 0 && subtreeEnd(panes, index) === index + 1;

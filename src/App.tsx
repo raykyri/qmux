@@ -141,6 +141,7 @@ import {
   isLeafPane,
   movePaneAfterSubtree,
   movePanePromotingChildrenAdjacentToPane,
+  movePaneSubtreeBy,
   moveToGap,
   nestUnder,
   outdentAt,
@@ -6603,26 +6604,39 @@ export default function App() {
       });
   }
 
-  function panesWithGroupOrder(groupId: string, nextGroupPanes: PaneInfo[]) {
+  function panesWithGroupOrder(
+    groupId: string,
+    nextGroupPanes: PaneInfo[],
+    paneSnapshot = panes,
+  ) {
     const next = groups.flatMap((group) =>
-      group.id === groupId ? nextGroupPanes : panes.filter((pane) => pane.groupId === group.id),
+      group.id === groupId
+        ? nextGroupPanes
+        : paneSnapshot.filter((pane) => pane.groupId === group.id),
     );
     const groupedIds = new Set(next.map((pane) => pane.id));
-    next.push(...panes.filter((pane) => !groupedIds.has(pane.id)));
+    next.push(...paneSnapshot.filter((pane) => !groupedIds.has(pane.id)));
     return next;
   }
 
   // Optimistically applies a new tab layout (order + depth) and persists it, with the
   // same request-sequence guard the old reorder used so stale responses never clobber
   // a newer local state.
-  function applyPaneLayout(groupId: string, nextGroupPanes: PaneInfo[]) {
-    const next = panesWithGroupOrder(groupId, nextGroupPanes);
+  function applyPaneLayout(
+    groupId: string,
+    nextGroupPanes: PaneInfo[],
+    paneSnapshot = panes,
+  ) {
+    const next = panesWithGroupOrder(groupId, nextGroupPanes, paneSnapshot);
     const nextLayout = toLayout(next);
-    if (sameLayout(nextLayout, toLayout(panes))) {
+    if (sameLayout(nextLayout, toLayout(paneSnapshot))) {
       return; // structural no-op — don't churn a backend round-trip
     }
     const requestSeq = paneReorderRequestSeqRef.current + 1;
     paneReorderRequestSeqRef.current = requestSeq;
+    // Keyboard repeats can arrive before React commits the optimistic state.
+    // Keep the imperative snapshot current so each press advances one slot.
+    panesRef.current = next;
     setPanesPreservingRecoveredDismissals(next);
 
     const persist = paneReorderPersistChainRef.current
@@ -6631,6 +6645,7 @@ export default function App() {
     paneReorderPersistChainRef.current = persist
       .then((orderedPanes) => {
         if (paneReorderRequestSeqRef.current === requestSeq) {
+          panesRef.current = orderedPanes;
           setPanesPreservingRecoveredDismissals(orderedPanes);
         }
       })
@@ -6644,11 +6659,35 @@ export default function App() {
         void listPanes()
           .then((latest) => {
             if (paneReorderRequestSeqRef.current === requestSeq) {
+              panesRef.current = latest;
               setPanesPreservingRecoveredDismissals(latest);
             }
           })
           .catch(() => undefined);
       });
+  }
+
+  function moveActiveTerminalPane(direction: -1 | 1) {
+    if (sidebarModeRef.current !== "terminal") {
+      return;
+    }
+    const paneId = activePaneIdRef.current;
+    if (!paneId || paneId === HOME_TAB_ID) {
+      return;
+    }
+    const currentPanes = panesRef.current;
+    const pane = currentPanes.find((candidate) => candidate.id === paneId);
+    if (
+      !pane ||
+      groupsRef.current.find((group) => group.id === pane.groupId)?.scope !== "terminal"
+    ) {
+      return;
+    }
+    const groupPanes = currentPanes.filter((candidate) => candidate.groupId === pane.groupId);
+    const nextGroupPanes = movePaneSubtreeBy(groupPanes, paneId, direction);
+    if (nextGroupPanes !== groupPanes) {
+      applyPaneLayout(pane.groupId, nextGroupPanes, currentPanes);
+    }
   }
 
   function applyGroupOrder(nextTerminalGroups: GroupInfo[]) {
@@ -8175,8 +8214,12 @@ export default function App() {
         case "cycleAllTab":
           cycleTab(command.direction, true, cycleableSidebarPanes);
           return;
-        case "moveResearchTree":
-          moveActiveResearchTree(command.direction);
+        case "moveSidebarItem":
+          if (currentSidebarMode === "terminal") {
+            moveActiveTerminalPane(command.direction);
+          } else {
+            moveActiveResearchTree(command.direction);
+          }
           return;
         case "openSettings":
           setSettingsMenu(null);

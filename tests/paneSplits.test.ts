@@ -4,6 +4,7 @@ import { cycleTabId, selectPaneAfterClose } from "../src/lib/appHelpers";
 import {
   movePaneAfterSubtree,
   movePanePromotingChildrenAdjacentToPane,
+  movePaneSubtreeBy,
 } from "../src/lib/paneTree";
 import {
   detachPaneFromSplitMemberships,
@@ -72,6 +73,27 @@ function assertApprox(actual: number, expected: number) {
     `expected ${actual} to be approximately ${expected}`,
   );
 }
+
+test("Option-Arrow pane moves stay within sibling and group boundaries", () => {
+  const flat = panes(["a", "b", "c"]);
+  assert.deepEqual(movePaneSubtreeBy(flat, "b", -1).map((item) => item.id), ["b", "a", "c"]);
+  assert.deepEqual(movePaneSubtreeBy(flat, "b", 1).map((item) => item.id), ["a", "c", "b"]);
+  assert.equal(movePaneSubtreeBy(flat, "a", -1), flat);
+  assert.equal(movePaneSubtreeBy(flat, "c", 1), flat);
+
+  const nested = [
+    pane("root"),
+    pane("a", 1),
+    pane("a-child", 2),
+    pane("b", 1),
+    pane("next-root"),
+  ];
+  assert.deepEqual(
+    movePaneSubtreeBy(nested, "a", 1).map((item) => item.id),
+    ["root", "b", "a", "a-child", "next-root"],
+  );
+  assert.equal(movePaneSubtreeBy(nested, "b", 1), nested);
+});
 
 test("normalizePaneSplitsForPanes preserves a split after its top pane closes", () => {
   const normalized = normalizePaneSplitsForPanes(

@@ -13,7 +13,7 @@ export type AppShortcutCommand =
   | { type: "toggleSidebarMode" }
   | { type: "cyclePaneTab"; direction: -1 | 1 }
   | { type: "cycleAllTab"; direction: -1 | 1 }
-  | { type: "moveResearchTree"; direction: -1 | 1 }
+  | { type: "moveSidebarItem"; direction: -1 | 1 }
   | { type: "openSettings" }
   | { type: "openCommandPalette" }
   | { type: "toggleTranscriptOrBrowser" }
@@ -64,7 +64,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
     !input.editableTarget &&
     (key === "arrowup" || key === "arrowdown")
   ) {
-    return { type: "moveResearchTree", direction: key === "arrowup" ? -1 : 1 };
+    return { type: "moveSidebarItem", direction: key === "arrowup" ? -1 : 1 };
   }
 
   if (command && !control && !option) {
@@ -169,7 +169,7 @@ export function appShortcutAllowsRepeat(command: AppShortcutCommand): boolean {
     command.type === "fontZoomIn" ||
     command.type === "fontZoomOut" ||
     command.type === "fontZoomReset" ||
-    command.type === "moveResearchTree"
+    command.type === "moveSidebarItem"
   );
 }
 
@@ -213,10 +213,10 @@ export function parseAppShortcutCommand(
       return { type: "cycleAllTab", direction: -1 };
     case "cycleAllTabNext":
       return { type: "cycleAllTab", direction: 1 };
-    case "moveResearchTreeUp":
-      return { type: "moveResearchTree", direction: -1 };
-    case "moveResearchTreeDown":
-      return { type: "moveResearchTree", direction: 1 };
+    case "moveSidebarItemUp":
+      return { type: "moveSidebarItem", direction: -1 };
+    case "moveSidebarItemDown":
+      return { type: "moveSidebarItem", direction: 1 };
     default:
       return null;
   }
