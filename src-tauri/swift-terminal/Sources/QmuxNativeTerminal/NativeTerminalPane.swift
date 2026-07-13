@@ -205,10 +205,6 @@ final class NativeTerminalPane: NSObject,
         }
     }
 
-    func receive(_ data: Data) -> Bool {
-        terminalSession.receive(data)
-    }
-
     func terminalDidClose(processAlive: Bool) {
         paneID.withCString { nativeTerminalDidClose($0, processAlive ? 1 : 0) }
         NativeTerminalHost.shared.surfaceDidClose(id: paneID)

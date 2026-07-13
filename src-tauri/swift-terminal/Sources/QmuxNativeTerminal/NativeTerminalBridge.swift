@@ -89,16 +89,6 @@ public func qmuxNativeTerminalRemove(_ paneID: UnsafePointer<CChar>?) {
     }
 }
 
-@_cdecl("qmux_native_terminal_terminate")
-public func qmuxNativeTerminalTerminate(
-    _ paneID: UnsafePointer<CChar>?
-) -> Int32 {
-    guard let paneID = terminalString(paneID) else { return 0 }
-    return onTerminalMain {
-        NativeTerminalHost.shared.terminatePane(id: paneID) ? 1 : 0
-    }
-}
-
 @_cdecl("qmux_native_terminal_set_stage_backstop")
 public func qmuxNativeTerminalSetStageBackstop(
     _ x: Double,

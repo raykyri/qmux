@@ -254,7 +254,6 @@ mod imp {
         ) -> i32;
         fn qmux_native_terminal_is_ready_for_replay(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_remove(pane_id: *const c_char);
-        fn qmux_native_terminal_terminate(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_set_stage_backstop(x: f64, y: f64, width: f64, height: f64) -> i32;
         fn qmux_native_terminal_set_layout(
             pane_id: *const c_char,
@@ -416,17 +415,6 @@ mod imp {
         // SAFETY: Swift copies the string synchronously before returning.
         unsafe { qmux_native_terminal_remove(pane_id.as_ptr()) };
         Ok(())
-    }
-
-    pub fn terminate(pane_id: &str) -> Result<(), String> {
-        let pane_id = cstring(pane_id, "pane id")?;
-        // SAFETY: Swift copies the string and invokes Ghostty's close binding
-        // synchronously on the main actor.
-        if unsafe { qmux_native_terminal_terminate(pane_id.as_ptr()) } == 1 {
-            Ok(())
-        } else {
-            Err("native terminal pane was not found".to_string())
-        }
     }
 
     /// Positions the opaque terminal-colored backstop under the webview's
@@ -735,10 +723,6 @@ mod imp {
         Ok(())
     }
 
-    pub fn terminate(_pane_id: &str) -> Result<(), String> {
-        Err("native terminals are only available on macOS".to_string())
-    }
-
     pub fn set_stage_backstop(_x: f64, _y: f64, _width: f64, _height: f64) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
@@ -797,7 +781,7 @@ pub use imp::{
     action, available, create_host_managed, focus, initialize, is_ready_for_replay,
     paste_approved_text, receive, remove, seed_settings, send_text, set_layout,
     set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown, submit,
-    terminate, update_settings,
+    update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {

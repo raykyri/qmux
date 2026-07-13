@@ -175,11 +175,6 @@ final class NativeTerminalHost {
         pane.view.removeFromSuperview()
     }
 
-    func terminatePane(id: String) -> Bool {
-        guard let pane = panes[id] else { return false }
-        return pane.view.performBindingAction("close_surface")
-    }
-
     func surfaceDidClose(id: String) {
         DispatchQueue.main.async { [weak self] in
             self?.removePane(id: id)
