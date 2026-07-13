@@ -1443,6 +1443,10 @@
   --research-workspace-bg: var(--right-pane-bg);
   --chrome-header-bg: #171716;
   --content-card-bg: #212220;
+  /* Rotate the cool popover charcoal toward the same low-chroma amber used by
+     the warm chrome. Keep its hover state in that hue family as well. */
+  --popover-bg: #24211d;
+  --popover-item-hover-bg: #322e28;
   --surface-divider: #2d2d2c;
   --surface-border-strong: #363735;
   --control-bg: #282827;
