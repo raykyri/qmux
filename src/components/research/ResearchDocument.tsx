@@ -517,7 +517,17 @@ export default function ResearchDocument({
       return;
     }
     const closeMenu = (event: MouseEvent) => {
-      if (!followupMenuRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      // Leave trigger clicks to the trigger's own handler: closing here on
+      // mousedown would clear the state its click-time toggle checks, so the
+      // ensuing click always reopens and the trigger can never dismiss.
+      if (
+        target instanceof Element &&
+        target.closest("[data-research-answer-menu-trigger]")
+      ) {
+        return;
+      }
+      if (!followupMenuRef.current?.contains(target)) {
         setFollowupMenu(null);
       }
     };
@@ -1600,6 +1610,7 @@ export default function ResearchDocument({
                         aria-label="Answer actions"
                         aria-haspopup="menu"
                         aria-expanded={followupMenu?.nodeId === displayNode.id}
+                        data-research-answer-menu-trigger
                         onClick={(event) => openAnswerMenu(event.currentTarget, displayNode.id)}
                       >
                         <MoreHorizontal size={15} aria-hidden="true" />
