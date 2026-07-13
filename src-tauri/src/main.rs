@@ -44,7 +44,8 @@ use pty::{
 use research::{
     CreateResearchDocumentRequest, CreateResearchTreeRequest, ResearchBranchRemoval,
     ResearchHighlight, ResearchHighlightAnchor, ResearchNode, ResearchNodeContent, ResearchTree,
-    ResearchTreeDetail, ResearchTreeSummary,
+    ResearchTreeDetail, ResearchTreeSummary, UpdateResearchDocumentRequest,
+    UpdateResearchDocumentResult,
 };
 use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
@@ -795,6 +796,24 @@ async fn create_research_document(
 }
 
 #[tauri::command]
+async fn update_research_document(
+    state: tauri::State<'_, AppState>,
+    request: UpdateResearchDocumentRequest,
+) -> Result<UpdateResearchDocumentResult, String> {
+    let state = state.inner().clone();
+    // Blocking: a body edit atomically replaces and fsyncs the durable response
+    // snapshot before the in-memory metadata is announced. Serialize with
+    // research-folder replacement/removal as well, or another window could
+    // detach the tree after validation but before the edit commits.
+    tauri::async_runtime::spawn_blocking(move || {
+        let _workspace_guard = workspace::lock_research_workspace_mutations()?;
+        state.update_research_document(request)
+    })
+    .await
+    .map_err(|err| format!("update_research_document task failed: {err}"))?
+}
+
+#[tauri::command]
 async fn read_markdown_document_file(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         research::read_markdown_document_file(std::path::Path::new(&path))
@@ -896,14 +915,7 @@ async fn fork_research_node(
             // fresh run whose prompt carries the document as context; the
             // child's displayed prompt stays the bare question (the response
             // boundary still matches it as a substring of the sent prompt).
-            let launch_prompt = state.research_tree(&parent.tree_id).and_then(|detail| {
-                let turns =
-                    research::read_response_snapshot(&state.config().workspace_root, &parent.id)?
-                        .ok_or_else(|| "the document's content is unavailable".to_string())?;
-                let markdown = research::document_markdown_from_turns(&turns)
-                    .ok_or_else(|| "the document's content is unavailable".to_string())?;
-                research::document_followup_prompt(&detail.tree.title, markdown, &child.prompt)
-            });
+            let launch_prompt = state.research_document_followup_prompt(&parent.id, &child.prompt);
             let launch_prompt = match launch_prompt {
                 Ok(launch_prompt) => launch_prompt,
                 Err(err) => {
@@ -1866,6 +1878,7 @@ fn main() {
             get_research_tree,
             create_research_tree,
             create_research_document,
+            update_research_document,
             read_markdown_document_file,
             get_research_node_content,
             fork_research_node,

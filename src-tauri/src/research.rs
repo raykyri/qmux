@@ -211,6 +211,33 @@ pub struct CreateResearchDocumentRequest {
     pub group_id: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateResearchDocumentRequest {
+    pub node_id: String,
+    pub markdown: String,
+    pub title: Option<String>,
+    /// Optimistic concurrency tokens captured when the editor opens. The
+    /// response revision protects the body; the title is stored separately on
+    /// the tree and therefore needs its own comparison.
+    pub expected_response_revision: String,
+    pub expected_title: String,
+    /// Highlight identities captured with the revision when the editor opens.
+    /// A body save must not silently erase highlights added in another window
+    /// after the warning was rendered.
+    pub expected_highlight_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateResearchDocumentResult {
+    pub tree: ResearchTree,
+    pub node: ResearchNode,
+    pub response_revision: String,
+    pub markdown_changed: bool,
+    pub removed_highlight_count: usize,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchTreeSummary {
@@ -1115,10 +1142,8 @@ pub fn response_preview(
         }
     }
     let text = text_after_last_activity.or(fallback_text)?;
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = normalized.chars();
-    let preview = chars.by_ref().take(220).collect::<String>();
-    Some(if chars.next().is_some() {
+    let (preview, truncated) = normalized_prefix(text, 220);
+    Some(if truncated {
         format!("{}…", preview.trim_end())
     } else {
         preview
@@ -1127,16 +1152,39 @@ pub fn response_preview(
 
 pub fn default_title(prompt: &str) -> String {
     const MAX_CHARS: usize = 72;
-    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = normalized.chars();
-    let title = chars.by_ref().take(MAX_CHARS).collect::<String>();
-    if chars.next().is_some() {
+    let (title, truncated) = normalized_prefix(prompt, MAX_CHARS);
+    if truncated {
         format!("{}…", title.trim_end())
     } else if title.is_empty() {
         "Untitled research".to_string()
     } else {
         title
     }
+}
+
+/// Normalizes whitespace while retaining at most `max_chars` Unicode scalar
+/// values. Unlike collecting and joining every word, this stops as soon as the
+/// bounded UI string is known, which matters for 10 MB document lines.
+fn normalized_prefix(text: &str, max_chars: usize) -> (String, bool) {
+    let mut normalized = String::new();
+    let mut char_count = 0;
+    for word in text.split_whitespace() {
+        if char_count > 0 {
+            if char_count == max_chars {
+                return (normalized, true);
+            }
+            normalized.push(' ');
+            char_count += 1;
+        }
+        for character in word.chars() {
+            if char_count == max_chars {
+                return (normalized, true);
+            }
+            normalized.push(character);
+            char_count += 1;
+        }
+    }
+    (normalized, false)
 }
 
 pub fn document_word_count(markdown: &str) -> usize {

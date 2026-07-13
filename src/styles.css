@@ -1241,8 +1241,23 @@
 
 .new-document-footer {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.new-document-footer-row {
+  display: flex;
   align-items: center;
   gap: 12px;
+  width: 100%;
+}
+
+.edit-document-highlight-warning {
+  width: 100%;
+  margin: 0;
+  color: #d8b878;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .new-document-wordcount {
@@ -1264,13 +1279,13 @@
   line-height: 1.4;
 }
 
-.new-document-footer .confirm-dialog-actions {
+.new-document-footer-row .confirm-dialog-actions {
   margin-top: 0;
   margin-left: auto;
   flex-wrap: nowrap;
 }
 
-.new-document-footer .confirm-dialog-actions button[type="submit"] {
+.new-document-footer-row .confirm-dialog-actions button[type="submit"] {
   display: inline-flex;
   align-items: center;
   gap: 7px;

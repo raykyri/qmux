@@ -28,6 +28,7 @@ import type {
   ResearchTreeSummary,
   ResearchNode,
   ResearchNodeContent,
+  UpdateResearchDocumentResult,
   SendNextQueuedAgentTurnResult,
   RuntimeConfig,
   SpawnAgentRequest,
@@ -300,6 +301,17 @@ export function createResearchDocument(request: {
   workspaceId: string;
 }) {
   return invoke<ResearchTreeDetail>("create_research_document", { request });
+}
+
+export function updateResearchDocument(request: {
+  nodeId: string;
+  markdown: string;
+  title?: string | null;
+  expectedResponseRevision: string;
+  expectedTitle: string;
+  expectedHighlightIds: string[];
+}) {
+  return invoke<UpdateResearchDocumentResult>("update_research_document", { request });
 }
 
 /** Reads a Markdown file selected through the native window drop API. The

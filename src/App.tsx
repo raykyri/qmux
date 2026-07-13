@@ -225,6 +225,7 @@ import {
   cancelResearchNode,
   createResearchDocument,
   createResearchTree,
+  updateResearchDocument,
   forkResearchNode,
   markResearchTreeViewed,
   renameResearchNode,
@@ -5348,6 +5349,35 @@ export default function App() {
       adoptCreatedResearchTree(detail);
     },
     [adoptCreatedResearchTree, refreshResearchNavigation, resolveResearchComposerWorkspace],
+  );
+  const editResearchDocument = useCallback(
+    async (input: {
+      nodeId: string;
+      markdown: string;
+      title: string | null;
+      expectedResponseRevision: string;
+      expectedTitle: string;
+      expectedHighlightIds: string[];
+    }) => {
+      const result = await updateResearchDocument(input);
+      if (activeResearchTreeIdRef.current === result.tree.id) {
+        // Apply the authoritative metadata immediately. The document component
+        // separately refetches the body when its snapshot revision changed.
+        setActiveResearchDetail((current) =>
+          current?.tree.id === result.tree.id
+            ? {
+                tree: result.tree,
+                nodes: current.nodes.map((node) =>
+                  node.id === result.node.id ? result.node : node,
+                ),
+              }
+            : current,
+        );
+      }
+      void refreshResearchNavigation().catch(() => undefined);
+      return result;
+    },
+    [refreshResearchNavigation],
   );
   // Mirrors the backend's adapters::default_fork_adapter — the adapter that
   // document follow-ups launch on — so adapter-specific composer affordances
@@ -10840,6 +10870,7 @@ export default function App() {
               onFork={createResearchFollowup}
               onRemoveBranch={removeResearchBranchFromDocument}
               onRemoveTree={removeResearchTreeAndSelectFallback}
+              onUpdateDocument={editResearchDocument}
               onCancel={cancelResearchRun}
               onOpenPane={openResearchPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}

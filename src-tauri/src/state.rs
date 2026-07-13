@@ -5,7 +5,7 @@ use crate::research::{
     self, CreateResearchDocumentRequest, CreateResearchTreeRequest, ResearchBranchRemoval,
     ResearchHighlight, ResearchHighlightAnchor, ResearchNode, ResearchNodeCard,
     ResearchNodeContent, ResearchNodeKind, ResearchNodeStatus, ResearchTree, ResearchTreeDetail,
-    ResearchTreeSummary,
+    ResearchTreeSummary, UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
 };
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -125,6 +125,11 @@ struct AppStateInner {
     // rename can land after a newer one and clobber it, losing the last change
     // (or re-sending an already-drained queued turn) across a restart.
     persist_lock: Mutex<()>,
+    // Serializes document snapshot replacement with highlight mutations and
+    // follow-up prompt capture. Those operations span both the in-memory model
+    // and a response-snapshot file, so the model lock alone cannot make them a
+    // coherent revision boundary without holding it across fsync'd IO.
+    research_document_lock: Mutex<()>,
     // Debounced persistence. Mutations only mark this dirty flag and wake the
     // dedicated writer thread, which coalesces a burst of mutations (agent
     // status hooks, transcript appends, resize storms) into one snapshot+write
@@ -870,6 +875,7 @@ impl AppState {
                 app_handle: Mutex::new(None),
                 persist_enabled: AtomicBool::new(false),
                 persist_lock: Mutex::new(()),
+                research_document_lock: Mutex::new(()),
                 persist_dirty: Mutex::new(false),
                 persist_wake: Condvar::new(),
                 persister_spawned: AtomicBool::new(false),
@@ -2354,6 +2360,207 @@ impl AppState {
         self.research_tree(&tree_id)
     }
 
+    /// Replaces a root document's durable Markdown in place. Existing child
+    /// runs are intentionally untouched: their agents already received a copy
+    /// of the document in their launch prompt. A body replacement invalidates
+    /// every highlight on this node because anchors are revision-bound; a
+    /// title-only edit preserves both the snapshot and its highlights.
+    pub fn update_research_document(
+        &self,
+        request: UpdateResearchDocumentRequest,
+    ) -> Result<UpdateResearchDocumentResult, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
+        let markdown = request.markdown.trim().to_string();
+        research::validate_document_markdown(&markdown)?;
+
+        let (current_node, current_tree) = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get(&request.node_id)
+                .cloned()
+                .ok_or_else(|| format!("research node {} was not found", request.node_id))?;
+            let tree = model
+                .research_trees
+                .get(&node.tree_id)
+                .cloned()
+                .ok_or_else(|| format!("research tree {} was not found", node.tree_id))?;
+            (node, tree)
+        };
+        if current_node.kind != ResearchNodeKind::Document
+            || current_node.parent_node_id.is_some()
+            || current_tree.root_node_id != current_node.id
+        {
+            return Err("only root research documents can be edited".to_string());
+        }
+        if current_tree.archived_at.is_some() {
+            return Err("restore archived research before editing its document".to_string());
+        }
+        if current_tree.title != request.expected_title {
+            return Err(
+                "the document title changed while you were editing; reopen the editor and try again"
+                    .to_string(),
+            );
+        }
+
+        let current_snapshot = research::read_response_snapshot_with_revision(
+            &self.inner.config.workspace_root,
+            &current_node.id,
+        )?
+        .ok_or_else(|| "the document's content is unavailable".to_string())?;
+        if current_snapshot.revision != request.expected_response_revision {
+            return Err(
+                "the document changed while you were editing; reopen the editor and try again"
+                    .to_string(),
+            );
+        }
+        let current_markdown = research::document_markdown_from_turns(&current_snapshot.turns)
+            .ok_or_else(|| "the document's content is unavailable".to_string())?;
+        let title = request
+            .title
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| research::document_default_title(&markdown));
+        let markdown_changed = current_markdown != markdown;
+        if markdown_changed {
+            let expected_highlight_ids = request
+                .expected_highlight_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            let current_highlight_ids = current_node
+                .highlights
+                .iter()
+                .map(|highlight| highlight.id.as_str())
+                .collect::<HashSet<_>>();
+            if current_highlight_ids != expected_highlight_ids {
+                return Err(
+                    "the document's highlights changed while you were editing; reopen the editor and try again"
+                        .to_string(),
+                );
+            }
+        }
+        let (turns, response_revision) = if markdown_changed {
+            let turns = vec![research::document_turn(&current_node.id, &markdown)];
+            let revision = research::response_revision(&turns)?;
+            // The file commit is atomic. Nothing in the model changes if it
+            // fails, so the old document, title, and highlights remain valid.
+            research::write_response_snapshot(
+                &self.inner.config.workspace_root,
+                &current_node.id,
+                &turns,
+            )?;
+            (Some(turns), revision)
+        } else {
+            (None, current_snapshot.revision)
+        };
+
+        let now = now_millis();
+        let (tree, node, removed_highlight_count) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(&current_node.id)
+                .ok_or_else(|| format!("research node {} was not found", current_node.id))?;
+            let removed = if let Some(turns) = turns.as_deref() {
+                let removed = node.highlights.len();
+                node.highlights.clear();
+                node.response_preview = research::response_preview(turns, None, "");
+                node.response_snapshot_at = Some(
+                    node.response_snapshot_at
+                        .map_or(now, |previous| now.max(previous.saturating_add(1))),
+                );
+                removed
+            } else {
+                0
+            };
+            let node = node.clone();
+            let tree = model
+                .research_trees
+                .get_mut(&current_tree.id)
+                .ok_or_else(|| format!("research tree {} was not found", current_tree.id))?;
+            tree.title = title;
+            tree.updated_at = now.max(tree.updated_at.saturating_add(1));
+            (tree.clone(), node, removed)
+        };
+        // The response snapshot above is already durable. Persist its matching
+        // title, revision timestamp, and cleared-highlight metadata before the
+        // command returns instead of leaving a debounce-sized crash window in
+        // which state.json still describes the previous document.
+        self.persist_now();
+        self.emit(QmuxEvent::new(
+            "research.document.updated",
+            None,
+            None,
+            json!({
+                "tree": tree,
+                "node": node,
+                "responseRevision": response_revision,
+                "markdownChanged": markdown_changed,
+                "removedHighlightCount": removed_highlight_count,
+            }),
+        ));
+        Ok(UpdateResearchDocumentResult {
+            tree,
+            node,
+            response_revision,
+            markdown_changed,
+            removed_highlight_count,
+        })
+    }
+
+    /// Captures one coherent document version for a new direct follow-up. The
+    /// returned launch prompt owns its Markdown string, so releasing the lock
+    /// before the agent spawn cannot let a later edit rewrite that child.
+    pub fn research_document_followup_prompt(
+        &self,
+        node_id: &str,
+        question: &str,
+    ) -> Result<String, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
+        let (node, title) = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get(node_id)
+                .cloned()
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let tree = model
+                .research_trees
+                .get(&node.tree_id)
+                .ok_or_else(|| format!("research tree {} was not found", node.tree_id))?;
+            (node, tree.title.clone())
+        };
+        if node.kind != ResearchNodeKind::Document {
+            return Err("the research node is not a document".to_string());
+        }
+        let turns = research::read_response_snapshot(&self.inner.config.workspace_root, node_id)?
+            .ok_or_else(|| "the document's content is unavailable".to_string())?;
+        let markdown = research::document_markdown_from_turns(&turns)
+            .ok_or_else(|| "the document's content is unavailable".to_string())?;
+        research::document_followup_prompt(&title, markdown, question)
+    }
+
     pub fn create_research_child(
         &self,
         parent_node_id: &str,
@@ -2823,6 +3030,11 @@ impl AppState {
         tree_id: &str,
         title: String,
     ) -> Result<ResearchTree, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
         let title = title.trim().to_string();
         if title.is_empty() {
             return Err("research title cannot be empty".to_string());
@@ -2888,6 +3100,11 @@ impl AppState {
         node_id: &str,
         anchor: ResearchHighlightAnchor,
     ) -> Result<ResearchHighlight, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
         research::validate_highlight_anchor(&anchor)?;
         self.research_node(node_id)?;
         let snapshot = research::read_response_snapshot_with_revision(
@@ -2956,6 +3173,11 @@ impl AppState {
         node_id: &str,
         highlight_id: &str,
     ) -> Result<ResearchHighlight, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
         let removed = {
             let mut model = self
                 .inner
@@ -3017,6 +3239,11 @@ impl AppState {
     }
 
     pub fn archive_research_tree(&self, tree_id: &str) -> Result<ResearchTree, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
         let tree = {
             let mut model = self
                 .inner
@@ -3050,6 +3277,11 @@ impl AppState {
     }
 
     pub fn restore_research_tree(&self, tree_id: &str) -> Result<ResearchTree, String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
         let tree = {
             let mut model = self
                 .inner
@@ -3075,6 +3307,11 @@ impl AppState {
     }
 
     pub fn remove_research_tree(&self, tree_id: &str) -> Result<(), String> {
+        let _document_guard = self
+            .inner
+            .research_document_lock
+            .lock()
+            .map_err(|_| "research document lock poisoned".to_string())?;
         let (removed, removed_node_ids, reaped_thread_records) = {
             let mut model = self
                 .inner
@@ -9309,6 +9546,209 @@ mod tests {
         .unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(node.response_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn research_document_edits_replace_content_clear_highlights_and_preserve_children() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+        let mut group = sample_group();
+        group.dir = workspace.display().to_string();
+        group.managed_dir = workspace.join("managed").display().to_string();
+        group.agents.clear();
+        state.insert_group_after(group, None).unwrap();
+        let detail = state
+            .create_research_document(CreateResearchDocumentRequest {
+                markdown: "# Original\n\nBody".to_string(),
+                title: Some("Original title".to_string()),
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let node_id = detail.tree.root_node_id.clone();
+        let original_snapshot =
+            research::read_response_snapshot_with_revision(&workspace, &node_id)
+                .unwrap()
+                .unwrap();
+        let highlight = state
+            .create_research_highlight(
+                &node_id,
+                ResearchHighlightAnchor {
+                    version: 1,
+                    projection: "answer-v1".to_string(),
+                    response_revision: original_snapshot.revision.clone(),
+                    start: 0,
+                    end: 10,
+                    exact: "# Original".to_string(),
+                    prefix: String::new(),
+                    suffix: "\n\nBody".to_string(),
+                },
+            )
+            .unwrap();
+        let child = state
+            .create_research_child(&node_id, "What changed?".to_string())
+            .unwrap();
+        let captured_before_edit = state
+            .research_document_followup_prompt(&node_id, &child.prompt)
+            .unwrap();
+        assert!(captured_before_edit.contains("# Original\n\nBody"));
+
+        let updated = state
+            .update_research_document(UpdateResearchDocumentRequest {
+                node_id: node_id.clone(),
+                markdown: "# Revised\n\nNew body".to_string(),
+                title: Some("Revised title".to_string()),
+                expected_response_revision: original_snapshot.revision.clone(),
+                expected_title: "Original title".to_string(),
+                expected_highlight_ids: vec![highlight.id.clone()],
+            })
+            .unwrap();
+        assert!(updated.markdown_changed);
+        assert_eq!(updated.removed_highlight_count, 1);
+        assert_ne!(updated.response_revision, original_snapshot.revision);
+        assert_eq!(updated.tree.title, "Revised title");
+        assert!(updated.node.highlights.is_empty());
+        assert_eq!(
+            state.research_node(&child.id).unwrap().prompt,
+            "What changed?"
+        );
+        // The string already captured for the child owns the old document;
+        // future direct follow-ups read the new snapshot.
+        assert!(!captured_before_edit.contains("# Revised"));
+        let captured_after_edit = state
+            .research_document_followup_prompt(&node_id, "What now?")
+            .unwrap();
+        assert!(captured_after_edit.contains("# Revised\n\nNew body"));
+        let revised_snapshot = research::read_response_snapshot_with_revision(&workspace, &node_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(revised_snapshot.revision, updated.response_revision);
+        assert_eq!(
+            research::document_markdown_from_turns(&revised_snapshot.turns),
+            Some("# Revised\n\nNew body")
+        );
+
+        let stale_title = state
+            .update_research_document(UpdateResearchDocumentRequest {
+                node_id: node_id.clone(),
+                markdown: "stale overwrite".to_string(),
+                title: Some("stale title".to_string()),
+                expected_response_revision: revised_snapshot.revision.clone(),
+                expected_title: "Original title".to_string(),
+                expected_highlight_ids: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(stale_title.contains("title changed"));
+        let stale_body = state
+            .update_research_document(UpdateResearchDocumentRequest {
+                node_id: node_id.clone(),
+                markdown: "stale overwrite".to_string(),
+                title: Some("stale title".to_string()),
+                expected_response_revision: original_snapshot.revision,
+                expected_title: "Revised title".to_string(),
+                expected_highlight_ids: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(stale_body.contains("document changed"));
+
+        let preserved = state
+            .create_research_highlight(
+                &node_id,
+                ResearchHighlightAnchor {
+                    response_revision: revised_snapshot.revision.clone(),
+                    ..highlight.anchor
+                },
+            )
+            .unwrap();
+        let title_only = state
+            .update_research_document(UpdateResearchDocumentRequest {
+                node_id: node_id.clone(),
+                markdown: "# Revised\n\nNew body".to_string(),
+                title: Some("Title only".to_string()),
+                expected_response_revision: revised_snapshot.revision.clone(),
+                expected_title: "Revised title".to_string(),
+                expected_highlight_ids: vec![preserved.id.clone()],
+            })
+            .unwrap();
+        assert!(!title_only.markdown_changed);
+        assert_eq!(title_only.response_revision, revised_snapshot.revision);
+        assert_eq!(title_only.removed_highlight_count, 0);
+        assert_eq!(title_only.node.highlights, vec![preserved]);
+
+        // A highlight created after the editor opened was never represented in
+        // its warning. Refuse to erase that unseen highlight with a body save.
+        let highlight_ids_at_open = title_only
+            .node
+            .highlights
+            .iter()
+            .map(|highlight| highlight.id.clone())
+            .collect::<Vec<_>>();
+        let concurrent_highlight = state
+            .create_research_highlight(
+                &node_id,
+                ResearchHighlightAnchor {
+                    version: 1,
+                    projection: "answer-v1".to_string(),
+                    response_revision: revised_snapshot.revision.clone(),
+                    start: 11,
+                    end: 19,
+                    exact: "New body".to_string(),
+                    prefix: "# Revised\n\n".to_string(),
+                    suffix: String::new(),
+                },
+            )
+            .unwrap();
+        let stale_highlights = state
+            .update_research_document(UpdateResearchDocumentRequest {
+                node_id: node_id.clone(),
+                markdown: "# Another revision".to_string(),
+                title: Some("Another revision".to_string()),
+                expected_response_revision: revised_snapshot.revision.clone(),
+                expected_title: "Title only".to_string(),
+                expected_highlight_ids: highlight_ids_at_open,
+            })
+            .unwrap_err();
+        assert!(stale_highlights.contains("highlights changed"));
+        assert_eq!(state.research_node(&node_id).unwrap().highlights.len(), 2);
+        assert_eq!(
+            research::read_response_snapshot_with_revision(&workspace, &node_id)
+                .unwrap()
+                .unwrap()
+                .revision,
+            revised_snapshot.revision
+        );
+        state
+            .remove_research_highlight(&node_id, &concurrent_highlight.id)
+            .unwrap();
+
+        state.cancel_research_node(&child.id).unwrap();
+        state.archive_research_tree(&detail.tree.id).unwrap();
+        let archived = state
+            .update_research_document(UpdateResearchDocumentRequest {
+                node_id: node_id.clone(),
+                markdown: "another body".to_string(),
+                title: Some("Archived edit".to_string()),
+                expected_response_revision: title_only.response_revision,
+                expected_title: "Title only".to_string(),
+                expected_highlight_ids: title_only
+                    .node
+                    .highlights
+                    .iter()
+                    .map(|highlight| highlight.id.clone())
+                    .collect(),
+            })
+            .unwrap_err();
+        assert!(archived.contains("restore archived"));
+
+        let reloaded = AppState::new(test_config(workspace.clone()));
+        reloaded.restore_session();
+        let reloaded_detail = reloaded.research_tree(&detail.tree.id).unwrap();
+        assert_eq!(reloaded_detail.tree.title, "Title only");
+        assert_eq!(
+            reloaded.research_node(&node_id).unwrap().highlights.len(),
+            1
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

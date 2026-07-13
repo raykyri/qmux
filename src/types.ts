@@ -253,6 +253,14 @@ export interface ResearchNodeContent {
   responseRevision?: string;
 }
 
+export interface UpdateResearchDocumentResult {
+  tree: ResearchTree;
+  node: ResearchNode;
+  responseRevision: string;
+  markdownChanged: boolean;
+  removedHighlightCount: number;
+}
+
 // Where a queued turn is delivered when it is reached: absent means the agent's
 // own composer; "fork" resumes the session into a new forked pane (optionally in a
 // fresh worktree); "newSession" starts a fresh session in the same directory.

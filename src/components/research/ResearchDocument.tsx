@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, ScrollText, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, ScrollText, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
 import {
@@ -45,6 +45,7 @@ import type {
   ResearchNode,
   ResearchNodeContent,
   ResearchTreeDetail,
+  UpdateResearchDocumentResult,
 } from "../../types";
 import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
 import {
@@ -56,6 +57,7 @@ import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
   type LinkActions,
 } from "../TranscriptMarkdown";
+import DocumentDialog from "./DocumentDialog";
 
 interface ResearchDocumentProps {
   detail: ResearchTreeDetail | null;
@@ -70,6 +72,14 @@ interface ResearchDocumentProps {
   onFork: (parentNodeId: string, prompt: string) => Promise<ResearchNode>;
   onRemoveBranch: (nodeId: string) => Promise<ResearchBranchRemoval>;
   onRemoveTree: (treeId: string) => Promise<void>;
+  onUpdateDocument: (input: {
+    nodeId: string;
+    markdown: string;
+    title: string | null;
+    expectedResponseRevision: string;
+    expectedTitle: string;
+    expectedHighlightIds: string[];
+  }) => Promise<UpdateResearchDocumentResult>;
   onCancel: (nodeId: string) => Promise<void>;
   onOpenPane: (paneId: string) => void;
   linkActions: LinkActions;
@@ -81,10 +91,10 @@ interface ResearchDocumentProps {
   onToast: (message: string, tone?: "normal" | "warning") => void;
 }
 
-// The backend caps snapshots at 16MB, which is still far beyond what markdown
+// The backend caps snapshots at 64MB, which is still far beyond what markdown
 // parsing and eager React element creation can absorb without freezing the
 // interface. Blocks past this size render as plain preformatted text — itself
-// display-capped, since laying out one 16MB text node freezes the interface
+// display-capped, since laying out a multi-megabyte text node freezes the interface
 // too — and long transcripts render only their tail until expanded.
 const MARKDOWN_CHAR_LIMIT = 100_000;
 const PLAINTEXT_DISPLAY_CHAR_LIMIT = 1_000_000;
@@ -101,6 +111,7 @@ const OVERSIZED_MARKDOWN_POLICY = {
 const RESEARCH_SWIPE_IDLE_MS = 180;
 const FOLLOWUP_MENU_WIDTH = 190;
 const FOLLOWUP_MENU_HEIGHT = 38;
+const DOCUMENT_MENU_HEIGHT = 80;
 const FOLLOWUP_MENU_MARGIN = 8;
 
 interface FollowupMenu {
@@ -120,6 +131,15 @@ interface ResolvedHighlight {
   highlight: ResearchHighlight;
   start: number;
   end: number;
+}
+
+interface DocumentEditSession {
+  nodeId: string;
+  markdown: string;
+  title: string;
+  responseRevision: string;
+  highlightIds: string[];
+  highlightCount: number;
 }
 
 interface ResearchHighlightRegistry {
@@ -358,6 +378,7 @@ export default function ResearchDocument({
   onFork,
   onRemoveBranch,
   onRemoveTree,
+  onUpdateDocument,
   onCancel,
   onOpenPane,
   linkActions,
@@ -381,6 +402,7 @@ export default function ResearchDocument({
   const [followupMenu, setFollowupMenu] = useState<FollowupMenu | null>(null);
   const [deletingBranchId, setDeletingBranchId] = useState<string | null>(null);
   const [removingBranch, setRemovingBranch] = useState(false);
+  const [documentEditSession, setDocumentEditSession] = useState<DocumentEditSession | null>(null);
   const [branchRemovalError, setBranchRemovalError] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
   const [contentLoadNonce, setContentLoadNonce] = useState(0);
@@ -458,6 +480,26 @@ export default function ResearchDocument({
     () => detail?.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [detail, selectedNodeId],
   );
+  // Highlight mutations are announced as research events but do not replace
+  // the response snapshot. Mirror their refreshed node metadata into the
+  // loaded content so another window's changes reach both the document and a
+  // subsequently opened edit warning.
+  useEffect(() => {
+    if (!selectedDetailNode) {
+      return;
+    }
+    setContent((current) =>
+      current?.node.id === selectedDetailNode.id
+        ? {
+            ...current,
+            node: {
+              ...current.node,
+              highlights: selectedDetailNode.highlights,
+            },
+          }
+        : current,
+    );
+  }, [selectedDetailNode]);
   const selectedNodeStatus = selectedDetailNode?.status ?? null;
   // The run is marked complete before the adapter finishes flushing, so the
   // fetch made on the status transition can read a truncated response. The
@@ -552,6 +594,12 @@ export default function ResearchDocument({
   }, [followupMenu]);
 
   function openFollowupMenu(nodeId: string, clientX: number, clientY: number) {
+    const currentDetail = detailRef.current;
+    const node = currentDetail?.nodes.find((candidate) => candidate.id === nodeId);
+    const menuHeight =
+      node?.kind === "document" && node.id === currentDetail?.tree.rootNodeId
+        ? DOCUMENT_MENU_HEIGHT
+        : FOLLOWUP_MENU_HEIGHT;
     setFollowupMenu({
       nodeId,
       left: Math.max(
@@ -560,7 +608,7 @@ export default function ResearchDocument({
       ),
       top: Math.max(
         FOLLOWUP_MENU_MARGIN,
-        Math.min(clientY, window.innerHeight - FOLLOWUP_MENU_HEIGHT - FOLLOWUP_MENU_MARGIN),
+        Math.min(clientY, window.innerHeight - menuHeight - FOLLOWUP_MENU_MARGIN),
       ),
     });
   }
@@ -1020,6 +1068,19 @@ export default function ResearchDocument({
     () => assistantTextFromTimelineItems(answerTimelineItems),
     [answerTimelineItems],
   );
+  const editableDocumentMarkdown = useMemo(() => {
+    if (content?.node.kind !== "document") {
+      return null;
+    }
+    for (const turn of content.turns) {
+      for (const block of turn.blocks) {
+        if (block.type === "text") {
+          return block.text;
+        }
+      }
+    }
+    return null;
+  }, [content]);
   // Memoized because this component renders several times a second while a run
   // streams (detail replacements, the duration tick, every composer keystroke),
   // and the word scanner walks the entire answer.
@@ -1322,6 +1383,36 @@ export default function ResearchDocument({
       onToast("Copied research answer");
     } catch {
       onToast("Couldn’t copy the research answer", "warning");
+    }
+  }
+
+  async function saveDocumentEdit(input: { markdown: string; title: string | null }) {
+    if (!documentEditSession) {
+      throw new Error("The document is not available for editing.");
+    }
+    const result = await onUpdateDocument({
+      nodeId: documentEditSession.nodeId,
+      markdown: input.markdown,
+      title: input.title,
+      expectedResponseRevision: documentEditSession.responseRevision,
+      expectedTitle: documentEditSession.title,
+      expectedHighlightIds: documentEditSession.highlightIds,
+    });
+    if (treeIdRef.current === result.tree.id && result.markdownChanged) {
+      // Do not leave the old revision visible after the modal closes. The
+      // existing loader refetches the atomically replaced snapshot.
+      setContent(null);
+      setContentError(null);
+      setContentLoadNonce((value) => value + 1);
+    }
+    if (result.removedHighlightCount > 0) {
+      onToast(
+        `Document updated · ${result.removedHighlightCount.toLocaleString()} highlight${
+          result.removedHighlightCount === 1 ? "" : "s"
+        } removed`,
+      );
+    } else {
+      onToast("Document updated");
     }
   }
 
@@ -1771,6 +1862,47 @@ export default function ResearchDocument({
                   onContextMenu={(event) => event.preventDefault()}
                 >
                   <div className="group-context-actions">
+                    {rootNode && node.kind === "document" ? (
+                      <>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={
+                            archived ||
+                            content?.node.id !== node.id ||
+                            !content?.responseRevision ||
+                            editableDocumentMarkdown === null
+                          }
+                          title={
+                            archived
+                              ? "Unarchive this research before editing its document"
+                              : content?.node.id !== node.id ||
+                                  !content?.responseRevision ||
+                                  editableDocumentMarkdown === null
+                                ? "The document content is unavailable"
+                                : undefined
+                          }
+                          onClick={() => {
+                            setFollowupMenu(null);
+                            if (content?.responseRevision && editableDocumentMarkdown !== null) {
+                              setDocumentEditSession({
+                                nodeId: content.node.id,
+                                markdown: editableDocumentMarkdown,
+                                title: detail.tree.title,
+                                responseRevision: content.responseRevision,
+                                highlightIds:
+                                  content.node.highlights?.map((highlight) => highlight.id) ?? [],
+                                highlightCount: content.node.highlights?.length ?? 0,
+                              });
+                            }
+                          }}
+                        >
+                          <Pencil size={13} aria-hidden="true" />
+                          <span>Edit document</span>
+                        </button>
+                        <div className="context-menu-divider" role="separator" />
+                      </>
+                    ) : null}
                     <button
                       type="button"
                       role="menuitem"
@@ -1795,6 +1927,21 @@ export default function ResearchDocument({
                 document.body,
               );
             })()
+          : null}
+        {documentEditSession
+          ? createPortal(
+              <DocumentDialog
+                open
+                mode="edit"
+                initialMarkdown={documentEditSession.markdown}
+                initialTitle={documentEditSession.title}
+                highlightCount={documentEditSession.highlightCount}
+                resetKey={`${documentEditSession.nodeId}:${documentEditSession.responseRevision}`}
+                onClose={() => setDocumentEditSession(null)}
+                onSubmit={saveDocumentEdit}
+              />,
+              document.body,
+            )
           : null}
         {highlightAction
           ? createPortal(
