@@ -1,0 +1,757 @@
+.turn-pane {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--right-pane-bg);
+  /* Add the terminal-zoom delta (set on the app shell, 0 by default) to the type
+     scale so every right-pane element sized off these vars — composer, queue,
+     etc. — grows with the terminal. Hard-coded px sizes add the delta directly. */
+  --fs-xs: calc(11.5px + var(--turn-font-delta, 0px));
+  --fs-sm: calc(12.5px + var(--turn-font-delta, 0px));
+  --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
+}
+
+.turn-pane-stack {
+  overflow: hidden;
+}
+
+.turn-pane-split-divider {
+  z-index: 7;
+  pointer-events: none;
+}
+
+.turn-pane-split-cell.is-active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* Keep the indicator a single pixel inside the cell so it never bleeds onto
+     the terminal to its left. */
+  left: 0;
+  z-index: 9;
+  width: 1px;
+  background: var(--split-active-indicator);
+  pointer-events: none;
+}
+
+.turn-pane-split-cell {
+  position: absolute;
+  right: 0;
+  left: auto;
+  z-index: 5;
+  display: flex;
+  width: var(--inline-turn-pane-width, var(--turn-pane-width, 420px));
+  min-width: 0;
+  min-height: 0;
+  background: var(--right-pane-bg);
+  box-shadow: inset 1px 0 0 var(--surface-divider);
+}
+
+.turn-pane-split-cell.is-active {
+  background: var(--right-pane-active-bg);
+}
+
+.turn-pane-split-cell.is-active .turn-sidebar {
+  background: var(--right-pane-active-bg);
+}
+
+/* A queued card dragged from another split hovers this cell: read as the drop
+   target with an inset accent ring (kept inset so cell layout never shifts). */
+.turn-pane-split-cell.is-queue-drop-target {
+  box-shadow:
+    inset 0 0 0 2px var(--accent-color),
+    inset 1px 0 0 var(--surface-divider);
+}
+
+.turn-pane-stack .turn-pane-resizer {
+  z-index: 8;
+}
+
+.turn-pane-split-cell .turn-pane-resizer {
+  z-index: 8;
+}
+
+.turn-pane-inline-split-divider {
+  right: 0;
+  left: auto;
+  width: var(--inline-turn-pane-width, var(--turn-pane-width, 420px));
+  /* Cover the native terminal-colored split gutter under the inline right
+     pane. This divider is pointer-transparent via .turn-pane-split-divider,
+     so the full-width terminal resize handle remains draggable underneath. */
+  background: var(--right-pane-bg);
+  box-shadow: inset 1px 0 0 var(--surface-divider);
+}
+
+.turn-pane.is-expanded {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--sidebar-width, 268px);
+  z-index: 7;
+  width: auto;
+  box-shadow: inset 1px 0 0 var(--surface-divider);
+}
+
+/* The pane's left edge is drawn solely by the resizer's ::before line so there's
+   a single border top-to-bottom. It sits above the header (z-index 3) so the line
+   is continuous across the header too, rather than being painted over by it. */
+.turn-pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 4;
+  width: 10px;
+  cursor: col-resize;
+}
+
+.turn-pane-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--surface-divider);
+  content: "";
+}
+
+.turn-pane-resizer:hover::before,
+.turn-pane-resizer:focus-visible::before {
+  background: var(--split-border-hover);
+}
+
+.turn-sidebar {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--right-pane-bg);
+}
+
+.turn-queue-resizer {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.turn-queue-resizer::before {
+  position: absolute;
+  top: 5px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--surface-divider);
+  content: "";
+}
+
+.turn-queue-resizer:hover::before,
+.turn-queue-resizer:focus-visible::before {
+  background: var(--control-border-hover-accent);
+}
+
+.turn-queue-resizer:focus-visible {
+  outline: none;
+}
+
+/* Top bar across the right pane. Height matches the browser overlay's address bar
+   so the two line up when the browser is open. */
+.turn-pane-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--surface-divider);
+  background: var(--chrome-header-bg);
+}
+
+/* The session label/dropdown anchor fills the space before the header controls.
+   The menu is positioned from this box so its left edge lines up with "Session:". */
+.turn-pane-session-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+}
+
+/* The session id (or "New session"), vertically centred and truncated. */
+.turn-pane-session {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+}
+
+/* The session label opens a menu; it drops the button chrome so it still reads as
+   inline header text, and only brightens on hover/focus to hint that it is
+   clickable. */
+.turn-pane-session-trigger {
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-pane-session-trigger:hover,
+.turn-pane-session-trigger:focus-visible {
+  color: var(--text-strong);
+}
+
+.turn-pane-session-trigger:focus-visible {
+  outline: none;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
+/* Portaled to <body>; left/top/width/max-height come from placePanePopover so the
+   menu stays inside the right pane and opens downward from the session control. */
+.turn-pane-session-menu {
+  gap: 2px;
+  padding: 4px;
+  overflow: hidden;
+}
+
+.turn-pane-session-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.turn-pane-session-menu-item:disabled {
+  color: #6f7773;
+  cursor: default;
+}
+
+.turn-pane-session-menu-label {
+  padding: 2px 10px 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.turn-pane-header-controls {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+/* Shared by the fork, queue split, browser, and transcript buttons. */
+.turn-pane-header-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--chrome-control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.turn-pane-header-button svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.turn-pane-header-button:hover:not(:disabled) {
+  background: var(--chrome-control-bg-hover);
+  color: var(--text-strong);
+}
+
+.turn-pane-header-button:disabled {
+  background: var(--chrome-control-bg-disabled);
+  color: #6f7773;
+}
+
+/* Browser toggle when the overlay is open: reads as locked on / pushed in rather
+   than swapping to a close icon. An accent-tinted fill plus an inset shadow gives
+   the depressed look; it returns to the neutral skin once toggled off. */
+.turn-pane-header-button.is-active {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: var(--text-strong);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.turn-pane-header-button.is-active:hover {
+  background: var(--accent-shadow);
+  color: var(--text-strong);
+}
+
+.turn-pane-header-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.prompt-library {
+  position: relative;
+  display: flex;
+}
+
+/* Portaled; right-aligned to its trigger like the fork menu, but taller: it hosts
+   a search field, a scrolling prompt list, and small inline fill/edit forms. */
+.prompt-library-menu {
+  gap: 6px;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.prompt-library-search {
+  width: 100%;
+  min-height: var(--control-h-md);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  outline: none;
+}
+
+.prompt-library-search:hover {
+  border-color: var(--control-border-hover);
+}
+
+.prompt-library-search:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.prompt-library-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.prompt-library-empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+  text-align: center;
+}
+
+.prompt-library-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.prompt-library-item-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.prompt-library-item-main:hover:not(:disabled) {
+  background: var(--popover-item-hover-bg);
+}
+
+.prompt-library-item-main:disabled {
+  color: #6f7773;
+  cursor: default;
+}
+
+/* Prompts are titleless: the row is the prompt text itself, clamped to two
+   physical lines so long prompts stay scannable. Slightly dimmed from full
+   foreground so a list of multi-line rows doesn't read as one wall of text. */
+.prompt-library-item-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: #c9cfc9;
+  font-size: var(--fs-base);
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt-library-item-main:hover:not(:disabled) .prompt-library-item-text {
+  color: var(--text-primary);
+}
+
+.prompt-library-item-main:disabled .prompt-library-item-text {
+  color: inherit;
+}
+
+/* The row's single action: a floating "…" trigger that overlays the row's right
+   edge (no layout shift) and appears only on hover/focus, like the message-title
+   menu in the right sidebar. Solid background keeps it legible over row text. */
+.prompt-library-item-menu-trigger {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #3a4245;
+  border-radius: 5px;
+  background: #2f383b;
+  color: #b6bfba;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transform: translateY(-50%);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.prompt-library-item:hover .prompt-library-item-menu-trigger,
+.prompt-library-item:focus-within .prompt-library-item-menu-trigger,
+.prompt-library-item-menu-trigger.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.prompt-library-item-menu-trigger:hover,
+.prompt-library-item-menu-trigger.is-open {
+  background: #374043;
+  color: var(--text-primary);
+}
+
+/* The row menu itself: portaled, mirroring .turn-title-menu-popover. */
+.prompt-library-row-menu-popover {
+  z-index: calc(var(--z-popover) + 1);
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.prompt-library-row-menu-item {
+  white-space: nowrap;
+}
+
+.prompt-library-row-menu-item.is-danger {
+  color: #e08a8a;
+}
+
+.prompt-library-row-menu-item.is-danger:hover {
+  background: #3a2022;
+}
+
+.prompt-library-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  align-self: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.prompt-library-icon-button:hover {
+  background: var(--popover-item-hover-bg);
+  color: var(--text-primary);
+}
+
+/* A scope section (Global / Project) doubles as the drag-and-drop target for
+   moving prompts between scopes; the dashed accent border signals a live drop. */
+.prompt-library-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+}
+
+.prompt-library-section.is-drop-target {
+  border-color: var(--accent-color);
+  /* A light wash, not the full accent-shadow flood: the dashed border already
+     marks the target, the tint just confirms the whole section is live. */
+  background: var(--accent-subtle);
+}
+
+.prompt-library-section-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 2px 5px 1px;
+}
+
+.prompt-library-section-heading {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.prompt-library-section-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The project's home-relative path, shown under the Project heading. */
+.prompt-library-section-path {
+  min-width: 0;
+  overflow: hidden;
+  color: #6f7773;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Separates the Global and Project sections. */
+.prompt-library-divider {
+  height: 1px;
+  flex: none;
+  margin: 7px 5px;
+  background: var(--surface-divider);
+}
+
+/* Names the fill-in step above the prompt's first-line heading. */
+.prompt-library-kicker {
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.prompt-library-scope-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.prompt-library-scope-option {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  overflow: hidden;
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--chrome-control-bg);
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.prompt-library-scope-option:hover {
+  background: var(--chrome-control-bg-hover);
+  color: var(--text-strong);
+}
+
+.prompt-library-scope-option.is-active {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: var(--text-strong);
+}
+
+.prompt-library-heading {
+  padding: 0 2px;
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+/* Fill-view heading is the prompt's first line, not a title — keep it one line. */
+.prompt-library-heading-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-library-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.prompt-library-field-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.prompt-library-editor {
+  width: 100%;
+  min-height: 90px;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: 1.4;
+  outline: none;
+  resize: vertical;
+}
+
+.prompt-library-editor:hover {
+  border-color: var(--control-border-hover);
+}
+
+.prompt-library-editor:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.prompt-library-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.prompt-library-button {
+  min-height: var(--control-h-md);
+  padding: 0 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--chrome-control-bg);
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  cursor: pointer;
+}
+
+.prompt-library-button:hover:not(:disabled) {
+  background: var(--chrome-control-bg-hover);
+  color: var(--text-strong);
+}
+
+.prompt-library-button:disabled {
+  color: #6f7773;
+  cursor: default;
+}
+
+.prompt-library-button.is-primary {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: var(--text-strong);
+}
+
+.prompt-library-error {
+  padding: 6px 8px;
+  border: 1px solid #7a3030;
+  border-radius: 6px;
+  background: #3a2022;
+  color: #e08a8a;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* The centered new/edit prompt modal, reusing the confirm-dialog surface but
+   wider so multi-line prompts are comfortable to write. */
+.prompt-editor-dialog {
+  width: min(560px, 100%);
+}
+
+.prompt-editor-dialog-textarea {
+  min-height: 160px;
+}
+
+/* The prompt being deleted, quoted in the confirm dialog. Two clamped lines:
+   enough to recognize the prompt without the dialog growing unbounded. */
+.confirm-dialog .prompt-delete-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  padding: 2px 10px;
+  border-left: 2px solid #3b4447;
+  color: var(--text-muted);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
+.turn-pane-floating-controls {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
+}
+
+.turn-pane-floating-expand-button,
+.turn-pane-floating-collapse-button,
+.turn-pane-floating-restore-button {
+  backdrop-filter: blur(6px);
+}
+
+.turn-pane-floating-restore-button {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 9;
+}
+
+.turn-pane-fork {
+  position: relative;
+  display: flex;
+}
+
+/* Portaled; right-aligned to the fork button so it grows toward the pane center. */
+.turn-pane-fork-menu {
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.turn-pane-fork-item {
+  padding-inline: 10px;
+}
+
+/* Make room for the top bar (40px + its 1px border). */
+.turn-sidebar.has-header .turn-timeline {
+  top: 41px;
+}
+

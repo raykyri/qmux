@@ -1,0 +1,225 @@
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/fonts/JetBrainsMono-BoldItalic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 700;
+  font-display: block;
+}
+
+:root {
+  /* Type scale. Controls and body share --fs-base; the two main typing surfaces
+     (composer + launcher) use --fs-input; xs/sm are for hints, badges, meta. */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-input: 15px;
+
+  /* Control heights. sm = inline/table actions, md = default, lg = composer + launcher. */
+  --control-h-sm: 26px;
+  --control-h-md: 30px;
+  --control-h-lg: 34px;
+
+  /* Corner radii. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+
+  /* Shared stacking levels for portaled chrome. Local component layers continue
+     to use small integers inside their own stacking contexts. */
+  --z-browser-overlay: 8;
+  --z-popover: 15;
+  --z-select-popover: 50;
+  --z-dialog: 20;
+  --z-toast: 30;
+  --z-context-menu: 1000;
+
+  color: var(--text-primary);
+  /* Transparent so the macOS window vibrancy (NSVisualEffectView) composites
+     through the webview. The opaque app background is painted by .app-shell. */
+  background: transparent;
+  font-family: var(--font-ui);
+  font-synthesis: none;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+}
+
+:root,
+:root[data-color-theme="green-blob"] {
+  /* Primary pane surfaces. Keep these separate from control backgrounds so
+     application color themes can tint the workspace without flattening the
+     contrast hierarchy inside inputs, menus, and buttons. */
+  --left-pane-bg: rgba(14, 16, 17, 0.72);
+  --terminal-pane-bg: #111315;
+  --right-pane-bg: #171b1d;
+  --right-pane-bg-transparent: rgba(23, 27, 29, 0);
+  --right-pane-active-bg: #181d1f;
+
+  /* Secondary surfaces. Equal values remain separate when their visual roles
+     may diverge in a future theme. */
+  --workspace-bg: #17191b;
+  --research-workspace-bg: #151719;
+  --field-bg: #111315;
+  --field-bg-hover: #16191b;
+  --panel-bg: #1b2022;
+  --panel-highlight-bg: #1f2426;
+  --popover-bg: #1d2224;
+  --content-card-bg: #1d2224;
+  --content-inset-bg: #15191b;
+  --context-menu-bg: #1c1f22;
+  --popover-item-hover-bg: #283032;
+  --chrome-header-bg: #14171a;
+  --pane-hover-bg: #1b1f21;
+  --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
+  --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
+  --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
+  --sidebar-group-bg: rgba(255, 255, 255, 0.013);
+  --transcript-code-bg: #111416;
+  --transcript-code-header-bg: #0d1012;
+  --surface-divider: #2a2d2f;
+  --surface-border-strong: #30383b;
+  --chrome-control-bg: rgba(20, 24, 26, 0.9);
+  --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
+  --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
+
+  /* Text and status roles are shared by controls, transcript content, and
+     research surfaces. */
+  --text-primary: #e7e7e2;
+  --text-strong: #f1f0e8;
+  --text-secondary: #c4cbc6;
+  --text-body-soft: #d9ddd9;
+  --text-muted: #8a938e;
+  --text-activity: #8f9994;
+  --status-failed-fg: #d98787;
+  --status-attention-fg: #e0796d;
+  --status-warning-fg: #d8b878;
+  --status-info-fg: #6da7ec;
+  --status-success-fg: #81c784;
+  --status-error-fg: #e08a5f;
+
+  --accent-color: #8fd6c7;
+  --accent-shadow: rgba(143, 214, 199, 0.35);
+  --accent-soft: rgba(143, 214, 199, 0.13);
+  --accent-subtle: rgba(143, 214, 199, 0.08);
+  --accent-active-bg: #243430;
+  --accent-strong: #6cae9d;
+  --accent-strong-hover: #7cc0ae;
+  --placeholder-color: #6b726d;
+
+  --control-bg: #24282b;
+  --control-bg-hover: #2c3134;
+  --control-border: #3a3d3f;
+  --control-border-hover: #474b4e;
+  --control-border-hover-accent: #4a5d56;
+  --control-fg: var(--text-strong);
+  --control-fg-muted: #b9c0bc;
+  --focus-ring: #6cae9d;
+  --split-border-hover: rgba(215, 168, 79, 0.65);
+  --split-border-active: rgba(255, 220, 143, 0.78);
+  --split-border-active-muted: rgba(255, 220, 143, 0.28);
+  --split-active-indicator: rgba(215, 168, 79, 0.32);
+
+  --popover-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --context-menu-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-color-theme="orange-blob"] {
+  --left-pane-bg: #171716;
+  --terminal-pane-bg: #151515;
+  --right-pane-bg: #1b1c1c;
+  --right-pane-bg-transparent: rgba(27, 28, 28, 0);
+  --right-pane-active-bg: #1a1b1c;
+  --workspace-bg: #1b1c1c;
+  --research-workspace-bg: var(--right-pane-bg);
+  --field-bg: #171615;
+  --field-bg-hover: #1e1d1a;
+  --panel-bg: #211f1c;
+  --panel-highlight-bg: #27241f;
+  --chrome-header-bg: #171716;
+  --content-card-bg: #212220;
+  --content-inset-bg: #1d1c19;
+  --popover-bg: #24211d;
+  --popover-item-hover-bg: #322e28;
+  --context-menu-bg: #231f1b;
+  --pane-hover-bg: #23211e;
+  --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
+  --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
+  --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
+  --sidebar-group-bg: rgba(255, 255, 255, 0.013);
+  --transcript-code-bg: #171512;
+  --transcript-code-header-bg: #12110f;
+  --surface-divider: #2d2d2c;
+  --surface-border-strong: #363735;
+  --chrome-control-bg: rgba(31, 29, 26, 0.9);
+  --chrome-control-bg-hover: rgba(44, 40, 35, 0.95);
+  --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);
+
+  --text-primary: #e7e7e2;
+  --text-strong: #f1f0e8;
+  --text-secondary: #c4cbc6;
+  --text-body-soft: #d9ddd9;
+  --text-muted: #8a938e;
+  --text-activity: #8f9994;
+  --status-failed-fg: #d98787;
+  --status-attention-fg: #e0796d;
+  --status-warning-fg: #d8b878;
+  --status-info-fg: #6da7ec;
+  --status-success-fg: #81c784;
+  --status-error-fg: #e08a5f;
+
+  --control-bg: #282827;
+  --control-bg-hover: #313130;
+  --control-border: #3d3d3c;
+  --control-border-hover: #4a4946;
+  --control-fg: var(--text-strong);
+  --control-fg-muted: #b9c0bc;
+  --accent-color: #33adff;
+  --accent-shadow: rgba(51, 173, 255, 0.35);
+  --accent-soft: rgba(51, 173, 255, 0.13);
+  --accent-subtle: rgba(51, 173, 255, 0.08);
+  --accent-active-bg: #263a49;
+  --accent-strong: #268fd6;
+  --accent-strong-hover: #339fe6;
+  --control-border-hover-accent: #4d6173;
+  --focus-ring: #33adff;
+  --placeholder-color: #6b726d;
+  --split-border-hover: rgba(215, 168, 79, 0.65);
+  --split-border-active: rgba(255, 220, 143, 0.78);
+  --split-border-active-muted: rgba(255, 220, 143, 0.28);
+  --split-active-indicator: rgba(215, 168, 79, 0.32);
+
+  --popover-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --context-menu-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+}

@@ -1,0 +1,213 @@
+.terminal-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-pane.is-visible {
+  visibility: visible;
+  pointer-events: auto;
+  opacity: 1;
+  z-index: 1;
+}
+
+.terminal-pane.is-visible.is-focused {
+  z-index: 2;
+}
+
+.terminal-split-drop-placeholder {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  border: 1px solid rgba(215, 168, 79, 0.74);
+  background: rgba(215, 168, 79, 0.12);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 239, 197, 0.12),
+    0 0 18px rgba(215, 168, 79, 0.12);
+  pointer-events: none;
+}
+
+.terminal-split-drop-placeholder::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-1px);
+  background: rgba(255, 220, 143, 0.78);
+}
+
+.terminal-split-resizer,
+.turn-pane-split-divider {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 4;
+}
+
+.terminal-split-resizer {
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.terminal-split-resizer::before,
+.turn-pane-split-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-0.5px);
+  background: rgba(244, 244, 239, 0.12);
+}
+
+/* With native terminals the stage is a transparent hole in the webview, so the
+   reserved gutter between splits must paint itself or the window vibrancy
+   material shows through it. */
+.terminal-stage.is-native .terminal-split-resizer {
+  background: var(--terminal-bg, var(--terminal-pane-bg));
+}
+
+.terminal-split-resizer:hover::before,
+.terminal-split-resizer:focus-visible::before {
+  background: var(--split-border-hover);
+}
+
+.terminal-split-resizer:focus-visible {
+  outline: none;
+}
+
+.terminal-host {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 10px 0 10px 10px;
+}
+
+/* The find bar shared by the terminal and the right-pane transcript. */
+.pane-search {
+  position: absolute;
+  top: 10px;
+  --pane-search-right: 22px;
+  right: var(--pane-search-right);
+  /* Stay within the pane: grow leftward but never past its left edge. */
+  max-width: calc(100% - var(--pane-search-right) - 8px);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #3a3d3f;
+  border-radius: 8px;
+  background: var(--pane-hover-bg);
+  padding: 6px 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* In the transcript, drop below the pinned session header (40px tall). */
+.turn-sidebar.has-header .pane-search {
+  top: 50px;
+  --pane-search-right: 16px;
+}
+
+/* Headerless overlays (split cells) keep their floating expand/collapse controls
+   at the top-right corner, so the bar starts to their left. */
+.turn-sidebar:not(.has-header) .pane-search {
+  top: 8px;
+  --pane-search-right: 84px;
+}
+
+.pane-search-input {
+  /* Prefer 200px but shrink so the whole bar fits a narrow pane. */
+  flex: 0 1 200px;
+  min-width: 0;
+  border: 1px solid #3a3d3f;
+  border-radius: 6px;
+  background: var(--field-bg);
+  color: var(--text-strong);
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.pane-search-input:focus {
+  outline: none;
+  border-color: var(--focus-ring);
+}
+
+.pane-search-count {
+  flex: 0 0 auto;
+  min-width: 56px;
+  color: #9aa0a3;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pane-search-toggles,
+.pane-search-nav {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pane-search-toggle,
+.pane-search-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  /* Compact square icon buttons — opt out of the base control height/padding. */
+  min-height: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-search-toggle:hover,
+.pane-search-button:hover:not(:disabled) {
+  background: #2a2f31;
+}
+
+.pane-search-toggle.is-active {
+  border-color: var(--accent-strong);
+  background: var(--accent-active-bg);
+  color: var(--text-primary);
+}
+
+.pane-search-button:disabled {
+  color: #5a5f62;
+  cursor: default;
+}
+
+/* Transcript search matches, painted via the CSS Custom Highlight API (names
+   registered in lib/transcriptSearch.ts). Colors mirror the terminal's
+   SEARCH_DECORATIONS so find reads the same on both sides of the split. */
+::highlight(transcript-search-match) {
+  background-color: #665a2b;
+  color: #f4f4ef;
+}
+
+::highlight(transcript-search-active-match) {
+  background-color: #a8842f;
+  color: #111315;
+}
+

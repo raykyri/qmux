@@ -1,0 +1,517 @@
+.queued-turn-stack {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  /* Extends up the sidebar as turns are queued, scrolling only once it has
+     consumed all the space above the composer. */
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  /* Room above the first / below the last row so the drop rule, which sits in
+     the inter-row gap, is not clipped by this scroll container at the edges. */
+  padding-block: 4px;
+}
+
+.queued-turn {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+  border: 1px solid #384246;
+  border-radius: 6px;
+  background: var(--content-inset-bg);
+  color: var(--text-body-soft);
+  padding: 7px 8px;
+  font-size: var(--fs-base);
+  line-height: 1.4;
+  /* The whole row remains the drag handle, but reads as a normal clickable row
+     until dragging starts. */
+  cursor: pointer;
+  user-select: none;
+}
+
+/* The dragged row fades; a drop line marks where it will land. */
+.queued-turn.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+/* The drop target is a standalone rule sitting centered in the 6px gap between
+   rows (not a border hugging a row). For the very first/last position the rule
+   sits in the stack's edge padding. */
+.queued-turn.is-drop-before::before,
+.queued-turn.is-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent-color);
+  pointer-events: none;
+}
+
+.queued-turn.is-drop-before::before {
+  /* Centered in the gap: 3px (half the gap) above the row, less 1px (half the
+     rule height). */
+  top: -4px;
+}
+
+.queued-turn.is-drop-after::after {
+  bottom: -4px;
+}
+
+/* Hold the grabbing cursor across the whole stack for the duration of a drag. */
+.queued-turn-stack.is-dragging,
+.queued-turn-stack.is-dragging * {
+  cursor: grabbing !important;
+}
+
+.queued-turn-toggle {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  /* When the text is shorter than the row (whose height the action buttons set),
+     center it vertically instead of pinning it to the top. */
+  align-self: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  /* Inherit the row cursor so the text does not switch affordance inside the row. */
+  cursor: inherit;
+}
+
+.queued-turn-toggle:hover {
+  color: var(--text-strong);
+}
+
+.queued-turn-toggle:focus-visible {
+  border: 0;
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.queued-turn-text {
+  display: block;
+  min-width: 0;
+  user-select: text;
+  /* overflow:hidden lets the JS height tween clip content cleanly while it eases
+     open/closed (see QueuedTurnText). */
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.queued-turn.is-collapsed .queued-turn-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.queued-turn-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.queued-turn-actions > button {
+  min-height: var(--control-h-sm);
+  padding: 2px 7px;
+  font-size: var(--fs-sm);
+}
+
+.queued-turn-actions > button:hover:not(:disabled) {
+  border-color: var(--control-border-hover-accent);
+  background: var(--control-bg-hover);
+  color: #f4f3ec;
+}
+
+/* Trim 1px of horizontal padding on each side so the × button reads tighter. */
+.queued-turn-actions > button.queued-turn-remove {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+/* "Pause after send" caption centered under a pause-after queued item, spanning the
+   item's full width (below the text + actions grid row). */
+.queued-turn-pause-label {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--accent-color);
+}
+
+/* A queued turn gated on another agent reads as suspended: the card border goes
+   dashed and an hourglass pill under the text names what it waits on. */
+.queued-turn.has-wait {
+  border-style: dashed;
+  border-color: rgba(109, 167, 236, 0.5);
+}
+
+/* Shared pill shape for the badges under a queued turn's text: the hourglass wait
+   pill and the branch delivery pill differ only in tint and glyph. */
+.queued-turn-wait-label,
+.queued-turn-delivery-label {
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 1px solid rgba(109, 167, 236, 0.25);
+  border-radius: 999px;
+  background: rgba(109, 167, 236, 0.08);
+  color: var(--status-info-fg);
+  font-size: var(--fs-xs);
+  line-height: 17px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.queued-turn-wait-label::before {
+  content: "⧗ ";
+}
+
+/* A queued turn delivered elsewhere (fork / new session). */
+.queued-turn-delivery-label {
+  border-color: rgba(129, 199, 132, 0.25);
+  background: rgba(129, 199, 132, 0.08);
+  color: var(--status-success-fg);
+}
+
+.queued-turn-delivery-label::before {
+  content: "⑂ ";
+}
+
+/* "Paused" status sits at the far left of the composer's submit row (the
+   composer-menu's margin-left:auto pushes the controls to the right of it). */
+.composer-paused-label {
+  align-self: center;
+  color: var(--status-warning-fg);
+  font-size: var(--fs-sm);
+}
+
+/* Optically center the × against the text baseline. */
+.queued-turn-remove svg {
+  transform: translateY(-0.5px);
+}
+
+/* Keep the remove (×) button destructive without adding a glow. */
+.queued-turn-actions button.queued-turn-remove:hover:not(:disabled) {
+  border-color: #7a3b34;
+  background: #2c1a17;
+  color: #ffd3c7;
+}
+
+.native-input textarea,
+.research-followup-composer textarea {
+  flex: 0 0 auto;
+  min-width: 0;
+  /* Auto-grows with content (JS sets the height) up to a cap, then scrolls. */
+  min-height: var(--composer-min-height, 40px);
+  max-height: 200px;
+  overflow-y: auto;
+  resize: none;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-strong);
+  font-size: calc(var(--fs-base) + 1px);
+  padding: 8px 9px;
+}
+
+.research-followup-composer textarea {
+  font-size: calc(var(--research-meta-font-size) + 0.5px);
+}
+
+.native-input textarea::placeholder,
+.research-followup-composer textarea::placeholder {
+  color: var(--placeholder-color);
+}
+
+@keyframes spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.composer-menu {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  /* Sit at the right of the row, with a small gap before the submit buttons. */
+  margin-left: auto;
+  margin-right: 2px;
+}
+
+.composer-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-lg);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--control-fg-muted);
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.composer-menu-trigger:hover {
+  color: #f4f3ec;
+}
+
+.composer-menu-trigger:focus-visible {
+  outline: none;
+  color: #f4f3ec;
+}
+
+.composer-menu-popover {
+  /* Portaled to <body> and positioned by placePanePopover: opens upward from the
+     ⋮ trigger, right-aligned (grows toward the pane center), width/height
+     clamped to the right pane. left/top/max-height/max-width from inline style. */
+  width: 220px;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.composer-menu-label {
+  padding: 4px 10px 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Recent-message rows truncate to a single line; the full text is in the title. */
+.composer-menu-recent {
+  display: block;
+  max-width: none;
+  min-height: 0;
+  padding: 5px 10px;
+  overflow: hidden;
+  color: #b9c0bc;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-menu-recent:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+
+/* Stack the session title over its gray last-modified subtext as plain block
+   flow. A flex button (any direction) renders the rows blank in WebKit (qmux's
+   WKWebView) — it collapses the children — so the row stays block and the title/
+   meta carry explicit line-heights and margins so they don't run together. */
+.turn-pane-session-list .turn-pane-session-menu-item.session-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 7px 10px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.session-menu-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.session-menu-item.is-active .session-menu-title {
+  color: var(--accent-color);
+}
+
+.session-menu-meta {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.25;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.composer-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 42px;
+  z-index: var(--z-toast);
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border: 1px solid var(--surface-divider);
+  border-radius: 999px;
+  background: var(--popover-bg);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.app-toast {
+  max-width: min(520px, calc(100vw - 48px));
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+}
+
+.app-toast.is-warning {
+  border-color: #5b4630;
+  background: #241f18;
+  color: #ffdca8;
+}
+
+.folder-picker-status {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  padding: 7px 13px;
+  border: 1px solid #364245;
+  border-radius: 999px;
+  background: #1d2325;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.folder-picker-status svg {
+  flex: none;
+  animation: spinner-spin 0.9s linear infinite;
+}
+
+.native-input-submit-actions {
+  display: flex;
+  /* Center the buttons in the row so their own height (shared with the sidebar
+     actions) wins instead of being stretched to the taller composer-menu trigger. */
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  /* The composer menu now owns the margin-left:auto that pushes this group right. */
+}
+
+.queue-button {
+  flex: 0 0 auto;
+  /* 1px tighter than the shared button column-gap (8px) between text and glyphs. */
+  column-gap: 7px;
+}
+
+.wait-target-picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.queue-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.queue-button-group > button {
+  position: relative;
+}
+
+.queue-button-group > button:focus-visible {
+  z-index: 1;
+}
+
+.queue-button-group .queue-button-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.queue-menu-button {
+  flex: 0 0 auto;
+  min-width: 22px;
+  margin-left: -1px;
+  padding: 0 4px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.queue-menu-button svg {
+  opacity: 0.82;
+}
+
+.wait-target-popover {
+  /* Same placement rules as .composer-menu-popover (upward, right-aligned, pane-clamped). */
+  width: 260px;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.wait-target-placeholder {
+  color: #b9c0bc;
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.wait-target-item {
+  appearance: none;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  min-height: 0;
+  padding: 7px 10px;
+}
+
+.wait-target-status-dot {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  justify-self: center;
+  align-self: center;
+}
+
+.wait-target-title,
+.wait-target-status {
+  display: block;
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wait-target-title {
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+}
+
+.wait-target-status {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* Nudge the enter (↵) glyph down 1px so it sits optically centered next to ⌘. */
+.enter-glyph {
+  display: inline-block;
+  transform: translateY(1px);
+}
+
+/* Browser overlay: floats over the sidebar (leaving a left strip for tab switching)
+   and the center terminal, stopping at the turn pane's left edge. */

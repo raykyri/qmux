@@ -1,0 +1,1197 @@
+.turn-timeline {
+  --transcript-font-delta: calc(
+    var(--turn-font-delta, 0px) + var(--transcript-expanded-font-delta, 0px)
+  );
+  --transcript-line-height-delta: var(--transcript-expanded-line-height-delta, 0);
+  position: absolute;
+  inset: 0;
+  /* A single flex column (not a grid): items stretch to the pane width without
+     growing sideways for long unbreakable lines, and the sticky last user
+     message can travel the whole scroll length — a grid row would trap it
+     inside its own track. */
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  /* The transcript fills the whole pane and is the only scroll surface; the
+     bottom padding keeps the latest turn clear of the floating composer. */
+  padding: 10px 11px 132px 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  line-height: calc(1.5 + var(--transcript-line-height-delta, 0));
+}
+
+.turn-timeline.is-empty {
+  justify-content: center;
+  padding: 24px;
+}
+
+/* Zero-height marker after the last timeline row, watched by TurnOverlay's
+   intersection observer to keep a pinned view at the bottom through content
+   that grows outside React commits (late-rendering diagrams, decoding
+   images). The negative margin cancels the column's flex gap so the marker
+   adds no visible height anywhere, including the centered empty state. */
+.turn-timeline-sentinel {
+  flex: 0 0 auto;
+  height: 0;
+  margin-top: -5px;
+}
+
+.turn-pane-split-cell .turn-timeline,
+.turn-pane.is-headerless-expanded .turn-timeline {
+  padding-top: 44px;
+}
+
+/* Stack the placeholder text and any transcript-health notice vertically. */
+.turn-empty-state {
+  flex-direction: column;
+  gap: 6px;
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
+}
+
+/* Empty-queue placeholder shown above the composer when the queue and transcript
+   are split into view together; grows to fill the reserved queue area so the text
+   sits centered like the transcript's "No activity yet". */
+.queue-empty-state {
+  flex: 1 1 auto;
+}
+
+.turn-empty-notice {
+  max-width: 260px;
+  /* Same muted gray as the placeholder above it (.empty-state); a missing
+     transcript is an ordinary state, not a warning. */
+  color: #aab1ad;
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+  line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
+}
+
+/* "Working…" indicator pinned to the bottom of the transcript while the agent is
+   actively working. Left-aligned like an assistant row, using the same base label
+   treatment as tool groups and completed thinking blocks. */
+.turn-thinking {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 2px;
+  color: var(--text-activity);
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  user-select: none;
+}
+
+.turn-thinking-dot {
+  --status-dot-y: 0;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(var(--status-dot-y));
+  animation: status-dot-pulse 1.3s ease-in-out infinite;
+}
+
+.turn-thinking-label {
+  color: inherit;
+  font-size: inherit;
+  font-style: italic;
+}
+
+/* "No transcript loaded" picker: a quiet link (matching .turn-empty-notice's
+   color and size) with a chevron, opening a portaled dropdown of past sessions. */
+.turn-empty-picker {
+  display: inline-flex;
+}
+
+.turn-empty-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #aab1ad;
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+  line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.turn-empty-picker-trigger:hover {
+  color: var(--text-primary);
+}
+
+.turn-empty-picker-chevron {
+  flex: 0 0 auto;
+  color: var(--placeholder-color);
+}
+
+/* Portaled; left/top/width/max-height from placePanePopover (clamped to the pane). */
+.turn-empty-picker-popover {
+  gap: 2px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.turn-empty-picker-popover .session-menu-item {
+  display: block;
+  min-height: 48px;
+  padding: 7px 10px;
+  border: 0;
+}
+
+.turn-sidebar-input {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  /* No z-index: the composer renders its confirm dialog and toast inline
+     (position: fixed, z 20/30), and a stacking context here would trap them
+     below the pane header. DOM order alone keeps this above the transcript. */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* Floats over the transcript, anchored to the bottom, growing upward with the
+     queue but never taller than the pane. */
+  max-height: 100%;
+  overflow: hidden;
+  padding: 10px 13px 10px 12px;
+  /* Mostly opaque so the unwrapped queue/composer stay legible over the
+     transcript, with only a short fade at the very top. */
+  background: linear-gradient(
+    to top,
+    var(--right-pane-bg) 88%,
+    var(--right-pane-bg-transparent)
+  );
+}
+
+.turn-sidebar.has-header .turn-sidebar-input:not(.is-split) {
+  /* Keep the floating queue/composer out from under the absolute 40px header.
+     Without this cap, a tall unsplit queue can grow behind the header, making the
+     top queued item impossible to scroll fully into view. */
+  max-height: calc(100% - 41px);
+}
+
+.turn-sidebar-input-rail {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.turn-sidebar-input.is-split {
+  overflow: hidden;
+  background: var(--right-pane-bg);
+  /* The split divider already separates the queue from the transcript, so drop the
+     floating composer's top padding that otherwise leaves a gap below the
+     splitter. */
+  padding-top: 0;
+}
+
+.turn-pane.is-expanded .turn-timeline {
+  align-items: center;
+  padding-right: 24px;
+  padding-left: 24px;
+}
+
+/* The centered reading column: every timeline row caps at 700px, matching the
+   expanded composer rail below. */
+.turn-pane.is-expanded .turn-timeline > * {
+  width: min(700px, 100%);
+}
+
+.turn-pane.is-expanded .turn-sidebar-input-rail {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.turn-card {
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 6px;
+  background: var(--content-card-bg);
+  padding: 8px 9px;
+}
+
+/* Agent and system turns read as plain text in the transcript rather than in a
+   bubble: keep the role header and text, but drop the card's border, fill, and
+   padding. (User turns keep the bubble so they still stand out.) */
+.turn-card.role-assistant,
+.turn-card.role-system {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 2px 10px;
+}
+
+.turn-card.role-user {
+  margin: 7px 0;
+}
+
+/* In the compact pane, the last user message pins to the top while the turn
+   beneath it plays out, and releases as the view scrolls back up to its original slot.
+   Expanded transcripts keep every message in the normal document flow.
+   TurnOverlay arms this (has-sticky-user) only while the bubble is short
+   relative to the pane, so a tall message never blankets the transcript. */
+.turn-pane:not(.is-expanded)
+  .turn-timeline.has-sticky-user
+  .turn-card.is-sticky-user-message {
+  position: sticky;
+  top: 0;
+}
+
+/* Only while actually pinned: raise the bubble over later transcript content
+   (only then can anything overlap it — in normal flow a z-index would also
+   lift it above the floating queue/composer), lift it off the content sliding
+   beneath with a shadow, and backfill the gap above it with the pane
+   background so scrolled text cannot peek over the card. It stays below the
+   pane header (3), find bar (4), and floating controls (5). It would paint
+   over the queue/composer on overlap (z-index 1 beats their auto), but
+   TurnOverlay's STICKY_USER_MAX_HEIGHT_RATIO cap keeps a pinned card short
+   enough that they can never meet.
+   Nothing here applies while the message sits in its normal flow position. */
+.turn-pane:not(.is-expanded)
+  .turn-timeline.has-sticky-user
+  .turn-card.is-sticky-user-message.is-stuck {
+  z-index: 1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Sticky offsets resolve against the scroller's content edge, so the pinned
+   card rests below the timeline's top padding — the strip masks that gap in
+   every mode (10px default, 44px in split-cell/headerless panes). It must end
+   flush at the card's top edge: a negative-z-index pseudo paints over its own
+   element's background, so any overlap would erase the card's top border and
+   corners. Anything above the scrollport is clipped. */
+.turn-pane:not(.is-expanded)
+  .turn-timeline.has-sticky-user
+  .turn-card.is-sticky-user-message.is-stuck::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -48px;
+  right: -6px;
+  left: -6px;
+  /* Offsets resolve against the card's padding box, whose top sits 1px inside
+     the border, so ending flush with the card's outer edge means stopping at
+     -1px: 48px - 1px. A 44px strip stopped at -4px, leaving a 3px unmasked
+     band where scrolled text stayed visible above the pinned card. */
+  height: 47px;
+  background: var(--right-pane-bg);
+}
+
+.turn-card.is-status-superseded,
+.turn-card.is-status-interrupted {
+  opacity: 0.55;
+}
+
+.turn-card.is-status-superseded .turn-text,
+.turn-card.is-status-superseded .turn-markdown,
+.turn-card.is-status-superseded .long-user-message,
+.turn-card.is-status-interrupted .turn-text,
+.turn-card.is-status-interrupted .turn-markdown,
+.turn-card.is-status-interrupted .long-user-message {
+  text-decoration-line: line-through;
+  text-decoration-color: rgba(241, 240, 232, 0.8);
+  text-decoration-thickness: 1px;
+}
+
+.turn-card.role-user.is-tagged-instruction-message {
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+}
+
+/* Expanded transcripts are for reading the conversation at full width, so omit
+   collapsed metadata-style user messages instead of filling the reading column
+   with tag pills. A tag opened before expansion remains visible. */
+.turn-pane.is-expanded
+  .turn-card.role-user.is-tagged-instruction-message:has(
+    .tagged-user-instruction.is-collapsed
+  ) {
+  display: none;
+}
+
+.turn-card.role-user.is-tagged-instruction-message
+  + .turn-card.role-user.is-tagged-instruction-message {
+  margin-top: -3px;
+}
+
+/* Give a collapsed tagged instruction (e.g. a task notification) breathing room
+   before whatever the agent does next — text or straight into tool activity. */
+.turn-card.role-user.is-tagged-instruction-message + .turn-card.role-assistant,
+.turn-card.role-user.is-tagged-instruction-message + .activity-group-block,
+.turn-card.role-user.is-tagged-instruction-message + .tool-block,
+.turn-card.role-user.is-tagged-instruction-message + .thinking-block {
+  margin-top: 5px;
+}
+
+.turn-card.is-tagged-instruction-message .turn-blocks {
+  gap: 0;
+  margin-top: 0;
+}
+
+.turn-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-color);
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
+  font-weight: 700;
+  text-transform: uppercase;
+  /* Don't let the role label ("User"/"Claude") get caught in a transcript
+     selection — only the message text should be copied/asked about. */
+  user-select: none;
+}
+
+.turn-card-role-label {
+  min-width: 0;
+}
+
+.turn-title-menu {
+  position: relative;
+  margin-left: auto;
+  display: inline-flex;
+}
+
+.turn-title-regenerate-button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-height: 0;
+  height: auto;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(217, 221, 217, 0.42);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.turn-title-regenerate-button:hover:not(:disabled),
+.turn-title-regenerate-button:focus-visible:not(:disabled) {
+  background: transparent;
+  color: var(--text-body-soft);
+}
+
+.turn-title-regenerate-button:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.turn-title-regenerate-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* Portaled so the scrollable timeline cannot clip it; right-aligned to the "..."
+   button (grows left / toward the pane center). left/top/width from placement. */
+.turn-title-menu-popover {
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.turn-title-menu-item {
+  /* Reset the bold uppercase inherited from the turn-card header — these
+     should read as normal menu items. */
+  font-weight: 400;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.turn-title-menu-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.turn-card.role-system header,
+.turn-card.role-system .turn-text,
+.turn-card.role-system .turn-markdown {
+  color: var(--text-activity);
+}
+
+.turn-blocks {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+header + .turn-blocks {
+  margin-top: 5px;
+}
+
+.turn-card.role-user .turn-blocks {
+  margin-top: 2px;
+}
+
+.turn-text,
+.turn-markdown {
+  min-width: 0;
+  color: var(--text-strong);
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  overflow-wrap: anywhere;
+}
+
+.turn-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.turn-text.is-tagged-instruction {
+  color: var(--text-activity);
+}
+
+.tagged-user-instruction {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.tagged-user-instruction-toggle {
+  display: inline;
+  justify-self: start;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  padding: 0 1px;
+  color: var(--text-activity);
+  font: inherit;
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  line-height: 1.35;
+  overflow: hidden;
+  text-align: left;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tagged-user-instruction-toggle:hover {
+  color: #a8b2ad;
+}
+
+.tagged-user-instruction-toggle:focus-visible {
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.long-user-message {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.long-user-message-toggle {
+  display: grid;
+  grid-template-columns: 13px minmax(0, auto) auto;
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+  color: var(--text-body-soft);
+  font: inherit;
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+  cursor: pointer;
+}
+
+.long-user-message-toggle:hover {
+  background: #252b2d;
+}
+
+.long-user-message-toggle[aria-expanded="true"] .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.long-user-message-size {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-activity);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.long-user-message-preview {
+  min-width: 0;
+  max-height: 96px;
+  margin: 0;
+  color: #bfc7c2;
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.long-user-message > .turn-text {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown > :first-child {
+  margin-top: 0;
+}
+
+.turn-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.turn-markdown strong,
+.turn-markdown b {
+  font-weight: 600;
+}
+
+.turn-markdown p,
+.turn-markdown ul,
+.turn-markdown ol,
+.turn-markdown blockquote,
+.turn-markdown pre,
+.turn-markdown table {
+  margin: 0 0 8px;
+}
+
+/* Heading scale. Without an explicit size per level react-markdown's h1–h6 all
+   inherited one flat size (smaller than body), so a report's section structure
+   was invisible. These give each level a distinct, semibold step while keeping
+   the top level modest enough for dense answers. Top margin exceeds bottom so a
+   heading binds to the content beneath it and separates from the block above. */
+.turn-markdown h1,
+.turn-markdown h2,
+.turn-markdown h3,
+.turn-markdown h4,
+.turn-markdown h5,
+.turn-markdown h6 {
+  margin: 22px 0 7px;
+  color: #f4f3ec;
+  font-weight: 600;
+  line-height: calc(1.3 + var(--transcript-line-height-delta, 0));
+  letter-spacing: -0.007em;
+}
+
+.turn-markdown h1 {
+  font-size: calc(21px + var(--transcript-font-delta, 0px));
+  line-height: 1.25;
+}
+
+.turn-markdown h2 {
+  font-size: calc(17.5px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown h3 {
+  font-size: calc(15.5px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown h4 {
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
+}
+
+/* Below h4 the size floor is body text; separation comes from weight, a muted
+   tone, and (at the deepest level) uppercase rather than an ever-smaller size. */
+.turn-markdown h5 {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  color: var(--text-body-soft);
+}
+
+.turn-markdown h6 {
+  margin-bottom: 5px;
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a7b0ab;
+}
+
+.turn-markdown ul,
+.turn-markdown ol {
+  padding-left: 18px;
+}
+
+.turn-markdown ol {
+  padding-left: 20px;
+}
+
+.turn-markdown li {
+  margin: 2px 0;
+}
+
+.turn-markdown li > p {
+  margin: 0;
+}
+
+.turn-markdown a {
+  color: var(--accent-color);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+.turn-markdown a:hover {
+  text-decoration: underline;
+}
+
+.turn-markdown blockquote {
+  border-left: 2px solid #3d4a4d;
+  padding-left: 9px;
+  color: var(--text-secondary);
+}
+
+.turn-markdown code {
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 4px;
+  background: var(--transcript-code-bg);
+  padding: 1px 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown pre {
+  overflow: auto;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 6px;
+  background: var(--transcript-code-bg);
+  padding: 8px;
+}
+
+.turn-markdown pre code {
+  display: block;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+/* Fenced-code wrapper: anchors its actions menu to the block's top-right corner
+   so it stays put while the <pre> underneath scrolls. Block margin moves here
+   from the <pre> so :last-child margin trimming still works. */
+.turn-markdown-code-block {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.turn-markdown-code-block pre {
+  margin: 0;
+}
+
+.turn-markdown-code-block.is-wrapped pre code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.turn-markdown-code-menu-trigger {
+  appearance: none;
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  min-height: 0;
+  height: 20px;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent-color);
+  cursor: pointer;
+  opacity: 0.68;
+}
+
+.turn-markdown-code-menu-trigger svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.turn-markdown-code-menu-trigger:hover,
+.turn-markdown-code-menu-trigger:focus-visible,
+.turn-markdown-code-menu-trigger[aria-expanded="true"] {
+  border: 0;
+  background: transparent;
+  color: var(--accent-color);
+  opacity: 1;
+}
+
+.turn-markdown-code-menu-trigger:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* Framed, rounded container. overflow-x stays a scroll fallback for content that
+   genuinely cannot wrap (long tokens, code), but the table below now fits the
+   column width and wraps its cells instead of forcing every wide table to
+   scroll — matching how research answers read top to bottom. */
+.turn-markdown-table-wrap {
+  max-width: 100%;
+  margin: 0 0 12px;
+  border: 1px solid #2f3639;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.turn-markdown-table-wrap table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: calc(13.5px + var(--transcript-font-delta, 0px));
+}
+
+.turn-markdown th,
+.turn-markdown td {
+  padding: 8px 12px;
+  border-right: 1px solid #262d2f;
+  border-bottom: 1px solid #262d2f;
+  text-align: left;
+  vertical-align: top;
+  /* Override the ambient `anywhere` so columns size to words and only long
+     unbreakable tokens break, keeping wrapping at sensible boundaries. */
+  overflow-wrap: break-word;
+}
+
+/* Drop the frame-adjacent edges so cell separators never double up against the
+   wrapper's rounded border. */
+.turn-markdown th:last-child,
+.turn-markdown td:last-child {
+  border-right: 0;
+}
+
+.turn-markdown tr:last-child td {
+  border-bottom: 0;
+}
+
+.turn-diagram {
+  margin: 0 0 8px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--transcript-code-bg);
+}
+
+.turn-diagram-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  border-bottom: 1px solid #262d30;
+  background: var(--transcript-code-header-bg);
+}
+
+.turn-diagram-lang {
+  font-family: var(--font-mono);
+  font-size: calc(10.5px + var(--transcript-font-delta, 0px));
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7f8b88;
+}
+
+.turn-diagram-toggle {
+  border: 0;
+  background: transparent;
+  padding: 1px 4px;
+  color: #9aa5a1;
+  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.turn-diagram-toggle:hover {
+  color: var(--accent-color);
+}
+
+.turn-diagram-svg {
+  overflow: auto;
+  padding: 10px;
+  text-align: center;
+}
+
+.turn-diagram-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Graphviz draws black-on-transparent, unreadable on the dark pane, so give it a light
+   canvas and let wide graphs scroll at their natural size. */
+.turn-diagram-svg[data-lang="dot"] {
+  background: #f6f6f2;
+  border-radius: 4px;
+  margin: 6px;
+  padding: 12px;
+}
+
+.turn-diagram-svg[data-lang="dot"] svg {
+  max-width: none;
+}
+
+.turn-diagram-loading {
+  padding: 12px;
+  color: #7f8b88;
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+}
+
+.turn-diagram-error {
+  padding: 8px;
+}
+
+.turn-diagram-error-msg {
+  margin-bottom: 6px;
+  color: #d8a657;
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+}
+
+.turn-diagram-source {
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 6px;
+  background: var(--transcript-code-header-bg);
+  padding: 8px;
+}
+
+.turn-diagram-source code {
+  display: block;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+/* Header row: a surface a step lighter than the pane (the old #15191b was
+   indistinguishable from it) plus a stronger divider, so it reads as a header. */
+.turn-markdown th {
+  background: #1d2325;
+  color: #f4f3ec;
+  font-weight: 600;
+  border-bottom-color: #38403f;
+}
+
+.turn-markdown hr {
+  height: 1px;
+  margin: 10px 0;
+  border: 0;
+  background: var(--surface-border-strong);
+}
+
+.turn-markdown input[type="checkbox"] {
+  margin-right: 6px;
+}
+
+/* Only .turn-card (user/assistant messages) is a bordered "module". Everything
+   else in the timeline — individual tool entries and thinking — renders as a quiet
+   borderless disclosure row. */
+.tool-block,
+.thinking-block,
+.activity-group-block {
+  background: transparent;
+  color: var(--text-body-soft);
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  overflow: visible;
+}
+
+.activity-group-block {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+}
+
+.tool-block > summary,
+.thinking-block > summary,
+.activity-group-block > summary {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+
+.tool-block.is-status-superseded > summary,
+.tool-block.is-status-superseded > .tool-payload,
+.tool-block.is-status-interrupted > summary,
+.tool-block.is-status-interrupted > .tool-payload,
+.thinking-block.is-status-superseded > summary,
+.thinking-block.is-status-superseded > pre,
+.thinking-block.is-status-interrupted > summary,
+.thinking-block.is-status-interrupted > pre,
+.activity-group-block.is-status-superseded > summary,
+.activity-group-block.is-status-interrupted > summary {
+  opacity: 0.55;
+}
+
+.tool-block.is-status-superseded > summary,
+.tool-block.is-status-superseded > .tool-payload,
+.tool-block.is-status-interrupted > summary,
+.tool-block.is-status-interrupted > .tool-payload,
+.thinking-block.is-status-superseded > summary,
+.thinking-block.is-status-superseded > pre,
+.thinking-block.is-status-interrupted > summary,
+.thinking-block.is-status-interrupted > pre,
+.activity-group-block.is-status-superseded > summary,
+.activity-group-block.is-status-interrupted > summary {
+  text-decoration-line: line-through;
+  text-decoration-color: rgba(217, 221, 217, 0.8);
+  text-decoration-thickness: 1px;
+}
+
+.tool-block.is-root-activity > summary,
+.thinking-block.is-root-activity > summary,
+.activity-group-block.is-root-activity > summary {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.tool-block > summary::-webkit-details-marker,
+.thinking-block > summary::-webkit-details-marker,
+.activity-group-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-block > summary::marker,
+.thinking-block > summary::marker,
+.activity-group-block > summary::marker {
+  content: "";
+}
+
+.disclosure-chevron {
+  color: var(--text-activity);
+  transition: transform 120ms ease;
+}
+
+.tool-block[open] > summary .disclosure-chevron,
+.thinking-block[open] > summary .disclosure-chevron,
+.activity-group-block[open] > summary .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+/* Borderless rows still need a click affordance, so highlight on hover. */
+.tool-block > summary:hover,
+.thinking-block > summary:hover {
+  background: var(--content-inset-bg);
+}
+
+.tool-block.tool-pair > summary:hover,
+.activity-group-block > summary:hover {
+  background: var(--pane-hover-bg);
+}
+
+/* Errors lost their red box along with every other border; a red left rule on the
+   row keeps them glanceable. */
+.tool-block.is-error > summary {
+  box-shadow: inset 2px 0 0 #b5705f;
+}
+
+.tool-summary {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.tool-summary-main,
+.tool-summary-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-summary-main {
+  color: var(--text-activity);
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-weight: 400;
+}
+
+.activity-group-label.is-tool-group {
+  color: var(--text-activity);
+}
+
+.activity-group-label.is-thinking-group {
+  color: var(--text-activity);
+}
+
+.tool-summary-arg {
+  color: var(--text-body-soft);
+}
+
+.tool-block.is-root-activity .tool-summary-arg {
+  color: var(--text-activity);
+}
+
+.tool-summary-meta {
+  color: var(--text-activity);
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+}
+
+/* Expanded payloads keep a faint full box so raw output stays delineated, indented
+   beneath their tool row. */
+.tool-payload {
+  margin: 6px 0 0 14px;
+  border: 1px solid var(--surface-divider);
+  border-radius: 6px;
+  background: var(--content-inset-bg);
+  overflow: hidden;
+}
+
+.tool-payload-label {
+  padding: 6px 8px 0;
+  color: var(--text-activity);
+  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.tool-block pre,
+.thinking-block pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 6px 8px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Thinking and raw-block payloads have no .tool-payload wrapper, so the same faint
+   box + indent goes on the <pre> directly. */
+.tool-block > pre,
+.thinking-block > pre {
+  margin: 6px 0 0 14px;
+  border: 1px solid var(--surface-divider);
+  border-radius: 6px;
+  background: var(--content-inset-bg);
+}
+
+.thinking-block {
+  color: var(--text-activity);
+}
+
+.thinking-block summary {
+  color: var(--text-activity);
+}
+
+.thinking-block > summary > span {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+}
+
+.activity-group-children {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 2px;
+  padding-left: 10px;
+}
+
+.native-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
+  min-height: 0;
+  /* Sits directly in the floating composer area (.turn-sidebar-input owns the
+     background and padding) — no extra card border or padding layer. The queue
+     claims the height above the composer. */
+  flex: 1 1 auto;
+}
+
+.native-input-composer {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.turn-pane-input-stack {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recovered-queue-panel {
+  display: flex;
+  max-height: min(44vh, 320px);
+  min-width: 0;
+  min-height: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid #2c3336;
+  padding-bottom: 10px;
+}
+
+.recovered-queue-panel header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-body-soft);
+}
+
+.recovered-queue-panel h2 {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 700;
+}
+
+.recovered-queue-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.recovered-queue-group {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.recovered-queue-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid #3a3430;
+  border-radius: 6px;
+  background: #1b1815;
+  padding: 7px 8px;
+}
+
+.recovered-queue-item p {
+  min-width: 0;
+  margin: 0;
+  color: #e5ded6;
+  font-size: var(--fs-base);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.recovered-queue-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.recovered-queue-actions button {
+  min-height: var(--control-h-sm);
+  padding: 2px 7px;
+  font-size: var(--fs-sm);
+}
+
