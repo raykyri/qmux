@@ -3,10 +3,6 @@ export interface TaggedUserInstructionDetails {
   tags: string[];
 }
 
-export function isTaggedUserInstruction(text: string) {
-  return taggedUserInstructionDetails(text) !== null;
-}
-
 export function stripTaggedUserInstructionBlocks(text: string): string {
   const leading = stripLeadingTaggedInstructionBlocks(text);
   const stripped = stripInlineTaggedInstructionBlocks(leading.text);

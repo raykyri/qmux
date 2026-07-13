@@ -102,11 +102,6 @@ export interface GroupInfo {
   agents: string[];
 }
 
-export interface ResearchWorkspaceInfo extends GroupInfo {
-  available: boolean;
-  treeCount: number;
-}
-
 export interface AgentInfo {
   id: string;
   groupId: string;
@@ -320,14 +315,6 @@ export interface ThreadGraph {
   rootTurnIds: string[];
   branches: Record<string, ThreadBranch>;
   nodes: Record<string, ThreadNode>;
-}
-
-export interface ThreadRecord {
-  id: string;
-  storageRoot: string;
-  snapshotPath: string;
-  defaultFocusedBranchId: string;
-  createdAt: number;
 }
 
 export interface ThreadBranch {

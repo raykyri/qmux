@@ -4,7 +4,6 @@ import type { GroupInfo, PaneInfo, ResearchTreeSummary } from "../src/types";
 import { cycleTabId } from "../src/lib/appHelpers";
 import {
   groupsForScope,
-  panesForWorkspace,
   panesForScope,
   researchAttention,
   replaceScopedGroupOrder,
@@ -81,10 +80,7 @@ test("a pane with missing group metadata remains recoverable in Terminal scope",
   assert.deepEqual(panesForScope([orphan], [], "research"), []);
 });
 
-test("workspace panes and research attention are derived from durable ownership and summaries", () => {
-  const panes = [pane("one", "folder-a"), pane("two", "folder-b"), pane("three", "folder-a")];
-  assert.deepEqual(panesForWorkspace(panes, "folder-a").map(({ id }) => id), ["one", "three"]);
-
+test("research attention is derived from durable summaries", () => {
   assert.deepEqual(
     researchAttention([
       {

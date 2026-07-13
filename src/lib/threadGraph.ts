@@ -180,13 +180,6 @@ export function focusedBranchTurns(graph: ThreadGraph, agent: AgentInfo): Turn[]
     }));
 }
 
-export function focusedBranchGraphNodes(graph: ThreadGraph): ThreadNode[] {
-  const branchSelection = focusedBranchSelection(graph, graph.focusedBranchId);
-  return Object.values(graph.nodes)
-    .filter((node) => nodeMatchesBranchSelection(node, branchSelection))
-    .sort(compareThreadNodes);
-}
-
 function focusedBranchSelection(graph: ThreadGraph, branchId: string) {
   const selection = new Map<string, number | null>();
   let currentBranchId: string | null = branchId;

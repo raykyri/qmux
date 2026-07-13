@@ -2453,7 +2453,6 @@ mod tests {
     fn ingest(state: &AppState, notification: AdapterNotification) -> QmuxEvent {
         match ClaudeAdapter::new(state.config()).ingest_notification(state, notification) {
             Ok(AdapterNotificationOutcome::Event(event)) => event,
-            Ok(AdapterNotificationOutcome::Events(mut events)) => events.remove(0),
             Err(err) => panic!("{err}"),
         }
     }

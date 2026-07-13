@@ -8,7 +8,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 static THREAD_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
@@ -527,34 +527,6 @@ fn write_snapshot_to_disk(storage_root: &str, graph: &ThreadGraph) -> Result<(),
     atomic_write_owner_only(&path, &raw)
 }
 
-#[allow(dead_code)]
-pub fn materialize_agent_graph(agent: &AgentInfo, turns: &[Turn]) -> ThreadGraph {
-    let mut graph = ThreadGraph::empty_for_agent(agent);
-    let branch_id = agent_branch_id(agent);
-    let mut previous_turn_id: Option<String> = None;
-    for (created_order, turn) in turns.iter().enumerate() {
-        let parent_turn_ids = previous_turn_id.iter().cloned().collect::<Vec<_>>();
-        graph.nodes.insert(
-            turn.id.clone(),
-            ThreadNode::Turn(turn_node_from_turn(
-                agent,
-                turn,
-                parent_turn_ids,
-                created_order as u64,
-            )),
-        );
-        if graph.root_turn_ids.is_empty() {
-            graph.root_turn_ids.push(turn.id.clone());
-        }
-        previous_turn_id = Some(turn.id.clone());
-    }
-    if let Some(branch) = graph.branches.get_mut(&branch_id) {
-        branch.head_turn_ids = previous_turn_id.into_iter().collect();
-    }
-    graph.next_created_order = turns.len() as u64;
-    graph
-}
-
 #[derive(Clone, Debug)]
 pub struct ThreadStore {
     storage_root: PathBuf,
@@ -696,136 +668,12 @@ impl ThreadStore {
         .map_err(|err| format!("thread {thread_id}: {err}"))
     }
 
-    #[allow(dead_code)]
-    pub fn create_branch(
-        &self,
-        thread_id: &str,
-        target_branch_id: &str,
-        parent_branch_id: Option<String>,
-        base_turn_id: Option<String>,
-        created_by_agent_id: Option<String>,
-    ) -> Result<ThreadGraph, String> {
-        self.with_existing_or_empty(thread_id, |graph| {
-            ensure_next_created_order(graph);
-            let node_id = format!("branch-start-{target_branch_id}");
-            graph
-                .branches
-                .entry(target_branch_id.to_string())
-                .or_insert_with(|| ThreadBranch {
-                    id: target_branch_id.to_string(),
-                    thread_id: graph.thread_id.clone(),
-                    parent_branch_id: parent_branch_id.clone(),
-                    base_turn_id: base_turn_id.clone(),
-                    created_from_turn_id: base_turn_id.clone(),
-                    head_turn_ids: vec![node_id.clone()],
-                    label: None,
-                    created_by_agent_id: created_by_agent_id.clone(),
-                    created_by_actor_id: created_by_agent_id.clone(),
-                    created_at: now_millis_u64(),
-                    status: ThreadBranchStatus::Active,
-                });
-            if !graph.nodes.contains_key(&node_id) {
-                let parent_turn_ids = base_turn_id.clone().into_iter().collect::<Vec<_>>();
-                let created_order = allocate_created_order(graph);
-                graph.nodes.insert(
-                    node_id.clone(),
-                    ThreadNode::BranchStart(BranchStartNode {
-                        base: BaseThreadNode {
-                            id: node_id.clone(),
-                            thread_id: graph.thread_id.clone(),
-                            branch_id: target_branch_id.to_string(),
-                            parent_turn_ids,
-                            participant: qmux_participant(),
-                            created_at: now_millis_u64(),
-                            created_order,
-                            status: None,
-                            status_reason: None,
-                        },
-                        branch_start: BranchStartPayload {
-                            parent_branch_id,
-                            base_turn_id,
-                            target_branch_id: target_branch_id.to_string(),
-                        },
-                    }),
-                );
-            }
-            if let Some(branch) = graph.branches.get_mut(target_branch_id)
-                && branch.head_turn_ids.is_empty()
-            {
-                branch.head_turn_ids = vec![node_id];
-            }
-            recompute_root_turn_ids(graph);
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn append_handoff_node(
-        &self,
-        thread_id: &str,
-        branch_id: &str,
-        node_id: &str,
-        payload: HandoffPayload,
-    ) -> Result<ThreadGraph, String> {
-        self.with_existing_or_empty(thread_id, |graph| {
-            ensure_next_created_order(graph);
-            let parent_turn_ids = graph
-                .branches
-                .get(branch_id)
-                .map(|branch| branch.head_turn_ids.clone())
-                .unwrap_or_default();
-            if !graph.nodes.contains_key(node_id) {
-                let created_order = allocate_created_order(graph);
-                graph.nodes.insert(
-                    node_id.to_string(),
-                    ThreadNode::Handoff(HandoffNode {
-                        base: BaseThreadNode {
-                            id: node_id.to_string(),
-                            thread_id: graph.thread_id.clone(),
-                            branch_id: branch_id.to_string(),
-                            parent_turn_ids,
-                            participant: qmux_participant(),
-                            created_at: now_millis_u64(),
-                            created_order,
-                            status: None,
-                            status_reason: None,
-                        },
-                        handoff: payload,
-                    }),
-                );
-            }
-            if let Some(branch) = graph.branches.get_mut(branch_id) {
-                branch.head_turn_ids = vec![node_id.to_string()];
-            }
-            recompute_root_turn_ids(graph);
-        })
-    }
-
     fn with_agent_graph<F>(&self, agent: &AgentInfo, mutate: F) -> Result<ThreadGraph, String>
     where
         F: FnOnce(&mut ThreadGraph),
     {
         let thread_id = agent_thread_id(agent);
         self.with_existing_or_else(&thread_id, || ThreadGraph::empty_for_agent(agent), mutate)
-    }
-
-    #[allow(dead_code)]
-    fn with_existing_or_empty<F>(&self, thread_id: &str, mutate: F) -> Result<ThreadGraph, String>
-    where
-        F: FnOnce(&mut ThreadGraph),
-    {
-        self.with_existing_or_else(
-            thread_id,
-            || ThreadGraph {
-                version: 1,
-                thread_id: thread_id.to_string(),
-                focused_branch_id: String::new(),
-                next_created_order: 0,
-                root_turn_ids: Vec::new(),
-                branches: HashMap::new(),
-                nodes: HashMap::new(),
-            },
-            mutate,
-        )
     }
 
     fn with_existing_or_else<F, G>(
@@ -953,17 +801,6 @@ fn adapter_label(adapter: &str) -> &str {
     }
 }
 
-#[allow(dead_code)]
-fn qmux_participant() -> ThreadParticipant {
-    ThreadParticipant {
-        kind: ThreadParticipantKind::Qmux,
-        actor_id: "qmux".to_string(),
-        adapter: None,
-        agent_id: None,
-        label: Some("qmux".to_string()),
-    }
-}
-
 fn agent_created_at(agent: &AgentInfo) -> u64 {
     agent.created_at.min(u64::MAX as u128) as u64
 }
@@ -1032,11 +869,6 @@ fn thread_lock(thread_id: &str) -> Result<Arc<Mutex<()>>, String> {
         .clone())
 }
 
-#[allow(dead_code)]
-fn now_millis_u64() -> u64 {
-    now_millis().min(u64::MAX as u128) as u64
-}
-
 fn atomic_write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -1072,14 +904,6 @@ fn atomic_write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .open(parent)
         .and_then(|dir| dir.sync_all());
     Ok(())
-}
-
-#[allow(dead_code)]
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1145,57 +969,16 @@ mod tests {
 
     fn temp_worktree(prefix: &str) -> PathBuf {
         let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
         let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}-{seq}",
+            "{prefix}-{}-{millis}-{seq}",
             std::process::id(),
-            now_millis()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    #[test]
-    fn materialize_wraps_turns_in_created_order() {
-        let agent = sample_agent("/tmp/qmux-thread-graph".to_string());
-        let turns = vec![
-            sample_turn("agent-1", "turn-1", "user", 0),
-            sample_turn("agent-1", "turn-2", "assistant", 1),
-        ];
-
-        let graph = materialize_agent_graph(&agent, &turns);
-
-        assert_eq!(graph.thread_id, "thread-1");
-        assert_eq!(graph.focused_branch_id, "branch-1");
-        assert_eq!(graph.next_created_order, 2);
-        assert_eq!(graph.root_turn_ids, vec!["turn-1"]);
-        let branch = graph.branches.get("branch-1").unwrap();
-        assert_eq!(branch.head_turn_ids, vec!["turn-2"]);
-
-        let Some(ThreadNode::Turn(first)) = graph.nodes.get("turn-1") else {
-            panic!("missing first turn node");
-        };
-        assert_eq!(first.base.parent_turn_ids, Vec::<String>::new());
-        assert_eq!(first.base.created_order, 0);
-        assert_eq!(first.base.participant.kind, ThreadParticipantKind::User);
-        assert_eq!(first.base.participant.label.as_deref(), Some("You"));
-
-        let Some(ThreadNode::Turn(second)) = graph.nodes.get("turn-2") else {
-            panic!("missing second turn node");
-        };
-        assert_eq!(second.base.parent_turn_ids, vec!["turn-1"]);
-        assert_eq!(second.base.created_order, 1);
-        assert_eq!(
-            second.base.participant.kind,
-            ThreadParticipantKind::Assistant
-        );
-        assert_eq!(second.base.participant.label.as_deref(), Some("Codex"));
-        assert_eq!(
-            second
-                .native
-                .as_ref()
-                .and_then(|native| native.session_id.as_deref()),
-            Some("agent-1-session")
-        );
     }
 
     #[test]
@@ -1350,32 +1133,6 @@ mod tests {
             )
             .unwrap();
         store
-            .create_branch(
-                "thread-shared",
-                "branch-target",
-                Some("branch-source".to_string()),
-                Some("source-turn-1".to_string()),
-                Some("agent-target".to_string()),
-            )
-            .unwrap();
-        store
-            .append_handoff_node(
-                "thread-shared",
-                "branch-target",
-                "handoff-1",
-                HandoffPayload {
-                    source_agent_id: source.id.clone(),
-                    source_adapter: source.adapter.clone(),
-                    source_branch_id: "branch-source".to_string(),
-                    source_turn_id: "source-turn-1".to_string(),
-                    target_agent_id: target.id.clone(),
-                    target_adapter: target.adapter.clone(),
-                    target_branch_id: "branch-target".to_string(),
-                    context_path: "/tmp/handoff.md".to_string(),
-                },
-            )
-            .unwrap();
-        store
             .append_turn_node(
                 &target,
                 &sample_turn("agent-target", "target-turn-1", "assistant", 0),
@@ -1393,15 +1150,8 @@ mod tests {
             .read_thread("thread-shared")
             .unwrap()
             .expect("shared graph exists");
-        assert!(matches!(
-            graph.nodes.get("branch-start-branch-target"),
-            Some(ThreadNode::BranchStart(_))
-        ));
-        assert!(matches!(
-            graph.nodes.get("handoff-1"),
-            Some(ThreadNode::Handoff(_))
-        ));
         assert!(graph.nodes.contains_key("source-turn-1"));
+        assert!(graph.nodes.contains_key("target-turn-1"));
         assert!(graph.branches.contains_key("branch-source"));
         assert!(graph.branches.contains_key("branch-target"));
 

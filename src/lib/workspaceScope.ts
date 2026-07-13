@@ -32,10 +32,6 @@ export function panesForScope(
   return [...grouped, ...ungrouped];
 }
 
-export function panesForWorkspace(panes: PaneInfo[], workspaceId: string): PaneInfo[] {
-  return panes.filter((pane) => pane.groupId === workspaceId);
-}
-
 export function researchAttention(trees: ResearchTreeSummary[]) {
   return trees.reduce(
     (attention, tree) => ({

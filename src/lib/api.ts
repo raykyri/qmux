@@ -23,7 +23,6 @@ import type {
   ResearchHighlight,
   ResearchHighlightAnchor,
   ResearchTree,
-  ResearchWorkspaceInfo,
   ResearchTreeDetail,
   ResearchTreeSummary,
   ResearchNode,
@@ -191,10 +190,6 @@ export function listGroups() {
   return invoke<GroupInfo[]>("list_groups");
 }
 
-export function listResearchWorkspaces() {
-  return invoke<ResearchWorkspaceInfo[]>("list_research_workspaces");
-}
-
 export function ensureDefaultResearchWorkspace() {
   return invoke<GroupInfo>("ensure_default_research_workspace_command");
 }
@@ -213,24 +208,6 @@ export function removeResearchWorkspace(workspaceId: string) {
 
 export function revealResearchWorkspace(workspaceId: string) {
   return invoke<void>("research_workspace_reveal", { workspaceId });
-}
-
-export function createGroup(request?: {
-  name?: string | null;
-  dir?: string | null;
-  afterGroupId?: string | null;
-  baseRepo?: string | null;
-  baseRef?: string | null;
-}) {
-  return invoke<GroupInfo>("group_create", {
-    request: {
-      name: request?.name ?? null,
-      dir: request?.dir ?? null,
-      afterGroupId: request?.afterGroupId ?? null,
-      baseRepo: request?.baseRepo ?? null,
-      baseRef: request?.baseRef ?? null,
-    },
-  });
 }
 
 export function createGroupWithFolder(afterGroupId?: string | null) {
@@ -464,10 +441,6 @@ export function forkAgent(
   });
 }
 
-export function writePane(paneId: string, data: string) {
-  return invoke<void>("pane_write", { paneId, data, paste: false, submit: false });
-}
-
 export function submitPaneInput(paneId: string, data: string) {
   return invoke<void>("pane_write", { paneId, data, paste: true, submit: true });
 }
@@ -578,10 +551,6 @@ export function clearAgentWorkingStatus(agentId: string) {
  */
 export function attachPane(paneId: string) {
   return invoke<void>("pane_attach", { paneId });
-}
-
-export function resizePane(paneId: string, cols: number, rows: number) {
-  return invoke<void>("pane_resize", { paneId, cols, rows });
 }
 
 export interface NativeTerminalLayout {
@@ -758,10 +727,6 @@ export function renamePane(paneId: string, title: string) {
 
 export function generateFoundationTabTitle(message: string) {
   return invoke<string>("generate_foundation_tab_title", { message });
-}
-
-export function reorderPanes(paneIds: string[]) {
-  return invoke<PaneInfo[]>("pane_reorder", { paneIds });
 }
 
 /** Atomically sets the sidebar tab tree (order + nesting depth) in one call. */

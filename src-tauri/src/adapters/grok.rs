@@ -1845,7 +1845,6 @@ mod tests {
             .unwrap();
         match outcome {
             AdapterNotificationOutcome::Event(event) => event,
-            AdapterNotificationOutcome::Events(events) => events.into_iter().next().unwrap(),
         }
     }
 

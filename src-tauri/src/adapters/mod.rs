@@ -353,15 +353,12 @@ pub(crate) fn subagent_id(payload: &Value) -> Option<&str> {
 
 pub enum AdapterNotificationOutcome {
     Event(QmuxEvent),
-    #[allow(dead_code)]
-    Events(Vec<QmuxEvent>),
 }
 
 impl AdapterNotificationOutcome {
     pub fn into_events(self) -> Vec<QmuxEvent> {
         match self {
             AdapterNotificationOutcome::Event(event) => vec![event],
-            AdapterNotificationOutcome::Events(events) => events,
         }
     }
 }

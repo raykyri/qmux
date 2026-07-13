@@ -3549,7 +3549,6 @@ trusted_hash = "sha256:trusted"
     fn ingest(state: &AppState, notification: AdapterNotification) -> QmuxEvent {
         match CodexAdapter::new(state.config()).ingest_notification(state, notification) {
             Ok(AdapterNotificationOutcome::Event(event)) => event,
-            Ok(AdapterNotificationOutcome::Events(mut events)) => events.remove(0),
             Err(err) => panic!("{err}"),
         }
     }
