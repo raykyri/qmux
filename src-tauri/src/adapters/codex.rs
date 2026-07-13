@@ -660,15 +660,50 @@ impl CodexAdapter {
                 }
                 "agent.compacted"
             }
-            "SubagentStart" => "agent.subagent_started",
-            "SubagentStop" => "agent.subagent_stopped",
+            "SubagentStart" => {
+                if let Some(agent) = agent.as_mut() {
+                    state.agent_subagent_started(
+                        &agent.id,
+                        super::subagent_id(&notification.payload),
+                    )?;
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.subagent_started"
+            }
+            "SubagentStop" => {
+                if let Some(agent) = agent.as_mut() {
+                    state.agent_subagent_stopped(
+                        &agent.id,
+                        super::subagent_id(&notification.payload),
+                    )?;
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.subagent_stopped"
+            }
             "Stop" => {
-                let deferred = if let Some(agent) = agent.as_ref() {
+                let waiting_on_subagents = if let Some(agent) = agent.as_mut() {
+                    if state.agent_has_active_subagents(&agent.id)? {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let deferred = if waiting_on_subagents {
+                    false
+                } else if let Some(agent) = agent.as_ref() {
                     schedule_finish_agent_after_stop(state, agent)?
                 } else {
                     false
                 };
-                if deferred {
+                if waiting_on_subagents {
+                    "agent.running"
+                } else if deferred {
                     "agent.stop_observed"
                 } else {
                     "agent.done"
@@ -1415,6 +1450,9 @@ fn resolve_agent_after_stop_grace(
         return Ok(None);
     }
     if state.agent_status_activity_seq(agent_id)? != baseline {
+        return Ok(None);
+    }
+    if state.agent_has_active_subagents(agent_id)? {
         return Ok(None);
     }
 
@@ -3235,20 +3273,31 @@ trusted_hash = "sha256:trusted"
 
         let event = ingest(
             &state,
-            hook_for_agent("SubagentStart", "agent-1", json!({})),
+            hook_for_agent("SubagentStart", "agent-1", json!({ "agent_id": "child-1" })),
         );
         assert_eq!(event.event_type, "agent.subagent_started");
+        assert!(state.agent_has_active_subagents("agent-1").unwrap());
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Running
         ));
 
-        let event = ingest(&state, hook_for_agent("SubagentStop", "agent-1", json!({})));
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        assert_eq!(event.event_type, "agent.running");
+
+        let event = ingest(
+            &state,
+            hook_for_agent("SubagentStop", "agent-1", json!({ "agent_id": "child-1" })),
+        );
         assert_eq!(event.event_type, "agent.subagent_stopped");
+        assert!(!state.agent_has_active_subagents("agent-1").unwrap());
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Running
         ));
+
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        assert_eq!(event.event_type, "agent.stop_observed");
     }
 
     #[test]

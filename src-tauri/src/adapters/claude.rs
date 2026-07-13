@@ -817,12 +817,25 @@ impl ClaudeAdapter {
             event if event.starts_with("Notification") => {
                 let notification_kind = notification_kind(&notification);
                 if matches!(notification_kind, NotificationKind::IdlePrompt) {
-                    let drained = if let Some(agent) = agent.as_mut() {
+                    let waiting_on_subagents = if let Some(agent) = agent.as_mut() {
+                        if state.agent_has_active_subagents(&agent.id)? {
+                            agent.status = AgentStatus::Running;
+                            state.set_agent_status(&agent.id, agent.status)?;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    let drained = if waiting_on_subagents {
+                        false
+                    } else if let Some(agent) = agent.as_mut() {
                         finish_agent_after_idle(state, agent)?
                     } else {
                         false
                     };
-                    if drained {
+                    if waiting_on_subagents || drained {
                         "agent.running"
                     } else {
                         "agent.done"
@@ -836,20 +849,58 @@ impl ClaudeAdapter {
                 }
             }
             "Stop" | "StopFailure" => {
-                let drained = if let Some(agent) = agent.as_mut() {
+                let waiting_on_subagents = if let Some(agent) = agent.as_mut() {
+                    if state.agent_has_active_subagents(&agent.id)? {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let drained = if waiting_on_subagents {
+                    false
+                } else if let Some(agent) = agent.as_mut() {
                     finish_agent_after_idle(state, agent)?
                 } else {
                     false
                 };
-                if drained {
+                if waiting_on_subagents || drained {
                     "agent.running"
                 } else {
                     "agent.done"
                 }
             }
-            "SubagentStart" => "agent.subagent_started",
-            "SubagentStop" => "agent.subagent_stopped",
-            "SessionEnd" => "agent.session_end",
+            "SubagentStart" => {
+                if let Some(agent) = agent.as_mut() {
+                    state.agent_subagent_started(
+                        &agent.id,
+                        super::subagent_id(&notification.payload),
+                    )?;
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.subagent_started"
+            }
+            "SubagentStop" => {
+                if let Some(agent) = agent.as_mut() {
+                    state.agent_subagent_stopped(
+                        &agent.id,
+                        super::subagent_id(&notification.payload),
+                    )?;
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.subagent_stopped"
+            }
+            "SessionEnd" => {
+                if let Some(agent) = agent.as_ref() {
+                    state.clear_agent_subagents(&agent.id);
+                }
+                "agent.session_end"
+            }
             other => {
                 return Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
                     format!("agent.hook.{other}"),
@@ -2855,18 +2906,49 @@ mod tests {
     }
 
     #[test]
-    fn subagent_and_session_boundary_hooks_are_forwarded() {
+    fn parent_stop_waits_for_subagents_and_a_later_synthesis_stop() {
         let state = test_state();
         install_agent_pane(&state);
 
-        for (hook_event, expected_event) in [
-            ("SubagentStart", "agent.subagent_started"),
-            ("SubagentStop", "agent.subagent_stopped"),
-            ("SessionEnd", "agent.session_end"),
-        ] {
-            let event = ingest(&state, hook(hook_event, json!({})));
-            assert_eq!(event.event_type, expected_event);
-        }
+        let event = ingest(
+            &state,
+            hook("SubagentStart", json!({ "agent_id": "child-1" })),
+        );
+        assert_eq!(event.event_type, "agent.subagent_started");
+        assert!(state.agent_has_active_subagents("agent-1").unwrap());
+
+        let event = ingest(
+            &state,
+            hook(
+                "Notification.idle_prompt",
+                json!({ "hook_event_name": "Notification" }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.running");
+
+        let event = ingest(&state, hook("Stop", json!({})));
+        assert_eq!(event.event_type, "agent.running");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(
+            &state,
+            hook("SubagentStop", json!({ "agent_id": "child-1" })),
+        );
+        assert_eq!(event.event_type, "agent.subagent_stopped");
+        assert!(!state.agent_has_active_subagents("agent-1").unwrap());
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(&state, hook("Stop", json!({})));
+        assert_eq!(event.event_type, "agent.done");
+
+        let event = ingest(&state, hook("SessionEnd", json!({})));
+        assert_eq!(event.event_type, "agent.session_end");
     }
 
     #[test]

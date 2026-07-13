@@ -154,6 +154,22 @@ struct AppStateInner {
 }
 
 #[derive(Default)]
+struct ActiveSubagents {
+    identified: HashSet<String>,
+    anonymous: usize,
+}
+
+impl ActiveSubagents {
+    fn count(&self) -> usize {
+        self.identified.len().saturating_add(self.anonymous)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.identified.is_empty() && self.anonymous == 0
+    }
+}
+
+#[derive(Default)]
 struct Model {
     panes: HashMap<String, PaneRuntime>,
     pane_order: Vec<String>,
@@ -188,6 +204,10 @@ struct Model {
     /// touch this, so a delayed idle resolver can distinguish a new lifecycle hook from
     /// late transcript tailing. Transient (not persisted).
     agent_status_activity: HashMap<String, u64>,
+    /// Adapter-reported background subagents still working for each parent.
+    /// A parent Stop ends only its foreground turn while this is non-zero.
+    /// Transient: hooks rebuild it for each running process.
+    agent_active_subagents: HashMap<String, ActiveSubagents>,
     /// Agents with an Esc-interrupt grace watch already in flight. Holding Esc (key
     /// repeat) fires `watch_agent_after_escape` per keystroke; this dedupes so a burst
     /// spawns one watcher thread, not dozens. Cleared when that thread resolves.
@@ -2327,6 +2347,10 @@ impl AppState {
             // will observe this binding), or it is gone for good and the run
             // must settle here.
             let pane_exists = model.panes.contains_key(pane_id);
+            let has_active_subagents = model
+                .agent_active_subagents
+                .get(&agent.id)
+                .is_some_and(|active| !active.is_empty());
             let node = model
                 .research_nodes
                 .get_mut(node_id)
@@ -2347,7 +2371,7 @@ impl AppState {
                 // pane and agent — the caller reclaims them — but a settled outcome
                 // is monotonic and the bind must not resurrect the run.
                 if !node.status.is_terminal() {
-                    node.status = research_status_for_agent(agent.status);
+                    node.status = research_status_for_agent(agent.status, has_active_subagents);
                     node.error = None;
                     if node.status.is_terminal() {
                         node.completed_at.get_or_insert(now);
@@ -2357,7 +2381,9 @@ impl AppState {
                 // Mirror detach_research_pane's settle for the teardown that
                 // already ran: the agent snapshot was captured after the spawn,
                 // so Done/Idle means the run finished before its pane closed.
-                if matches!(agent.status, AgentStatus::Done | AgentStatus::Idle) {
+                if matches!(agent.status, AgentStatus::Done | AgentStatus::Idle)
+                    && !has_active_subagents
+                {
                     node.status = ResearchNodeStatus::Complete;
                 } else {
                     node.status = ResearchNodeStatus::Failed;
@@ -2578,7 +2604,7 @@ impl AppState {
     fn detach_research_pane_inner(
         &self,
         pane_id: &str,
-        removed_agent: Option<(&str, AgentStatus)>,
+        removed_agent: Option<(&str, AgentStatus, bool)>,
     ) -> Result<Option<ResearchNode>, String> {
         let updated = {
             let mut model = self
@@ -2605,12 +2631,20 @@ impl AppState {
                     .and_then(|node| node.agent_id.as_deref())
                     .and_then(|agent_id| {
                         removed_agent
-                            .filter(|(removed_id, _)| *removed_id == agent_id)
-                            .map(|(_, status)| status)
-                            .or_else(|| model.agents.get(agent_id).map(|agent| agent.status))
+                            .filter(|(removed_id, _, _)| *removed_id == agent_id)
+                            .map(|(_, status, active)| (status, active))
+                            .or_else(|| {
+                                model.agents.get(agent_id).map(|agent| {
+                                    let active = model
+                                        .agent_active_subagents
+                                        .get(agent_id)
+                                        .is_some_and(|active| !active.is_empty());
+                                    (agent.status, active)
+                                })
+                            })
                     })
-                    .is_some_and(|status| {
-                        matches!(status, AgentStatus::Done | AgentStatus::Idle)
+                    .is_some_and(|(status, active)| {
+                        matches!(status, AgentStatus::Done | AgentStatus::Idle) && !active
                     });
                 let node = model.research_nodes.get_mut(&node_id)?;
                 node.pane_id = None;
@@ -3735,7 +3769,7 @@ impl AppState {
         // record. The research detach at the end of this function needs it to
         // tell a finished run (process exits at end of turn) from a crashed
         // one; reading the model there is too late.
-        let mut departing_agent: Option<(String, AgentStatus)> = None;
+        let mut departing_agent: Option<(String, AgentStatus, bool)> = None;
         let removed_group_id = {
             let mut model = self
                 .inner
@@ -3764,7 +3798,11 @@ impl AppState {
                 .map(|agent| agent.id.clone())
             {
                 if let Some(agent) = model.agents.get(&agent_id).cloned() {
-                    departing_agent = Some((agent.id.clone(), agent.status));
+                    let has_active_subagents = model
+                        .agent_active_subagents
+                        .get(&agent.id)
+                        .is_some_and(|active| !active.is_empty());
+                    departing_agent = Some((agent.id.clone(), agent.status, has_active_subagents));
                     upsert_recent_session_for_agent_locked(
                         &mut model,
                         &agent,
@@ -3780,6 +3818,7 @@ impl AppState {
                 model.agent_send_tracking.remove(&agent_id);
                 model.agent_activity.remove(&agent_id);
                 model.agent_status_activity.remove(&agent_id);
+                model.agent_active_subagents.remove(&agent_id);
                 model.agent_escape_watch.remove(&agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
@@ -3864,7 +3903,7 @@ impl AppState {
             pane_id,
             departing_agent
                 .as_ref()
-                .map(|(agent_id, status)| (agent_id.as_str(), *status)),
+                .map(|(agent_id, status, active)| (agent_id.as_str(), *status, *active)),
         ) {
             eprintln!("qmux: failed to detach research pane {pane_id}: {err}");
         }
@@ -4333,6 +4372,84 @@ impl AppState {
         Ok(updated)
     }
 
+    /// Records a background subagent starting under `agent_id`. The lifecycle
+    /// bump also invalidates a delayed parent-Stop resolver that raced this hook.
+    pub fn agent_subagent_started(
+        &self,
+        agent_id: &str,
+        subagent_id: Option<&str>,
+    ) -> Result<usize, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let active = model
+            .agent_active_subagents
+            .entry(agent_id.to_string())
+            .or_default();
+        match subagent_id.map(str::trim).filter(|id| !id.is_empty()) {
+            Some(id) => {
+                active.identified.insert(id.to_string());
+            }
+            None => active.anonymous = active.anonymous.saturating_add(1),
+        }
+        let count = active.count();
+        bump_agent_activity_locked(&mut model, agent_id);
+        bump_agent_status_activity_locked(&mut model, agent_id);
+        Ok(count)
+    }
+
+    /// Records one background subagent settling. Reaching zero does not finish
+    /// the parent: it still needs a synthesis turn and a later parent Stop.
+    pub fn agent_subagent_stopped(
+        &self,
+        agent_id: &str,
+        subagent_id: Option<&str>,
+    ) -> Result<usize, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let remaining = match model.agent_active_subagents.get_mut(agent_id) {
+            Some(active) => {
+                match subagent_id.map(str::trim).filter(|id| !id.is_empty()) {
+                    Some(id) => {
+                        active.identified.remove(id);
+                    }
+                    None => active.anonymous = active.anonymous.saturating_sub(1),
+                }
+                active.count()
+            }
+            None => 0,
+        };
+        if remaining == 0 {
+            model.agent_active_subagents.remove(agent_id);
+        }
+        bump_agent_activity_locked(&mut model, agent_id);
+        bump_agent_status_activity_locked(&mut model, agent_id);
+        Ok(remaining)
+    }
+
+    pub fn agent_has_active_subagents(&self, agent_id: &str) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_active_subagents
+            .get(agent_id)
+            .is_some_and(|active| !active.is_empty()))
+    }
+
+    pub fn clear_agent_subagents(&self, agent_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock() {
+            model.agent_active_subagents.remove(agent_id);
+        }
+    }
+
     fn sync_research_node_from_agent(&self, agent: &AgentInfo) -> Result<bool, String> {
         let updated = {
             let mut model = self
@@ -4362,6 +4479,10 @@ impl AppState {
                 );
                 (prompt_id, preview)
             });
+            let has_active_subagents = model
+                .agent_active_subagents
+                .get(&agent.id)
+                .is_some_and(|active| !active.is_empty());
             let now = now_millis();
             let node = model.research_nodes.get_mut(&node_id).expect("node exists");
             let before = node.clone();
@@ -4394,7 +4515,7 @@ impl AppState {
             // the status would resurrect the run and let the pane teardown
             // re-settle it as Failed. Terminal outcomes stay as written.
             if !node.status.is_terminal() {
-                node.status = research_status_for_agent(agent.status);
+                node.status = research_status_for_agent(agent.status, has_active_subagents);
                 if node.status.is_terminal() && node.completed_at.is_none() {
                     node.completed_at = Some(now);
                 }
@@ -4435,6 +4556,14 @@ impl AppState {
         ) {
             return;
         }
+        if node.status == ResearchNodeStatus::Complete
+            && node
+                .agent_id
+                .as_deref()
+                .is_some_and(|agent_id| self.agent_has_active_subagents(agent_id).unwrap_or(false))
+        {
+            return;
+        }
         let scheduled = self
             .inner
             .model
@@ -4457,6 +4586,26 @@ impl AppState {
                 // later delays provide bounded recovery from transient file/process races.
                 let delay_ms = 250_u64.saturating_mul(1_u64 << attempt).min(4_000);
                 std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                let current_node = state.research_node(&node_id).ok();
+                let still_settled = current_node.as_ref().is_some_and(|node| {
+                    matches!(
+                        node.status,
+                        ResearchNodeStatus::Complete | ResearchNodeStatus::Failed
+                    )
+                });
+                let active_subagents = current_node
+                    .as_ref()
+                    .filter(|node| node.status == ResearchNodeStatus::Complete)
+                    .and_then(|node| node.agent_id.as_deref())
+                    .is_some_and(|agent_id| {
+                        state.agent_has_active_subagents(agent_id).unwrap_or(false)
+                    });
+                if !still_settled || active_subagents {
+                    if let Ok(mut model) = state.inner.model.lock() {
+                        model.research_retiring_panes.remove(&pane_id);
+                    }
+                    return;
+                }
                 // Re-read per attempt rather than capturing at schedule time:
                 // the native checkpoint (session id / transcript path) usually
                 // trails the Complete status by a beat, and a fresh read lets a
@@ -6326,6 +6475,7 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agent_send_tracking.remove(agent_id);
     model.agent_activity.remove(agent_id);
     model.agent_status_activity.remove(agent_id);
+    model.agent_active_subagents.remove(agent_id);
     model.agent_escape_watch.remove(agent_id);
     clear_recent_session_binding_locked(model, Some(agent_id), None);
 }
@@ -6665,18 +6815,25 @@ fn drop_research_recent_sessions(persisted: &mut PersistedState) -> bool {
 
 /// Adapter contract this mapping (and research completion as a whole) depends
 /// on: a research-capable adapter must report `Done`/`Idle` at end-of-turn
-/// while its process stays alive. An adapter that instead *rests* at
+/// while its process stays alive, and must report subagent start/stop boundaries
+/// when foreground idleness can coexist with background work. An adapter that instead *rests* at
 /// `AwaitingInput` after a normal turn would leave its nodes Researching…
 /// forever (no completion, no snapshot, no retirement, no follow-ups); one
 /// whose process exits on completion relies on `detach_research_pane`'s
 /// agent-finished check to settle Complete instead of Failed.
-fn research_status_for_agent(status: AgentStatus) -> ResearchNodeStatus {
+fn research_status_for_agent(
+    status: AgentStatus,
+    has_active_subagents: bool,
+) -> ResearchNodeStatus {
     match status {
         AgentStatus::Starting => ResearchNodeStatus::Starting,
         // AwaitingInput is a mid-turn pause (elicitation / clarifying question),
         // not completion: the adapters return to Running once the user answers,
         // so the node must stay live or retirement would kill the waiting agent.
         AgentStatus::Running | AgentStatus::AwaitingPermission | AgentStatus::AwaitingInput => {
+            ResearchNodeStatus::Running
+        }
+        AgentStatus::Done | AgentStatus::Idle if has_active_subagents => {
             ResearchNodeStatus::Running
         }
         AgentStatus::Done | AgentStatus::Idle => ResearchNodeStatus::Complete,
@@ -7424,6 +7581,85 @@ mod tests {
         );
         assert_eq!(content.turns.len(), 1);
         assert_eq!(content.turns[0].role, "assistant");
+    }
+
+    #[test]
+    fn research_waits_for_subagents_and_a_later_parent_completion() {
+        let state = AppState::new(test_config(PathBuf::from(
+            "/tmp/qmux-state-research-subagents",
+        )));
+        state.insert_group_after(sample_group(), None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let root_id = detail.tree.root_node_id;
+        let agent = sample_agent("research-agent");
+        state.insert_agent(agent.clone()).unwrap();
+        state
+            .bind_research_node_run(&root_id, &agent, "pane-7")
+            .unwrap();
+
+        assert_eq!(
+            state
+                .agent_subagent_started("research-agent", Some(" child-1 "))
+                .unwrap(),
+            1
+        );
+        // Duplicate identified hooks are idempotent.
+        assert_eq!(
+            state
+                .agent_subagent_started("research-agent", Some("child-1"))
+                .unwrap(),
+            1
+        );
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+        let waiting = state.research_node(&root_id).unwrap();
+        assert_eq!(waiting.status, ResearchNodeStatus::Running);
+        assert!(waiting.completed_at.is_none());
+
+        assert_eq!(
+            state
+                .agent_subagent_stopped("research-agent", Some("child-1"))
+                .unwrap(),
+            0
+        );
+        // Child completion alone is not the parent completion boundary.
+        assert_eq!(
+            state.research_node(&root_id).unwrap().status,
+            ResearchNodeStatus::Running
+        );
+
+        state
+            .set_agent_status("research-agent", AgentStatus::Running)
+            .unwrap();
+        state
+            .set_agent_status("research-agent", AgentStatus::Done)
+            .unwrap();
+        assert_eq!(
+            state.research_node(&root_id).unwrap().status,
+            ResearchNodeStatus::Complete
+        );
+    }
+
+    #[test]
+    fn anonymous_subagent_tracking_saturates_and_is_parent_scoped() {
+        let state = AppState::new(test_config(temp_workspace()));
+        assert_eq!(state.agent_subagent_started("parent-1", None).unwrap(), 1);
+        assert_eq!(state.agent_subagent_started("parent-1", None).unwrap(), 2);
+        assert!(!state.agent_has_active_subagents("parent-2").unwrap());
+        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), 1);
+        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), 0);
+        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), 0);
+        assert!(!state.agent_has_active_subagents("parent-1").unwrap());
     }
 
     #[test]

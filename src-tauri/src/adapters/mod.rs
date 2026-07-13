@@ -343,6 +343,14 @@ pub struct AdapterNotification {
     pub payload: Value,
 }
 
+pub(crate) fn subagent_id(payload: &Value) -> Option<&str> {
+    ["agent_id", "agentId", "subagent_id", "subagentId"]
+        .into_iter()
+        .find_map(|key| payload.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
 pub enum AdapterNotificationOutcome {
     Event(QmuxEvent),
     #[allow(dead_code)]

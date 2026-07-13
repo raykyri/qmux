@@ -667,16 +667,54 @@ impl GrokAdapter {
                 "agent.compacted"
             }
             "Notification" => "agent.notification",
-            "SubagentStart" => "agent.subagent_started",
-            "SubagentStop" => "agent.subagent_stopped",
-            "SessionEnd" => "agent.session_end",
+            "SubagentStart" => {
+                if let Some(agent) = agent.as_mut() {
+                    state.agent_subagent_started(
+                        &agent.id,
+                        super::subagent_id(&notification.payload),
+                    )?;
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.subagent_started"
+            }
+            "SubagentStop" => {
+                if let Some(agent) = agent.as_mut() {
+                    state.agent_subagent_stopped(
+                        &agent.id,
+                        super::subagent_id(&notification.payload),
+                    )?;
+                    agent.status = AgentStatus::Running;
+                    state.set_agent_status(&agent.id, agent.status)?;
+                }
+                "agent.subagent_stopped"
+            }
+            "SessionEnd" => {
+                if let Some(agent) = agent.as_ref() {
+                    state.clear_agent_subagents(&agent.id);
+                }
+                "agent.session_end"
+            }
             "Stop" | "StopFailure" => {
-                let drained = if let Some(agent) = agent.as_mut() {
+                let waiting_on_subagents = if let Some(agent) = agent.as_mut() {
+                    if state.agent_has_active_subagents(&agent.id)? {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let drained = if waiting_on_subagents {
+                    false
+                } else if let Some(agent) = agent.as_mut() {
                     finish_agent_after_stop(state, agent)?
                 } else {
                     false
                 };
-                if drained {
+                if waiting_on_subagents || drained {
                     "agent.running"
                 } else {
                     "agent.done"
@@ -2118,9 +2156,6 @@ mod tests {
         for (hook_event, expected_event) in [
             ("PostCompact", "agent.compacted"),
             ("Notification", "agent.notification"),
-            ("SubagentStart", "agent.subagent_started"),
-            ("SubagentStop", "agent.subagent_stopped"),
-            ("SessionEnd", "agent.session_end"),
         ] {
             let event = ingest(&state, hook_for_agent(hook_event, "agent-1", json!({})));
             assert_eq!(event.event_type, expected_event);
@@ -2129,6 +2164,41 @@ mod tests {
                 AgentStatus::Running
             ));
         }
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SubagentStart",
+                "agent-1",
+                json!({ "subagentId": "child-1" }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.subagent_started");
+        assert!(state.agent_has_active_subagents("agent-1").unwrap());
+
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        assert_eq!(event.event_type, "agent.running");
+
+        let event = ingest(
+            &state,
+            hook_for_agent(
+                "SubagentStop",
+                "agent-1",
+                json!({ "subagentId": "child-1" }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.subagent_stopped");
+        assert!(!state.agent_has_active_subagents("agent-1").unwrap());
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        assert_eq!(event.event_type, "agent.done");
+
+        let event = ingest(&state, hook_for_agent("SessionEnd", "agent-1", json!({})));
+        assert_eq!(event.event_type, "agent.session_end");
     }
 
     #[test]
