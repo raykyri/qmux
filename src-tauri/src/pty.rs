@@ -21,7 +21,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -49,29 +49,10 @@ const BACKLOG_CAP: usize = 8 * 1024 * 1024;
 const CHILD_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How many watch intervals between refreshes of a pane's descendant-pid
-/// snapshot (both the portable watcher's fallback list and the native process
-/// tree). Descendants that outlive their shell (dev servers, `sleep &`) are
-/// long-lived, so a coarse ~16s refresh catches them while keeping the
+/// snapshot. Descendants that outlive their shell (dev servers, `sleep &`)
+/// are long-lived, so a coarse ~16s refresh catches them while keeping the
 /// `pgrep` walk off the steady-state path.
 const DESCENDANT_REFRESH_TICKS: u32 = 8;
-
-const NATIVE_PROCESS_TERM_GRACE: Duration = Duration::from_millis(400);
-
-#[derive(Clone, Debug)]
-struct TrackedProcess {
-    pid: u32,
-    start_signature: String,
-}
-
-#[derive(Clone, Debug)]
-struct NativeProcessTree {
-    root: TrackedProcess,
-    descendants: HashMap<u32, TrackedProcess>,
-}
-
-static NATIVE_PROCESS_TREES: OnceLock<Mutex<HashMap<String, NativeProcessTree>>> = OnceLock::new();
-
-static CLOSING_NATIVE_PANES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 /// Panes whose attach was requested before their native surface had committed
 /// real geometry. Replaying durable scrollback into a surface that still has
@@ -744,104 +725,6 @@ pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, Strin
     spawn_portable_pty(state, spec, cfg!(all(target_os = "macos", not(test))))
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
-#[allow(dead_code)]
-fn spawn_native_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
-    let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
-    let initial_size = resolved_initial_size(spec.initial_size);
-    let launcher = create_native_launcher(&pane_id, &spec.program, &spec.args, &spec.envs)?;
-    let pane = PaneInfo {
-        id: pane_id.clone(),
-        title: spec.title,
-        kind: spec.kind,
-        agent_id: spec.agent_id,
-        group_id: spec.group_id,
-        cwd: spec.cwd.display().to_string(),
-        cols: initial_size.cols,
-        rows: initial_size.rows,
-        status: PaneStatus::Running,
-        last_active_at: crate::state::now_millis(),
-        recovered: spec.recovered,
-        depth: 0,
-    };
-    state.insert_pane(PaneRuntime {
-        info: pane.clone(),
-        backend: PaneBackend::Native { root_pid: None },
-    })?;
-
-    if let Err(err) =
-        crate::native_terminal::create(&pane_id, &launcher.display().to_string(), Some(&pane.cwd))
-    {
-        let _ = state.remove_pane(&pane_id);
-        remove_shell_integration_dir(&pane_id);
-        return Err(err);
-    }
-    Ok(pane)
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-#[allow(dead_code)]
-fn create_native_launcher(
-    pane_id: &str,
-    program: &str,
-    args: &[String],
-    envs: &[(String, String)],
-) -> Result<PathBuf, String> {
-    let root = create_shell_integration_dir(pane_id)?;
-    let launcher = root.join("launch");
-    let qmux_cli = env::current_exe()
-        .map_err(|err| format!("failed to resolve qmux executable for native launcher: {err}"))?;
-    let mut script = String::from("#!/bin/sh\n");
-
-    let mut launch_envs = base_child_envs();
-    launch_envs.extend(envs.iter().cloned());
-    for (key, value) in launch_envs {
-        if key.is_empty()
-            || !key.bytes().enumerate().all(|(index, byte)| {
-                byte == b'_'
-                    || byte.is_ascii_alphanumeric() && (index > 0 || !byte.is_ascii_digit())
-            })
-        {
-            return Err(format!(
-                "invalid environment variable name for pane {pane_id}: {key}"
-            ));
-        }
-        script.push_str("export ");
-        script.push_str(&key);
-        script.push('=');
-        script.push_str(&shell_quote_str(&value));
-        script.push('\n');
-    }
-    // Report the shell's PID over the control socket; without it, descendant
-    // teardown and close-time activity detection are silently disabled for the
-    // pane's entire lifetime. A single attempt can race app startup before the
-    // socket listens, so retry briefly — the shell still launches if every
-    // attempt fails.
-    script.push_str("for _ in 1 2 3 4 5; do\n  if ");
-    script.push_str(&shell_quote(&qmux_cli));
-    script.push_str(" pane-pid \"$$\" >/dev/null 2>&1; then break; fi\n  sleep 0.2\ndone\nexec ");
-    script.push_str(&shell_quote_str(program));
-    for arg in args {
-        script.push(' ');
-        script.push_str(&shell_quote_str(arg));
-    }
-    script.push('\n');
-
-    fs::write(&launcher, script).map_err(|err| {
-        format!(
-            "failed to write native terminal launcher {}: {err}",
-            launcher.display()
-        )
-    })?;
-    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).map_err(|err| {
-        format!(
-            "failed to make native terminal launcher executable {}: {err}",
-            launcher.display()
-        )
-    })?;
-    Ok(launcher)
-}
-
 /// The base environment shared by both renderers: the resolved child PATH,
 /// 24-bit color capability, and a UTF-8 locale backfill. TERM is added by the
 /// host-owned PTY spawn below; using the widely installed xterm-256color entry
@@ -980,9 +863,6 @@ fn spawn_portable_pty(
 /// `complete_pending_attach`.
 pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     let native_surface = state.pane_is_native(&pane_id)? == Some(true);
-    if native_surface && state.pane_has_host_pty(&pane_id)? != Some(true) {
-        return Ok(());
-    }
     let backlog = state
         .pane_backlog(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -1284,11 +1164,6 @@ fn write_pane_input<W: Write + ?Sized>(
 }
 
 pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    if state.pane_is_native(&pane_id)? == Some(true)
-        && state.pane_has_host_pty(&pane_id)? != Some(true)
-    {
-        return state.update_pane_size(&pane_id, cols, rows);
-    }
     let master = state
         .pane_master(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -1342,23 +1217,6 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
         return Err(format!("pane {pane_id} was not found"));
     }
 
-    if state.pane_is_native(&pane_id)? == Some(true)
-        && state.pane_has_host_pty(&pane_id)? != Some(true)
-    {
-        let Some(root_pid) = state.native_pane_pid(&pane_id)? else {
-            return Ok(PaneActivity::idle());
-        };
-        let processes = running_descendant_processes(root_pid);
-        return if processes.is_empty() {
-            Ok(PaneActivity::idle())
-        } else {
-            Ok(PaneActivity::running_process(
-                processes.len(),
-                processes.first().map(|process| process.name.clone()),
-            ))
-        };
-    }
-
     let child = state
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -1392,62 +1250,8 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
     }
 }
 
-/// Starts a lightweight descendant snapshotter once the native launcher reports
-/// the PID that Ghostty owns. The snapshot retains processes that later detach or
-/// become reparented, while the start signature prevents a recycled PID from being
-/// signalled during a much later pane close.
-pub fn track_native_pane_process(state: AppState, pane_id: String, root_pid: u32) {
-    let Some(root) = tracked_process(root_pid) else {
-        return;
-    };
-    let mut tree = NativeProcessTree {
-        root,
-        descendants: HashMap::new(),
-    };
-    merge_live_descendants(&mut tree);
-    if let Ok(mut trees) = native_process_trees().lock() {
-        trees.insert(pane_id.clone(), tree);
-    }
-
-    thread::spawn(move || {
-        let mut tick: u32 = 0;
-        loop {
-            thread::sleep(CHILD_WATCH_INTERVAL);
-            tick = tick.wrapping_add(1);
-            if state.native_pane_pid(&pane_id).ok().flatten() != Some(root_pid) {
-                break;
-            }
-            let root_alive = process_matches(
-                native_process_trees()
-                    .lock()
-                    .ok()
-                    .and_then(|trees| trees.get(&pane_id).map(|tree| tree.root.clone()))
-                    .as_ref(),
-            );
-            // The root-liveness probe above is a proc_pidinfo syscall, so it can
-            // run every tick; the descendant walk forks a `ps` snapshot and is
-            // gated to the coarse refresh, matching the portable watcher.
-            // Teardown accuracy doesn't depend on this cadence: the close path
-            // re-merges via take_native_process_tree before signalling.
-            if tick.is_multiple_of(DESCENDANT_REFRESH_TICKS)
-                && let Ok(mut trees) = native_process_trees().lock()
-                && let Some(tree) = trees.get_mut(&pane_id)
-                && tree.root.pid == root_pid
-            {
-                merge_live_descendants(tree);
-            }
-            if !root_alive {
-                break;
-            }
-        }
-    });
-}
-
 pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     let native_surface = state.pane_is_native(&pane_id)? == Some(true);
-    if native_surface && state.pane_has_host_pty(&pane_id)? != Some(true) {
-        return kill_native_pane(state, pane_id);
-    }
     let child = state
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -1493,143 +1297,17 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     Ok(())
 }
 
-fn kill_native_pane(state: &AppState, pane_id: String) -> Result<(), String> {
-    // Claim the close before ANY destructive step, not just before touching the
-    // surface. Both this function and the natural-exit close delegate
-    // (`native_pane_did_close`) now run off the main thread, so a user close
-    // racing a pane whose process just exited could interleave with the
-    // delegate's teardown: duplicate undo snapshots, a spurious "pane was not
-    // found" from the surface close, and the abort branch below clearing the
-    // delegate's strand snapshot. Whoever inserts into `closing_native_panes`
-    // first owns the entire teardown; the loser backs off. (The claim also
-    // covers the original hazard: `close_surface` can fire the close delegate
-    // re-entrantly while this function is mid-sequence.)
-    if let Ok(mut closing) = closing_native_panes().lock()
-        && !closing.insert(pane_id.clone())
-    {
-        // The close delegate already owns this pane's teardown — it captures,
-        // removes, and releases waiters itself, so the user's close has
-        // nothing left to do.
-        return Ok(());
-    }
-    let pane_agent_id = state
-        .agent_by_pane(&pane_id)
-        .ok()
-        .flatten()
-        .map(|agent| agent.id);
-    if let Err(err) = state.capture_last_closed_pane(&pane_id) {
-        eprintln!("qmux: failed to capture closed native pane {pane_id}: {err}");
-    }
-    let process_tree = take_native_process_tree(state, &pane_id);
-    if let Some(tree) = process_tree.as_ref() {
-        signal_native_process_tree(tree, libc::SIGTERM);
-    }
-    let terminate_result = crate::native_terminal::terminate(&pane_id);
-    let had_process_tree = process_tree.is_some();
-    if let Some(tree) = process_tree {
-        // Escalate to SIGKILL after the grace window on a background thread,
-        // like the natural-exit path in `native_pane_did_close`: `pane_kill`
-        // is a synchronous command on the main thread, and sleeping the grace
-        // period inline stalled the UI for every pane close.
-        thread::spawn(move || {
-            finish_native_process_tree_termination(&tree, NATIVE_PROCESS_TERM_GRACE);
-        });
-    }
-    if let Err(err) = terminate_result
-        && state.pane_is_native(&pane_id).ok().flatten() == Some(true)
-    {
-        // Only leave the pane in place for a retry when nothing destructive has
-        // happened yet (no tracked tree meant nothing was signalled). Once the
-        // process tree has been SIGTERM/SIGKILLed, keeping a "Running" pane
-        // whose processes are dead would desync state — fall through and
-        // remove it despite the surface-close error.
-        if !had_process_tree {
-            state.clear_last_closed_pane_for_pane(&pane_id);
-            if let Ok(mut closing) = closing_native_panes().lock() {
-                closing.remove(&pane_id);
-            }
-            return Err(err);
-        }
-        eprintln!(
-            "qmux: native surface close failed for pane {pane_id}; removing the pane anyway: {err}"
-        );
-    }
-    let remove_result = state.remove_pane(&pane_id);
-    let _ = crate::native_terminal::remove(&pane_id);
-    if let Some(agent_id) = pane_agent_id
-        && let Err(err) = release_waiters_for_agent(state, &agent_id)
-    {
-        eprintln!("qmux: failed to release waiters for closed agent {agent_id}: {err}");
-    }
-    remove_shell_integration_dir(&pane_id);
-    if let Ok(mut closing) = closing_native_panes().lock() {
-        closing.remove(&pane_id);
-    }
-    remove_result
-}
-
 pub fn native_pane_did_close(state: &AppState, pane_id: &str, process_alive: bool) {
     if process_alive && let Err(err) = state.settle_research_pane_cancelled(pane_id) {
         eprintln!("qmux: failed to cancel user-closed research pane {pane_id}: {err}");
     }
-    if state.pane_has_host_pty(pane_id).ok().flatten() == Some(true) {
-        if let Err(err) = kill_pane(state, pane_id.to_string()) {
-            eprintln!("qmux: failed to close host-managed pane {pane_id}: {err}");
-        }
-        return;
-    }
-    // Atomically claim this close. A close `kill_native_pane` owns (it claims
-    // before its first destructive step, and its `terminate` can re-fire this
-    // delegate) — or a duplicate delegate delivery — fails the insert and
-    // backs off; otherwise this thread owns the whole teardown and releases
-    // the claim when done. A late delivery after a finished close claims
-    // successfully but is caught by the pane-registered check below.
+    // A delegate delivery for a pane no longer in the model (a late or
+    // duplicate close) has nothing left to tear down.
+    if state.pane_has_host_pty(pane_id).ok().flatten() == Some(true)
+        && let Err(err) = kill_pane(state, pane_id.to_string())
     {
-        let Ok(mut closing) = closing_native_panes().lock() else {
-            return;
-        };
-        if !closing.insert(pane_id.to_string()) {
-            return;
-        }
+        eprintln!("qmux: failed to close host-managed pane {pane_id}: {err}");
     }
-    native_pane_did_close_owned(state, pane_id);
-    if let Ok(mut closing) = closing_native_panes().lock() {
-        closing.remove(pane_id);
-    }
-}
-
-fn native_pane_did_close_owned(state: &AppState, pane_id: &str) {
-    if state.pane_is_native(pane_id).ok().flatten() != Some(true) {
-        return;
-    }
-    let process_tree = take_native_process_tree(state, pane_id);
-    if let Some(tree) = process_tree {
-        signal_native_process_tree(&tree, libc::SIGTERM);
-        thread::spawn(move || {
-            finish_native_process_tree_termination(&tree, NATIVE_PROCESS_TERM_GRACE);
-        });
-    }
-    let pane_agent_id = state
-        .agent_by_pane(pane_id)
-        .ok()
-        .flatten()
-        .map(|agent| agent.id);
-    if state
-        .closing_pane_would_strand_queued_work(pane_id)
-        .unwrap_or(false)
-        && let Err(err) = state.capture_last_closed_pane(pane_id)
-    {
-        eprintln!("qmux: failed to capture exited native pane {pane_id}: {err}");
-    }
-    if let Err(err) = state.remove_pane(pane_id) {
-        eprintln!("qmux: failed to remove exited native pane {pane_id}: {err}");
-    }
-    if let Some(agent_id) = pane_agent_id
-        && let Err(err) = release_waiters_for_agent(state, &agent_id)
-    {
-        eprintln!("qmux: failed to release waiters for exited agent {agent_id}: {err}");
-    }
-    remove_shell_integration_dir(pane_id);
 }
 
 /// Best-effort teardown of every pane's process tree on app exit.
@@ -1643,28 +1321,6 @@ fn native_pane_did_close_owned(state: &AppState, pane_id: &str) {
 /// the process is about to exit anyway. It cannot help a hard SIGKILL/force-quit,
 /// which no in-process handler can intercept.
 pub fn kill_all_panes(state: &AppState) {
-    let mut native_process_trees = Vec::new();
-    match state.native_pane_ids() {
-        Ok(panes) => {
-            for pane_id in panes {
-                if let Some(tree) = take_native_process_tree(state, &pane_id) {
-                    signal_native_process_tree(&tree, libc::SIGTERM);
-                    native_process_trees.push(tree);
-                }
-                if let Err(err) = crate::native_terminal::terminate(&pane_id) {
-                    eprintln!("qmux: failed to close native pane {pane_id} on exit: {err}");
-                }
-                remove_shell_integration_dir(&pane_id);
-            }
-        }
-        Err(err) => eprintln!("qmux: failed to enumerate native panes for exit cleanup: {err}"),
-    }
-    if !native_process_trees.is_empty() {
-        thread::sleep(NATIVE_PROCESS_TERM_GRACE);
-        for tree in &native_process_trees {
-            signal_native_process_tree(tree, libc::SIGKILL);
-        }
-    }
     let children = match state.all_pane_children() {
         Ok(children) => children,
         Err(err) => {
@@ -1900,159 +1556,6 @@ fn record_scrollback(state: &AppState, pane_id: &str, chunk: &[u8]) {
     if let Err(err) = append_pane_scrollback(&state.config().workspace_root, pane_id, chunk) {
         eprintln!("qmux: failed to record scrollback for pane {pane_id}: {err}");
     }
-}
-
-fn native_process_trees() -> &'static Mutex<HashMap<String, NativeProcessTree>> {
-    NATIVE_PROCESS_TREES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Panes whose close is currently owned by `kill_native_pane`. Ghostty's
-/// `close_surface` can invoke the close delegate before `terminate` returns,
-/// which would re-enter `native_pane_did_close` while the pane is still
-/// registered and capture/remove/emit a second time for the same close.
-fn closing_native_panes() -> &'static Mutex<HashSet<String>> {
-    CLOSING_NATIVE_PANES.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-struct ProcBsdInfo {
-    pbi_flags: u32,
-    pbi_status: u32,
-    pbi_xstatus: u32,
-    pbi_pid: u32,
-    pbi_ppid: u32,
-    pbi_uid: u32,
-    pbi_gid: u32,
-    pbi_ruid: u32,
-    pbi_rgid: u32,
-    pbi_svuid: u32,
-    pbi_svgid: u32,
-    rfu_1: u32,
-    pbi_comm: [libc::c_char; 16],
-    pbi_name: [libc::c_char; 32],
-    pbi_nfiles: u32,
-    pbi_pgid: u32,
-    pbi_pjobc: u32,
-    e_tdev: u32,
-    e_tpgid: u32,
-    pbi_nice: i32,
-    pbi_start_tvsec: u64,
-    pbi_start_tvusec: u64,
-}
-
-#[cfg(target_os = "macos")]
-#[link(name = "proc")]
-unsafe extern "C" {
-    fn proc_pidinfo(
-        pid: libc::c_int,
-        flavor: libc::c_int,
-        arg: u64,
-        buffer: *mut libc::c_void,
-        buffer_size: libc::c_int,
-    ) -> libc::c_int;
-}
-
-#[cfg(target_os = "macos")]
-fn process_start_signature(pid: u32) -> Option<String> {
-    const PROC_PIDTBSDINFO: libc::c_int = 3;
-    let mut info = std::mem::MaybeUninit::<ProcBsdInfo>::zeroed();
-    let size = std::mem::size_of::<ProcBsdInfo>();
-    let read = unsafe {
-        proc_pidinfo(
-            pid as libc::c_int,
-            PROC_PIDTBSDINFO,
-            0,
-            info.as_mut_ptr().cast(),
-            size as libc::c_int,
-        )
-    };
-    if read != size as libc::c_int {
-        return None;
-    }
-    let info = unsafe { info.assume_init() };
-    Some(format!(
-        "{}:{}",
-        info.pbi_start_tvsec, info.pbi_start_tvusec
-    ))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn process_start_signature(pid: u32) -> Option<String> {
-    let output = Command::new("/bin/ps")
-        .arg("-p")
-        .arg(pid.to_string())
-        .arg("-o")
-        .arg("lstart=")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let signature = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!signature.is_empty()).then_some(signature)
-}
-
-fn tracked_process(pid: u32) -> Option<TrackedProcess> {
-    Some(TrackedProcess {
-        pid,
-        start_signature: process_start_signature(pid)?,
-    })
-}
-
-fn process_matches(process: Option<&TrackedProcess>) -> bool {
-    let Some(process) = process else { return false };
-    process_start_signature(process.pid).as_deref() == Some(process.start_signature.as_str())
-}
-
-fn merge_live_descendants(tree: &mut NativeProcessTree) {
-    for pid in descendant_process_ids(tree.root.pid) {
-        let Some(process) = tracked_process(pid) else {
-            continue;
-        };
-        match tree.descendants.get(&pid) {
-            Some(existing) if process_matches(Some(existing)) => {}
-            _ => {
-                tree.descendants.insert(pid, process);
-            }
-        }
-    }
-}
-
-fn take_native_process_tree(state: &AppState, pane_id: &str) -> Option<NativeProcessTree> {
-    let root_pid = state.native_pane_pid(pane_id).ok().flatten()?;
-    let mut tree = native_process_trees()
-        .lock()
-        .ok()
-        .and_then(|mut trees| trees.remove(pane_id))
-        .filter(|tree| tree.root.pid == root_pid)?;
-    merge_live_descendants(&mut tree);
-    Some(tree)
-}
-
-fn signal_native_process_tree(tree: &NativeProcessTree, signal: libc::c_int) {
-    if process_matches(Some(&tree.root)) {
-        // Ghostty launches the command as a session/process-group leader. Verify
-        // that invariant before using a negative pid so a malformed report can
-        // never target qmux's own group.
-        let group_id = unsafe { libc::getpgid(tree.root.pid as libc::pid_t) };
-        if group_id == tree.root.pid as libc::pid_t {
-            let _ = unsafe { libc::kill(-group_id, signal) };
-        }
-        let _ = unsafe { libc::kill(tree.root.pid as libc::pid_t, signal) };
-    }
-    for process in tree.descendants.values() {
-        if process.pid != tree.root.pid && process_matches(Some(process)) {
-            let _ = unsafe { libc::kill(process.pid as libc::pid_t, signal) };
-        }
-    }
-}
-
-fn finish_native_process_tree_termination(tree: &NativeProcessTree, grace: Duration) {
-    if !grace.is_zero() {
-        thread::sleep(grace);
-    }
-    signal_native_process_tree(tree, libc::SIGKILL);
 }
 
 fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
@@ -2871,60 +2374,6 @@ mod tests {
                 .any(|(candidate, _)| *candidate == pid),
             "ps snapshot did not include the test process"
         );
-    }
-
-    #[test]
-    fn native_process_tree_terminates_group_and_tracked_escapee() {
-        let mut root = Command::new("/bin/sh");
-        root.arg("-c")
-            .arg("trap '' TERM; exec /bin/sleep 30")
-            .process_group(0);
-        let mut root = root.spawn().expect("spawn isolated native root");
-        let mut escaped = Command::new("/bin/sh");
-        escaped
-            .arg("-c")
-            .arg("trap '' TERM; exec /bin/sleep 30")
-            .process_group(0);
-        let mut escaped = escaped.spawn().expect("spawn simulated escaped descendant");
-
-        let root_process = tracked_process(root.id()).expect("track root identity");
-        let escaped_process = tracked_process(escaped.id()).expect("track escaped identity");
-        let tree = NativeProcessTree {
-            root: root_process,
-            descendants: HashMap::from([(escaped_process.pid, escaped_process)]),
-        };
-
-        signal_native_process_tree(&tree, libc::SIGTERM);
-        finish_native_process_tree_termination(&tree, Duration::from_millis(50));
-        assert!(
-            wait_for_test_child(&mut root),
-            "native root survived teardown"
-        );
-        assert!(
-            wait_for_test_child(&mut escaped),
-            "tracked escaped descendant survived teardown"
-        );
-    }
-
-    #[test]
-    fn native_process_tree_does_not_signal_reused_identity() {
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()
-            .expect("spawn identity test child");
-        let mut stale = tracked_process(child.id()).expect("track child identity");
-        stale.start_signature.push_str(" stale");
-        let tree = NativeProcessTree {
-            root: stale,
-            descendants: HashMap::new(),
-        };
-
-        signal_native_process_tree(&tree, libc::SIGKILL);
-        thread::sleep(Duration::from_millis(30));
-        assert!(child.try_wait().expect("inspect child").is_none());
-        let _ = child.kill();
-        let _ = child.wait();
     }
 
     #[test]

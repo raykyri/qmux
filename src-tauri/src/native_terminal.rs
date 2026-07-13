@@ -243,11 +243,6 @@ mod imp {
             responder_state: i32,
         ) -> i32;
         fn qmux_native_terminal_initialize(native_view: *mut c_void) -> i32;
-        fn qmux_native_terminal_create(
-            pane_id: *const c_char,
-            launcher_path: *const c_char,
-            working_directory: *const c_char,
-        ) -> i32;
         fn qmux_native_terminal_create_host_managed(
             pane_id: *const c_char,
             working_directory: *const c_char,
@@ -363,34 +358,6 @@ mod imp {
             Ok(())
         } else {
             Err("failed to attach the native terminal host beneath WKWebView".to_string())
-        }
-    }
-
-    pub fn create(
-        pane_id: &str,
-        launcher_path: &str,
-        working_directory: Option<&str>,
-    ) -> Result<(), String> {
-        let pane_id = cstring(pane_id, "pane id")?;
-        let launcher_path = cstring(launcher_path, "launcher path")?;
-        let working_directory = working_directory
-            .map(|value| cstring(value, "working directory"))
-            .transpose()?;
-        let working_directory_ptr = working_directory
-            .as_ref()
-            .map_or(std::ptr::null(), |value| value.as_ptr());
-        // SAFETY: Swift copies both strings synchronously before returning.
-        if unsafe {
-            qmux_native_terminal_create(
-                pane_id.as_ptr(),
-                launcher_path.as_ptr(),
-                working_directory_ptr,
-            )
-        } == 1
-        {
-            Ok(())
-        } else {
-            Err("failed to create the native terminal surface".to_string())
         }
     }
 
@@ -747,14 +714,6 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
-    pub fn create(
-        _pane_id: &str,
-        _launcher_path: &str,
-        _working_directory: Option<&str>,
-    ) -> Result<(), String> {
-        Err("native terminals are only available on macOS".to_string())
-    }
-
     pub fn create_host_managed(
         _pane_id: &str,
         _working_directory: Option<&str>,
@@ -835,7 +794,7 @@ mod imp {
 
 #[allow(unused_imports)]
 pub use imp::{
-    action, available, create, create_host_managed, focus, initialize, is_ready_for_replay,
+    action, available, create_host_managed, focus, initialize, is_ready_for_replay,
     paste_approved_text, receive, remove, seed_settings, send_text, set_layout,
     set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown, submit,
     terminate, update_settings,

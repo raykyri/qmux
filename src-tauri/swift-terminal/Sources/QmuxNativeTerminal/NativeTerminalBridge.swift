@@ -42,28 +42,6 @@ public func qmuxNativeTerminalInitialize(
     }
 }
 
-@_cdecl("qmux_native_terminal_create")
-public func qmuxNativeTerminalCreate(
-    _ paneID: UnsafePointer<CChar>?,
-    _ launcherPath: UnsafePointer<CChar>?,
-    _ workingDirectory: UnsafePointer<CChar>?
-) -> Int32 {
-    guard let paneID = terminalString(paneID),
-          let launcherPath = terminalString(launcherPath)
-    else {
-        return 0
-    }
-    let cwd = terminalString(workingDirectory)
-    return onTerminalMain {
-        NativeTerminalHost.shared.createPane(
-            id: paneID,
-            launcherPath: launcherPath,
-            workingDirectory: cwd
-        )
-            ? 1 : 0
-    }
-}
-
 @_cdecl("qmux_native_terminal_create_host_managed")
 public func qmuxNativeTerminalCreateHostManaged(
     _ paneID: UnsafePointer<CChar>?,
@@ -72,12 +50,7 @@ public func qmuxNativeTerminalCreateHostManaged(
     guard let paneID = terminalString(paneID) else { return 0 }
     let cwd = terminalString(workingDirectory)
     return onTerminalMain {
-        NativeTerminalHost.shared.createPane(
-            id: paneID,
-            launcherPath: "",
-            workingDirectory: cwd,
-            hostManaged: true
-        ) ? 1 : 0
+        NativeTerminalHost.shared.createPane(id: paneID, workingDirectory: cwd) ? 1 : 0
     }
 }
 

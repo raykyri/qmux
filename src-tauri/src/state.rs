@@ -37,10 +37,6 @@ pub enum PaneBackend {
         /// Ghostty host-managed surface instead of the webview renderer.
         native_surface: bool,
     },
-    // Kept for decoding/teardown compatibility with the previous Ghostty-owned
-    // process backend and for its focused lifecycle tests. New panes use HostPty.
-    #[allow(dead_code)]
-    Native { root_pid: Option<u32> },
 }
 
 /// Upper bound on a pane's reported working directory. Comfortably above any
@@ -6312,9 +6308,8 @@ impl AppState {
         Ok(model
             .panes
             .get(pane_id)
-            .and_then(|pane| match &pane.backend {
-                PaneBackend::HostPty { writer, .. } => Some(writer.clone()),
-                PaneBackend::Native { .. } => None,
+            .map(|pane| match &pane.backend {
+                PaneBackend::HostPty { writer, .. } => writer.clone(),
             }))
     }
 
@@ -6327,9 +6322,8 @@ impl AppState {
         Ok(model
             .panes
             .get(pane_id)
-            .and_then(|pane| match &pane.backend {
-                PaneBackend::HostPty { master, .. } => Some(master.clone()),
-                PaneBackend::Native { .. } => None,
+            .map(|pane| match &pane.backend {
+                PaneBackend::HostPty { master, .. } => master.clone(),
             }))
     }
 
@@ -6342,9 +6336,8 @@ impl AppState {
         Ok(model
             .panes
             .get(pane_id)
-            .and_then(|pane| match &pane.backend {
-                PaneBackend::HostPty { child, .. } => Some(child.clone()),
-                PaneBackend::Native { .. } => None,
+            .map(|pane| match &pane.backend {
+                PaneBackend::HostPty { child, .. } => child.clone(),
             }))
     }
 
@@ -6360,9 +6353,8 @@ impl AppState {
         Ok(model
             .panes
             .iter()
-            .filter_map(|(pane_id, pane)| match &pane.backend {
-                PaneBackend::HostPty { child, .. } => Some((pane_id.clone(), child.clone())),
-                PaneBackend::Native { .. } => None,
+            .map(|(pane_id, pane)| match &pane.backend {
+                PaneBackend::HostPty { child, .. } => (pane_id.clone(), child.clone()),
             })
             .collect())
     }
@@ -6388,9 +6380,8 @@ impl AppState {
         Ok(model
             .panes
             .get(pane_id)
-            .and_then(|pane| match &pane.backend {
-                PaneBackend::HostPty { backlog, .. } => Some(backlog.clone()),
-                PaneBackend::Native { .. } => None,
+            .map(|pane| match &pane.backend {
+                PaneBackend::HostPty { backlog, .. } => backlog.clone(),
             }))
     }
 
@@ -6401,7 +6392,6 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.panes.get(pane_id).map(|pane| match &pane.backend {
-            PaneBackend::Native { .. } => true,
             PaneBackend::HostPty { native_surface, .. } => *native_surface,
         }))
     }
@@ -6457,63 +6447,6 @@ impl AppState {
             .research_nodes
             .values()
             .any(|node| node.agent_id.as_deref() == Some(agent_id)))
-    }
-
-    pub fn native_pane_pid(&self, pane_id: &str) -> Result<Option<u32>, String> {
-        let model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .get(pane_id)
-            .and_then(|pane| match &pane.backend {
-                PaneBackend::Native { root_pid } => *root_pid,
-                PaneBackend::HostPty { .. } => None,
-            }))
-    }
-
-    pub fn native_pane_ids(&self) -> Result<Vec<String>, String> {
-        let model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .iter()
-            .filter(|(_, pane)| matches!(pane.backend, PaneBackend::Native { .. }))
-            .map(|(pane_id, _)| pane_id.clone())
-            .collect())
-    }
-
-    pub fn set_native_pane_pid(&self, pane_id: &str, pid: u32) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        let pane = model
-            .panes
-            .get_mut(pane_id)
-            .ok_or_else(|| format!("pane {pane_id} was not found"))?;
-        match &mut pane.backend {
-            PaneBackend::Native { root_pid } => {
-                if let Some(existing) = *root_pid
-                    && existing != pid
-                {
-                    return Err(format!(
-                        "pane {pane_id} already reported native pid {existing}"
-                    ));
-                }
-                *root_pid = Some(pid);
-                Ok(())
-            }
-            PaneBackend::HostPty { .. } => {
-                Err(format!("pane {pane_id} does not use the native backend"))
-            }
-        }
     }
 
     pub fn update_pane_size(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {

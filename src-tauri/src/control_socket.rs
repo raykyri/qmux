@@ -4,7 +4,7 @@ use crate::adapters::{
 };
 use crate::connection_limit::ConnectionLimiter;
 use crate::events::QmuxEvent;
-use crate::pty::{PaneWriteOptions, track_native_pane_process, write_pane};
+use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
 use crate::workspace::{LaunchOrigin, validate_launch_workspace};
 use serde::{Deserialize, Serialize};
@@ -195,20 +195,6 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // Bind the cwd update to the authenticated pane regardless of any claimed
             // paneId, mirroring hook.notify's scoping.
             state.update_pane_cwd(&authed_pane, payload.cwd)?;
-            Ok(json!({ "updated": true }))
-        }
-        "pane.set_pid" => {
-            #[derive(Debug, Deserialize)]
-            struct SetPidPayload {
-                pid: u32,
-            }
-            let payload = serde_json::from_value::<SetPidPayload>(request.payload)
-                .map_err(|err| format!("invalid pane.set_pid payload: {err}"))?;
-            let should_track = state.native_pane_pid(&authed_pane)?.is_none();
-            state.set_native_pane_pid(&authed_pane, payload.pid)?;
-            if should_track {
-                track_native_pane_process(state.clone(), authed_pane, payload.pid);
-            }
             Ok(json!({ "updated": true }))
         }
         "agent.prepare_shell_launch" => {
