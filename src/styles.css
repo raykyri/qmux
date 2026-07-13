@@ -1137,12 +1137,20 @@
 .new-research-model {
   display: grid;
   gap: 5px;
-  max-width: 260px;
+  max-width: 360px;
   color: #8f9893;
   font-size: 11px;
 }
 
+.new-research-model-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .new-research-model input {
+  flex: 1;
+  min-width: 0;
   height: 28px;
   padding: 0 9px;
   border: 1px solid var(--control-border);

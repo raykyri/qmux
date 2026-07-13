@@ -6,6 +6,21 @@ import {
   isComposerSubmitShortcut,
 } from "../ComposerSubmitShortcut";
 import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "../../lib/adapterIcons";
+import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
+import { CODEX_ADAPTER_ID } from "../../adapters/codex";
+
+// Model presets per adapter; "custom" reveals a free-form input. Adapters
+// without a curated list only offer "custom".
+const MODEL_PRESETS_BY_ADAPTER: Record<string, string[]> = {
+  [CLAUDE_ADAPTER_ID]: ["fable", "opus", "sonnet", "custom"],
+  [CODEX_ADAPTER_ID]: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "custom"],
+};
+
+const CUSTOM_MODEL = "custom";
+
+function modelPresetsFor(adapter: string): string[] {
+  return MODEL_PRESETS_BY_ADAPTER[adapter] ?? [CUSTOM_MODEL];
+}
 
 interface NewResearchDialogProps {
   open: boolean;
@@ -35,7 +50,8 @@ export default function NewResearchDialog({
 }: NewResearchDialogProps) {
   const [prompt, setPrompt] = useState("");
   const [adapter, setAdapter] = useState("");
-  const [model, setModel] = useState("");
+  const [modelChoice, setModelChoice] = useState<string | null>(null);
+  const [customModel, setCustomModel] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // Shown inside the dialog: a global banner renders behind the modal
@@ -57,7 +73,8 @@ export default function NewResearchDialog({
       return;
     }
     setPrompt("");
-    setModel("");
+    setModelChoice(null);
+    setCustomModel("");
     setAdvancedOpen(false);
     setError(null);
     setAdapter(adapters.find((candidate) => candidate.default)?.id ?? adapters[0]?.id ?? "");
@@ -102,6 +119,19 @@ export default function NewResearchDialog({
     return null;
   }
 
+  // A stale choice (left over from another adapter) silently falls back to the
+  // adapter's first preset, so the trigger always shows what will launch.
+  const modelPresets = modelPresetsFor(adapter);
+  const selectedModel =
+    modelChoice && modelPresets.includes(modelChoice) ? modelChoice : modelPresets[0];
+  // The model only applies while the "Select model" section is open; unchecked
+  // launches keep the agent default, as before.
+  const resolvedModel = !advancedOpen
+    ? null
+    : selectedModel === CUSTOM_MODEL
+      ? customModel.trim() || null
+      : selectedModel;
+
   async function submit() {
     if (!prompt.trim() || !adapter || submitting) {
       return;
@@ -112,7 +142,7 @@ export default function NewResearchDialog({
       await onCreate({
         prompt: prompt.trim(),
         adapter,
-        model: model.trim() || null,
+        model: resolvedModel,
         workspaceId,
       });
       onClose();
@@ -175,7 +205,7 @@ export default function NewResearchDialog({
                 checked={advancedOpen}
                 onChange={(event) => setAdvancedOpen(event.currentTarget.checked)}
               />
-              <span>Advanced</span>
+              <span>Select model</span>
             </label>
           </div>
           <div className="command-launcher-controls">
@@ -215,15 +245,26 @@ export default function NewResearchDialog({
             </p>
           ) : null}
           {advancedOpen ? (
-            <label className="new-research-model">
-              <span>Model (optional)</span>
-              <input
-                type="text"
-                value={model}
-                placeholder="Agent default"
-                onChange={(event) => setModel(event.currentTarget.value)}
-              />
-            </label>
+            <div className="new-research-model">
+              <span>Model</span>
+              <div className="new-research-model-controls">
+                <LauncherSelect
+                  value={selectedModel}
+                  options={modelPresets.map((preset) => ({ value: preset, label: preset }))}
+                  ariaLabel="Model"
+                  onChange={setModelChoice}
+                />
+                {selectedModel === CUSTOM_MODEL ? (
+                  <input
+                    type="text"
+                    value={customModel}
+                    placeholder="Model name"
+                    aria-label="Custom model"
+                    onChange={(event) => setCustomModel(event.currentTarget.value)}
+                  />
+                ) : null}
+              </div>
+            </div>
           ) : null}
         </div>
       ) : null}
