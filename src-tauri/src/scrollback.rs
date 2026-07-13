@@ -288,6 +288,15 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
                 || alternate_set
                 || alternate_reset
                 || matches!(csi.final_byte, b'h' | b'l' | b'c' | b'n')
+                // Kitty's keyboard protocol uses private CSI-u forms to
+                // push, pop, set, and query progressive-enhancement flags.
+                // Replaying an agent's historical push into a fresh surface
+                // leaves release-event reporting active after the resumed
+                // agent exits and pops only its own live push. Queries are
+                // stateful too: replaying one writes a reply into the fresh
+                // PTY's input stream. Plain CSI-u remains valid ANSI cursor
+                // restoration, so only discard the private forms.
+                || csi.is_kitty_keyboard_control()
                 // Window manipulation includes resize and state queries. It
                 // can call back into the host instead of merely drawing.
                 || csi.final_byte == b't'
@@ -348,18 +357,22 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
 struct ParsedCsi {
     final_byte: u8,
     intermediates: Vec<u8>,
-    private: bool,
+    parameter_prefix: Option<u8>,
     params: Vec<u32>,
 }
 
 impl ParsedCsi {
     fn is_alternate_screen(&self, final_byte: u8) -> bool {
-        self.private
+        self.parameter_prefix == Some(b'?')
             && self.final_byte == final_byte
             && self
                 .params
                 .iter()
                 .any(|param| matches!(param, 47 | 1047 | 1049))
+    }
+
+    fn is_kitty_keyboard_control(&self) -> bool {
+        self.final_byte == b'u' && matches!(self.parameter_prefix, Some(b'<' | b'=' | b'>' | b'?'))
     }
 }
 
@@ -370,12 +383,14 @@ fn find_csi_end(bytes: &[u8], start: usize) -> Option<usize> {
 fn parse_csi(bytes: &[u8], start: usize, end: usize) -> ParsedCsi {
     let mut params = Vec::new();
     let mut intermediates = Vec::new();
-    let mut private = false;
+    let mut parameter_prefix = None;
     let mut current = None::<u32>;
 
     for byte in bytes[start..end].iter().copied() {
         match byte {
-            b'?' => private = true,
+            b'<'..=b'?' if parameter_prefix.is_none() && params.is_empty() && current.is_none() => {
+                parameter_prefix = Some(byte);
+            }
             b'0'..=b'9' => {
                 current = Some(
                     current
@@ -406,7 +421,7 @@ fn parse_csi(bytes: &[u8], start: usize, end: usize) -> ParsedCsi {
     ParsedCsi {
         final_byte: bytes[end],
         intermediates,
-        private,
+        parameter_prefix,
         params,
     }
 }
@@ -574,6 +589,20 @@ mod tests {
     fn replay_sanitizer_removes_host_controls_modes_and_queries() {
         let input = b"before\r\n\x1b]0;secret title\x07\x1bPpayload\x07still payload\x1b\\\x1b[?2004hprompt \x1b[c\x1b[6n\x1b[8;50;120t";
         assert_eq!(sanitize_scrollback_replay(input), b"before\r\nprompt ");
+    }
+
+    #[test]
+    fn replay_sanitizer_removes_kitty_keyboard_controls_and_queries() {
+        let input = b"before\x1b[>7u\x1b[?u\x1b[=3;2u\x1b[<u\x9b>7u\xc2\x9b?uafter";
+
+        assert_eq!(sanitize_scrollback_replay(input), b"beforeafter");
+    }
+
+    #[test]
+    fn replay_sanitizer_preserves_plain_csi_u_cursor_restore() {
+        let input = b"before\x1b[uafter";
+
+        assert_eq!(sanitize_scrollback_replay(input), input);
     }
 
     #[test]
