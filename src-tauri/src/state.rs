@@ -4678,11 +4678,17 @@ impl AppState {
 
     /// Records one background subagent settling. Reaching zero does not finish
     /// the parent: it still needs a synthesis turn and a later parent Stop.
+    ///
+    /// Returns `Some(remaining)` when the stop matched tracked work, `None` for
+    /// a stop with nothing tracked (late, duplicate, or never-started) so
+    /// callers can leave the parent's status alone. Start/stop id asymmetry —
+    /// one side of the pair carrying an id the other lacks — still settles one
+    /// tracked subagent rather than leaving the counter wedged above zero.
     pub fn agent_subagent_stopped(
         &self,
         agent_id: &str,
         subagent_id: Option<&str>,
-    ) -> Result<usize, String> {
+    ) -> Result<Option<usize>, String> {
         let mut model = self
             .inner
             .model
@@ -4692,15 +4698,25 @@ impl AppState {
             Some(active) => {
                 match subagent_id.map(str::trim).filter(|id| !id.is_empty()) {
                     Some(id) => {
-                        active.identified.remove(id);
+                        if !active.identified.remove(id) {
+                            active.anonymous = active.anonymous.saturating_sub(1);
+                        }
                     }
-                    None => active.anonymous = active.anonymous.saturating_sub(1),
+                    None => {
+                        if active.anonymous > 0 {
+                            active.anonymous -= 1;
+                        } else if let Some(any) = active.identified.iter().next().cloned() {
+                            // An anonymous stop still means one subagent settled;
+                            // which tracked id it was is unknowable, so retire any.
+                            active.identified.remove(&any);
+                        }
+                    }
                 }
-                active.count()
+                Some(active.count())
             }
-            None => 0,
+            None => None,
         };
-        if remaining == 0 {
+        if remaining.is_none_or(|remaining| remaining == 0) {
             model.agent_active_subagents.remove(agent_id);
         }
         bump_agent_activity_locked(&mut model, agent_id);
@@ -8036,7 +8052,7 @@ mod tests {
             state
                 .agent_subagent_stopped("research-agent", Some("child-1"))
                 .unwrap(),
-            0
+            Some(0)
         );
         // Child completion alone is not the parent completion boundary.
         assert_eq!(
@@ -8062,10 +8078,46 @@ mod tests {
         assert_eq!(state.agent_subagent_started("parent-1", None).unwrap(), 1);
         assert_eq!(state.agent_subagent_started("parent-1", None).unwrap(), 2);
         assert!(!state.agent_has_active_subagents("parent-2").unwrap());
-        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), 1);
-        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), 0);
-        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), 0);
+        assert_eq!(
+            state.agent_subagent_stopped("parent-1", None).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            state.agent_subagent_stopped("parent-1", None).unwrap(),
+            Some(0)
+        );
+        // A stop with nothing tracked reports as such so callers leave the
+        // parent's status alone.
+        assert_eq!(state.agent_subagent_stopped("parent-1", None).unwrap(), None);
         assert!(!state.agent_has_active_subagents("parent-1").unwrap());
+    }
+
+    // A stop hook whose payload lost (or never had) the id its start carried
+    // must still settle one tracked subagent — a permanently non-zero counter
+    // suppresses every future parent Stop.
+    #[test]
+    fn asymmetric_subagent_ids_still_settle_tracked_work() {
+        let state = AppState::new(test_config(temp_workspace()));
+
+        // Identified start, anonymous stop.
+        state
+            .agent_subagent_started("parent-1", Some("child-1"))
+            .unwrap();
+        assert_eq!(
+            state.agent_subagent_stopped("parent-1", None).unwrap(),
+            Some(0)
+        );
+        assert!(!state.agent_has_active_subagents("parent-1").unwrap());
+
+        // Anonymous start, identified stop.
+        state.agent_subagent_started("parent-2", None).unwrap();
+        assert_eq!(
+            state
+                .agent_subagent_stopped("parent-2", Some("child-9"))
+                .unwrap(),
+            Some(0)
+        );
+        assert!(!state.agent_has_active_subagents("parent-2").unwrap());
     }
 
     #[test]

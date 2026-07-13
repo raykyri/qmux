@@ -620,6 +620,14 @@ impl CodexAdapter {
                         agent.status = AgentStatus::Running;
                         state.set_agent_status(&agent.id, agent.status)?;
                     }
+                    // A new main-agent turn supersedes the previous one, so
+                    // subagents tracked for it can no longer gate completion.
+                    // Clearing here also self-heals a counter wedged by a lost
+                    // SubagentStop, which would otherwise suppress every future
+                    // Stop.
+                    if super::subagent_id(&notification.payload).is_none() {
+                        state.clear_agent_subagents(&agent.id);
+                    }
                     send_tracking =
                         Some(state.match_agent_prompt_submit(&agent.id, prompt.as_deref())?);
                 }
@@ -673,12 +681,15 @@ impl CodexAdapter {
             }
             "SubagentStop" => {
                 if let Some(agent) = agent.as_mut() {
-                    state.agent_subagent_stopped(
-                        &agent.id,
-                        super::subagent_id(&notification.payload),
-                    )?;
-                    agent.status = AgentStatus::Running;
-                    state.set_agent_status(&agent.id, agent.status)?;
+                    let tracked = state
+                        .agent_subagent_stopped(&agent.id, super::subagent_id(&notification.payload))?
+                        .is_some();
+                    // A late or duplicate stop with nothing tracked must not
+                    // drag a settled agent back to Running.
+                    if tracked {
+                        agent.status = AgentStatus::Running;
+                        state.set_agent_status(&agent.id, agent.status)?;
+                    }
                 }
                 "agent.subagent_stopped"
             }
