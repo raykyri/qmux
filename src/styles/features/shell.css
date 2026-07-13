@@ -113,7 +113,7 @@
   gap: 2px;
   margin: 0 4px;
   padding: 3px 3px 2.5px;
-  border: 1px solid rgba(255, 255, 255, 0.075);
+  border: 1px solid var(--surface-border-subtle);
   border-radius: 8px;
   background: var(--sidebar-switcher-bg);
 }
@@ -144,7 +144,7 @@
 }
 
 .sidebar-mode-toggle button.is-selected {
-  color: #edf0ec;
+  color: var(--text-interactive);
   background: var(--sidebar-switcher-active-bg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
@@ -277,7 +277,7 @@
   border-left: var(--pane-tab-left-rail-width) solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: #b9c0bc;
+  color: var(--control-fg-muted);
   font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
   cursor: pointer;
@@ -436,7 +436,7 @@
   /* Interior padding holds the 4px trimmed from the sidebar's horizontal padding,
      so tabs keep their width while the card grows outward and gains breathing room. */
   padding: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.075);
+  border: 1px solid var(--surface-border-subtle);
   border-radius: 7px;
   background: var(--sidebar-group-bg);
 }
@@ -462,7 +462,7 @@
   min-height: 25px;
   padding: 2px 4px 2px 5px;
   border-radius: 5px;
-  color: #b9c0bc;
+  color: var(--control-fg-muted);
   cursor: grab;
   font-size: calc(12px + var(--turn-font-delta, 0px));
   line-height: 1.2;
@@ -479,7 +479,7 @@
 
 .pane-group-folder {
   flex: none;
-  color: #7f8884;
+  color: var(--text-subtle);
 }
 
 .pane-group-title {
@@ -522,7 +522,7 @@
 
 /* The active group (holding the selected tab) brightens slightly. */
 .pane-group.is-active-group .pane-group-name {
-  color: #edf0ec;
+  color: var(--text-interactive);
 }
 
 .pane-group-aux {
@@ -668,12 +668,12 @@
 }
 
 .pane-tab-dot.status-pending {
-  background: #7f8884;
+  background: var(--status-pending-fg);
   animation: status-dot-pulse 1.5s ease-in-out infinite;
 }
 
 .pane-tab-dot.status-idle {
-  border: 1px solid #7f8884;
+  border: 1px solid var(--status-pending-fg);
   background: transparent;
 }
 
@@ -755,26 +755,6 @@
   }
 }
 
-.app-shell.reduce-motion .pane-tab-dot.status-active,
-.app-shell.reduce-motion .pane-tab-dot.status-pending,
-.app-shell.reduce-motion .pane-tab-dot.status-attention,
-.app-shell.reduce-motion .turn-thinking-dot {
-  animation: none;
-  opacity: 1;
-  transform: translateY(var(--status-dot-y, 0));
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pane-tab-dot.status-active,
-  .pane-tab-dot.status-pending,
-  .pane-tab-dot.status-attention,
-  .turn-thinking-dot {
-    animation: none;
-    opacity: 1;
-    transform: translateY(var(--status-dot-y, 0));
-  }
-}
-
 .pane-tab small,
 .pane-tab-path,
 .pane-tab-gitmeta {
@@ -802,7 +782,7 @@
 }
 
 .pane-tab small {
-  color: #7f8884;
+  color: var(--text-subtle);
   font-size: calc(12px + var(--turn-font-delta, 0px));
 }
 
@@ -823,8 +803,8 @@
 }
 
 .pane-tab-status-clickable:hover {
-  background: #2c1a17;
-  color: #ffd3c7;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
 }
 
 .pane-tab-status-clickable:focus-visible {
@@ -952,7 +932,7 @@
 .pane-context-actions {
   margin-top: 6px;
   padding-top: 4px;
-  border-top: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-top: 0.5px solid var(--surface-border-default);
   user-select: none;
 }
 
@@ -1044,7 +1024,7 @@
 .context-menu-divider {
   height: 1px;
   margin: 4px 6px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--surface-border-default);
 }
 
 .pane-context-actions .context-menu-danger:hover:not(:disabled),
@@ -1062,7 +1042,7 @@
 .pane-context-actions .context-menu-danger:focus-visible:not(:disabled) svg,
 .group-context-actions .context-menu-danger:hover:not(:disabled) svg,
 .group-context-actions .context-menu-danger:focus-visible:not(:disabled) svg {
-  color: #ffb4a3;
+  color: var(--danger-fg-strong);
 }
 
 .pane-context-actions svg,
@@ -1099,7 +1079,7 @@
   font-weight: 600;
   line-height: 1;
   background: rgba(255, 255, 255, 0.035);
-  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 -1px 0 var(--surface-border-faint);
 }
 
 .context-menu-shortcut-options {
@@ -1134,7 +1114,7 @@
   border: 0;
   background: transparent;
   /* Match the tab's text rather than dimming the glyph. */
-  color: #b9c0bc;
+  color: var(--control-fg-muted);
   line-height: 0;
   cursor: pointer;
   text-decoration: none;
@@ -1144,7 +1124,7 @@
 }
 
 .pane-tab-close:hover {
-  color: #ffd3c7;
+  color: var(--danger-fg);
 }
 
 /* On a selected tab the × is white, matching the selected label. */
@@ -1153,7 +1133,7 @@
 }
 
 .pane-tab-row.is-selected .pane-tab-close:hover {
-  color: #ffd3c7;
+  color: var(--danger-fg);
 }
 
 .pane-tab-row:hover .pane-tab-close,
@@ -1244,7 +1224,7 @@
 .native-input-submit-actions button:hover:not(:disabled) {
   border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
-  color: #f4f3ec;
+  color: var(--text-heading);
 }
 
 .sidebar-actions button svg,
@@ -1277,7 +1257,7 @@
   /* Faint top-lit gradient — a touch lighter at the very top, settling to the
      base surface by ~40% down — so the bar reads as a lifted panel. */
   background: linear-gradient(180deg, var(--panel-highlight-bg), var(--panel-bg) 40%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 var(--surface-highlight);
   overflow: hidden;
 }
 .confirm-dialog-backdrop {
@@ -1306,7 +1286,7 @@
 .confirm-dialog h2 {
   margin: 0;
   font-size: 15px;
-  color: #f4f3ec;
+  color: var(--text-heading);
 }
 
 .confirm-dialog p {
@@ -1367,13 +1347,13 @@
 }
 
 .confirm-dialog-actions .danger {
-  border-color: #7a3b34;
-  background: #2c1a17;
-  color: #ffb4a3;
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-fg-strong);
 }
 
 .confirm-dialog-actions .danger:hover {
-  background: #3a221d;
+  background: var(--danger-bg-hover);
 }
 
 /* Dialog action buttons are focused programmatically when the dialog opens, which
@@ -1389,8 +1369,8 @@
 }
 
 .confirm-dialog-actions .danger:focus {
-  border-color: #7a3b34;
-  outline-color: #a55349;
+  border-color: var(--danger-border);
+  outline-color: var(--danger-focus-ring);
 }
 
 /* Settings panel — a small modal reusing the confirm-dialog surface. */
@@ -1536,7 +1516,7 @@
 .settings-header h2 {
   margin: 0;
   font-size: 15px;
-  color: #f4f3ec;
+  color: var(--text-heading);
 }
 
 .settings-close {
@@ -1587,7 +1567,7 @@
 
 .settings-tabs button.is-active {
   background: #273034;
-  color: #f4f3ec;
+  color: var(--text-heading);
 }
 
 .settings-content {
@@ -1651,7 +1631,7 @@
 }
 
 .settings-title-test-message.is-error {
-  color: #ffb4a8;
+  color: var(--danger-fg-message);
   opacity: 1;
 }
 
@@ -1713,7 +1693,7 @@
   width: 12px;
   height: 12px;
   border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--surface-border-overlay-strong);
 }
 
 .settings-input {
@@ -1791,7 +1771,7 @@
 }
 
 .settings-shortcut-message.is-error {
-  color: #ffb4a8;
+  color: var(--danger-fg-message);
   opacity: 1;
 }
 
@@ -1969,7 +1949,7 @@
 }
 
 .command-launcher-worktree:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-fill-subtle);
   color: var(--text-primary);
 }
 
@@ -2065,7 +2045,7 @@
 }
 
 .command-launcher-option-toggle:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-fill-subtle);
   color: var(--text-primary);
 }
 
@@ -2194,7 +2174,7 @@
 .command-launcher-adapter-select .launcher-select-trigger:hover,
 .command-launcher-options .launcher-select-trigger:hover {
   border-color: transparent;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-fill-subtle);
 }
 
 .launcher-select-popover {
@@ -2258,10 +2238,10 @@
   gap: 10px;
   max-width: 720px;
   margin: 0 auto;
-  border: 1px solid #755149;
+  border: 1px solid var(--danger-border-banner);
   border-radius: 6px;
-  background: #2a211f;
-  color: #ffd3c7;
+  background: var(--danger-bg-banner);
+  color: var(--danger-fg);
   padding: 10px 10px 10px 12px;
   font-size: 13px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
@@ -2285,19 +2265,19 @@
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
-  color: #ffd3c7;
+  color: var(--danger-fg);
   cursor: pointer;
 }
 
 .error-banner-dismiss:hover {
-  border-color: #8a5f55;
+  border-color: var(--danger-border-banner-hover);
   background: rgba(0, 0, 0, 0.22);
-  color: #ffe8e0;
+  color: var(--danger-fg-hover);
 }
 
 .error-banner-dismiss:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(224, 138, 95, 0.55);
+  box-shadow: 0 0 0 2px var(--danger-focus-shadow);
 }
 
 .error-banner-dismiss svg {
@@ -2484,7 +2464,7 @@
 }
 
 .home-cascade-card--current.tone-error {
-  border-color: rgba(224, 138, 95, 0.55);
+  border-color: var(--danger-outline);
   background: #211814;
 }
 
@@ -2519,7 +2499,7 @@
 
 .home-cascade-card--queued.has-wait {
   border-style: dashed;
-  border-color: rgba(109, 167, 236, 0.5);
+  border-color: var(--status-info-border-strong);
 }
 
 .home-cascade-card--queued.is-short-command {
@@ -2563,9 +2543,9 @@
   max-width: 100%;
   overflow: hidden;
   padding: 0 8px;
-  border: 1px solid rgba(109, 167, 236, 0.25);
+  border: 1px solid var(--status-info-border);
   border-radius: 999px;
-  background: rgba(109, 167, 236, 0.08);
+  background: var(--status-info-bg);
   color: var(--status-info-fg);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -2584,8 +2564,8 @@ button.home-cascade-wait-pill {
 }
 
 button.home-cascade-wait-pill:hover {
-  border-color: rgba(109, 167, 236, 0.5);
-  background: rgba(109, 167, 236, 0.14);
+  border-color: var(--status-info-border-strong);
+  background: var(--status-info-bg-hover);
 }
 
 button.home-cascade-wait-pill:focus-visible {
@@ -2781,4 +2761,3 @@ button.home-cascade-wait-pill:focus-visible {
   align-items: stretch;
   width: 100%;
 }
-

@@ -187,10 +187,10 @@ export default function DocumentDialog({
               </p>
             ) : null}
             <div className="confirm-dialog-actions">
-              <button type="button" disabled={submitting} onClick={onClose}>
+              <button className="control-button" type="button" disabled={submitting} onClick={onClose}>
                 Cancel
               </button>
-              <button type="submit" disabled={!canSubmit}>
+              <button className="control-button" type="submit" disabled={!canSubmit}>
                 <span>
                   {submitting
                     ? editing

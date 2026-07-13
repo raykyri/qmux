@@ -34,7 +34,7 @@ export default function RecoveredQueuePanel({
               <div key={`${agent.id}-${index}-${turn.text}`} className="recovered-queue-item">
                 <p>{turn.text}</p>
                 <div className="recovered-queue-actions">
-                  <button
+                  <button className="control-button"
                     type="button"
                     disabled={!hasTargetAgent}
                     title={
@@ -46,7 +46,7 @@ export default function RecoveredQueuePanel({
                   >
                     Queue
                   </button>
-                  <button type="button" onClick={() => onDiscardTurn(agent.id, index, turn.text)}>
+                  <button className="control-button" type="button" onClick={() => onDiscardTurn(agent.id, index, turn.text)}>
                     Discard
                   </button>
                 </div>

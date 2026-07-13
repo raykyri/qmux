@@ -79,7 +79,7 @@ function BlockedMarkdownImage({ src, alt }: ComponentPropsWithoutRef<"img">) {
   return (
     <button
       type="button"
-      className="research-blocked-image"
+      className="control-button research-blocked-image"
       onClick={() => openLink(safe)}
       onContextMenu={(event) => {
         event.preventDefault();

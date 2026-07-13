@@ -1,0 +1,40 @@
+/* Accessibility overrides intentionally outrank component transitions. Keep
+   progress spinners moving because they communicate ongoing work; decorative
+   state transitions and status pulses settle immediately. */
+.app-shell.reduce-motion,
+.app-shell.reduce-motion *,
+.app-shell.reduce-motion *::before,
+.app-shell.reduce-motion *::after {
+  scroll-behavior: auto !important;
+  transition-delay: 0s !important;
+  transition-duration: 0.01ms !important;
+}
+
+.app-shell.reduce-motion .pane-tab-dot.status-active,
+.app-shell.reduce-motion .pane-tab-dot.status-pending,
+.app-shell.reduce-motion .pane-tab-dot.status-attention,
+.app-shell.reduce-motion .turn-thinking-dot {
+  animation: none;
+  opacity: 1;
+  transform: translateY(var(--status-dot-y, 0));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .pane-tab-dot.status-active,
+  .pane-tab-dot.status-pending,
+  .pane-tab-dot.status-attention,
+  .turn-thinking-dot {
+    animation: none;
+    opacity: 1;
+    transform: translateY(var(--status-dot-y, 0));
+  }
+}

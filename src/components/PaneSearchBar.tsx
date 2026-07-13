@@ -124,7 +124,7 @@ export default function PaneSearchBar({
       {showOptions ? <div className="pane-search-toggles">
         <button
           type="button"
-          className={`pane-search-toggle ${caseSensitive ? "is-active" : ""}`}
+          className={`control-button pane-search-toggle ${caseSensitive ? "is-active" : ""}`}
           title="Match case"
           aria-pressed={caseSensitive}
           onClick={() => {
@@ -136,7 +136,7 @@ export default function PaneSearchBar({
         </button>
         <button
           type="button"
-          className={`pane-search-toggle ${useRegex ? "is-active" : ""}`}
+          className={`control-button pane-search-toggle ${useRegex ? "is-active" : ""}`}
           title="Use regular expression"
           aria-pressed={useRegex}
           onClick={() => {

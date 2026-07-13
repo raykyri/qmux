@@ -24,7 +24,7 @@ export default function SidebarModeToggle({
         type="button"
         role="tab"
         aria-selected={mode === "terminal"}
-        className={mode === "terminal" ? "is-selected" : undefined}
+        className={`control-button${mode === "terminal" ? " is-selected" : ""}`}
         onClick={() => onChange("terminal")}
       >
         <SquareTerminal size={14} aria-hidden="true" />
@@ -42,7 +42,7 @@ export default function SidebarModeToggle({
         type="button"
         role="tab"
         aria-selected={mode === "research"}
-        className={mode === "research" ? "is-selected" : undefined}
+        className={`control-button${mode === "research" ? " is-selected" : ""}`}
         onClick={() => onChange("research")}
       >
         <BookOpen size={14} aria-hidden="true" />

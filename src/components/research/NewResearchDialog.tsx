@@ -206,7 +206,7 @@ export default function NewResearchDialog({
             </div>
             <button
               type="submit"
-              className="command-launcher-send new-research-send"
+              className="control-button command-launcher-send new-research-send"
               disabled={!prompt.trim() || !adapter || submitting}
               aria-label={submitting ? "Starting research" : "Start research"}
               title={submitting ? "Starting research" : "Start research"}

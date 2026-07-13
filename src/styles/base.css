@@ -3,7 +3,7 @@
 }
 
 ::selection {
-  background: #6DA7EC;
+  background: var(--status-info-fg);
 }
 
 /* lucide-react renders its icons with width/height attributes, but as a flex item an
@@ -56,10 +56,14 @@ select:focus {
   box-shadow: none;
 }
 
-/* Compatibility baseline for existing controls. New controls should opt into
-   .control-button, .icon-button, .link-button, or .menu-item so their intended
-   interaction shape is explicit. :where() keeps the baseline easy to override. */
-:where(button, .control-button) {
+/* Keep the native element neutral. Button geometry belongs to one of the
+   explicit control primitives in primitives.css or to .control-button below. */
+button {
+  color: inherit;
+  cursor: pointer;
+}
+
+.control-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -72,11 +76,9 @@ select:focus {
   background: var(--control-bg);
   color: var(--control-fg);
   font-size: var(--fs-base);
-  cursor: pointer;
 }
 
 button:disabled {
-  color: #797d80;
+  color: var(--text-disabled);
   cursor: default;
 }
-

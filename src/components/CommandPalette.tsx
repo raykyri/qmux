@@ -143,7 +143,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                     role="option"
                     aria-selected={index === selectedIndex}
                     data-palette-index={index}
-                    className={`command-palette-item${
+                    className={`control-button command-palette-item${
                       index === selectedIndex ? " is-selected" : ""
                     }`}
                     onMouseMove={() => setSelectedIndex(index)}

@@ -12,14 +12,23 @@ const ConfirmDialogActionButton = forwardRef<
   HTMLButtonElement,
   ConfirmDialogActionButtonProps
 >(function ConfirmDialogActionButton(
-  { pending = false, pendingLabel = "Working…", disabled, children, ...props },
+  {
+    pending = false,
+    pendingLabel = "Working…",
+    disabled,
+    children,
+    className,
+    type = "button",
+    ...props
+  },
   ref,
 ) {
   return (
     <button
       {...props}
+      className={["control-button", className].filter(Boolean).join(" ")}
       ref={ref}
-      type={props.type ?? "button"}
+      type={type}
       disabled={disabled || pending}
       aria-busy={pending || undefined}
     >

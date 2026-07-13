@@ -218,7 +218,7 @@ export default function DiagramBlock({
         <span className="turn-diagram-lang">{label}</span>
         <button
           type="button"
-          className="turn-diagram-toggle"
+          className="control-button turn-diagram-toggle"
           onClick={() => setShowSource((prev) => !prev)}
         >
           {showSource ? "Diagram" : "Source"}

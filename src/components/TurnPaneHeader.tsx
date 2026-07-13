@@ -437,7 +437,7 @@ export default function TurnPaneHeader({
         {showQueueSplit ? (
           <button
             type="button"
-            className={`turn-pane-header-button${queueSplit ? " is-active" : ""}`}
+            className={`control-button turn-pane-header-button${queueSplit ? " is-active" : ""}`}
             title={queueSplit ? "Use floating queue" : "Split transcript and queue"}
             aria-label={queueSplit ? "Use floating queue" : "Split transcript and queue"}
             aria-pressed={queueSplit}
@@ -448,7 +448,7 @@ export default function TurnPaneHeader({
         ) : null}
         <button
           type="button"
-          className={`turn-pane-header-button${browserOpen ? " is-active" : ""}`}
+          className={`control-button turn-pane-header-button${browserOpen ? " is-active" : ""}`}
           title={browserOpen ? "Hide browser" : "Show browser"}
           aria-label={browserOpen ? "Hide browser" : "Show browser"}
           aria-pressed={browserOpen}
@@ -458,7 +458,7 @@ export default function TurnPaneHeader({
         </button>
         <button
           type="button"
-          className={`turn-pane-header-button${transcriptExpanded ? " is-active" : ""}`}
+          className={`control-button turn-pane-header-button${transcriptExpanded ? " is-active" : ""}`}
           title={
             `${transcriptExpanded ? "Restore transcript" : "Expand transcript"} (${transcriptShortcutLabel})`
           }

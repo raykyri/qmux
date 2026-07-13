@@ -407,7 +407,7 @@ export default function ResearchSidebarSection({
           >
             <button
               type="button"
-              className="research-sidebar-select"
+              className="control-button research-sidebar-select"
               aria-current={activeTreeId === tree.id ? "page" : undefined}
               title={tree.title}
               onClick={(event) => {
@@ -448,7 +448,7 @@ export default function ResearchSidebarSection({
             </button>
             <button
               type="button"
-              className="research-sidebar-menu-trigger"
+              className="control-button research-sidebar-menu-trigger"
               title="Research actions"
               aria-label={`Actions for ${tree.title}`}
               aria-haspopup="menu"
@@ -484,7 +484,7 @@ export default function ResearchSidebarSection({
               >
                 <button
                   type="button"
-                  className="research-sidebar-select"
+                  className="control-button research-sidebar-select"
                   aria-current={activeTreeId === tree.id ? "page" : undefined}
                   title={tree.title}
                   onClick={() => {
@@ -499,7 +499,7 @@ export default function ResearchSidebarSection({
                 </button>
                 <button
                   type="button"
-                  className="research-sidebar-menu-trigger"
+                  className="control-button research-sidebar-menu-trigger"
                   title="Research actions"
                   aria-label={`Actions for ${tree.title}`}
                   aria-haspopup="menu"
@@ -526,7 +526,7 @@ export default function ResearchSidebarSection({
             >
               <div className="group-context-actions">
                 {menu.archived ? (
-                  <button
+                  <button className="control-button"
                     type="button"
                     role="menuitem"
                     onClick={() => {
@@ -539,7 +539,7 @@ export default function ResearchSidebarSection({
                   </button>
                 ) : (
                   <>
-                    <button
+                    <button className="control-button"
                       type="button"
                       role="menuitem"
                       onClick={() => openRenameDialog(menuTree)}
@@ -550,7 +550,7 @@ export default function ResearchSidebarSection({
                     {menuTree.kind !== "document" ? (
                       // Title regeneration reruns the root prompt through the
                       // title model; a document has no prompt to rerun.
-                      <button
+                      <button className="control-button"
                         type="button"
                         role="menuitem"
                         onClick={() => {
@@ -570,7 +570,7 @@ export default function ResearchSidebarSection({
                     <button
                       type="button"
                       role="menuitem"
-                      className="context-menu-has-shortcut"
+                      className="control-button context-menu-has-shortcut"
                       disabled={menuTree.runningCount > 0}
                       title={
                         menuTree.runningCount > 0
@@ -591,7 +591,7 @@ export default function ResearchSidebarSection({
                 <button
                   type="button"
                   role="menuitem"
-                  className="context-menu-danger context-menu-has-shortcut"
+                  className="control-button context-menu-danger context-menu-has-shortcut"
                   disabled={menuTree.runningCount > 0}
                   title={
                     menuTree.runningCount > 0
@@ -644,7 +644,7 @@ export default function ResearchSidebarSection({
                   </p>
                 ) : null}
                 <div className="confirm-dialog-actions">
-                  <button
+                  <button className="control-button"
                     type="button"
                     disabled={removingTreeId !== null}
                     onClick={() => setDeletingTree(null)}
@@ -653,7 +653,7 @@ export default function ResearchSidebarSection({
                   </button>
                   <button
                     type="button"
-                    className="danger"
+                    className="control-button danger"
                     autoFocus
                     disabled={removingTreeId !== null}
                     onClick={() => void confirmTreeRemoval()}
@@ -702,10 +702,10 @@ export default function ResearchSidebarSection({
                   }}
                 />
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setRenamingTree(null)}>
+                  <button className="control-button" type="button" onClick={() => setRenamingTree(null)}>
                     Cancel
                   </button>
-                  <button type="submit">Rename</button>
+                  <button className="control-button" type="submit">Rename</button>
                 </div>
               </form>
             </div>,

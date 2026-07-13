@@ -5,6 +5,7 @@
   flex-wrap: nowrap;
   min-height: 0;
   padding: 0;
+  cursor: pointer;
 }
 
 .link-button {
@@ -12,6 +13,7 @@
   padding: 0;
   border: 0;
   background: transparent;
+  cursor: pointer;
 }
 
 .popover-surface {
@@ -27,7 +29,7 @@
 }
 
 .popover-surface--context {
-  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border: 0.5px solid var(--surface-border-default);
   background: var(--context-menu-bg);
   box-shadow: var(--context-menu-shadow);
 }
@@ -83,9 +85,8 @@
 }
 
 .shortcut-hint {
-  color: #797d80;
+  color: var(--text-disabled);
   font-size: var(--fs-xs);
   line-height: 1;
   white-space: nowrap;
 }
-

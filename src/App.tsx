@@ -8715,7 +8715,7 @@ export default function App() {
           </div>
           <button
             type="submit"
-            className="command-launcher-send"
+            className="control-button command-launcher-send"
             aria-label={`Launch ${launchAdapter.label}`}
             title={`Launch ${launchAdapter.label}`}
           >
@@ -8893,7 +8893,7 @@ export default function App() {
         ) : null}
         <button
           type="button"
-          className="pane-tab"
+          className="control-button pane-tab"
           onClick={(event) => {
             event.stopPropagation();
             handlePaneTabClick(pane.id);
@@ -8967,7 +8967,7 @@ export default function App() {
         {canClearWorkingStatus && paneAgent ? (
           <button
             type="button"
-            className="pane-tab-clear-status pane-tab-dot-button"
+            className="control-button pane-tab-clear-status pane-tab-dot-button"
             aria-label={`Clear working status for ${paneDisplayTitle}`}
             title="Clear working status"
             onPointerDown={(event) => {
@@ -9046,7 +9046,7 @@ export default function App() {
       <div className="turn-pane-floating-controls">
         <button
           type="button"
-          className={`turn-pane-header-button turn-pane-floating-expand-button${
+          className={`control-button turn-pane-header-button turn-pane-floating-expand-button${
             expanded ? " is-active" : ""
           }`}
           title={`${label} (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
@@ -9322,7 +9322,7 @@ export default function App() {
           >
             <button
               type="button"
-              className="pane-tab"
+              className="control-button pane-tab"
               aria-current={researchHomeActive ? "page" : undefined}
               onClick={(event) => {
                 event.stopPropagation();
@@ -9406,7 +9406,7 @@ export default function App() {
             >
               <button
                 type="button"
-                className="pane-tab"
+                className="control-button pane-tab"
                 aria-current={homeActive ? "page" : undefined}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -9530,7 +9530,7 @@ export default function App() {
                   <span className="pane-group-aux">
                     <button
                       type="button"
-                      className="pane-group-collapse-button"
+                      className="control-button pane-group-collapse-button"
                       aria-label={`${isCollapsedGroup ? "Expand" : "Collapse"} ${groupDisplayName}`}
                       title={isCollapsedGroup ? "Expand group" : "Collapse group"}
                       onPointerDown={(event) => {
@@ -9550,7 +9550,7 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      className="pane-group-menu-button"
+                      className="control-button pane-group-menu-button"
                       aria-label={`Group options for ${groupDisplayName}`}
                       aria-haspopup="menu"
                       aria-expanded={groupMenu?.groupId === group.id ? true : undefined}
@@ -9615,7 +9615,7 @@ export default function App() {
             <>
               {settings.codeMode ? (
                 <div className="sidebar-action-with-hint">
-                  <button type="button" onClick={addShellPane}>
+                  <button className="control-button" type="button" onClick={addShellPane}>
                     <SquareTerminal size={14} aria-hidden="true" />
                     <span>New shell</span>
                   </button>
@@ -9630,7 +9630,7 @@ export default function App() {
                 </div>
               ) : null}
               <div className="sidebar-action-with-hint">
-                <button type="button" onClick={focusHomeTab}>
+                <button className="control-button" type="button" onClick={focusHomeTab}>
                   <MessageSquareText size={14} aria-hidden="true" />
                   <span>New agent</span>
                 </button>
@@ -9647,7 +9647,7 @@ export default function App() {
           ) : (
             <>
               <div className="sidebar-action-with-hint">
-                <button type="button" onClick={() => void createResearchFromSidebar()}>
+                <button className="control-button" type="button" onClick={() => void createResearchFromSidebar()}>
                   <Plus size={14} aria-hidden="true" />
                   <span>New research</span>
                 </button>
@@ -9661,7 +9661,7 @@ export default function App() {
                 ) : null}
               </div>
               <div className="sidebar-action-with-hint">
-                <button type="button" onClick={() => void createDocumentFromSidebar()}>
+                <button className="control-button" type="button" onClick={() => void createDocumentFromSidebar()}>
                   <FileText size={14} aria-hidden="true" />
                   <span>New document</span>
                 </button>
@@ -9670,7 +9670,7 @@ export default function App() {
           )}
           <button
             type="button"
-            className="sidebar-settings-button"
+            className="control-button sidebar-settings-button"
             aria-label="Settings menu"
             aria-haspopup="menu"
             aria-expanded={settingsMenu ? true : undefined}
@@ -9704,7 +9704,7 @@ export default function App() {
               <button
                 type="button"
                 role="menuitem"
-                className="context-menu-has-shortcut"
+                className="control-button context-menu-has-shortcut"
                 disabled={folderPickerStatus !== null}
                 onClick={() => {
                   void createGroupFromSettingsMenu();
@@ -9722,7 +9722,7 @@ export default function App() {
                     key={id}
                     type="button"
                     role="menuitemradio"
-                    className="settings-research-filter-option"
+                    className="control-button settings-research-filter-option"
                     aria-checked={researchVisibilityFilter === id}
                     onClick={() => {
                       setSettingsMenu(null);
@@ -9738,7 +9738,7 @@ export default function App() {
                 <div className="context-menu-divider" role="separator" />
               </>
             ) : null}
-            <button
+            <button className="control-button"
               type="button"
               role="menuitem"
               onClick={() => {
@@ -9763,7 +9763,7 @@ export default function App() {
           onContextMenu={(event) => event.preventDefault()}
         >
           <div className="group-context-actions">
-            <button
+            <button className="control-button"
               type="button"
               role="menuitem"
               onClick={() => {
@@ -9777,7 +9777,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
-              className="context-menu-has-shortcut"
+              className="control-button context-menu-has-shortcut"
               onClick={() => {
                 setGroupMenu(null);
                 openGroupRenameDialog(groupMenuGroup);
@@ -9790,7 +9790,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
-              className="context-menu-has-shortcut"
+              className="control-button context-menu-has-shortcut"
               onClick={() => {
                 void toggleGroupCollapsed(groupMenuGroup);
               }}
@@ -9813,7 +9813,7 @@ export default function App() {
             </button>
             <div className="context-menu-divider" role="separator" />
             {settings.codeMode ? (
-              <button
+              <button className="control-button"
                 type="button"
                 role="menuitem"
                 onClick={() => {
@@ -9825,7 +9825,7 @@ export default function App() {
                 <span>New shell</span>
               </button>
             ) : null}
-            <button
+            <button className="control-button"
               type="button"
               role="menuitem"
               onClick={() => {
@@ -9842,7 +9842,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
-              className="context-menu-has-shortcut"
+              className="control-button context-menu-has-shortcut"
               disabled={folderPickerStatus !== null}
               onClick={() => {
                 setGroupMenu(null);
@@ -9856,7 +9856,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
-              className="context-menu-danger"
+              className="control-button context-menu-danger"
               onClick={() => {
                 void requestCloseGroup(groupMenuGroup);
               }}
@@ -9919,7 +9919,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
-              className="context-menu-has-shortcut"
+              className="control-button context-menu-has-shortcut"
               title="Create a new shell split below this tab"
               onClick={() => {
                 setPaneContextMenu(null);
@@ -9933,7 +9933,7 @@ export default function App() {
               <kbd className="context-menu-shortcut">⌘D</kbd>
             </button>
             {canJoinContextMenuBelow && contextMenuAdjacentBelow ? (
-              <button
+              <button className="control-button"
                 type="button"
                 role="menuitem"
                 title="Show this tab and the next tab in one vertical split"
@@ -9947,7 +9947,7 @@ export default function App() {
               </button>
             ) : null}
             {contextMenuPaneSplit ? (
-              <button
+              <button className="control-button"
                 type="button"
                 role="menuitem"
                 onClick={() => {
@@ -9959,7 +9959,7 @@ export default function App() {
                 <span>Detach from split</span>
               </button>
             ) : null}
-            <button
+            <button className="control-button"
               type="button"
               role="menuitem"
               onClick={() => {
@@ -9976,7 +9976,7 @@ export default function App() {
               </span>
             </button>
             <div className="context-menu-divider" role="separator" />
-            <button
+            <button className="control-button"
               type="button"
               role="menuitem"
               disabled={!canOutdent(contextMenuGroupPanes, contextMenuPaneIndex)}
@@ -9988,7 +9988,7 @@ export default function App() {
               <SquareChevronLeft size={13} aria-hidden="true" />
               <span>Outdent</span>
             </button>
-            <button
+            <button className="control-button"
               type="button"
               role="menuitem"
               disabled={!canIndent(contextMenuGroupPanes, contextMenuPaneIndex)}
@@ -10003,7 +10003,7 @@ export default function App() {
             {canForkContextMenuPane ? (
               <>
                 <div className="context-menu-divider" role="separator" />
-                <button
+                <button className="control-button"
                   type="button"
                   role="menuitem"
                   onClick={() => {
@@ -10014,7 +10014,7 @@ export default function App() {
                   <GitBranch size={13} aria-hidden="true" />
                   <span>Fork session</span>
                 </button>
-                <button
+                <button className="control-button"
                   type="button"
                   role="menuitem"
                   onClick={() => {
@@ -10031,7 +10031,7 @@ export default function App() {
             <button
               type="button"
               role="menuitem"
-              className="context-menu-danger"
+              className="control-button context-menu-danger"
               aria-label={`Close ${contextMenuDisplayTitle}`}
               title={`Close ${contextMenuDisplayTitle}`}
               onClick={() => {
@@ -10072,7 +10072,7 @@ export default function App() {
               <h2 id="settings-title">Settings</h2>
               <button
                 type="button"
-                className="settings-close"
+                className="control-button settings-close"
                 aria-label="Close settings"
                 onClick={() => setSettingsOpen(false)}
               >
@@ -10085,7 +10085,7 @@ export default function App() {
                 type="button"
                 role="tab"
                 aria-selected={settingsTab === "basic"}
-                className={settingsTab === "basic" ? "is-active" : ""}
+                className={`control-button${settingsTab === "basic" ? " is-active" : ""}`}
                 onClick={() => setSettingsTab("basic")}
               >
                 Basic
@@ -10094,7 +10094,7 @@ export default function App() {
                 type="button"
                 role="tab"
                 aria-selected={settingsTab === "advanced"}
-                className={settingsTab === "advanced" ? "is-active" : ""}
+                className={`control-button${settingsTab === "advanced" ? " is-active" : ""}`}
                 onClick={() => setSettingsTab("advanced")}
               >
                 Advanced
@@ -10228,7 +10228,7 @@ export default function App() {
             <div className="settings-row">
               <span className="settings-label">Font size</span>
               <div className="settings-stepper" role="group" aria-label="Font size">
-                <button
+                <button className="control-button"
                   type="button"
                   aria-label="Decrease font size"
                   disabled={settings.fontSize <= TERMINAL_FONT_SIZE_MIN}
@@ -10242,7 +10242,7 @@ export default function App() {
                   <Minus size={14} aria-hidden="true" />
                 </button>
                 <span className="settings-stepper-value">{settings.fontSize}px</span>
-                <button
+                <button className="control-button"
                   type="button"
                   aria-label="Increase font size"
                   disabled={settings.fontSize >= TERMINAL_FONT_SIZE_MAX}
@@ -10514,7 +10514,7 @@ export default function App() {
                     />
                     <button
                       type="button"
-                      className="settings-secret-toggle"
+                      className="control-button settings-secret-toggle"
                       aria-label={
                         openRouterKeyVisible ? "Hide OpenRouter key" : "Show OpenRouter key"
                       }
@@ -10556,7 +10556,7 @@ export default function App() {
                   <span className="settings-label">Test title generation</span>
                   <button
                     type="button"
-                    className="settings-test-button"
+                    className="control-button settings-test-button"
                     disabled={titleGenerationTestRunning}
                     aria-describedby={
                       titleGenerationTest ? "settings-title-test-message" : undefined
@@ -10700,7 +10700,7 @@ export default function App() {
                 <div className="settings-row">
                   <span className="settings-label">Line height</span>
                   <div className="settings-stepper" role="group" aria-label="Line height">
-                    <button
+                    <button className="control-button"
                       type="button"
                       aria-label="Decrease line height"
                       disabled={settings.lineHeight <= LINE_HEIGHT_MIN}
@@ -10716,7 +10716,7 @@ export default function App() {
                     <span className="settings-stepper-value">
                       {settings.lineHeight.toFixed(1)}x
                     </span>
-                    <button
+                    <button className="control-button"
                       type="button"
                       aria-label="Increase line height"
                       disabled={settings.lineHeight >= LINE_HEIGHT_MAX}
@@ -10840,7 +10840,7 @@ export default function App() {
                   </p>
                 ) : null}
                 <div className="confirm-dialog-actions">
-                  <button
+                  <button className="control-button"
                     type="button"
                     disabled={resolvingClose !== null}
                     onClick={() => setCloseDialog(null)}
@@ -10850,7 +10850,7 @@ export default function App() {
                   <button
                     ref={closeConfirmButtonRef}
                     type="button"
-                    className="danger"
+                    className="control-button danger"
                     autoFocus
                     disabled={resolvingClose !== null}
                     onClick={() => void confirmResearchFolderRemoval()}
@@ -10891,7 +10891,7 @@ export default function App() {
                   Delete the worktree?
                 </p>
                 <div className="confirm-dialog-actions">
-                  <button
+                  <button className="control-button"
                     type="button"
                     disabled={resolvingClose !== null}
                     onClick={() => setCloseDialog(null)}
@@ -10928,13 +10928,13 @@ export default function App() {
               <>
                 <p>Closing cancels this research run. Its completed work and follow-up history remain available.</p>
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setCloseDialog(null)}>
+                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
                     Keep running
                   </button>
                   <button
                     ref={closeConfirmButtonRef}
                     type="button"
-                    className="danger"
+                    className="control-button danger"
                     autoFocus
                     onClick={() => void confirmStopAndClose()}
                   >
@@ -10946,13 +10946,13 @@ export default function App() {
               <>
                 <p>This agent {closeDialog.reason}. Close the tab and stop it?</p>
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setCloseDialog(null)}>
+                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
                     Cancel
                   </button>
                   <button
                     ref={closeConfirmButtonRef}
                     type="button"
-                    className="danger"
+                    className="control-button danger"
                     autoFocus
                     onClick={() => void confirmStopAndClose()}
                   >
@@ -10971,13 +10971,13 @@ export default function App() {
                 </p>
                 <p>Closing this tab will terminate running processes in it.</p>
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setCloseDialog(null)}>
+                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
                     Cancel
                   </button>
                   <button
                     ref={closeConfirmButtonRef}
                     type="button"
-                    className="danger"
+                    className="control-button danger"
                     autoFocus
                     onClick={() => void confirmPaneClose()}
                   >
@@ -10989,13 +10989,13 @@ export default function App() {
               <>
                 <p>Close this tab?</p>
                 <div className="confirm-dialog-actions">
-                  <button type="button" onClick={() => setCloseDialog(null)}>
+                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
                     Cancel
                   </button>
                   <button
                     ref={closeConfirmButtonRef}
                     type="button"
-                    className="danger"
+                    className="control-button danger"
                     autoFocus
                     onClick={() => void confirmPaneClose()}
                   >
@@ -11039,7 +11039,7 @@ export default function App() {
               </p>
             ) : null}
             <div className="confirm-dialog-actions">
-              <button type="button" disabled={quitting} onClick={() => setExitDialog(null)}>
+              <button className="control-button" type="button" disabled={quitting} onClick={() => setExitDialog(null)}>
                 Cancel
               </button>
               <ConfirmDialogActionButton
@@ -11105,10 +11105,10 @@ export default function App() {
               </p>
             ) : null}
             <div className="confirm-dialog-actions">
-              <button type="button" onClick={closeRenameDialog}>
+              <button className="control-button" type="button" onClick={closeRenameDialog}>
                 Cancel
               </button>
-              <button type="submit">Rename</button>
+              <button className="control-button" type="submit">Rename</button>
             </div>
           </form>
         </div>
@@ -11125,7 +11125,7 @@ export default function App() {
             <span className="error-banner-message">{error}</span>
             <button
               type="button"
-              className="error-banner-dismiss"
+              className="control-button error-banner-dismiss"
               title="Dismiss (Esc)"
               aria-label="Dismiss error"
               onClick={() => setError(null)}

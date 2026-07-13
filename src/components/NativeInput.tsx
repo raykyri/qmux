@@ -163,8 +163,14 @@ function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean 
     el.style.height = "auto";
     const to = el.offsetHeight;
 
-    if (!initialized.current) {
-      // First mount (or a remount from reorder): nothing to animate.
+    const reduceMotion =
+      el.closest(".reduce-motion") !== null ||
+      (typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+    if (!initialized.current || reduceMotion) {
+      // First mount (or a remount from reorder) and reduced-motion changes
+      // should settle immediately at the target height.
       initialized.current = true;
       naturalHeight.current = to;
       el.style.height = "";
@@ -1208,7 +1214,7 @@ export default function NativeInput({
               >
                 <button
                   type="button"
-                  className="queued-turn-toggle"
+                  className="control-button queued-turn-toggle"
                   aria-expanded={!collapsed}
                   aria-label={collapsed ? "Expand queued turn" : "Collapse queued turn"}
                   onClick={(event) => handleQueuedTurnToggleClick(event, index)}
@@ -1219,7 +1225,7 @@ export default function NativeInput({
                 <div className="queued-turn-actions">
                   <button
                     type="button"
-                    className="queued-turn-remove"
+                    className="control-button queued-turn-remove"
                     disabled={submitting}
                     aria-label="Remove queued turn"
                     title="Remove"
@@ -1227,7 +1233,7 @@ export default function NativeInput({
                   >
                     <X size={13} aria-hidden="true" />
                   </button>
-                  <button
+                  <button className="control-button"
                     type="button"
                     disabled={submitting}
                     onClick={() => void editQueuedTurn(index, turn.text)}
@@ -1468,7 +1474,7 @@ export default function NativeInput({
           </div>
           {permissionActions.length > 0 ? (
             permissionActions.map((action) => (
-              <button
+              <button className="control-button"
                 key={action.id}
                 type="button"
                 onClick={() => void submitPermissionResponse(action.input)}
@@ -1479,7 +1485,7 @@ export default function NativeInput({
             ))
           ) : null}
           {!sendDisabled ? (
-            <button type="button" onClick={() => void submitTurn(value, "send")}>
+            <button className="control-button" type="button" onClick={() => void submitTurn(value, "send")}>
               <span>Send</span>
               {submitShortcutWouldTargetSend ? (
                 <ComposerSubmitShortcutGlyph
@@ -1490,7 +1496,7 @@ export default function NativeInput({
             </button>
           ) : null}
           {canSteer ? (
-            <button
+            <button className="control-button"
               type="button"
               disabled={submitting || value.trim().length === 0}
               onClick={() => void submitTurn(value, "steer")}
@@ -1502,7 +1508,7 @@ export default function NativeInput({
           {paused ? (
             <button
               type="button"
-              className="queue-button"
+              className="control-button queue-button"
               disabled={submitting}
               onClick={() => void unpause()}
               title="Clear the pause and resume the queue"
@@ -1513,7 +1519,7 @@ export default function NativeInput({
             <div className="wait-target-picker queue-button-group" ref={waitRef}>
               <button
                 type="button"
-                className="queue-button queue-button-main"
+                className="control-button queue-button queue-button-main"
                 disabled={submitting || !canAppendQueue || value.trim().length === 0}
                 onClick={() => {
                   setWaitOpen(false);
@@ -1531,7 +1537,7 @@ export default function NativeInput({
               <button
                 ref={waitTriggerRef}
                 type="button"
-                className="queue-menu-button"
+                className="control-button queue-menu-button"
                 disabled={waitDisabled}
                 aria-haspopup="menu"
                 aria-expanded={waitOpen}

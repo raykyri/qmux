@@ -1131,7 +1131,7 @@ function MessageTitleMenu({
       <button
         ref={triggerRef}
         type="button"
-        className="turn-title-regenerate-button"
+        className="control-button turn-title-regenerate-button"
         title="Title options"
         aria-label="Title options"
         aria-haspopup="menu"
@@ -1263,7 +1263,7 @@ function CollapsedTaggedUserInstruction({ label, text }: { label: string; text: 
     <div className={`tagged-user-instruction${expanded ? " is-expanded" : " is-collapsed"}`}>
       <button
         type="button"
-        className="tagged-user-instruction-toggle"
+        className="control-button tagged-user-instruction-toggle"
         aria-expanded={expanded}
         title={title}
         onClick={() => setExpanded((current) => !current)}
@@ -1284,7 +1284,7 @@ function CollapsedUserText({ text }: { text: string }) {
     <div className="long-user-message">
       <button
         type="button"
-        className="long-user-message-toggle"
+        className="control-button long-user-message-toggle"
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
       >

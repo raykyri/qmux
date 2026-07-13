@@ -1477,7 +1477,7 @@ export default function ResearchDocument({
             <div className="research-history-nav" aria-label="Research history">
               <button
                 type="button"
-                className="research-history-button"
+                className="control-button research-history-button"
                 disabled
                 aria-label="Back"
               >
@@ -1485,7 +1485,7 @@ export default function ResearchDocument({
               </button>
               <button
                 type="button"
-                className="research-history-button"
+                className="control-button research-history-button"
                 disabled
                 aria-label="Forward"
               >
@@ -1494,7 +1494,7 @@ export default function ResearchDocument({
             </div>
             <div className="research-breadcrumb" aria-label="Research path">
               <span>
-                <button type="button" disabled>
+                <button className="control-button" type="button" disabled>
                   {headerTitle}
                 </button>
               </span>
@@ -1509,7 +1509,7 @@ export default function ResearchDocument({
               <>
                 <p role="alert">{placeholderError}</p>
                 {retry ? (
-                  <button type="button" onClick={retry}>
+                  <button className="control-button" type="button" onClick={retry}>
                     Retry
                   </button>
                 ) : null}
@@ -1542,7 +1542,7 @@ export default function ResearchDocument({
             <div className="research-history-nav" aria-label="Research history">
               <button
                 type="button"
-                className="research-history-button"
+                className="control-button research-history-button"
                 disabled={!canGoBack}
                 title={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
                 aria-label="Back"
@@ -1552,7 +1552,7 @@ export default function ResearchDocument({
               </button>
               <button
                 type="button"
-                className="research-history-button"
+                className="control-button research-history-button"
                 disabled={!canGoForward}
                 title={`Forward (${IS_MAC ? "⌘]" : "Ctrl+]"})`}
                 aria-label="Forward"
@@ -1565,7 +1565,7 @@ export default function ResearchDocument({
               {breadcrumb.map((node, index) => (
                 <span key={node.id}>
                   {index > 0 ? <span className="research-breadcrumb-separator">/</span> : null}
-                  <button type="button" onClick={() => selectNode(node.id)}>
+                  <button className="control-button" type="button" onClick={() => selectNode(node.id)}>
                     {index === 0 ? detail.tree.title : node.title ?? node.prompt}
                   </button>
                 </span>
@@ -1579,7 +1579,7 @@ export default function ResearchDocument({
             {hasTranscriptActivity ? (
               <button
                 type="button"
-                className={`research-trace-toggle${showFullTrace ? " is-active" : ""}`}
+                className={`control-button research-trace-toggle${showFullTrace ? " is-active" : ""}`}
                 aria-pressed={showFullTrace}
                 title={showFullTrace ? "Hide full transcript" : "Show full transcript"}
                 aria-label={showFullTrace ? "Hide full transcript" : "Show full transcript"}
@@ -1591,7 +1591,7 @@ export default function ResearchDocument({
             {displayNode.paneId && (activeRun || cancellationNeedsRetry) ? (
               <button
                 type="button"
-                className="research-open-terminal"
+                className="control-button research-open-terminal"
                 onClick={() => onOpenPane(displayNode.paneId!)}
               >
                 <ExternalLink size={14} aria-hidden="true" />
@@ -1601,7 +1601,7 @@ export default function ResearchDocument({
             {activeRun || cancellationNeedsRetry ? (
               <button
                 type="button"
-                className="research-cancel-run"
+                className="control-button research-cancel-run"
                 disabled={cancelling}
                 onClick={() => {
                   const nodeId = displayNode.id;
@@ -1632,7 +1632,7 @@ export default function ResearchDocument({
                   {displayNode.parentNodeId ? (
                     <button
                       type="button"
-                      className="research-parent-link"
+                      className="control-button research-parent-link"
                       onClick={() => selectNode(displayNode.parentNodeId!)}
                     >
                       <ArrowLeft size={13} aria-hidden="true" />
@@ -1649,7 +1649,7 @@ export default function ResearchDocument({
                       {contentError ? (
                         <>
                           <p role="alert">{contentError}</p>
-                          <button
+                          <button className="control-button"
                             type="button"
                             onClick={() => setContentLoadNonce((value) => value + 1)}
                           >
@@ -1674,7 +1674,7 @@ export default function ResearchDocument({
                     // off the last loaded response as current.
                     <div className="research-response-stale" role="alert">
                       <p>Refreshing this response failed: {contentError}</p>
-                      <button
+                      <button className="control-button"
                         type="button"
                         onClick={() => setContentLoadNonce((value) => value + 1)}
                       >
@@ -1708,7 +1708,7 @@ export default function ResearchDocument({
                       {hiddenTimelineItemCount > 0 ? (
                         <button
                           type="button"
-                          className="research-show-earlier"
+                          className="control-button research-show-earlier"
                           onClick={expandAllTurns}
                         >
                           Show {hiddenTimelineItemCount} earlier response item
@@ -1750,7 +1750,7 @@ export default function ResearchDocument({
                       {displayNode.status === "complete" && rawAnswer ? (
                         <button
                           type="button"
-                          className="research-answer-copy"
+                          className="control-button research-answer-copy"
                           title="Copy answer as Markdown"
                           aria-label="Copy answer as Markdown"
                           onClick={() => void copyAnswer()}
@@ -1760,7 +1760,7 @@ export default function ResearchDocument({
                       ) : null}
                       <button
                         type="button"
-                        className="research-answer-menu-trigger"
+                        className="control-button research-answer-menu-trigger"
                         title="Answer actions"
                         aria-label="Answer actions"
                         aria-haspopup="menu"
@@ -1789,7 +1789,7 @@ export default function ResearchDocument({
                         type="button"
                         role="tab"
                         aria-selected={followupMode === "ask"}
-                        className={followupMode === "ask" ? "is-selected" : undefined}
+                          className={`control-button${followupMode === "ask" ? " is-selected" : ""}`}
                         disabled={archived || displayNode.status !== "complete"}
                         onClick={() => setFollowupMode("ask")}
                       >
@@ -1799,7 +1799,7 @@ export default function ResearchDocument({
                         type="button"
                         role="tab"
                         aria-selected={followupMode === "deep"}
-                        className={followupMode === "deep" ? "is-selected" : undefined}
+                        className={`control-button${followupMode === "deep" ? " is-selected" : ""}`}
                         disabled={archived || displayNode.status !== "complete"}
                         onClick={() => setFollowupMode("deep")}
                       >
@@ -1828,7 +1828,7 @@ export default function ResearchDocument({
                       rows={2}
                     />
                     <div className="native-input-submit-actions">
-                      <button
+                      <button className="control-button"
                         type="button"
                         disabled={
                           archived ||
@@ -1857,7 +1857,7 @@ export default function ResearchDocument({
                       <button
                         key={child.id}
                         type="button"
-                        className="research-followup-card"
+                        className="control-button research-followup-card"
                         onClick={() => selectNode(child.id)}
                         onContextMenu={(event) => {
                           event.preventDefault();
@@ -1910,7 +1910,7 @@ export default function ResearchDocument({
                   <div className="group-context-actions">
                     {rootNode && node.kind === "document" ? (
                       <>
-                        <button
+                        <button className="control-button"
                           type="button"
                           role="menuitem"
                           disabled={
@@ -1952,7 +1952,7 @@ export default function ResearchDocument({
                     <button
                       type="button"
                       role="menuitem"
-                      className="context-menu-danger"
+                      className="control-button context-menu-danger"
                       disabled={info.hasActiveRuns}
                       title={
                         info.hasActiveRuns
@@ -1993,7 +1993,7 @@ export default function ResearchDocument({
           ? createPortal(
               <button
                 type="button"
-                className="research-highlight-action"
+                className="control-button research-highlight-action"
                 style={{ left: highlightAction.left, top: highlightAction.top }}
                 disabled={savingHighlight}
                 aria-keyshortcuts="H"
@@ -2069,7 +2069,7 @@ export default function ResearchDocument({
                     </p>
                   ) : null}
                   <div className="confirm-dialog-actions">
-                    <button
+                    <button className="control-button"
                       type="button"
                       disabled={removingBranch}
                       onClick={() => setDeletingBranchId(null)}
@@ -2078,7 +2078,7 @@ export default function ResearchDocument({
                     </button>
                     <button
                       type="button"
-                      className="danger"
+                      className="control-button danger"
                       autoFocus
                       disabled={removingBranch || deletingBranch.info.hasActiveRuns}
                       onClick={() => void confirmBranchRemoval()}

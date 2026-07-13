@@ -187,7 +187,7 @@ function PromptRowMenu({
       <button
         ref={triggerRef}
         type="button"
-        className={`prompt-library-item-menu-trigger${open ? " is-open" : ""}`}
+        className={`control-button prompt-library-item-menu-trigger${open ? " is-open" : ""}`}
         title="Prompt options"
         aria-label="Prompt options"
         aria-haspopup="menu"
@@ -579,7 +579,7 @@ export default function PromptLibraryMenu({
       <button
         type="button"
         role="menuitem"
-        className="prompt-library-item-main"
+        className="control-button prompt-library-item-main"
         disabled={!onInsert}
         title={onInsert ? "Insert into composer" : "No composer in this tab"}
         onClick={() => choosePrompt(prompt)}
@@ -699,14 +699,14 @@ export default function PromptLibraryMenu({
         <div className="prompt-library-actions">
           <button
             type="button"
-            className="prompt-library-button"
+            className="control-button prompt-library-button"
             onClick={() => setView({ kind: "list" })}
           >
             Back
           </button>
           <button
             type="button"
-            className="prompt-library-button is-primary"
+            className="control-button prompt-library-button is-primary"
             onClick={() => insert(fillPlaceholders(view.prompt.content, fillValues))}
           >
             Insert
@@ -752,7 +752,7 @@ export default function PromptLibraryMenu({
                   type="button"
                   role="radio"
                   aria-checked={editScope === scope}
-                  className={`prompt-library-scope-option${
+                  className={`control-button prompt-library-scope-option${
                     editScope === scope ? " is-active" : ""
                   }`}
                   title={scope === "project" ? (projectPath ?? projectDir ?? undefined) : undefined}
@@ -779,7 +779,7 @@ export default function PromptLibraryMenu({
         </label>
         {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
         <div className="confirm-dialog-actions">
-          <button type="button" onClick={closeDialog}>
+          <button className="control-button" type="button" onClick={closeDialog}>
             Cancel
           </button>
           <ConfirmDialogActionButton
@@ -813,7 +813,7 @@ export default function PromptLibraryMenu({
         <p className="prompt-delete-snippet">{dialog.prompt.content.trim() || "(empty)"}</p>
         {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
         <div className="confirm-dialog-actions">
-          <button type="button" onClick={closeDialog}>
+          <button className="control-button" type="button" onClick={closeDialog}>
             Cancel
           </button>
           <ConfirmDialogActionButton
@@ -834,7 +834,7 @@ export default function PromptLibraryMenu({
       <button
         ref={triggerRef}
         type="button"
-        className={`turn-pane-header-button${open ? " is-active" : ""}`}
+        className={`control-button turn-pane-header-button${open ? " is-active" : ""}`}
         title="Prompt library"
         aria-label="Prompt library"
         aria-haspopup="menu"

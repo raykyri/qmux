@@ -62,10 +62,10 @@ export function useConfirm(): {
       >
         <p>{state.message}</p>
         <div className="confirm-dialog-actions">
-          <button type="button" onClick={() => settle(false)}>
+          <button className="control-button" type="button" onClick={() => settle(false)}>
             {state.cancelLabel ?? "Cancel"}
           </button>
-          <button type="button" autoFocus onClick={() => settle(true)}>
+          <button className="control-button" type="button" autoFocus onClick={() => settle(true)}>
             {state.confirmLabel ?? "OK"}
           </button>
         </div>

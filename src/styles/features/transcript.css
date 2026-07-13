@@ -575,7 +575,7 @@ header + .turn-blocks {
 .turn-markdown h5,
 .turn-markdown h6 {
   margin: 22px 0 7px;
-  color: #f4f3ec;
+  color: var(--text-heading);
   font-weight: 600;
   line-height: calc(1.3 + var(--transcript-line-height-delta, 0));
   letter-spacing: -0.007em;
@@ -872,7 +872,7 @@ header + .turn-blocks {
    indistinguishable from it) plus a stronger divider, so it reads as a header. */
 .turn-markdown th {
   background: #1d2325;
-  color: #f4f3ec;
+  color: var(--text-heading);
   font-weight: 600;
   border-bottom-color: #38403f;
 }

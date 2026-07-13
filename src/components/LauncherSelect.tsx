@@ -82,7 +82,7 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
       <button
         ref={triggerRef}
         type="button"
-        className={`launcher-select-trigger${toneClass(selected?.tone)}`}
+        className={`control-button launcher-select-trigger${toneClass(selected?.tone)}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}

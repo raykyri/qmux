@@ -72,7 +72,7 @@ export default function ResearchFolderSwitcher({
     <div className="research-folder-switcher" ref={rootRef}>
       <button
         type="button"
-        className="research-folder-trigger"
+        className="control-button research-folder-trigger"
         aria-haspopup="menu"
         aria-expanded={open}
         title={scopedFolder?.dir ?? "No research folder selected"}
@@ -98,7 +98,7 @@ export default function ResearchFolderSwitcher({
                   type="button"
                   role="menuitemradio"
                   aria-checked={scope === folder.id}
-                  className={`research-folder-item${scope === folder.id ? " is-selected" : ""}`}
+                  className={`control-button research-folder-item${scope === folder.id ? " is-selected" : ""}`}
                   title={folder.dir}
                   onClick={() => select(folder.id)}
                 >
@@ -116,7 +116,7 @@ export default function ResearchFolderSwitcher({
           <button
             type="button"
             role="menuitem"
-            className="research-folder-item"
+            className="control-button research-folder-item"
             disabled={folderPickerBusy}
             onClick={() => {
               setOpen(false);
@@ -136,7 +136,7 @@ export default function ResearchFolderSwitcher({
               <button
                 type="button"
                 role="menuitem"
-                className="research-folder-item"
+                className="control-button research-folder-item"
                 onClick={() => {
                   setOpen(false);
                   void onOpenFolder(scopedFolder);
@@ -148,7 +148,7 @@ export default function ResearchFolderSwitcher({
               <button
                 type="button"
                 role="menuitem"
-                className="research-folder-item"
+                className="control-button research-folder-item"
                 onClick={() => {
                   setOpen(false);
                   onRenameFolder(scopedFolder);
@@ -162,7 +162,7 @@ export default function ResearchFolderSwitcher({
               <button
                 type="button"
                 role="menuitem"
-                className="research-folder-item is-remove"
+                className="control-button research-folder-item is-remove"
                 onClick={() => {
                   setOpen(false);
                   onRemoveFolder(scopedFolder);

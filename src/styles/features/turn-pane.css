@@ -245,7 +245,7 @@
 }
 
 .turn-pane-session-menu-item:disabled {
-  color: #6f7773;
+  color: var(--text-faint);
   cursor: default;
 }
 
@@ -290,7 +290,7 @@
 
 .turn-pane-header-button:disabled {
   background: var(--chrome-control-bg-disabled);
-  color: #6f7773;
+  color: var(--text-faint);
 }
 
 /* Browser toggle when the overlay is open: reads as locked on / pushed in rather
@@ -390,7 +390,7 @@
 }
 
 .prompt-library-item-main:disabled {
-  color: #6f7773;
+  color: var(--text-faint);
   cursor: default;
 }
 
@@ -466,11 +466,11 @@
 }
 
 .prompt-library-row-menu-item.is-danger {
-  color: #e08a8a;
+  color: var(--danger-fg-muted);
 }
 
 .prompt-library-row-menu-item.is-danger:hover {
-  background: #3a2022;
+  background: var(--danger-bg-strong);
 }
 
 .prompt-library-icon-button {
@@ -539,7 +539,7 @@
 .prompt-library-section-path {
   min-width: 0;
   overflow: hidden;
-  color: #6f7773;
+  color: var(--text-faint);
   font-size: 10px;
   font-weight: 400;
   text-overflow: ellipsis;
@@ -668,7 +668,7 @@
 }
 
 .prompt-library-button:disabled {
-  color: #6f7773;
+  color: var(--text-faint);
   cursor: default;
 }
 
@@ -680,10 +680,10 @@
 
 .prompt-library-error {
   padding: 6px 8px;
-  border: 1px solid #7a3030;
+  border: 1px solid var(--danger-border-strong);
   border-radius: 6px;
-  background: #3a2022;
-  color: #e08a8a;
+  background: var(--danger-bg-strong);
+  color: var(--danger-fg-muted);
   font-size: 11px;
   overflow-wrap: anywhere;
 }

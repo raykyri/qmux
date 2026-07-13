@@ -294,7 +294,7 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
   const renderExpandToggle = (key: string, open: boolean) => (
     <button
       type="button"
-      className="home-cascade-more"
+      className="control-button home-cascade-more"
       onClick={(event) => {
         stopButtonPropagation(event);
         toggleCardOpen(key);
@@ -398,7 +398,7 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
           target ? (
             <button
               type="button"
-              className="home-cascade-wait-pill"
+              className="control-button home-cascade-wait-pill"
               title={`Waiting on ${waitLabel} — click to open it`}
               onClick={(event) => {
                 stopButtonPropagation(event);
@@ -427,7 +427,7 @@ export default function HomeCascades({ workstreams, onActivatePane }: HomeCascad
             <button
               type="button"
               ref={(element) => setHeaderRef(workstream.agentId, element)}
-              className="home-cascade-lane-head"
+              className="control-button home-cascade-lane-head"
               aria-label={`Open ${workstream.title} — ${statusLabel(workstream)}`}
               onClick={() => onActivatePane(workstream.paneId)}
             >
