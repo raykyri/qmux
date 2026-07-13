@@ -5210,6 +5210,22 @@ export default function App() {
     },
     [refreshResearchNavigation],
   );
+  const removeResearchTreeFromDocument = useCallback(
+    async (treeId: string) => {
+      await removeResearchTree(treeId);
+      if (activeResearchTreeIdRef.current === treeId) {
+        activeResearchTreeIdRef.current = null;
+        setActiveResearchTreeId(null);
+        setActiveResearchDetail(null);
+        setActiveResearchDetailError(null);
+        localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+        setSidebarMode("research");
+        setActiveSurface("research");
+      }
+      await refreshResearchNavigation().catch(() => undefined);
+    },
+    [refreshResearchNavigation, setSidebarMode],
+  );
   const nativeTerminalShortcutHandlerRef = useRef<
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => void
   >(() => undefined);
@@ -10313,6 +10329,7 @@ export default function App() {
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}
               onRemoveBranch={removeResearchBranchFromDocument}
+              onRemoveTree={removeResearchTreeFromDocument}
               onCancel={cancelResearchRun}
               onOpenPane={openResearchPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, ScrollText, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, ScrollText, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
 import { getResearchNodeContent, listClaudeSkills } from "../../lib/api";
@@ -55,6 +55,7 @@ interface ResearchDocumentProps {
   onRetryDetail?: () => void;
   onFork: (parentNodeId: string, prompt: string) => Promise<ResearchNode>;
   onRemoveBranch: (nodeId: string) => Promise<ResearchBranchRemoval>;
+  onRemoveTree: (treeId: string) => Promise<void>;
   onCancel: (nodeId: string) => Promise<void>;
   onOpenPane: (paneId: string) => void;
   linkActions: LinkActions;
@@ -222,6 +223,7 @@ export default function ResearchDocument({
   onRetryDetail,
   onFork,
   onRemoveBranch,
+  onRemoveTree,
   onCancel,
   onOpenPane,
   linkActions,
@@ -404,12 +406,26 @@ export default function ResearchDocument({
     });
   }
 
+  function openAnswerMenu(trigger: HTMLButtonElement, nodeId: string) {
+    if (followupMenu?.nodeId === nodeId) {
+      setFollowupMenu(null);
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    openFollowupMenu(nodeId, rect.right - FOLLOWUP_MENU_WIDTH, rect.bottom + 4);
+  }
+
   async function confirmBranchRemoval() {
     if (!deletingBranch?.node || !deletingBranch.info || deletingBranch.info.hasActiveRuns) {
       return;
     }
     setRemovingBranch(true);
     try {
+      if (deletingBranch.node.id === detail?.tree.rootNodeId) {
+        await onRemoveTree(detail.tree.id);
+        setDeletingBranchId(null);
+        return;
+      }
       const removal = await onRemoveBranch(deletingBranch.node.id);
       const removedNodeIds = new Set(removal.removedNodeIds);
       const validNodeIds = new Set(
@@ -417,9 +433,13 @@ export default function ResearchDocument({
           .filter((node) => !removedNodeIds.has(node.id))
           .map((node) => node.id),
       );
-      setHistory((current) =>
-        pruneResearchHistory(current, validNodeIds, selectedNodeId ?? removal.parentNodeId),
-      );
+      setHistory((current) => {
+        const pruned = pruneResearchHistory(current, validNodeIds, removal.parentNodeId);
+        return pruned.entries[pruned.index] === removal.parentNodeId
+          ? pruned
+          : pushResearchHistory(pruned, removal.parentNodeId);
+      });
+      applySelection(removal.parentNodeId);
       setDeletingBranchId(null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1158,6 +1178,17 @@ export default function ResearchDocument({
                           <Copy size={14} aria-hidden="true" />
                         </button>
                       ) : null}
+                      <button
+                        type="button"
+                        className="research-answer-menu-trigger"
+                        title="Answer actions"
+                        aria-label="Answer actions"
+                        aria-haspopup="menu"
+                        aria-expanded={followupMenu?.nodeId === displayNode.id}
+                        onClick={(event) => openAnswerMenu(event.currentTarget, displayNode.id)}
+                      >
+                        <MoreHorizontal size={15} aria-hidden="true" />
+                      </button>
                     </footer>
                   ) : null}
                 </section>
@@ -1267,6 +1298,7 @@ export default function ResearchDocument({
                 return null;
               }
               const label = info.descendantCount > 0 ? "Delete branch" : "Delete follow-up";
+              const rootNode = node.id === detail.tree.rootNodeId;
               return createPortal(
                 <div
                   ref={followupMenuRef}
@@ -1294,7 +1326,7 @@ export default function ResearchDocument({
                       }}
                     >
                       <Trash2 size={13} aria-hidden="true" />
-                      <span>{label}</span>
+                      <span>{rootNode ? "Delete research" : label}</span>
                     </button>
                   </div>
                 </div>,
@@ -1327,13 +1359,19 @@ export default function ResearchDocument({
                   }}
                 >
                   <h2 id="delete-research-branch-dialog-title">
-                    {deletingBranch.info.descendantCount > 0
+                    {deletingBranch.node.id === detail.tree.rootNodeId
+                      ? "Delete this research?"
+                      : deletingBranch.info.descendantCount > 0
                       ? "Delete this research branch?"
                       : "Delete this follow-up?"}
                   </h2>
                   <p>{deletingBranch.node.title ?? deletingBranch.node.prompt}</p>
                   <p>
-                    {deletingBranch.info.descendantCount > 0
+                    {deletingBranch.node.id === detail.tree.rootNodeId
+                      ? deletingBranch.info.descendantCount > 0
+                        ? `This permanently deletes the root answer and all ${deletingBranch.info.descendantCount} follow-up${deletingBranch.info.descendantCount === 1 ? "" : "s"}.`
+                        : "This permanently deletes the root answer and its research history."
+                      : deletingBranch.info.descendantCount > 0
                       ? `This also permanently deletes ${deletingBranch.info.descendantCount} descendant follow-up${deletingBranch.info.descendantCount === 1 ? "" : "s"}.`
                       : "This permanently deletes the follow-up and its response."} {" "}
                     This can’t be undone.
@@ -1355,7 +1393,9 @@ export default function ResearchDocument({
                     >
                       {removingBranch
                         ? "Deleting…"
-                        : deletingBranch.info.descendantCount > 0
+                        : deletingBranch.node.id === detail.tree.rootNodeId
+                          ? "Delete research"
+                          : deletingBranch.info.descendantCount > 0
                           ? "Delete branch"
                           : "Delete follow-up"}
                     </button>

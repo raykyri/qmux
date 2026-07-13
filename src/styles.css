@@ -846,6 +846,27 @@
   color: #c2cac5;
 }
 
+.research-answer-menu-trigger {
+  display: inline-flex;
+  min-width: 22px;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #7d8782;
+  background: transparent;
+}
+
+.research-answer-menu-trigger:hover,
+.research-answer-menu-trigger:focus-visible {
+  color: #c2cac5;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: none;
+}
+
 .research-plaintext {
   padding: 14px;
   overflow: auto;
