@@ -82,9 +82,29 @@ test("horizontal wheel gestures resolve only after clear dominant travel", () =>
 test("pruning deleted visits preserves the surviving cursor position", () => {
   const history = { entries: ["root", "branch", "leaf", "root"], index: 2 };
   assert.deepEqual(pruneResearchHistory(history, new Set(["root"]), "root"), {
-    entries: ["root", "root"],
+    entries: ["root"],
     index: 0,
   });
+});
+
+test("pruning keeps the cursor on a later surviving visit", () => {
+  const history = { entries: ["root", "branch", "leaf"], index: 1 };
+  assert.deepEqual(pruneResearchHistory(history, new Set(["root", "leaf"]), "root"), {
+    entries: ["root", "leaf"],
+    index: 0,
+  });
+});
+
+test("pruning collapses visits that become adjacent duplicates", () => {
+  // root -> branch -> back to root, then branch is deleted: without the
+  // collapse the history reads [root, root] and Back re-applies the already
+  // selected node — readers treat that as real navigation (clearing content
+  // for a load that never restarts).
+  const history = { entries: ["root", "branch", "root"], index: 2 };
+  const pruned = pruneResearchHistory(history, new Set(["root", "other"]), "root");
+  assert.deepEqual(pruned, { entries: ["root"], index: 0 });
+  assert.equal(canGoBack(pruned), false);
+  assert.equal(canGoForward(pruned), false);
 });
 
 test("pruning falls back when every visited node was deleted", () => {

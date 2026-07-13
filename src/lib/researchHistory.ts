@@ -79,21 +79,31 @@ export function researchHistoryForward(history: ResearchHistory): ResearchHistor
 }
 
 /** Removes visits to nodes that no longer exist while keeping the cursor on
- * the same surviving visit whenever possible. */
+ * the same surviving visit whenever possible. Visits that become adjacent
+ * duplicates are collapsed: stepping between two entries for the same node
+ * would re-apply the already-selected node, which readers treat as a real
+ * navigation (e.g. clearing content for a load that never restarts). */
 export function pruneResearchHistory(
   history: ResearchHistory,
   validNodeIds: ReadonlySet<string>,
   fallbackNodeId: string | null,
 ): ResearchHistory {
-  const entries = history.entries.filter((nodeId) => validNodeIds.has(nodeId));
+  const entries: string[] = [];
+  let index = -1;
+  for (let visit = 0; visit < history.entries.length; visit += 1) {
+    const nodeId = history.entries[visit];
+    if (!validNodeIds.has(nodeId)) {
+      continue;
+    }
+    if (entries[entries.length - 1] !== nodeId) {
+      entries.push(nodeId);
+    }
+    if (visit <= history.index) {
+      index = entries.length - 1;
+    }
+  }
   if (entries.length === 0) {
     return initResearchHistory(fallbackNodeId);
   }
-  const survivingThroughCursor = history.entries
-    .slice(0, history.index + 1)
-    .filter((nodeId) => validNodeIds.has(nodeId)).length;
-  return {
-    entries,
-    index: Math.max(0, Math.min(entries.length - 1, survivingThroughCursor - 1)),
-  };
+  return { entries, index: Math.max(0, index) };
 }
