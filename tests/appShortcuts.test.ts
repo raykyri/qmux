@@ -74,6 +74,17 @@ test("uses command-shift-t to leave Research and reopen tabs elsewhere", () => {
   });
 });
 
+test("uses command-n to open new Research and the launcher elsewhere", () => {
+  const command = resolveAppShortcut(shortcut({ key: "n", metaKey: true }));
+  assert.deepEqual(command, { type: "homeOrCycleAdapter" });
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "openNewResearch",
+  });
+  assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), {
+    type: "homeOrCycleAdapter",
+  });
+});
+
 test("normalizes shifted bracket shortcuts", () => {
   assert.deepEqual(
     resolveAppShortcut(shortcut({ key: "{", metaKey: true, shiftKey: true })),

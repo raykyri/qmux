@@ -162,8 +162,9 @@ import {
 } from "./lib/workspaceScope";
 import {
   parseSidebarMode,
-  RESEARCH_DOCUMENT_TAB_ID,
   researchCycleTabIds,
+  researchTreeIdFromTabId,
+  researchTreeTabId,
   SIDEBAR_MODE_STORAGE_KEY,
   terminalTabForMode,
   type SidebarMode,
@@ -1900,8 +1901,8 @@ export default function App() {
     [researchPanes, researchScope],
   );
   const cycleableResearchTabIds = useMemo(
-    () => researchCycleTabIds(panes, groups, activeResearchTreeId, researchScope),
-    [activeResearchTreeId, groups, panes, researchScope],
+    () => researchCycleTabIds(panes, groups, researchTrees, researchScope),
+    [groups, panes, researchScope, researchTrees],
   );
   const researchAttentionState = useMemo(() => researchAttention(researchTrees), [researchTrees]);
   const runningResearchCount = researchAttentionState.runningCount;
@@ -7410,9 +7411,10 @@ export default function App() {
     };
 
     const cycleResearchTab = (direction: -1 | 1) => {
-      const activeTabId = researchSurfaceActive
-        ? RESEARCH_DOCUMENT_TAB_ID
-        : activePaneId;
+      const activeTabId =
+        researchSurfaceActive && activeResearchTreeId
+          ? researchTreeTabId(activeResearchTreeId)
+          : activePaneId;
       const nextTabId = cycleTabId(
         cycleableResearchTabIds,
         activeTabId,
@@ -7422,12 +7424,9 @@ export default function App() {
       if (!nextTabId || nextTabId === activeTabId) {
         return;
       }
-      if (nextTabId === RESEARCH_DOCUMENT_TAB_ID) {
-        setSidebarMode("research");
-        setActiveSurface("research");
-        activeResearchPaneIdRef.current = null;
-        setActiveResearchPaneId(null);
-        localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
+      const nextTreeId = researchTreeIdFromTabId(nextTabId);
+      if (nextTreeId) {
+        void selectResearchTree(nextTreeId);
         return;
       }
       // Mirror handlePaneTabClick: keep the durable document paired with the
@@ -7472,6 +7471,9 @@ export default function App() {
           } else {
             focusHomeTab();
           }
+          return;
+        case "openNewResearch":
+          createResearchFromSidebar();
           return;
         case "focusHome":
           focusHomeTab();
@@ -7592,7 +7594,9 @@ export default function App() {
     launchAdapter.id,
     paneSplits,
     changeSidebarMode,
+    createResearchFromSidebar,
     researchSurfaceActive,
+    activeResearchTreeId,
     selectResearchTree,
     sidebarMode,
   ]);
@@ -8859,6 +8863,14 @@ export default function App() {
                 <Plus size={14} aria-hidden="true" />
                 <span>New research</span>
               </button>
+              {shortcutHintsShown ? (
+                <span
+                  className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
+                  aria-hidden="true"
+                >
+                  ⌘N
+                </span>
+              ) : null}
             </div>
           )}
           <button

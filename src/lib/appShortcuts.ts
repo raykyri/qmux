@@ -4,6 +4,7 @@ export type AppShortcutCommand =
   | { type: "fontZoomReset" }
   | { type: "focusTab"; tabIndex: number }
   | { type: "homeOrCycleAdapter" }
+  | { type: "openNewResearch" }
   | { type: "focusHome" }
   | { type: "focusTerminalMode" }
   | { type: "focusResearchMode" }
@@ -128,6 +129,9 @@ export function contextualizeAppShortcut(
   command: AppShortcutCommand,
   sidebarMode: "terminal" | "research",
 ): AppShortcutCommand {
+  if (sidebarMode === "research" && command.type === "homeOrCycleAdapter") {
+    return { type: "openNewResearch" };
+  }
   if (sidebarMode === "research" && command.type === "restoreClosedPane") {
     return { type: "focusTerminalMode" };
   }
@@ -151,6 +155,7 @@ export function parseAppShortcutCommand(
     case "fontZoomOut":
     case "fontZoomReset":
     case "homeOrCycleAdapter":
+    case "openNewResearch":
     case "focusHome":
     case "focusTerminalMode":
     case "focusResearchMode":

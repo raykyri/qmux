@@ -11,12 +11,12 @@ import {
 } from "../src/lib/workspaceScope";
 import {
   parseSidebarMode,
-  RESEARCH_DOCUMENT_TAB_ID,
   researchCycleTabIds,
+  researchTreeIdFromTabId,
+  researchTreeTabId,
   terminalTabForMode,
 } from "../src/lib/sidebarMode";
 import {
-  ALL_RESEARCH_SCOPE,
   nextTreeInResearchScope,
   resolveResearchScope,
   treeForResearchScope,
@@ -215,20 +215,22 @@ test("switching to Terminal prefers a pane whose group is expanded", () => {
 });
 
 test("research cycling stays on the document when no research terminals are visible", () => {
-  const groups = [group("terminal", "terminal")];
+  const research = group("research", "research");
+  const groups = [research];
+  const treeTabId = researchTreeTabId("tree");
   const ids = researchCycleTabIds(
-    [pane("terminal-pane", "terminal")],
+    [],
     groups,
-    "tree",
-    ALL_RESEARCH_SCOPE,
+    [treeSummary("tree", research.id)],
+    research.id,
   );
 
-  assert.deepEqual(ids, [RESEARCH_DOCUMENT_TAB_ID]);
-  assert.equal(cycleTabId(ids, RESEARCH_DOCUMENT_TAB_ID, 1), RESEARCH_DOCUMENT_TAB_ID);
-  assert.equal(cycleTabId(ids, RESEARCH_DOCUMENT_TAB_ID, -1), RESEARCH_DOCUMENT_TAB_ID);
+  assert.deepEqual(ids, [treeTabId]);
+  assert.equal(cycleTabId(ids, treeTabId, 1), treeTabId);
+  assert.equal(cycleTabId(ids, treeTabId, -1), treeTabId);
 });
 
-test("research cycling wraps between the document and visible research terminals", () => {
+test("research cycling wraps between documents and visible research terminals", () => {
   const terminal = group("terminal", "terminal");
   const researchA = group("research-a", "research");
   const researchB = group("research-b", "research");
@@ -241,16 +243,21 @@ test("research cycling wraps between the document and visible research terminals
       pane("research-two", researchA.id),
     ],
     [terminal, researchA, researchB],
-    "tree",
-    ALL_RESEARCH_SCOPE,
+    [treeSummary("tree-one", researchA.id), treeSummary("tree-two", researchA.id)],
+    researchA.id,
   );
 
-  assert.deepEqual(ids, [RESEARCH_DOCUMENT_TAB_ID, "research-one", "research-two"]);
-  assert.equal(cycleTabId(ids, RESEARCH_DOCUMENT_TAB_ID, 1), "research-one");
+  const treeOneTabId = researchTreeTabId("tree-one");
+  const treeTwoTabId = researchTreeTabId("tree-two");
+  assert.deepEqual(ids, [treeOneTabId, treeTwoTabId, "research-one", "research-two"]);
+  assert.equal(cycleTabId(ids, treeOneTabId, 1), treeTwoTabId);
+  assert.equal(cycleTabId(ids, treeTwoTabId, 1), "research-one");
   assert.equal(cycleTabId(ids, "research-one", 1), "research-two");
-  assert.equal(cycleTabId(ids, "research-two", 1), RESEARCH_DOCUMENT_TAB_ID);
-  assert.equal(cycleTabId(ids, RESEARCH_DOCUMENT_TAB_ID, -1), "research-two");
-  assert.equal(cycleTabId(ids, "research-one", -1), RESEARCH_DOCUMENT_TAB_ID);
+  assert.equal(cycleTabId(ids, "research-two", 1), treeOneTabId);
+  assert.equal(cycleTabId(ids, treeOneTabId, -1), "research-two");
+  assert.equal(cycleTabId(ids, "research-one", -1), treeTwoTabId);
+  assert.equal(researchTreeIdFromTabId(treeTwoTabId), "tree-two");
+  assert.equal(researchTreeIdFromTabId("research-one"), null);
 });
 
 test("research cycling honours the folder scope the sidebar is filtered to", () => {
@@ -264,12 +271,22 @@ test("research cycling honours the folder scope the sidebar is filtered to", () 
   // Scoped to A: B's live terminal has no sidebar row, so it must not be
   // reachable by cycling either.
   assert.deepEqual(
-    researchCycleTabIds(panes, [researchA, researchB], "tree", researchA.id),
-    [RESEARCH_DOCUMENT_TAB_ID, "pane-a"],
+    researchCycleTabIds(
+      panes,
+      [researchA, researchB],
+      [treeSummary("tree-a", researchA.id), treeSummary("tree-b", researchB.id)],
+      researchA.id,
+    ),
+    [researchTreeTabId("tree-a"), "pane-a"],
   );
   assert.deepEqual(
-    researchCycleTabIds(panes, [researchA, researchB], "tree", ALL_RESEARCH_SCOPE),
-    [RESEARCH_DOCUMENT_TAB_ID, "pane-a", "pane-b"],
+    researchCycleTabIds(
+      panes,
+      [researchA, researchB],
+      [treeSummary("tree-a", researchA.id), treeSummary("tree-b", researchB.id)],
+      researchB.id,
+    ),
+    [researchTreeTabId("tree-b"), "pane-b"],
   );
 });
 
@@ -278,10 +295,10 @@ test("a stored folder scope resolves to itself only while the workspace is live"
   const researchB = group("research-b", "research");
 
   assert.equal(resolveResearchScope("research-a", [researchA, researchB]), "research-a");
-  assert.equal(resolveResearchScope("research-a", [researchB]), ALL_RESEARCH_SCOPE);
-  assert.equal(resolveResearchScope("research-a", []), ALL_RESEARCH_SCOPE);
-  assert.equal(resolveResearchScope(null, [researchA]), ALL_RESEARCH_SCOPE);
-  assert.equal(resolveResearchScope("all", [researchA]), ALL_RESEARCH_SCOPE);
+  assert.equal(resolveResearchScope("research-a", [researchB]), "research-b");
+  assert.equal(resolveResearchScope("research-a", []), null);
+  assert.equal(resolveResearchScope(null, [researchA]), "research-a");
+  assert.equal(resolveResearchScope("all", [researchA]), "research-a");
 });
 
 function treeSummary(id: string, workspaceId: string): ResearchTreeSummary {
@@ -300,14 +317,14 @@ function treeSummary(id: string, workspaceId: string): ResearchTreeSummary {
   };
 }
 
-test("folder scoping filters trees and 'all' passes them through untouched", () => {
+test("folder scoping filters trees and returns none without a folder", () => {
   const trees = [
     treeSummary("tree-1", "research-a"),
     treeSummary("tree-2", "research-b"),
     treeSummary("tree-3", "research-a"),
   ];
 
-  assert.equal(treesForResearchScope(trees, ALL_RESEARCH_SCOPE), trees);
+  assert.deepEqual(treesForResearchScope(trees, null), []);
   assert.deepEqual(
     treesForResearchScope(trees, "research-a").map(({ id }) => id),
     ["tree-1", "tree-3"],
@@ -323,10 +340,10 @@ test("research restoration never crosses the selected folder scope", () => {
 
   assert.equal(treeForResearchScope(trees, "research-b", "tree-1")?.id, "tree-2");
   assert.equal(treeForResearchScope(trees, "research-c", "tree-1"), null);
-  assert.equal(treeForResearchScope(trees, ALL_RESEARCH_SCOPE, "tree-1")?.id, "tree-1");
+  assert.equal(treeForResearchScope(trees, null, "tree-1"), null);
   assert.equal(workspaceIsInResearchScope("research-a", "research-a"), true);
   assert.equal(workspaceIsInResearchScope("research-a", "research-b"), false);
-  assert.equal(workspaceIsInResearchScope("research-a", ALL_RESEARCH_SCOPE), true);
+  assert.equal(workspaceIsInResearchScope("research-a", null), false);
 });
 
 test("the next-tree fallback stays inside the scoped folder", () => {
@@ -340,5 +357,5 @@ test("the next-tree fallback stays inside the scoped folder", () => {
   // The only tree in scope going away leaves the folder empty rather than
   // jumping to another folder's tree.
   assert.equal(nextTreeInResearchScope(trees, "research-b", "tree-2"), null);
-  assert.equal(nextTreeInResearchScope(trees, ALL_RESEARCH_SCOPE, "tree-1")?.id, "tree-2");
+  assert.equal(nextTreeInResearchScope(trees, null, "tree-1"), null);
 });

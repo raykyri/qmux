@@ -1,11 +1,23 @@
-import type { GroupInfo, PaneInfo } from "../types";
+import type { GroupInfo, PaneInfo, ResearchTreeSummary } from "../types";
 import { type ResearchFolderScope, workspaceIsInResearchScope } from "./researchScope";
 import { panesForScope } from "./workspaceScope";
 
 export type SidebarMode = "terminal" | "research";
 
 export const SIDEBAR_MODE_STORAGE_KEY = "qmux.sidebar-mode.v1";
-export const RESEARCH_DOCUMENT_TAB_ID = "__research_document__";
+const RESEARCH_TREE_TAB_PREFIX = "__research_tree__:";
+
+export function researchTreeTabId(treeId: string): string {
+  return `${RESEARCH_TREE_TAB_PREFIX}${treeId}`;
+}
+
+export function researchTreeIdFromTabId(tabId: string): string | null {
+  if (!tabId.startsWith(RESEARCH_TREE_TAB_PREFIX)) {
+    return null;
+  }
+  const treeId = tabId.slice(RESEARCH_TREE_TAB_PREFIX.length);
+  return treeId || null;
+}
 
 export function parseSidebarMode(value: string | null): SidebarMode {
   return value === "research" ? "research" : "terminal";
@@ -39,7 +51,7 @@ export function terminalTabForMode(
 export function researchCycleTabIds(
   panes: PaneInfo[],
   groups: GroupInfo[],
-  activeResearchTreeId: string | null,
+  trees: ResearchTreeSummary[],
   scope: ResearchFolderScope,
 ): string[] {
   const groupById = new Map(groups.map((group) => [group.id, group]));
@@ -52,7 +64,9 @@ export function researchCycleTabIds(
     .filter((pane) => groupById.get(pane.groupId)?.collapsed !== true)
     .map((pane) => pane.id);
   return [
-    ...(activeResearchTreeId ? [RESEARCH_DOCUMENT_TAB_ID] : []),
+    ...trees
+      .filter((tree) => workspaceIsInResearchScope(tree.workspaceId, scope))
+      .map((tree) => researchTreeTabId(tree.id)),
     ...visibleResearchPaneIds,
   ];
 }
