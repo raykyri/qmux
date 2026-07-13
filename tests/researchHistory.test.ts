@@ -6,6 +6,7 @@ import {
   canGoForward,
   initResearchHistory,
   pushResearchHistory,
+  pruneResearchHistory,
   researchHistoryBack,
   researchHistoryForward,
   researchSwipeDirection,
@@ -76,4 +77,19 @@ test("horizontal wheel gestures resolve only after clear dominant travel", () =>
   assert.equal(researchSwipeDirection(100, 90), 0);
   assert.equal(researchSwipeDirection(-100, 20), -1);
   assert.equal(researchSwipeDirection(100, 20), 1);
+});
+
+test("pruning deleted visits preserves the surviving cursor position", () => {
+  const history = { entries: ["root", "branch", "leaf", "root"], index: 2 };
+  assert.deepEqual(pruneResearchHistory(history, new Set(["root"]), "root"), {
+    entries: ["root", "root"],
+    index: 0,
+  });
+});
+
+test("pruning falls back when every visited node was deleted", () => {
+  assert.deepEqual(
+    pruneResearchHistory({ entries: ["branch", "leaf"], index: 1 }, new Set(["root"]), "root"),
+    { entries: ["root"], index: 0 },
+  );
 });

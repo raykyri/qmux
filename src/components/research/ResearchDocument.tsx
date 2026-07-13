@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, ScrollText, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, ScrollText, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
 import { getResearchNodeContent, listClaudeSkills } from "../../lib/api";
@@ -11,10 +12,12 @@ import {
   canGoForward as historyCanGoForward,
   initResearchHistory,
   pushResearchHistory,
+  pruneResearchHistory,
   researchHistoryBack,
   researchHistoryForward,
   researchSwipeDirection,
 } from "../../lib/researchHistory";
+import { researchBranchInfo } from "../../lib/researchBranches";
 import {
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
@@ -27,7 +30,12 @@ import {
   timelineItemsAfterLastToolCall,
 } from "../../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../../lib/turnTimeline";
-import type { ResearchNode, ResearchNodeContent, ResearchTreeDetail } from "../../types";
+import type {
+  ResearchBranchRemoval,
+  ResearchNode,
+  ResearchNodeContent,
+  ResearchTreeDetail,
+} from "../../types";
 import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
 import {
   RawTranscriptDisclosure,
@@ -46,6 +54,7 @@ interface ResearchDocumentProps {
   /** Refetches the active tree's detail after a failed load. */
   onRetryDetail?: () => void;
   onFork: (parentNodeId: string, prompt: string) => Promise<ResearchNode>;
+  onRemoveBranch: (nodeId: string) => Promise<ResearchBranchRemoval>;
   onCancel: (nodeId: string) => Promise<void>;
   onOpenPane: (paneId: string) => void;
   linkActions: LinkActions;
@@ -71,6 +80,15 @@ const OVERSIZED_MARKDOWN_POLICY = {
 } as const;
 
 const RESEARCH_SWIPE_IDLE_MS = 180;
+const FOLLOWUP_MENU_WIDTH = 190;
+const FOLLOWUP_MENU_HEIGHT = 38;
+const FOLLOWUP_MENU_MARGIN = 8;
+
+interface FollowupMenu {
+  nodeId: string;
+  left: number;
+  top: number;
+}
 
 function horizontalScrollerConsumesWheel(
   target: EventTarget | null,
@@ -203,6 +221,7 @@ export default function ResearchDocument({
   detailError,
   onRetryDetail,
   onFork,
+  onRemoveBranch,
   onCancel,
   onOpenPane,
   linkActions,
@@ -222,6 +241,9 @@ export default function ResearchDocument({
   const [deepResearchSkillCommand, setDeepResearchSkillCommand] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [followupMenu, setFollowupMenu] = useState<FollowupMenu | null>(null);
+  const [deletingBranchId, setDeletingBranchId] = useState<string | null>(null);
+  const [removingBranch, setRemovingBranch] = useState(false);
   const [contentError, setContentError] = useState<string | null>(null);
   const [contentLoadNonce, setContentLoadNonce] = useState(0);
   const [showAllTurns, setShowAllTurns] = useState(false);
@@ -230,6 +252,7 @@ export default function ResearchDocument({
   const treeId = detail?.tree.id ?? null;
   const documentScrollRef = useRef<HTMLElement | null>(null);
   const followupTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const followupMenuRef = useRef<HTMLDivElement | null>(null);
   const navigationRef = useRef(researchNavigationStore());
   const navigationPersistTimerRef = useRef<number | null>(null);
   const selectedNodeIdRef = useRef(selectedNodeId);
@@ -238,6 +261,7 @@ export default function ResearchDocument({
   // detail replacement (every research event rebuilds the object) does not
   // restart the effect and refetch content that has not changed.
   const detailRef = useRef(detail);
+  const previousDetailNodesRef = useRef<ResearchNode[]>([]);
   // Which node's content the scroll container is actually showing. Scroll
   // offsets must only be recorded while this matches the selection: a node
   // switch clears `content`, the article collapses to the loading block, and
@@ -296,18 +320,113 @@ export default function ResearchDocument({
         : [],
     [detail, selectedNodeId],
   );
+  const deletingBranch = useMemo(
+    () =>
+      deletingBranchId && detail
+        ? {
+            node: detail.nodes.find((node) => node.id === deletingBranchId) ?? null,
+            info: researchBranchInfo(detail.nodes, deletingBranchId),
+          }
+        : null,
+    [deletingBranchId, detail],
+  );
 
   // Scroll offsets and selections for deleted nodes would otherwise sit in
   // localStorage forever (tree-level pruning happens in the app shell, which
   // does not know a tree's nodes).
   useEffect(() => {
     if (treeId && detail) {
+      const validNodeIds = new Set(detail.nodes.map((node) => node.id));
+      const previousNode = selectedNodeId
+        ? previousDetailNodesRef.current.find((node) => node.id === selectedNodeId)
+        : null;
+      const fallbackNodeId =
+        previousNode?.parentNodeId && validNodeIds.has(previousNode.parentNodeId)
+          ? previousNode.parentNodeId
+          : detail.tree.rootNodeId;
       pruneResearchNavigationNodes(
         treeId,
-        detail.nodes.map((node) => node.id),
+        [...validNodeIds],
       );
+      setHistory((current) =>
+        pruneResearchHistory(current, validNodeIds, fallbackNodeId),
+      );
+      if (selectedNodeId && !validNodeIds.has(selectedNodeId)) {
+        const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+        navigation.selectedNodeId = fallbackNodeId;
+        saveResearchNavigation();
+        setSelectedNodeId(fallbackNodeId);
+        setContent(null);
+        setContentError(null);
+      }
+      previousDetailNodesRef.current = detail.nodes;
     }
-  }, [detail, treeId]);
+  }, [detail, selectedNodeId, treeId]);
+
+  useEffect(() => {
+    if (!followupMenu) {
+      return;
+    }
+    const closeMenu = (event: MouseEvent) => {
+      if (!followupMenuRef.current?.contains(event.target as Node)) {
+        setFollowupMenu(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFollowupMenu(null);
+      }
+    };
+    const closeOnReflow = () => setFollowupMenu(null);
+    document.addEventListener("mousedown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeOnReflow);
+    window.addEventListener("scroll", closeOnReflow, true);
+    return () => {
+      document.removeEventListener("mousedown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeOnReflow);
+      window.removeEventListener("scroll", closeOnReflow, true);
+    };
+  }, [followupMenu]);
+
+  function openFollowupMenu(nodeId: string, clientX: number, clientY: number) {
+    setFollowupMenu({
+      nodeId,
+      left: Math.max(
+        FOLLOWUP_MENU_MARGIN,
+        Math.min(clientX, window.innerWidth - FOLLOWUP_MENU_WIDTH - FOLLOWUP_MENU_MARGIN),
+      ),
+      top: Math.max(
+        FOLLOWUP_MENU_MARGIN,
+        Math.min(clientY, window.innerHeight - FOLLOWUP_MENU_HEIGHT - FOLLOWUP_MENU_MARGIN),
+      ),
+    });
+  }
+
+  async function confirmBranchRemoval() {
+    if (!deletingBranch?.node || !deletingBranch.info || deletingBranch.info.hasActiveRuns) {
+      return;
+    }
+    setRemovingBranch(true);
+    try {
+      const removal = await onRemoveBranch(deletingBranch.node.id);
+      const removedNodeIds = new Set(removal.removedNodeIds);
+      const validNodeIds = new Set(
+        (detail?.nodes ?? [])
+          .filter((node) => !removedNodeIds.has(node.id))
+          .map((node) => node.id),
+      );
+      setHistory((current) =>
+        pruneResearchHistory(current, validNodeIds, selectedNodeId ?? removal.parentNodeId),
+      );
+      setDeletingBranchId(null);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemovingBranch(false);
+    }
+  }
 
   useEffect(() => {
     const rootNodeId = detail?.tree.rootNodeId ?? null;
@@ -819,10 +938,12 @@ export default function ResearchDocument({
 
   const activeRun = ["queued", "starting", "running"].includes(displayNode.status);
   const cancellationNeedsRetry = displayNode.status === "cancelled" && Boolean(displayNode.paneId);
+  const followupCount = Math.max(0, detail.nodes.length - 1);
 
   return (
     <TranscriptLinkActionsProvider actions={linkActions}>
-      <div className="research-workspace">
+      <>
+        <div className="research-workspace">
         <main className="research-document">
           <header className="research-document-header">
             <div className="research-history-nav" aria-label="Research history">
@@ -857,6 +978,11 @@ export default function ResearchDocument({
                 </span>
               ))}
             </div>
+            {followupCount > 0 ? (
+              <span className="research-document-followup-count">
+                {followupCount} {followupCount === 1 ? "follow-up" : "follow-ups"}
+              </span>
+            ) : null}
             {hasHiddenTrace ? (
               <button
                 type="button"
@@ -1113,6 +1239,11 @@ export default function ResearchDocument({
                         type="button"
                         className="research-followup-card"
                         onClick={() => selectNode(child.id)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          openFollowupMenu(child.id, event.clientX, event.clientY);
+                        }}
                       >
                         <strong>{child.prompt}</strong>
                         {child.responsePreview ? <span>{child.responsePreview}</span> : null}
@@ -1127,7 +1258,114 @@ export default function ResearchDocument({
             </div>
           </article>
         </main>
-      </div>
+        </div>
+        {followupMenu && detail
+          ? (() => {
+              const node = detail.nodes.find((candidate) => candidate.id === followupMenu.nodeId);
+              const info = researchBranchInfo(detail.nodes, followupMenu.nodeId);
+              if (!node || !info) {
+                return null;
+              }
+              const label = info.descendantCount > 0 ? "Delete branch" : "Delete follow-up";
+              return createPortal(
+                <div
+                  ref={followupMenuRef}
+                  className="pane-context-menu research-followup-menu"
+                  role="menu"
+                  aria-label={`Actions for ${node.title ?? node.prompt}`}
+                  style={{ left: followupMenu.left, top: followupMenu.top }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onContextMenu={(event) => event.preventDefault()}
+                >
+                  <div className="group-context-actions">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="context-menu-danger"
+                      disabled={info.hasActiveRuns}
+                      title={
+                        info.hasActiveRuns
+                          ? "This branch must finish or be cancelled before deletion"
+                          : undefined
+                      }
+                      onClick={() => {
+                        setFollowupMenu(null);
+                        setDeletingBranchId(node.id);
+                      }}
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                      <span>{label}</span>
+                    </button>
+                  </div>
+                </div>,
+                document.body,
+              );
+            })()
+          : null}
+        {deletingBranch?.node && deletingBranch.info
+          ? createPortal(
+              <div
+                className="confirm-dialog-backdrop"
+                role="presentation"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget && !removingBranch) {
+                    setDeletingBranchId(null);
+                  }
+                }}
+              >
+                <div
+                  className="confirm-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="delete-research-branch-dialog-title"
+                  aria-busy={removingBranch}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && !removingBranch) {
+                      event.preventDefault();
+                      setDeletingBranchId(null);
+                    }
+                  }}
+                >
+                  <h2 id="delete-research-branch-dialog-title">
+                    {deletingBranch.info.descendantCount > 0
+                      ? "Delete this research branch?"
+                      : "Delete this follow-up?"}
+                  </h2>
+                  <p>{deletingBranch.node.title ?? deletingBranch.node.prompt}</p>
+                  <p>
+                    {deletingBranch.info.descendantCount > 0
+                      ? `This also permanently deletes ${deletingBranch.info.descendantCount} descendant follow-up${deletingBranch.info.descendantCount === 1 ? "" : "s"}.`
+                      : "This permanently deletes the follow-up and its response."} {" "}
+                    This can’t be undone.
+                  </p>
+                  <div className="confirm-dialog-actions">
+                    <button
+                      type="button"
+                      disabled={removingBranch}
+                      onClick={() => setDeletingBranchId(null)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      autoFocus
+                      disabled={removingBranch || deletingBranch.info.hasActiveRuns}
+                      onClick={() => void confirmBranchRemoval()}
+                    >
+                      {removingBranch
+                        ? "Deleting…"
+                        : deletingBranch.info.descendantCount > 0
+                          ? "Delete branch"
+                          : "Delete follow-up"}
+                    </button>
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
+      </>
     </TranscriptLinkActionsProvider>
   );
 }

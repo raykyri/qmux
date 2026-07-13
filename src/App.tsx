@@ -218,6 +218,7 @@ import {
   renameResearchNode,
   renameResearchTree,
   removeResearchTree,
+  removeResearchBranch,
   restoreResearchTree,
   forkAgent,
   getActiveTab,
@@ -5135,12 +5136,30 @@ export default function App() {
     async (treeId: string) => {
       try {
         await removeResearchTree(treeId);
+        if (activeResearchTreeIdRef.current === treeId) {
+          const nextTree = nextTreeInResearchScope(
+            researchTrees,
+            researchScopeRef.current,
+            treeId,
+          );
+          if (nextTree) {
+            await selectResearchTree(nextTree.id);
+          } else {
+            activeResearchTreeIdRef.current = null;
+            setActiveResearchTreeId(null);
+            setActiveResearchDetail(null);
+            setActiveResearchDetailError(null);
+            localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+            setSidebarMode("research");
+            setActiveSurface("research");
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
       void refreshResearchNavigation().catch(() => undefined);
     },
-    [refreshResearchNavigation],
+    [refreshResearchNavigation, researchTrees, selectResearchTree, setSidebarMode],
   );
   const createResearchFollowup = useCallback(
     async (parentNodeId: string, prompt: string) => {
@@ -5165,6 +5184,31 @@ export default function App() {
       return node;
     },
     [applyGeneratedResearchNodeTitle, refreshResearchNavigation],
+  );
+  const removeResearchBranchFromDocument = useCallback(
+    async (nodeId: string) => {
+      const removal = await removeResearchBranch(nodeId);
+      const treeId = activeResearchTreeIdRef.current;
+      if (treeId === removal.treeId) {
+        const requestSeq = researchDetailRequestSeqRef.current + 1;
+        researchDetailRequestSeqRef.current = requestSeq;
+        try {
+          const detail = await getResearchTree(treeId);
+          if (
+            researchDetailRequestSeqRef.current === requestSeq &&
+            activeResearchTreeIdRef.current === treeId
+          ) {
+            setActiveResearchDetail(detail);
+            setActiveResearchDetailError(null);
+          }
+        } catch (err) {
+          setError(`The branch was deleted, but Research could not refresh: ${unknownErrorMessage(err)}`);
+        }
+      }
+      void refreshResearchNavigation().catch(() => undefined);
+      return removal;
+    },
+    [refreshResearchNavigation],
   );
   const nativeTerminalShortcutHandlerRef = useRef<
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => void
@@ -8847,12 +8891,12 @@ export default function App() {
                   <MessageSquareText size={14} aria-hidden="true" />
                   <span>New agent</span>
                 </button>
-                {shortcutHintsShown && !settings.codeMode ? (
+                {shortcutHintsShown ? (
                   <span
                     className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
                     aria-hidden="true"
                   >
-                    ⌘T
+                    {settings.codeMode ? "⌘N" : "⌘N · ⌘T"}
                   </span>
                 ) : null}
               </div>
@@ -10268,6 +10312,7 @@ export default function App() {
               detailError={activeResearchDetailError}
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}
+              onRemoveBranch={removeResearchBranchFromDocument}
               onCancel={cancelResearchRun}
               onOpenPane={openResearchPaneTab}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}

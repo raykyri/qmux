@@ -170,6 +170,14 @@ pub struct ResearchTreeDetail {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResearchBranchRemoval {
+    pub tree_id: String,
+    pub parent_node_id: String,
+    pub removed_node_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResearchNodeCard {
     pub id: String,
     pub prompt: String,

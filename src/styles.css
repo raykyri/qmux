@@ -86,32 +86,6 @@
   background: transparent;
 }
 
-.research-sidebar-action {
-  display: none;
-  width: 20px;
-  height: 20px;
-  flex: none;
-  place-items: center;
-  border: 0;
-  border-radius: 5px;
-  color: #7f8884;
-  background: transparent;
-}
-
-.research-sidebar-row:hover .research-sidebar-action,
-.research-sidebar-row:focus-within .research-sidebar-action {
-  display: grid;
-}
-
-.research-sidebar-action:hover {
-  color: #edf0ec;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.research-sidebar-action.is-danger {
-  color: #d98787;
-}
-
 .research-sidebar-menu-trigger {
   position: absolute;
   top: 4px;
@@ -166,16 +140,6 @@
   min-width: 0;
   flex-direction: column;
   gap: 3px;
-}
-
-.research-sidebar-followups {
-  color: #78817c;
-  font-size: calc(11px + var(--turn-font-delta, 0px));
-  line-height: 1.3;
-}
-
-.research-sidebar-row.is-selected .research-sidebar-followups {
-  color: rgba(255, 255, 255, 0.72);
 }
 
 .research-sidebar-count,
@@ -245,13 +209,7 @@
 }
 
 .research-sidebar-row.is-archived .research-sidebar-select {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-}
-
-.research-sidebar-action:disabled {
-  color: #555c59;
-  background: transparent;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Live research terminal panes for the scoped folder(s). Anchored to the
@@ -586,6 +544,14 @@
 .research-breadcrumb-separator {
   margin: 0 5px;
   color: #59615d;
+}
+
+.research-document-followup-count {
+  flex: 0 0 auto;
+  color: #78817c;
+  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .research-open-terminal,
@@ -2308,6 +2274,12 @@ button:disabled {
   width: min(200px, calc(100vw - 16px));
 }
 
+.research-followup-menu {
+  width: min(190px, calc(100vw - 16px));
+  padding: 4px;
+  user-select: none;
+}
+
 .group-context-menu,
 .research-sidebar-menu {
   padding: 4px;
@@ -2341,7 +2313,11 @@ button:disabled {
 .pane-context-actions .context-menu-danger:hover:not(:disabled) span,
 .pane-context-actions .context-menu-danger:focus-visible:not(:disabled) span,
 .group-context-actions .context-menu-danger:hover:not(:disabled) span,
-.group-context-actions .context-menu-danger:focus-visible:not(:disabled) span {
+.group-context-actions .context-menu-danger:focus-visible:not(:disabled) span,
+.pane-context-actions .context-menu-danger:hover:not(:disabled) svg,
+.pane-context-actions .context-menu-danger:focus-visible:not(:disabled) svg,
+.group-context-actions .context-menu-danger:hover:not(:disabled) svg,
+.group-context-actions .context-menu-danger:focus-visible:not(:disabled) svg {
   color: #ffb4a3;
 }
 
@@ -6545,7 +6521,7 @@ header + .turn-blocks {
 }
 
 .research-followup-composer textarea {
-  font-size: var(--research-meta-font-size);
+  font-size: calc(var(--research-meta-font-size) + 0.5px);
 }
 
 .native-input textarea::placeholder,

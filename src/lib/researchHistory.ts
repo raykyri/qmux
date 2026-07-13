@@ -77,3 +77,23 @@ export function researchHistoryForward(history: ResearchHistory): ResearchHistor
   const index = history.index + 1;
   return { history: { entries: history.entries, index }, nodeId: history.entries[index] };
 }
+
+/** Removes visits to nodes that no longer exist while keeping the cursor on
+ * the same surviving visit whenever possible. */
+export function pruneResearchHistory(
+  history: ResearchHistory,
+  validNodeIds: ReadonlySet<string>,
+  fallbackNodeId: string | null,
+): ResearchHistory {
+  const entries = history.entries.filter((nodeId) => validNodeIds.has(nodeId));
+  if (entries.length === 0) {
+    return initResearchHistory(fallbackNodeId);
+  }
+  const survivingThroughCursor = history.entries
+    .slice(0, history.index + 1)
+    .filter((nodeId) => validNodeIds.has(nodeId)).length;
+  return {
+    entries,
+    index: Math.max(0, Math.min(entries.length - 1, survivingThroughCursor - 1)),
+  };
+}

@@ -19,6 +19,7 @@ import type {
   SavedPrompt,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
+  ResearchBranchRemoval,
   ResearchTree,
   ResearchWorkspaceInfo,
   ResearchTreeDetail,
@@ -327,6 +328,10 @@ export function restoreResearchTree(treeId: string) {
 
 export function removeResearchTree(treeId: string) {
   return invoke<void>("remove_research_tree", { treeId });
+}
+
+export function removeResearchBranch(nodeId: string) {
+  return invoke<ResearchBranchRemoval>("remove_research_branch", { nodeId });
 }
 
 export function listAgentTurnQueue(agentId: string) {

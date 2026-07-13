@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import {
   Archive,
   ArchiveRestore,
-  Check,
   MoreHorizontal,
   Pencil,
   RefreshCw,
@@ -12,7 +11,7 @@ import {
 import type { ResearchTreeSummary } from "../../types";
 
 const RESEARCH_MENU_WIDTH = 190;
-const RESEARCH_MENU_HEIGHT_ESTIMATE = 98;
+const RESEARCH_MENU_HEIGHT_ESTIMATE = 132;
 const RESEARCH_MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
 
@@ -30,29 +29,10 @@ interface ResearchSidebarSectionProps {
 
 type ResearchMenu = {
   treeId: string;
+  archived: boolean;
   left: number;
   top: number;
 };
-
-function followupCount(tree: ResearchTreeSummary) {
-  const nodeCount =
-    tree.runningCount + tree.failedCount + tree.completedCount + tree.cancelledCount;
-  return Math.max(0, nodeCount - 1);
-}
-
-function FollowupHint({ tree }: { tree: ResearchTreeSummary }) {
-  const count = followupCount(tree);
-  // A fresh research has no follow-ups; "0 follow-ups" on every new row is
-  // noise, so the meta line only appears once the tree actually branches.
-  if (count === 0) {
-    return null;
-  }
-  return (
-    <span className="research-sidebar-followups">
-      {count} {count === 1 ? "follow-up" : "follow-ups"}
-    </span>
-  );
-}
 
 export default function ResearchSidebarSection({
   trees,
@@ -68,10 +48,12 @@ export default function ResearchSidebarSection({
   const [menu, setMenu] = useState<ResearchMenu | null>(null);
   const [renamingTree, setRenamingTree] = useState<ResearchTreeSummary | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [confirmingRemoveId, setConfirmingRemoveId] = useState<string | null>(null);
+  const [deletingTree, setDeletingTree] = useState<ResearchTreeSummary | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
-  const menuTree = menu ? trees.find((tree) => tree.id === menu.treeId) ?? null : null;
+  const menuTree = menu
+    ? (menu.archived ? archivedTrees : trees).find((tree) => tree.id === menu.treeId) ?? null
+    : null;
 
   useEffect(() => {
     if (!menu) {
@@ -111,18 +93,8 @@ export default function ResearchSidebarSection({
     }
   }, [renamingTree]);
 
-  // A pending delete confirmation quietly expires rather than lingering as a
-  // one-click destructive button.
-  useEffect(() => {
-    if (!confirmingRemoveId) {
-      return;
-    }
-    const timer = window.setTimeout(() => setConfirmingRemoveId(null), 4000);
-    return () => window.clearTimeout(timer);
-  }, [confirmingRemoveId]);
-
-  function openMenu(trigger: HTMLButtonElement, treeId: string) {
-    if (menu?.treeId === treeId) {
+  function openMenu(trigger: HTMLButtonElement, treeId: string, archived: boolean) {
+    if (menu?.treeId === treeId && menu.archived === archived) {
       setMenu(null);
       return;
     }
@@ -142,10 +114,15 @@ export default function ResearchSidebarSection({
             VIEWPORT_MARGIN,
             rect.top - RESEARCH_MENU_HEIGHT_ESTIMATE - RESEARCH_MENU_GAP,
           );
-    setMenu({ treeId, left, top });
+    setMenu({ treeId, archived, left, top });
   }
 
-  function openContextMenu(treeId: string, clientX: number, clientY: number) {
+  function openContextMenu(
+    treeId: string,
+    archived: boolean,
+    clientX: number,
+    clientY: number,
+  ) {
     const left = Math.max(
       VIEWPORT_MARGIN,
       Math.min(clientX, window.innerWidth - RESEARCH_MENU_WIDTH - VIEWPORT_MARGIN),
@@ -157,7 +134,12 @@ export default function ResearchSidebarSection({
         window.innerHeight - RESEARCH_MENU_HEIGHT_ESTIMATE - VIEWPORT_MARGIN,
       ),
     );
-    setMenu({ treeId, left, top });
+    setMenu({ treeId, archived, left, top });
+  }
+
+  function openDeleteDialog(tree: ResearchTreeSummary) {
+    setMenu(null);
+    setDeletingTree(tree);
   }
 
   function openRenameDialog(tree: ResearchTreeSummary) {
@@ -191,19 +173,30 @@ export default function ResearchSidebarSection({
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              openContextMenu(tree.id, event.clientX, event.clientY);
+              openContextMenu(tree.id, false, event.clientX, event.clientY);
             }}
+            onDoubleClick={() => openRenameDialog(tree)}
           >
             <button
               type="button"
               className="research-sidebar-select"
               aria-current={activeTreeId === tree.id ? "page" : undefined}
               title={tree.title}
-              onClick={() => onSelect(tree.id)}
+              onClick={(event) => {
+                // A double-click still selects the research on its first click,
+                // but does not start a second redundant detail fetch before the
+                // rename dialog opens.
+                if (event.detail <= 1) {
+                  onSelect(tree.id);
+                }
+              }}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                openRenameDialog(tree);
+              }}
             >
               <span className="research-sidebar-copy">
                 <span className="research-sidebar-title">{tree.title}</span>
-                <FollowupHint tree={tree} />
               </span>
               {tree.runningCount > 0 ? (
                 <span className="research-sidebar-count" title={`${tree.runningCount} running`}>
@@ -230,7 +223,8 @@ export default function ResearchSidebarSection({
               aria-haspopup="menu"
               aria-expanded={menu?.treeId === tree.id}
               data-research-menu-trigger
-              onClick={(event) => openMenu(event.currentTarget, tree.id)}
+              onClick={(event) => openMenu(event.currentTarget, tree.id, false)}
+              onDoubleClick={(event) => event.stopPropagation()}
             >
               <MoreHorizontal size={14} aria-hidden="true" />
             </button>
@@ -243,47 +237,34 @@ export default function ResearchSidebarSection({
               <span>{archivedTrees.length}</span>
             </summary>
             {archivedTrees.map((tree) => (
-              <div key={tree.id} className="research-sidebar-row is-archived">
+              <div
+                key={tree.id}
+                className={`research-sidebar-row is-archived${
+                  menu?.archived && menu.treeId === tree.id ? " has-open-menu" : ""
+                }`}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openContextMenu(tree.id, true, event.clientX, event.clientY);
+                }}
+              >
                 <div className="research-sidebar-select" title={tree.title}>
-                  <Archive size={13} aria-hidden="true" />
                   <span className="research-sidebar-copy">
                     <span className="research-sidebar-title">{tree.title}</span>
-                    <FollowupHint tree={tree} />
                   </span>
                 </div>
                 <button
                   type="button"
-                  className="research-sidebar-action"
-                  title="Restore research"
-                  aria-label={`Restore ${tree.title}`}
-                  onClick={() => void onRestore(tree.id)}
+                  className="research-sidebar-menu-trigger"
+                  title="Research actions"
+                  aria-label={`Actions for ${tree.title}`}
+                  aria-haspopup="menu"
+                  aria-expanded={menu?.archived && menu.treeId === tree.id}
+                  data-research-menu-trigger
+                  onClick={(event) => openMenu(event.currentTarget, tree.id, true)}
                 >
-                  <ArchiveRestore size={12} aria-hidden="true" />
+                  <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
-                {confirmingRemoveId === tree.id ? (
-                  <button
-                    type="button"
-                    className="research-sidebar-action is-danger"
-                    title="Confirm permanent deletion"
-                    aria-label={`Confirm permanently deleting ${tree.title}`}
-                    onClick={() => {
-                      setConfirmingRemoveId(null);
-                      void onRemove(tree.id);
-                    }}
-                  >
-                    <Check size={12} aria-hidden="true" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="research-sidebar-action"
-                    title="Delete permanently"
-                    aria-label={`Permanently delete ${tree.title}`}
-                    onClick={() => setConfirmingRemoveId(tree.id)}
-                  >
-                    <Trash2 size={12} aria-hidden="true" />
-                  </button>
-                )}
               </div>
             ))}
           </details>
@@ -301,38 +282,124 @@ export default function ResearchSidebarSection({
               onContextMenu={(event) => event.preventDefault()}
             >
               <div className="group-context-actions">
-                <button type="button" role="menuitem" onClick={() => openRenameDialog(menuTree)}>
-                  <Pencil size={13} aria-hidden="true" />
-                  <span>Rename research</span>
-                </button>
+                {menu.archived ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(null);
+                      void onRestore(menuTree.id);
+                    }}
+                  >
+                    <ArchiveRestore size={13} aria-hidden="true" />
+                    <span>Restore research</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => openRenameDialog(menuTree)}
+                    >
+                      <Pencil size={13} aria-hidden="true" />
+                      <span>Rename research</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={menuTree.runningCount > 0}
+                      title={
+                        menuTree.runningCount > 0
+                          ? "Research with active runs cannot be archived"
+                          : undefined
+                      }
+                      onClick={() => {
+                        setMenu(null);
+                        void onArchive(menuTree.id);
+                      }}
+                    >
+                      <Archive size={13} aria-hidden="true" />
+                      <span>Archive research</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenu(null);
+                        void onRegenerateTitle(menuTree.id);
+                      }}
+                    >
+                      <RefreshCw size={13} aria-hidden="true" />
+                      <span>Regenerate title</span>
+                    </button>
+                  </>
+                )}
+                <div className="context-menu-divider" role="separator" />
                 <button
                   type="button"
                   role="menuitem"
+                  className="context-menu-danger"
                   disabled={menuTree.runningCount > 0}
                   title={
                     menuTree.runningCount > 0
-                      ? "Research with active runs cannot be archived"
+                      ? "Research with active runs cannot be deleted"
                       : undefined
                   }
-                  onClick={() => {
-                    setMenu(null);
-                    void onArchive(menuTree.id);
-                  }}
+                  onClick={() => openDeleteDialog(menuTree)}
                 >
-                  <Archive size={13} aria-hidden="true" />
-                  <span>Archive research</span>
+                  <Trash2 size={13} aria-hidden="true" />
+                  <span>Delete permanently</span>
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenu(null);
-                    void onRegenerateTitle(menuTree.id);
-                  }}
-                >
-                  <RefreshCw size={13} aria-hidden="true" />
-                  <span>Regenerate title</span>
-                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {deletingTree
+        ? createPortal(
+            <div
+              className="confirm-dialog-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                  setDeletingTree(null);
+                }
+              }}
+            >
+              <div
+                className="confirm-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="delete-research-dialog-title"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setDeletingTree(null);
+                  }
+                }}
+              >
+                <h2 id="delete-research-dialog-title">Delete “{deletingTree.title}”?</h2>
+                <p>
+                  This permanently deletes this research and its completed work and follow-up
+                  history. This can’t be undone.
+                </p>
+                <div className="confirm-dialog-actions">
+                  <button type="button" onClick={() => setDeletingTree(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    autoFocus
+                    onClick={() => {
+                      const treeId = deletingTree.id;
+                      setDeletingTree(null);
+                      void onRemove(treeId);
+                    }}
+                  >
+                    Delete research
+                  </button>
+                </div>
               </div>
             </div>,
             document.body,

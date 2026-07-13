@@ -42,8 +42,8 @@ use pty::{
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
 };
 use research::{
-    CreateResearchTreeRequest, ResearchNode, ResearchNodeContent, ResearchTree, ResearchTreeDetail,
-    ResearchTreeSummary,
+    CreateResearchTreeRequest, ResearchBranchRemoval, ResearchNode, ResearchNodeContent,
+    ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
 };
 use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
@@ -967,6 +967,14 @@ fn remove_research_tree(state: tauri::State<'_, AppState>, tree_id: String) -> R
 }
 
 #[tauri::command]
+fn remove_research_branch(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+) -> Result<ResearchBranchRemoval, String> {
+    state.remove_research_branch(&node_id)
+}
+
+#[tauri::command]
 fn list_agent_turn_queue(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -1752,6 +1760,7 @@ fn main() {
             archive_research_tree,
             restore_research_tree,
             remove_research_tree,
+            remove_research_branch,
             list_agent_turn_queue,
             list_agent_transcripts,
             set_agent_transcript,

@@ -2,8 +2,8 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::research::{
-    self, CreateResearchTreeRequest, ResearchNode, ResearchNodeCard, ResearchNodeContent,
-    ResearchNodeStatus, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    self, CreateResearchTreeRequest, ResearchBranchRemoval, ResearchNode, ResearchNodeCard,
+    ResearchNodeContent, ResearchNodeStatus, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
 };
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -2934,6 +2934,129 @@ impl AppState {
             }
         }
         Ok(())
+    }
+
+    pub fn remove_research_branch(&self, node_id: &str) -> Result<ResearchBranchRemoval, String> {
+        let (removal, removed_node_ids, reaped_thread_records) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let target = model
+                .research_nodes
+                .get(node_id)
+                .cloned()
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let tree = model
+                .research_trees
+                .get(&target.tree_id)
+                .ok_or_else(|| format!("research tree {} was not found", target.tree_id))?;
+            if tree.root_node_id == target.id || target.parent_node_id.is_none() {
+                return Err(
+                    "the root research cannot be deleted as a branch; delete the research instead"
+                        .to_string(),
+                );
+            }
+
+            let mut subtree_ids = HashSet::from([target.id.clone()]);
+            loop {
+                let descendants = model
+                    .research_nodes
+                    .values()
+                    .filter(|node| {
+                        node.tree_id == target.tree_id
+                            && node
+                                .parent_node_id
+                                .as_ref()
+                                .is_some_and(|parent_id| subtree_ids.contains(parent_id))
+                            && !subtree_ids.contains(&node.id)
+                    })
+                    .map(|node| node.id.clone())
+                    .collect::<Vec<_>>();
+                if descendants.is_empty() {
+                    break;
+                }
+                subtree_ids.extend(descendants);
+            }
+
+            if model.research_nodes.values().any(|node| {
+                subtree_ids.contains(&node.id)
+                    && (node.pane_id.is_some() || node.status.is_active())
+            }) {
+                return Err("cannot delete a research branch while it has active runs".to_string());
+            }
+
+            let thread_ids = model
+                .research_nodes
+                .values()
+                .filter(|node| subtree_ids.contains(&node.id))
+                .filter_map(|node| node.thread_id.clone())
+                .filter(|thread_id| {
+                    !model
+                        .agents
+                        .values()
+                        .any(|agent| agent.thread_id.as_deref() == Some(thread_id))
+                })
+                .collect::<HashSet<_>>();
+            let mut removed_node_ids = subtree_ids.into_iter().collect::<Vec<_>>();
+            removed_node_ids.sort_by_key(|id| {
+                model
+                    .research_nodes
+                    .get(id)
+                    .map(|node| (node.created_at, node.id.clone()))
+            });
+            model
+                .research_nodes
+                .retain(|id, _| !removed_node_ids.contains(id));
+            let reaped_thread_records = thread_ids
+                .into_iter()
+                .filter_map(|thread_id| {
+                    model.thread_focus.remove(&thread_id);
+                    model.threads.remove(&thread_id)
+                })
+                .collect::<Vec<_>>();
+            touch_research_tree_locked(&mut model, &target.tree_id, now_millis());
+            (
+                ResearchBranchRemoval {
+                    tree_id: target.tree_id,
+                    parent_node_id: target.parent_node_id.expect("non-root target has a parent"),
+                    removed_node_ids: removed_node_ids.clone(),
+                },
+                removed_node_ids,
+                reaped_thread_records,
+            )
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.removed",
+            None,
+            None,
+            json!({
+                "treeId": removal.tree_id,
+                "parentNodeId": removal.parent_node_id,
+                "removedNodeIds": removal.removed_node_ids,
+            }),
+        ));
+        for node_id in removed_node_ids {
+            if let Err(err) =
+                research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id)
+            {
+                eprintln!("qmux: failed to remove research response {node_id}: {err}");
+            }
+        }
+        for record in reaped_thread_records {
+            let path = std::path::Path::new(&record.snapshot_path);
+            if let Err(err) = std::fs::remove_file(path)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "qmux: failed to remove research thread graph {}: {err}",
+                    record.snapshot_path
+                );
+            }
+        }
+        Ok(removal)
     }
 
     pub fn group(&self, group_id: &str) -> Result<Option<GroupInfo>, String> {
@@ -7408,6 +7531,126 @@ mod tests {
         state.remove_research_tree(&detail.tree.id).unwrap();
         assert!(state.list_research_trees().unwrap().is_empty());
         assert!(state.research_tree(&detail.tree.id).is_err());
+    }
+
+    #[test]
+    fn remove_research_branch_deletes_descendants_and_preserves_siblings() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let settle = |node_id: &str| {
+            let mut model = state.inner.model.lock().unwrap();
+            let node = model.research_nodes.get_mut(node_id).unwrap();
+            node.status = ResearchNodeStatus::Complete;
+            node.native_session_id = Some(format!("session-{node_id}"));
+            node.completed_at = Some(now_millis());
+        };
+        settle(&detail.tree.root_node_id);
+        let branch = state
+            .create_research_child(&detail.tree.root_node_id, "Branch".to_string())
+            .unwrap();
+        settle(&branch.id);
+        let descendant = state
+            .create_research_child(&branch.id, "Descendant".to_string())
+            .unwrap();
+        state
+            .fail_research_node(&descendant.id, "settled".to_string())
+            .unwrap();
+        let sibling = state
+            .create_research_child(&detail.tree.root_node_id, "Sibling".to_string())
+            .unwrap();
+        state
+            .fail_research_node(&sibling.id, "settled".to_string())
+            .unwrap();
+        research::write_response_snapshot(
+            &workspace,
+            &branch.id,
+            &[sample_user_turn("branch-agent", "Branch")],
+        )
+        .unwrap();
+        research::write_response_snapshot(
+            &workspace,
+            &descendant.id,
+            &[sample_user_turn("descendant-agent", "Descendant")],
+        )
+        .unwrap();
+
+        let removal = state.remove_research_branch(&branch.id).unwrap();
+        assert_eq!(removal.tree_id, detail.tree.id);
+        assert_eq!(removal.parent_node_id, detail.tree.root_node_id);
+        assert_eq!(
+            removal.removed_node_ids.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([branch.id.clone(), descendant.id.clone()])
+        );
+        let remaining = state.research_tree(&detail.tree.id).unwrap();
+        assert!(
+            remaining
+                .nodes
+                .iter()
+                .any(|node| node.id == detail.tree.root_node_id)
+        );
+        assert!(remaining.nodes.iter().any(|node| node.id == sibling.id));
+        assert!(!remaining.nodes.iter().any(|node| node.id == branch.id));
+        assert!(!remaining.nodes.iter().any(|node| node.id == descendant.id));
+        assert!(
+            research::read_response_snapshot(&workspace, &branch.id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            research::read_response_snapshot(&workspace, &descendant.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remove_research_branch_rejects_roots_and_active_descendants_atomically() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        assert!(
+            state
+                .remove_research_branch(&detail.tree.root_node_id)
+                .unwrap_err()
+                .contains("root research")
+        );
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            let root = model
+                .research_nodes
+                .get_mut(&detail.tree.root_node_id)
+                .unwrap();
+            root.status = ResearchNodeStatus::Complete;
+            root.native_session_id = Some("root-session".to_string());
+        }
+        let branch = state
+            .create_research_child(&detail.tree.root_node_id, "Branch".to_string())
+            .unwrap();
+        assert!(
+            state
+                .remove_research_branch(&branch.id)
+                .unwrap_err()
+                .contains("active runs")
+        );
+        assert!(state.research_node(&branch.id).is_ok());
     }
 
     #[test]

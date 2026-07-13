@@ -204,6 +204,12 @@ export interface ResearchTreeDetail {
   nodes: ResearchNode[];
 }
 
+export interface ResearchBranchRemoval {
+  treeId: string;
+  parentNodeId: string;
+  removedNodeIds: string[];
+}
+
 export interface ResearchNodeCard {
   id: string;
   prompt: string;
