@@ -36,6 +36,17 @@ type ResearchMenu = {
   top: number;
 };
 
+function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
+  return (
+    <span className="research-sidebar-title">
+      {tree.kind === "document" ? (
+        <FileText className="research-sidebar-doc-icon" size={12} aria-hidden="true" />
+      ) : null}
+      {tree.title}
+    </span>
+  );
+}
+
 export default function ResearchSidebarSection({
   trees,
   archivedTrees,
@@ -221,16 +232,7 @@ export default function ResearchSidebarSection({
               }}
             >
               <span className="research-sidebar-copy">
-                <span className="research-sidebar-title">
-                  {tree.kind === "document" ? (
-                    <FileText
-                      className="research-sidebar-doc-icon"
-                      size={12}
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                  {tree.title}
-                </span>
+                <ResearchSidebarTitle tree={tree} />
               </span>
               {tree.runningCount > 0 ? (
                 <span className="research-sidebar-count" title={`${tree.runningCount} running`}>
@@ -287,16 +289,7 @@ export default function ResearchSidebarSection({
                   onClick={() => onSelect(tree.id)}
                 >
                   <span className="research-sidebar-copy">
-                    <span className="research-sidebar-title">
-                      {tree.kind === "document" ? (
-                        <FileText
-                          className="research-sidebar-doc-icon"
-                          size={12}
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                      {tree.title}
-                    </span>
+                    <ResearchSidebarTitle tree={tree} />
                   </span>
                 </button>
                 <button

@@ -12,6 +12,11 @@ pub const MAX_RESEARCH_HIGHLIGHTS_PER_NODE: usize = 500;
 pub const MAX_RESEARCH_HIGHLIGHT_BYTES_PER_NODE: usize = 512 * 1024;
 pub const MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL: usize = 4 * 1024 * 1024;
 pub const MAX_RESEARCH_DOCUMENT_WORDS: usize = 10_000;
+/// Backstop for word-sparse pastes (one giant token counts as one word):
+/// far above any real 10k-word document, comfortably under the 16MB snapshot
+/// cap even at worst-case JSON escaping, and cheap to name in an error —
+/// unlike the snapshot writer's "too large to render safely".
+pub const MAX_RESEARCH_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
 pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 4;
 /// Written for archives that contain no document nodes, so they stay readable
 /// by pre-documents builds (which accept versions 1–3).
@@ -1147,6 +1152,12 @@ pub fn validate_document_markdown(markdown: &str) -> Result<(), String> {
     if markdown.trim().is_empty() {
         return Err("document content cannot be empty".to_string());
     }
+    if markdown.len() > MAX_RESEARCH_DOCUMENT_BYTES {
+        return Err(format!(
+            "documents are limited to {} MB for now",
+            MAX_RESEARCH_DOCUMENT_BYTES / (1024 * 1024)
+        ));
+    }
     let words = document_word_count(markdown);
     if words > MAX_RESEARCH_DOCUMENT_WORDS {
         return Err(format!(
@@ -1490,6 +1501,16 @@ mod tests {
         let over_limit = vec!["word"; MAX_RESEARCH_DOCUMENT_WORDS + 1].join(" ");
         let error = validate_document_markdown(&over_limit).unwrap_err();
         assert!(error.contains("10000 words"), "{error}");
+        // One giant whitespace-free token is a single word; the byte backstop
+        // must name a limit the composer advertised instead of failing later
+        // in the snapshot writer.
+        let over_bytes = "x".repeat(MAX_RESEARCH_DOCUMENT_BYTES + 1);
+        let error = validate_document_markdown(&over_bytes).unwrap_err();
+        assert!(error.contains("MB"), "{error}");
+        // Pins the separator set the frontend mirror must match
+        // (tests/researchDocuments.test.ts): NEL separates, FEFF does not.
+        assert_eq!(document_word_count("a\u{85}b"), 2);
+        assert_eq!(document_word_count("a\u{FEFF}b"), 1);
     }
 
     #[test]

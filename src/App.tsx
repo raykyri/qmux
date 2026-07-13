@@ -5131,16 +5131,25 @@ export default function App() {
       workspaceId: string | null;
     }) => {
       const group = await resolveResearchComposerWorkspace(input.workspaceId);
-      const detail = await createResearchDocument({
-        markdown: input.markdown,
-        title: input.title,
-        workspaceId: group.id,
-      });
+      let detail: ResearchTreeDetail;
+      try {
+        detail = await createResearchDocument({
+          markdown: input.markdown,
+          title: input.title,
+          workspaceId: group.id,
+        });
+      } catch (err) {
+        // Same reconciliation as the research composer: resolving the
+        // workspace may have just created the default folder, so the sidebar
+        // needs a refresh even though the failed create committed nothing.
+        void refreshResearchNavigation().catch(() => undefined);
+        throw err;
+      }
       // No generated-title pass: a document's title comes from its own content
       // (or the composer's explicit field).
       adoptCreatedResearchTree(detail);
     },
-    [adoptCreatedResearchTree, resolveResearchComposerWorkspace],
+    [adoptCreatedResearchTree, refreshResearchNavigation, resolveResearchComposerWorkspace],
   );
   const cancelResearchRun = useCallback(
     async (nodeId: string) => {

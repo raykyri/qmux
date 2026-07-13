@@ -23,6 +23,7 @@ import {
   researchSwipeDirection,
 } from "../../lib/researchHistory";
 import { researchBranchInfo } from "../../lib/researchBranches";
+import { countResearchDocumentWords } from "../../lib/researchDocuments";
 import { resolveResearchHighlightOffset } from "../../lib/researchHighlights";
 import {
   isResearchNodeSelectionChange,
@@ -272,10 +273,6 @@ function formatDuration(durationMs: number) {
     return `${minutes}m ${totalSeconds % 60}s`;
   }
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-
-function countWords(text: string) {
-  return text.match(/\S+/g)?.length ?? 0;
 }
 
 function unexpectedRoleLabel(role: string) {
@@ -1021,7 +1018,7 @@ export default function ResearchDocument({
   // Memoized because this component renders several times a second while a run
   // streams (detail replacements, the duration tick, every composer keystroke),
   // and the regex walks — and allocates a match array over — the entire answer.
-  const answerWordCount = useMemo(() => countWords(rawAnswer), [rawAnswer]);
+  const answerWordCount = useMemo(() => countResearchDocumentWords(rawAnswer), [rawAnswer]);
 
   // Diagram rendering and other child-owned Markdown controls can replace text
   // nodes without changing the transcript items. Observe those commits so saved
@@ -1749,12 +1746,14 @@ export default function ResearchDocument({
               }
               const label = info.descendantCount > 0 ? "Delete branch" : "Delete follow-up";
               const rootNode = node.id === detail.tree.rootNodeId;
+              // A document root has no prompt; its identity is the tree title.
+              const nodeName = (node.title ?? node.prompt) || detail.tree.title;
               return createPortal(
                 <div
                   ref={followupMenuRef}
                   className="pane-context-menu research-followup-menu"
                   role="menu"
-                  aria-label={`Actions for ${node.title ?? node.prompt}`}
+                  aria-label={`Actions for ${nodeName}`}
                   style={{ left: followupMenu.left, top: followupMenu.top }}
                   onMouseDown={(event) => event.stopPropagation()}
                   onContextMenu={(event) => event.preventDefault()}
@@ -1835,7 +1834,12 @@ export default function ResearchDocument({
                       ? "Delete this research branch?"
                       : "Delete this follow-up?"}
                   </h2>
-                  <p>Delete "{deletingBranch.node.title ?? deletingBranch.node.prompt}"?</p>
+                  <p>
+                    Delete "
+                    {(deletingBranch.node.title ?? deletingBranch.node.prompt) ||
+                      detail.tree.title}
+                    "?
+                  </p>
                   <p>
                     {deletingBranch.node.id === detail.tree.rootNodeId
                       ? deletingBranch.info.descendantCount > 0

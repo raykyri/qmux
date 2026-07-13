@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  RESEARCH_DOCUMENT_BYTE_LIMIT,
   RESEARCH_DOCUMENT_WORD_LIMIT,
   countResearchDocumentWords,
   deriveResearchDocumentTitle,
 } from "../../lib/researchDocuments";
-import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
+import {
+  ComposerSubmitShortcutGlyph,
+  isComposerSubmitShortcut,
+} from "../ComposerSubmitShortcut";
 
 interface NewDocumentDialogProps {
   open: boolean;
@@ -20,8 +24,8 @@ interface NewDocumentDialogProps {
 /** Composer for adding a pasted-markdown document as a root-level research
  * item. Unlike the prompt launcher, Escape and backdrop clicks only dismiss
  * while the composer is empty — a pasted document must survive a stray
- * click — and Enter always inserts a newline, so submit is Cmd/Ctrl+Enter or
- * the explicit button. */
+ * click — and Enter always inserts a newline, so submit is Cmd+Enter or the
+ * explicit button. */
 export default function NewDocumentDialog({
   open,
   workspaceId,
@@ -45,17 +49,28 @@ export default function NewDocumentDialog({
     setError(null);
   }, [open]);
 
+  // Memoized on the body: these walk the whole document (up to hundreds of
+  // KB), and without the memo every title-field keystroke re-scanned it.
+  const { wordCount, byteCount, derivedTitle } = useMemo(
+    () => ({
+      wordCount: countResearchDocumentWords(markdown),
+      byteCount: new TextEncoder().encode(markdown).length,
+      derivedTitle: markdown.trim() ? deriveResearchDocumentTitle(markdown) : "",
+    }),
+    [markdown],
+  );
+
   if (!open) {
     return null;
   }
 
-  const wordCount = countResearchDocumentWords(markdown);
-  const overLimit = wordCount > RESEARCH_DOCUMENT_WORD_LIMIT;
+  const overWordLimit = wordCount > RESEARCH_DOCUMENT_WORD_LIMIT;
+  const overByteLimit = byteCount > RESEARCH_DOCUMENT_BYTE_LIMIT;
   const pristine = !markdown.trim() && !title.trim();
-  const derivedTitle = markdown.trim() ? deriveResearchDocumentTitle(markdown) : "";
+  const canSubmit = Boolean(markdown.trim()) && !overWordLimit && !overByteLimit && !submitting;
 
   async function submit() {
-    if (!markdown.trim() || overLimit || submitting) {
+    if (!canSubmit) {
       return;
     }
     setSubmitting(true);
@@ -107,6 +122,14 @@ export default function NewDocumentDialog({
           placeholder={derivedTitle || "Title (uses the first line if left blank)"}
           aria-label="Document title"
           onChange={(event) => setTitle(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            // Block the browser's implicit form submission: creating the
+            // document is deliberate (Cmd+Enter or the button), never a side
+            // effect of pressing Enter while editing the title.
+            if (event.key === "Enter" && !isComposerSubmitShortcut(event, true)) {
+              event.preventDefault();
+            }
+          }}
         />
         <textarea
           autoFocus
@@ -116,7 +139,7 @@ export default function NewDocumentDialog({
           aria-label="Document markdown"
           onChange={(event) => setMarkdown(event.currentTarget.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (isComposerSubmitShortcut(event, true)) {
               event.preventDefault();
               void submit();
             }
@@ -124,15 +147,16 @@ export default function NewDocumentDialog({
         />
         <footer className="new-document-footer">
           <span
-            className={`new-document-wordcount${overLimit ? " is-over" : ""}`}
-            role={overLimit ? "alert" : undefined}
+            className={`new-document-wordcount${overWordLimit || overByteLimit ? " is-over" : ""}`}
+            role={overWordLimit || overByteLimit ? "alert" : undefined}
             title={
-              overLimit
+              overWordLimit
                 ? `Documents are limited to ${RESEARCH_DOCUMENT_WORD_LIMIT.toLocaleString()} words for now`
                 : undefined
             }
           >
             {wordCount.toLocaleString()} / {RESEARCH_DOCUMENT_WORD_LIMIT.toLocaleString()} words
+            {overByteLimit ? " · over the 2 MB size limit" : ""}
           </span>
           {error ? (
             <p className="new-document-error" role="alert">
@@ -143,7 +167,7 @@ export default function NewDocumentDialog({
             <button type="button" disabled={submitting} onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" disabled={!markdown.trim() || overLimit || submitting}>
+            <button type="submit" disabled={!canSubmit}>
               <span>{submitting ? "Adding…" : "Add document"}</span>
               {!submitting ? (
                 <ComposerSubmitShortcutGlyph requireCmdEnter className="shortcut-hint" />

@@ -2318,7 +2318,9 @@ impl AppState {
             completed_at: Some(now),
             highlights: Vec::new(),
         };
-        let inserted = {
+        // Same admission shape as create_research_tree, in a closure only so
+        // an early return can still reclaim the pre-written snapshot below.
+        let inserted = (|| -> Result<(), String> {
             let mut model = self
                 .inner
                 .model
@@ -2327,20 +2329,15 @@ impl AppState {
             let workspace = model
                 .groups
                 .get(&node.group_id)
-                .ok_or_else(|| format!("research workspace {} was not found", node.group_id));
-            match workspace {
-                Ok(workspace) if workspace.scope != WorkspaceScope::Research => {
-                    Err("research requires a Research-scoped workspace".to_string())
-                }
-                Ok(workspace) => {
-                    node.worktree_dir = workspace.dir.clone();
-                    model.research_trees.insert(tree_id.clone(), tree.clone());
-                    model.research_nodes.insert(node_id.clone(), node.clone());
-                    Ok(())
-                }
-                Err(err) => Err(err),
+                .ok_or_else(|| format!("research workspace {} was not found", node.group_id))?;
+            if workspace.scope != WorkspaceScope::Research {
+                return Err("research requires a Research-scoped workspace".to_string());
             }
-        };
+            node.worktree_dir = workspace.dir.clone();
+            model.research_trees.insert(tree_id.clone(), tree.clone());
+            model.research_nodes.insert(node_id.clone(), node.clone());
+            Ok(())
+        })();
         if let Err(err) = inserted {
             // Nothing references the snapshot yet; reclaim it now rather than
             // waiting for the next structural prune.
