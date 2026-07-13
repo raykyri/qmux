@@ -28,7 +28,7 @@ import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
   timelineItemsAfterLastToolCall,
-  timelineItemsContainToolCall,
+  timelineItemsContainTranscriptActivity,
 } from "../../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../../lib/turnTimeline";
 import type {
@@ -50,6 +50,8 @@ import TranscriptMarkdown, {
 
 interface ResearchDocumentProps {
   detail: ResearchTreeDetail | null;
+  /** Archived trees remain browsable, but cannot be branched. */
+  archived: boolean;
   /** Why `detail` is null, when the tree fetch itself failed. */
   detailError?: string | null;
   /** Refetches the active tree's detail after a failed load. */
@@ -220,6 +222,7 @@ const ResearchTimelineItem = memo(function ResearchTimelineItem({ item }: { item
 
 export default function ResearchDocument({
   detail,
+  archived,
   detailError,
   onRetryDetail,
   onFork,
@@ -852,7 +855,7 @@ export default function ResearchDocument({
     () => timelineItemsAfterLastToolCall(timelineItems),
     [timelineItems],
   );
-  const hasToolCalls = timelineItemsContainToolCall(timelineItems);
+  const hasTranscriptActivity = timelineItemsContainTranscriptActivity(timelineItems);
   const displayedTimelineItems = showFullTrace ? timelineItems : answerTimelineItems;
   const visibleTimelineItems =
     showAllTurns || displayedTimelineItems.length <= TIMELINE_ITEM_RENDER_WINDOW
@@ -874,6 +877,7 @@ export default function ResearchDocument({
     // reach the backend (and bounce with an error) from a state the button
     // presents as unavailable — a running node already has a session id.
     if (
+      archived ||
       !followupNode ||
       !prompt ||
       submitting ||
@@ -1021,13 +1025,13 @@ export default function ResearchDocument({
                 {followupCount} {followupCount === 1 ? "follow-up" : "follow-ups"}
               </span>
             ) : null}
-            {hasToolCalls ? (
+            {hasTranscriptActivity ? (
               <button
                 type="button"
                 className={`research-trace-toggle${showFullTrace ? " is-active" : ""}`}
                 aria-pressed={showFullTrace}
-                title={showFullTrace ? "Hide tool trace" : "Show full tool trace"}
-                aria-label={showFullTrace ? "Hide tool trace" : "Show full tool trace"}
+                title={showFullTrace ? "Hide full transcript" : "Show full transcript"}
+                aria-label={showFullTrace ? "Hide full transcript" : "Show full transcript"}
                 onClick={() => setShowFullTrace((current) => !current)}
               >
                 <ScrollText size={15} aria-hidden="true" />
@@ -1080,7 +1084,7 @@ export default function ResearchDocument({
                     onClick={() => selectNode(displayNode.parentNodeId!)}
                   >
                     <ArrowLeft size={13} aria-hidden="true" />
-                    Parent response
+                    Back
                   </button>
                 ) : null}
                 <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" inline />
@@ -1212,7 +1216,9 @@ export default function ResearchDocument({
                 </section>
 
                 <aside className="research-followups" aria-label="Follow-ups">
-                  <div className="research-followup-composer">
+                  <div
+                    className={`research-followup-composer${archived ? " is-disabled" : ""}`}
+                  >
                     <div
                       className="sidebar-mode-toggle research-followup-mode-toggle"
                       role="tablist"
@@ -1223,6 +1229,7 @@ export default function ResearchDocument({
                         role="tab"
                         aria-selected={followupMode === "ask"}
                         className={followupMode === "ask" ? "is-selected" : undefined}
+                        disabled={archived}
                         onClick={() => setFollowupMode("ask")}
                       >
                         <span>Ask about</span>
@@ -1232,6 +1239,7 @@ export default function ResearchDocument({
                         role="tab"
                         aria-selected={followupMode === "deep"}
                         className={followupMode === "deep" ? "is-selected" : undefined}
+                        disabled={archived}
                         onClick={() => setFollowupMode("deep")}
                       >
                         <span>Deep research</span>
@@ -1246,6 +1254,7 @@ export default function ResearchDocument({
                           : "Type your query…"
                       }
                       aria-label="Follow-up question"
+                      disabled={archived}
                       onChange={(event) => setFollowup(event.currentTarget.value)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -1259,6 +1268,7 @@ export default function ResearchDocument({
                       <button
                         type="button"
                         disabled={
+                          archived ||
                           !followup.trim() ||
                           submitting ||
                           displayNode.status !== "complete" ||
@@ -1275,9 +1285,11 @@ export default function ResearchDocument({
                         ) : null}
                       </button>
                     </div>
-                    {displayNode.status === "complete" && !displayNode.nativeSessionId ? (
+                    {!archived &&
+                    displayNode.status === "complete" &&
+                    !displayNode.nativeSessionId ? (
                       <small>Waiting for the native session checkpoint before branching.</small>
-                    ) : displayNode.status !== "complete" ? (
+                    ) : !archived && displayNode.status !== "complete" ? (
                       <small>Follow-ups become available when this response completes.</small>
                     ) : null}
                   </div>
@@ -1386,7 +1398,7 @@ export default function ResearchDocument({
                 >
                   <h2 id="delete-research-branch-dialog-title">
                     {deletingBranch.node.id === detail.tree.rootNodeId
-                      ? "Delete this research?"
+                      ? "Delete research"
                       : deletingBranch.info.descendantCount > 0
                       ? "Delete this research branch?"
                       : "Delete this follow-up?"}

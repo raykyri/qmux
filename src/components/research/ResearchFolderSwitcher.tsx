@@ -153,7 +153,7 @@ export default function ResearchFolderSwitcher({
                 }}
               >
                 <Trash2 size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">Remove folder</span>
+                <span className="research-folder-item-name">Remove selected folder</span>
               </button>
             </>
           ) : null}

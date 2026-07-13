@@ -18,6 +18,7 @@ const VIEWPORT_MARGIN = 8;
 interface ResearchSidebarSectionProps {
   trees: ResearchTreeSummary[];
   archivedTrees: ResearchTreeSummary[];
+  showArchived: boolean;
   activeTreeId: string | null;
   onSelect: (treeId: string) => void;
   onRename: (treeId: string, title: string) => Promise<void>;
@@ -37,6 +38,7 @@ type ResearchMenu = {
 export default function ResearchSidebarSection({
   trees,
   archivedTrees,
+  showArchived,
   activeTreeId,
   onSelect,
   onRename,
@@ -252,16 +254,13 @@ export default function ResearchSidebarSection({
             </button>
           </div>
         ))}
-        {archivedTrees.length > 0 ? (
-          <details className="research-sidebar-archive">
-            <summary>
-              <span>Archived</span>
-              <span>{archivedTrees.length}</span>
-            </summary>
-            {archivedTrees.map((tree) => (
+        {showArchived
+          ? archivedTrees.map((tree) => (
               <div
                 key={tree.id}
                 className={`research-sidebar-row is-archived${
+                  activeTreeId === tree.id ? " is-selected" : ""
+                }${
                   menu?.archived && menu.treeId === tree.id ? " has-open-menu" : ""
                 }`}
                 onContextMenu={(event) => {
@@ -270,11 +269,17 @@ export default function ResearchSidebarSection({
                   openContextMenu(tree.id, true, event.clientX, event.clientY);
                 }}
               >
-                <div className="research-sidebar-select" title={tree.title}>
+                <button
+                  type="button"
+                  className="research-sidebar-select"
+                  aria-current={activeTreeId === tree.id ? "page" : undefined}
+                  title={tree.title}
+                  onClick={() => onSelect(tree.id)}
+                >
                   <span className="research-sidebar-copy">
                     <span className="research-sidebar-title">{tree.title}</span>
                   </span>
-                </div>
+                </button>
                 <button
                   type="button"
                   className="research-sidebar-menu-trigger"
@@ -288,9 +293,8 @@ export default function ResearchSidebarSection({
                   <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
               </div>
-            ))}
-          </details>
-        ) : null}
+            ))
+          : null}
       </section>
       {menu && menuTree
         ? createPortal(
@@ -324,7 +328,7 @@ export default function ResearchSidebarSection({
                       onClick={() => openRenameDialog(menuTree)}
                     >
                       <Pencil size={13} aria-hidden="true" />
-                      <span>Rename research</span>
+                      <span>Rename</span>
                     </button>
                     <button
                       type="button"
@@ -356,7 +360,7 @@ export default function ResearchSidebarSection({
                     }}
                   >
                     <Archive size={13} aria-hidden="true" />
-                    <span>Archive research</span>
+                    <span>Archive</span>
                   </button>
                 ) : null}
                 <button

@@ -178,38 +178,8 @@
   background: rgba(90, 130, 178, 0.16);
 }
 
-.research-sidebar-archive {
-  margin: 7px 3px 0;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.065);
-}
-
-.research-sidebar-archive > summary {
-  display: flex;
-  min-height: 24px;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  padding: 0 7px;
-  color: #747d79;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: pointer;
-  list-style: none;
-}
-
-.research-sidebar-archive > summary::-webkit-details-marker {
-  display: none;
-}
-
 .research-sidebar-row.is-archived {
   color: #89918d;
-}
-
-.research-sidebar-row.is-archived .research-sidebar-select {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Live research terminal panes for the scoped folder(s). Anchored to the
@@ -643,20 +613,17 @@
   --transcript-line-height-delta: 0.12;
 }
 
-/* Full usable width so the divider spans the whole content column; the title
-   text itself is capped to the answer column's width below. */
+/* Keep the user's prompt visually distinct from the plain-text answer below. */
 .research-prompt {
-  display: grid;
-  grid-template-columns: var(--research-content-columns);
-  column-gap: var(--research-content-column-gap);
-  width: 100%;
-  margin-bottom: 34px;
-  padding-bottom: 28px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.075);
+  width: fit-content;
+  max-width: min(100%, var(--research-main-content-max-width));
+  margin-bottom: 26px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #1d2224;
 }
 
 .research-prompt > * {
-  grid-column: 1;
   max-width: 100%;
 }
 
@@ -857,7 +824,6 @@
   min-height: 22px;
   align-items: center;
   justify-content: center;
-  margin-left: auto;
   padding: 0;
   border: 0;
   border-radius: 5px;
@@ -904,6 +870,7 @@
   min-width: 0;
   flex-direction: column;
   gap: 16px;
+  margin-top: 2px;
   padding-right: 2px;
 }
 
@@ -955,6 +922,20 @@
   line-height: 1.35;
 }
 
+.research-followup-composer.is-disabled .research-followup-mode-toggle,
+.research-followup-composer.is-disabled textarea,
+.research-followup-composer.is-disabled .native-input-submit-actions {
+  opacity: 0.55;
+}
+
+.research-followup-composer.is-disabled
+  .research-followup-mode-toggle
+  button.is-selected {
+  color: #69716d;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: none;
+}
+
 .research-followup-cards {
   display: flex;
   flex-direction: column;
@@ -975,7 +956,7 @@
   background: transparent;
 }
 
-.research-followup-card:hover strong {
+.research-followup-card:hover > strong {
   color: #f2f4f1;
 }
 
@@ -983,7 +964,7 @@
   color: #7d8580;
 }
 
-.research-followup-card strong,
+.research-followup-card > strong,
 .research-followup-card .research-followup-preview,
 .research-followup-card small {
   display: block;
@@ -996,7 +977,7 @@
    clamping keeps every card scannable without capping what it can hold. The
    question is the card's primary content, so it reads near-white while the
    preview below stays dim. Its size matches the response preview below. */
-.research-followup-card strong {
+.research-followup-card > strong {
   display: -webkit-box;
   overflow: hidden;
   color: #e6e9e5;
@@ -1088,8 +1069,8 @@
   min-height: 132px;
 }
 
-.new-research-composer .command-launcher-overlay {
-  justify-content: flex-end;
+.research-empty-state .new-research-composer .command-launcher-input {
+  min-height: 106px;
 }
 
 .new-research-send {
@@ -1115,21 +1096,6 @@
   gap: 6px;
   padding: 9px 14px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.new-research-advanced {
-  color: #8f9893;
-  font-size: 11px;
-}
-
-.new-research-advanced > summary {
-  width: max-content;
-  padding: 2px 0;
-  cursor: pointer;
-}
-
-.new-research-advanced[open] > summary {
-  margin-bottom: 8px;
 }
 
 .new-research-model {
@@ -1702,6 +1668,13 @@ button:disabled {
 }
 
 .sidebar:not(.is-code-mode) .pane-home-row {
+  margin: 0 4px;
+}
+
+/* Research Home sits above the folder switcher instead of inside the scrolling
+   tree list, but otherwise uses the same permanent-tab skin as Terminal Home. */
+.sidebar .pane-home-row.research-home-row,
+.sidebar:not(.is-code-mode) .pane-home-row.research-home-row {
   margin: 0 4px;
 }
 
@@ -2591,7 +2564,7 @@ button:disabled {
 
 .confirm-dialog .rename-dialog-hint {
   color: #777f7b;
-  font-size: 10px;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -3617,6 +3590,11 @@ button:disabled {
   justify-content: flex-start;
   gap: 34px;
   overflow: auto;
+}
+
+.terminal-empty-state.is-launcher-only {
+  justify-content: center;
+  padding: 28px;
 }
 
 .home-launcher {

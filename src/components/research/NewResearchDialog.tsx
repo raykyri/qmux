@@ -10,6 +10,7 @@ import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "../../lib/adapterIcons
 interface NewResearchDialogProps {
   open: boolean;
   inline?: boolean;
+  adapterCycleNonce?: number;
   adapters: AgentAdapterMetadata[];
   requireCmdEnterToSend: boolean;
   workspaceId: string | null;
@@ -25,6 +26,7 @@ interface NewResearchDialogProps {
 export default function NewResearchDialog({
   open,
   inline = false,
+  adapterCycleNonce = 0,
   adapters: allAdapters,
   requireCmdEnterToSend,
   workspaceId,
@@ -34,12 +36,14 @@ export default function NewResearchDialog({
   const [prompt, setPrompt] = useState("");
   const [adapter, setAdapter] = useState("");
   const [model, setModel] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // Shown inside the dialog: a global banner renders behind the modal
   // backdrop, so a failed launch (bad model name, missing folder…) looked
   // like an unresponsive Start button. Fields are kept for the retry.
   const [error, setError] = useState<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const adapterCycleNonceRef = useRef(adapterCycleNonce);
   // Research is built on branching follow-ups, which require the adapter's
   // native fork command; offering a non-forkable adapter here would only be
   // discovered when the first follow-up fails after a completed root run.
@@ -54,6 +58,7 @@ export default function NewResearchDialog({
     }
     setPrompt("");
     setModel("");
+    setAdvancedOpen(false);
     setError(null);
     setAdapter(adapters.find((candidate) => candidate.default)?.id ?? adapters[0]?.id ?? "");
   }, [open]);
@@ -64,6 +69,18 @@ export default function NewResearchDialog({
     }
     setAdapter(adapters.find((candidate) => candidate.default)?.id ?? adapters[0]?.id ?? "");
   }, [adapter, adapters, open]);
+
+  useEffect(() => {
+    const previous = adapterCycleNonceRef.current;
+    adapterCycleNonceRef.current = adapterCycleNonce;
+    if (!open || adapterCycleNonce === previous || adapters.length < 2) {
+      return;
+    }
+    setAdapter((current) => {
+      const currentIndex = adapters.findIndex((candidate) => candidate.id === current);
+      return adapters[(currentIndex + 1 + adapters.length) % adapters.length].id;
+    });
+  }, [adapterCycleNonce, adapters, open]);
 
   // Grow the textarea to fit its content, like the Home launcher: multi-line
   // prompts expand the composer until the CSS max-height caps it.
@@ -151,6 +168,16 @@ export default function NewResearchDialog({
           }}
         />
         <div className="command-launcher-overlay">
+          <div className="command-launcher-overlay-group">
+            <label className="command-launcher-worktree new-research-advanced-toggle">
+              <input
+                type="checkbox"
+                checked={advancedOpen}
+                onChange={(event) => setAdvancedOpen(event.currentTarget.checked)}
+              />
+              <span>Advanced</span>
+            </label>
+          </div>
           <div className="command-launcher-controls">
             <div className="command-launcher-adapter-select">
               <LauncherSelect
@@ -164,8 +191,9 @@ export default function NewResearchDialog({
               type="submit"
               className="command-launcher-send new-research-send"
               disabled={!prompt.trim() || !adapter || submitting}
+              aria-label={submitting ? "Starting research" : "Start research"}
+              title={submitting ? "Starting research" : "Start research"}
             >
-              <span>{submitting ? "Starting…" : "Start research"}</span>
               <ComposerSubmitShortcutGlyph
                 requireCmdEnter={requireCmdEnterToSend}
                 ariaHidden
@@ -174,30 +202,31 @@ export default function NewResearchDialog({
           </div>
         </div>
       </div>
-      <div className="new-research-footer">
-        {adapters.length === 0 ? (
-          <p className="new-research-unavailable" role="alert">
-            No installed agent supports research follow-ups.
-          </p>
-        ) : null}
-        {error ? (
-          <p className="new-research-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <details className="new-research-advanced">
-          <summary>Advanced</summary>
-          <label className="new-research-model">
-            <span>Model (optional)</span>
-            <input
-              type="text"
-              value={model}
-              placeholder="Agent default"
-              onChange={(event) => setModel(event.currentTarget.value)}
-            />
-          </label>
-        </details>
-      </div>
+      {adapters.length === 0 || error || advancedOpen ? (
+        <div className="new-research-footer">
+          {adapters.length === 0 ? (
+            <p className="new-research-unavailable" role="alert">
+              No installed agent supports research follow-ups.
+            </p>
+          ) : null}
+          {error ? (
+            <p className="new-research-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {advancedOpen ? (
+            <label className="new-research-model">
+              <span>Model (optional)</span>
+              <input
+                type="text"
+                value={model}
+                placeholder="Agent default"
+                onChange={(event) => setModel(event.currentTarget.value)}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : null}
     </form>
   );
 

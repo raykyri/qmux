@@ -259,11 +259,13 @@ const researchMarkdownComponents: Components = {
 
 // Paragraphs and Markdown hard breaks are block boundaries in the source, but
 // inline contexts (titles, prompts, compact answer previews) need them to flow
-// as ordinary spaces. Keeping the inline formatting children preserves links,
-// emphasis, and code without stacking every short paragraph on its own line.
+// as ordinary spaces. Keeping the inline children preserves links and emphasis
+// without stacking every short paragraph on its own line; code is deliberately
+// flattened to ordinary text so compact previews retain one visual type style.
 const inlineComponentOverrides: Components = {
   p: ({ node: _node, children }) => <span>{children} </span>,
   br: () => <span> </span>,
+  code: ({ node: _node, children }) => <span>{children}</span>,
 };
 
 const inlineMarkdownComponents: Components = {
@@ -314,9 +316,10 @@ interface TranscriptMarkdownProps {
   className?: string;
   imageBehavior?: "render" | "open";
   oversizedContent?: OversizedMarkdownPolicy;
-  /** Strip block-level wrappers (headings, lists, code fences, tables) so only
-   * inline formatting — emphasis, links, inline code — survives. For one-line
-   * contexts like a title, where a promoted block would break the layout. */
+  /** Strip block-level wrappers (headings, lists, code fences, tables), retain
+   * safe inline formatting such as emphasis and links, and render code as plain
+   * text. For one-line contexts where promoted or code-styled content would
+   * break the compact layout. */
   inline?: boolean;
 }
 

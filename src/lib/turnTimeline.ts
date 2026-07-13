@@ -71,11 +71,30 @@ function containsToolActivity(item: ActivityItem) {
   );
 }
 
-export function timelineItemsContainToolCall(items: MessageItem[]) {
-  return items.some((item) => item.activities.some(containsToolActivity));
+function containsTranscriptActivity(item: ActivityItem) {
+  return (
+    item.type === "tool" ||
+    item.type === "thinking" ||
+    (item.type === "activityGroup" && item.children.length > 0)
+  );
 }
 
-/** The user-facing answer begins after the final tool-bearing timeline item. */
+export function timelineItemsContainTranscriptActivity(items: MessageItem[]) {
+  return items.some((item) => item.activities.some(containsTranscriptActivity));
+}
+
+function withoutTranscriptActivities(items: MessageItem[]) {
+  return items
+    .map((item) =>
+      item.activities.length > 0 ? { ...item, activities: [] } : item,
+    )
+    .filter((item) => item.blocks.length > 0);
+}
+
+/**
+ * The collapsed user-facing answer begins after the final tool-bearing item
+ * and never includes tool or thinking activity disclosures.
+ */
 export function timelineItemsAfterLastToolCall(items: MessageItem[]) {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (items[index].activities.some(containsToolActivity)) {
@@ -92,12 +111,12 @@ export function timelineItemsAfterLastToolCall(items: MessageItem[]) {
         messageItemText(boundary) !== null &&
         !assistantTextFromTimelineItems(after)
       ) {
-        return [{ ...boundary, activities: [] }, ...after];
+        return withoutTranscriptActivities([boundary, ...after]);
       }
-      return after;
+      return withoutTranscriptActivities(after);
     }
   }
-  return items;
+  return withoutTranscriptActivities(items);
 }
 
 export function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageItem[] {

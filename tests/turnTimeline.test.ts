@@ -4,7 +4,7 @@ import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
   timelineItemsAfterLastToolCall,
-  timelineItemsContainToolCall,
+  timelineItemsContainTranscriptActivity,
 } from "../src/lib/turnTimeline";
 import type { Turn, TurnBlock } from "../src/types";
 
@@ -101,7 +101,7 @@ test("final answer view starts after the last tool call group", () => {
   ]);
 
   assert.equal(items[0].activities[0]?.type, "activityGroup");
-  assert.equal(timelineItemsContainToolCall(items), true);
+  assert.equal(timelineItemsContainTranscriptActivity(items), true);
   const answerItems = timelineItemsAfterLastToolCall(items);
   assert.equal(answerItems.length, 1);
   assert.equal(assistantTextFromTimelineItems(answerItems), "Final **answer**.");
@@ -126,13 +126,41 @@ test("final answer survives when trailing tool activity attaches to the answer i
   // The carried boundary copy sheds its activities: the wrap-up call stays
   // out of the answer view (it is still visible in the full trace).
   assert.ok(answerItems.every((item) => item.activities.length === 0));
-  assert.equal(timelineItemsContainToolCall(items), true);
+  assert.equal(timelineItemsContainTranscriptActivity(items), true);
 });
 
-test("tool-call detection stays false for answer-only timelines", () => {
+test("transcript activity detection includes thinking-only timelines", () => {
+  nextIndex = 0;
+  const items = buildTimelineItems([
+    turn("assistant", [{ type: "raw", value: { thinking: "Considering options" } }]),
+    turn("assistant", [text("Answer")]),
+  ]);
+  assert.equal(timelineItemsContainTranscriptActivity(items), true);
+  const answerItems = timelineItemsAfterLastToolCall(items);
+  assert.equal(assistantTextFromTimelineItems(answerItems), "Answer");
+  assert.ok(answerItems.every((item) => item.activities.length === 0));
+});
+
+test("collapsed answer strips thinking attached to answer text", () => {
+  nextIndex = 0;
+  const items = buildTimelineItems([
+    turn("assistant", [
+      text("Answer"),
+      { type: "raw", value: { thinking: "Considering options" } },
+    ]),
+  ]);
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].activities[0]?.type, "thinking");
+  const answerItems = timelineItemsAfterLastToolCall(items);
+  assert.equal(assistantTextFromTimelineItems(answerItems), "Answer");
+  assert.ok(answerItems.every((item) => item.activities.length === 0));
+});
+
+test("transcript activity detection stays false for answer-only timelines", () => {
   nextIndex = 0;
   const items = buildTimelineItems([turn("assistant", [text("Answer only")])]);
-  assert.equal(timelineItemsContainToolCall(items), false);
+  assert.equal(timelineItemsContainTranscriptActivity(items), false);
 });
 
 test("keys derive from turn ids so truncating old turns keeps suffix keys stable", () => {

@@ -316,7 +316,9 @@ const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 // lives outside the `panes` list — it can't be closed, reordered, or nested, and
 // selecting it shows the empty content placeholder (the launcher).
 const HOME_TAB_ID = "__home__";
+const RESEARCH_HOME_TAB_ID = "__research_home__";
 const ACTIVE_RESEARCH_TREE_KEY = "qmux.active-research-tree.v1";
+const SHOW_ARCHIVED_RESEARCH_KEY = "qmux.show-archived-research.v1";
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
 const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
@@ -438,7 +440,7 @@ const GROUP_CONTEXT_MENU_WIDTH = 220;
 const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
 const SETTINGS_CONTEXT_MENU_WIDTH = 180;
 const SETTINGS_CONTEXT_MENU_TERMINAL_HEIGHT = 66;
-const SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT = 37;
+const SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT = 66;
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
@@ -1332,6 +1334,16 @@ export default function App() {
   activeResearchPaneIdRef.current = activeResearchPaneId;
   const [researchTrees, setResearchTrees] = useState<ResearchTreeSummary[]>([]);
   const [archivedResearchTrees, setArchivedResearchTrees] = useState<ResearchTreeSummary[]>([]);
+  const [showArchivedResearch, setShowArchivedResearch] = useState(
+    () => localStorage.getItem(SHOW_ARCHIVED_RESEARCH_KEY) === "true",
+  );
+  const toggleArchivedResearchVisibility = useCallback(() => {
+    setShowArchivedResearch((current) => {
+      const next = !current;
+      localStorage.setItem(SHOW_ARCHIVED_RESEARCH_KEY, String(next));
+      return next;
+    });
+  }, []);
   // Read by mark-viewed acknowledgment (a stable callback) to decide whether
   // any attention badge was actually lit without threading the lists through
   // its dependencies.
@@ -1419,6 +1431,7 @@ export default function App() {
   settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newResearchOpen, setNewResearchOpen] = useState(false);
+  const [researchAdapterCycleNonce, setResearchAdapterCycleNonce] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   // Saved prompts shown in the palette's "Insert prompt" section, refreshed on
   // each open so edits made in the library menu or on disk show up.
@@ -1589,6 +1602,7 @@ export default function App() {
   // the previous selection instead of erasing the other mode's navigation context.
   const researchSurfaceActive = activeSurface === "research";
   const researchActive = researchSurfaceActive && activeResearchTreeId !== null;
+  const researchHomeActive = researchSurfaceActive && activeResearchTreeId === null;
   const selectedPane = panes.find((pane) => pane.id === activePaneId);
   const homeActive =
     activeSurface === "pane" &&
@@ -4325,15 +4339,19 @@ export default function App() {
           localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY),
           groupsForScope(existingGroups, "research"),
         );
-        const researchTreeToRestore =
-          sidebarModeRef.current === "research"
+        const allResearchTrees = [
+          ...partitionedResearchTrees.active,
+          ...partitionedResearchTrees.archived,
+        ];
+        const researchTreeToRestore = savedResearchTreeId
+          ? sidebarModeRef.current === "research"
             ? treeForResearchScope(
-                partitionedResearchTrees.active,
+                allResearchTrees,
                 restoredResearchScope,
                 savedResearchTreeId,
               )
-            : partitionedResearchTrees.active.find((tree) => tree.id === savedResearchTreeId) ??
-              null;
+            : allResearchTrees.find((tree) => tree.id === savedResearchTreeId) ?? null
+          : null;
         const restoreResearchSelection = async () => {
           if (!researchTreeToRestore || cancelled) {
             if (savedResearchTreeId) {
@@ -4809,6 +4827,21 @@ export default function App() {
       void selectResearchTree(treeId);
     }
   }, [selectResearchTree]);
+  const focusResearchHome = useCallback(() => {
+    // Invalidate a tree request that may still be landing while Home is
+    // selected; otherwise its detail can repaint behind the launcher.
+    researchDetailRequestSeqRef.current += 1;
+    setSidebarMode("research");
+    setActiveSurface("research");
+    activeResearchPaneIdRef.current = null;
+    setActiveResearchPaneId(null);
+    localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
+    activeResearchTreeIdRef.current = null;
+    setActiveResearchTreeId(null);
+    setActiveResearchDetail(null);
+    setActiveResearchDetailError(null);
+    localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+  }, [setActiveSurface, setSidebarMode]);
   const changeSidebarMode = useCallback(
     (mode: SidebarMode) => {
       setPaneContextMenu(null);
@@ -4842,8 +4875,12 @@ export default function App() {
       }
       setActiveSurface("research");
       const currentTreeId = activeResearchTreeIdRef.current;
+      if (!currentTreeId) {
+        focusResearchHome();
+        return;
+      }
       const tree = treeForResearchScope(
-        researchTrees,
+        [...researchTrees, ...archivedResearchTrees],
         researchScopeRef.current,
         currentTreeId,
       );
@@ -4857,7 +4894,14 @@ export default function App() {
         localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
       }
     },
-    [researchTrees, selectResearchTree, setActivePaneId, setSidebarMode],
+    [
+      archivedResearchTrees,
+      focusResearchHome,
+      researchTrees,
+      selectResearchTree,
+      setActivePaneId,
+      setSidebarMode,
+    ],
   );
   const createResearchFromSidebar = useCallback(() => {
     setSidebarMode("research");
@@ -7490,14 +7534,21 @@ export default function App() {
       const activeTabId =
         researchSurfaceActive && activeResearchTreeId
           ? researchTreeTabId(activeResearchTreeId)
-          : activePaneId;
+          : researchSurfaceActive
+            ? RESEARCH_HOME_TAB_ID
+            : activePaneId;
+      const researchTabIds = [RESEARCH_HOME_TAB_ID, ...cycleableResearchTabIds];
       const nextTabId = cycleTabId(
-        cycleableResearchTabIds,
+        researchTabIds,
         activeTabId,
         direction,
         paneSplits,
       );
       if (!nextTabId || nextTabId === activeTabId) {
+        return;
+      }
+      if (nextTabId === RESEARCH_HOME_TAB_ID) {
+        focusResearchHome();
         return;
       }
       const nextTreeId = researchTreeIdFromTabId(nextTabId);
@@ -7549,7 +7600,11 @@ export default function App() {
           }
           return;
         case "openNewResearch":
-          createResearchFromSidebar();
+          if (researchHomeActive) {
+            setResearchAdapterCycleNonce((current) => current + 1);
+          } else {
+            focusResearchHome();
+          }
           return;
         case "focusHome":
           focusHomeTab();
@@ -7670,9 +7725,10 @@ export default function App() {
     launchAdapter.id,
     paneSplits,
     changeSidebarMode,
-    createResearchFromSidebar,
     researchSurfaceActive,
+    researchHomeActive,
     activeResearchTreeId,
+    focusResearchHome,
     selectResearchTree,
     sidebarMode,
   ]);
@@ -8648,6 +8704,33 @@ export default function App() {
           onChange={changeSidebarMode}
         />
         {sidebarMode === "research" ? (
+          <div
+            className={`pane-tab-row pane-home-row research-home-row${
+              researchHomeActive ? " is-selected" : ""
+            }`}
+            data-research-home-tab="true"
+            onClick={focusResearchHome}
+          >
+            <button
+              type="button"
+              className="pane-tab"
+              aria-current={researchHomeActive ? "page" : undefined}
+              onClick={(event) => {
+                event.stopPropagation();
+                focusResearchHome();
+              }}
+            >
+              <House size={12} aria-hidden="true" />
+              <span className="pane-tab-title">Home</span>
+            </button>
+            {shortcutHintsShown ? (
+              <span className="pane-tab-shortcut-hint" aria-hidden="true">
+                ⌘N
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+        {sidebarMode === "research" ? (
           <ResearchFolderSwitcher
             folders={researchGroups}
             scope={researchScope}
@@ -8657,7 +8740,8 @@ export default function App() {
               changeResearchFolderScope(scope);
               // Keep the selection inside the new scope: an active document
               // from another folder would otherwise sit with no sidebar row.
-              const scopedTrees = treesForResearchScope(researchTrees, scope);
+              const allTrees = [...researchTrees, ...archivedResearchTrees];
+              const scopedTrees = treesForResearchScope(allTrees, scope);
               const activeInScope = scopedTrees.some(
                 (tree) => tree.id === activeResearchTreeId,
               );
@@ -8672,8 +8756,11 @@ export default function App() {
                 setActiveResearchPaneId(null);
                 localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
               }
+              if (researchHomeActive) {
+                return;
+              }
               if (!activeInScope || !activePaneInScope) {
-                const tree = treeForResearchScope(researchTrees, scope, activeResearchTreeId);
+                const tree = treeForResearchScope(allTrees, scope, activeResearchTreeId);
                 if (tree) {
                   void selectResearchTree(tree.id);
                 } else {
@@ -8730,6 +8817,7 @@ export default function App() {
             <ResearchSidebarSection
               trees={scopedResearchTrees}
               archivedTrees={scopedArchivedResearchTrees}
+              showArchived={showArchivedResearch}
               activeTreeId={activeResearchTreeId}
               onSelect={(treeId) => {
                 if (
@@ -8999,6 +9087,23 @@ export default function App() {
                 <Plus size={13} aria-hidden="true" />
                 <span>New group...</span>
                 <kbd className="context-menu-shortcut">⌘⇧N</kbd>
+              </button>
+            ) : null}
+            {sidebarMode === "research" ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setSettingsMenu(null);
+                  toggleArchivedResearchVisibility();
+                }}
+              >
+                {showArchivedResearch ? (
+                  <EyeOff size={13} aria-hidden="true" />
+                ) : (
+                  <Eye size={13} aria-hidden="true" />
+                )}
+                <span>{showArchivedResearch ? "Hide archived" : "Show archived"}</span>
               </button>
             ) : null}
             <button
@@ -10360,6 +10465,7 @@ export default function App() {
             <ResearchDocument
               key={activeResearchTreeId}
               detail={activeResearchDetail}
+              archived={Boolean(activeResearchDetail?.tree.archivedAt)}
               detailError={activeResearchDetailError}
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}
@@ -10377,6 +10483,7 @@ export default function App() {
               <NewResearchDialog
                 open
                 inline
+                adapterCycleNonce={researchAdapterCycleNonce}
                 adapters={config?.adapters ?? []}
                 requireCmdEnterToSend={settings.requireCmdEnterToSend}
                 workspaceId={researchScope}
@@ -10386,12 +10493,18 @@ export default function App() {
             </div>
           ) : null}
           {homeActive ? (
-            <div className="terminal-empty-state">
+            <div
+              className={`terminal-empty-state${
+                homeCascadeWorkstreams.length === 0 ? " is-launcher-only" : ""
+              }`}
+            >
               <div className="home-launcher">{renderLauncher()}</div>
-              <HomeCascades
-                workstreams={homeCascadeWorkstreams}
-                onActivatePane={focusPaneTab}
-              />
+              {homeCascadeWorkstreams.length > 0 ? (
+                <HomeCascades
+                  workstreams={homeCascadeWorkstreams}
+                  onActivatePane={focusPaneTab}
+                />
+              ) : null}
             </div>
           ) : null}
           {panes.map((pane) => (
