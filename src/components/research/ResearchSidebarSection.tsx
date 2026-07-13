@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Archive,
   ArchiveRestore,
+  FileText,
   MoreHorizontal,
   Pencil,
   RefreshCw,
@@ -220,7 +221,16 @@ export default function ResearchSidebarSection({
               }}
             >
               <span className="research-sidebar-copy">
-                <span className="research-sidebar-title">{tree.title}</span>
+                <span className="research-sidebar-title">
+                  {tree.kind === "document" ? (
+                    <FileText
+                      className="research-sidebar-doc-icon"
+                      size={12}
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  {tree.title}
+                </span>
               </span>
               {tree.runningCount > 0 ? (
                 <span className="research-sidebar-count" title={`${tree.runningCount} running`}>
@@ -277,7 +287,16 @@ export default function ResearchSidebarSection({
                   onClick={() => onSelect(tree.id)}
                 >
                   <span className="research-sidebar-copy">
-                    <span className="research-sidebar-title">{tree.title}</span>
+                    <span className="research-sidebar-title">
+                      {tree.kind === "document" ? (
+                        <FileText
+                          className="research-sidebar-doc-icon"
+                          size={12}
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      {tree.title}
+                    </span>
                   </span>
                 </button>
                 <button
@@ -330,17 +349,21 @@ export default function ResearchSidebarSection({
                       <Pencil size={13} aria-hidden="true" />
                       <span>Rename</span>
                     </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setMenu(null);
-                        void onRegenerateTitle(menuTree.id);
-                      }}
-                    >
-                      <RefreshCw size={13} aria-hidden="true" />
-                      <span>Regenerate title</span>
-                    </button>
+                    {menuTree.kind !== "document" ? (
+                      // Title regeneration reruns the root prompt through the
+                      // title model; a document has no prompt to rerun.
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu(null);
+                          void onRegenerateTitle(menuTree.id);
+                        }}
+                      >
+                        <RefreshCw size={13} aria-hidden="true" />
+                        <span>Regenerate title</span>
+                      </button>
+                    ) : null}
                   </>
                 )}
                 <div className="context-menu-divider" role="separator" />

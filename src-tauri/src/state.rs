@@ -2,9 +2,10 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::research::{
-    self, CreateResearchTreeRequest, ResearchBranchRemoval, ResearchHighlight,
-    ResearchHighlightAnchor, ResearchNode, ResearchNodeCard, ResearchNodeContent,
-    ResearchNodeStatus, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    self, CreateResearchDocumentRequest, CreateResearchTreeRequest, ResearchBranchRemoval,
+    ResearchHighlight, ResearchHighlightAnchor, ResearchNode, ResearchNodeCard,
+    ResearchNodeContent, ResearchNodeKind, ResearchNodeStatus, ResearchTree, ResearchTreeDetail,
+    ResearchTreeSummary,
 };
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -2035,6 +2036,11 @@ impl AppState {
                     id: tree.id.clone(),
                     title: tree.title.clone(),
                     root_node_id: tree.root_node_id.clone(),
+                    kind: model
+                        .research_nodes
+                        .get(&tree.root_node_id)
+                        .map(|root| root.kind)
+                        .unwrap_or_default(),
                     workspace_id: tree.workspace_id.clone(),
                     running_count,
                     failed_count,
@@ -2208,6 +2214,7 @@ impl AppState {
             agent_id: None,
             pane_id: None,
             thread_id: None,
+            kind: ResearchNodeKind::Run,
             status: ResearchNodeStatus::Queued,
             error: None,
             response_snapshot_at: None,
@@ -2235,6 +2242,113 @@ impl AppState {
             node.worktree_dir = workspace.dir.clone();
             model.research_trees.insert(tree_id.clone(), tree.clone());
             model.research_nodes.insert(node_id, node.clone());
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.created",
+            None,
+            None,
+            json!({ "tree": tree, "node": node }),
+        ));
+        self.research_tree(&tree_id)
+    }
+
+    /// Creates a document as a single-node research tree: the root node is the
+    /// document, its markdown persisted through the same response-snapshot
+    /// pipeline as run responses. Nothing launches — the node is born
+    /// `Complete` with its snapshot already durable, so viewers, archives, and
+    /// pruning treat it exactly like a settled run. The caller must hold the
+    /// research workspace-mutation guard, matching `create_research_tree`.
+    pub fn create_research_document(
+        &self,
+        request: CreateResearchDocumentRequest,
+    ) -> Result<ResearchTreeDetail, String> {
+        let markdown = request.markdown.trim().to_string();
+        research::validate_document_markdown(&markdown)?;
+        if request.group_id.trim().is_empty() {
+            return Err("research workspace cannot be empty".to_string());
+        }
+        let title = request
+            .title
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| research::document_default_title(&markdown));
+        let tree_id = self.next_id("research");
+        let node_id = self.next_id("research-node");
+        let now = now_millis();
+        let turns = vec![research::document_turn(&node_id, &markdown)];
+        // Durable content lands before the records that point at it: a crash
+        // here strands only an orphan snapshot, which prune_response_snapshots
+        // reclaims. The reverse order would commit a document whose body never
+        // existed.
+        research::write_response_snapshot(&self.inner.config.workspace_root, &node_id, &turns)?;
+        let tree = ResearchTree {
+            id: tree_id.clone(),
+            title,
+            root_node_id: node_id.clone(),
+            workspace_id: request.group_id.clone(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            last_viewed_at: Some(now),
+        };
+        let mut node = ResearchNode {
+            id: node_id.clone(),
+            tree_id: tree_id.clone(),
+            parent_node_id: None,
+            prompt: String::new(),
+            title: None,
+            response_preview: research::response_preview(&turns, None, ""),
+            adapter: String::new(),
+            model: None,
+            group_id: request.group_id,
+            worktree_dir: String::new(),
+            native_session_id: None,
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            thread_id: None,
+            kind: ResearchNodeKind::Document,
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: Some(now),
+            created_at: now,
+            started_at: None,
+            completed_at: Some(now),
+            highlights: Vec::new(),
+        };
+        let inserted = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let workspace = model
+                .groups
+                .get(&node.group_id)
+                .ok_or_else(|| format!("research workspace {} was not found", node.group_id));
+            match workspace {
+                Ok(workspace) if workspace.scope != WorkspaceScope::Research => {
+                    Err("research requires a Research-scoped workspace".to_string())
+                }
+                Ok(workspace) => {
+                    node.worktree_dir = workspace.dir.clone();
+                    model.research_trees.insert(tree_id.clone(), tree.clone());
+                    model.research_nodes.insert(node_id.clone(), node.clone());
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        };
+        if let Err(err) = inserted {
+            // Nothing references the snapshot yet; reclaim it now rather than
+            // waiting for the next structural prune.
+            let _ = research::remove_response_snapshot(
+                &self.inner.config.workspace_root,
+                &node_id,
+            );
+            return Err(err);
         }
         self.persist();
         self.emit(QmuxEvent::new(
@@ -2306,6 +2420,7 @@ impl AppState {
                 agent_id: None,
                 pane_id: None,
                 thread_id: None,
+                kind: ResearchNodeKind::Run,
                 status: ResearchNodeStatus::Queued,
                 error: None,
                 response_snapshot_at: None,
@@ -3239,7 +3354,7 @@ impl AppState {
             .collect::<Vec<_>>();
         nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
         Ok(research::DetachedResearchArchive {
-            version: research::DETACHED_RESEARCH_ARCHIVE_VERSION,
+            version: research::detached_archive_version(&nodes),
             archive_id: research::new_detached_research_archive_id()?,
             workspace,
             trees,
@@ -8663,6 +8778,7 @@ mod tests {
             agent_id: None,
             pane_id: None,
             thread_id: None,
+            kind: ResearchNodeKind::Run,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -8780,6 +8896,7 @@ mod tests {
             agent_id: Some(agent.id.clone()),
             pane_id: Some(research_pane.id.clone()),
             thread_id: None,
+            kind: ResearchNodeKind::Run,
             status: ResearchNodeStatus::Running,
             error: None,
             response_snapshot_at: None,
@@ -8871,6 +8988,7 @@ mod tests {
             agent_id: None,
             pane_id: None,
             thread_id: None,
+            kind: ResearchNodeKind::Run,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -8943,6 +9061,7 @@ mod tests {
             agent_id: None,
             pane_id: None,
             thread_id: None,
+            kind: ResearchNodeKind::Run,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -9024,6 +9143,7 @@ mod tests {
                     agent_id: None,
                     pane_id: None,
                     thread_id: None,
+                    kind: ResearchNodeKind::Run,
                     status: ResearchNodeStatus::Complete,
                     error: None,
                     response_snapshot_at: None,

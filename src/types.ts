@@ -141,6 +141,10 @@ export type ResearchNodeStatus =
   | "failed"
   | "cancelled";
 
+/** What produced a node's content: an agent run, or user-authored markdown.
+ * The backend omits the field for runs, so absence means "run". */
+export type ResearchNodeKind = "run" | "document";
+
 export interface ResearchTree {
   id: string;
   title: string;
@@ -172,6 +176,7 @@ export interface ResearchNode {
   paneId?: string | null;
   /** The run agent's thread-graph record id, kept for backend reaping. */
   threadId?: string | null;
+  kind?: ResearchNodeKind;
   status: ResearchNodeStatus;
   error?: string | null;
   /** Set when the durable response snapshot lands — the viewer's signal to
@@ -204,6 +209,8 @@ export interface ResearchTreeSummary {
   id: string;
   title: string;
   rootNodeId: string;
+  /** The root node's kind — what this sidebar item fundamentally is. */
+  kind: ResearchNodeKind;
   workspaceId: string;
   runningCount: number;
   failedCount: number;

@@ -11,7 +11,11 @@ pub const MAX_RESPONSE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RESEARCH_HIGHLIGHTS_PER_NODE: usize = 500;
 pub const MAX_RESEARCH_HIGHLIGHT_BYTES_PER_NODE: usize = 512 * 1024;
 pub const MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL: usize = 4 * 1024 * 1024;
-pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 3;
+pub const MAX_RESEARCH_DOCUMENT_WORDS: usize = 10_000;
+pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 4;
+/// Written for archives that contain no document nodes, so they stay readable
+/// by pre-documents builds (which accept versions 1–3).
+const DETACHED_RESEARCH_ARCHIVE_VERSION_RUNS_ONLY: u32 = 3;
 const DETACHED_RESEARCH_DIR: &str = "research-v1";
 const DETACHED_RESEARCH_PENDING_DIR: &str = "research-v1.pending";
 const DETACHED_RESEARCH_MANIFEST: &str = "manifest.json";
@@ -78,6 +82,27 @@ impl ResearchNodeStatus {
     }
 }
 
+/// What produced a node's content. `Run` nodes carry an agent run (adapter,
+/// session, pane bindings); `Document` nodes carry user-authored markdown that
+/// rides the same response-snapshot pipeline as run responses. The default
+/// keeps every pre-documents `state.json` and detached archive loading as
+/// plain runs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResearchNodeKind {
+    #[default]
+    Run,
+    Document,
+}
+
+impl ResearchNodeKind {
+    /// serde skip guard: run nodes serialize byte-identically to builds that
+    /// predate the field.
+    pub fn is_run(&self) -> bool {
+        matches!(self, Self::Run)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchNode {
@@ -114,6 +139,8 @@ pub struct ResearchNode {
     /// accumulate one dead entry per run forever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "ResearchNodeKind::is_run")]
+    pub kind: ResearchNodeKind,
     pub status: ResearchNodeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -167,12 +194,26 @@ pub struct CreateResearchTreeRequest {
     pub group_id: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateResearchDocumentRequest {
+    pub markdown: String,
+    pub title: Option<String>,
+    /// Same contract as [`CreateResearchTreeRequest::group_id`]: identity only,
+    /// never a directory.
+    #[serde(rename = "workspaceId", alias = "groupId")]
+    pub group_id: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchTreeSummary {
     pub id: String,
     pub title: String,
     pub root_node_id: String,
+    /// The root node's kind — what this sidebar item fundamentally is —
+    /// surfaced here so list consumers never need the node collection.
+    pub kind: ResearchNodeKind,
     pub workspace_id: String,
     pub running_count: usize,
     pub failed_count: usize,
@@ -339,6 +380,14 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
         if highlight_bytes_total > MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL {
             return Err("detached research archive contains too much highlight data".to_string());
         }
+        if node.kind == ResearchNodeKind::Document && node.parent_node_id.is_some() {
+            // Documents are root-level items; the create path is the only
+            // writer and never nests them, so a nested one is corruption.
+            return Err(format!(
+                "research document {} is not a root node",
+                node.id
+            ));
+        }
         if let Some(parent_id) = node.parent_node_id.as_deref() {
             let parent = node_by_id
                 .get(parent_id)
@@ -371,6 +420,21 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// The version to stamp on a new archive: the current version only when the
+/// content actually needs it. Pre-documents builds refuse anything above 3
+/// with an "upgrade this installation" error, so archives without documents
+/// keep the widest compatibility.
+pub fn detached_archive_version(nodes: &[ResearchNode]) -> u32 {
+    if nodes
+        .iter()
+        .any(|node| node.kind == ResearchNodeKind::Document)
+    {
+        DETACHED_RESEARCH_ARCHIVE_VERSION
+    } else {
+        DETACHED_RESEARCH_ARCHIVE_VERSION_RUNS_ONLY
+    }
 }
 
 pub fn write_detached_research_pending(
@@ -1075,6 +1139,58 @@ pub fn default_title(prompt: &str) -> String {
     }
 }
 
+pub fn document_word_count(markdown: &str) -> usize {
+    markdown.split_whitespace().count()
+}
+
+pub fn validate_document_markdown(markdown: &str) -> Result<(), String> {
+    if markdown.trim().is_empty() {
+        return Err("document content cannot be empty".to_string());
+    }
+    let words = document_word_count(markdown);
+    if words > MAX_RESEARCH_DOCUMENT_WORDS {
+        return Err(format!(
+            "documents are limited to {MAX_RESEARCH_DOCUMENT_WORDS} words for now; this one has {words}"
+        ));
+    }
+    Ok(())
+}
+
+/// Title for a document created without an explicit one: the first line with
+/// content, with any ATX heading markers stripped, truncated like a prompt
+/// title.
+pub fn document_default_title(markdown: &str) -> String {
+    markdown
+        .lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())
+        .map(default_title)
+        .unwrap_or_else(|| "Untitled document".to_string())
+}
+
+/// The synthetic turn that carries a document's markdown through the response
+/// snapshot pipeline. One assistant text turn: `get_research_node_content`
+/// returns it unchanged, the viewer's timeline renders it as markdown, and
+/// detached archives round-trip it like any run response. The `kind` field on
+/// the node — not this role — is what drives document presentation.
+pub fn document_turn(node_id: &str, markdown: &str) -> crate::transcript::Turn {
+    crate::transcript::Turn {
+        id: format!("{node_id}-document"),
+        agent_id: node_id.to_string(),
+        session_id: None,
+        role: "assistant".to_string(),
+        blocks: vec![crate::transcript::TurnBlock::Text {
+            text: markdown.to_string(),
+        }],
+        source_index: 0,
+        status: None,
+        status_reason: None,
+        native_id: None,
+        parent_native_id: None,
+        native_message_id: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1138,6 +1254,7 @@ mod tests {
             agent_id: Some("agent-1".to_string()),
             pane_id: None,
             thread_id: None,
+            kind: ResearchNodeKind::Run,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: Some(2),
@@ -1350,6 +1467,75 @@ mod tests {
         let title = default_title(&"x".repeat(80));
         assert_eq!(title.chars().count(), 73);
         assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn document_titles_prefer_headings_and_survive_missing_content() {
+        assert_eq!(
+            document_default_title("\n\n## Quarterly Report\n\nBody text"),
+            "Quarterly Report"
+        );
+        assert_eq!(document_default_title("plain first line\nsecond"), "plain first line");
+        // A heading-marker-only line has no content; the next line wins.
+        assert_eq!(document_default_title("#\nReal title"), "Real title");
+        assert_eq!(document_default_title("   \n\t"), "Untitled document");
+    }
+
+    #[test]
+    fn document_markdown_is_capped_at_the_word_limit() {
+        assert!(validate_document_markdown("").is_err());
+        assert!(validate_document_markdown("  \n ").is_err());
+        let at_limit = vec!["word"; MAX_RESEARCH_DOCUMENT_WORDS].join(" ");
+        assert!(validate_document_markdown(&at_limit).is_ok());
+        let over_limit = vec!["word"; MAX_RESEARCH_DOCUMENT_WORDS + 1].join(" ");
+        let error = validate_document_markdown(&over_limit).unwrap_err();
+        assert!(error.contains("10000 words"), "{error}");
+    }
+
+    #[test]
+    fn document_nodes_bump_the_archive_version_and_must_be_roots() {
+        let folder = temp_workspace();
+        let mut archive = sample_detached_archive(&folder);
+        assert_eq!(detached_archive_version(&archive.nodes), 3);
+
+        let mut document = archive.nodes[0].clone();
+        document.id = "research-node-2".to_string();
+        document.kind = ResearchNodeKind::Document;
+        document.agent_id = None;
+        document.native_session_id = None;
+        let mut document_tree = archive.trees[0].clone();
+        document_tree.id = "research-2".to_string();
+        document_tree.root_node_id = document.id.clone();
+        document.tree_id = document_tree.id.clone();
+        archive.trees.push(document_tree);
+        archive.nodes.push(document);
+        assert_eq!(
+            detached_archive_version(&archive.nodes),
+            DETACHED_RESEARCH_ARCHIVE_VERSION
+        );
+        validate_detached_archive(&archive).unwrap();
+
+        // A nested document is corruption: no writer produces one.
+        archive.nodes[1].tree_id = archive.trees[0].id.clone();
+        archive.nodes[1].parent_node_id = Some(archive.nodes[0].id.clone());
+        archive.trees.pop();
+        let error = validate_detached_archive(&archive).unwrap_err();
+        assert!(error.contains("not a root node"), "{error}");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn document_turns_round_trip_through_response_snapshots() {
+        let workspace = temp_workspace();
+        let turn = document_turn("node-1", "# Title\n\nBody **bold**.");
+        write_response_snapshot(&workspace, "node-1", std::slice::from_ref(&turn)).unwrap();
+        let turns = read_response_snapshot(&workspace, "node-1").unwrap().unwrap();
+        assert_eq!(turns, vec![turn]);
+        assert_eq!(
+            response_preview(&turns, None, "").as_deref(),
+            Some("# Title Body **bold**.")
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

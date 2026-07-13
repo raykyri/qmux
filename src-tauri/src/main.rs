@@ -42,8 +42,9 @@ use pty::{
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
 };
 use research::{
-    CreateResearchTreeRequest, ResearchBranchRemoval, ResearchHighlight, ResearchHighlightAnchor,
-    ResearchNode, ResearchNodeContent, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    CreateResearchDocumentRequest, CreateResearchTreeRequest, ResearchBranchRemoval,
+    ResearchHighlight, ResearchHighlightAnchor, ResearchNode, ResearchNodeContent, ResearchTree,
+    ResearchTreeDetail, ResearchTreeSummary,
 };
 use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
@@ -727,6 +728,27 @@ async fn create_research_tree(
     })
     .await
     .map_err(|err| format!("create_research_tree task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn create_research_document(
+    state: tauri::State<'_, AppState>,
+    request: CreateResearchDocumentRequest,
+) -> Result<ResearchTreeDetail, String> {
+    let state = state.inner().clone();
+    // Blocking: the document body is written to its response snapshot (fsync'd
+    // file IO) before the records commit.
+    tauri::async_runtime::spawn_blocking(move || {
+        // Same admission as create_research_tree: the insert must be atomic
+        // with the workspace checks or a concurrent folder removal could
+        // detach the workspace out from under the new records. There is no
+        // run to launch, so admission is the whole command.
+        let _guard = workspace::lock_research_workspace_mutations()?;
+        validate_launch_workspace(&state, Some(&request.group_id), LaunchOrigin::Research)?;
+        state.create_research_document(request)
+    })
+    .await
+    .map_err(|err| format!("create_research_document task failed: {err}"))?
 }
 
 /// The tree is committed before its root run launches so a crash mid-launch is
@@ -1762,6 +1784,7 @@ fn main() {
             list_research_activity,
             get_research_tree,
             create_research_tree,
+            create_research_document,
             get_research_node_content,
             fork_research_node,
             cancel_research_node,

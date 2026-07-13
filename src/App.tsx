@@ -21,6 +21,7 @@ import {
   Eye,
   EyeOff,
   Expand,
+  FileText,
   Folder,
   Globe,
   GitBranch,
@@ -77,6 +78,7 @@ import {
   workspaceIsInResearchScope,
 } from "./lib/researchScope";
 import ResearchDocument from "./components/research/ResearchDocument";
+import NewDocumentDialog from "./components/research/NewDocumentDialog";
 import NewResearchDialog from "./components/research/NewResearchDialog";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
@@ -214,6 +216,7 @@ import {
   ensureDefaultResearchWorkspace,
   archiveResearchTree,
   cancelResearchNode,
+  createResearchDocument,
   createResearchTree,
   forkResearchNode,
   markResearchTreeViewed,
@@ -1439,6 +1442,7 @@ export default function App() {
   settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newResearchOpen, setNewResearchOpen] = useState(false);
+  const [newDocumentOpen, setNewDocumentOpen] = useState(false);
   const [researchAdapterCycleNonce, setResearchAdapterCycleNonce] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   // Saved prompts shown in the palette's "Insert prompt" section, refreshed on
@@ -4930,6 +4934,10 @@ export default function App() {
     setSidebarMode("research");
     setNewResearchOpen(true);
   }, [setSidebarMode]);
+  const createDocumentFromSidebar = useCallback(() => {
+    setSidebarMode("research");
+    setNewDocumentOpen(true);
+  }, [setSidebarMode]);
   const chooseResearchWorkspaceFolder = useCallback(async (): Promise<GroupInfo | null> => {
     setError(null);
     setFolderPickerStatus("Opening folder picker…");
@@ -5043,15 +5051,12 @@ export default function App() {
     },
     [generateResearchTitle, scheduleResearchRefresh],
   );
-  const submitNewResearch = useCallback(
-    async (input: {
-      prompt: string;
-      adapter: string;
-      model: string | null;
-      workspaceId: string | null;
-    }) => {
-      const group = input.workspaceId
-        ? groups.find((candidate) => candidate.id === input.workspaceId)
+  // Shared by the research and document composers: the folder the item lands
+  // in — the picked one, or the default folder (created on first use).
+  const resolveResearchComposerWorkspace = useCallback(
+    async (workspaceId: string | null): Promise<GroupInfo> => {
+      const group = workspaceId
+        ? groups.find((candidate) => candidate.id === workspaceId)
         : await ensureDefaultResearchWorkspace();
       if (!group || group.scope !== "research") {
         throw new Error("The selected research folder is no longer available.");
@@ -5059,6 +5064,42 @@ export default function App() {
       setGroups((current) =>
         current.some((candidate) => candidate.id === group.id) ? current : [...current, group],
       );
+      return group;
+    },
+    [groups],
+  );
+  // Focuses a tree that a composer just created: research surface active, the
+  // new tree selected with its detail already in hand, and the sidebar scoped
+  // to its folder (a first item creates its private default folder — follow it
+  // so the single-folder sidebar immediately lists the new tree).
+  const adoptCreatedResearchTree = useCallback(
+    (detail: ResearchTreeDetail) => {
+      researchDetailRequestSeqRef.current += 1;
+      setSidebarMode("research");
+      setActiveSurface("research");
+      activeResearchPaneIdRef.current = null;
+      setActiveResearchPaneId(null);
+      localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
+      activeResearchTreeIdRef.current = detail.tree.id;
+      setActiveResearchTreeId(detail.tree.id);
+      localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, detail.tree.id);
+      setActiveResearchDetail(detail);
+      setActiveResearchDetailError(null);
+      if (researchScopeRef.current !== detail.tree.workspaceId) {
+        changeResearchFolderScope(detail.tree.workspaceId);
+      }
+      void refreshResearchNavigation().catch(() => undefined);
+    },
+    [changeResearchFolderScope, refreshResearchNavigation, setSidebarMode],
+  );
+  const submitNewResearch = useCallback(
+    async (input: {
+      prompt: string;
+      adapter: string;
+      model: string | null;
+      workspaceId: string | null;
+    }) => {
+      const group = await resolveResearchComposerWorkspace(input.workspaceId);
       let detail: ResearchTreeDetail;
       try {
         detail = await createResearchTree({
@@ -5073,32 +5114,33 @@ export default function App() {
         void refreshResearchNavigation().catch(() => undefined);
         throw err;
       }
-      researchDetailRequestSeqRef.current += 1;
-      setSidebarMode("research");
-      setActiveSurface("research");
-      activeResearchPaneIdRef.current = null;
-      setActiveResearchPaneId(null);
-      localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
-      activeResearchTreeIdRef.current = detail.tree.id;
-      setActiveResearchTreeId(detail.tree.id);
-      localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, detail.tree.id);
-      setActiveResearchDetail(detail);
-      setActiveResearchDetailError(null);
-      // A first run creates its private default folder. Follow that new folder
-      // so the single-folder sidebar immediately lists the new tree.
-      if (researchScopeRef.current !== detail.tree.workspaceId) {
-        changeResearchFolderScope(detail.tree.workspaceId);
-      }
-      void refreshResearchNavigation().catch(() => undefined);
+      adoptCreatedResearchTree(detail);
       void applyGeneratedResearchTreeTitle(detail.tree.id, input.prompt, detail.tree.title);
     },
     [
+      adoptCreatedResearchTree,
       applyGeneratedResearchTreeTitle,
-      changeResearchFolderScope,
-      groups,
       refreshResearchNavigation,
-      setSidebarMode,
+      resolveResearchComposerWorkspace,
     ],
+  );
+  const submitNewDocument = useCallback(
+    async (input: {
+      markdown: string;
+      title: string | null;
+      workspaceId: string | null;
+    }) => {
+      const group = await resolveResearchComposerWorkspace(input.workspaceId);
+      const detail = await createResearchDocument({
+        markdown: input.markdown,
+        title: input.title,
+        workspaceId: group.id,
+      });
+      // No generated-title pass: a document's title comes from its own content
+      // (or the composer's explicit field).
+      adoptCreatedResearchTree(detail);
+    },
+    [adoptCreatedResearchTree, resolveResearchComposerWorkspace],
   );
   const cancelResearchRun = useCallback(
     async (nodeId: string) => {
@@ -5500,6 +5542,12 @@ export default function App() {
       section: "Actions",
       title: "New research",
       action: () => void createResearchFromSidebar(),
+    });
+    commands.push({
+      id: "action:new-document",
+      section: "Actions",
+      title: "New document",
+      action: () => void createDocumentFromSidebar(),
     });
     commands.push({
       id: "action:new-terminal",
@@ -7168,6 +7216,7 @@ export default function App() {
     commandPaletteOpen ||
     settingsOpen ||
     newResearchOpen ||
+    newDocumentOpen ||
     Boolean(renamePaneId || renameGroupId);
   useEffect(() => {
     if (modalEditorOpen) {
@@ -9110,20 +9159,28 @@ export default function App() {
               </div>
             </>
           ) : (
-            <div className="sidebar-action-with-hint">
-              <button type="button" onClick={() => void createResearchFromSidebar()}>
-                <Plus size={14} aria-hidden="true" />
-                <span>New research</span>
-              </button>
-              {shortcutHintsShown ? (
-                <span
-                  className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
-                  aria-hidden="true"
-                >
-                  ⌘N
-                </span>
-              ) : null}
-            </div>
+            <>
+              <div className="sidebar-action-with-hint">
+                <button type="button" onClick={() => void createResearchFromSidebar()}>
+                  <Plus size={14} aria-hidden="true" />
+                  <span>New research</span>
+                </button>
+                {shortcutHintsShown ? (
+                  <span
+                    className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
+                    aria-hidden="true"
+                  >
+                    ⌘N
+                  </span>
+                ) : null}
+              </div>
+              <div className="sidebar-action-with-hint">
+                <button type="button" onClick={() => void createDocumentFromSidebar()}>
+                  <FileText size={14} aria-hidden="true" />
+                  <span>New document</span>
+                </button>
+              </div>
+            </>
           )}
           <button
             type="button"
@@ -10624,6 +10681,7 @@ export default function App() {
                 visibleTerminalPaneIdSet.has(pane.id) &&
                 (settingsOpen ||
                   newResearchOpen ||
+                  newDocumentOpen ||
                   // The ⌘K palette floats over the stage and its rows commit on
                   // click; a pointer-live pane under it would swallow the
                   // mouse-up (dead item clicks) and steal the keyboard from the
@@ -10818,6 +10876,13 @@ export default function App() {
         workspaceId={researchScope}
         onClose={() => setNewResearchOpen(false)}
         onCreate={submitNewResearch}
+      />
+
+      <NewDocumentDialog
+        open={newDocumentOpen}
+        workspaceId={researchScope}
+        onClose={() => setNewDocumentOpen(false)}
+        onCreate={submitNewDocument}
       />
 
       {appToast ? (

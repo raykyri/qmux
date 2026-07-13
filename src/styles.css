@@ -135,6 +135,13 @@
   -webkit-line-clamp: 2;
 }
 
+/* Marks document items apart from research runs in the shared list. */
+.research-sidebar-doc-icon {
+  margin-right: 5px;
+  vertical-align: -1px;
+  color: #8f9893;
+}
+
 .research-sidebar-copy {
   display: flex;
   min-width: 0;
@@ -644,6 +651,11 @@
   align-items: start;
   gap: var(--research-content-column-gap);
   min-width: 0;
+}
+
+/* A document has no follow-up rail (yet): let its body take the full width. */
+.research-response-grid.is-document {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .research-response {
@@ -1171,6 +1183,94 @@
   color: #d98787;
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* Document composer: a tall centered card — the pasted markdown is the main
+   surface, so the textarea takes all height between the title and footer. */
+.new-document-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(720px, 100%);
+  height: min(78vh, 900px);
+  padding: 16px;
+  border: 1px solid var(--control-border);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #1f2426, #1b2022 40%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 22px 70px rgba(0, 0, 0, 0.5);
+}
+
+.new-document-composer h2 {
+  margin: 0;
+  font-size: 15px;
+  color: #f4f3ec;
+}
+
+.new-document-title {
+  min-height: var(--control-h-lg);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #f1f0e8;
+  font-size: var(--fs-base);
+}
+
+.new-document-markdown {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: #111315;
+  color: #f1f0e8;
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  resize: none;
+}
+
+.new-document-title:focus,
+.new-document-markdown:focus {
+  outline: none;
+  border-color: var(--control-border-hover);
+}
+
+.new-document-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.new-document-wordcount {
+  color: #8f9893;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.new-document-wordcount.is-over {
+  color: #d98787;
+}
+
+.new-document-error {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: #d98787;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.new-document-footer .confirm-dialog-actions {
+  margin-top: 0;
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+
+.new-document-footer .confirm-dialog-actions button[type="submit"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
 }
 
 @media (max-width: 900px) {

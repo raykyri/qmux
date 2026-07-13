@@ -290,6 +290,14 @@ export function createResearchTree(request: {
   return invoke<ResearchTreeDetail>("create_research_tree", { request });
 }
 
+export function createResearchDocument(request: {
+  markdown: string;
+  title?: string | null;
+  workspaceId: string;
+}) {
+  return invoke<ResearchTreeDetail>("create_research_document", { request });
+}
+
 export function getResearchNodeContent(nodeId: string) {
   return invoke<ResearchNodeContent>("get_research_node_content", { nodeId });
 }

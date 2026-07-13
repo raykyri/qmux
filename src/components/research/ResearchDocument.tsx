@@ -1379,6 +1379,11 @@ export default function ResearchDocument({
   const activeRun = ["queued", "starting", "running"].includes(displayNode.status);
   const cancellationNeedsRetry = displayNode.status === "cancelled" && Boolean(displayNode.paneId);
   const followupCount = Math.max(0, detail.nodes.length - 1);
+  // A document node is authored content, not a run: no prompt to show above
+  // the body, and no session to branch from (yet), so the run chrome and the
+  // follow-up rail stay hidden. Everything else — the snapshot-backed
+  // timeline, word count, copy, highlights — behaves identically.
+  const isDocument = displayNode.kind === "document";
 
   return (
     <TranscriptLinkActionsProvider actions={linkActions}>
@@ -1474,20 +1479,22 @@ export default function ResearchDocument({
             onScroll={recordScroll}
           >
             <div className="research-document-content">
-              <div className="research-prompt">
-                {displayNode.parentNodeId ? (
-                  <button
-                    type="button"
-                    className="research-parent-link"
-                    onClick={() => selectNode(displayNode.parentNodeId!)}
-                  >
-                    <ArrowLeft size={13} aria-hidden="true" />
-                    Back
-                  </button>
-                ) : null}
-                <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" inline />
-              </div>
-              <div className="research-response-grid">
+              {!isDocument ? (
+                <div className="research-prompt">
+                  {displayNode.parentNodeId ? (
+                    <button
+                      type="button"
+                      className="research-parent-link"
+                      onClick={() => selectNode(displayNode.parentNodeId!)}
+                    >
+                      <ArrowLeft size={13} aria-hidden="true" />
+                      Back
+                    </button>
+                  ) : null}
+                  <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" inline />
+                </div>
+              ) : null}
+              <div className={`research-response-grid${isDocument ? " is-document" : ""}`}>
                 <section className="research-response" aria-label="Research response">
                   {!content ? (
                     <div className="research-response-loading">
@@ -1619,6 +1626,7 @@ export default function ResearchDocument({
                   ) : null}
                 </section>
 
+                {!isDocument ? (
                 <aside className="research-followups" aria-label="Follow-ups">
                   <div
                     className={`research-followup-composer${
@@ -1726,6 +1734,7 @@ export default function ResearchDocument({
                     ))}
                   </div>
                 </aside>
+                ) : null}
               </div>
             </div>
           </article>
