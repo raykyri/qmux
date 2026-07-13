@@ -5804,7 +5804,7 @@ impl AppState {
     /// status observes `Done` and drains the held turn — closing the lost-wakeup where
     /// it would otherwise see a stale `Running`, skip its drain, and strand the queue.
     pub fn claim_next_turn_or_mark_idle(&self, agent_id: &str) -> Result<IdleAdvance, String> {
-        let outcome = {
+        let (outcome, settled_agent) = {
             let mut model = self
                 .inner
                 .model
@@ -5818,24 +5818,34 @@ impl AppState {
             if model.agent_typing.contains(agent_id) {
                 // User is mid-keystroke: hold the queue and settle to idle, atomically
                 // with reading the typing flag (see the doc comment).
-                if let Some(agent) = model.agents.get_mut(agent_id) {
+                let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
                     agent.status = AgentStatus::Done;
-                }
-                IdleAdvance::Idle
+                    agent.clone()
+                });
+                (IdleAdvance::Idle, settled_agent)
             } else if let Some((turn, pending)) = pop_ready_locked(&mut model, agent_id) {
                 model.agent_draining.insert(agent_id.to_string());
                 // Durable copy until delivery confirms (see claim_ready_agent_turn).
                 model
                     .agent_inflight
                     .insert(agent_id.to_string(), turn.clone());
-                IdleAdvance::Sent { turn, pending }
+                (IdleAdvance::Sent { turn, pending }, None)
             } else {
-                if let Some(agent) = model.agents.get_mut(agent_id) {
+                let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
                     agent.status = AgentStatus::Done;
-                }
-                IdleAdvance::Idle
+                    agent.clone()
+                });
+                (IdleAdvance::Idle, settled_agent)
             }
         };
+        // Unlike set_agent_status, the Done write above must stay inside the
+        // queue/typing decision's lock to avoid a lost wakeup. Run the same
+        // post-write synchronization after releasing it so a background
+        // research pane reaches Complete and schedules retirement without
+        // waiting for some later transcript or focus-triggered update.
+        if let Some(agent) = settled_agent.as_ref() {
+            self.sync_research_node_from_agent(agent)?;
+        }
         self.persist();
         Ok(outcome)
     }
@@ -9436,7 +9446,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_research_pane_retires_without_creating_an_undo_entry() {
+    fn queue_idle_completion_retires_research_pane_without_creating_an_undo_entry() {
         let state = AppState::new(test_config(temp_workspace()));
         state.insert_group_after(sample_group(), None).unwrap();
         state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
@@ -9461,9 +9471,15 @@ mod tests {
         answer.role = "assistant".to_string();
         answer.id = "research-agent-answer".to_string();
         state.append_turn(answer).unwrap();
-        state
-            .set_agent_status("research-agent", AgentStatus::Done)
-            .unwrap();
+        // Codex's deferred Stop resolver reaches Done through this atomic
+        // queue/typing decision rather than set_agent_status. That path must
+        // still settle the research node and start automatic retirement.
+        assert!(matches!(
+            state
+                .claim_next_turn_or_mark_idle("research-agent")
+                .unwrap(),
+            IdleAdvance::Idle
+        ));
 
         // Retirement now needs at least two snapshot reads (250ms + 500ms
         // backoff) to prove the response is stable before it closes the pane.
