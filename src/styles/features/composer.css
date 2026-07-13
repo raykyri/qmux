@@ -22,7 +22,7 @@
   align-items: start;
   min-width: 0;
   border: 1px solid #384246;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--content-inset-bg);
   color: var(--text-body-soft);
   padding: 7px 8px;
@@ -342,7 +342,7 @@
   white-space: nowrap;
   line-height: 1.25;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .composer-toast {

@@ -207,7 +207,7 @@
 
 .turn-card {
   border: 1px solid var(--surface-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--content-card-bg);
   padding: 8px 9px;
 }
@@ -364,7 +364,7 @@
   height: auto;
   padding: 2px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: rgba(217, 221, 217, 0.42);
   font: inherit;
@@ -501,7 +501,7 @@ header + .turn-blocks {
   width: max-content;
   max-width: 100%;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   padding: 3px 6px;
   color: var(--text-body-soft);
@@ -648,7 +648,7 @@ header + .turn-blocks {
 
 .turn-markdown code {
   border: 1px solid var(--surface-border-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--transcript-code-bg);
   padding: 1px 4px;
   color: var(--text-primary);
@@ -659,7 +659,7 @@ header + .turn-blocks {
 .turn-markdown pre {
   overflow: auto;
   border: 1px solid var(--surface-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--transcript-code-bg);
   padding: 8px;
 }
@@ -702,7 +702,7 @@ header + .turn-blocks {
   height: 20px;
   padding: 2px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--accent-color);
   cursor: pointer;
@@ -775,7 +775,7 @@ header + .turn-blocks {
 .turn-diagram {
   margin: 0 0 8px;
   border: 1px solid var(--surface-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--transcript-code-bg);
 }
@@ -804,7 +804,7 @@ header + .turn-blocks {
   color: #9aa5a1;
   font-size: calc(11px + var(--transcript-font-delta, 0px));
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .turn-diagram-toggle:hover {
@@ -826,7 +826,7 @@ header + .turn-blocks {
    canvas and let wide graphs scroll at their natural size. */
 .turn-diagram-svg[data-lang="dot"] {
   background: #f6f6f2;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   margin: 6px;
   padding: 12px;
 }
@@ -855,7 +855,7 @@ header + .turn-blocks {
   margin: 0;
   overflow: auto;
   border: 1px solid var(--surface-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--transcript-code-header-bg);
   padding: 8px;
 }
@@ -913,7 +913,7 @@ header + .turn-blocks {
   gap: 5px;
   cursor: pointer;
   list-style: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 4px 10px;
 }
 
@@ -1040,7 +1040,7 @@ header + .turn-blocks {
 .tool-payload {
   margin: 6px 0 0 14px;
   border: 1px solid var(--surface-divider);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--content-inset-bg);
   overflow: hidden;
 }
@@ -1069,7 +1069,7 @@ header + .turn-blocks {
 .thinking-block > pre {
   margin: 6px 0 0 14px;
   border: 1px solid var(--surface-divider);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--content-inset-bg);
 }
 
@@ -1169,7 +1169,7 @@ header + .turn-blocks {
   align-items: center;
   min-width: 0;
   border: 1px solid #3a3430;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1b1815;
   padding: 7px 8px;
 }

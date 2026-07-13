@@ -91,7 +91,7 @@
 
 .research-markdown-drop-overlay span {
   color: #91a59f;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* Draggable strip over the cleared area at the top of the sidebar so the
@@ -114,7 +114,7 @@
   margin: 0 4px;
   padding: 3px 3px 2.5px;
   border: 1px solid var(--surface-border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--sidebar-switcher-bg);
 }
 
@@ -275,7 +275,7 @@
   padding: 5px 9px 5px calc(var(--pane-tab-left-offset) - var(--pane-tab-left-rail-width));
   border: 1px solid transparent;
   border-left: var(--pane-tab-left-rail-width) solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--control-fg-muted);
   font-size: calc(13px + var(--turn-font-delta, 0px));
@@ -363,11 +363,11 @@
   padding: 1px 6px;
   transform: translateY(-50%);
   border: 1px solid #3a4245;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--transcript-code-bg);
   color: var(--text-secondary);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 1;
   opacity: 0.88;
@@ -542,7 +542,7 @@
   justify-content: center;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -624,7 +624,7 @@
   top: 0;
   bottom: 0;
   border: 1px solid var(--accent-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .pane-tab-nest-gutter {
@@ -638,7 +638,7 @@
   justify-content: center;
   border: 1px dashed var(--accent-color);
   border-right: none;
-  border-radius: 4px 0 0 4px;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
   color: var(--accent-color);
 }
 
@@ -907,7 +907,7 @@
   display: grid;
   gap: 1px;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .pane-context-details div {
@@ -1073,7 +1073,7 @@
   justify-self: end;
   padding: 0 4px;
   border: 1px solid rgba(170, 180, 174, 0.4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: #aeb7b2;
   font-size: 10px;
   font-weight: 600;
@@ -1291,7 +1291,7 @@
 
 .confirm-dialog p {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--text-secondary);
 }
@@ -1438,7 +1438,7 @@
 .command-palette-section {
   padding: 6px 10px 2px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
@@ -1451,7 +1451,7 @@
   min-height: var(--control-h-md);
   padding: 5px 10px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-primary);
   font-size: var(--fs-base);
@@ -1478,7 +1478,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1965,7 +1965,7 @@
   height: 14px;
   margin: 0;
   border: 1px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--control-bg);
   cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease;
@@ -2239,11 +2239,11 @@
   max-width: 720px;
   margin: 0 auto;
   border: 1px solid var(--danger-border-banner);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--danger-bg-banner);
   color: var(--danger-fg);
   padding: 10px 10px 10px 12px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
   pointer-events: auto;
 }
@@ -2431,7 +2431,7 @@
   z-index: 1;
   min-width: 0;
   border: 1px solid #2b3235;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--content-inset-bg);
   color: var(--text-body-soft);
   font-size: var(--fs-sm);
@@ -2607,7 +2607,7 @@ button.home-cascade-wait-pill:focus-visible {
   align-items: center;
   gap: 18px;
   min-width: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 .home-cascade-lane-head {
@@ -2620,7 +2620,7 @@ button.home-cascade-wait-pill:focus-visible {
   gap: 3px;
   padding: 6px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: inherit;
   cursor: pointer;

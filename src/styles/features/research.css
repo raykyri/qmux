@@ -11,7 +11,7 @@
   min-height: 24px;
   padding: 0 6px;
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -41,7 +41,7 @@
   min-height: 30px;
   padding-right: 3px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--control-fg-muted);
   font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
@@ -71,7 +71,7 @@
   min-height: 30px;
   padding: 5px 4px 5px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: inherit;
   text-align: left;
   background: transparent;
@@ -318,7 +318,7 @@
   min-height: 28px;
   padding: 4px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--control-fg-muted);
   font-size: calc(13px + var(--turn-font-delta, 0px));
   text-align: left;
@@ -396,7 +396,7 @@
   height: 100%;
   padding: 40px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   text-align: center;
   background: var(--research-workspace-bg);
 }
@@ -548,7 +548,7 @@
   min-height: 0;
   padding: 0 8px;
   border: 1px solid var(--control-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   background: var(--chrome-control-bg);
   font-family: var(--font-ui);
@@ -803,7 +803,7 @@
 .research-response-loading button {
   padding: 4px 12px;
   border: 1px solid var(--surface-border-overlay-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -833,11 +833,11 @@
   flex-shrink: 0;
   padding: 2px 10px;
   border: 1px solid var(--surface-border-overlay-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-subtle);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -903,7 +903,7 @@
   margin: 0 0 16px;
   padding: 7px 12px;
   border: 1px solid var(--surface-border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: #aab3ae;
   background: #1a1d1f;
   cursor: pointer;
@@ -1175,13 +1175,13 @@
 .new-research-unavailable {
   margin: 0;
   color: var(--status-failed-fg);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .new-research-error {
   margin: 0;
   color: var(--status-failed-fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
@@ -1252,13 +1252,13 @@
   width: 100%;
   margin: 0;
   color: var(--status-warning-fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
 }
 
 .new-document-wordcount {
   color: #8f9893;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
@@ -1271,7 +1271,7 @@
   min-width: 0;
   margin: 0;
   color: var(--status-failed-fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
 }
 

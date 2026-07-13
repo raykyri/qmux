@@ -109,7 +109,7 @@
   align-items: center;
   gap: 8px;
   border: 1px solid #3a3d3f;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--pane-hover-bg);
   padding: 6px 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
@@ -133,11 +133,11 @@
   flex: 0 1 200px;
   min-width: 0;
   border: 1px solid #3a3d3f;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--field-bg);
   color: var(--text-strong);
   padding: 5px 8px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .pane-search-input:focus {
@@ -149,7 +149,7 @@
   flex: 0 0 auto;
   min-width: 56px;
   color: #9aa0a3;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -174,10 +174,10 @@
   min-height: 0;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
 }

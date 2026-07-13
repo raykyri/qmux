@@ -252,7 +252,7 @@
 .turn-pane-session-menu-label {
   padding: 2px 10px 3px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 1.2;
 }
@@ -271,7 +271,7 @@
   width: 28px;
   height: 28px;
   border: 1px solid var(--control-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--chrome-control-bg);
   color: var(--text-secondary);
   cursor: pointer;
@@ -378,7 +378,7 @@
   min-width: 0;
   padding: 6px 8px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-primary);
   text-align: left;
@@ -481,7 +481,7 @@
   height: 24px;
   align-self: center;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -500,7 +500,7 @@
   gap: 2px;
   padding: 3px;
   border: 1px dashed transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .prompt-library-section.is-drop-target {
@@ -529,7 +529,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -558,7 +558,7 @@
 .prompt-library-kicker {
   padding: 0 2px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
@@ -617,7 +617,7 @@
 
 .prompt-library-field-label {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
@@ -681,10 +681,10 @@
 .prompt-library-error {
   padding: 6px 8px;
   border: 1px solid var(--danger-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--danger-bg-strong);
   color: var(--danger-fg-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
 
