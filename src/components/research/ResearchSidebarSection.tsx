@@ -142,6 +142,21 @@ export default function ResearchSidebarSection({
     setMenu({ treeId, left, top });
   }
 
+  function openContextMenu(treeId: string, clientX: number, clientY: number) {
+    const left = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(clientX, window.innerWidth - RESEARCH_MENU_WIDTH - VIEWPORT_MARGIN),
+    );
+    const top = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(
+        clientY,
+        window.innerHeight - RESEARCH_MENU_HEIGHT_ESTIMATE - VIEWPORT_MARGIN,
+      ),
+    );
+    setMenu({ treeId, left, top });
+  }
+
   function openRenameDialog(tree: ResearchTreeSummary) {
     setMenu(null);
     setRenameDraft(tree.title);
@@ -170,6 +185,11 @@ export default function ResearchSidebarSection({
             className={`research-sidebar-row${activeTreeId === tree.id ? " is-selected" : ""}${
               menu?.treeId === tree.id ? " has-open-menu" : ""
             }`}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openContextMenu(tree.id, event.clientX, event.clientY);
+            }}
           >
             <button
               type="button"

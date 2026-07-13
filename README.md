@@ -143,6 +143,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
   `Cmd-9` range.
 - `Ctrl-Tab` / `Ctrl-Shift-Tab`: cycle through visible pane tabs across groups.
 - `Cmd-Shift-[` / `Cmd-Shift-]`: cycle through Home and open tabs.
+- In Research, `Cmd/Ctrl-[` / `Cmd/Ctrl-]` or `Alt-Left` / `Alt-Right`
+  navigate response history. Mouse back/forward buttons and horizontal
+  two-finger trackpad or mouse-wheel gestures do the same.
 - `Cmd-Shift-T`: switch back to Terminal from Research; otherwise restore the
   most recently closed pane.
 - `Cmd-Shift-H`: focus Home.

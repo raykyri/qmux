@@ -652,7 +652,7 @@
 .research-document-scroll {
   width: 100%;
   min-height: 0;
-  padding: 44px clamp(24px, 5vw, 72px) 60px;
+  padding: 44px clamp(24px, 5vw, 72px) 40px;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -781,6 +781,7 @@
 .research-unexpected-text {
   margin: 0;
   overflow-wrap: anywhere;
+  font-size: calc(14px + var(--transcript-font-delta, 0px));
   white-space: pre-wrap;
 }
 
@@ -944,6 +945,8 @@
 }
 
 .research-followup-composer .native-input-submit-actions button {
+  /* Shift the label/glyph down, tightening the optical bottom inset. */
+  padding: 2px 8px 0;
   font-size: calc(var(--research-meta-font-size) - 0.5px);
 }
 

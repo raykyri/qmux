@@ -8,6 +8,7 @@ import {
   pushResearchHistory,
   researchHistoryBack,
   researchHistoryForward,
+  researchSwipeDirection,
 } from "../src/lib/researchHistory";
 
 test("empty history can go neither way", () => {
@@ -66,4 +67,13 @@ test("push does not mutate the prior history value", () => {
   const after = pushResearchHistory(before, "b");
   assert.deepEqual(before, { entries: ["a"], index: 0 });
   assert.notEqual(before.entries, after.entries);
+});
+
+test("horizontal wheel gestures resolve only after clear dominant travel", () => {
+  assert.equal(researchSwipeDirection(-79, 0), 0);
+  assert.equal(researchSwipeDirection(79, 0), 0);
+  assert.equal(researchSwipeDirection(-100, 90), 0);
+  assert.equal(researchSwipeDirection(100, 90), 0);
+  assert.equal(researchSwipeDirection(-100, 20), -1);
+  assert.equal(researchSwipeDirection(100, 20), 1);
 });

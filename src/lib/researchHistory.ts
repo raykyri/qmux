@@ -17,6 +17,26 @@ export interface ResearchHistoryStep {
 
 export const EMPTY_RESEARCH_HISTORY: ResearchHistory = { entries: [], index: -1 };
 
+export const RESEARCH_SWIPE_THRESHOLD_PX = 80;
+
+/**
+ * Resolves an accumulated two-axis wheel gesture into browser-style history
+ * navigation. Horizontal intent must be clear before the distance threshold
+ * counts, so diagonal/vertical scrolling does not accidentally change nodes.
+ */
+export function researchSwipeDirection(
+  deltaX: number,
+  deltaY: number,
+): -1 | 0 | 1 {
+  if (
+    Math.abs(deltaX) < RESEARCH_SWIPE_THRESHOLD_PX ||
+    Math.abs(deltaX) <= Math.abs(deltaY) * 1.25
+  ) {
+    return 0;
+  }
+  return deltaX < 0 ? -1 : 1;
+}
+
 /** Starts a fresh history at the given entry node (e.g. on a tree switch). */
 export function initResearchHistory(nodeId: string | null): ResearchHistory {
   return nodeId ? { entries: [nodeId], index: 0 } : EMPTY_RESEARCH_HISTORY;
