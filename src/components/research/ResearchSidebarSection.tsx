@@ -307,23 +307,6 @@ export default function ResearchSidebarSection({
                     <button
                       type="button"
                       role="menuitem"
-                      disabled={menuTree.runningCount > 0}
-                      title={
-                        menuTree.runningCount > 0
-                          ? "Research with active runs cannot be archived"
-                          : undefined
-                      }
-                      onClick={() => {
-                        setMenu(null);
-                        void onArchive(menuTree.id);
-                      }}
-                    >
-                      <Archive size={13} aria-hidden="true" />
-                      <span>Archive research</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
                       onClick={() => {
                         setMenu(null);
                         void onRegenerateTitle(menuTree.id);
@@ -335,6 +318,25 @@ export default function ResearchSidebarSection({
                   </>
                 )}
                 <div className="context-menu-divider" role="separator" />
+                {!menu.archived ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={menuTree.runningCount > 0}
+                    title={
+                      menuTree.runningCount > 0
+                        ? "Research with active runs cannot be archived"
+                        : undefined
+                    }
+                    onClick={() => {
+                      setMenu(null);
+                      void onArchive(menuTree.id);
+                    }}
+                  >
+                    <Archive size={13} aria-hidden="true" />
+                    <span>Archive research</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   role="menuitem"

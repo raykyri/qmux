@@ -2308,7 +2308,7 @@ button:disabled {
 }
 
 .settings-context-menu {
-  width: min(160px, calc(100vw - 16px));
+  width: min(180px, calc(100vw - 16px));
   padding: 4px;
   user-select: none;
 }

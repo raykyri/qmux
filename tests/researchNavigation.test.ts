@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isResearchNodeSelectionChange } from "../src/lib/researchNavigation";
+import {
+  isResearchNodeSelectionChange,
+  isResearchTreeSelectionChange,
+} from "../src/lib/researchNavigation";
 import { researchBranchInfo } from "../src/lib/researchBranches";
 import type { ResearchNode, ResearchNodeStatus } from "../src/types";
 
@@ -29,6 +32,15 @@ test("clicking the currently selected research breadcrumb is a no-op", () => {
 test("clicking a different research breadcrumb changes the selection", () => {
   assert.equal(isResearchNodeSelectionChange("child-node", "root-node"), true);
   assert.equal(isResearchNodeSelectionChange(null, "root-node"), true);
+});
+
+test("clicking the research tree already displayed is a no-op", () => {
+  assert.equal(isResearchTreeSelectionChange("tree", true, "tree"), false);
+});
+
+test("a research tree remains selectable when its document is not displayed", () => {
+  assert.equal(isResearchTreeSelectionChange("tree", false, "tree"), true);
+  assert.equal(isResearchTreeSelectionChange("tree", true, "other-tree"), true);
 });
 
 test("branch info includes every descendant but not siblings", () => {

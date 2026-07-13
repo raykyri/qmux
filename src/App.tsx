@@ -153,7 +153,10 @@ import {
   TERMINAL_FONT_SIZE_MIN,
 } from "./lib/terminalFont";
 import { canRenderInInternalBrowser, isFileServerUrl } from "./lib/links";
-import { pruneResearchNavigation } from "./lib/researchNavigation";
+import {
+  isResearchTreeSelectionChange,
+  pruneResearchNavigation,
+} from "./lib/researchNavigation";
 import {
   groupsForScope,
   panesForScope,
@@ -434,8 +437,9 @@ const PANE_CONTEXT_MENU_WIDTH = 320;
 const PANE_CONTEXT_MENU_ESTIMATED_HEIGHT = 400;
 const GROUP_CONTEXT_MENU_WIDTH = 220;
 const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
-const SETTINGS_CONTEXT_MENU_WIDTH = 160;
-const SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT = 66;
+const SETTINGS_CONTEXT_MENU_WIDTH = 180;
+const SETTINGS_CONTEXT_MENU_TERMINAL_HEIGHT = 66;
+const SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT = 37;
 const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
@@ -8084,10 +8088,14 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     const rect = event.currentTarget.getBoundingClientRect();
+    const menuHeight =
+      sidebarMode === "terminal"
+        ? SETTINGS_CONTEXT_MENU_TERMINAL_HEIGHT
+        : SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT;
     const maxX = Math.max(8, window.innerWidth - SETTINGS_CONTEXT_MENU_WIDTH - 8);
-    const maxY = Math.max(8, window.innerHeight - SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT - 8);
+    const maxY = Math.max(8, window.innerHeight - menuHeight - 8);
     const x = clamp(rect.right - SETTINGS_CONTEXT_MENU_WIDTH, 8, maxX);
-    const upwardY = rect.top - SETTINGS_CONTEXT_MENU_ESTIMATED_HEIGHT - 6;
+    const upwardY = rect.top - menuHeight - 6;
     const downwardY = rect.bottom + 6;
     const y = clamp(upwardY >= 8 ? upwardY : downwardY, 8, maxY);
     setPaneContextMenu(null);
@@ -8713,7 +8721,17 @@ export default function App() {
               trees={scopedResearchTrees}
               archivedTrees={scopedArchivedResearchTrees}
               activeTreeId={activeResearchTreeId}
-              onSelect={(treeId) => void selectResearchTree(treeId)}
+              onSelect={(treeId) => {
+                if (
+                  isResearchTreeSelectionChange(
+                    activeResearchTreeId,
+                    researchSurfaceActive,
+                    treeId,
+                  )
+                ) {
+                  void selectResearchTree(treeId);
+                }
+              }}
               onRename={renameResearchTreeTitle}
               onArchive={archiveResearchTreeFromSidebar}
               onRegenerateTitle={regenerateResearchTreeTitle}

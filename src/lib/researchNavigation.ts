@@ -24,6 +24,17 @@ export function isResearchNodeSelectionChange(
   return selectedNodeId !== nextNodeId;
 }
 
+export function isResearchTreeSelectionChange(
+  selectedTreeId: string | null,
+  documentVisible: boolean,
+  nextTreeId: string,
+): boolean {
+  // Re-selecting the visible document would clear its detail while the same
+  // tree is fetched again, producing a needless loading blink. The same tree
+  // remains selectable when one of its terminal panes is currently visible.
+  return !documentVisible || selectedTreeId !== nextTreeId;
+}
+
 function load(): Record<string, SavedResearchNavigation> {
   try {
     const parsed = JSON.parse(localStorage.getItem(RESEARCH_NAVIGATION_KEY) ?? "{}") as unknown;
