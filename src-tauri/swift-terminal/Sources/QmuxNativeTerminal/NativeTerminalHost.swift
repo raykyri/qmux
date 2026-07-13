@@ -2,6 +2,16 @@
 import GhosttyTerminal
 import WebKit
 
+@_silgen_name("qmux_native_terminal_did_receive_app_shortcut")
+private func nativeTerminalDidReceiveAppShortcut(
+    _ key: UnsafePointer<CChar>,
+    _ shift: Int32,
+    _ control: Int32,
+    _ option: Int32,
+    _ command: Int32,
+    _ repeat: Int32
+) -> Int32
+
 @MainActor
 final class NativeTerminalHost {
     static let shared = NativeTerminalHost()
@@ -12,6 +22,7 @@ final class NativeTerminalHost {
     private var eventMonitor: Any?
     private weak var keyboardOwnerPane: NativeTerminalPane?
     private weak var pointerCapturePane: NativeTerminalPane?
+    private var consumedAppShortcutKeyCodes: Set<UInt16> = []
     private var webPointerRoutingClaimed = false
     /// When true, the next pointer-up clears `webPointerRoutingClaimed`. Used for
     /// mid-gesture drag claims (button already down when claimed). Sticky claims
@@ -365,6 +376,7 @@ final class NativeTerminalHost {
             self.eventMonitor = nil
         }
         setKeyboardOwner(nil)
+        consumedAppShortcutKeyCodes.removeAll()
         pointerCapturePane = nil
         webPointerRoutingClaimed = false
         webPointerClaimClearsOnPointerUp = false
@@ -517,6 +529,9 @@ final class NativeTerminalHost {
 
     private func routeKeyEvent(_ event: NSEvent) -> NSEvent? {
         guard let pane = keyboardPane(for: event) else {
+            if claimStrandedWebAppShortcut(event) {
+                return nil
+            }
             return event
         }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -550,6 +565,9 @@ final class NativeTerminalHost {
 
     private func routeKeyUpEvent(_ event: NSEvent) -> NSEvent? {
         guard event.window === window else { return event }
+        if consumedAppShortcutKeyCodes.remove(event.keyCode) != nil {
+            return nil
+        }
         if panes.values.contains(where: {
             $0.consumedShortcutKeyCodes.remove(event.keyCode) != nil
         }) {
@@ -565,6 +583,40 @@ final class NativeTerminalHost {
         // forward them exactly once.
         pane.view.keyUp(with: event)
         return nil
+    }
+
+    /// WKWebView can leave its outer view as first responder after Escape.
+    /// That responder is inside the webview hierarchy, so the normal terminal
+    /// recovery deliberately leaves it alone, but it does not deliver keyDown
+    /// to the DOM. Recognized qmux shortcuts would consequently reach neither
+    /// the React listener nor a terminal classifier until the next web click
+    /// focuses WebKit's private content view. Claim only this exact stranded
+    /// state; descendants still represent real DOM/editable focus and keep the
+    /// ordinary WebKit path.
+    private func claimStrandedWebAppShortcut(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.window === window,
+              let window,
+              let webView = window.contentView.flatMap({ findWebView(in: $0) }),
+              window.firstResponder === webView,
+              let shortcutKey = appShortcutKey(for: event)
+        else {
+            return false
+        }
+        let handled = shortcutKey.withCString { key in
+            nativeTerminalDidReceiveAppShortcut(
+                key,
+                event.modifierFlags.contains(.shift) ? 1 : 0,
+                event.modifierFlags.contains(.control) ? 1 : 0,
+                event.modifierFlags.contains(.option) ? 1 : 0,
+                event.modifierFlags.contains(.command) ? 1 : 0,
+                event.isARepeat ? 1 : 0
+            ) == 1
+        }
+        if handled {
+            consumedAppShortcutKeyCodes.insert(event.keyCode)
+        }
+        return handled
     }
 
     private func routeFlagsChangedEvent(_ event: NSEvent) -> NSEvent? {
@@ -587,12 +639,25 @@ final class NativeTerminalHost {
         let key = event.charactersIgnoringModifiers?.lowercased()
         let hasPrimaryModifier = modifiers.contains(.command) || modifiers.contains(.control)
         let isNativeCommand = modifiers.contains(.command) && (key == "c" || key == "q")
-        guard hasPrimaryModifier, !isNativeCommand, let key,
-              let shortcutKey = webShortcutKey(for: key)
+        guard hasPrimaryModifier, !isNativeCommand,
+              let shortcutKey = appShortcutKey(for: event)
         else {
             return false
         }
         return pane.reportShortcut(key: shortcutKey, event: event)
+    }
+
+    private func appShortcutKey(for event: NSEvent) -> String? {
+        // Match React's physical-code handling for Cmd-backtick. WebKit may
+        // expose this key as Dead or a composed character after focus churn,
+        // while the ANSI key code remains stable.
+        if event.keyCode == 50 {
+            return "`"
+        }
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return nil
+        }
+        return webShortcutKey(for: key)
     }
 
     /// Translates AppKit key characters into the key names shared by the Rust

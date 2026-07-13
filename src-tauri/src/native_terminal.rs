@@ -66,6 +66,7 @@ enum AppShortcutCommand {
     CyclePaneTab(i8),
     CycleAllTab(i8),
     OpenSettings,
+    OpenCommandPalette,
     ToggleTranscriptOrBrowser,
     SplitPaneBelow,
     RestoreClosedPane,
@@ -90,6 +91,7 @@ impl AppShortcutCommand {
             Self::CycleAllTab(-1) => ("cycleAllTabPrevious", None),
             Self::CycleAllTab(_) => ("cycleAllTabNext", None),
             Self::OpenSettings => ("openSettings", None),
+            Self::OpenCommandPalette => ("openCommandPalette", None),
             Self::ToggleTranscriptOrBrowser => ("toggleTranscriptOrBrowser", None),
             Self::SplitPaneBelow => ("splitPaneBelow", None),
             Self::RestoreClosedPane => ("restoreClosedPane", None),
@@ -181,6 +183,22 @@ fn classify_app_shortcut(
     }
 
     None
+}
+
+/// The stranded WKWebView fallback has web-target semantics. In particular,
+/// Cmd-K opens qmux's palette there, while the terminal classifier above must
+/// leave the same chord to Ghostty's clear-screen binding.
+fn classify_web_app_shortcut(
+    key: &str,
+    shift: bool,
+    control: bool,
+    option: bool,
+    command: bool,
+) -> Option<AppShortcutCommand> {
+    if command && !control && !option && !shift && key.eq_ignore_ascii_case("k") {
+        return Some(AppShortcutCommand::OpenCommandPalette);
+    }
+    classify_app_shortcut(key, shift, control, option, command)
 }
 
 #[cfg(target_os = "macos")]
@@ -828,6 +846,44 @@ pub extern "C" fn qmux_native_terminal_did_receive_shortcut(
     i32::from(emitted)
 }
 
+/// A possible application shortcut typed while WKWebView's outer view is the
+/// first responder. In that stranded AppKit state the DOM receives no keyDown,
+/// so emit the same semantic command without tying it to a terminal pane.
+#[unsafe(no_mangle)]
+pub extern "C" fn qmux_native_terminal_did_receive_app_shortcut(
+    key: *const std::ffi::c_char,
+    shift: i32,
+    control: i32,
+    option: i32,
+    command: i32,
+    repeat: i32,
+) -> i32 {
+    let Some(key) = callback_string(key) else {
+        return 0;
+    };
+    let Some(shortcut) =
+        classify_web_app_shortcut(&key, shift == 1, control == 1, option == 1, command == 1)
+    else {
+        return 0;
+    };
+    let (command, tab_index) = shortcut.event_fields();
+    let mut emitted = false;
+    with_app_state(|state| {
+        state.emit(QmuxEvent::new(
+            "app.shortcut",
+            None,
+            None,
+            serde_json::json!({
+                "command": command,
+                "tabIndex": tab_index,
+                "repeat": repeat == 1,
+            }),
+        ));
+        emitted = true;
+    });
+    i32::from(emitted)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn qmux_native_terminal_did_change_command_modifier(
     pane_id: *const std::ffi::c_char,
@@ -996,6 +1052,10 @@ mod tests {
                 "command-{key} must remain native"
             );
         }
+        assert_eq!(
+            super::classify_web_app_shortcut("k", false, false, false, true),
+            Some(AppShortcutCommand::OpenCommandPalette)
+        );
         assert_eq!(
             super::classify_app_shortcut("w", false, true, false, false),
             None,

@@ -5148,9 +5148,18 @@ export default function App() {
   const nativeTerminalShortcutHandlerRef = useRef<
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => void
   >(() => undefined);
+  const nativeAppShortcutHandlerRef = useRef<
+    (command: AppShortcutCommand, repeat: boolean) => void
+  >(() => undefined);
   const handleNativeTerminalShortcut = useCallback(
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => {
       nativeTerminalShortcutHandlerRef.current(paneId, command, repeat);
+    },
+    [],
+  );
+  const handleNativeAppShortcut = useCallback(
+    (command: AppShortcutCommand, repeat: boolean) => {
+      nativeAppShortcutHandlerRef.current(command, repeat);
     },
     [],
   );
@@ -5198,6 +5207,7 @@ export default function App() {
     onTerminalUserInput: reportNativeTerminalInput,
     onTerminalActivated: activateTerminalPane,
     onTerminalShortcut: handleNativeTerminalShortcut,
+    onAppShortcut: handleNativeAppShortcut,
     onTerminalCommandModifier: handleNativeTerminalCommandModifier,
     onTerminalOpenUrl: openPaneLink,
     onTerminalTitleChanged: handleTerminalTitleChange,
@@ -7517,6 +7527,7 @@ export default function App() {
       }
       executeShortcut(command, repeat);
     };
+    nativeAppShortcutHandlerRef.current = executeShortcut;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isShowHideShortcutCaptureTarget(event.target) || event.defaultPrevented) {
@@ -7544,6 +7555,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
       nativeTerminalShortcutHandlerRef.current = () => undefined;
+      nativeAppShortcutHandlerRef.current = () => undefined;
     };
   }, [
     activePaneId,

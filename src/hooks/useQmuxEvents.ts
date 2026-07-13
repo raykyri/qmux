@@ -114,6 +114,7 @@ export interface UseQmuxEventsHandlers {
     command: AppShortcutCommand,
     repeat: boolean,
   ) => void;
+  onAppShortcut?: (command: AppShortcutCommand, repeat: boolean) => void;
   onTerminalCommandModifier?: (paneId: string, active: boolean) => void;
   onTerminalOpenUrl?: (paneId: string, url: string) => void;
   onTerminalTitleChanged?: (paneId: string, title: string) => void;
@@ -160,6 +161,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     onTerminalUserInput,
     onTerminalActivated,
     onTerminalShortcut,
+    onAppShortcut,
     onTerminalCommandModifier,
     onTerminalOpenUrl,
     onTerminalTitleChanged,
@@ -349,6 +351,15 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         );
         if (command !== null) {
           onTerminalShortcut?.(event.paneId, command, event.payload.repeat === true);
+        }
+      }
+      if (event.type === "app.shortcut") {
+        const command = parseAppShortcutCommand(
+          event.payload.command,
+          event.payload.tabIndex,
+        );
+        if (command !== null) {
+          onAppShortcut?.(command, event.payload.repeat === true);
         }
       }
       if (event.type === "terminal.command_modifier_changed" && event.paneId) {
