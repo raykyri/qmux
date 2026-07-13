@@ -706,7 +706,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   padding: 2px 10px;
-  border-left: 2px solid #3b4447;
+  border-left: 2px solid var(--dialog-border);
   color: var(--text-muted);
   font-style: italic;
   overflow-wrap: anywhere;
@@ -754,4 +754,3 @@
 .turn-sidebar.has-header .turn-timeline {
   top: 41px;
 }
-

@@ -1243,7 +1243,7 @@
   flex-direction: column;
   width: min(440px, 100%);
   gap: 10px;
-  border: 1px solid #3b4447;
+  border: 1px solid var(--dialog-border);
   border-radius: 10px;
   background: var(--panel-bg);
   box-shadow: var(--dialog-shadow);
@@ -1467,7 +1467,7 @@
   width: min(420px, 100%);
   max-height: min(760px, calc(100vh - 36px));
   gap: 14px;
-  border: 1px solid #3b4447;
+  border: 1px solid var(--dialog-border);
   border-radius: 10px;
   background: var(--panel-bg);
   box-shadow: var(--dialog-shadow);

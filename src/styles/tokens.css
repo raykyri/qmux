@@ -189,6 +189,7 @@
   --transcript-code-header-bg: #0d1012;
   --surface-divider: #2a2d2f;
   --surface-border-strong: #30383b;
+  --dialog-border: #3b4447;
   --chrome-control-bg: rgba(20, 24, 26, 0.9);
   --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
   --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
@@ -220,9 +221,9 @@
   --research-workspace-bg: var(--right-pane-bg);
   --field-bg: #171615;
   --field-bg-hover: #1e1d1a;
-  --panel-bg: #211f1c;
+  --panel-bg: var(--field-bg);
   --panel-highlight-bg: #27241f;
-  --popover-bg: #24211d;
+  --popover-bg: var(--field-bg);
   --content-card-bg: #212220;
   --content-inset-bg: #1d1c19;
   --context-menu-bg: #231f1b;
@@ -233,6 +234,7 @@
   --transcript-code-header-bg: #12110f;
   --surface-divider: #2d2d2c;
   --surface-border-strong: #363735;
+  --dialog-border: #3f3c37;
   --chrome-control-bg: rgba(31, 29, 26, 0.9);
   --chrome-control-bg-hover: rgba(44, 40, 35, 0.95);
   --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);
