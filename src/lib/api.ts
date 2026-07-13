@@ -20,6 +20,8 @@ import type {
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   ResearchBranchRemoval,
+  ResearchHighlight,
+  ResearchHighlightAnchor,
   ResearchTree,
   ResearchWorkspaceInfo,
   ResearchTreeDetail,
@@ -306,6 +308,23 @@ export function renameResearchTree(treeId: string, title: string) {
 
 export function renameResearchNode(nodeId: string, title: string) {
   return invoke<ResearchNode>("rename_research_node", { nodeId, title });
+}
+
+export function createResearchHighlight(
+  nodeId: string,
+  anchor: ResearchHighlightAnchor,
+) {
+  return invoke<ResearchHighlight>("create_research_highlight", {
+    nodeId,
+    anchor,
+  });
+}
+
+export function removeResearchHighlight(nodeId: string, highlightId: string) {
+  return invoke<ResearchHighlight>("remove_research_highlight", {
+    nodeId,
+    highlightId,
+  });
 }
 
 export function markResearchTreeViewed(treeId: string) {

@@ -42,8 +42,8 @@ use pty::{
     pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, write_pane,
 };
 use research::{
-    CreateResearchTreeRequest, ResearchBranchRemoval, ResearchNode, ResearchNodeContent,
-    ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    CreateResearchTreeRequest, ResearchBranchRemoval, ResearchHighlight, ResearchHighlightAnchor,
+    ResearchNode, ResearchNodeContent, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
 };
 use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
@@ -753,9 +753,13 @@ async fn get_research_node_content(
         // the transcript exactly as if no snapshot existed, keeping the read
         // failure only as diagnostic context if nothing else is viewable.
         let snapshot_error =
-            match research::read_response_snapshot(&state.config().workspace_root, &node_id) {
-                Ok(Some(turns)) => {
-                    content.turns = turns;
+            match research::read_response_snapshot_with_revision(
+                &state.config().workspace_root,
+                &node_id,
+            ) {
+                Ok(Some(snapshot)) => {
+                    content.response_revision = Some(snapshot.revision);
+                    content.turns = snapshot.turns;
                     return Ok(content);
                 }
                 Ok(None) => None,
@@ -917,6 +921,32 @@ fn rename_research_node(
     title: String,
 ) -> Result<ResearchNode, String> {
     state.set_research_node_title(&node_id, title)
+}
+
+#[tauri::command]
+async fn create_research_highlight(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+    anchor: ResearchHighlightAnchor,
+) -> Result<ResearchHighlight, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.create_research_highlight(&node_id, anchor))
+        .await
+        .map_err(|err| format!("research highlight task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn remove_research_highlight(
+    state: tauri::State<'_, AppState>,
+    node_id: String,
+    highlight_id: String,
+) -> Result<ResearchHighlight, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.remove_research_highlight(&node_id, &highlight_id)
+    })
+    .await
+    .map_err(|err| format!("research highlight task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -1737,6 +1767,8 @@ fn main() {
             cancel_research_node,
             rename_research_tree,
             rename_research_node,
+            create_research_highlight,
+            remove_research_highlight,
             mark_research_tree_viewed,
             archive_research_tree,
             restore_research_tree,

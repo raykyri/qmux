@@ -180,6 +180,24 @@ export interface ResearchNode {
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
+  highlights: ResearchHighlight[];
+}
+
+export interface ResearchHighlight {
+  id: string;
+  anchor: ResearchHighlightAnchor;
+  createdAt: number;
+}
+
+export interface ResearchHighlightAnchor {
+  version: 1;
+  projection: "answer-v1";
+  responseRevision: string;
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
 }
 
 export interface ResearchTreeSummary {
@@ -224,6 +242,8 @@ export interface ResearchNodeContent {
   children: ResearchNodeCard[];
   /** Why turns is empty for a finished node (snapshot and transcript both unavailable). */
   sourceError?: string;
+  /** Present only when the displayed turns came from a durable full snapshot. */
+  responseRevision?: string;
 }
 
 // Where a queued turn is delivered when it is reached: absent means the agent's

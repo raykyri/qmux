@@ -660,6 +660,38 @@
   line-height: calc(1.5 + var(--transcript-line-height-delta));
 }
 
+::highlight(qmux-research-highlights) {
+  color: inherit;
+  background: rgba(224, 190, 79, 0.42);
+}
+
+.research-highlight-action {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  min-height: 27px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: #edf0ec;
+  font-family: var(--font-ui);
+  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-weight: 400;
+  line-height: 1;
+  background: #303532;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.38);
+  cursor: pointer;
+}
+
+.research-highlight-action:hover {
+  background: #3a403c;
+}
+
+.research-highlight-action:disabled {
+  color: #929994;
+  cursor: default;
+}
+
 .research-response-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

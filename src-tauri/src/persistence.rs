@@ -34,7 +34,7 @@ static PREFERENCES_CACHE: LazyLock<Mutex<HashMap<PathBuf, AppPreferences>>> =
 
 /// Bumped whenever the on-disk shape changes incompatibly. A file written by a
 /// newer or unknown version is treated as empty rather than misinterpreted.
-pub const STATE_VERSION: u32 = 3;
+pub const STATE_VERSION: u32 = 4;
 const MIN_MIGRATABLE_STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = "state.json";
 const PREFERENCES_FILE: &str = "preferences.json";

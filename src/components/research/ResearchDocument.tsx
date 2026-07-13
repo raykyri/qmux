@@ -3,7 +3,12 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, ScrollText, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
-import { getResearchNodeContent, listClaudeSkills } from "../../lib/api";
+import {
+  createResearchHighlight,
+  getResearchNodeContent,
+  listClaudeSkills,
+  removeResearchHighlight,
+} from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { growComposerTextarea } from "../../lib/composerTextarea";
 import {
@@ -18,6 +23,7 @@ import {
   researchSwipeDirection,
 } from "../../lib/researchHistory";
 import { researchBranchInfo } from "../../lib/researchBranches";
+import { resolveResearchHighlightOffset } from "../../lib/researchHighlights";
 import {
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
@@ -33,6 +39,8 @@ import {
 import type { MessageBlock, MessageItem } from "../../lib/turnTimeline";
 import type {
   ResearchBranchRemoval,
+  ResearchHighlight,
+  ResearchHighlightAnchor,
   ResearchNode,
   ResearchNodeContent,
   ResearchTreeDetail,
@@ -94,6 +102,124 @@ interface FollowupMenu {
   nodeId: string;
   left: number;
   top: number;
+}
+
+interface HighlightAction {
+  anchor: ResearchHighlightAnchor;
+  highlightId: string | null;
+  left: number;
+  top: number;
+}
+
+interface ResolvedHighlight {
+  highlight: ResearchHighlight;
+  start: number;
+  end: number;
+}
+
+interface ResearchHighlightRegistry {
+  set(name: string, highlight: unknown): void;
+  delete(name: string): void;
+}
+
+interface ResearchNativeHighlight {
+  add(range: Range): void;
+}
+
+interface ResearchHighlightApi {
+  registry: ResearchHighlightRegistry;
+  Highlight: new () => ResearchNativeHighlight;
+}
+
+const RESEARCH_HIGHLIGHT_NAME = "qmux-research-highlights";
+const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
+
+function researchHighlightApi(): ResearchHighlightApi | null {
+  const css = (globalThis as unknown as { CSS?: { highlights?: ResearchHighlightRegistry } }).CSS;
+  const Highlight = (globalThis as unknown as { Highlight?: unknown }).Highlight;
+  if (!css?.highlights || typeof Highlight !== "function") {
+    return null;
+  }
+  return {
+    registry: css.highlights,
+    Highlight: Highlight as new () => ResearchNativeHighlight,
+  };
+}
+
+function textNodesWithin(root: HTMLElement) {
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node as Text);
+    node = walker.nextNode();
+  }
+  return nodes;
+}
+
+function rangeForTextOffsets(root: HTMLElement, start: number, end: number) {
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  const nodes = textNodesWithin(root);
+  let consumed = 0;
+  let startPoint: { node: Text; offset: number } | null = null;
+  let endPoint: { node: Text; offset: number } | null = null;
+  for (const node of nodes) {
+    const next = consumed + node.data.length;
+    if (!startPoint && start <= next) {
+      startPoint = { node, offset: start - consumed };
+    }
+    if (end <= next) {
+      endPoint = { node, offset: end - consumed };
+      break;
+    }
+    consumed = next;
+  }
+  if (!startPoint || !endPoint) {
+    return null;
+  }
+  const range = document.createRange();
+  range.setStart(startPoint.node, startPoint.offset);
+  range.setEnd(endPoint.node, endPoint.offset);
+  return range;
+}
+
+function selectionOffsets(root: HTMLElement, range: Range) {
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+    return null;
+  }
+  const prefixRange = document.createRange();
+  prefixRange.selectNodeContents(root);
+  prefixRange.setEnd(range.startContainer, range.startOffset);
+  const throughSelectionRange = document.createRange();
+  throughSelectionRange.selectNodeContents(root);
+  throughSelectionRange.setEnd(range.endContainer, range.endOffset);
+  const start = prefixRange.cloneContents().textContent?.length ?? 0;
+  const end = throughSelectionRange.cloneContents().textContent?.length ?? 0;
+  return end > start ? { start, end } : null;
+}
+
+function textContextSlice(text: string, start: number, end: number) {
+  let safeStart = Math.max(0, start);
+  let safeEnd = Math.min(text.length, end);
+  if (
+    safeStart > 0 &&
+    safeStart < text.length &&
+    /[\uDC00-\uDFFF]/.test(text[safeStart]) &&
+    /[\uD800-\uDBFF]/.test(text[safeStart - 1])
+  ) {
+    safeStart -= 1;
+  }
+  if (
+    safeEnd > 0 &&
+    safeEnd < text.length &&
+    /[\uD800-\uDBFF]/.test(text[safeEnd - 1]) &&
+    /[\uDC00-\uDFFF]/.test(text[safeEnd])
+  ) {
+    safeEnd += 1;
+  }
+  return text.slice(safeStart, safeEnd);
 }
 
 function horizontalScrollerConsumesWheel(
@@ -258,11 +384,16 @@ export default function ResearchDocument({
   const [contentLoadNonce, setContentLoadNonce] = useState(0);
   const [showAllTurns, setShowAllTurns] = useState(false);
   const [showFullTrace, setShowFullTrace] = useState(false);
+  const [highlightAction, setHighlightAction] = useState<HighlightAction | null>(null);
+  const [savingHighlight, setSavingHighlight] = useState(false);
+  const [highlightDomNonce, setHighlightDomNonce] = useState(0);
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
   const treeId = detail?.tree.id ?? null;
   const documentScrollRef = useRef<HTMLElement | null>(null);
   const followupTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const followupMenuRef = useRef<HTMLDivElement | null>(null);
+  const responseContentRootRef = useRef<HTMLDivElement | null>(null);
+  const resolvedHighlightsRef = useRef<ResolvedHighlight[]>([]);
   const navigationRef = useRef(researchNavigationStore());
   const navigationPersistTimerRef = useRef<number | null>(null);
   const selectedNodeIdRef = useRef(selectedNodeId);
@@ -282,6 +413,14 @@ export default function ResearchDocument({
   treeIdRef.current = treeId;
   detailRef.current = detail;
   contentNodeIdRef.current = content?.node.id ?? null;
+
+  // A selection anchor belongs to one rendered projection. Navigation or a
+  // transcript-visibility change invalidates its offsets, so never leave an
+  // action from the previous view floating over the next one.
+  useEffect(() => {
+    setHighlightAction(null);
+    window.getSelection()?.removeAllRanges();
+  }, [treeId, selectedNodeId, content?.responseRevision, showAllTurns, showFullTrace]);
 
   // Match the right-pane composer: fit the textarea to its contents up to the
   // shared cap, then let it scroll. The node dependency also sizes a newly
@@ -874,6 +1013,220 @@ export default function ResearchDocument({
   // and the regex walks — and allocates a match array over — the entire answer.
   const answerWordCount = useMemo(() => countWords(rawAnswer), [rawAnswer]);
 
+  // Diagram rendering and other child-owned Markdown controls can replace text
+  // nodes without changing the transcript items. Observe those commits so saved
+  // ranges are rebuilt against the current rendered projection.
+  useEffect(() => {
+    const root = responseContentRootRef.current;
+    if (
+      !root ||
+      !content?.responseRevision ||
+      !content.node.highlights?.length ||
+      !researchHighlightApi() ||
+      typeof MutationObserver === "undefined"
+    ) {
+      return;
+    }
+    let frame: number | null = null;
+    const observer = new MutationObserver(() => {
+      if (frame !== null) {
+        return;
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        setHighlightDomNonce((value) => value + 1);
+      });
+    });
+    observer.observe(root, { childList: true, characterData: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [
+    content?.node.id,
+    content?.node.highlights,
+    content?.responseRevision,
+    showAllTurns,
+    showFullTrace,
+    timelineItems,
+  ]);
+
+  // Paint saved ranges without rewriting the markdown DOM. Anchors retain an
+  // exact quote and nearby context so they can be relocated when transcript
+  // visibility changes shift the flat rendered-text offsets.
+  useLayoutEffect(() => {
+    const root = responseContentRootRef.current;
+    const api = researchHighlightApi();
+    api?.registry.delete(RESEARCH_HIGHLIGHT_NAME);
+    resolvedHighlightsRef.current = [];
+    if (!root || !api || !content?.responseRevision) {
+      return;
+    }
+    const projection = root.textContent ?? "";
+    const ranges: Range[] = [];
+    for (const highlight of content?.node.highlights ?? []) {
+      const offsets = resolveResearchHighlightOffset(
+        projection,
+        content.responseRevision,
+        highlight,
+      );
+      if (!offsets) {
+        continue;
+      }
+      const range = rangeForTextOffsets(root, offsets.start, offsets.end);
+      if (!range) {
+        continue;
+      }
+      ranges.push(range);
+      resolvedHighlightsRef.current.push({ highlight, ...offsets });
+    }
+    if (ranges.length > 0) {
+      const painted = new api.Highlight();
+      for (const range of ranges) {
+        painted.add(range);
+      }
+      api.registry.set(RESEARCH_HIGHLIGHT_NAME, painted);
+    }
+    return () => {
+      api.registry.delete(RESEARCH_HIGHLIGHT_NAME);
+    };
+  }, [
+    content?.node.id,
+    content?.node.highlights,
+    content?.responseRevision,
+    highlightDomNonce,
+    showAllTurns,
+    showFullTrace,
+    timelineItems,
+  ]);
+
+  const captureHighlightSelection = useCallback(() => {
+    const root = responseContentRootRef.current;
+    const revision = content?.responseRevision;
+    const selection = window.getSelection();
+    if (
+      !root ||
+      !revision ||
+      !researchHighlightApi() ||
+      !selection ||
+      selection.isCollapsed ||
+      selection.rangeCount === 0
+    ) {
+      setHighlightAction(null);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const offsets = selectionOffsets(root, range);
+    if (!offsets) {
+      setHighlightAction(null);
+      return;
+    }
+    const projection = root.textContent ?? "";
+    const exact = projection.slice(offsets.start, offsets.end);
+    if (!exact.trim()) {
+      setHighlightAction(null);
+      return;
+    }
+    const existing = resolvedHighlightsRef.current.find(
+      ({ start, end }) => offsets.start < end && offsets.end > start,
+    );
+    const rect = range.getBoundingClientRect();
+    setHighlightAction({
+      anchor: {
+        version: 1,
+        projection: "answer-v1",
+        responseRevision: revision,
+        start: offsets.start,
+        end: offsets.end,
+        exact,
+        prefix: textContextSlice(
+          projection,
+          Math.max(0, offsets.start - RESEARCH_HIGHLIGHT_CONTEXT_LENGTH),
+          offsets.start,
+        ),
+        suffix: textContextSlice(
+          projection,
+          offsets.end,
+          offsets.end + RESEARCH_HIGHLIGHT_CONTEXT_LENGTH,
+        ),
+      },
+      highlightId: existing?.highlight.id ?? null,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 150)),
+      top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
+    });
+  }, [content?.responseRevision]);
+
+  useEffect(() => {
+    if (!highlightAction) {
+      return;
+    }
+    const dismiss = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".research-highlight-action")) {
+        setHighlightAction(null);
+      }
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHighlightAction(null);
+      }
+    };
+    const dismissOnReflow = () => setHighlightAction(null);
+    document.addEventListener("mousedown", dismiss);
+    document.addEventListener("keydown", dismissOnEscape);
+    window.addEventListener("resize", dismissOnReflow);
+    window.addEventListener("scroll", dismissOnReflow, true);
+    return () => {
+      document.removeEventListener("mousedown", dismiss);
+      document.removeEventListener("keydown", dismissOnEscape);
+      window.removeEventListener("resize", dismissOnReflow);
+      window.removeEventListener("scroll", dismissOnReflow, true);
+    };
+  }, [highlightAction]);
+
+  async function applyHighlightAction() {
+    if (!highlightAction || !content || savingHighlight) {
+      return;
+    }
+    setSavingHighlight(true);
+    try {
+      if (highlightAction.highlightId) {
+        const removed = await removeResearchHighlight(content.node.id, highlightAction.highlightId);
+        setContent((current) =>
+          current?.node.id === content.node.id
+            ? {
+                ...current,
+                node: {
+                  ...current.node,
+                  highlights: (current.node.highlights ?? []).filter(({ id }) => id !== removed.id),
+                },
+              }
+            : current,
+        );
+      } else {
+        const created = await createResearchHighlight(content.node.id, highlightAction.anchor);
+        setContent((current) =>
+          current?.node.id === content.node.id
+            ? {
+                ...current,
+                node: {
+                  ...current.node,
+                  highlights: [...(current.node.highlights ?? []), created],
+                },
+              }
+            : current,
+        );
+      }
+      window.getSelection()?.removeAllRanges();
+      setHighlightAction(null);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingHighlight(false);
+    }
+  }
+
   async function submitFollowup() {
     const prompt = followup.trim();
     // Mirrors the submit button's disabled conditions: Cmd+Enter must not
@@ -1197,7 +1550,12 @@ export default function ResearchDocument({
                           {hiddenTimelineItemCount === 1 ? "" : "s"}
                         </button>
                       ) : null}
-                      <div className="research-response-content-root">
+                      <div
+                        ref={responseContentRootRef}
+                        className="research-response-content-root"
+                        onMouseUp={captureHighlightSelection}
+                        onKeyUp={captureHighlightSelection}
+                      >
                         {visibleTimelineItems.map((item) => (
                           <ResearchTimelineItem key={item.key} item={item} />
                         ))}
@@ -1406,6 +1764,25 @@ export default function ResearchDocument({
                 document.body,
               );
             })()
+          : null}
+        {highlightAction
+          ? createPortal(
+              <button
+                type="button"
+                className="research-highlight-action"
+                style={{ left: highlightAction.left, top: highlightAction.top }}
+                disabled={savingHighlight}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void applyHighlightAction()}
+              >
+                {savingHighlight
+                  ? "Saving…"
+                  : highlightAction.highlightId
+                    ? "Remove highlight"
+                    : "Highlight"}
+              </button>,
+              document.body,
+            )
           : null}
         {deletingBranch?.node && deletingBranch.info
           ? createPortal(

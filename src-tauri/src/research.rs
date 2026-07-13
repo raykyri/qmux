@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 
 pub const MAX_RESPONSE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_RESPONSE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
-pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 2;
+pub const MAX_RESEARCH_HIGHLIGHTS_PER_NODE: usize = 500;
+pub const MAX_RESEARCH_HIGHLIGHT_BYTES_PER_NODE: usize = 512 * 1024;
+pub const MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL: usize = 4 * 1024 * 1024;
+pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 3;
 const DETACHED_RESEARCH_DIR: &str = "research-v1";
 const DETACHED_RESEARCH_PENDING_DIR: &str = "research-v1.pending";
 const DETACHED_RESEARCH_MANIFEST: &str = "manifest.json";
@@ -124,6 +127,29 @@ pub struct ResearchNode {
     pub started_at: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<u128>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub highlights: Vec<ResearchHighlight>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchHighlight {
+    pub id: String,
+    pub anchor: ResearchHighlightAnchor,
+    pub created_at: u128,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchHighlightAnchor {
+    pub version: u32,
+    pub projection: String,
+    pub response_revision: String,
+    pub start: usize,
+    pub end: usize,
+    pub exact: String,
+    pub prefix: String,
+    pub suffix: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -197,6 +223,8 @@ pub struct ResearchNodeContent {
     /// failing the whole request, which would leave nothing viewable at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_revision: Option<String>,
 }
 
 const RESPONSE_SNAPSHOT_DIR: &str = "research-responses";
@@ -238,7 +266,7 @@ fn prepare_detached_archive_parent(folder: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), String> {
-    if archive.version != 1 && archive.version != DETACHED_RESEARCH_ARCHIVE_VERSION {
+    if !(1..=DETACHED_RESEARCH_ARCHIVE_VERSION).contains(&archive.version) {
         return Err(format!(
             "unsupported detached research archive version {} (it may have been written by a newer qmux; upgrade this installation to restore it)",
             archive.version
@@ -288,6 +316,7 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
             ));
         }
     }
+    let mut highlight_bytes_total = 0usize;
     for node in &archive.nodes {
         let Some(tree) = tree_by_id.get(node.tree_id.as_str()) else {
             return Err(format!("research node {} has no owning tree", node.id));
@@ -303,6 +332,12 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
                 "research node {} still contains live runtime state",
                 node.id
             ));
+        }
+        validate_highlight_collection(&node.highlights)?;
+        highlight_bytes_total = highlight_bytes_total
+            .saturating_add(highlight_collection_storage_bytes(&node.highlights));
+        if highlight_bytes_total > MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL {
+            return Err("detached research archive contains too much highlight data".to_string());
         }
         if let Some(parent_id) = node.parent_node_id.as_deref() {
             let parent = node_by_id
@@ -515,10 +550,10 @@ fn read_detached_research_from_path(
     for node in &archive.nodes {
         let path = responses_dir.join(validated_snapshot_file_name(&node.id)?);
         reject_symlink(&path)?;
-        let Some(turns) = read_snapshot_file(&path)? else {
+        let Some(snapshot) = read_snapshot_file(&path)? else {
             continue;
         };
-        responses.insert(node.id.clone(), turns);
+        responses.insert(node.id.clone(), snapshot.turns);
     }
     Ok(DetachedResearchBundle {
         archive,
@@ -604,7 +639,12 @@ fn legacy_response_snapshot_path(workspace_root: &Path, node_id: &str) -> Result
         .join(validated_snapshot_file_name(node_id)?))
 }
 
-fn read_snapshot_file(path: &Path) -> Result<Option<Vec<crate::transcript::Turn>>, String> {
+pub struct ResponseSnapshot {
+    pub turns: Vec<crate::transcript::Turn>,
+    pub revision: String,
+}
+
+fn read_snapshot_file(path: &Path) -> Result<Option<ResponseSnapshot>, String> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -636,19 +676,31 @@ fn read_snapshot_file(path: &Path) -> Result<Option<Vec<crate::transcript::Turn>
             path.display()
         ));
     }
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| format!("failed to decode {}: {err}", path.display()))
+    let turns = serde_json::from_slice(&raw)
+        .map_err(|err| format!("failed to decode {}: {err}", path.display()))?;
+    let digest = Sha256::digest(&raw);
+    Ok(Some(ResponseSnapshot {
+        turns,
+        revision: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+    }))
+}
+
+pub fn read_response_snapshot_with_revision(
+    workspace_root: &Path,
+    node_id: &str,
+) -> Result<Option<ResponseSnapshot>, String> {
+    if let Some(snapshot) = read_snapshot_file(&response_snapshot_path(workspace_root, node_id)?)? {
+        return Ok(Some(snapshot));
+    }
+    read_snapshot_file(&legacy_response_snapshot_path(workspace_root, node_id)?)
 }
 
 pub fn read_response_snapshot(
     workspace_root: &Path,
     node_id: &str,
 ) -> Result<Option<Vec<crate::transcript::Turn>>, String> {
-    if let Some(turns) = read_snapshot_file(&response_snapshot_path(workspace_root, node_id)?)? {
-        return Ok(Some(turns));
-    }
-    read_snapshot_file(&legacy_response_snapshot_path(workspace_root, node_id)?)
+    Ok(read_response_snapshot_with_revision(workspace_root, node_id)?
+        .map(|snapshot| snapshot.turns))
 }
 
 pub fn write_response_snapshot(
@@ -685,6 +737,79 @@ pub fn write_response_snapshot(
     })?;
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+pub fn response_revision(turns: &[crate::transcript::Turn]) -> Result<String, String> {
+    let raw = serde_json::to_vec(turns)
+        .map_err(|err| format!("failed to encode research response revision: {err}"))?;
+    let digest = Sha256::digest(raw);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub fn validate_highlight_anchor(anchor: &ResearchHighlightAnchor) -> Result<(), String> {
+    if anchor.version != 1 || anchor.projection != "answer-v1" {
+        return Err("unsupported research highlight anchor".to_string());
+    }
+    if anchor.start >= anchor.end || anchor.exact.trim().is_empty() {
+        return Err("research highlight selection cannot be empty".to_string());
+    }
+    if anchor.end > MAX_RESPONSE_SNAPSHOT_BYTES
+        || anchor.end - anchor.start != anchor.exact.encode_utf16().count()
+    {
+        return Err("research highlight has invalid selection offsets".to_string());
+    }
+    if anchor.exact.len() > 64 * 1024 || anchor.prefix.len() > 512 || anchor.suffix.len() > 512 {
+        return Err("research highlight selection is too large".to_string());
+    }
+    if anchor.response_revision.len() != 64
+        || !anchor
+            .response_revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("research highlight has an invalid response revision".to_string());
+    }
+    Ok(())
+}
+
+pub fn highlight_storage_bytes(highlight: &ResearchHighlight) -> usize {
+    // Include a conservative allowance for JSON field names, numeric values,
+    // escaping, and collection punctuation in addition to the stored strings.
+    160usize
+        .saturating_add(highlight.id.len())
+        .saturating_add(highlight.anchor.projection.len())
+        .saturating_add(highlight.anchor.response_revision.len())
+        // A control character can expand to a six-byte JSON escape. Using the
+        // worst case keeps the cap authoritative without serializing the whole
+        // model on every insertion.
+        .saturating_add(highlight.anchor.exact.len().saturating_mul(6))
+        .saturating_add(highlight.anchor.prefix.len().saturating_mul(6))
+        .saturating_add(highlight.anchor.suffix.len().saturating_mul(6))
+}
+
+pub fn highlight_collection_storage_bytes(highlights: &[ResearchHighlight]) -> usize {
+    highlights.iter().fold(0usize, |total, highlight| {
+        total.saturating_add(highlight_storage_bytes(highlight))
+    })
+}
+
+pub fn validate_highlight_collection(highlights: &[ResearchHighlight]) -> Result<(), String> {
+    if highlights.len() > MAX_RESEARCH_HIGHLIGHTS_PER_NODE {
+        return Err(format!(
+            "a research answer can have at most {MAX_RESEARCH_HIGHLIGHTS_PER_NODE} highlights"
+        ));
+    }
+    let mut ids = HashSet::new();
+    for highlight in highlights {
+        if highlight.id.is_empty() || !ids.insert(highlight.id.as_str()) {
+            return Err("research highlights must have unique non-empty ids".to_string());
+        }
+        validate_highlight_anchor(&highlight.anchor)?;
+    }
+    if highlight_collection_storage_bytes(highlights) > MAX_RESEARCH_HIGHLIGHT_BYTES_PER_NODE {
+        return Err("a research answer contains too much highlight data".to_string());
     }
     Ok(())
 }
@@ -1019,6 +1144,7 @@ mod tests {
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
+            highlights: Vec::new(),
         };
         DetachedResearchArchive {
             version: DETACHED_RESEARCH_ARCHIVE_VERSION,
@@ -1047,9 +1173,23 @@ mod tests {
     #[test]
     fn detached_archive_pending_and_committed_forms_round_trip() {
         let folder = temp_workspace();
-        let archive = sample_detached_archive(&folder);
-        let responses =
-            HashMap::from([("research-node-1".to_string(), vec![sample_turn("turn-1")])]);
+        let mut archive = sample_detached_archive(&folder);
+        let turns = vec![sample_turn("turn-1")];
+        archive.nodes[0].highlights.push(ResearchHighlight {
+            id: "highlight-1".to_string(),
+            anchor: ResearchHighlightAnchor {
+                version: 1,
+                projection: "answer-v1".to_string(),
+                response_revision: response_revision(&turns).unwrap(),
+                start: 0,
+                end: 6,
+                exact: "Answer".to_string(),
+                prefix: String::new(),
+                suffix: String::new(),
+            },
+            created_at: 3,
+        });
+        let responses = HashMap::from([("research-node-1".to_string(), turns)]);
 
         write_detached_research_pending(&folder, &archive, &responses).unwrap();
         let pending = read_detached_research(&folder).unwrap().unwrap();
@@ -1061,6 +1201,7 @@ mod tests {
         let committed = read_detached_research(&folder).unwrap().unwrap();
         assert!(!committed.pending);
         assert_eq!(committed.archive.nodes.len(), 1);
+        assert_eq!(committed.archive.nodes[0].highlights.len(), 1);
         remove_detached_research(&folder, false).unwrap();
         assert!(read_detached_research(&folder).unwrap().is_none());
         std::fs::remove_dir_all(folder).unwrap();
@@ -1138,7 +1279,8 @@ mod tests {
     #[test]
     fn snapshots_live_under_the_protected_state_dir_and_round_trip() {
         let workspace = temp_workspace();
-        write_response_snapshot(&workspace, "node-1", &[sample_turn("turn-1")]).unwrap();
+        let expected = vec![sample_turn("turn-1")];
+        write_response_snapshot(&workspace, "node-1", &expected).unwrap();
 
         let path = workspace
             .join(crate::persistence::STATE_DIR)
@@ -1156,6 +1298,10 @@ mod tests {
         let turns = read_response_snapshot(&workspace, "node-1").unwrap().unwrap();
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].id, "turn-1");
+        let snapshot = read_response_snapshot_with_revision(&workspace, "node-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.revision, response_revision(&expected).unwrap());
 
         remove_response_snapshot(&workspace, "node-1").unwrap();
         assert!(read_response_snapshot(&workspace, "node-1").unwrap().is_none());

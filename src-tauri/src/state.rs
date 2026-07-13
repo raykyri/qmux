@@ -2,8 +2,9 @@ use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::research::{
-    self, CreateResearchTreeRequest, ResearchBranchRemoval, ResearchNode, ResearchNodeCard,
-    ResearchNodeContent, ResearchNodeStatus, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    self, CreateResearchTreeRequest, ResearchBranchRemoval, ResearchHighlight,
+    ResearchHighlightAnchor, ResearchNode, ResearchNodeCard, ResearchNodeContent,
+    ResearchNodeStatus, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
 };
 use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -2145,6 +2146,7 @@ impl AppState {
             turns,
             children,
             source_error: None,
+            response_revision: None,
         })
     }
 
@@ -2212,6 +2214,7 @@ impl AppState {
             created_at: now,
             started_at: None,
             completed_at: None,
+            highlights: Vec::new(),
         };
         {
             let mut model = self
@@ -2309,6 +2312,7 @@ impl AppState {
                 created_at: now,
                 started_at: None,
                 completed_at: None,
+                highlights: Vec::new(),
             };
             model.research_nodes.insert(node_id, node.clone());
             touch_research_tree_locked(&mut model, &node.tree_id, now);
@@ -2755,6 +2759,106 @@ impl AppState {
             json!({ "node": node }),
         ));
         Ok(node)
+    }
+
+    pub fn create_research_highlight(
+        &self,
+        node_id: &str,
+        anchor: ResearchHighlightAnchor,
+    ) -> Result<ResearchHighlight, String> {
+        research::validate_highlight_anchor(&anchor)?;
+        self.research_node(node_id)?;
+        let snapshot = research::read_response_snapshot_with_revision(
+            &self.inner.config.workspace_root,
+            node_id,
+        )?
+            .ok_or_else(|| {
+                "research highlights require a durable full response snapshot".to_string()
+            })?;
+        if snapshot.revision != anchor.response_revision {
+            return Err("the research response changed; select the text again".to_string());
+        }
+
+        let mut highlight = ResearchHighlight {
+            id: self.next_id("research-highlight"),
+            anchor,
+            created_at: now_millis(),
+        };
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let total_bytes = model
+                .research_nodes
+                .values()
+                .flat_map(|node| node.highlights.iter())
+                .fold(0usize, |total, highlight| {
+                    total.saturating_add(research::highlight_storage_bytes(highlight))
+                });
+            while model
+                .research_nodes
+                .values()
+                .any(|node| node.highlights.iter().any(|saved| saved.id == highlight.id))
+            {
+                highlight.id = self.next_id("research-highlight");
+            }
+            let added_bytes = research::highlight_storage_bytes(&highlight);
+            if total_bytes.saturating_add(added_bytes)
+                > research::MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL
+            {
+                return Err("qmux contains too much saved research highlight data".to_string());
+            }
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let mut next_highlights = node.highlights.clone();
+            next_highlights.push(highlight.clone());
+            research::validate_highlight_collection(&next_highlights)?;
+            node.highlights.push(highlight.clone());
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.highlight.created",
+            None,
+            None,
+            json!({ "nodeId": node_id, "highlight": highlight }),
+        ));
+        Ok(highlight)
+    }
+
+    pub fn remove_research_highlight(
+        &self,
+        node_id: &str,
+        highlight_id: &str,
+    ) -> Result<ResearchHighlight, String> {
+        let removed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get_mut(node_id)
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let index = node
+                .highlights
+                .iter()
+                .position(|highlight| highlight.id == highlight_id)
+                .ok_or_else(|| format!("research highlight {highlight_id} was not found"))?;
+            node.highlights.remove(index)
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.highlight.removed",
+            None,
+            None,
+            json!({ "nodeId": node_id, "highlightId": highlight_id }),
+        ));
+        Ok(removed)
     }
 
     pub fn mark_research_tree_viewed(&self, tree_id: &str) -> Result<ResearchTree, String> {
@@ -3373,12 +3477,42 @@ impl AppState {
         mut nodes: Vec<ResearchNode>,
         responses: HashMap<String, Vec<Turn>>,
     ) -> Result<GroupInfo, String> {
+        // Import rewrites response JSON with this build's serializer. Retarget
+        // anchors to those exact bytes so a schema-preserving app upgrade does
+        // not make otherwise valid portable highlights disappear.
+        for node in &mut nodes {
+            let Some(turns) = responses.get(&node.id) else {
+                continue;
+            };
+            let revision = research::response_revision(turns)?;
+            for highlight in &mut node.highlights {
+                highlight.anchor.response_revision = revision.clone();
+            }
+        }
+        let incoming_highlight_bytes = nodes
+            .iter()
+            .flat_map(|node| node.highlights.iter())
+            .fold(0usize, |total, highlight| {
+                total.saturating_add(research::highlight_storage_bytes(highlight))
+            });
         let (tree_ids_in_use, mut node_ids_in_use) = {
             let model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            let existing_highlight_bytes = model
+                .research_nodes
+                .values()
+                .flat_map(|node| node.highlights.iter())
+                .fold(0usize, |total, highlight| {
+                    total.saturating_add(research::highlight_storage_bytes(highlight))
+                });
+            if existing_highlight_bytes.saturating_add(incoming_highlight_bytes)
+                > research::MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL
+            {
+                return Err("import would exceed qmux's research highlight storage limit".to_string());
+            }
             (
                 model.research_trees.keys().cloned().collect::<HashSet<_>>(),
                 model.research_nodes.keys().cloned().collect::<HashSet<_>>(),
@@ -8483,6 +8617,7 @@ mod tests {
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
+            highlights: Vec::new(),
         };
         let persisted_tree = |id: &str, root: &str| ResearchTree {
             id: id.to_string(),
@@ -8599,6 +8734,7 @@ mod tests {
             created_at: 1,
             started_at: Some(1),
             completed_at: None,
+            highlights: Vec::new(),
         };
         let persisted = PersistedState {
             next_id: 100,
@@ -8689,6 +8825,7 @@ mod tests {
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
+            highlights: Vec::new(),
         };
         let mut persisted = PersistedState {
             groups: vec![group.clone()],
@@ -8760,6 +8897,7 @@ mod tests {
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
+            highlights: Vec::new(),
         };
         let persisted = PersistedState {
             research_trees: HashMap::from([(tree.id.clone(), tree)]),
@@ -8840,6 +8978,7 @@ mod tests {
                     created_at: 1,
                     started_at: Some(1),
                     completed_at: Some(2),
+                    highlights: Vec::new(),
                 },
             );
         }
@@ -8983,6 +9122,98 @@ mod tests {
         .unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(node.response_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn research_highlights_require_and_track_a_durable_snapshot() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let node_id = detail.tree.root_node_id;
+        let mut anchor = ResearchHighlightAnchor {
+            version: 1,
+            projection: "answer-v1".to_string(),
+            response_revision: "0".repeat(64),
+            start: 0,
+            end: 6,
+            exact: "Answer".to_string(),
+            prefix: String::new(),
+            suffix: " text".to_string(),
+        };
+
+        let err = state
+            .create_research_highlight(&node_id, anchor.clone())
+            .unwrap_err();
+        assert!(err.contains("durable full response snapshot"));
+
+        let mut answer = sample_user_turn("research-agent", "Answer text");
+        answer.role = "assistant".to_string();
+        let turns = vec![answer];
+        research::write_response_snapshot(&workspace, &node_id, &turns).unwrap();
+
+        let err = state
+            .create_research_highlight(&node_id, anchor.clone())
+            .unwrap_err();
+        assert!(err.contains("response changed"));
+
+        anchor.response_revision = research::response_revision(&turns).unwrap();
+        let highlight = state
+            .create_research_highlight(&node_id, anchor.clone())
+            .unwrap();
+        assert_eq!(highlight.anchor, anchor);
+        // The snapshot file itself is the durability authority. Creation must
+        // still work after a crash between committing it and stamping the node.
+        assert!(state
+            .research_node(&node_id)
+            .unwrap()
+            .response_snapshot_at
+            .is_none());
+
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            let node = model.research_nodes.get_mut(&node_id).unwrap();
+            node.highlights = vec![highlight.clone(); research::MAX_RESEARCH_HIGHLIGHTS_PER_NODE];
+        }
+        let err = state
+            .create_research_highlight(&node_id, anchor.clone())
+            .unwrap_err();
+        assert!(err.contains("at most"));
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            let node = model.research_nodes.get_mut(&node_id).unwrap();
+            node.highlights = vec![highlight.clone()];
+        }
+
+        let reloaded = AppState::new(test_config(workspace.clone()));
+        reloaded.restore_session();
+        let saved_node = reloaded.research_node(&node_id).unwrap();
+        assert_eq!(saved_node.highlights, vec![highlight.clone()]);
+
+        let removed = reloaded
+            .remove_research_highlight(&node_id, &highlight.id)
+            .unwrap();
+        assert_eq!(removed, highlight);
+        let reloaded = AppState::new(test_config(workspace.clone()));
+        reloaded.restore_session();
+        assert!(
+            reloaded
+                .research_node(&node_id)
+                .unwrap()
+                .highlights
+                .is_empty()
+        );
+
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]
