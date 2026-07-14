@@ -398,6 +398,121 @@ pub fn rename_research_workspace(
     rename_group_record(state, workspace, name)
 }
 
+/// Moves a research workspace to a different directory. While a folder is
+/// open its research history (trees, nodes, responses) lives in qmux's global
+/// state, so a move repoints the durable record and relocates only the
+/// research-specific state a folder can carry — a detached `.qmux` research
+/// archive belonging to this workspace. The old folder itself and the rest of
+/// its contents are never modified or deleted.
+pub fn move_research_workspace(
+    state: &AppState,
+    workspace_id: &str,
+    dir: String,
+) -> Result<GroupInfo, String> {
+    let _guard = lock_research_workspace_mutations()?;
+    let mut workspace = require_research_workspace(state, workspace_id)?;
+    // Retire a fresh import's cleanup receipt first, exactly like removal:
+    // the receipt's archive is an already-imported duplicate that must be
+    // deleted where it stands, not carried along as if it were history.
+    if workspace.imported_research_archive_id.is_some() {
+        reconcile_imported_research_archive(state, &workspace)?;
+        workspace = require_research_workspace(state, workspace_id)?;
+    }
+    let dependencies = state.research_workspace_dependencies(workspace_id)?;
+    let display_name = workspace
+        .name_override
+        .as_deref()
+        .unwrap_or(&workspace.name);
+    if dependencies.has_live_panes {
+        return Err(format!(
+            "research folder '{display_name}' cannot be moved while it has live terminals"
+        ));
+    }
+    if dependencies.has_active_runs {
+        return Err(format!(
+            "research folder '{display_name}' cannot be moved while it has active runs"
+        ));
+    }
+    let requested = PathBuf::from(&dir);
+    let canonical = fs::canonicalize(&requested).map_err(|err| {
+        format!(
+            "research folder {} is unavailable: {err}",
+            requested.display()
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "research folder {} is not a directory",
+            canonical.display()
+        ));
+    }
+    if group_dir_matches(&workspace, &canonical, &requested) {
+        return Ok(workspace);
+    }
+    if let Some(existing) = state.list_groups()?.into_iter().find(|group| {
+        group.id != workspace.id
+            && group.scope == WorkspaceScope::Research
+            && group_dir_matches(group, &canonical, &requested)
+    }) {
+        return Err(format!(
+            "{} is already open as research folder '{}'",
+            canonical.display(),
+            existing.name_override.as_deref().unwrap_or(&existing.name)
+        ));
+    }
+    // A destination carrying its own detached history belongs to some other
+    // research folder; moving on top of it would hide that archive behind
+    // this workspace's record until removal, which would then refuse to
+    // overwrite it. Opening it as its own folder is the deliberate path.
+    if read_detached_research_for_folder(&canonical)?.is_some() {
+        return Err(format!(
+            "{} already contains detached research history; open it as its own research folder instead",
+            canonical.display()
+        ));
+    }
+    // The one research-specific thing the old folder can hold for a live
+    // workspace is its own pending archive (a removal interrupted before its
+    // global commit). Rewrite it into the destination before repointing so a
+    // crash between the two steps leaves both copies rather than neither,
+    // then clear the source copy. Foreign archives — a different workspace's
+    // detached history sitting in the folder — stay with the folder they
+    // describe.
+    match crate::research::read_detached_research(Path::new(&workspace.dir)) {
+        Ok(Some(bundle)) if bundle.archive.workspace.id == workspace.id => {
+            crate::research::write_detached_research_pending(
+                &canonical,
+                &bundle.archive,
+                &bundle.responses,
+            )?;
+            if !bundle.pending {
+                crate::research::commit_detached_research(&canonical)?;
+            }
+            crate::research::remove_detached_research(Path::new(&workspace.dir), bundle.pending)?;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            // Unreadable, so its owner cannot be identified — and a live
+            // workspace's own history is safe in global state either way.
+            // Leave it with the old folder rather than failing the move.
+            eprintln!(
+                "qmux: leaving unreadable detached research behind in {}: {err}",
+                workspace.dir
+            );
+        }
+    }
+    workspace.dir = canonical.display().to_string();
+    workspace.name = group_name_for_dir(&canonical);
+    write_group_manifest(&workspace)?;
+    state.update_group(workspace.clone())?;
+    state.emit(crate::events::QmuxEvent::new(
+        "group.updated",
+        None,
+        None,
+        serde_json::json!({ "group": workspace.clone() }),
+    ));
+    Ok(workspace)
+}
+
 pub fn remove_research_workspace(
     state: &AppState,
     workspace_id: &str,
@@ -2043,6 +2158,254 @@ mod tests {
         assert!(
             error.contains(&archive_dir.display().to_string()),
             "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moving_research_folder_repoints_record_and_leaves_both_folders_intact() {
+        let root = temp_workspace("move-research");
+        let source = root.join("source/project");
+        let destination = root.join("destination/notes");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source.join("draft.md"), "user content").unwrap();
+        std::fs::write(destination.join("existing.md"), "already here").unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, source.display().to_string()).unwrap();
+        rename_research_workspace(&state, &workspace.id, Some("My research".to_string())).unwrap();
+        let detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: workspace.id.clone(),
+            })
+            .unwrap();
+
+        assert!(
+            move_research_workspace(&state, &workspace.id, destination.display().to_string())
+                .unwrap_err()
+                .contains("active runs")
+        );
+        state
+            .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+
+        let moved =
+            move_research_workspace(&state, &workspace.id, destination.display().to_string())
+                .unwrap();
+
+        let canonical_destination = std::fs::canonicalize(&destination).unwrap();
+        assert_eq!(moved.dir, canonical_destination.display().to_string());
+        assert_eq!(moved.name, "notes");
+        assert_eq!(moved.name_override.as_deref(), Some("My research"));
+        // The history never left global state; only the record moved.
+        assert_eq!(state.list_research_trees_with_archived(true).unwrap().len(), 1);
+        let node = state.research_node(&detail.tree.root_node_id).unwrap();
+        assert_eq!(
+            node.worktree_dir,
+            std::fs::canonicalize(&source).unwrap().display().to_string()
+        );
+        // Neither folder gains or loses anything: no `.qmux` appears, the
+        // source keeps its contents, and the destination keeps its own.
+        assert!(source.join("draft.md").is_file());
+        assert!(!source.join(crate::persistence::STATE_DIR).exists());
+        assert!(destination.join("existing.md").is_file());
+        assert!(!destination.join(crate::persistence::STATE_DIR).exists());
+        // The repoint is durable.
+        let persisted = persistence::load_with_diagnostics(&state.config().workspace_root).state;
+        let persisted_group = persisted
+            .groups
+            .iter()
+            .find(|group| group.id == workspace.id)
+            .expect("moved workspace persisted");
+        assert_eq!(persisted_group.dir, moved.dir);
+        // Moving to the directory it already occupies is a no-op.
+        let unchanged =
+            move_research_workspace(&state, &workspace.id, destination.display().to_string())
+                .unwrap();
+        assert_eq!(unchanged.dir, moved.dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moving_research_folder_refuses_occupied_or_history_bearing_destinations() {
+        let root = temp_workspace("move-research-refusals");
+        let source = root.join("project");
+        let occupied = root.join("occupied");
+        let with_history = root.join("with-history");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::create_dir_all(&with_history).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, source.display().to_string()).unwrap();
+        create_research_workspace(&state, None, occupied.display().to_string()).unwrap();
+        // A folder that carries another workspace's detached history: run a
+        // real detach into it.
+        let removed_workspace =
+            create_research_workspace(&state, None, with_history.display().to_string()).unwrap();
+        let removed_detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Detached question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: removed_workspace.id.clone(),
+            })
+            .unwrap();
+        state
+            .fail_research_node(&removed_detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+        remove_research_workspace(&state, &removed_workspace.id).unwrap();
+        assert!(
+            crate::research::read_detached_research(&with_history)
+                .unwrap()
+                .is_some()
+        );
+
+        assert!(
+            move_research_workspace(&state, &workspace.id, occupied.display().to_string())
+                .unwrap_err()
+                .contains("already open as research folder")
+        );
+        assert!(
+            move_research_workspace(&state, &workspace.id, with_history.display().to_string())
+                .unwrap_err()
+                .contains("detached research history")
+        );
+        // The refused moves changed nothing: the record still points at the
+        // source and the foreign archive is untouched.
+        let unchanged = state.group(&workspace.id).unwrap().unwrap();
+        assert_eq!(unchanged.dir, workspace.dir);
+        assert!(
+            crate::research::read_detached_research(&with_history)
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moving_research_folder_carries_its_own_pending_archive() {
+        let root = temp_workspace("move-research-pending");
+        let source = root.join("project");
+        let destination = root.join("elsewhere");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, source.display().to_string()).unwrap();
+        let detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: workspace.id.clone(),
+            })
+            .unwrap();
+        state
+            .fail_research_node(&detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+        // A removal interrupted before its global commit leaves the
+        // workspace's own archive in pending form.
+        let own_archive = state.detached_research_archive(&workspace.id).unwrap();
+        crate::research::write_detached_research_pending(
+            &source,
+            &own_archive,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        let moved =
+            move_research_workspace(&state, &workspace.id, destination.display().to_string())
+                .unwrap();
+
+        // The pending archive traveled with the workspace, still pending —
+        // never promoted, so a retried removal can still replace it.
+        let carried = crate::research::read_detached_research(&destination)
+            .unwrap()
+            .expect("archive at destination");
+        assert!(carried.pending);
+        assert_eq!(carried.archive.workspace.id, workspace.id);
+        assert!(
+            crate::research::read_detached_research(&source)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            moved.dir,
+            std::fs::canonicalize(&destination)
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moving_research_folder_leaves_foreign_archives_with_the_old_folder() {
+        let root = temp_workspace("move-research-foreign");
+        let source = root.join("project");
+        let destination = root.join("elsewhere");
+        let donor = root.join("donor");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::create_dir_all(&donor).unwrap();
+        let state = test_state_with_workspace(root.join("managed"));
+        state.restore_session();
+        let workspace =
+            create_research_workspace(&state, None, source.display().to_string()).unwrap();
+        // Another workspace's detached history sitting in this folder does
+        // not describe this workspace, so a move must not take it along.
+        let donor_workspace =
+            create_research_workspace(&state, None, donor.display().to_string()).unwrap();
+        let donor_detail = state
+            .create_research_tree(crate::research::CreateResearchTreeRequest {
+                prompt: "Donor question".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: donor_workspace.id.clone(),
+            })
+            .unwrap();
+        state
+            .fail_research_node(&donor_detail.tree.root_node_id, "settled".to_string())
+            .unwrap();
+        let donor_archive = state.detached_research_archive(&donor_workspace.id).unwrap();
+        crate::research::write_detached_research_pending(
+            &source,
+            &donor_archive,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        let moved =
+            move_research_workspace(&state, &workspace.id, destination.display().to_string())
+                .unwrap();
+
+        assert_eq!(
+            moved.dir,
+            std::fs::canonicalize(&destination)
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        let left_behind = crate::research::read_detached_research(&source)
+            .unwrap()
+            .expect("foreign archive stays with the old folder");
+        assert_eq!(left_behind.archive.workspace.id, donor_workspace.id);
+        assert!(
+            crate::research::read_detached_research(&destination)
+                .unwrap()
+                .is_none()
         );
         std::fs::remove_dir_all(root).unwrap();
     }

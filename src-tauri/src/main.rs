@@ -71,8 +71,8 @@ use workspace::{
     AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, ResearchWorkspaceInfo,
     WorktreeStatus, acknowledge_agent, agent_worktree_status, clear_agent_working_status,
     create_group, create_research_workspace, ensure_default_research_workspace,
-    remove_agent_worktree, remove_research_workspace, rename_group, rename_research_workspace,
-    set_group_collapsed, set_group_dir, validate_launch_workspace,
+    move_research_workspace, remove_agent_worktree, remove_research_workspace, rename_group,
+    rename_research_workspace, set_group_collapsed, set_group_dir, validate_launch_workspace,
 };
 
 /// Menu ids for the custom items installed by `customize_app_menu`.
@@ -520,6 +520,23 @@ fn research_workspace_rename(
     name: Option<String>,
 ) -> Result<GroupInfo, String> {
     rename_research_workspace(&state, &workspace_id, name)
+}
+
+#[tauri::command]
+async fn research_workspace_move_pick(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+) -> Result<Option<GroupInfo>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        match pick_folder_dialog(&app, "Select a new location for this research folder")? {
+            Some(path) => move_research_workspace(&state, &workspace_id, path).map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|err| format!("research_workspace_move_pick task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -1922,6 +1939,7 @@ fn main() {
             ensure_default_research_workspace_command,
             research_workspace_create_pick,
             research_workspace_rename,
+            research_workspace_move_pick,
             research_workspace_remove,
             research_workspace_reveal,
             list_agents,

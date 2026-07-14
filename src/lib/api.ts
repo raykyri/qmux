@@ -202,6 +202,10 @@ export function renameResearchWorkspace(workspaceId: string, name: string | null
   return invoke<GroupInfo>("research_workspace_rename", { workspaceId, name });
 }
 
+export function moveResearchWorkspaceWithFolder(workspaceId: string) {
+  return invoke<GroupInfo | null>("research_workspace_move_pick", { workspaceId });
+}
+
 export function removeResearchWorkspace(workspaceId: string) {
   return invoke<string[]>("research_workspace_remove", { workspaceId });
 }
