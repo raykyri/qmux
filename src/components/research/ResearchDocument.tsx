@@ -1378,18 +1378,12 @@ export default function ResearchDocument({
     const finalPrompt = followupMode === "deep" ? `${deepCommand} ${prompt}` : prompt;
     try {
       // The new child lands in the tree detail (refreshed by the fork flow),
-      // which is where the follow-up cards render from.
-      const child = await onFork(followupNode.id, finalPrompt);
+      // which is where the follow-up cards render from. Submitting keeps the
+      // current node selected rather than following the child to its own page:
+      // the reader stays with the answer they asked about, and the new
+      // follow-up appears as a card below the composer to open when ready.
+      await onFork(followupNode.id, finalPrompt);
       setFollowup("");
-      // The fork round trip spans a real agent spawn, so the user can switch
-      // trees while it is in flight. Following the child then would hijack
-      // whatever tree is now displayed: this closure's selectNode records
-      // navigation for the submit-time tree but sets the live selection to a
-      // node the displayed tree does not contain. The child still exists and
-      // its card appears when its own tree is next opened.
-      if (treeIdRef.current === treeId) {
-        selectNode(child.id);
-      }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {

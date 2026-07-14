@@ -648,8 +648,6 @@
   min-width: 0;
   margin: 0 auto;
   --research-main-content-max-width: 780px;
-  --research-content-columns:
-    minmax(0, var(--research-main-content-max-width)) minmax(220px, 260px);
   --research-content-column-gap: clamp(28px, 4vw, 52px);
   --research-answer-font-delta: 0.5px;
   /* Shared scale for secondary document text. The question and answer use the
@@ -681,7 +679,15 @@
 
 .research-response-grid {
   display: grid;
-  grid-template-columns: var(--research-content-columns);
+  /* Reference the width variable directly rather than routing the whole
+     template through an intermediate custom property: WebKit (the Tauri
+     webview) fails to substitute a var() nested inside another custom
+     property consumed by grid-template-columns, which dropped the answer's
+     max-width cap and let the response wrap full width, shoving the follow-up
+     composer off screen. A single level of indirection resolves reliably —
+     the same pattern .research-prompt already relies on. */
+  grid-template-columns:
+    minmax(0, var(--research-main-content-max-width)) minmax(220px, 260px);
   align-items: start;
   gap: var(--research-content-column-gap);
   min-width: 0;
@@ -1322,10 +1328,6 @@
 }
 
 @media (max-width: 900px) {
-  .research-document-content {
-    --research-content-columns: minmax(0, 1fr);
-  }
-
   .research-document-scroll {
     padding-inline: 28px;
   }
