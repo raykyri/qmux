@@ -9326,6 +9326,9 @@ export default function App() {
             : undefined
         }
         onRemoveAnnotation={agent ? handleRemoveAnnotation : undefined}
+        onAddAnnotationsToComposer={
+          agent ? (text) => requestComposerInsert(agent.id, text) : undefined
+        }
         onAnnotationError={setError}
         assistantLabel={surface.assistantLabel}
         notice={agent ? surface.transcriptNotice : null}

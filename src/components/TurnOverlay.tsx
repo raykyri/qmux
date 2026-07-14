@@ -122,6 +122,8 @@ interface TurnOverlayProps {
     comment: string,
   ) => Promise<void>;
   onRemoveAnnotation?: (messageKey: string, annotationId: string) => Promise<void>;
+  // Inserts assembled annotation text into this transcript's composer (Phase 2).
+  onAddAnnotationsToComposer?: (text: string) => void;
   onAnnotationError?: (message: string) => void;
 }
 
@@ -184,6 +186,7 @@ export default function TurnOverlay({
   annotations,
   onCreateAnnotation,
   onRemoveAnnotation,
+  onAddAnnotationsToComposer,
   onAnnotationError,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -956,6 +959,7 @@ export default function TurnOverlay({
           annotations={annotations ?? []}
           onCreate={onCreateAnnotation}
           onRemove={onRemoveAnnotation}
+          onAddToComposer={onAddAnnotationsToComposer}
           onError={onAnnotationError}
         />
       ) : null}

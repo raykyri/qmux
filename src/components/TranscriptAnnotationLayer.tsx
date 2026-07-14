@@ -5,6 +5,7 @@ import { Trash2 } from "lucide-react";
 import type { MessageAnnotation, MessageAnnotationAnchor } from "../types";
 import {
   TRANSCRIPT_ANNOTATION_CONTEXT_LENGTH,
+  buildAnnotationMessage,
   groupAnnotationsByMessage,
   resolveAnnotationOffset,
 } from "../lib/transcriptAnnotations";
@@ -196,6 +197,9 @@ export interface TranscriptAnnotationLayerProps {
     comment: string,
   ) => Promise<void>;
   onRemove: (messageKey: string, annotationId: string) => Promise<void>;
+  // Inserts assembled annotation text into the composer for review before sending
+  // (Phase 2). Absent disables the "Add to composer" action.
+  onAddToComposer?: (text: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -205,6 +209,7 @@ export default function TranscriptAnnotationLayer({
   annotations,
   onCreate,
   onRemove,
+  onAddToComposer,
   onError,
 }: TranscriptAnnotationLayerProps) {
   const [compose, setCompose] = useState<ComposeState | null>(null);
@@ -541,6 +546,23 @@ export default function TranscriptAnnotationLayer({
                   </li>
                 ))}
               </ul>
+              {onAddToComposer ? (
+                <div className="transcript-annotation-actions">
+                  <button
+                    type="button"
+                    className="control-button is-primary"
+                    onClick={() => {
+                      const message = buildAnnotationMessage(viewAnnotations);
+                      if (message) {
+                        onAddToComposer(message);
+                      }
+                      setView(null);
+                    }}
+                  >
+                    Add to composer
+                  </button>
+                </div>
+              ) : null}
             </div>,
             document.body,
           )
