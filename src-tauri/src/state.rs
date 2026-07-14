@@ -7,7 +7,7 @@ use crate::research::{
     ResearchNodeContent, ResearchNodeKind, ResearchNodeStatus, ResearchTree, ResearchTreeDetail,
     ResearchTreeSummary, UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
 };
-use crate::scrollback::{read_pane_scrollback, remove_pane_scrollback};
+use crate::scrollback::{bounded_scrollback_tail, read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
 use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
@@ -57,6 +57,13 @@ const MAX_TURNS_PER_AGENT: usize = 200;
 /// still letting a run of accidental closes be reopened one at a time. Oldest entries
 /// are dropped past the cap. Transient — the stack is never persisted across restart.
 const MAX_CLOSED_PANE_UNDO: usize = 25;
+
+/// Per-snapshot cap on the scrollback an undo entry keeps resident. A closed
+/// pane's durable log is deleted, so the snapshot is the only surviving copy and
+/// the `MAX_CLOSED_PANE_UNDO`-deep stack could otherwise pin ~25× the full log
+/// (up to the trim trigger each) in memory. The newest slice restores plenty of
+/// context on reopen; the rest is a convenience buffer not worth the RAM.
+const MAX_UNDO_SCROLLBACK_BYTES: usize = 1024 * 1024;
 
 /// Upper bound on pending turns queued for a single agent. This is a safety
 /// ceiling against unbounded growth (memory plus a larger `state.json` rewritten
@@ -4377,7 +4384,7 @@ impl AppState {
 
         snapshot.scrollback =
             match read_pane_scrollback(&self.inner.config.workspace_root, &snapshot.pane.id) {
-                Ok(bytes) => bytes,
+                Ok(bytes) => bounded_scrollback_tail(bytes, MAX_UNDO_SCROLLBACK_BYTES),
                 Err(err) => {
                     eprintln!(
                         "qmux: failed to capture scrollback for closed pane {}: {err}",
@@ -12191,6 +12198,33 @@ mod tests {
         assert_eq!(agent.queued_turns.len(), 1);
         assert_eq!(agent.queued_turns[0].text, "later");
         assert_eq!(agent.draft.as_deref(), Some("draft text"));
+    }
+
+    #[test]
+    fn capture_last_closed_pane_caps_large_scrollback() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.set_pane_layout(layout(&[("pane-1", 0)])).unwrap();
+        // Well past the undo cap so the snapshot must keep only the tail rather
+        // than pin the whole log. Line-delimited so the cut lands cleanly.
+        let line = b"scrollback line of terminal output\n";
+        let mut big = Vec::new();
+        while big.len() < MAX_UNDO_SCROLLBACK_BYTES + line.len() * 2 {
+            big.extend_from_slice(line);
+        }
+        append_pane_scrollback(&workspace, "pane-1", &big).unwrap();
+
+        state.capture_last_closed_pane("pane-1").unwrap();
+
+        let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+        assert!(
+            snapshot.scrollback.len() <= MAX_UNDO_SCROLLBACK_BYTES,
+            "undo snapshot must not pin the full log ({} bytes)",
+            snapshot.scrollback.len()
+        );
+        assert!(snapshot.scrollback.starts_with(line));
+        assert!(snapshot.scrollback.ends_with(line));
     }
 
     #[test]
