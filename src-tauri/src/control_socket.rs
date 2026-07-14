@@ -213,6 +213,16 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // status. Scoped to the authed pane like pane.set_cwd; any claimed paneId is
             // advisory, so the wrapper can only ever detach its own pane's agent.
             let detached = crate::workspace::detach_pane_agent(state, &authed_pane)?;
+            // The exited agent may have left its TUI's terminal modes active in
+            // the surviving shell's surface (kitty keyboard flags, mouse/focus
+            // reporting, the alternate screen) — this detach is the only moment
+            // the host learns the foreground program is gone, so clear them
+            // here. Best-effort: the detach itself already succeeded.
+            if detached.is_some()
+                && let Err(err) = crate::pty::reset_pane_terminal_modes(state, &authed_pane)
+            {
+                eprintln!("qmux: failed to reset terminal modes for pane {authed_pane}: {err}");
+            }
             Ok(json!({ "detached": detached.is_some() }))
         }
         "claude.prepare_shell_launch" => {

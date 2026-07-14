@@ -941,6 +941,35 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Clears terminal modes a program may have left active in a pane that
+/// outlives it. A shell-launched agent (`qmux agent-exec codex ...`) that is
+/// killed or crashes never restores what its TUI pushed — kitty keyboard
+/// flags, mouse/focus reporting, bracketed paste, the alternate screen — and
+/// the surviving shell's surface keeps all of it: the replay reset in
+/// `attach_pane` only runs when a fresh surface restores scrollback, never
+/// for a live one. Stuck kitty flags in particular turn later unclaimed
+/// command chords into CSI-u garbage at the prompt instead of inert
+/// fall-through. The bytes go to the pane's renderer, never the pty child
+/// (they are emulator state, not program input), and are also recorded in
+/// durable scrollback so an unterminated alternate-screen entry can't make
+/// trims and restores discard everything the shell prints afterwards.
+pub fn reset_pane_terminal_modes(state: &AppState, pane_id: &str) -> Result<(), String> {
+    // A pane that is already gone has no surface or log left to reset.
+    let Some(native_surface) = state.pane_is_native(pane_id)? else {
+        return Ok(());
+    };
+    record_scrollback(state, pane_id, RESTORED_SCROLLBACK_TERMINAL_RESET);
+    if native_surface {
+        crate::native_terminal::receive(pane_id, RESTORED_SCROLLBACK_TERMINAL_RESET, false)?;
+    } else {
+        state.emit(QmuxEvent::pty_data(
+            pane_id.to_string(),
+            RESTORED_SCROLLBACK_TERMINAL_RESET,
+        ));
+    }
+    Ok(())
+}
+
 /// Finishes an attach that `attach_pane` parked while the native surface still
 /// had its pre-layout default grid. Called from native callbacks (geometry
 /// commit, grid resize) that fire on the main thread, so it only touches the
@@ -1932,6 +1961,36 @@ mod tests {
         // replay sanitizer also strips both from history; this is the same
         // defense in depth the kitty reset above provides.
         assert!(RESTORED_SCROLLBACK_TERMINAL_RESET.starts_with(b"\x18\x1b>"));
+    }
+
+    #[test]
+    fn reset_pane_terminal_modes_records_the_reset_for_live_panes_only() {
+        let workspace = temp_workspace();
+        let state = test_state_with_workspace(workspace.clone());
+        let pane = spawn_test_pty(
+            &state,
+            "pane-mode-reset",
+            vec!["-c".to_string(), "sleep 30".to_string()],
+        );
+
+        // The pane was never attached, so the reader thread is still buffering
+        // (pre-attach output is not recorded): the reset is the only scrollback
+        // writer here and the log contents are exact, not racy.
+        reset_pane_terminal_modes(&state, &pane.id).unwrap();
+        assert_eq!(
+            read_pane_scrollback(&workspace, &pane.id).unwrap(),
+            RESTORED_SCROLLBACK_TERMINAL_RESET
+        );
+
+        // A pane that no longer exists is a quiet no-op — the detach that
+        // triggers the reset can race pane teardown — and must not mint a
+        // scrollback log for the dead pane id.
+        reset_pane_terminal_modes(&state, "pane-gone").unwrap();
+        assert!(read_pane_scrollback(&workspace, "pane-gone")
+            .unwrap()
+            .is_empty());
+
+        kill_pane(&state, pane.id).expect("cleanup test pane");
     }
 
     #[derive(Default)]
