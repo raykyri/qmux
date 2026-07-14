@@ -8,6 +8,11 @@ final class QmuxTerminalView: TerminalView {
     /// Offers a ⌘ chord to qmux's shortcut layer (the same Rust classifier the
     /// NativeTerminalHost key monitor uses). Returns true when qmux consumed it.
     var onAppShortcutKeyEquivalent: ((NSEvent) -> Bool)?
+    /// Whether this view may offer a chord to the qmux classifier even though
+    /// it is not first responder: the host answers true only for the explicit
+    /// keyboard owner while the actual responder cannot deliver keys to the
+    /// DOM (see performKeyEquivalent below).
+    var shouldOfferAppShortcutFallback: (() -> Bool)?
 
     override func paste(_: Any?) {
         onPasteRequest?()
@@ -24,16 +29,39 @@ final class QmuxTerminalView: TerminalView {
     // So before Ghostty gets a look, offer the chord to qmux's own shortcut
     // classifier. The first-responder guard mirrors upstream: AppKit walks the
     // whole view hierarchy for key equivalents, and a chord typed into a web
-    // dialog must not trigger terminal-scoped shortcuts.
+    // dialog must not trigger terminal-scoped shortcuts. The fallback extends
+    // the offer to the one desync the monitor cannot recover on its own — this
+    // pane is the explicit keyboard owner but re-asserting first responder
+    // failed, stranding the responder somewhere that can't take the chord —
+    // which previously ended in the catch-all as a consumed no-op.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == .keyDown,
-           window?.firstResponder === self,
            let onAppShortcutKeyEquivalent,
+           window?.firstResponder === self || shouldOfferAppShortcutFallback?() == true,
            onAppShortcutKeyEquivalent(event)
         {
             return true
         }
+        // System window-management chords must keep falling through to the
+        // app menu: Ghostty's catch-all would consume them for a focused
+        // terminal, so ⌘H (hide), ⌘⌥H (hide others), and ⌘M (minimize)
+        // simply died. Declining the key equivalent lets AppKit continue to
+        // the menu bar — the same reason ⌘C/⌘Q are deliberately left native
+        // in the shortcut monitor.
+        if event.type == .keyDown, Self.isSystemMenuChord(event) {
+            return false
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    private static func isSystemMenuChord(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        guard mods == .command || mods == [.command, .option],
+              let key = event.charactersIgnoringModifiers?.lowercased()
+        else {
+            return false
+        }
+        return key == "h" || key == "m"
     }
 
     /// Key codes whose *unmodified* character is already a control byte

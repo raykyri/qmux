@@ -13,4 +13,7 @@ to the override list in
 src-tauri/swift-terminal/Sources/QmuxNativeTerminal/NativeTerminalPane.swift.
 Note that unbinding alone is not enough to reclaim a chord for qmux;
 use QmuxTerminalView.performKeyEquivalent to offer Command chords to
-qmux classifiers before Ghostty can capture them.
+qmux classifiers before Ghostty can capture them. System
+window-management chords (Cmd-H hide, Cmd-Option-H hide others, Cmd-M
+minimize) are exempted in that override so they fall through to the
+app menu instead of dying in Ghostty's catch-all.

@@ -725,6 +725,18 @@ final class NativeTerminalHost {
         return event
     }
 
+    /// Whether `pane` may offer a monitor-missed ⌘ chord to the qmux
+    /// classifier from performKeyEquivalent despite not being first responder.
+    /// It must be the explicit keyboard owner — AppKit walks every view for
+    /// key equivalents, and only one pane's offer should count — and the
+    /// actual responder must be unable to deliver the chord to the DOM: a
+    /// chord typed into a healthy WebKit descendant (a web dialog, the
+    /// composer) belongs to the DOM's own handlers and exclusions.
+    func shouldOfferKeyEquivalentFallback(for pane: NativeTerminalPane) -> Bool {
+        guard keyboardOwnerPane === pane, let window else { return false }
+        return webAppShortcutResponderState(in: window) != .webViewDescendant
+    }
+
     /// Asks Rust to classify the chord into an exact qmux command. Returns true
     /// (and consumes the chord) only when a semantic command was emitted;
     /// everything else stays in the native responder chain for Ghostty/AppKit.

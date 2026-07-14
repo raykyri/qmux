@@ -225,6 +225,10 @@ final class NativeTerminalPane: NSObject,
             guard let self else { return false }
             return NativeTerminalHost.shared.claimAppShortcut(event, for: self)
         }
+        view.shouldOfferAppShortcutFallback = { [weak self] in
+            guard let self else { return false }
+            return NativeTerminalHost.shared.shouldOfferKeyEquivalentFallback(for: self)
+        }
     }
 
     func terminalDidClose(processAlive: Bool) {
