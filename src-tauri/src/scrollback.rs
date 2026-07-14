@@ -85,7 +85,10 @@ impl PaneLog {
                 .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?;
             self.file = Some(file);
         }
-        let file = self.file.as_mut().expect("scrollback handle was just opened");
+        let file = self
+            .file
+            .as_mut()
+            .expect("scrollback handle was just opened");
         file.write_all(chunk)
             .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
         // fstat on the open handle instead of a path stat: the post-append
@@ -116,7 +119,9 @@ fn pane_log(path: &Path) -> Arc<Mutex<PaneLog>> {
 /// file handle whose worst post-panic state is a partially appended chunk,
 /// which the next append and replay tolerate.
 fn lock_pane_log(entry: &Arc<Mutex<PaneLog>>) -> MutexGuard<'_, PaneLog> {
-    entry.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    entry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub fn read_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<Vec<u8>, String> {

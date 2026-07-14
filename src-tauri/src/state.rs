@@ -3823,8 +3823,7 @@ impl AppState {
             current_nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
             if current_workspace != expected.workspace
                 || current_trees != expected.trees
-                || (!expected.tree_order.is_empty()
-                    && current_tree_order != expected.tree_order)
+                || (!expected.tree_order.is_empty() && current_tree_order != expected.tree_order)
                 || current_nodes != expected.nodes
             {
                 return Err(
@@ -6484,12 +6483,9 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .get(pane_id)
-            .map(|pane| match &pane.backend {
-                PaneBackend::HostPty { writer, .. } => writer.clone(),
-            }))
+        Ok(model.panes.get(pane_id).map(|pane| match &pane.backend {
+            PaneBackend::HostPty { writer, .. } => writer.clone(),
+        }))
     }
 
     pub fn pane_master(&self, pane_id: &str) -> Result<Option<SharedMaster>, String> {
@@ -6498,12 +6494,9 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .get(pane_id)
-            .map(|pane| match &pane.backend {
-                PaneBackend::HostPty { master, .. } => master.clone(),
-            }))
+        Ok(model.panes.get(pane_id).map(|pane| match &pane.backend {
+            PaneBackend::HostPty { master, .. } => master.clone(),
+        }))
     }
 
     pub fn pane_child(&self, pane_id: &str) -> Result<Option<SharedChild>, String> {
@@ -6512,12 +6505,9 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .get(pane_id)
-            .map(|pane| match &pane.backend {
-                PaneBackend::HostPty { child, .. } => child.clone(),
-            }))
+        Ok(model.panes.get(pane_id).map(|pane| match &pane.backend {
+            PaneBackend::HostPty { child, .. } => child.clone(),
+        }))
     }
 
     /// Snapshots every live pane's id and child handle. Used by the app-exit
@@ -6556,12 +6546,9 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .panes
-            .get(pane_id)
-            .map(|pane| match &pane.backend {
-                PaneBackend::HostPty { backlog, .. } => backlog.clone(),
-            }))
+        Ok(model.panes.get(pane_id).map(|pane| match &pane.backend {
+            PaneBackend::HostPty { backlog, .. } => backlog.clone(),
+        }))
     }
 
     pub fn pane_is_native(&self, pane_id: &str) -> Result<Option<bool>, String> {
@@ -8257,7 +8244,10 @@ mod tests {
                 "activity does not overwrite manual order"
             );
             assert_eq!(
-                state.detached_research_archive(&group.id).unwrap().tree_order,
+                state
+                    .detached_research_archive(&group.id)
+                    .unwrap()
+                    .tree_order,
                 expected,
                 "folder archives preserve the custom order"
             );

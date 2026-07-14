@@ -973,10 +973,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis())
             .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{millis}-{seq}",
-            std::process::id(),
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("{prefix}-{}-{millis}-{seq}", std::process::id(),));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

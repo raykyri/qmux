@@ -955,10 +955,11 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 /// `attach_pane` only runs when a fresh surface restores scrollback, never
 /// for a live one. Stuck kitty flags in particular turn later unclaimed
 /// command chords into CSI-u garbage at the prompt instead of inert
-/// fall-through. The bytes go to the pane's renderer, never the pty child
-/// (they are emulator state, not program input), and are also recorded in
-/// durable scrollback so an unterminated alternate-screen entry can't make
-/// trims and restores discard everything the shell prints afterwards.
+/// fall-through. For native panes the bytes go to the renderer, never the pty
+/// child (they are emulator state, not program input), and they are always
+/// recorded in durable scrollback so an unterminated alternate-screen entry
+/// can't make trims and restores discard everything the shell prints
+/// afterwards.
 pub fn reset_pane_terminal_modes(state: &AppState, pane_id: &str) -> Result<(), String> {
     // A pane that is already gone has no surface or log left to reset.
     let Some(native_surface) = state.pane_is_native(pane_id)? else {
@@ -967,11 +968,6 @@ pub fn reset_pane_terminal_modes(state: &AppState, pane_id: &str) -> Result<(), 
     record_scrollback(state, pane_id, RESTORED_SCROLLBACK_TERMINAL_RESET);
     if native_surface {
         crate::native_terminal::receive(pane_id, RESTORED_SCROLLBACK_TERMINAL_RESET, false)?;
-    } else {
-        state.emit(QmuxEvent::pty_data(
-            pane_id.to_string(),
-            RESTORED_SCROLLBACK_TERMINAL_RESET,
-        ));
     }
     Ok(())
 }
@@ -2010,9 +2006,11 @@ mod tests {
         // triggers the reset can race pane teardown — and must not mint a
         // scrollback log for the dead pane id.
         reset_pane_terminal_modes(&state, "pane-gone").unwrap();
-        assert!(read_pane_scrollback(&workspace, "pane-gone")
-            .unwrap()
-            .is_empty());
+        assert!(
+            read_pane_scrollback(&workspace, "pane-gone")
+                .unwrap()
+                .is_empty()
+        );
 
         kill_pane(&state, pane.id).expect("cleanup test pane");
     }
