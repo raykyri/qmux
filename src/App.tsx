@@ -714,6 +714,33 @@ function unknownErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Recognizes the errors Apple Foundation Models raise when the on-device model
+// can't be used at all: Apple Intelligence disabled, the model still
+// downloading, an ineligible device, or qmux's own build/OS guards. These are
+// not transient — retrying on the next message just reproduces the same
+// failure — so the caller turns off title generation when one is seen. Returns a
+// short, user-facing reason clause, or null when the error is something else.
+function foundationModelsUnavailableReason(message: string): string | null {
+  const lower = message.toLowerCase();
+  if (lower.includes("appleintelligencenotenabled")) {
+    return "Apple Intelligence is turned off";
+  }
+  if (lower.includes("modelnotready")) {
+    return "the on-device model isn't ready yet";
+  }
+  if (lower.includes("devicenoteligible")) {
+    return "this Mac doesn't support Apple Intelligence";
+  }
+  if (
+    lower.includes("foundation models unavailable") ||
+    lower.includes("foundation models require macos") ||
+    lower.includes("foundation models are not available")
+  ) {
+    return "they're unavailable on this Mac";
+  }
+  return null;
+}
+
 function isShowHideShortcutCaptureTarget(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLElement &&
@@ -2347,6 +2374,30 @@ export default function App() {
     setRegeneratingTitlePaneIds(next);
   }
 
+  // When Apple Foundation Models report they're unavailable (Apple Intelligence
+  // off, model not ready, ineligible device), turn off automatic tab titles so
+  // the failure doesn't recur on every message, and return a friendly notice for
+  // the caller to surface. Returns null for any other provider or error, leaving
+  // the caller to report it as usual.
+  function noteFoundationTitleUnavailable(
+    titleConfig: FirstMessageTitleConfig,
+    message: string,
+  ): string | null {
+    if (titleConfig.provider !== "appleFoundationModels") {
+      return null;
+    }
+    const reason = foundationModelsUnavailableReason(message);
+    if (!reason) {
+      return null;
+    }
+    setSettings((current) =>
+      current.tabTitleProvider === "appleFoundationModels"
+        ? { ...current, tabTitleProvider: "disabled" }
+        : current,
+    );
+    return `Apple Foundation Models can't generate tab titles — ${reason}. Automatic tab titles are now off; re-enable them in Settings.`;
+  }
+
   async function testFirstMessageTitleGeneration() {
     const settingsSnapshot = settingsRef.current;
     const titleConfig = firstMessageTitleConfig(settingsSnapshot, configRef.current);
@@ -2393,8 +2444,16 @@ export default function App() {
         return;
       }
       const message = unknownErrorMessage(err);
-      setTitleGenerationTest({ status: "error", providerLabel, message });
-      showAppToast(`${providerLabel} title test failed: ${message}`, "warning");
+      const friendly = noteFoundationTitleUnavailable(titleConfig, message);
+      setTitleGenerationTest({
+        status: "error",
+        providerLabel,
+        message: friendly ?? message,
+      });
+      showAppToast(
+        friendly ?? `${providerLabel} title test failed: ${message}`,
+        "warning",
+      );
     }
   }
 
@@ -2425,10 +2484,10 @@ export default function App() {
     try {
       title = await generateFirstMessageTitle(sourceMessage, titleConfig);
     } catch (err) {
+      const message = unknownErrorMessage(err);
+      const friendly = noteFoundationTitleUnavailable(titleConfig, message);
       showAppToast(
-        `${firstMessageTitleProviderLabel(titleConfig)} title error: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        friendly ?? `${firstMessageTitleProviderLabel(titleConfig)} title error: ${message}`,
         "warning",
       );
       return;
@@ -2529,8 +2588,10 @@ export default function App() {
       );
       showAppToast(`Renamed tab: ${updated.title}`);
     } catch (err) {
+      const message = unknownErrorMessage(err);
+      const friendly = noteFoundationTitleUnavailable(titleConfig, message);
       showAppToast(
-        `${firstMessageTitleProviderLabel(titleConfig)} title error: ${unknownErrorMessage(err)}`,
+        friendly ?? `${firstMessageTitleProviderLabel(titleConfig)} title error: ${message}`,
         "warning",
       );
     } finally {
@@ -5434,7 +5495,10 @@ export default function App() {
     }
     try {
       return await generateFirstMessageTitle(sourceMessage, titleConfig);
-    } catch {
+    } catch (err) {
+      // Research titles fail silently, but a Foundation Models-unavailable error
+      // still warrants turning generation off so it doesn't recur every time.
+      noteFoundationTitleUnavailable(titleConfig, unknownErrorMessage(err));
       return null;
     }
   }, []);
