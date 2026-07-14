@@ -493,6 +493,18 @@ fn find_string_control_end(
     bel: u8,
     st: u8,
 ) -> Option<usize> {
+    // CAN and SUB abort any string/escape sequence in the VT parser, returning
+    // the stream to ground. Honoring them here is what keeps a *truncated*
+    // string control (an OSC/DCS a program emitted but never terminated before
+    // it was killed, or a raw ESC-] that landed in `cat`ed binary) from
+    // swallowing every byte after it: without an abort, an unterminated control
+    // scans to the next stray ST/BEL or to EOF, and at EOF the caller drops the
+    // entire remainder. Most consequentially, `RESTORED_SCROLLBACK_TERMINAL_RESET`
+    // opens with CAN precisely to cancel a sequence a dead TUI left dangling —
+    // so a sanitizer that ignored CAN would let a dangling control eat the reset
+    // and all the surviving shell's history behind it.
+    const CAN: u8 = 0x18;
+    const SUB: u8 = 0x1a;
     let mut index = start;
     while index < bytes.len() {
         if let Some((code, len)) = c1_control_at(bytes, index) {
@@ -502,10 +514,14 @@ fn find_string_control_end(
             index += len;
             continue;
         }
-        if allow_bel && bytes[index] == bel {
+        let byte = bytes[index];
+        if byte == CAN || byte == SUB {
             return Some(index + 1);
         }
-        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+        if allow_bel && byte == bel {
+            return Some(index + 1);
+        }
+        if byte == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
             return Some(index + 2);
         }
         index += valid_utf8_sequence_len(bytes, index).max(1);
@@ -782,6 +798,42 @@ mod tests {
         assert_eq!(
             sanitize_scrollback_replay(b"visible\r\n\x1b]0;unfinished"),
             b"visible\r\n"
+        );
+    }
+
+    // An OSC with no terminator must not swallow the output that follows it.
+    // CAN/SUB abort the sequence, so the bytes after the abort keep rendering
+    // instead of being lost from the very byte the truncated control opened.
+    #[test]
+    fn replay_sanitizer_aborts_unterminated_string_control_on_can_or_sub() {
+        assert_eq!(
+            sanitize_scrollback_replay(b"before\x1b]0;stuck title\x18after"),
+            b"beforeafter"
+        );
+        assert_eq!(
+            sanitize_scrollback_replay(b"before\x1bPstuck payload\x1aafter"),
+            b"beforeafter"
+        );
+    }
+
+    // A TUI killed mid-OSC leaves the log holding an unterminated control.
+    // `RESTORED_SCROLLBACK_TERMINAL_RESET` (recorded on agent exit) opens with a
+    // CAN (`\x18`) precisely to cancel such a dangling sequence, so the reset
+    // itself and the surviving shell's history behind it must not be eaten on
+    // replay. The leading `\x18` here mirrors that reset.
+    #[test]
+    fn replay_sanitizer_lets_a_leading_can_rescue_a_dangling_control() {
+        let input =
+            b"scrollback line\r\n\x1b]8;;https://example.com/never-closed\x18\x1b[0m$ prompt after restore\r\n";
+
+        let restored = sanitize_scrollback_replay(input);
+        assert!(
+            restored.starts_with(b"scrollback line\r\n"),
+            "pre-dangle history should survive, got {restored:?}"
+        );
+        assert!(
+            restored.ends_with(b"$ prompt after restore\r\n"),
+            "history behind the dangling OSC must not be swallowed, got {restored:?}"
         );
     }
 
