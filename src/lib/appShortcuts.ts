@@ -164,6 +164,115 @@ export function contextualizeAppShortcut(
   return command;
 }
 
+// Human-readable action phrases for the settings conflict warning.
+function appShortcutLabel(command: AppShortcutCommand): string {
+  switch (command.type) {
+    case "fontZoomIn":
+    case "fontZoomOut":
+    case "fontZoomReset":
+      return "adjust the terminal font size";
+    case "focusTab":
+    case "focusResearchTab":
+      return `focus tab ${command.tabIndex + 1}`;
+    case "homeOrCycleAdapter":
+      return "open the launcher";
+    case "openNewResearch":
+      return "start a new research";
+    case "focusHome":
+    case "focusResearchHome":
+      return "focus Home";
+    case "focusTerminalMode":
+      return "switch to terminal mode";
+    case "focusResearchMode":
+      return "switch to research mode";
+    case "toggleSidebarMode":
+      return "toggle terminal/research mode";
+    case "cyclePaneTab":
+    case "cycleAllTab":
+      return "cycle tabs";
+    case "moveSidebarItem":
+      return "move the active tab";
+    case "openSettings":
+      return "open settings";
+    case "openCommandPalette":
+      return "open the command palette";
+    case "toggleTranscriptOrBrowser":
+      return "toggle the transcript or browser";
+    case "splitPaneBelow":
+      return "split the terminal";
+    case "restoreClosedPane":
+      return "restore a closed tab";
+    case "closePane":
+      return "close the tab";
+    case "newGroup":
+      return "create a group";
+    case "newPane":
+      return "open a new tab";
+  }
+}
+
+// The backend stores the global show/hide chord in its display form
+// ("Shift+Command+A", "Command+`", "Option+Space"...). Map it onto the input
+// shape DOM keydowns produce so it can be checked against the in-app table.
+// Keys with no DOM equivalent (function keys, numpad, media keys) cannot
+// collide and return null.
+function acceleratorToShortcutInput(accelerator: string): AppShortcutInput | null {
+  const parts = accelerator.split("+").map((part) => part.trim());
+  const key = parts.pop();
+  if (!key) {
+    return null;
+  }
+  const modifiers = new Set(parts);
+  const namedKeys: Record<string, string> = {
+    Up: "arrowup",
+    Down: "arrowdown",
+    Left: "arrowleft",
+    Right: "arrowright",
+    Space: " ",
+    Enter: "enter",
+    Tab: "tab",
+    Escape: "escape",
+    Backspace: "backspace",
+    Delete: "delete",
+    Home: "home",
+    End: "end",
+    PageUp: "pageup",
+    PageDown: "pagedown",
+  };
+  const domKey = key.length === 1 ? key.toLowerCase() : namedKeys[key];
+  if (!domKey) {
+    return null;
+  }
+  return {
+    key: domKey,
+    code: domKey === "`" ? "Backquote" : undefined,
+    metaKey: modifiers.has("Command"),
+    ctrlKey: modifiers.has("Control"),
+    altKey: modifiers.has("Option"),
+    shiftKey: modifiers.has("Shift"),
+    terminalTarget: false,
+    editableTarget: false,
+  };
+}
+
+/**
+ * Names the in-app shortcut a system-wide show/hide accelerator would shadow,
+ * or null when there is no collision. An OS-registered hotkey consumes its
+ * chord before the app sees any key event, so a colliding registration
+ * silently disables the in-app command everywhere.
+ */
+export function showHideShortcutConflict(accelerator: string | null): string | null {
+  if (!accelerator) {
+    return null;
+  }
+  const input = acceleratorToShortcutInput(accelerator);
+  if (!input) {
+    return null;
+  }
+  const command = resolveAppShortcut(input);
+  return command ? appShortcutLabel(command) : null;
+}
+
 export function appShortcutAllowsRepeat(command: AppShortcutCommand): boolean {
   return (
     command.type === "fontZoomIn" ||

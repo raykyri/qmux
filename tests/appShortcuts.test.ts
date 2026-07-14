@@ -5,6 +5,7 @@ import {
   contextualizeAppShortcut,
   parseAppShortcutCommand,
   resolveAppShortcut,
+  showHideShortcutConflict,
   type AppShortcutInput,
 } from "../src/lib/appShortcuts";
 
@@ -211,4 +212,26 @@ test("parses semantic commands from native payloads", () => {
   assert.equal(parseAppShortcutCommand("launcherOrCycleAdapter", null), null);
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);
+});
+
+test("show/hide accelerator conflicts name the shadowed in-app shortcut", () => {
+  // Display-form accelerators come from the backend's shortcut normalizer.
+  assert.equal(
+    showHideShortcutConflict("Command+`"),
+    "toggle terminal/research mode",
+  );
+  assert.equal(showHideShortcutConflict("Command+T"), "open a new tab");
+  assert.equal(showHideShortcutConflict("Control+4"), "focus tab 4");
+  assert.equal(
+    showHideShortcutConflict("Shift+Command+["),
+    "cycle tabs",
+  );
+  // ⌘K only opens the palette for web targets, but a system-wide chord
+  // shadows that too.
+  assert.equal(showHideShortcutConflict("Command+K"), "open the command palette");
+  // Non-colliding and non-DOM chords stay quiet.
+  assert.equal(showHideShortcutConflict("Option+Space"), null);
+  assert.equal(showHideShortcutConflict("Shift+Command+A"), null);
+  assert.equal(showHideShortcutConflict("Command+F13"), null);
+  assert.equal(showHideShortcutConflict(null), null);
 });

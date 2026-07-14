@@ -110,6 +110,7 @@ import {
   appShortcutAllowsRepeat,
   contextualizeAppShortcut,
   resolveAppShortcut,
+  showHideShortcutConflict,
   type AppShortcutCommand,
 } from "./lib/appShortcuts";
 import { requestComposerInsert } from "./lib/promptLibrary";
@@ -1519,6 +1520,12 @@ export default function App() {
     !showHideShortcutSetting.captureActive
       ? "Shortcut is saved but not active."
       : null);
+  // A system-wide hotkey consumes its chord before the app sees any key event,
+  // so a registration that collides with an in-app shortcut silently disables
+  // that command everywhere. Warn, don't block: the collision may be wanted.
+  const showHideShortcutConflictLabel = showHideShortcutConflict(
+    showHideShortcutValue || null,
+  );
   const bodyFontFamily = bodyFontStackFor(settings.bodyFontId);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
@@ -10462,6 +10469,11 @@ export default function App() {
                 }`}
               >
                 {showHideShortcutSaving ? "Saving shortcut..." : showHideShortcutMessage}
+              </p>
+            ) : null}
+            {showHideShortcutConflictLabel ? (
+              <p className="settings-hint settings-shortcut-message">
+                {`qmux also uses this shortcut to ${showHideShortcutConflictLabel}; while registered system-wide, it will show/hide the app instead.`}
               </p>
             ) : null}
 
