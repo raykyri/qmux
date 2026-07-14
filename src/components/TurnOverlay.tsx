@@ -221,6 +221,21 @@ export default function TurnOverlay({
   // search highlight registry. See lib/transcriptSearch.ts.
   const searchOwnerRef = useRef<object>({});
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // WebKit does not reliably emit focusout when a focused element is removed
+  // with its subtree. If this overlay unmounts while its find input holds
+  // focus (pane close, transcript collapse), blur it while it is still
+  // attached — layout-effect cleanup runs before React detaches the node — so
+  // the app-level sampler clears webEditableFocused instead of leaving every
+  // terminal keyboard-dead until the next real focus event. Mirrors the same
+  // backstop on TerminalPane's find input.
+  useLayoutEffect(() => {
+    return () => {
+      const input = searchInputRef.current;
+      if (input && document.activeElement === input) {
+        input.blur();
+      }
+    };
+  }, []);
 
   const scrollToBottom = () => {
     const timeline = timelineRef.current;
