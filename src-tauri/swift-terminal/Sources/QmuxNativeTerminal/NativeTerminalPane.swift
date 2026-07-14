@@ -82,6 +82,14 @@ final class NativeTerminalPane: NSObject,
     let terminalSession: InMemoryTerminalSession
     var acceptsPointerInput = true
     var acceptsKeyboardInput = false
+    /// Whether a pointer gesture may optimistically grant this pane the
+    /// keyboard before React's layout update lands. False for panes whose
+    /// keyboard denial is a hard policy (read-only research panes, blocked
+    /// input) rather than a transient focus state: the pointer monitor's
+    /// click-to-focus claim flips `acceptsKeyboardInput` on directly, and
+    /// when the pane was already active no React state changes, so no
+    /// corrective layout would ever revoke a claim this flag forbids.
+    var acceptsKeyboardClaim = true
     var isFocused = false
     /// True once the view has been fitted to a real (nonzero) frame. Until
     /// then the surface still has its zero-frame default grid, and replaying

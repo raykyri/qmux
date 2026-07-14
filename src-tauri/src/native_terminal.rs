@@ -20,6 +20,11 @@ pub struct NativeTerminalLayout {
     pub focused: bool,
     pub accepts_pointer_input: bool,
     pub accepts_keyboard_input: bool,
+    /// Whether a pointer gesture may optimistically grant this pane the
+    /// keyboard before the next layout update. False when the keyboard denial
+    /// is hard policy (read-only research panes, blocked input) rather than a
+    /// transient focus state.
+    pub accepts_keyboard_claim: bool,
     pub defer_geometry: bool,
 }
 
@@ -276,6 +281,7 @@ mod imp {
             focused: i32,
             accepts_pointer_input: i32,
             accepts_keyboard_input: i32,
+            accepts_keyboard_claim: i32,
             defer_geometry: i32,
         ) -> i32;
         fn qmux_native_terminal_set_web_pointer_claimed(claimed: i32) -> i32;
@@ -474,6 +480,7 @@ mod imp {
                 i32::from(layout.focused),
                 i32::from(layout.accepts_pointer_input),
                 i32::from(layout.accepts_keyboard_input),
+                i32::from(layout.accepts_keyboard_claim),
                 i32::from(layout.defer_geometry),
             )
         };
@@ -1213,6 +1220,7 @@ mod tests {
             focused: true,
             accepts_pointer_input: true,
             accepts_keyboard_input: true,
+            accepts_keyboard_claim: true,
             defer_geometry: false,
         });
         assert_eq!(

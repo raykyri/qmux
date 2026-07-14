@@ -188,11 +188,13 @@ final class NativeTerminalHost {
         focused: Bool,
         acceptsPointerInput: Bool,
         acceptsKeyboardInput: Bool,
+        acceptsKeyboardClaim: Bool,
         deferGeometry: Bool
     ) -> Bool {
         guard let pane = panes[id] else { return false }
         pane.acceptsPointerInput = acceptsPointerInput
         pane.acceptsKeyboardInput = acceptsKeyboardInput
+        pane.acceptsKeyboardClaim = acceptsKeyboardClaim
         if !acceptsPointerInput, pointerCapturePane === pane {
             pointerCapturePane = nil
         }
@@ -543,6 +545,19 @@ final class NativeTerminalHost {
     }
 
     private func routeKeyEvent(_ event: NSEvent) -> NSEvent? {
+        // A fresh (non-repeat) keyDown proves this key was physically released
+        // since any earlier claim, so a lingering consumed-shortcut entry for
+        // its key code belongs to a keyUp that never reached this window (the
+        // window hid or lost key status mid-chord — e.g. the global show/hide
+        // shortcut). Left in place it would swallow THIS press's own release,
+        // which a kitty-keyboard-protocol TUI observes as a stuck key. The
+        // claim paths below re-insert when they consume this press.
+        if !event.isARepeat, event.window === window {
+            consumedAppShortcutKeyCodes.remove(event.keyCode)
+            for pane in panes.values {
+                pane.consumedShortcutKeyCodes.remove(event.keyCode)
+            }
+        }
         guard let pane = keyboardPane(for: event) else {
             if claimWebAppShortcut(event) {
                 return nil
@@ -790,8 +805,10 @@ final class NativeTerminalHost {
         // gesture so Ghostty never sees a dangling press or release.
         if isMiddleMouseEvent(event) {
             if event.type == .otherMouseDown {
-                pane.acceptsKeyboardInput = true
-                setKeyboardOwner(pane)
+                if pane.acceptsKeyboardClaim {
+                    pane.acceptsKeyboardInput = true
+                    setKeyboardOwner(pane)
+                }
                 pane.reportActivation()
                 pane.requestPaste()
             }
@@ -800,8 +817,17 @@ final class NativeTerminalHost {
 
         if isPointerDown(event) {
             pointerCapturePane = pane
-            pane.acceptsKeyboardInput = true
-            setKeyboardOwner(pane)
+            // Claiming the keyboard optimistically keeps the first keystroke
+            // after a click out of WKWebView, but only where React could ever
+            // agree: a hard-blocked pane (read-only research) gets pointer
+            // events for scrolling/selection while its keyboard stays wherever
+            // it was — otherwise this claim would persist with no corrective
+            // layout and feed keystrokes into a pane the app promises is
+            // read-only.
+            if pane.acceptsKeyboardClaim {
+                pane.acceptsKeyboardInput = true
+                setKeyboardOwner(pane)
+            }
         }
         forward(event, to: pane.view)
         if isPointerUp(event) {

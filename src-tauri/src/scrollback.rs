@@ -377,6 +377,14 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
                 index += 2;
                 continue;
             }
+            // DECKPAM/DECKPNM switch the keypad between application and
+            // numeric encoding — terminal mode, not rendering. A TUI that
+            // died with application keypad active must not re-latch it onto
+            // the fresh surface through replayed history.
+            if next == b'=' || next == b'>' {
+                index += 2;
+                continue;
+            }
             if alternate_screen {
                 index += 2;
                 continue;
@@ -658,6 +666,15 @@ mod tests {
         let input = b"before\x1b[uafter";
 
         assert_eq!(sanitize_scrollback_replay(input), input);
+    }
+
+    #[test]
+    fn replay_sanitizer_removes_keypad_mode_switches() {
+        // DECKPAM/DECKPNM are terminal mode, not rendering: a TUI that died
+        // with application keypad active must not re-latch it via replay.
+        let input = b"before\x1b=middle\x1b>after";
+
+        assert_eq!(sanitize_scrollback_replay(input), b"beforemiddleafter");
     }
 
     #[test]

@@ -7644,12 +7644,24 @@ export default function App() {
     window.addEventListener("focusout", schedule);
     window.addEventListener("blur", schedule);
     window.addEventListener("focus", bounceStolenFocus);
+    // Recovery backstop for editables that vanish on a path the explicit
+    // re-samples (pane membership, the known modals) don't cover: WebKit emits
+    // no focusout when a focused element's subtree is removed, so
+    // webEditableFocused can wedge true with focus back on <body>, leaving
+    // every terminal keyboard-dead. Keys and clicks only reach the DOM at all
+    // while the native surface doesn't own the keyboard, so re-sampling on
+    // them is cheap (rAF-coalesced, no-op state update) and heals any such
+    // wedge on the user's next keystroke or click, whatever overlay caused it.
+    window.addEventListener("keydown", schedule, true);
+    window.addEventListener("pointerdown", schedule, true);
     sample();
     return () => {
       window.removeEventListener("focusin", handleFocusIn);
       window.removeEventListener("focusout", schedule);
       window.removeEventListener("blur", schedule);
       window.removeEventListener("focus", bounceStolenFocus);
+      window.removeEventListener("keydown", schedule, true);
+      window.removeEventListener("pointerdown", schedule, true);
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
@@ -8291,7 +8303,18 @@ export default function App() {
 
     nativeTerminalShortcutHandlerRef.current = (paneId, command, repeat) => {
       if (activePaneRef.current?.id !== paneId) {
-        return;
+        // The native monitor already consumed this chord's keyDown (and will
+        // swallow its keyUp) on behalf of `paneId`, so dropping it here eats
+        // the keystroke entirely. A mismatch means React's activation state
+        // is still catching up to the surface that really owns the keyboard
+        // (click-then-chord on a split, right-click activation in flight):
+        // adopt the native side's authority — activate that pane, then run
+        // the command against it. setActivePaneId updates activePaneRef /
+        // activePaneIdRef synchronously, so executeShortcut below targets it.
+        if (!panesRef.current.some((pane) => pane.id === paneId)) {
+          return;
+        }
+        setActivePaneId(paneId);
       }
       executeShortcut(command, repeat);
     };

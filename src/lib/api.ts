@@ -571,6 +571,13 @@ export interface NativeTerminalLayout {
   focused: boolean;
   acceptsPointerInput: boolean;
   acceptsKeyboardInput: boolean;
+  /**
+   * Whether a pointer gesture may optimistically grant this pane the keyboard
+   * before the next layout update (native click-to-focus). False when the
+   * keyboard denial is hard policy — read-only research panes, blocked input —
+   * rather than a transient focus state like an active web editable.
+   */
+  acceptsKeyboardClaim: boolean;
   deferGeometry: boolean;
 }
 

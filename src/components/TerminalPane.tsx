@@ -345,6 +345,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         focused: ownsKeyboard,
         acceptsPointerInput: !inputBlocked && !searchOpen && !confirmOpen,
         acceptsKeyboardInput: ownsKeyboard,
+        // Unlike ownsKeyboard this ignores transient web focus states: a click
+        // may still claim the keyboard away from a composer, but never into a
+        // pane whose input is blocked by policy (read-only research panes).
+        acceptsKeyboardClaim: !inputBlocked && !readOnly,
         deferGeometry: deferGeometryUpdates,
       }).then(
         () => {
