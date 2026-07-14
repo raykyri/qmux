@@ -29,10 +29,10 @@ enum QmuxTerminalTheme {
 
     static let warmDefinition = GhosttyThemeDefinition(
         name: warmName,
-        background: "151515",
+        background: "161514",
         foreground: "e7e7e2",
         cursorColor: "f2d37b",
-        cursorText: "151515",
+        cursorText: "161514",
         selectionBackground: "3d4a52",
         selectionForeground: "f4f4ef"
     )

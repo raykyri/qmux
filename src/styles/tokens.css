@@ -212,19 +212,19 @@
 
 :root[data-color-theme="orange-blob"] {
   --left-pane-bg: #171716;
-  --terminal-pane-bg: #151515;
-  --right-pane-bg: #1b1c1c;
-  --right-pane-bg-transparent: rgba(27, 28, 28, 0);
-  --right-pane-active-bg: #1a1b1c;
+  --terminal-pane-bg: #161514;
+  --right-pane-bg: #1c1b1a;
+  --right-pane-bg-transparent: rgba(28, 27, 26, 0);
+  --right-pane-active-bg: #1b1a19;
 
-  --workspace-bg: #1b1c1c;
+  --workspace-bg: #1c1b1a;
   --research-workspace-bg: var(--right-pane-bg);
   --field-bg: #171615;
   --field-bg-hover: #1e1d1a;
   --panel-bg: var(--field-bg);
   --panel-highlight-bg: #27241f;
   --popover-bg: var(--field-bg);
-  --content-card-bg: #212220;
+  --content-card-bg: #222120;
   --content-inset-bg: #1d1c19;
   --context-menu-bg: #231f1b;
   --popover-item-hover-bg: #322e28;
@@ -233,7 +233,7 @@
   --transcript-code-bg: #171512;
   --transcript-code-header-bg: #12110f;
   --surface-divider: #2d2d2c;
-  --surface-border-strong: #363735;
+  --surface-border-strong: #373634;
   --dialog-border: #3f3c37;
   --chrome-control-bg: rgba(31, 29, 26, 0.9);
   --chrome-control-bg-hover: rgba(44, 40, 35, 0.95);
