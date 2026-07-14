@@ -32,6 +32,24 @@ const SUBMIT_KEY: &[u8] = b"\r";
 // It runs before the new process's buffered startup output, so an agent resumed
 // into the pane can still enable its desired live keyboard mode afterward.
 const RESTORED_SCROLLBACK_TERMINAL_RESET: &[u8] = b"\x18\x1b>\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?47l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1047l\x1b[?2004l\x1b[?2026l\x1b[>4;0m\x1b[=0u";
+// The subset of the reset that is safe to send to a *live* pane's surface —
+// one an exited agent left behind for the surviving shell — as opposed to a
+// fresh surface being rebuilt from scrollback. It clears only latched input
+// and reporting modes (keypad, cursor-key, mouse, focus, bracketed paste,
+// synchronized output, xterm modifyOtherKeys, and the Kitty keyboard flags)
+// plus cursor-position-neutral display state (SGR, ASCII charset, insert mode,
+// autowrap, reverse-wrap, cursor visibility). It deliberately omits every byte
+// in the full reset that can move the cursor or swap the screen buffer: the
+// leading CAN (`\x18`) and the alternate-screen exits (`\x1b[?47l`,
+// `\x1b[?1047l`). Those are correct when rebuilding a fresh surface — the
+// cursor is being reconstructed anyway and any historical alternate-screen
+// entry must be closed — but on a live surface the shell has already regained
+// control and is about to print its prompt at the current cursor; a screen
+// swap that does not restore the cursor (47/1047 never do) or a CAN landing
+// mid-sequence would strand that prompt at the wrong column. The durable log
+// still records the full reset (see `reset_pane_terminal_modes`) so a future
+// restore and any trim still close a mid-alternate-screen entry.
+const LIVE_PANE_TERMINAL_MODE_RESET: &[u8] = b"\x1b>\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?2026l\x1b[>4;0m\x1b[=0u";
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
 const DEFAULT_PTY_COLS: u16 = 100;
 const DEFAULT_PTY_ROWS: u16 = 24;
@@ -955,11 +973,22 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
 /// `attach_pane` only runs when a fresh surface restores scrollback, never
 /// for a live one. Stuck kitty flags in particular turn later unclaimed
 /// command chords into CSI-u garbage at the prompt instead of inert
-/// fall-through. For native panes the bytes go to the renderer, never the pty
-/// child (they are emulator state, not program input), and they are always
-/// recorded in durable scrollback so an unterminated alternate-screen entry
-/// can't make trims and restores discard everything the shell prints
-/// afterwards.
+/// fall-through.
+///
+/// The live surface and the durable log get *different* bytes. The surface —
+/// where the surviving shell is already about to draw its prompt at the
+/// current cursor — receives only `LIVE_PANE_TERMINAL_MODE_RESET`, the
+/// cursor-position-neutral subset: sending the full reset's alternate-screen
+/// exits (`\x1b[?47l`/`\x1b[?1047l`) into a live surface strands the shell
+/// prompt, because those never restore the cursor and, when the agent already
+/// exited its alternate screen cleanly (the common Ctrl-C case), needlessly
+/// perturb a cursor that was already correct. The durable log still records
+/// the *full* `RESTORED_SCROLLBACK_TERMINAL_RESET`: a later restore replays it
+/// into a fresh surface (where the cursor is rebuilt regardless), and a trim's
+/// sanitizer needs the alternate-screen exit to stop discarding everything the
+/// shell prints after a TUI that died mid-alternate-screen. The bytes go to
+/// the renderer, never the pty child — they are emulator state, not program
+/// input.
 pub fn reset_pane_terminal_modes(state: &AppState, pane_id: &str) -> Result<(), String> {
     // A pane that is already gone has no surface or log left to reset.
     let Some(native_surface) = state.pane_is_native(pane_id)? else {
@@ -967,7 +996,7 @@ pub fn reset_pane_terminal_modes(state: &AppState, pane_id: &str) -> Result<(), 
     };
     record_scrollback(state, pane_id, RESTORED_SCROLLBACK_TERMINAL_RESET);
     if native_surface {
-        crate::native_terminal::receive(pane_id, RESTORED_SCROLLBACK_TERMINAL_RESET, false)?;
+        crate::native_terminal::receive(pane_id, LIVE_PANE_TERMINAL_MODE_RESET, false)?;
     }
     Ok(())
 }
@@ -1948,6 +1977,12 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn windows_contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
     fn wait_for_test_child(child: &mut std::process::Child) -> bool {
         for _ in 0..50 {
             if child.try_wait().ok().flatten().is_some() {
@@ -1981,6 +2016,41 @@ mod tests {
         // replay sanitizer also strips both from history; this is the same
         // defense in depth the kitty reset above provides.
         assert!(RESTORED_SCROLLBACK_TERMINAL_RESET.starts_with(b"\x18\x1b>"));
+    }
+
+    #[test]
+    fn live_pane_reset_clears_input_modes_without_moving_the_cursor() {
+        // The live-surface reset still latches off the key-encoding modes that
+        // otherwise garble a surviving shell's prompt (Kitty flags and xterm
+        // modifyOtherKeys), and still turns the cursor back on.
+        assert!(LIVE_PANE_TERMINAL_MODE_RESET.ends_with(b"\x1b[>4;0m\x1b[=0u"));
+        assert!(windows_contains(
+            LIVE_PANE_TERMINAL_MODE_RESET,
+            b"\x1b[?25h"
+        ));
+
+        // But it must never move the cursor or swap the screen buffer on a
+        // live surface the shell is about to draw its prompt into: no leading
+        // CAN and no alternate-screen exits. Those stay in the full reset,
+        // which only ever rebuilds a fresh surface or is recorded for trims.
+        assert!(!LIVE_PANE_TERMINAL_MODE_RESET.starts_with(b"\x18"));
+        assert!(!windows_contains(
+            LIVE_PANE_TERMINAL_MODE_RESET,
+            b"\x1b[?47l"
+        ));
+        assert!(!windows_contains(
+            LIVE_PANE_TERMINAL_MODE_RESET,
+            b"\x1b[?1047l"
+        ));
+        assert!(!windows_contains(
+            LIVE_PANE_TERMINAL_MODE_RESET,
+            b"\x1b[?1049l"
+        ));
+        // The full reset keeps them — the two are otherwise the same reset.
+        assert!(windows_contains(
+            RESTORED_SCROLLBACK_TERMINAL_RESET,
+            b"\x1b[?1047l"
+        ));
     }
 
     #[test]
