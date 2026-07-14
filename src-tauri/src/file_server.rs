@@ -294,8 +294,13 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         let mut response = Response::new(200, "OK");
         response.header("Content-Type", "text/html; charset=utf-8");
         response.header("Content-Length", &page.len().to_string());
-        if let Some(csp) = &csp {
-            response.header("Content-Security-Policy", csp);
+        // Rendered Markdown never needs script, so serve it under a CSP with no
+        // `script-src` at all (it falls back to `default-src 'none'`). Raw HTML in the
+        // Markdown passes through the renderer verbatim, so a hostile file could embed
+        // `<script>`/`onerror` — dropping script execution entirely makes that inert
+        // instead of relying solely on the overlay's opaque-origin sandbox.
+        if let Some(port) = state.file_server_port() {
+            response.header("Content-Security-Policy", &markdown_page_csp(port));
         }
         if !is_head {
             response.body = page.into_bytes();
@@ -373,6 +378,28 @@ fn file_content_csp(port: u16) -> String {
     format!(
         "default-src 'none'; \
          script-src 'unsafe-inline' {origin}; \
+         style-src 'unsafe-inline' {origin}; \
+         img-src data: blob: {origin}; \
+         font-src data: {origin}; \
+         media-src blob: {origin}; \
+         connect-src 'none'; \
+         object-src 'none'; \
+         base-uri 'none'; \
+         form-action 'none'"
+    )
+}
+
+/// CSP for *rendered Markdown* pages. Identical to [`file_content_csp`] but with no
+/// `script-src` directive, so it falls back to `default-src 'none'` and blocks all
+/// script execution. The styled Markdown template carries only inline styles (allowed
+/// below) and no script, and raw HTML embedded in the source passes through the
+/// renderer verbatim — so omitting `script-src` turns any embedded `<script>` into
+/// inert markup, a second line of defense alongside the overlay's opaque-origin
+/// sandbox rather than the sole one.
+fn markdown_page_csp(port: u16) -> String {
+    let origin = format!("http://127.0.0.1:{port}");
+    format!(
+        "default-src 'none'; \
          style-src 'unsafe-inline' {origin}; \
          img-src data: blob: {origin}; \
          font-src data: {origin}; \
@@ -614,6 +641,23 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_page_csp_blocks_scripts() {
+        let csp = markdown_page_csp(12345);
+        // No script-src at all → falls back to default-src 'none', so an embedded
+        // <script> in a rendered Markdown file cannot execute.
+        assert!(
+            !csp.contains("script-src"),
+            "rendered markdown CSP must not grant script execution: {csp}"
+        );
+        assert!(csp.contains("default-src 'none'"), "{csp}");
+        assert!(csp.contains("style-src 'unsafe-inline'"), "{csp}");
+        assert!(csp.contains("connect-src 'none'"), "{csp}");
+        // The general file-content CSP, by contrast, still permits (contained) inline
+        // script for self-hosted reports.
+        assert!(file_content_csp(12345).contains("script-src 'unsafe-inline'"));
+    }
 
     #[test]
     fn loopback_host_header_accepts_loopback_and_rejects_remote() {

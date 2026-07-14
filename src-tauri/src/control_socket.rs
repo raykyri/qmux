@@ -349,12 +349,18 @@ fn validate_control_launch_workspace(state: &AppState, pane_id: &str) -> Result<
 /// stricter than a browser — it accepts only `localhost` and parsed loopback IPs,
 /// not oddball encodings a browser would still resolve to loopback — so it fails
 /// closed.
+///
+/// A backslash is treated as an authority terminator too. WHATWG special-scheme
+/// parsing (what WebKit and `new URL()` use) maps `\` to `/`, so without this a
+/// target like `http://evil.com\@127.0.0.1/` would be judged loopback here (host
+/// after the last `@` is `127.0.0.1`) while the webview resolves host `evil.com`.
+/// Splitting on `\` makes this gate agree with WebKit and reject the spoof.
 fn is_loopback_http_url(url: &str) -> bool {
     let Some((_scheme, rest)) = url.split_once("://") else {
         return false;
     };
-    // The authority ends at the first '/', '?' or '#'.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // The authority ends at the first '/', '\', '?' or '#'.
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or(rest);
     // Drop any userinfo: the host is whatever follows the last '@'.
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
     // Separate host from port, honoring the [ipv6]:port bracket form.
@@ -494,6 +500,15 @@ mod tests {
         assert!(!is_loopback_http_url("http://0.0.0.0/"));
         assert!(!is_loopback_http_url("http://2130706433/"));
         assert!(!is_loopback_http_url("not-a-url"));
+
+        // Backslash authority-terminator spoof: WebKit maps `\` to `/`, so the real
+        // host is `evil.com`. This must be rejected, matching the webview parser.
+        assert!(!is_loopback_http_url("http://evil.com\\@127.0.0.1/"));
+        assert!(!is_loopback_http_url("http://evil.com\\127.0.0.1/"));
+        assert!(!is_loopback_http_url("https://evil.com\\@localhost/app"));
+        // A genuine loopback host followed by a backslash path is still loopback
+        // (WebKit reads `http://127.0.0.1/@evil.com/`), so this stays allowed.
+        assert!(is_loopback_http_url("http://127.0.0.1\\@evil.com/"));
     }
 
     use crate::workspace::{AgentInfo, AgentStatus};

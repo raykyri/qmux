@@ -1210,8 +1210,37 @@ pub fn document_word_count(markdown: &str) -> usize {
 /// document limit. Checking both metadata and the limited stream handles a
 /// file that grows between inspection and reading (and avoids unbounded reads
 /// from special files).
+///
+/// The read is confined to the user's home directory (where imported documents
+/// live). This command is reachable only from the trusted webview, but confining
+/// it keeps a compromised renderer from repurposing it as a general file-read
+/// oracle: the path is canonicalized first, so a `foo.md` symlink pointing at a
+/// secret outside home is rejected by both the location and the (re-checked on the
+/// canonical target) extension test. If a legitimate import lives outside `$HOME`
+/// (a mounted volume, a system temp dir), it must be copied under home first — a
+/// deliberate trade of that edge case for closing the oracle.
 pub fn read_markdown_document_file(path: &Path) -> Result<String, String> {
-    let is_markdown = path
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
+        .ok_or_else(|| "cannot determine your home directory to validate the import".to_string())?;
+    read_markdown_document_file_within(path, &home)
+}
+
+/// Confinement-root-injectable core of [`read_markdown_document_file`], kept
+/// separate so tests can point `allowed_root` at a scratch directory. The path is
+/// canonicalized (resolving symlinks and `..`) before any check, so the extension,
+/// location, type, and size tests all apply to the real target rather than to a
+/// symlink whose name merely ends in `.md`.
+fn read_markdown_document_file_within(path: &Path, allowed_root: &Path) -> Result<String, String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|err| format!("failed to resolve {}: {err}", path.display()))?;
+    let root = fs::canonicalize(allowed_root).unwrap_or_else(|_| allowed_root.to_path_buf());
+    if !canonical.starts_with(&root) {
+        return Err("only Markdown files under your home directory can be imported".to_string());
+    }
+
+    let is_markdown = canonical
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -1221,10 +1250,10 @@ pub fn read_markdown_document_file(path: &Path) -> Result<String, String> {
         return Err("only .md and .markdown files can be imported".to_string());
     }
 
-    let metadata =
-        fs::metadata(path).map_err(|err| format!("failed to inspect {}: {err}", path.display()))?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|err| format!("failed to inspect {}: {err}", canonical.display()))?;
     if !metadata.is_file() {
-        return Err(format!("{} is not a regular file", path.display()));
+        return Err(format!("{} is not a regular file", canonical.display()));
     }
     if metadata.len() > MAX_RESEARCH_DOCUMENT_BYTES as u64 {
         return Err(format!(
@@ -1233,12 +1262,12 @@ pub fn read_markdown_document_file(path: &Path) -> Result<String, String> {
         ));
     }
 
-    let file =
-        fs::File::open(path).map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+    let file = fs::File::open(&canonical)
+        .map_err(|err| format!("failed to open {}: {err}", canonical.display()))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_RESEARCH_DOCUMENT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        .map_err(|err| format!("failed to read {}: {err}", canonical.display()))?;
     if bytes.len() > MAX_RESEARCH_DOCUMENT_BYTES {
         return Err(format!(
             "Markdown files are limited to {} MB",
@@ -1678,30 +1707,54 @@ mod tests {
     #[test]
     fn markdown_file_import_is_bounded_and_requires_utf8_markdown() {
         let folder = temp_workspace();
+        // The confinement root is injected as `folder` here (production uses $HOME).
         let markdown = folder.join("notes.MD");
         fs::write(&markdown, "# Imported\n\nBody").unwrap();
         assert_eq!(
-            read_markdown_document_file(&markdown).unwrap(),
+            read_markdown_document_file_within(&markdown, &folder).unwrap(),
             "# Imported\n\nBody"
         );
 
         let wrong_extension = folder.join("notes.txt");
         fs::write(&wrong_extension, "text").unwrap();
-        assert!(read_markdown_document_file(&wrong_extension).is_err());
+        assert!(read_markdown_document_file_within(&wrong_extension, &folder).is_err());
 
         let invalid_utf8 = folder.join("invalid.markdown");
         fs::write(&invalid_utf8, [0xff]).unwrap();
-        let error = read_markdown_document_file(&invalid_utf8).unwrap_err();
+        let error = read_markdown_document_file_within(&invalid_utf8, &folder).unwrap_err();
         assert!(error.contains("UTF-8"), "{error}");
 
         let oversized = folder.join("oversized.md");
         let file = fs::File::create(&oversized).unwrap();
         file.set_len(MAX_RESEARCH_DOCUMENT_BYTES as u64 + 1)
             .unwrap();
-        let error = read_markdown_document_file(&oversized).unwrap_err();
+        let error = read_markdown_document_file_within(&oversized, &folder).unwrap_err();
         assert!(error.contains("10 MB"), "{error}");
 
         fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn markdown_file_import_is_confined_to_the_allowed_root() {
+        let root = temp_workspace();
+        let outside = temp_workspace();
+
+        // A .md file outside the confinement root is refused even though it exists.
+        let external = outside.join("external.md");
+        fs::write(&external, "# outside").unwrap();
+        assert!(read_markdown_document_file_within(&external, &root).is_err());
+
+        // A .md symlink inside the root that points at a non-.md secret outside it is
+        // rejected: canonicalization resolves the link, so both the location and the
+        // extension checks see the real target, not the .md link name.
+        let secret = outside.join("secret.conf");
+        fs::write(&secret, "token=hunter2").unwrap();
+        let link = root.join("innocent.md");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        assert!(read_markdown_document_file_within(&link, &root).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

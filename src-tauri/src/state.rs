@@ -1052,28 +1052,54 @@ impl AppState {
     /// render another agent's private files. (Same-group panes intentionally share a
     /// group directory.)
     ///
-    /// A pane that isn't in the model falls back to the workspace root. This is inert for
-    /// real requests: no live file token resolves to an out-of-model pane
-    /// (`remove_pane` reclaims the token, and `pane_for_file_token` 404s a stale one
-    /// before roots are consulted), so the fallback only keeps a synthetic lookup from
-    /// returning nothing.
+    /// A pane that isn't in the model resolves to *zero* roots (fail closed), so the
+    /// file server rejects every request (`resolve_under_roots` → 403) rather than
+    /// serving the whole workspace tree. The documented invariant is that no live file
+    /// token resolves to an out-of-model pane (`remove_pane` reclaims the token, and
+    /// `pane_for_file_token` 404s a stale one before roots are consulted), so failing
+    /// closed here costs nothing real while removing a fail-open widening that would
+    /// otherwise expose every group's directory, all transcripts, and
+    /// `.qmux/{state,preferences}.json` (the plaintext OpenRouter key) if that invariant
+    /// were ever broken by a spawn/teardown race or a poisoned lock.
     pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
-        if let Ok(model) = self.inner.model.lock()
-            && let Some(pane) = model.panes.get(pane_id)
-        {
+        // Recover a poisoned lock, matching the sibling token accessors
+        // (`pane_token`/`pane_for_token`/…). Using `if let Ok(model)` here would fail
+        // *open* to the whole workspace after any unrelated panic that held this lock;
+        // recover instead so the per-pane scoping below still applies.
+        let model = self
+            .inner
+            .model
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(pane) = model.panes.get(pane_id) {
             let mut roots = Vec::new();
-            if let Some(group) = model.groups.get(&pane.info.group_id) {
-                roots.push(std::path::PathBuf::from(&group.dir));
+            let group_dir = model
+                .groups
+                .get(&pane.info.group_id)
+                .map(|group| std::path::PathBuf::from(&group.dir));
+            if let Some(group_dir) = &group_dir {
+                roots.push(group_dir.clone());
             }
-            // Serve the pane's cwd so `qmux open ./file` resolves — but never when the cwd
-            // is the workspace root or an ancestor of it. `pane.set_cwd` accepts any
-            // existing absolute directory (a pane legitimately runs in arbitrary project
-            // dirs), so a pane that cd'd to `/`, `~`, or the workspace itself would
-            // otherwise widen its own file token to serve every other group's directory,
-            // all transcripts, and .qmux/state.json. The group dir and worktree (both
-            // inside a single group's area) stay served regardless.
+            // Serve the pane's cwd so `qmux open ./file` resolves — but keep it from
+            // widening the pane's scope past its own working area. `pane.set_cwd`
+            // accepts any existing absolute directory (a pane legitimately runs in
+            // arbitrary project dirs), so constrain what becomes a servable root:
+            //  - never at or above the workspace root (`/`, `~`, or the workspace
+            //    itself would expose every group's directory, all transcripts, and
+            //    `.qmux/{state,preferences}.json`), and
+            //  - never a *sibling group's* subtree. A cwd that lives *inside* the
+            //    workspace root is only served when it is under this pane's own group
+            //    dir; legitimate external project dirs live outside the workspace root
+            //    and stay served. The group dir and agent worktree are served
+            //    unconditionally above.
             let cwd = std::path::PathBuf::from(&pane.info.cwd);
-            if !path_is_ancestor_or_equal(&cwd, &self.inner.config.workspace_root) {
+            let workspace_root = &self.inner.config.workspace_root;
+            let cwd_at_or_above_workspace = path_is_ancestor_or_equal(&cwd, workspace_root);
+            let cwd_inside_workspace = path_is_ancestor_or_equal(workspace_root, &cwd);
+            let cwd_under_own_group = group_dir
+                .as_deref()
+                .is_some_and(|group_dir| path_is_ancestor_or_equal(group_dir, &cwd));
+            if !cwd_at_or_above_workspace && (!cwd_inside_workspace || cwd_under_own_group) {
                 roots.push(cwd);
             }
             for agent in model.agents.values() {
@@ -1083,7 +1109,7 @@ impl AppState {
             }
             return roots;
         }
-        vec![self.inner.config.workspace_root.clone()]
+        Vec::new()
     }
 
     pub fn config(&self) -> &QmuxConfig {
@@ -12651,6 +12677,52 @@ mod tests {
             !roots.iter().any(|r| {
                 std::fs::canonicalize(r).ok() == std::fs::canonicalize(&workspace).ok()
             })
+        );
+    }
+
+    #[test]
+    fn pane_file_roots_are_empty_for_an_out_of_model_pane() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        // No pane inserted: pane_file_roots must fail *closed* (zero roots) rather than
+        // fall back to serving the whole workspace root, so a token that ever resolves
+        // to an out-of-model pane (spawn/teardown race, poisoned lock) reads nothing.
+        assert!(state.pane_file_roots("ghost-pane").is_empty());
+    }
+
+    #[test]
+    fn pane_file_roots_exclude_a_sibling_group_cwd() {
+        let workspace = temp_workspace();
+        let group1_dir = workspace.join("group-1");
+        let group2_dir = workspace.join("group-2");
+        std::fs::create_dir_all(&group1_dir).unwrap();
+        std::fs::create_dir_all(&group2_dir).unwrap();
+
+        let state = AppState::new(test_config(workspace));
+        let mut group1 = sample_group_with_id("group-1");
+        group1.dir = group1_dir.display().to_string();
+        let mut group2 = sample_group_with_id("group-2");
+        group2.dir = group2_dir.display().to_string();
+        state.insert_group_after(group1, None).unwrap();
+        state.insert_group_after(group2, None).unwrap();
+
+        // pane-1 belongs to group-1 (sample_pane default group_id).
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        // A pane cd'ing into a *sibling* group's directory (a descendant of the
+        // workspace root) must not turn its file token into a servable root over that
+        // group's files — only its own group dir is served for in-workspace cwds.
+        state
+            .update_pane_cwd("pane-1", group2_dir.display().to_string())
+            .unwrap();
+
+        let roots = state.pane_file_roots("pane-1");
+        assert!(
+            roots.iter().any(|r| r == group1_dir.as_path()),
+            "the pane's own group dir should be served: {roots:?}"
+        );
+        assert!(
+            !roots.iter().any(|r| r == group2_dir.as_path()),
+            "a sibling group's dir must never be served: {roots:?}"
         );
     }
 

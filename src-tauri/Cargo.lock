@@ -2931,6 +2931,7 @@ dependencies = [
  "names",
  "portable-pty",
  "pulldown-cmark",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
