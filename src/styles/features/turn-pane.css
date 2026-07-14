@@ -263,13 +263,19 @@
   gap: 6px;
 }
 
-/* Shared by the fork, queue split, browser, and transcript buttons. */
+/* Shared by the prompt-library, fork, queue split, browser, transcript, and
+   collapse buttons. Some also carry .control-button, whose min-height (30px) and
+   horizontal padding would otherwise leak in and make those buttons taller than
+   the plain .icon-button ones; neutralizing both here keeps all header buttons a
+   uniform 28px square with the icon centered. */
 .turn-pane-header-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
+  min-height: 0;
+  padding: 0;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--chrome-control-bg);
