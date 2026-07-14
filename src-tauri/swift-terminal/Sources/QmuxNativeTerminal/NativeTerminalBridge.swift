@@ -161,6 +161,13 @@ public func qmuxNativeTerminalSetWebOverlayRegion(
     }
 }
 
+@_cdecl("qmux_native_terminal_set_iframe_shortcut_fallback")
+public func qmuxNativeTerminalSetIframeShortcutFallback(_ active: Int32) -> Int32 {
+    onTerminalMain {
+        NativeTerminalHost.shared.setIframeShortcutFallback(active == 1) ? 1 : 0
+    }
+}
+
 @_cdecl("qmux_native_terminal_focus")
 public func qmuxNativeTerminalFocus(_ paneID: UnsafePointer<CChar>?) -> Int32 {
     guard let paneID = terminalString(paneID) else { return 0 }

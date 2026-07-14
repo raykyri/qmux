@@ -45,6 +45,12 @@ final class NativeTerminalHost {
     /// small controls floating over the terminal, like the right-bar restore
     /// button. Unlike a web pointer claim, the rest of the terminal stays live.
     private var webOverlayRegions: [String: CGRect] = [:]
+    /// True while the frontend reports DOM focus inside a cross-document
+    /// iframe (the browser overlay's page). Keys typed there are delivered to
+    /// the framed document only — the host document's window-level shortcut
+    /// handlers never fire — so the key monitor must claim recognized ⌘ app
+    /// shortcuts itself or they die inside the frame.
+    private var iframeShortcutFallbackActive = false
     private var windowLiveResizeActive = false
     private var clientDeferredGeometryPaneIDs: Set<String> = []
     private var pendingPaneFrames: [String: CGRect] = [:]
@@ -319,6 +325,12 @@ final class NativeTerminalHost {
         return true
     }
 
+    func setIframeShortcutFallback(_ active: Bool) -> Bool {
+        guard container != nil else { return false }
+        iframeShortcutFallbackActive = active
+        return true
+    }
+
     func sendText(id: String, text: String) -> Bool {
         guard let pane = panes[id] else { return false }
         // Report a dead/not-yet-created surface as failure: the surface only
@@ -398,6 +410,7 @@ final class NativeTerminalHost {
         webPointerClaimClearsOnPointerUp = false
         webGesturePointerActive = false
         webOverlayRegions.removeAll()
+        iframeShortcutFallbackActive = false
         for pane in panes.values {
             pane.view.removeFromSuperview()
         }
@@ -629,7 +642,13 @@ final class NativeTerminalHost {
               event.window === window,
               shouldClaimWebAppShortcut(
                   hasTerminalKeyboardOwner: keyboardOwnerPane != nil,
-                  responderState: webAppShortcutResponderState(in: window)
+                  responderState: webAppShortcutResponderState(in: window),
+                  // Only ⌘ chords are pulled out of a focused iframe; option
+                  // and bare-control chords (word navigation, readline-style
+                  // editing) stay with the framed page, mirroring how the DOM
+                  // classifier defers those to editable targets.
+                  iframeFallbackEligible: iframeShortcutFallbackActive
+                      && event.modifierFlags.contains(.command)
               ),
               let shortcutKey = appShortcutKey(for: event)
         else {

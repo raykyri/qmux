@@ -2,7 +2,10 @@ import { ExternalLink, RotateCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { BrowserOverlaySize } from "../appTypes";
-import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
+import {
+  claimNativeTerminalPointerForWebDrag,
+  setNativeTerminalIframeShortcutFallback,
+} from "../lib/api";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
 const MIN_BROWSER_OVERLAY_HEIGHT = 240;
@@ -62,11 +65,63 @@ export default function BrowserOverlay({
   const [draft, setDraft] = useState(url ?? "");
   const [resizing, setResizing] = useState(false);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const cleanupResizeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     setDraft(url ?? "");
   }, [url]);
+
+  // Keys typed into the framed page belong to its document: the host
+  // document's window-level shortcut handlers never fire, and the native key
+  // monitor deliberately leaves keys to a healthy WKWebView responder — so
+  // every app shortcut (⌘-backtick, the ⌘⇧E toggle that closes this overlay…)
+  // goes dead the moment a click lands inside the frame. Report frame focus
+  // to the native layer so the monitor claims ⌘ chords for qmux while it
+  // holds. Focus crossing into an iframe blurs the host window (its browsing
+  // context loses focus) and leaves activeElement on the frame element, so
+  // sample on window focus transitions — the framed document never forwards
+  // focusin/focusout to this one. The rAF matches the app-level samplers:
+  // activeElement settles after the event.
+  useEffect(() => {
+    if (!url) {
+      return;
+    }
+    let frame: number | null = null;
+    let reported = false;
+    const report = (active: boolean) => {
+      if (active === reported) {
+        return;
+      }
+      reported = active;
+      void setNativeTerminalIframeShortcutFallback(active).catch(() => undefined);
+    };
+    const sample = () => {
+      frame = null;
+      report(frameRef.current !== null && document.activeElement === frameRef.current);
+    };
+    const schedule = () => {
+      if (frame === null) {
+        frame = requestAnimationFrame(sample);
+      }
+    };
+    window.addEventListener("blur", schedule);
+    window.addEventListener("focus", schedule);
+    window.addEventListener("focusin", schedule);
+    schedule();
+    return () => {
+      window.removeEventListener("blur", schedule);
+      window.removeEventListener("focus", schedule);
+      window.removeEventListener("focusin", schedule);
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+      }
+      // The frame is unmounting (overlay closed, or remounted by the reload
+      // key); WebKit fires no focus event for a removed element, so release
+      // the claim explicitly instead of leaving it wedged on.
+      report(false);
+    };
+  }, [url, reloadNonce]);
 
   useEffect(() => {
     return () => {
@@ -233,6 +288,7 @@ export default function BrowserOverlay({
         {url ? (
           <iframe
             key={`${url}::${reloadNonce}`}
+            ref={frameRef}
             className={`browser-overlay-frame${sandbox ? " is-file-content" : ""}`}
             src={url}
             title="Browser overlay"
