@@ -174,6 +174,20 @@ final class NativeTerminalPane: NSObject,
                 "super+zero",  // reset_font_size
                 "ctrl+tab",  // next_tab — qmux: cycle pane tab
                 "ctrl+shift+tab",  // previous_tab
+                "super+shift+left_bracket",  // previous_tab — qmux: cycle all tabs
+                "super+shift+right_bracket",  // next_tab — qmux: cycle all tabs
+                // goto_tab 1-8 and last_tab — qmux: focus tab N. Ghostty's
+                // defaults bind the digits by physical key, so the unbind
+                // trigger must match that form exactly.
+                "super+physical:one",
+                "super+physical:two",
+                "super+physical:three",
+                "super+physical:four",
+                "super+physical:five",
+                "super+physical:six",
+                "super+physical:seven",
+                "super+physical:eight",
+                "super+physical:nine",
                 // No Ghostty default action today, but qmux's terminal/research
                 // mode toggle — keep any future Ghostty binding from claiming
                 // it. Note unbinding alone can NOT reclaim a chord Ghostty has
