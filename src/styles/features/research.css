@@ -647,7 +647,7 @@
   width: min(100%, 1160px);
   min-width: 0;
   margin: 0 auto;
-  --research-main-content-max-width: 780px;
+  --research-main-content-max-width: 640px;
   --research-content-column-gap: clamp(28px, 4vw, 52px);
   --research-answer-font-delta: 0.5px;
   /* Shared scale for secondary document text. The question and answer use the
@@ -695,6 +695,15 @@
 
 .research-response {
   min-width: 0;
+  /* Cap the answer column directly rather than trusting the grid track's max.
+     The Tauri webview (WebKit) does not reliably honor a var()-driven max
+     inside grid-template-columns' minmax(), so the answer could grow to its
+     content width and shove the follow-up column off the right edge. max-width
+     with a custom property resolves reliably (the pattern .research-prompt
+     already relies on); and because a grid item's max-content contribution is
+     clamped by its own max-width, this also keeps the answer track itself from
+     overrunning even where the track's max is dropped. */
+  max-width: var(--research-main-content-max-width);
 }
 
 .research-response-content-root {
@@ -705,6 +714,13 @@
   flex-direction: column;
   gap: 9px;
   line-height: calc(1.5 + var(--transcript-line-height-delta));
+  /* A long token without spaces (a URL, hash, or path) would otherwise set a
+     min-content width wider than the column cap and force horizontal overflow.
+     Break anywhere so any non-markdown response content wraps; the specific
+     overrides for tables (break-word) and code blocks (scroll) still win by
+     specificity. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 ::highlight(qmux-research-highlights) {
