@@ -341,7 +341,13 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
                 // Window manipulation includes resize and state queries. It
                 // can call back into the host instead of merely drawing.
                 || csi.final_byte == b't'
-                || (csi.final_byte == b'p' && csi.intermediates.as_slice() == b"$");
+                || (csi.final_byte == b'p' && csi.intermediates.as_slice() == b"$")
+                // XTMODKEYS (CSI > ... m) changes key encoding — terminal
+                // mode, not rendering — and XTQMODKEYS (CSI ? ... m) is a
+                // query whose replay would write a reply into the fresh
+                // PTY's input stream. Plain SGR (no prefix) stays.
+                || (csi.final_byte == b'm'
+                    && matches!(csi.parameter_prefix, Some(b'>' | b'?')));
             if !discard {
                 output.extend_from_slice(&bytes[index..=end]);
             }
@@ -666,6 +672,17 @@ mod tests {
         let input = b"before\x1b[uafter";
 
         assert_eq!(sanitize_scrollback_replay(input), input);
+    }
+
+    #[test]
+    fn replay_sanitizer_removes_modify_other_keys_controls_and_queries() {
+        // XTMODKEYS set/reset and the XTQMODKEYS query; plain SGR survives.
+        let input = b"before\x1b[>4;2m\x1b[>4m\x1b[?4m\x1b[1;32mok\x1b[0mafter";
+
+        assert_eq!(
+            sanitize_scrollback_replay(input),
+            b"before\x1b[1;32mok\x1b[0mafter"
+        );
     }
 
     #[test]

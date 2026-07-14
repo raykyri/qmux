@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::events::QmuxEvent;
@@ -7,6 +8,21 @@ use crate::state::AppState;
 static APP_STATE: OnceLock<Mutex<Option<AppState>>> = OnceLock::new();
 static REPLAYING_PANES: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+/// Whether the webview's qmux-event listener is live. The native shortcut
+/// classifiers report a chord as "handled" — which makes Swift consume its
+/// keyDown and keyUp — purely by emitting an event; while no listener exists
+/// (startup, a page reload) that emit is dropped by Tauri and the chord would
+/// be consumed and then do nothing. Set by the frontend once its subscription
+/// resolves, cleared whenever the webview starts loading a page.
+static EVENTS_LISTENER_READY: AtomicBool = AtomicBool::new(false);
+
+pub fn set_events_listener_ready(ready: bool) {
+    EVENTS_LISTENER_READY.store(ready, Ordering::Release);
+}
+
+fn events_listener_ready() -> bool {
+    EVENTS_LISTENER_READY.load(Ordering::Acquire)
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1010,6 +1026,13 @@ pub extern "C" fn qmux_native_terminal_did_receive_shortcut(
     let (Some(pane_id), Some(key)) = (callback_string(pane_id), callback_string(key)) else {
         return 0;
     };
+    // Claiming a chord is a promise the frontend will execute it. Without a
+    // live event listener the emit below is dropped, so decline instead —
+    // the chord stays in the native responder chain rather than being
+    // consumed into nothing.
+    if !events_listener_ready() {
+        return 0;
+    }
     let Some(shortcut) =
         classify_app_shortcut(&key, shift == 1, control == 1, option == 1, command == 1)
     else {
@@ -1048,6 +1071,11 @@ pub extern "C" fn qmux_native_terminal_did_receive_app_shortcut(
     let Some(key) = callback_string(key) else {
         return 0;
     };
+    // Same delivery gate as the terminal-scoped classifier above: never
+    // consume a chord the frontend cannot receive.
+    if !events_listener_ready() {
+        return 0;
+    }
     let Some(shortcut) =
         classify_web_app_shortcut(&key, shift == 1, control == 1, option == 1, command == 1)
     else {

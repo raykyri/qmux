@@ -31,7 +31,7 @@ const SUBMIT_KEY: &[u8] = b"\r";
 // against an unrecognized keyboard-protocol form reaching the fresh surface.
 // It runs before the new process's buffered startup output, so an agent resumed
 // into the pane can still enable its desired live keyboard mode afterward.
-const RESTORED_SCROLLBACK_TERMINAL_RESET: &[u8] = b"\x18\x1b>\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?47l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1047l\x1b[?2004l\x1b[?2026l\x1b[=0u";
+const RESTORED_SCROLLBACK_TERMINAL_RESET: &[u8] = b"\x18\x1b>\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?47l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1047l\x1b[?2004l\x1b[?2026l\x1b[>4;0m\x1b[=0u";
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
 const DEFAULT_PTY_COLS: u16 = 100;
 const DEFAULT_PTY_ROWS: u16 = 24;
@@ -1952,7 +1952,8 @@ mod tests {
 
     #[test]
     fn restored_scrollback_reset_clears_kitty_keyboard_flags() {
-        assert!(RESTORED_SCROLLBACK_TERMINAL_RESET.ends_with(b"\x1b[=0u"));
+        // ... and xterm modifyOtherKeys, the other latched key-encoding mode.
+        assert!(RESTORED_SCROLLBACK_TERMINAL_RESET.ends_with(b"\x1b[>4;0m\x1b[=0u"));
     }
 
     #[test]

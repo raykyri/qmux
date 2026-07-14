@@ -782,3 +782,13 @@ export function setPreventSleep(active: boolean) {
 export function listenToEvents(onEvent: (event: QmuxEvent) => void): Promise<UnlistenFn> {
   return listen<QmuxEvent>("qmux-event", (event) => onEvent(event.payload));
 }
+
+/**
+ * Tells the backend the qmux-event subscription is live. Until then the native
+ * shortcut classifiers decline to consume chords, since the events they emit
+ * would be dropped with nobody listening. The backend clears the flag itself
+ * on every page navigation.
+ */
+export function markEventsListenerReady() {
+  return invoke<void>("mark_events_listener_ready");
+}

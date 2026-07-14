@@ -1392,6 +1392,29 @@ fn pane_attach(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(),
     attach_pane(&state, pane_id)
 }
 
+/// Marks the webview's qmux-event listener as live. Until this arrives (and
+/// again after any page navigation clears it, see `on_page_load` below), the
+/// native shortcut classifiers decline to consume chords: their events would
+/// be dropped by Tauri with nobody subscribed, turning consumed keystrokes
+/// into nothing.
+#[tauri::command]
+fn mark_events_listener_ready() {
+    native_terminal::set_events_listener_ready(true);
+}
+
+/// User-invoked escape hatch (pane context menu) for a terminal a crashed or
+/// killed TUI left in a broken state: clears latched modes — kitty keyboard
+/// flags, mouse/focus reporting, the alternate screen — without touching the
+/// running process or the visible content. Async like the other pane commands
+/// that take the scrollback I/O lock.
+#[tauri::command(async)]
+fn pane_reset_terminal_modes(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+) -> Result<(), String> {
+    pty::reset_pane_terminal_modes(&state, &pane_id)
+}
+
 #[tauri::command]
 fn pane_resize(
     state: tauri::State<'_, AppState>,
@@ -1757,6 +1780,15 @@ fn main() {
             }
         })
         .on_menu_event(handle_app_menu_event)
+        // A page navigation (reload, dev HMR full-reload) tears down the old
+        // document's qmux-event listener; clear the readiness flag so native
+        // shortcut classifiers stop consuming chords until the new document
+        // re-subscribes and calls mark_events_listener_ready again.
+        .on_page_load(|_, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                native_terminal::set_events_listener_ready(false);
+            }
+        })
         .setup({
             let state = state.clone();
             move |app| {
@@ -1938,6 +1970,8 @@ fn main() {
             agent_fork,
             pane_write,
             pane_attach,
+            pane_reset_terminal_modes,
+            mark_events_listener_ready,
             pane_resize,
             pane_activity,
             pane_kill,

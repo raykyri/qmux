@@ -7,6 +7,7 @@ import {
   listPanes,
   listThreadGraphs,
   listenToEvents,
+  markEventsListenerReady,
 } from "../lib/api";
 import {
   isAgentInfo,
@@ -585,6 +586,9 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         cleanup();
       } else {
         unlisten = cleanup;
+        // Unblock the native shortcut classifiers: from here on an emitted
+        // terminal.shortcut / app.shortcut event actually reaches this hook.
+        void markEventsListenerReady().catch(() => undefined);
         onEventsReady();
       }
     });

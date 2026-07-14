@@ -7739,24 +7739,110 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [modalEditorOpen]);
 
+  // Live snapshot of the app-level overlay state for the Escape dispatcher
+  // below, which is registered exactly once. Mirrored every render, read only
+  // at event time.
+  const escapeOverlayStateRef = useRef({
+    paneContextMenu,
+    groupMenu,
+    settingsMenu,
+    closeDialog,
+    exitDialog,
+    renamePaneId,
+    renameGroupId,
+    resolvingClose,
+    quitting,
+    settingsOpen,
+    error,
+  });
+  useEffect(() => {
+    escapeOverlayStateRef.current = {
+      paneContextMenu,
+      groupMenu,
+      settingsMenu,
+      closeDialog,
+      exitDialog,
+      renamePaneId,
+      renameGroupId,
+      resolvingClose,
+      quitting,
+      settingsOpen,
+      error,
+    };
+  });
+
+  // One capture-phase listener dispatches Escape across the app-level
+  // overlays in a fixed order. These used to be independent window listeners
+  // whose effects re-registered when their deps changed, so their relative
+  // position in the same-target capture order silently followed registration
+  // history; state lives in the ref above so this listener never re-registers
+  // and the order below is the whole story.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
         return;
       }
+      const overlays = escapeOverlayStateRef.current;
 
+      // The browser overlay claims Escape exclusively, including from
+      // component-level listeners registered after this one.
       const browserOwnerId = activeBrowserOwnerIdRef.current;
       const browserOpen = browserOwnerId
         ? browserOverlayByPaneRef.current[browserOwnerId]?.open === true
         : false;
-      if (!browserOpen) {
+      if (browserOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        closeActiveBrowserOverlayRef.current();
         return;
       }
 
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      closeActiveBrowserOverlayRef.current();
+      // The remaining overlays dismiss together on one Escape, as they did as
+      // independent listeners that each observed the same keydown.
+      const menusOpen = Boolean(
+        overlays.paneContextMenu || overlays.groupMenu || overlays.settingsMenu,
+      );
+      const dialogsOpen = Boolean(overlays.closeDialog || overlays.exitDialog);
+      let stopPropagation = false;
+      if (menusOpen) {
+        event.preventDefault();
+        setPaneContextMenu(null);
+        setGroupMenu(null);
+        setSettingsMenu(null);
+      }
+      if (dialogsOpen) {
+        stopPropagation = true;
+        event.preventDefault();
+        // Don't dismiss the worktree dialog while its close/delete is running.
+        if (!overlays.resolvingClose) {
+          setCloseDialog(null);
+        }
+        if (!overlays.quitting) {
+          setExitDialog(null);
+        }
+      }
+      if (overlays.settingsOpen) {
+        stopPropagation = true;
+        event.preventDefault();
+        setSettingsOpen(false);
+      }
+      // The workspace error banner is lowest priority: it only takes Escape
+      // when nothing above it (menus, dialogs, a rename editor) wanted it.
+      if (
+        overlays.error &&
+        !menusOpen &&
+        !dialogsOpen &&
+        !overlays.renamePaneId &&
+        !overlays.renameGroupId
+      ) {
+        stopPropagation = true;
+        event.preventDefault();
+        setError(null);
+      }
+      if (stopPropagation) {
+        event.stopPropagation();
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
@@ -7770,51 +7856,6 @@ export default function App() {
   // entire terminal mouse-dead (no clicks, scrolling, or selection) for as long
   // as any error banner stayed up.
   const errorBannerRegionRef = useNativeWebOverlayRegion<HTMLDivElement>(Boolean(error));
-
-  // Escape dismisses the workspace error banner when no higher-priority overlay
-  // is already handling it (browser overlay has its own capture-phase handler).
-  useEffect(() => {
-    if (!error) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") {
-        return;
-      }
-      if (
-        paneContextMenu ||
-        groupMenu ||
-        settingsMenu ||
-        closeDialog ||
-        exitDialog ||
-        renamePaneId ||
-        renameGroupId
-      ) {
-        return;
-      }
-      const browserOwnerId = activeBrowserOwnerIdRef.current;
-      if (
-        browserOwnerId &&
-        browserOverlayByPaneRef.current[browserOwnerId]?.open === true
-      ) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      setError(null);
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [
-    error,
-    paneContextMenu,
-    groupMenu,
-    settingsMenu,
-    closeDialog,
-    exitDialog,
-    renamePaneId,
-    renameGroupId,
-  ]);
 
   useEffect(() => {
     if (!paneContextMenu && !groupMenu && !settingsMenu) {
@@ -7830,14 +7871,8 @@ export default function App() {
       setSettingsMenu(null);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setPaneContextMenu(null);
-        setGroupMenu(null);
-        setSettingsMenu(null);
-        return;
-      }
-
+      // Escape is handled by the app-level Escape dispatcher; this listener
+      // only owns the group menu's single-key actions.
       if (!groupMenu || event.metaKey || event.ctrlKey || event.altKey) {
         return;
       }
@@ -8000,47 +8035,15 @@ export default function App() {
     });
   }, [settings.worktreeLocation]);
 
-  // Escape cancels the worktree close dialog. Capture phase so it wins over the
-  // global ⌘W/Ctrl-W shortcut handler while the dialog is open.
-  useEffect(() => {
-    if (!closeDialog && !exitDialog) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        // Don't dismiss the worktree dialog while its close/delete is running.
-        if (!resolvingClose) {
-          setCloseDialog(null);
-        }
-        if (!quitting) {
-          setExitDialog(null);
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [closeDialog, exitDialog, quitting, resolvingClose]);
-
-  // Escape closes the settings panel. Separate from the dialog handler above so
-  // it can run regardless of which other modals are open.
+  // Escape handling for the worktree close/exit dialogs and the settings panel
+  // lives in the app-level Escape dispatcher; this effect only resets the
+  // settings panel's transient state when it closes.
   useEffect(() => {
     if (!settingsOpen) {
       setOpenRouterKeyVisible(false);
       setSettingsTab("basic");
       setShowHideShortcutCapturing(false);
-      return;
     }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        setSettingsOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [settingsOpen]);
 
   // Focus and select the name when the rename dialog opens, so the user can type
