@@ -15,7 +15,14 @@ import type {
 } from "react";
 import { createPortal } from "react-dom";
 import { Ellipsis } from "lucide-react";
-import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
+import type {
+  MessageAnnotation,
+  MessageAnnotationAnchor,
+  ThreadParticipant,
+  Turn,
+  TurnBlock,
+  TranscriptOption,
+} from "../types";
 import {
   IS_MAC,
   isEditableTarget,
@@ -46,6 +53,7 @@ import {
 } from "../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../lib/turnTimeline";
 import PaneSearchBar from "./PaneSearchBar";
+import TranscriptAnnotationLayer from "./TranscriptAnnotationLayer";
 import TranscriptPickerLink from "./TranscriptPickerLink";
 import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
@@ -105,6 +113,16 @@ interface TurnOverlayProps {
   // When true (the overlay showing the active pane), Cmd-F/Ctrl-F opens this
   // pane's find bar — unless focus is in the terminal, which owns its own find.
   searchHotkeyActive?: boolean;
+  // Message annotations for this agent's transcript, plus the handlers that
+  // create and remove them. Absent for panes without an agent (shell panes).
+  annotations?: MessageAnnotation[];
+  onCreateAnnotation?: (
+    messageKey: string,
+    anchor: MessageAnnotationAnchor,
+    comment: string,
+  ) => Promise<void>;
+  onRemoveAnnotation?: (messageKey: string, annotationId: string) => Promise<void>;
+  onAnnotationError?: (message: string) => void;
 }
 
 // Gap kept between the last transcript message and the top of the composer.
@@ -163,6 +181,10 @@ export default function TurnOverlay({
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy = false,
   searchHotkeyActive = false,
+  annotations,
+  onCreateAnnotation,
+  onRemoveAnnotation,
+  onAnnotationError,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
@@ -927,6 +949,16 @@ export default function TurnOverlay({
         <div ref={bottomSentinelRef} className="turn-timeline-sentinel" aria-hidden="true" />
         </div>
       </TranscriptLinkActionsProvider>
+      {onCreateAnnotation && onRemoveAnnotation ? (
+        <TranscriptAnnotationLayer
+          agentId={agentId ?? null}
+          timelineRef={timelineRef}
+          annotations={annotations ?? []}
+          onCreate={onCreateAnnotation}
+          onRemove={onRemoveAnnotation}
+          onError={onAnnotationError}
+        />
+      ) : null}
       {input ? (
         <div
           className={`turn-sidebar-input${queueSplit ? " is-split" : ""}`}
@@ -1045,7 +1077,7 @@ function MessageItemView({
           ) : null}
         </header>
       ) : null}
-      <div className="turn-blocks">
+      <div className="turn-blocks" data-message-key={item.key}>
         {item.blocks.map((block, index) => (
           <MessageBlockView key={`${item.key}-${index}`} block={block} role={item.role} />
         ))}

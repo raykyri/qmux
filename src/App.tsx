@@ -272,6 +272,9 @@ import {
   listAgentTurnQueue,
   listThreadGraphs,
   listTurns,
+  listTranscriptAnnotations,
+  createTranscriptAnnotation,
+  removeTranscriptAnnotation,
   listPanes,
   listResearchActivity,
   listResearchTrees,
@@ -315,6 +318,8 @@ import type {
   ClaudeSkill,
   GroupInfo,
   InitialPaneSize,
+  MessageAnnotation,
+  MessageAnnotationAnchor,
   PaneInfo,
   PaneSplitInfo,
   QueuedTurn,
@@ -1206,6 +1211,10 @@ function defaultPaneTitle(
   );
 }
 
+// Stable empty list so agents without annotations pass reference-equal props to
+// their TranscriptAnnotationLayer (whose effects key on the array identity).
+const EMPTY_ANNOTATIONS: MessageAnnotation[] = [];
+
 export default function App() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
@@ -1346,6 +1355,49 @@ export default function App() {
     Record<string, string | null>
   >({});
   const [turns, setTurns] = useState<Turn[]>([]);
+  // Transcript message annotations across the workspace, kept flat and grouped by
+  // agent at render. Loaded once at boot and kept live by transcript.annotation.*
+  // events.
+  const [annotations, setAnnotations] = useState<MessageAnnotation[]>([]);
+  const annotationsByAgent = useMemo(() => {
+    const map = new Map<string, MessageAnnotation[]>();
+    for (const annotation of annotations) {
+      const list = map.get(annotation.agentId);
+      if (list) {
+        list.push(annotation);
+      } else {
+        map.set(annotation.agentId, [annotation]);
+      }
+    }
+    return map;
+  }, [annotations]);
+  const handleCreateAnnotation = useCallback(
+    async (
+      agentId: string,
+      messageKey: string,
+      anchor: MessageAnnotationAnchor,
+      comment: string,
+    ) => {
+      const created = await createTranscriptAnnotation(agentId, messageKey, anchor, comment);
+      // The backend also emits transcript.annotation.created; dedupe by id so the
+      // optimistic insert and the event never double-add.
+      setAnnotations((current) =>
+        current.some((annotation) => annotation.id === created.id)
+          ? current
+          : [...current, created],
+      );
+    },
+    [],
+  );
+  const handleRemoveAnnotation = useCallback(
+    async (messageKey: string, annotationId: string) => {
+      await removeTranscriptAnnotation(messageKey, annotationId);
+      setAnnotations((current) =>
+        current.filter((annotation) => annotation.id !== annotationId),
+      );
+    },
+    [],
+  );
   const [threadGraphs, setThreadGraphs] = useState<ThreadGraph[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   // Per-agent hook-event history. It backs only the "copy transcript as JSON"
@@ -4554,6 +4606,7 @@ export default function App() {
           existingAgents,
           existingResearchTrees,
           existingResearchActivity,
+          existingAnnotations,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
@@ -4564,6 +4617,7 @@ export default function App() {
           listAgents(),
           listResearchTrees(true).catch((): ResearchTreeSummary[] => []),
           listResearchActivity().catch((): ResearchNode[] => []),
+          listTranscriptAnnotations().catch((): MessageAnnotation[] => []),
         ]);
         if (cancelled) {
           return;
@@ -4583,6 +4637,7 @@ export default function App() {
         setResearchTrees(partitionedResearchTrees.active);
         setArchivedResearchTrees(partitionedResearchTrees.archived);
         setResearchActivity(existingResearchActivity);
+        setAnnotations(existingAnnotations);
         void hydrateSecondaryFast(existingAgents);
         void hydrateSecondaryHeavy();
         const savedResearchTreeId = localStorage.getItem(ACTIVE_RESEARCH_TREE_KEY);
@@ -5898,6 +5953,7 @@ export default function App() {
     setGroups,
     setThinkingAgentIds,
     setTurns,
+    setAnnotations,
     setThreadGraphs,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
@@ -9262,6 +9318,15 @@ export default function App() {
         stickyUserMessages={settings.stickyUserMessages}
         agentId={agent?.id ?? surface.pane.id}
         searchHotkeyActive={surface.pane.id === activePane?.id}
+        annotations={agent ? (annotationsByAgent.get(agent.id) ?? EMPTY_ANNOTATIONS) : undefined}
+        onCreateAnnotation={
+          agent
+            ? (messageKey, anchor, comment) =>
+                handleCreateAnnotation(agent.id, messageKey, anchor, comment)
+            : undefined
+        }
+        onRemoveAnnotation={agent ? handleRemoveAnnotation : undefined}
+        onAnnotationError={setError}
         assistantLabel={surface.assistantLabel}
         notice={agent ? surface.transcriptNotice : null}
         transcriptOptions={agent ? surface.transcriptOptions : []}

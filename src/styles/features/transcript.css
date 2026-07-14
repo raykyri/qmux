@@ -1195,3 +1195,104 @@ header + .turn-blocks {
   font-size: var(--fs-sm);
 }
 
+/* Transcript message annotations. Painted via the CSS Custom Highlight API
+   (registered in components/TranscriptAnnotationLayer.tsx); a soft underline
+   marks annotated spans without obscuring the text under them. */
+::highlight(qmux-transcript-annotations) {
+  color: inherit;
+  background-color: rgba(120, 170, 255, 0.22);
+  text-decoration: underline;
+  text-decoration-color: rgba(120, 170, 255, 0.65);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+
+.transcript-annotation-popover {
+  position: fixed;
+  z-index: var(--z-context-menu);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: max-content;
+  max-width: 320px;
+  padding: 10px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: calc(13px + var(--turn-font-delta, 0px));
+  background: #303532;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.38);
+}
+
+.transcript-annotation-quote,
+.transcript-annotation-item-quote {
+  max-height: 66px;
+  overflow: hidden;
+  padding-left: 8px;
+  border-left: 2px solid rgba(120, 170, 255, 0.65);
+  color: var(--text-secondary, #b9beb8);
+  font-style: italic;
+  line-height: 1.35;
+}
+
+.transcript-annotation-input {
+  width: 260px;
+  min-height: 54px;
+  padding: 6px 8px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: inherit;
+  background: rgba(0, 0, 0, 0.22);
+  resize: vertical;
+}
+
+.transcript-annotation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.transcript-annotation-notes-header {
+  color: var(--text-secondary, #b9beb8);
+  font-size: calc(11px + var(--turn-font-delta, 0px));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.transcript-annotation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.transcript-annotation-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "quote actions" "comment actions";
+  gap: 2px 6px;
+}
+
+.transcript-annotation-item-quote {
+  grid-area: quote;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
+}
+
+.transcript-annotation-item-comment {
+  grid-area: comment;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.transcript-annotation-item-actions {
+  grid-area: actions;
+  align-self: start;
+}
+

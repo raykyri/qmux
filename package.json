@@ -22,6 +22,7 @@
     "test:thread-graph-overlay": "node scripts/test-thread-graph-overlay.mjs",
     "test:workspace-scope": "node scripts/test-workspace-scope.mjs",
     "test:turn-timeline": "node scripts/test-turn-timeline.mjs",
+    "test:transcript-annotations": "node scripts/test-transcript-annotations.mjs",
     "test:opencode-plugin": "node --experimental-default-type=module --test qmux-opencode-plugin/tests/*.test.mjs",
     "tauri": "tauri"
   },

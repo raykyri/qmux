@@ -307,6 +307,30 @@ export interface Turn {
   nativeMessageId?: string | null;
 }
 
+/** A user comment anchored to a text span inside one rendered transcript message.
+ * `messageKey` is the timeline item key of the annotated message (see
+ * turnTimeline). The anchor mirrors research highlights but the comment field is
+ * what makes this an annotation rather than a bare highlight. */
+export interface MessageAnnotation {
+  id: string;
+  agentId: string;
+  messageKey: string;
+  anchor: MessageAnnotationAnchor;
+  comment: string;
+  createdAt: number;
+}
+
+export interface MessageAnnotationAnchor {
+  version: 1;
+  projection: "transcript-v1";
+  /** UTF-16 offsets into the message's flat text projection (JS string units). */
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
+}
+
 export interface ThreadGraph {
   version: 1;
   threadId: string;

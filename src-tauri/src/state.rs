@@ -1,3 +1,4 @@
+use crate::annotations::{self, MessageAnnotation, MessageAnnotationAnchor};
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
 use crate::persistence::{self, PersistedState, STATE_VERSION};
@@ -198,6 +199,9 @@ struct Model {
     research_trees: HashMap<String, ResearchTree>,
     research_tree_order: Vec<String>,
     research_nodes: HashMap<String, ResearchNode>,
+    /// Transcript message annotations, keyed by the frontend timeline item key of
+    /// the annotated message. Durable across restarts alongside the rest of the model.
+    transcript_annotations: HashMap<String, Vec<MessageAnnotation>>,
     /// Pane ids with a backend retirement worker in flight. Transient and deduplicated.
     research_retiring_panes: HashSet<String>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
@@ -1382,6 +1386,7 @@ impl AppState {
                 model.research_tree_order = normalized_research_order;
             }
             model.research_nodes = persisted.research_nodes;
+            model.transcript_annotations = persisted.transcript_annotations;
             for mut agent in persisted.agents {
                 ensure_agent_thread_metadata(self, &mut model, &mut agent);
                 if let Some(pane_id) = agent
@@ -1613,6 +1618,7 @@ impl AppState {
                 research_trees: model.research_trees.clone(),
                 research_tree_order: ordered_research_tree_ids(&model),
                 research_nodes: model.research_nodes.clone(),
+                transcript_annotations: model.transcript_annotations.clone(),
             }
         };
         persistence::save(&self.inner.config.workspace_root, &snapshot)
@@ -3326,6 +3332,134 @@ impl AppState {
             }),
         ));
         Ok(removed)
+    }
+
+    /// Attach a comment to a text span inside a transcript message. `message_key`
+    /// is the frontend timeline item key of the annotated message; the anchor's
+    /// offsets index into that message's flat text projection. The comment and
+    /// anchor are validated, and both per-message and workspace-wide byte caps are
+    /// enforced, before the annotation is stored and persisted.
+    pub fn create_transcript_annotation(
+        &self,
+        agent_id: &str,
+        message_key: &str,
+        anchor: MessageAnnotationAnchor,
+        comment: String,
+    ) -> Result<MessageAnnotation, String> {
+        annotations::validate_annotation_anchor(&anchor)?;
+        annotations::validate_annotation_comment(&comment)?;
+        let mut annotation = MessageAnnotation {
+            id: self.next_id("annotation"),
+            agent_id: agent_id.to_string(),
+            message_key: message_key.to_string(),
+            anchor,
+            comment,
+            created_at: now_millis(),
+        };
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let total_bytes = model
+                .transcript_annotations
+                .values()
+                .flat_map(|list| list.iter())
+                .fold(0usize, |total, annotation| {
+                    total.saturating_add(annotations::annotation_storage_bytes(annotation))
+                });
+            while model
+                .transcript_annotations
+                .values()
+                .any(|list| list.iter().any(|saved| saved.id == annotation.id))
+            {
+                annotation.id = self.next_id("annotation");
+            }
+            let added_bytes = annotations::annotation_storage_bytes(&annotation);
+            if total_bytes.saturating_add(added_bytes)
+                > annotations::MAX_TRANSCRIPT_ANNOTATION_BYTES_TOTAL
+            {
+                return Err("qmux contains too much saved annotation data".to_string());
+            }
+            // Build the candidate collection off to the side and validate it before
+            // touching the map, so a rejected insert never leaves an empty entry.
+            let mut next = model
+                .transcript_annotations
+                .get(message_key)
+                .cloned()
+                .unwrap_or_default();
+            next.push(annotation.clone());
+            annotations::validate_annotation_collection(&next)?;
+            model
+                .transcript_annotations
+                .insert(message_key.to_string(), next);
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "transcript.annotation.created",
+            None,
+            Some(agent_id.to_string()),
+            json!({ "messageKey": message_key, "annotation": annotation }),
+        ));
+        Ok(annotation)
+    }
+
+    pub fn remove_transcript_annotation(
+        &self,
+        message_key: &str,
+        annotation_id: &str,
+    ) -> Result<MessageAnnotation, String> {
+        let removed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let list = model
+                .transcript_annotations
+                .get_mut(message_key)
+                .ok_or_else(|| format!("no annotations for message {message_key}"))?;
+            let index = list
+                .iter()
+                .position(|annotation| annotation.id == annotation_id)
+                .ok_or_else(|| format!("annotation {annotation_id} was not found"))?;
+            let removed = list.remove(index);
+            if list.is_empty() {
+                model.transcript_annotations.remove(message_key);
+            }
+            removed
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "transcript.annotation.removed",
+            None,
+            Some(removed.agent_id.clone()),
+            json!({
+                "messageKey": message_key,
+                "annotationId": annotation_id,
+                "agentId": removed.agent_id,
+            }),
+        ));
+        Ok(removed)
+    }
+
+    /// All annotations across the workspace, oldest first. The frontend groups them
+    /// by `message_key` and paints each message's spans; the list is bounded by the
+    /// per-message and total byte caps enforced at creation.
+    pub fn list_transcript_annotations(&self) -> Result<Vec<MessageAnnotation>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let mut all: Vec<MessageAnnotation> = model
+            .transcript_annotations
+            .values()
+            .flat_map(|list| list.iter().cloned())
+            .collect();
+        all.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(all)
     }
 
     pub fn mark_research_tree_viewed(&self, tree_id: &str) -> Result<ResearchTree, String> {
@@ -13159,5 +13293,103 @@ mod tests {
         let state = AppState::new(config);
         state.restore_session();
         assert_eq!(state.agent_draft("agent-1").unwrap(), None);
+    }
+
+    fn sample_annotation_anchor(exact: &str, start: usize) -> MessageAnnotationAnchor {
+        MessageAnnotationAnchor {
+            version: 1,
+            projection: annotations::TRANSCRIPT_ANNOTATION_PROJECTION.to_string(),
+            start,
+            end: start + exact.encode_utf16().count(),
+            exact: exact.to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+
+    #[test]
+    fn transcript_annotations_persist_and_round_trip() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+        let message_key = "message-assistant-agent-1-3:0";
+
+        let (first_id, second_id) = {
+            let state = AppState::new(config.clone());
+            state.restore_session();
+            let first = state
+                .create_transcript_annotation(
+                    "agent-1",
+                    message_key,
+                    sample_annotation_anchor("hello", 0),
+                    "look here".to_string(),
+                )
+                .unwrap();
+            let second = state
+                .create_transcript_annotation(
+                    "agent-1",
+                    message_key,
+                    sample_annotation_anchor("world", 6),
+                    "and here".to_string(),
+                )
+                .unwrap();
+            assert_ne!(first.id, second.id, "each annotation gets a distinct id");
+            let listed = state.list_transcript_annotations().unwrap();
+            assert_eq!(listed.len(), 2);
+            assert_eq!(listed[0].id, first.id, "listed oldest first");
+            (first.id, second.id)
+        };
+
+        // Second process: annotations reload from disk.
+        let restored = AppState::new(config);
+        restored.restore_session();
+        let listed = restored.list_transcript_annotations().unwrap();
+        assert_eq!(listed.len(), 2, "annotations survive a restart");
+
+        // Removing one leaves the other; removing the last drops the map entry.
+        restored
+            .remove_transcript_annotation(message_key, &first_id)
+            .unwrap();
+        assert_eq!(restored.list_transcript_annotations().unwrap().len(), 1);
+        restored
+            .remove_transcript_annotation(message_key, &second_id)
+            .unwrap();
+        assert!(restored.list_transcript_annotations().unwrap().is_empty());
+
+        // Removing a now-missing annotation is a clean error, not a panic.
+        assert!(
+            restored
+                .remove_transcript_annotation(message_key, &second_id)
+                .is_err()
+        );
+
+        // Invalid input is rejected before anything is stored.
+        let mut mismatched = sample_annotation_anchor("hello", 0);
+        mismatched.end = 3;
+        assert!(
+            restored
+                .create_transcript_annotation(
+                    "agent-1",
+                    message_key,
+                    mismatched,
+                    "note".to_string()
+                )
+                .is_err(),
+            "offset/quote mismatch rejected"
+        );
+        assert!(
+            restored
+                .create_transcript_annotation(
+                    "agent-1",
+                    message_key,
+                    sample_annotation_anchor("hello", 0),
+                    "   ".to_string(),
+                )
+                .is_err(),
+            "empty comment rejected"
+        );
+        assert!(
+            restored.list_transcript_annotations().unwrap().is_empty(),
+            "rejected creates leave no residue"
+        );
     }
 }

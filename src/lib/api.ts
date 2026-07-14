@@ -7,6 +7,8 @@ import type {
   ClaudeSkill,
   GroupInfo,
   InitialPaneSize,
+  MessageAnnotation,
+  MessageAnnotationAnchor,
   MoveQueuedAgentTurnResult,
   PaneActivity,
   PaneInfo,
@@ -356,6 +358,31 @@ export function removeResearchHighlights(nodeId: string, highlightIds: string[])
 
 export function markResearchTreeViewed(treeId: string) {
   return invoke<ResearchTree>("mark_research_tree_viewed", { treeId });
+}
+
+export function listTranscriptAnnotations() {
+  return invoke<MessageAnnotation[]>("list_transcript_annotations", {});
+}
+
+export function createTranscriptAnnotation(
+  agentId: string,
+  messageKey: string,
+  anchor: MessageAnnotationAnchor,
+  comment: string,
+) {
+  return invoke<MessageAnnotation>("create_transcript_annotation", {
+    agentId,
+    messageKey,
+    anchor,
+    comment,
+  });
+}
+
+export function removeTranscriptAnnotation(messageKey: string, annotationId: string) {
+  return invoke<MessageAnnotation>("remove_transcript_annotation", {
+    messageKey,
+    annotationId,
+  });
 }
 
 export function archiveResearchTree(treeId: string) {

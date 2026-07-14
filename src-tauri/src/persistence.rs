@@ -1,3 +1,4 @@
+use crate::annotations::MessageAnnotation;
 use crate::research::{ResearchNode, ResearchTree};
 use crate::state::{PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use crate::thread_graph::ThreadRecord;
@@ -101,6 +102,10 @@ pub struct PersistedState {
     pub research_tree_order: Vec<String>,
     #[serde(default)]
     pub research_nodes: HashMap<String, ResearchNode>,
+    /// Transcript message annotations, keyed by the frontend timeline item key of
+    /// the annotated message. Absent in older state files.
+    #[serde(default)]
+    pub transcript_annotations: HashMap<String, Vec<MessageAnnotation>>,
 }
 
 impl Default for PersistedState {
@@ -123,6 +128,7 @@ impl Default for PersistedState {
             research_trees: HashMap::new(),
             research_tree_order: Vec::new(),
             research_nodes: HashMap::new(),
+            transcript_annotations: HashMap::new(),
         }
     }
 }
@@ -666,6 +672,12 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.research_trees = take_typed_map(&mut map, "researchTrees", "research tree", &mut dropped);
     state.research_tree_order = take_string_vec(&mut map, "researchTreeOrder");
     state.research_nodes = take_typed_map(&mut map, "researchNodes", "research node", &mut dropped);
+    state.transcript_annotations = take_map_of_vecs(
+        &mut map,
+        "transcriptAnnotations",
+        "transcript annotation",
+        &mut dropped,
+    );
     state.active_tab_id = map
         .get("activeTabId")
         .and_then(Value::as_str)

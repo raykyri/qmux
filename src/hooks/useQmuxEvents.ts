@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import {
   isAgentInfo,
+  isMessageAnnotation,
   isQueuedTurn,
   isTurn,
   reconcileReplacedTurns,
@@ -24,6 +25,7 @@ import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
 import type {
   AgentInfo,
   GroupInfo,
+  MessageAnnotation,
   PaneInfo,
   QmuxEvent,
   QueuedTurn,
@@ -83,6 +85,7 @@ export interface UseQmuxEventsHandlers {
   // agent restored into a working status never falsely shows it (see below).
   setThinkingAgentIds: Dispatch<SetStateAction<Set<string>>>;
   setTurns: Dispatch<SetStateAction<Turn[]>>;
+  setAnnotations: Dispatch<SetStateAction<MessageAnnotation[]>>;
   setThreadGraphs: Dispatch<SetStateAction<ThreadGraph[]>>;
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
@@ -146,6 +149,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setGroups,
     setThinkingAgentIds,
     setTurns,
+    setAnnotations,
     setThreadGraphs,
     setTranscriptNoticeByAgent,
     setAgentQueuedTurns,
@@ -555,6 +559,24 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       }
       if (event.agentId && event.type === "agent.transcript_recovered") {
         void refreshTranscriptOptions(event.agentId).catch(() => undefined);
+      }
+      if (event.type === "transcript.annotation.created") {
+        const annotation = event.payload.annotation;
+        if (isMessageAnnotation(annotation)) {
+          setAnnotations((current) =>
+            current.some((existing) => existing.id === annotation.id)
+              ? current
+              : [...current, annotation],
+          );
+        }
+      }
+      if (event.type === "transcript.annotation.removed") {
+        const annotationId = stringField(event.payload, "annotationId");
+        if (annotationId) {
+          setAnnotations((current) =>
+            current.filter((annotation) => annotation.id !== annotationId),
+          );
+        }
       }
     };
 

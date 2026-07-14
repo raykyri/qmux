@@ -9,6 +9,7 @@ import { GROK_ADAPTER_ID } from "../adapters/grok";
 import { OPENCODE_ADAPTER_ID } from "../adapters/opencode";
 import type {
   AgentInfo,
+  MessageAnnotation,
   PaneInfo,
   PaneSplitInfo,
   QmuxEvent,
@@ -244,6 +245,23 @@ function optionalTurnStatusReason(value: unknown) {
     value === "interrupted" ||
     value === "claudePromptBranch" ||
     value === "unknownBranch"
+  );
+}
+
+// Validates a transcript annotation payload arriving on an event before it is
+// applied to local state, mirroring isTurn.
+export function isMessageAnnotation(value: unknown): value is MessageAnnotation {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const annotation = value as Record<string, unknown>;
+  return (
+    typeof annotation.id === "string" &&
+    typeof annotation.agentId === "string" &&
+    typeof annotation.messageKey === "string" &&
+    typeof annotation.comment === "string" &&
+    typeof annotation.anchor === "object" &&
+    annotation.anchor !== null
   );
 }
 

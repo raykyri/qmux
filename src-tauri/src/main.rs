@@ -1,4 +1,5 @@
 mod adapters;
+mod annotations;
 mod cli;
 mod config;
 mod connection_limit;
@@ -28,6 +29,7 @@ use adapters::{
     SpawnAgentRequest, SpawnClaudeRequest, agent_fork as fork_agent_pane,
     agent_spawn as spawn_agent_pane, fork_agent_source,
 };
+use annotations::{MessageAnnotation, MessageAnnotationAnchor};
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
 use menu_bar::menu_bar_update;
@@ -1106,6 +1108,43 @@ async fn remove_research_highlights(
 }
 
 #[tauri::command]
+async fn create_transcript_annotation(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    message_key: String,
+    anchor: MessageAnnotationAnchor,
+    comment: String,
+) -> Result<MessageAnnotation, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.create_transcript_annotation(&agent_id, &message_key, anchor, comment)
+    })
+    .await
+    .map_err(|err| format!("transcript annotation task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn remove_transcript_annotation(
+    state: tauri::State<'_, AppState>,
+    message_key: String,
+    annotation_id: String,
+) -> Result<MessageAnnotation, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.remove_transcript_annotation(&message_key, &annotation_id)
+    })
+    .await
+    .map_err(|err| format!("transcript annotation task failed: {err}"))?
+}
+
+#[tauri::command]
+fn list_transcript_annotations(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<MessageAnnotation>, String> {
+    state.list_transcript_annotations()
+}
+
+#[tauri::command]
 fn mark_research_tree_viewed(
     state: tauri::State<'_, AppState>,
     tree_id: String,
@@ -1964,6 +2003,9 @@ fn main() {
             create_research_highlight,
             remove_research_highlight,
             remove_research_highlights,
+            create_transcript_annotation,
+            remove_transcript_annotation,
+            list_transcript_annotations,
             mark_research_tree_viewed,
             archive_research_tree,
             restore_research_tree,
