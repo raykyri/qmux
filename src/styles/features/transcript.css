@@ -1229,17 +1229,25 @@ header + .turn-blocks {
    focus, so ordinary select-to-copy is unaffected until the user opts in. */
 .transcript-annotation-prompt {
   flex-direction: row;
-  align-items: center;
-  gap: 0;
-  min-height: 27px;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+}
+
+.transcript-annotation-prompt-action {
+  min-height: 24px;
   padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-sm);
   color: var(--text-interactive);
   font-family: var(--font-ui);
+  font-size: calc(13px + var(--turn-font-delta, 0px));
   font-weight: 500;
+  background: transparent;
   cursor: pointer;
 }
 
-.transcript-annotation-prompt:hover {
+.transcript-annotation-prompt-action:hover {
   background: #3a403c;
 }
 

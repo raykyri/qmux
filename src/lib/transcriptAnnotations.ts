@@ -124,3 +124,21 @@ export function buildAnnotationMessage(
       : `${blocks.length} notes on your response:`;
   return `${intro}\n\n${blocks.join("\n\n")}`;
 }
+
+// Assembles the launch prompt for a side thread branched off a selected span:
+// the quoted excerpt followed by the user's instruction. The branch resumes the
+// full session, so the quote anchors the sub-conversation to the right place.
+export function buildSideThreadPrompt(quote: string, instruction: string): string {
+  const trimmedInstruction = instruction.trim();
+  const trimmedQuote = quote.trim();
+  if (!trimmedQuote) {
+    return trimmedInstruction;
+  }
+  const quoted = trimmedQuote
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return trimmedInstruction
+    ? `Regarding this from your earlier message:\n\n${quoted}\n\n${trimmedInstruction}`
+    : `Regarding this from your earlier message:\n\n${quoted}`;
+}

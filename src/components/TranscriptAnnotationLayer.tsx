@@ -6,6 +6,7 @@ import type { MessageAnnotation, MessageAnnotationAnchor } from "../types";
 import {
   TRANSCRIPT_ANNOTATION_CONTEXT_LENGTH,
   buildAnnotationMessage,
+  buildSideThreadPrompt,
   groupAnnotationsByMessage,
   resolveAnnotationOffset,
 } from "../lib/transcriptAnnotations";
@@ -168,14 +169,17 @@ function messageRootFor(root: HTMLElement, node: Node): HTMLElement | null {
   return block && root.contains(block) ? block : null;
 }
 
+type ComposeMode = "annotate" | "sideThread";
+
 interface ComposeState {
   messageKey: string;
   anchor: MessageAnnotationAnchor;
-  // Two-step: a selection first shows a small "Annotate" affordance (editing
-  // false) so it never steals focus from the live selection or hijacks
-  // select-to-copy; the comment textarea (which autofocuses) only mounts once the
-  // user opts in.
+  // Two-step: a selection first shows small "Annotate"/"Side thread" affordances
+  // (editing false) so it never steals focus from the live selection or hijacks
+  // select-to-copy; the input (which autofocuses) only mounts once the user opts
+  // in, and `mode` records which action they chose.
   editing: boolean;
+  mode: ComposeMode;
   left: number;
   top: number;
 }
@@ -205,6 +209,9 @@ export interface TranscriptAnnotationLayerProps {
   // Inserts assembled annotation text into the composer for review before sending
   // (Phase 2). Absent disables the "Add to composer" action.
   onAddToComposer?: (text: string) => void;
+  // Branches a side thread off the selected span, seeded with the quote and the
+  // user's instruction (Phase 3). Absent disables the "Side thread" action.
+  onStartSideThread?: (quote: string, instruction: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -215,6 +222,7 @@ export default function TranscriptAnnotationLayer({
   onCreate,
   onRemove,
   onAddToComposer,
+  onStartSideThread,
   onError,
 }: TranscriptAnnotationLayerProps) {
   const [compose, setCompose] = useState<ComposeState | null>(null);
@@ -363,6 +371,7 @@ export default function TranscriptAnnotationLayer({
             ),
           },
           editing: false,
+          mode: "annotate",
           left: Math.max(8, Math.min(rect.left, window.innerWidth - 300)),
           top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 160)),
         });
@@ -453,6 +462,20 @@ export default function TranscriptAnnotationLayer({
     }
   }, [commentDraft, compose, onCreate, onError, saving]);
 
+  const startSideThread = useCallback(() => {
+    if (!compose || !onStartSideThread) {
+      return;
+    }
+    const instruction = commentDraft.trim();
+    if (!instruction) {
+      return;
+    }
+    onStartSideThread(compose.anchor.exact, instruction);
+    window.getSelection()?.removeAllRanges();
+    setCompose(null);
+    setCommentDraft("");
+  }, [commentDraft, compose, onStartSideThread]);
+
   const remove = useCallback(
     async (messageKey: string, annotationId: string) => {
       try {
@@ -474,19 +497,39 @@ export default function TranscriptAnnotationLayer({
     <>
       {compose && !compose.editing
         ? createPortal(
-            <button
-              type="button"
+            <div
               className="transcript-annotation-popover transcript-annotation-prompt"
               style={{ left: compose.left, top: compose.top }}
-              // mousedown (not click) so the live selection is still present when
-              // we switch to the input; a click would first collapse it.
-              onMouseDown={(event) => {
-                event.preventDefault();
-                setCompose((current) => (current ? { ...current, editing: true } : current));
-              }}
             >
-              Annotate
-            </button>,
+              {/* mousedown (not click) so the live selection is still present when
+                  we switch to the input; a click would first collapse it. */}
+              <button
+                type="button"
+                className="transcript-annotation-prompt-action"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  setCompose((current) =>
+                    current ? { ...current, editing: true, mode: "annotate" } : current,
+                  );
+                }}
+              >
+                Annotate
+              </button>
+              {onStartSideThread ? (
+                <button
+                  type="button"
+                  className="transcript-annotation-prompt-action"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    setCompose((current) =>
+                      current ? { ...current, editing: true, mode: "sideThread" } : current,
+                    );
+                  }}
+                >
+                  Side thread
+                </button>
+              ) : null}
+            </div>,
             document.body,
           )
         : null}
@@ -503,13 +546,21 @@ export default function TranscriptAnnotationLayer({
                 className="transcript-annotation-input"
                 autoFocus
                 value={commentDraft}
-                placeholder="Add a note…"
+                placeholder={
+                  compose.mode === "sideThread"
+                    ? "Ask about this in a side thread…"
+                    : "Add a note…"
+                }
                 rows={3}
                 onChange={(event) => setCommentDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                     event.preventDefault();
-                    void save();
+                    if (compose.mode === "sideThread") {
+                      startSideThread();
+                    } else {
+                      void save();
+                    }
                   }
                 }}
               />
@@ -524,14 +575,25 @@ export default function TranscriptAnnotationLayer({
                 >
                   Cancel
                 </button>
-                <button
-                  type="button"
-                  className="control-button is-primary"
-                  disabled={saving || !commentDraft.trim()}
-                  onClick={() => void save()}
-                >
-                  {saving ? "Saving…" : "Annotate"}
-                </button>
+                {compose.mode === "sideThread" ? (
+                  <button
+                    type="button"
+                    className="control-button is-primary"
+                    disabled={!commentDraft.trim()}
+                    onClick={() => startSideThread()}
+                  >
+                    Start side thread
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="control-button is-primary"
+                    disabled={saving || !commentDraft.trim()}
+                    onClick={() => void save()}
+                  >
+                    {saving ? "Saving…" : "Annotate"}
+                  </button>
+                )}
               </div>
             </div>,
             document.body,

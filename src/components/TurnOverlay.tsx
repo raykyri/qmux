@@ -124,6 +124,8 @@ interface TurnOverlayProps {
   onRemoveAnnotation?: (messageKey: string, annotationId: string) => Promise<void>;
   // Inserts assembled annotation text into this transcript's composer (Phase 2).
   onAddAnnotationsToComposer?: (text: string) => void;
+  // Branches a side thread off a selected span in a message (Phase 3).
+  onStartSideThread?: (quote: string, instruction: string) => void;
   onAnnotationError?: (message: string) => void;
 }
 
@@ -187,6 +189,7 @@ export default function TurnOverlay({
   onCreateAnnotation,
   onRemoveAnnotation,
   onAddAnnotationsToComposer,
+  onStartSideThread,
   onAnnotationError,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -960,6 +963,7 @@ export default function TurnOverlay({
           onCreate={onCreateAnnotation}
           onRemove={onRemoveAnnotation}
           onAddToComposer={onAddAnnotationsToComposer}
+          onStartSideThread={onStartSideThread}
           onError={onAnnotationError}
         />
       ) : null}

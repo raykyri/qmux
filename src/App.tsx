@@ -115,6 +115,7 @@ import {
   type AppShortcutCommand,
 } from "./lib/appShortcuts";
 import { requestComposerInsert } from "./lib/promptLibrary";
+import { buildSideThreadPrompt } from "./lib/transcriptAnnotations";
 import {
   buildSingleAgentThreadGraph,
   focusedBranchTurns,
@@ -9328,6 +9329,16 @@ export default function App() {
         onRemoveAnnotation={agent ? handleRemoveAnnotation : undefined}
         onAddAnnotationsToComposer={
           agent ? (text) => requestComposerInsert(agent.id, text) : undefined
+        }
+        onStartSideThread={
+          agent && !researchBound && agentCanFork(agent)
+            ? (quote, instruction) =>
+                void forkPane(surface.pane, {
+                  nest: true,
+                  useWorktree: false,
+                  prompt: buildSideThreadPrompt(quote, instruction),
+                })
+            : undefined
         }
         onAnnotationError={setError}
         assistantLabel={surface.assistantLabel}

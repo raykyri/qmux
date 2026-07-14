@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildAnnotationMessage,
+  buildSideThreadPrompt,
   groupAnnotationsByMessage,
   resolveAnnotationOffset,
 } from "../src/lib/transcriptAnnotations";
@@ -122,4 +123,24 @@ test("multi-line quotes are prefixed per line", () => {
 
 test("empty annotation list yields an empty string", () => {
   assert.equal(buildAnnotationMessage([]), "");
+});
+
+test("builds a side-thread prompt with the quoted excerpt and instruction", () => {
+  const prompt = buildSideThreadPrompt("the risky step", "why is this safe?");
+  assert.equal(
+    prompt,
+    "Regarding this from your earlier message:\n\n> the risky step\n\nwhy is this safe?",
+  );
+});
+
+test("side-thread prompt falls back to instruction-only when the quote is blank", () => {
+  assert.equal(buildSideThreadPrompt("   ", "start over"), "start over");
+});
+
+test("side-thread prompt quotes multi-line excerpts per line", () => {
+  const prompt = buildSideThreadPrompt("line one\nline two", "explain");
+  assert.equal(
+    prompt,
+    "Regarding this from your earlier message:\n\n> line one\n> line two\n\nexplain",
+  );
 });
