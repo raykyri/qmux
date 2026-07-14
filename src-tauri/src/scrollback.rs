@@ -1,9 +1,9 @@
-use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 const SCROLLBACK_DIR: &str = "terminal";
 const STATE_DIR: &str = ".qmux";
@@ -16,25 +16,113 @@ const SCROLLBACK_LOG_CAP: u64 = 8 * 1024 * 1024;
 /// File length at which a trim actually runs. Trimming rewrites the whole
 /// retained tail with an fsync, so triggering it the moment the file passed the
 /// cap meant every subsequent append of a long-lived noisy pane paid a full
-/// 8MB read + synced write + rename — per PTY chunk, under the global
+/// 8MB read + synced write + rename — per PTY chunk, under the pane's
 /// scrollback lock. The slack amortizes that to one rewrite per
 /// `SCROLLBACK_TRIM_TRIGGER - SCROLLBACK_LOG_CAP` bytes of output, at the cost
 /// of the on-disk file transiently exceeding the cap by up to the slack.
 const SCROLLBACK_TRIM_TRIGGER: u64 = SCROLLBACK_LOG_CAP + SCROLLBACK_LOG_CAP / 2;
 
-static SCROLLBACK_IO_LOCK: Mutex<()> = Mutex::new(());
-/// Scrollback directories already created and permission-locked this process
-/// run, so the steady-state append path skips the mkdir + chmod syscalls it
-/// previously paid per chunk. Guarded by `SCROLLBACK_IO_LOCK` ordering: every
-/// writer takes that lock first.
-static PREPARED_DIRS: LazyLock<Mutex<HashSet<PathBuf>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+/// One entry per pane log, keyed by the log's path. Scrollback I/O used to
+/// serialize every pane behind one global mutex, so a noisy pane's trim — a
+/// multi-MB read + synced rewrite — stalled every other pane's reader thread
+/// (and with it their output rendering) for the trim's duration. Per-pane
+/// entries keep appends, reads, trims, and removals of the *same* pane
+/// serialized, exactly like the old global lock did, while panes no longer
+/// contend with each other. The map lock itself is only ever held for a
+/// lookup/insert/remove, never across I/O.
+static PANE_LOGS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<PaneLog>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Per-pane log state: the append handle, kept open across chunks so the
+/// steady-state append path skips the open/close (and mkdir + chmod) syscalls
+/// it previously paid per chunk. `None` until the first append, after a trim
+/// replaced the file, and after removal.
+struct PaneLog {
+    file: Option<File>,
+}
+
+impl PaneLog {
+    /// Appends a chunk through the cached handle, healing the two ways the
+    /// handle can go stale: the file was replaced or unlinked externally
+    /// (detected by nlink = 0 after the write — the bytes went to the orphaned
+    /// inode, so the chunk is rewritten to a fresh file), and a trim, which
+    /// invalidates the handle itself below.
+    fn append(&mut self, path: &Path, chunk: &[u8]) -> Result<(), String> {
+        let mut len = self.append_once(path, chunk)?;
+        if len.is_none() {
+            // The previous handle pointed at an unlinked inode; recreate the
+            // directory and file once and rewrite the chunk.
+            self.file = None;
+            len = self.append_once(path, chunk)?;
+        }
+        let Some(len) = len else {
+            return Err(format!(
+                "scrollback {} was removed while appending",
+                path.display()
+            ));
+        };
+        if len > SCROLLBACK_TRIM_TRIGGER {
+            // The rename inside the trim replaces the inode, so the cached
+            // append handle must not survive it; the next append reopens.
+            self.file = None;
+            trim_scrollback_file(path, len)?;
+        }
+        Ok(())
+    }
+
+    /// One append attempt. Returns the post-append file length, or `None` when
+    /// the write landed in an inode that is no longer linked at `path`.
+    fn append_once(&mut self, path: &Path, chunk: &[u8]) -> Result<Option<u64>, String> {
+        if self.file.is_none() {
+            prepare_scrollback_dir(path)?;
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                // Owner-only: the log is as sensitive as the socket the same
+                // codebase locks to 0600.
+                .mode(0o600)
+                .open(path)
+                .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?;
+            self.file = Some(file);
+        }
+        let file = self.file.as_mut().expect("scrollback handle was just opened");
+        file.write_all(chunk)
+            .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
+        // fstat on the open handle instead of a path stat: the post-append
+        // length decides whether the trim trigger tripped, and the link count
+        // tells us whether the file still exists at its path at all.
+        let metadata = file
+            .metadata()
+            .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?;
+        if metadata.nlink() == 0 {
+            return Ok(None);
+        }
+        Ok(Some(metadata.len()))
+    }
+}
+
+/// The pane's log entry, created on first use. Removal drops the entry (see
+/// `remove_pane_scrollback`), so the map tracks only live panes.
+fn pane_log(path: &Path) -> Arc<Mutex<PaneLog>> {
+    let mut logs = PANE_LOGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    logs.entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(PaneLog { file: None })))
+        .clone()
+}
+
+/// Locks a pane's log entry, recovering from poisoning: the entry guards a
+/// file handle whose worst post-panic state is a partially appended chunk,
+/// which the next append and replay tolerate.
+fn lock_pane_log(entry: &Arc<Mutex<PaneLog>>) -> MutexGuard<'_, PaneLog> {
+    entry.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 pub fn read_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<Vec<u8>, String> {
-    let _guard = SCROLLBACK_IO_LOCK
-        .lock()
-        .map_err(|_| "scrollback lock poisoned".to_string())?;
     let path = pane_scrollback_path(workspace_root, pane_id)?;
+    let entry = pane_log(&path);
+    let _log = lock_pane_log(&entry);
     match fs::read(&path) {
         Ok(bytes) => Ok(bytes),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -53,73 +141,18 @@ pub fn append_pane_scrollback(
     if chunk.is_empty() {
         return Ok(());
     }
-
-    let _guard = SCROLLBACK_IO_LOCK
-        .lock()
-        .map_err(|_| "scrollback lock poisoned".to_string())?;
     let path = pane_scrollback_path(workspace_root, pane_id)?;
-    prepare_scrollback_dir(&path)?;
-
-    let open_log = || {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            // Owner-only: the log is as sensitive as the socket the same codebase
-            // locks to 0600.
-            .mode(0o600)
-            .open(&path)
-    };
-    let mut file = match open_log() {
-        Ok(file) => file,
-        // The prepared-dir cache means the directory is normally never
-        // re-checked; if something external removed it mid-run, self-heal by
-        // evicting the cache entry and recreating it once, instead of failing
-        // every append until restart (the pre-cache behavior recreated the dir
-        // per chunk).
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            if let (Ok(mut prepared), Some(parent)) = (PREPARED_DIRS.lock(), path.parent()) {
-                prepared.remove(parent);
-            }
-            prepare_scrollback_dir(&path)?;
-            open_log()
-                .map_err(|err| format!("failed to open scrollback {}: {err}", path.display()))?
-        }
-        Err(err) => {
-            return Err(format!(
-                "failed to open scrollback {}: {err}",
-                path.display()
-            ));
-        }
-    };
-    file.write_all(chunk)
-        .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
-    // fstat on the open handle instead of a path stat: the post-append
-    // length decides whether the trim trigger tripped.
-    let len = file
-        .metadata()
-        .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?
-        .len();
-    drop(file);
-
-    if len > SCROLLBACK_TRIM_TRIGGER {
-        trim_scrollback_file(&path, len)?;
-    }
-    Ok(())
+    let entry = pane_log(&path);
+    let mut log = lock_pane_log(&entry);
+    log.append(&path, chunk)
 }
 
-/// Creates (and permission-locks) the scrollback directory for `path` unless
-/// this process has already prepared it. Callers hold `SCROLLBACK_IO_LOCK`.
+/// Creates (and permission-locks) the scrollback directory for `path`. Only
+/// runs when a pane (re)opens its log handle, not per chunk.
 fn prepare_scrollback_dir(path: &Path) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
-    let already_prepared = PREPARED_DIRS
-        .lock()
-        .map(|prepared| prepared.contains(parent))
-        .unwrap_or(false);
-    if already_prepared {
-        return Ok(());
-    }
     fs::create_dir_all(parent).map_err(|err| {
         format!(
             "failed to create scrollback dir {}: {err}",
@@ -130,17 +163,25 @@ fn prepare_scrollback_dir(path: &Path) -> Result<(), String> {
     // the pane's own QMUX_TOKEN — so keep its directory owner-only, matching the
     // socket / shell-integration hardening. Best-effort on an existing dir.
     let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-    if let Ok(mut prepared) = PREPARED_DIRS.lock() {
-        prepared.insert(parent.to_path_buf());
-    }
     Ok(())
 }
 
 pub fn remove_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<(), String> {
-    let _guard = SCROLLBACK_IO_LOCK
-        .lock()
-        .map_err(|_| "scrollback lock poisoned".to_string())?;
     let path = pane_scrollback_path(workspace_root, pane_id)?;
+    // Drop the map entry first so the pane stops accumulating state, then close
+    // the handle and unlink under the entry lock so an in-flight append (a
+    // reader thread that already cloned the Arc) can't interleave with the
+    // removal. A late append after this simply recreates the file, matching the
+    // old global-lock behavior.
+    let entry = PANE_LOGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&path);
+    let _log = entry.as_ref().map(|entry| {
+        let mut log = lock_pane_log(entry);
+        log.file = None;
+        log
+    });
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -177,8 +218,8 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     // rename it over the log. An in-place `fs::write` truncates the file before
     // writing, so a crash mid-write could leave the scrollback empty or
     // half-written; the temp + rename swap is all-or-nothing. Callers hold the
-    // global scrollback I/O lock, so the temp name can't collide with a concurrent
-    // trim of the same file.
+    // pane's scrollback log lock, so the temp name can't collide with a
+    // concurrent trim of the same file.
     let tmp = path.with_extension(format!("trim.{}.tmp", std::process::id()));
     // fsync the temp before the rename (and the dir after) so a power loss can't order
     // the rename ahead of the data and surface a zero-length or stale scrollback.
@@ -583,6 +624,20 @@ mod tests {
         let workspace = temp_workspace();
 
         remove_pane_scrollback(&workspace, "pane-1").unwrap();
+    }
+
+    // Removal must invalidate the pane's cached append handle: a later append
+    // (e.g. a reused pane id) has to recreate the log rather than write into
+    // the unlinked inode the old handle still points at.
+    #[test]
+    fn append_after_remove_recreates_the_log() {
+        let workspace = temp_workspace();
+
+        append_pane_scrollback(&workspace, "pane-1", b"old").unwrap();
+        remove_pane_scrollback(&workspace, "pane-1").unwrap();
+        append_pane_scrollback(&workspace, "pane-1", b"new").unwrap();
+
+        assert_eq!(read_pane_scrollback(&workspace, "pane-1").unwrap(), b"new");
     }
 
     #[test]

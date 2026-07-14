@@ -3,7 +3,7 @@ use crate::events::QmuxEvent;
 use crate::scrollback::{append_pane_scrollback, read_pane_scrollback, sanitize_scrollback_replay};
 use crate::state::{
     AppState, PaneBackend, PaneInfo, PaneKind, PaneRuntime, PaneStatus, SharedBacklog, SharedChild,
-    ShellAgentResume,
+    SharedWriter, ShellAgentResume,
 };
 use crate::turn_queue::release_waiters_for_agent;
 use crate::workspace::{
@@ -70,6 +70,17 @@ const DESCENDANT_REFRESH_TICKS: u32 = 8;
 /// an insert/remove — never across FFI or another lock.
 static DEFERRED_ATTACHES: std::sync::LazyLock<Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Per-native-pane input senders, feeding each pane's writer thread (see
+/// `start_native_input_writer`). Ghostty's input callback delivers every
+/// keystroke and paste chunk through `write_native_host_input`; resolving the
+/// sender here keeps that per-keystroke path off the global model lock, and
+/// queueing keeps it from blocking on a full PTY buffer — a TUI stopped with
+/// ^S/SIGSTOP would otherwise wedge the callback's thread until the child
+/// drained. The map lock is only ever held for a lookup/insert/remove.
+static NATIVE_INPUT_SENDERS: std::sync::LazyLock<
+    Mutex<HashMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -828,19 +839,20 @@ fn spawn_portable_pty(
         backend: PaneBackend::HostPty {
             child: child.clone(),
             master,
-            writer,
+            writer: writer.clone(),
             backlog: backlog.clone(),
             native_surface,
         },
     };
 
     state.insert_pane(runtime)?;
-    if native_surface
-        && let Err(err) = crate::native_terminal::create_host_managed(&pane_id, Some(&pane.cwd))
-    {
-        let _ = kill_child(&pane_id, child.clone());
-        let _ = state.remove_pane(&pane_id);
-        return Err(err);
+    if native_surface {
+        if let Err(err) = crate::native_terminal::create_host_managed(&pane_id, Some(&pane.cwd)) {
+            let _ = kill_child(&pane_id, child.clone());
+            let _ = state.remove_pane(&pane_id);
+            return Err(err);
+        }
+        register_native_input_writer(&pane_id, writer);
     }
     // Capture the direct child's pid for the watcher before handing the child to
     // the reader/watcher threads; the watcher uses it to reach descendants that
@@ -861,8 +873,8 @@ fn spawn_portable_pty(
 /// Marks a pane's frontend listener as live and flushes any output buffered
 /// before it attached. Called once per pane, after the webview registers its
 /// `qmux-event` listener, so the cold-start prompt is never lost to a startup
-/// race. The buffered bytes are emitted before `ready` releases the reader to
-/// emit live, preserving output order. For native surfaces the flush also
+/// race. The buffered bytes are flushed before `ready` releases the reader to
+/// deliver live, preserving output order. For native surfaces the flush also
 /// waits for the surface's first real geometry fit (see `DEFERRED_ATTACHES`);
 /// a call that arrives earlier returns Ok and is finished later by
 /// `complete_pending_attach`.
@@ -907,19 +919,19 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         }
         if !backlog.buffer.is_empty() {
             let pending = std::mem::take(&mut backlog.buffer);
-            if native_surface {
-                if let Err(err) = crate::native_terminal::receive(&pane_id, &pending, false) {
-                    // Keep startup output available for the attach retry. It
-                    // has not been recorded yet, so a successful retry cannot
-                    // duplicate these bytes in durable history.
-                    backlog.buffer = pending;
-                    return Err(err);
-                }
-                record_scrollback(state, &pane_id, &pending);
-            } else {
-                record_scrollback(state, &pane_id, &pending);
-                state.emit(QmuxEvent::pty_data(pane_id, &pending));
+            if native_surface
+                && let Err(err) = crate::native_terminal::receive(&pane_id, &pending, false)
+            {
+                // Keep startup output available for the attach retry. It
+                // has not been recorded yet, so a successful retry cannot
+                // duplicate these bytes in durable history.
+                backlog.buffer = pending;
+                return Err(err);
             }
+            // Without a native surface (non-macOS) there is no renderer: the
+            // webview dropped the old per-chunk pty.data events unread, so the
+            // backlog goes straight to durable scrollback.
+            record_scrollback(state, &pane_id, &pending);
         }
         // Only release the reader after every startup byte was accepted. A
         // failed native receive leaves this false so the frontend's attach
@@ -1201,8 +1213,26 @@ pub fn resize_native_host_pane(
 pub fn write_native_host_input(
     state: &AppState,
     pane_id: &str,
-    bytes: &[u8],
+    bytes: Vec<u8>,
 ) -> Result<(), String> {
+    // Fast path: hand the bytes to the pane's writer thread. Write errors on
+    // this path surface asynchronously (logged by the writer thread) — the
+    // caller is Ghostty's synchronous input callback, which only logs them
+    // anyway.
+    let sender = NATIVE_INPUT_SENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(pane_id)
+        .cloned();
+    let bytes = match sender {
+        Some(sender) => match sender.send(bytes) {
+            Ok(()) => return Ok(()),
+            // The writer thread exited (write failure, teardown race); fall
+            // through to the synchronous write so the error surfaces here.
+            Err(std::sync::mpsc::SendError(bytes)) => bytes,
+        },
+        None => bytes,
+    };
     let writer = state
         .pane_writer(pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -1210,9 +1240,58 @@ pub fn write_native_host_input(
         .lock()
         .map_err(|_| format!("pane {pane_id} writer lock poisoned"))?;
     writer
-        .write_all(bytes)
+        .write_all(&bytes)
         .and_then(|()| writer.flush())
         .map_err(|err| format!("failed to write native pane {pane_id}: {err}"))
+}
+
+/// Registers a native pane's input writer thread, replacing (and thereby
+/// shutting down) any stale thread left by a reused pane id.
+fn register_native_input_writer(pane_id: &str, writer: SharedWriter) {
+    let sender = start_native_input_writer(pane_id.to_string(), writer);
+    NATIVE_INPUT_SENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(pane_id.to_string(), sender);
+}
+
+/// Drops the pane's persistent sender so its writer thread drains what is
+/// already queued and exits.
+fn remove_native_input_writer(pane_id: &str) {
+    NATIVE_INPUT_SENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(pane_id);
+}
+
+/// One writer thread per native pane, draining queued input into the PTY.
+/// Ghostty's input callback stays non-blocking regardless of PTY buffer state,
+/// and input ordering is preserved because every native write funnels through
+/// this single channel. Exits when the registry's sender is dropped or the
+/// PTY write fails (the fallback in `write_native_host_input` then reports
+/// subsequent failures synchronously).
+fn start_native_input_writer(
+    pane_id: String,
+    writer: SharedWriter,
+) -> std::sync::mpsc::Sender<Vec<u8>> {
+    let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        while let Ok(mut pending) = receiver.recv() {
+            // Coalesce whatever queued while this thread was busy or parked;
+            // one write+flush per batch instead of per keystroke burst.
+            while let Ok(more) = receiver.try_recv() {
+                pending.extend_from_slice(&more);
+            }
+            let Ok(mut writer) = writer.lock() else {
+                return;
+            };
+            if let Err(err) = writer.write_all(&pending).and_then(|()| writer.flush()) {
+                eprintln!("qmux: failed to write input to native pane {pane_id}: {err}");
+                return;
+            }
+        }
+    });
+    sender
 }
 
 pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, String> {
@@ -1295,6 +1374,7 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
     state.remove_pane(&pane_id)?;
     if native_surface {
         let _ = crate::native_terminal::remove(&pane_id);
+        remove_native_input_writer(&pane_id);
     }
     if let Some(agent_id) = pane_agent_id
         && let Err(err) = release_waiters_for_agent(state, &agent_id)
@@ -1383,7 +1463,12 @@ fn start_reader_thread(
     native_surface: bool,
 ) {
     thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
+        // 64KB per read: every chunk pays fixed costs beyond the syscall — the
+        // durable scrollback append and, for native surfaces, the FFI handoff
+        // with its buffer copy — so at the old 8KB a bulk producer (builds,
+        // `cat` of a large file) paid that overhead 8x as often. Heap-allocated
+        // to keep the reader thread's stack frame small.
+        let mut buffer = vec![0_u8; 64 * 1024];
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
@@ -1405,18 +1490,23 @@ fn start_reader_thread(
                         Err(_) => true,
                     };
                     if live {
-                        record_scrollback(&state, &pane_id, chunk);
-                        if native_surface {
-                            if let Err(err) =
+                        // Hand the surface its bytes before touching disk: the
+                        // durable append (and its occasional multi-MB trim) is
+                        // recovery bookkeeping, and running it first put disk
+                        // latency in front of every rendered chunk — including
+                        // keystroke echo. Without a native surface (non-macOS)
+                        // there is no renderer — the webview dropped the old
+                        // per-chunk pty.data events unread — so output is only
+                        // recorded.
+                        if native_surface
+                            && let Err(err) =
                                 crate::native_terminal::receive(&pane_id, chunk, false)
-                            {
-                                eprintln!(
-                                    "qmux: failed to render output for native pane {pane_id}: {err}"
-                                );
-                            }
-                        } else {
-                            state.emit(QmuxEvent::pty_data(pane_id.clone(), chunk));
+                        {
+                            eprintln!(
+                                "qmux: failed to render output for native pane {pane_id}: {err}"
+                            );
                         }
+                        record_scrollback(&state, &pane_id, chunk);
                     }
                 }
                 Err(err) => {
@@ -1459,6 +1549,7 @@ fn start_reader_thread(
         }
         if native_surface {
             let _ = crate::native_terminal::remove(&pane_id);
+            remove_native_input_writer(&pane_id);
         }
         if let Some(agent_id) = pane_agent_id
             && let Err(err) = release_waiters_for_agent(&state, &agent_id)
@@ -1498,7 +1589,7 @@ fn start_child_watcher(
         return;
     };
     thread::spawn(move || {
-        let mut descendants = descendant_process_ids(root_pid);
+        let mut descendants = watcher_descendant_process_ids(root_pid);
         let mut tick: u32 = 0;
         loop {
             thread::sleep(CHILD_WATCH_INTERVAL);
@@ -1521,7 +1612,7 @@ fn start_child_watcher(
             if !exited {
                 tick = tick.wrapping_add(1);
                 if tick.is_multiple_of(DESCENDANT_REFRESH_TICKS) {
-                    descendants = descendant_process_ids(root_pid);
+                    descendants = watcher_descendant_process_ids(root_pid);
                 }
                 continue;
             }
@@ -1548,13 +1639,22 @@ fn reap_pane_child(state: &AppState, pane_id: &str) -> Option<i32> {
     child.wait().ok().map(|status| status.exit_code() as i32)
 }
 
+/// How far below `BACKLOG_CAP` an over-cap backlog is trimmed. Draining the
+/// front of the buffer is an O(len) memmove, and trimming to the cap exactly
+/// re-ran it on every subsequent chunk of a saturated backlog — a multi-MB
+/// memmove per PTY read. The slack amortizes that to one memmove per
+/// `BACKLOG_TRIM_SLACK` bytes of overflow, at the cost of a saturated backlog
+/// retaining slightly less than the cap.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+const BACKLOG_TRIM_SLACK: usize = BACKLOG_CAP / 8;
+
 /// Appends to the pre-attach backlog, dropping the oldest bytes once it exceeds
 /// the cap so a runaway pre-attach burst can't grow unbounded.
 #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn append_capped(buffer: &mut Vec<u8>, chunk: &[u8]) {
     buffer.extend_from_slice(chunk);
     if buffer.len() > BACKLOG_CAP {
-        let overflow = buffer.len() - BACKLOG_CAP;
+        let overflow = buffer.len() - (BACKLOG_CAP - BACKLOG_TRIM_SLACK);
         buffer.drain(..overflow);
     }
 }
@@ -1678,6 +1778,45 @@ fn running_processes(pids: &[u32]) -> Vec<RunningProcess> {
 /// size.
 fn descendant_process_ids(pid: u32) -> Vec<u32> {
     descendants_from_parent_pairs(pid, &process_parent_snapshot())
+}
+
+/// How stale the shared process-table snapshot may be for pane-watcher
+/// refreshes. Watcher refreshes track long-lived descendants (dev servers,
+/// backgrounded jobs), so a snapshot a few seconds old is as good as a fresh
+/// one — while the kill/close paths keep forking their own fresh `ps`, since
+/// they act on what they see.
+const WATCHER_SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(5);
+
+/// A process-table snapshot (every live process's pid and ppid) plus when it
+/// was taken.
+type TimestampedProcessSnapshot = (std::time::Instant, Arc<Vec<(u32, u32)>>);
+
+/// The most recent shared snapshot, timestamped. Holding the lock across the
+/// `ps` fork is deliberate: concurrent watcher refreshes then wait for one
+/// snapshot instead of racing to fork their own.
+static WATCHER_SNAPSHOT: std::sync::LazyLock<Mutex<Option<TimestampedProcessSnapshot>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// `descendant_process_ids` for pane watchers: resolves against a briefly
+/// cached process-table snapshot so N panes' watchers cost at most one `ps`
+/// fork per cache window between them, instead of one fork per pane per
+/// refresh tick.
+fn watcher_descendant_process_ids(pid: u32) -> Vec<u32> {
+    descendants_from_parent_pairs(pid, &shared_process_parent_snapshot())
+}
+
+fn shared_process_parent_snapshot() -> Arc<Vec<(u32, u32)>> {
+    let mut cache = WATCHER_SNAPSHOT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((taken_at, snapshot)) = cache.as_ref()
+        && taken_at.elapsed() < WATCHER_SNAPSHOT_MAX_AGE
+    {
+        return snapshot.clone();
+    }
+    let snapshot = Arc::new(process_parent_snapshot());
+    *cache = Some((std::time::Instant::now(), snapshot.clone()));
+    snapshot
 }
 
 /// Every live process's (pid, ppid), from one `ps` invocation.
@@ -1812,6 +1951,46 @@ mod tests {
             paste,
             submit,
         }
+    }
+
+    /// A `Write` sink whose bytes are observable from the test thread while the
+    /// pane's writer thread drains into it.
+    struct SharedSink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn native_input_writer_drains_in_order_off_the_calling_thread() {
+        let pane_id = "pane-native-input-order";
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(SharedSink(sink.clone()))));
+        register_native_input_writer(pane_id, writer);
+        let state = test_state();
+
+        // The registered fast path must accept both writes without consulting
+        // pane state (no pane exists in this test AppState).
+        write_native_host_input(&state, pane_id, b"hello ".to_vec()).unwrap();
+        write_native_host_input(&state, pane_id, b"world".to_vec()).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while sink.lock().unwrap().len() < 11 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(*sink.lock().unwrap(), b"hello world");
+
+        // Once the registration is gone, the fallback path reports the missing
+        // pane synchronously instead of silently dropping input.
+        remove_native_input_writer(pane_id);
+        assert!(write_native_host_input(&state, pane_id, b"late".to_vec()).is_err());
     }
 
     fn test_state() -> AppState {
@@ -2502,9 +2681,15 @@ mod tests {
         append_capped(&mut buffer, &first);
         append_capped(&mut buffer, b"tail");
 
-        assert_eq!(buffer.len(), BACKLOG_CAP);
+        // The trim overshoots the cap by the slack so a saturated backlog pays
+        // one front-memmove per slack's worth of chunks, not one per chunk.
+        assert_eq!(buffer.len(), BACKLOG_CAP - BACKLOG_TRIM_SLACK);
         // The oldest bytes were dropped to make room; the most recent bytes win.
         assert_eq!(&buffer[buffer.len() - 4..], b"tail");
         assert_eq!(buffer[0], b'a');
+
+        // Appends within the reopened slack must not re-trim.
+        append_capped(&mut buffer, b"-more");
+        assert_eq!(buffer.len(), BACKLOG_CAP - BACKLOG_TRIM_SLACK + 5);
     }
 }

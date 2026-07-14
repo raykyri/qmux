@@ -139,6 +139,9 @@ final class NativeTerminalHost {
         pane.view.setSurfaceVisible(false)
         container.addSubview(pane.view)
         panes[id] = pane
+        // Publish the session for the lock-based receive path (PTY output
+        // bytes resolve it from Rust reader threads without a main-thread hop).
+        TerminalSessionRegistry.shared.register(pane.terminalSession, for: id)
         // Applying the cached snapshot assigns the view's controller, creating
         // the Ghostty surface now rather than after this pane's mount-time
         // settings round-trip. A failure is not a creation failure: the pane's
@@ -147,10 +150,6 @@ final class NativeTerminalHost {
             _ = pane.applySettings(currentSettings)
         }
         return true
-    }
-
-    func terminalSession(id: String) -> InMemoryTerminalSession? {
-        panes[id]?.terminalSession
     }
 
     /// True once the pane's surface is live and has been fitted to a real
@@ -163,6 +162,7 @@ final class NativeTerminalHost {
 
     func removePane(id: String) {
         guard let pane = panes.removeValue(forKey: id) else { return }
+        TerminalSessionRegistry.shared.unregister(id)
         if keyboardOwnerPane === pane {
             setKeyboardOwner(nil)
         }
@@ -400,6 +400,7 @@ final class NativeTerminalHost {
             pane.view.removeFromSuperview()
         }
         panes.removeAll()
+        TerminalSessionRegistry.shared.unregisterAll()
         clientDeferredGeometryPaneIDs.removeAll()
         pendingPaneFrames.removeAll()
         pendingFitPaneIDs.removeAll()

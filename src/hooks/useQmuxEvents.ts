@@ -576,13 +576,6 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       if (disposed) {
         return;
       }
-      // Raw PTY output has no handler here (macOS terminals render natively;
-      // the portable backend's replay goes through pane_attach), so drop the
-      // per-chunk events before they occupy the coalescer — on portable
-      // builds they arrive once per 8KB of terminal output.
-      if (event.type === "pty.data") {
-        return;
-      }
       pendingEvents.push(event);
       if (coalesceTimer === null) {
         coalesceTimer = window.setTimeout(flushPendingEvents, EVENT_COALESCE_MS);

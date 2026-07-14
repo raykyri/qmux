@@ -931,7 +931,7 @@ pub extern "C" fn qmux_native_terminal_did_write(
     // of this callback; copy it before returning across FFI.
     let bytes = unsafe { std::slice::from_raw_parts(bytes, bytes_len) }.to_vec();
     with_app_state(|state| {
-        if let Err(err) = crate::pty::write_native_host_input(state, &pane_id, &bytes) {
+        if let Err(err) = crate::pty::write_native_host_input(state, &pane_id, bytes) {
             eprintln!("qmux: failed to write native terminal input for pane {pane_id}: {err}");
         }
     });

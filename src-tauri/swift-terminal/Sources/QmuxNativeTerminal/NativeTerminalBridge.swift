@@ -65,9 +65,11 @@ public func qmuxNativeTerminalReceive(
           bytes != nil || length == 0
     else { return 0 }
     let data = bytes.map { Data(bytes: $0, count: length) } ?? Data()
-    guard let session = onTerminalMain({
-        NativeTerminalHost.shared.terminalSession(id: paneID)
-    }) else { return 0 }
+    // The per-chunk output hot path: resolve the session through the
+    // thread-safe registry rather than a main-thread hop, so PTY throughput
+    // is not serialized behind whatever the main thread is currently doing.
+    guard let session = TerminalSessionRegistry.shared.session(for: paneID)
+    else { return 0 }
     return session.receive(data) ? 1 : 0
 }
 
