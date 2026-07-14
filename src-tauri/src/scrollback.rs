@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -195,6 +195,69 @@ pub fn remove_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<()
             path.display()
         )),
     }
+}
+
+/// Removes scrollback logs and trim scratch files that no live pane owns.
+///
+/// Run once at startup, after recovery has respawned the panes that are coming
+/// back. A clean quit deliberately preserves every open pane's log so recovery
+/// can replay it (see the exit-teardown guard in `remove_pane`), and a crash or
+/// kill leaves them all behind — so without this, the log of any pane that will
+/// never return (a session lost to a kill, an agent that exited and was not
+/// respawned) lingers on disk forever holding raw terminal output, which the
+/// same log's directory hardening treats as secret-bearing. A `<pane_id>.pty`
+/// whose id is neither in `live_pane_ids` nor already reopened by a live append
+/// handle is such an orphan and is deleted. Trim scratch files
+/// (`<pane_id>.trim.<pid>.tmp`) stranded by a process killed between the synced
+/// temp write and the rename are swept by dead writer pid, mirroring the state
+/// dir's own scratch cleanup. Best-effort throughout: leftovers are only
+/// clutter, and a recycled pid just postpones one temp file's removal.
+pub fn remove_orphaned_scrollback(workspace_root: &Path, live_pane_ids: &HashSet<String>) {
+    let dir = workspace_root.join(STATE_DIR).join(SCROLLBACK_DIR);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let log_suffix = format!(".{LOG_EXTENSION}");
+    // Hold the map lock across the sweep so a pane created in the startup window
+    // (its id absent from the captured `live_pane_ids`) is still recognized as
+    // live the moment its reader opens an append handle, instead of racing us to
+    // a delete.
+    let live_logs = PANE_LOGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(pid) = trim_scratch_writer_pid(name) {
+            if pid != std::process::id() && !crate::persistence::process_is_alive(pid) {
+                let _ = fs::remove_file(&path);
+            }
+            continue;
+        }
+        let Some(pane_id) = name.strip_suffix(&log_suffix) else {
+            continue;
+        };
+        if live_pane_ids.contains(pane_id) || live_logs.contains_key(&path) {
+            continue;
+        }
+        let _ = fs::remove_file(&path);
+    }
+}
+
+/// Parses the writer pid out of a `<pane_id>.trim.<pid>.tmp` trim scratch name.
+/// Returns `None` for anything else (the live `.pty` logs, foreign files), which
+/// the sweep then leaves alone. Pane ids never contain `.` (see
+/// `pane_scrollback_path`), so the `.trim.` marker is unambiguous.
+fn trim_scratch_writer_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_suffix(".tmp")?;
+    let (rest, pid) = rest.rsplit_once('.')?;
+    if !rest.ends_with(".trim") {
+        return None;
+    }
+    pid.parse().ok()
 }
 
 /// Rewrites the log down to the newest `SCROLLBACK_LOG_CAP` bytes. Only called
@@ -673,6 +736,74 @@ mod tests {
         append_pane_scrollback(&workspace, "pane-1", b"new").unwrap();
 
         assert_eq!(read_pane_scrollback(&workspace, "pane-1").unwrap(), b"new");
+    }
+
+    #[test]
+    fn orphaned_scrollback_logs_are_swept_by_liveness() {
+        let workspace = temp_workspace();
+        append_pane_scrollback(&workspace, "pane-live", b"keep me").unwrap();
+        // Model a log left by a previous process: on disk, with no in-memory
+        // append handle. Written directly so PANE_LOGS holds no entry for it.
+        let dead_path = pane_scrollback_path(&workspace, "pane-dead").unwrap();
+        fs::create_dir_all(dead_path.parent().unwrap()).unwrap();
+        fs::write(&dead_path, b"drop me").unwrap();
+
+        let live: HashSet<String> = ["pane-live".to_string()].into_iter().collect();
+        remove_orphaned_scrollback(&workspace, &live);
+
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-live").unwrap(),
+            b"keep me"
+        );
+        assert!(!dead_path.exists(), "orphaned log should be removed");
+    }
+
+    #[test]
+    fn orphaned_sweep_keeps_a_pane_with_a_live_append_handle() {
+        let workspace = temp_workspace();
+        // The pane id is absent from the captured live set (as if created in the
+        // startup window), but its append handle is open — the sweep must keep it.
+        append_pane_scrollback(&workspace, "pane-racing", b"live output").unwrap();
+
+        remove_orphaned_scrollback(&workspace, &HashSet::new());
+
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-racing").unwrap(),
+            b"live output"
+        );
+    }
+
+    #[test]
+    fn orphaned_sweep_removes_dead_pid_trim_scratch_only() {
+        let workspace = temp_workspace();
+        let dir = workspace.join(STATE_DIR).join(SCROLLBACK_DIR);
+        fs::create_dir_all(&dir).unwrap();
+
+        // A pid we know is dead: spawn a child, reap it, reuse its pid.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
+        let dead_scratch = dir.join(format!("pane-1.trim.{dead_pid}.tmp"));
+        let live_scratch = dir.join(format!("pane-1.trim.{}.tmp", std::process::id()));
+        fs::write(&dead_scratch, b"stranded").unwrap();
+        fs::write(&live_scratch, b"in flight").unwrap();
+
+        remove_orphaned_scrollback(&workspace, &HashSet::new());
+
+        assert!(!dead_scratch.exists(), "dead-pid trim scratch should be swept");
+        assert!(
+            live_scratch.exists(),
+            "a live process's in-flight trim scratch must be left alone"
+        );
+    }
+
+    #[test]
+    fn trim_scratch_writer_pid_parses_only_trim_temps() {
+        assert_eq!(trim_scratch_writer_pid("pane-1.trim.4321.tmp"), Some(4321));
+        assert_eq!(trim_scratch_writer_pid("pane-1.pty"), None);
+        assert_eq!(trim_scratch_writer_pid("pane-1.trim.tmp"), None);
+        assert_eq!(trim_scratch_writer_pid("pane-1.trim.notpid.tmp"), None);
     }
 
     #[test]
