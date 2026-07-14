@@ -3,7 +3,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -24,6 +26,12 @@ import {
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
 import { growComposerTextarea } from "../lib/composerTextarea";
+import {
+  completeComposerSlashCommand,
+  matchingComposerSlashCommands,
+  parseComposerSlashCommand,
+  type ComposerSlashCommand,
+} from "../lib/composerSlashCommands";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import { useConfirm } from "../hooks/useConfirm";
@@ -112,7 +120,8 @@ function queuedTurnDeliveryLabel(delivery: QueuedTurnDelivery) {
   return delivery.useWorktree ? "Fork in worktree" : "Fork session";
 }
 
-const FORK_REQUIREMENT_TITLE = "Forking needs a Claude or Codex session that has run a turn";
+const FORK_REQUIREMENT_TITLE =
+  "Forking requires a supported agent session that has run a turn";
 
 // The delivery choices offered by the queue dropdown, above the wait targets.
 const QUEUE_DELIVERY_OPTIONS: Array<{
@@ -245,6 +254,10 @@ interface NativeInputProps {
   registerDraftFlusher: (flush: () => void) => () => void;
   onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onWaitTargetHover: (agentId: string | null) => void;
+  onForkWithPrompt: (options: {
+    useWorktree: boolean;
+    prompt: string;
+  }) => Promise<boolean>;
   onTurnSubmitted: (agentId: string, text: string, mode: SubmitAgentTurnMode) => void;
   onUserInput: (agentId: string) => void;
   // Read/write a tab's last queue scroll position (kept in App so it survives the
@@ -275,6 +288,7 @@ export default function NativeInput({
   registerDraftFlusher,
   onQueuedTurnCollapseToggle,
   onWaitTargetHover,
+  onForkWithPrompt,
   onTurnSubmitted,
   onUserInput,
   getQueueScroll,
@@ -418,6 +432,17 @@ export default function NativeInput({
     maxWidth: number;
   } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const slashPopoverRef = useRef<HTMLDivElement | null>(null);
+  const slashListId = useId();
+  const [textareaFocused, setTextareaFocused] = useState(false);
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [slashDismissedValue, setSlashDismissedValue] = useState<string | null>(null);
+  const [slashPos, setSlashPos] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number;
+    maxWidth: number;
+  } | null>(null);
 
   // Saved-prompt insertion requests from the pane header's library menu. The
   // caret lives here, so the splice happens here: insert at the selection (or
@@ -460,6 +485,14 @@ export default function NativeInput({
   // Delivery to a brand-new session only needs an adapter, which every agent has,
   // so the queue dropdown no longer requires wait targets to exist.
   const canQueueFork = agentCanFork(agent);
+  const parsedSlashCommand = useMemo(() => parseComposerSlashCommand(value), [value]);
+  const slashMatches = useMemo(() => matchingComposerSlashCommands(value), [value]);
+  const activeSlashIndex = Math.min(
+    slashSelectedIndex,
+    Math.max(0, slashMatches.length - 1),
+  );
+  const slashMenuOpen =
+    textareaFocused && slashMatches.length > 0 && slashDismissedValue !== value;
   const waitDisabled = submitting || agent.status === "failed" || !hasSubmitValue;
   const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueuedTurns;
   const submitShortcutWouldTargetQueue =
@@ -468,6 +501,14 @@ export default function NativeInput({
   const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
+
+  useEffect(() => {
+    setSlashSelectedIndex(0);
+  }, [agent.id, value]);
+
+  useEffect(() => {
+    setSlashDismissedValue(null);
+  }, [agent.id]);
 
   function waitLabelWithShortcut(label: string, shortcutLabel?: string | null) {
     return shortcutLabel ? `${label} (${shortcutLabel})` : label;
@@ -567,6 +608,24 @@ export default function NativeInput({
     );
   }, []);
 
+  const positionSlashMenu = useCallback(() => {
+    const trigger = textareaRef.current;
+    const popover = slashPopoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const { width, height } = popover.getBoundingClientRect();
+    setSlashPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width, height },
+        paneRect: turnPaneRectFrom(trigger),
+        align: "start",
+        prefer: "above",
+      }),
+    );
+  }, []);
+
   useLayoutEffect(() => {
     if (!menuOpen) {
       setMenuPos(null);
@@ -596,6 +655,21 @@ export default function NativeInput({
       window.removeEventListener("scroll", onReflow, true);
     };
   }, [waitOpen, positionWait]);
+
+  useLayoutEffect(() => {
+    if (!slashMenuOpen) {
+      setSlashPos(null);
+      return;
+    }
+    positionSlashMenu();
+    const onReflow = () => positionSlashMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [positionSlashMenu, slashMenuOpen, slashMatches.length]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -679,6 +753,20 @@ export default function NativeInput({
     [onQueueDropTargetChange],
   );
 
+  function completeSlashCommand(command: ComposerSlashCommand) {
+    const completed = completeComposerSlashCommand(command);
+    setSlashDismissedValue(null);
+    setValue(completed);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        return;
+      }
+      textarea.focus();
+      textarea.setSelectionRange(completed.length, completed.length);
+    });
+  }
+
   async function submitTurn(text: string, mode: SubmitAgentTurnMode) {
     if (submitting) {
       return;
@@ -686,6 +774,37 @@ export default function NativeInput({
 
     const trimmed = text.trim();
     if (!trimmed) {
+      return;
+    }
+
+    const slashCommand = parseComposerSlashCommand(text);
+    if (slashCommand.kind === "incomplete") {
+      onError(`Add a message after ${slashCommand.command.token}`);
+      return;
+    }
+    if (slashCommand.kind === "ready") {
+      if (!canQueueFork) {
+        onError(FORK_REQUIREMENT_TITLE);
+        return;
+      }
+      setMenuOpen(false);
+      setWaitOpen(false);
+      setSubmitting(true);
+      try {
+        const forked = await onForkWithPrompt({
+          useWorktree: slashCommand.command.useWorktree,
+          prompt: slashCommand.prompt,
+        });
+        if (forked) {
+          recordRecentMessage(trimmed);
+          setValue("");
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
+      } catch (err) {
+        onError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
 
@@ -1278,6 +1397,14 @@ export default function NativeInput({
         <textarea
           ref={textareaRef}
           value={value}
+          aria-autocomplete="list"
+          aria-controls={slashMenuOpen ? slashListId : undefined}
+          aria-expanded={slashMenuOpen}
+          aria-activedescendant={
+            slashMenuOpen ? `${slashListId}-option-${activeSlashIndex}` : undefined
+          }
+          onFocus={() => setTextareaFocused(true)}
+          onBlur={() => setTextareaFocused(false)}
           onChange={(event) => {
             setValue(event.currentTarget.value);
             onUserInput(agent.id);
@@ -1316,9 +1443,67 @@ export default function NativeInput({
             });
           }}
           onKeyDown={(event) => {
+            if (slashMenuOpen && !event.nativeEvent.isComposing) {
+              if (
+                (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey &&
+                !event.shiftKey
+              ) {
+                event.preventDefault();
+                const step = event.key === "ArrowDown" ? 1 : -1;
+                setSlashSelectedIndex(
+                  (activeSlashIndex + step + slashMatches.length) % slashMatches.length,
+                );
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setSlashDismissedValue(value);
+                return;
+              }
+              const acceptsSelection =
+                event.key === "Tab" ||
+                (event.key === "Enter" &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  !event.altKey &&
+                  !event.shiftKey);
+              if (acceptsSelection) {
+                const command = slashMatches[activeSlashIndex];
+                if (command) {
+                  event.preventDefault();
+                  if (canQueueFork) {
+                    completeSlashCommand(command);
+                  } else {
+                    onError(FORK_REQUIREMENT_TITLE);
+                  }
+                  return;
+                }
+                if (event.key === "Enter") {
+                  // Keep a disabled typeahead from submitting a partial command;
+                  // Tab remains native so keyboard users can leave the field.
+                  event.preventDefault();
+                }
+                return;
+              }
+            }
             if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
               event.preventDefault();
-              if (submitShortcutTargetsSend) {
+              if (slashMenuOpen) {
+                const command = slashMatches[activeSlashIndex];
+                if (!command) {
+                  return;
+                }
+                if (canQueueFork) {
+                  completeSlashCommand(command);
+                } else {
+                  onError(FORK_REQUIREMENT_TITLE);
+                }
+              } else if (parsedSlashCommand.kind !== "none") {
+                void submitTurn(value, "send");
+              } else if (submitShortcutTargetsSend) {
                 void submitTurn(value, "send");
               } else if (submitShortcutTargetsQueue) {
                 void submitTurn(value, "queue");
@@ -1345,6 +1530,51 @@ export default function NativeInput({
           }
           rows={1}
         />
+        {slashMenuOpen
+          ? createPortal(
+              <div
+                ref={slashPopoverRef}
+                id={slashListId}
+                className="popover-surface composer-slash-popover"
+                role="listbox"
+                aria-label="qMux slash commands"
+                style={
+                  slashPos
+                    ? {
+                        left: slashPos.left,
+                        top: slashPos.top,
+                        maxHeight: slashPos.maxHeight,
+                        maxWidth: slashPos.maxWidth,
+                      }
+                    : { left: -9999, top: -9999 }
+                }
+              >
+                {slashMatches.map((command, index) => (
+                  <button
+                    key={command.name}
+                    id={`${slashListId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeSlashIndex}
+                    className={`composer-slash-option${
+                      index === activeSlashIndex ? " is-selected" : ""
+                    }`}
+                    disabled={!canQueueFork}
+                    title={!canQueueFork ? FORK_REQUIREMENT_TITLE : command.description}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseMove={() => setSlashSelectedIndex(index)}
+                    onClick={() => completeSlashCommand(command)}
+                  >
+                    <span className="composer-slash-token">{command.token}</span>
+                    <span className="composer-slash-description">
+                      {!canQueueFork ? FORK_REQUIREMENT_TITLE : command.description}
+                    </span>
+                  </button>
+                ))}
+              </div>,
+              document.body,
+            )
+          : null}
         <div className="native-input-submit-actions">
           {paused ? <span className="composer-paused-label">Paused</span> : null}
           <div className="composer-menu" ref={menuRef}>
@@ -1484,74 +1714,101 @@ export default function NativeInput({
               </button>
             ))
           ) : null}
-          {!sendDisabled ? (
-            <button className="control-button" type="button" onClick={() => void submitTurn(value, "send")}>
-              <span>Send</span>
-              {submitShortcutWouldTargetSend ? (
-                <ComposerSubmitShortcutGlyph
-                  requireCmdEnter={requireCmdEnterToSend}
-                  className="shortcut-hint"
-                />
-              ) : null}
-            </button>
-          ) : null}
-          {canSteer ? (
-            <button className="control-button"
-              type="button"
-              disabled={submitting || value.trim().length === 0}
-              onClick={() => void submitTurn(value, "steer")}
-              title="Send now, interrupting the agent's current work"
-            >
-              <span>Send Now</span>
-            </button>
-          ) : null}
-          {paused ? (
+          {slashMenuOpen ? null : parsedSlashCommand.kind !== "none" ? (
             <button
+              className="control-button"
               type="button"
-              className="control-button queue-button"
-              disabled={submitting}
-              onClick={() => void unpause()}
-              title="Clear the pause and resume the queue"
+              disabled={
+                submitting || parsedSlashCommand.kind !== "ready" || !canQueueFork
+              }
+              title={!canQueueFork ? FORK_REQUIREMENT_TITLE : undefined}
+              onClick={() => void submitTurn(value, "send")}
             >
-              <span>Unpause</span>
+              <span>
+                {parsedSlashCommand.command.useWorktree
+                  ? "Fork in worktree & send"
+                  : "Fork & send"}
+              </span>
+              <ComposerSubmitShortcutGlyph
+                requireCmdEnter={requireCmdEnterToSend}
+                className="shortcut-hint"
+              />
             </button>
           ) : (
-            <div className="wait-target-picker queue-button-group" ref={waitRef}>
-              <button
-                type="button"
-                className="control-button queue-button queue-button-main"
-                disabled={submitting || !canAppendQueue || value.trim().length === 0}
-                onClick={() => {
-                  setWaitOpen(false);
-                  void submitTurn(value, "queue");
-                }}
-              >
-                <span>Queue</span>
-                {submitShortcutWouldTargetQueue ? (
-                  <ComposerSubmitShortcutGlyph
-                    requireCmdEnter={requireCmdEnterToSend}
-                    className="shortcut-hint"
-                  />
-                ) : null}
-              </button>
-              <button
-                ref={waitTriggerRef}
-                type="button"
-                className="control-button queue-menu-button"
-                disabled={waitDisabled}
-                aria-haspopup="menu"
-                aria-expanded={waitOpen}
-                aria-label="Queue options"
-                title="Queue this turn to a fork, a new session, or after another terminal"
-                onClick={() => {
-                  setMenuOpen(false);
-                  setWaitOpen((open) => !open);
-                }}
-              >
-                <ChevronDown size={14} aria-hidden="true" />
-              </button>
-              {waitOpen
-                ? createPortal(
+            <>
+              {!sendDisabled ? (
+                <button
+                  className="control-button"
+                  type="button"
+                  onClick={() => void submitTurn(value, "send")}
+                >
+                  <span>Send</span>
+                  {submitShortcutWouldTargetSend ? (
+                    <ComposerSubmitShortcutGlyph
+                      requireCmdEnter={requireCmdEnterToSend}
+                      className="shortcut-hint"
+                    />
+                  ) : null}
+                </button>
+              ) : null}
+              {canSteer ? (
+                <button
+                  className="control-button"
+                  type="button"
+                  disabled={submitting || value.trim().length === 0}
+                  onClick={() => void submitTurn(value, "steer")}
+                  title="Send now, interrupting the agent's current work"
+                >
+                  <span>Send Now</span>
+                </button>
+              ) : null}
+              {paused ? (
+                <button
+                  type="button"
+                  className="control-button queue-button"
+                  disabled={submitting}
+                  onClick={() => void unpause()}
+                  title="Clear the pause and resume the queue"
+                >
+                  <span>Unpause</span>
+                </button>
+              ) : (
+                <div className="wait-target-picker queue-button-group" ref={waitRef}>
+                  <button
+                    type="button"
+                    className="control-button queue-button queue-button-main"
+                    disabled={submitting || !canAppendQueue || value.trim().length === 0}
+                    onClick={() => {
+                      setWaitOpen(false);
+                      void submitTurn(value, "queue");
+                    }}
+                  >
+                    <span>Queue</span>
+                    {submitShortcutWouldTargetQueue ? (
+                      <ComposerSubmitShortcutGlyph
+                        requireCmdEnter={requireCmdEnterToSend}
+                        className="shortcut-hint"
+                      />
+                    ) : null}
+                  </button>
+                  <button
+                    ref={waitTriggerRef}
+                    type="button"
+                    className="control-button queue-menu-button"
+                    disabled={waitDisabled}
+                    aria-haspopup="menu"
+                    aria-expanded={waitOpen}
+                    aria-label="Queue options"
+                    title="Queue this turn to a fork, a new session, or after another terminal"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setWaitOpen((open) => !open);
+                    }}
+                  >
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </button>
+                  {waitOpen
+                    ? createPortal(
                     <div
                       ref={waitPopoverRef}
                       className="popover-surface wait-target-popover"
@@ -1615,10 +1872,12 @@ export default function NativeInput({
                         </button>
                       ))}
                     </div>,
-                    document.body,
-                  )
-                : null}
-            </div>
+                        document.body,
+                      )
+                    : null}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

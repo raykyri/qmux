@@ -7512,8 +7512,8 @@ export default function App() {
   // list, so the optimistic append below is just to avoid a flicker.
   async function forkPane(
     pane: PaneInfo,
-    options: { nest: boolean; useWorktree: boolean },
-  ) {
+    options: { nest: boolean; useWorktree: boolean; prompt?: string },
+  ): Promise<boolean> {
     setError(null);
     try {
       const fork = await forkAgent(pane.id, options);
@@ -7522,8 +7522,17 @@ export default function App() {
       );
       setActivePaneId(fork.id);
       expandNewAgentTranscriptByDefault(fork);
+      if (options.prompt && fork.agentId) {
+        pendingFirstTitleByAgentRef.current.set(
+          fork.agentId,
+          createPendingFirstMessageTitle(fork.id),
+        );
+        applyPendingFirstMessageTitle(fork.agentId, options.prompt);
+      }
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     }
   }
 
@@ -9233,6 +9242,13 @@ export default function App() {
                 registerDraftFlusher={registerComposerDraftFlusher}
                 onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                 onWaitTargetHover={setWaitTargetHoverAgentId}
+                onForkWithPrompt={({ useWorktree, prompt }) =>
+                  forkPane(surface.pane, {
+                    nest: true,
+                    useWorktree,
+                    prompt,
+                  })
+                }
                 onTurnSubmitted={(agentId, text, mode) => {
                   // Show "Working…" the instant a send starts a run, before the
                   // backend's status event round-trips. Gate on the agent being

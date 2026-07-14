@@ -284,6 +284,64 @@
   overflow-y: auto;
 }
 
+/* qMux command completion is anchored to the textarea's top edge and portaled so
+   it can grow upward over the transcript without being clipped by the input rail. */
+.composer-slash-popover {
+  width: min(360px, calc(100vw - 24px));
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.composer-slash-option {
+  appearance: none;
+  display: grid;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-slash-option.is-selected:not(:disabled),
+.composer-slash-option:hover:not(:disabled) {
+  border-color: var(--control-border-hover-accent);
+  background: var(--control-bg-hover);
+}
+
+.composer-slash-option:disabled {
+  color: var(--control-fg-muted);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.composer-slash-token {
+  color: var(--accent-color);
+  font-family: var(--font-mono);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.composer-slash-option:disabled .composer-slash-token {
+  color: inherit;
+}
+
+.composer-slash-description {
+  min-width: 0;
+  color: var(--control-fg-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+}
+
 .composer-menu-label {
   padding: 4px 10px 2px;
   color: var(--text-muted);

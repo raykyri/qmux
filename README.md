@@ -25,6 +25,9 @@ matching UI adapter on the frontend.
 - Transcript JSONL tailing and a native follow-up composer: send, queue,
   steer, edit/reorder queued turns, and approve/deny permission prompts where
   supported.
+- qMux slash commands in the follow-up composer: `/fork <message>` branches the
+  current session, while `/worktree <message>` branches it in a fresh worktree.
+  Typing `/` opens an upward command typeahead.
 - Session/transcript recovery. Respawns recoverable panes and agents on
   restart, along with drafts that you've typed in qmux.
 - Persisted pane, group, agent, transcript, and queued-turn metadata with
