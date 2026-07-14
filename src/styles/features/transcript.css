@@ -1273,6 +1273,14 @@ header + .turn-blocks {
   gap: 6px;
 }
 
+/* Match the app's primary-action treatment (see .prompt-library-button.is-primary);
+   .control-button has no is-primary variant of its own. */
+.transcript-annotation-popover .control-button.is-primary {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: var(--text-strong);
+}
+
 .transcript-annotation-notes-header {
   color: var(--text-secondary, #b9beb8);
   font-size: calc(11px + var(--turn-font-delta, 0px));
