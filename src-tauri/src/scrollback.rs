@@ -13,14 +13,6 @@ const LOG_EXTENSION: &str = "pty";
 /// replay, and retaining the latest bytes gives the same practical behavior as
 /// a bounded scrollback window without storing a frontend-specific buffer shape.
 const SCROLLBACK_LOG_CAP: u64 = 8 * 1024 * 1024;
-/// File length at which a trim actually runs. Trimming rewrites the whole
-/// retained tail with an fsync, so triggering it the moment the file passed the
-/// cap meant every subsequent append of a long-lived noisy pane paid a full
-/// 8MB read + synced write + rename — per PTY chunk, under the pane's
-/// scrollback lock. The slack amortizes that to one rewrite per
-/// `SCROLLBACK_TRIM_TRIGGER - SCROLLBACK_LOG_CAP` bytes of output, at the cost
-/// of the on-disk file transiently exceeding the cap by up to the slack.
-const SCROLLBACK_TRIM_TRIGGER: u64 = SCROLLBACK_LOG_CAP + SCROLLBACK_LOG_CAP / 2;
 /// Ceiling on trims running at once, across all panes. A trim reads the whole
 /// log (up to the trigger) and builds its sanitized rewrite in memory — several
 /// tens of MB transiently — and per-pane locks deliberately let every pane trim
@@ -29,9 +21,61 @@ const SCROLLBACK_TRIM_TRIGGER: u64 = SCROLLBACK_LOG_CAP + SCROLLBACK_LOG_CAP / 2
 /// would run all their trims at once and multiply that transient by the pane
 /// count, spiking to hundreds of MB. Bounding the concurrency caps the peak
 /// while still letting a handful proceed in parallel; trims are rare (one per
-/// `SCROLLBACK_TRIM_TRIGGER - SCROLLBACK_LOG_CAP` bytes of output per pane), so
-/// the occasional wait costs little.
+/// trigger's worth of slack per pane), so the occasional wait costs little.
 const MAX_CONCURRENT_TRIMS: usize = 4;
+/// Estimated durable bytes per retained scrollback row, used to scale the log
+/// cap to the user's configured `scrollbackRows`. Raw terminal bytes per row
+/// vary wildly with width and escape density, so this is a budget, not a
+/// guarantee — it just keeps a user who raised their live scrollback depth from
+/// being silently held to the 8MB default when their session is restored.
+const BYTES_PER_ROW_ESTIMATE: u64 = 512;
+/// Hard ceiling on the derived cap regardless of `scrollbackRows`, so a very
+/// large row setting can't grow each pane's on-disk log — and the in-memory
+/// trim that rewrites it — without bound.
+const MAX_SCROLLBACK_LOG_CAP: u64 = 64 * 1024 * 1024;
+
+/// The effective per-pane byte cap. Starts at `SCROLLBACK_LOG_CAP` and is raised
+/// toward `MAX_SCROLLBACK_LOG_CAP` as the configured scrollback rows grow (see
+/// `set_scrollback_cap_for_rows`). Relaxed throughout: it is only a trim
+/// threshold, so a briefly stale read just trims a hair early or late.
+static EFFECTIVE_SCROLLBACK_CAP: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(SCROLLBACK_LOG_CAP);
+
+fn effective_scrollback_cap() -> u64 {
+    EFFECTIVE_SCROLLBACK_CAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The file length at which a trim actually runs: the effective cap plus 50%
+/// hysteresis slack. Trimming rewrites the whole retained tail with an fsync, so
+/// firing it the instant the file passed the cap would make every subsequent
+/// append of a long-lived noisy pane pay a full cap-sized read + synced write +
+/// rename per PTY chunk, under the pane's scrollback lock. The slack amortizes
+/// that to one rewrite per half-cap of output, at the cost of the on-disk file
+/// transiently exceeding the cap by up to the slack.
+fn effective_trim_trigger() -> u64 {
+    let cap = effective_scrollback_cap();
+    cap + cap / 2
+}
+
+/// Maps a configured scrollback-row count to a durable byte budget, floored at
+/// the 8MB default (never smaller than today) and ceilinged at
+/// `MAX_SCROLLBACK_LOG_CAP`.
+fn cap_bytes_for_rows(rows: u32) -> u64 {
+    (rows as u64)
+        .saturating_mul(BYTES_PER_ROW_ESTIMATE)
+        .clamp(SCROLLBACK_LOG_CAP, MAX_SCROLLBACK_LOG_CAP)
+}
+
+/// Scales the durable scrollback cap to the live scrollback depth the user
+/// configured. Called whenever the frontend seeds or updates terminal settings,
+/// so the bytes retained for restore track how much history they asked their
+/// live surface to keep instead of a fixed 8MB unrelated to that preference.
+pub fn set_scrollback_cap_for_rows(rows: u32) {
+    EFFECTIVE_SCROLLBACK_CAP.store(
+        cap_bytes_for_rows(rows),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// One entry per pane log, keyed by the log's path. Scrollback I/O used to
 /// serialize every pane behind one global mutex, so a noisy pane's trim — a
@@ -107,7 +151,7 @@ impl PaneLog {
                 path.display()
             ));
         };
-        if len > SCROLLBACK_TRIM_TRIGGER {
+        if len > effective_trim_trigger() {
             // The rename inside the trim replaces the inode, so the cached
             // append handle must not survive it; the next append reopens.
             self.file = None;
@@ -322,9 +366,9 @@ fn trim_scratch_writer_pid(name: &str) -> Option<u32> {
     pid.parse().ok()
 }
 
-/// Rewrites the log down to the newest `SCROLLBACK_LOG_CAP` bytes. Only called
-/// once the file has grown past `SCROLLBACK_TRIM_TRIGGER`, so the rewrite cost
-/// is amortized over the slack instead of paid per append.
+/// Rewrites the log down to the newest `effective_scrollback_cap()` bytes. Only
+/// called once the file has grown past `effective_trim_trigger()`, so the
+/// rewrite cost is amortized over the slack instead of paid per append.
 fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     // Bound the peak memory of simultaneous trims. Held for the whole rewrite;
     // released on drop at function exit (including the error paths below).
@@ -341,7 +385,7 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     // because the real entry sequence fell off the front of the file.
     let (canonical, alternate_screen) = sanitize_scrollback_replay_with_state(&captured);
     let marker = alternate_screen.then_some(b"\x1b[?1049h".as_slice());
-    let retained_cap = SCROLLBACK_LOG_CAP as usize - marker.map_or(0, <[u8]>::len);
+    let retained_cap = effective_scrollback_cap() as usize - marker.map_or(0, <[u8]>::len);
     let keep_from = canonical.len().saturating_sub(retained_cap);
     // The cap is a raw byte offset, so it can land inside a multi-byte UTF-8
     // scalar or an SGR/cursor escape and leave the retained tail beginning with
@@ -774,14 +818,14 @@ mod tests {
     #[test]
     fn scrollback_is_capped_to_recent_bytes() {
         let workspace = temp_workspace();
-        let large = vec![b'a'; SCROLLBACK_TRIM_TRIGGER as usize];
+        let large = vec![b'a'; effective_trim_trigger() as usize];
 
         // Exactly at the trigger: no trim yet (hysteresis slack, not the cap,
         // bounds the on-disk file between trims).
         append_pane_scrollback(&workspace, "pane-1", &large).unwrap();
         assert_eq!(
             read_pane_scrollback(&workspace, "pane-1").unwrap().len(),
-            SCROLLBACK_TRIM_TRIGGER as usize
+            effective_trim_trigger() as usize
         );
 
         // Past the trigger: trimmed down to the newest cap-sized tail.
@@ -810,7 +854,7 @@ mod tests {
                 let workspace = workspace.clone();
                 std::thread::spawn(move || {
                     let pane = format!("pane-{i}");
-                    let mut data = vec![b'a'; SCROLLBACK_TRIM_TRIGGER as usize];
+                    let mut data = vec![b'a'; effective_trim_trigger() as usize];
                     data.extend_from_slice(b"tail");
                     append_pane_scrollback(&workspace, &pane, &data).unwrap();
                     let restored = read_pane_scrollback(&workspace, &pane).unwrap();
@@ -822,6 +866,18 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
+    }
+
+    #[test]
+    fn cap_scales_with_rows_between_the_default_floor_and_the_ceiling() {
+        // Low / default row counts stay at the historical 8MB floor.
+        assert_eq!(cap_bytes_for_rows(0), SCROLLBACK_LOG_CAP);
+        assert_eq!(cap_bytes_for_rows(1_000), SCROLLBACK_LOG_CAP);
+        // Deeper scrollback scales the durable cap up...
+        let mid = cap_bytes_for_rows(60_000);
+        assert!(mid > SCROLLBACK_LOG_CAP && mid < MAX_SCROLLBACK_LOG_CAP);
+        // ...but a huge setting is clamped at the ceiling, not unbounded.
+        assert_eq!(cap_bytes_for_rows(u32::MAX), MAX_SCROLLBACK_LOG_CAP);
     }
 
     #[test]
@@ -867,7 +923,7 @@ mod tests {
     fn trim_keeps_the_retained_tail_on_a_scalar_boundary() {
         let workspace = temp_workspace();
         let line = "héllo-世界\n".as_bytes();
-        let count = (SCROLLBACK_TRIM_TRIGGER as usize / line.len()) + 2;
+        let count = (effective_trim_trigger() as usize / line.len()) + 2;
         let mut data = Vec::with_capacity(count * line.len());
         for _ in 0..count {
             data.extend_from_slice(line);
@@ -1198,7 +1254,7 @@ mod tests {
     fn trim_preserves_open_alternate_screen_state_for_future_appends() {
         let workspace = temp_workspace();
         let mut noisy_tui = b"before\r\n\x1b[?1049h".to_vec();
-        noisy_tui.extend(std::iter::repeat_n(b'x', SCROLLBACK_TRIM_TRIGGER as usize));
+        noisy_tui.extend(std::iter::repeat_n(b'x', effective_trim_trigger() as usize));
         append_pane_scrollback(&workspace, "pane-1", &noisy_tui).unwrap();
         assert!(
             read_pane_scrollback(&workspace, "pane-1").unwrap().len()
@@ -1221,7 +1277,7 @@ mod tests {
     #[test]
     fn trim_counts_the_alternate_screen_marker_toward_the_cap() {
         let workspace = temp_workspace();
-        let mut output = vec![b'a'; SCROLLBACK_TRIM_TRIGGER as usize];
+        let mut output = vec![b'a'; effective_trim_trigger() as usize];
         output.extend_from_slice(b"\x1b[?1049h");
 
         append_pane_scrollback(&workspace, "pane-1", &output).unwrap();

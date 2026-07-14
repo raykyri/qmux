@@ -1217,11 +1217,15 @@ pub fn native_terminal_paste_approved_text(pane_id: String, text: String) -> Res
 
 #[tauri::command]
 pub fn native_terminal_update_settings(settings: NativeTerminalSettings) -> Result<(), String> {
+    // Track the configured live scrollback depth so the durable log cap scales
+    // with it instead of holding a deep-scrollback user to the 8MB default.
+    crate::scrollback::set_scrollback_cap_for_rows(settings.scrollback_rows);
     imp::update_settings(settings)
 }
 
 #[tauri::command]
 pub fn native_terminal_seed_settings(settings: NativeTerminalSeedSettings) -> Result<(), String> {
+    crate::scrollback::set_scrollback_cap_for_rows(settings.scrollback_rows);
     imp::seed_settings(settings)
 }
 
