@@ -23,6 +23,7 @@ final class NativeTerminalHost {
     private var panes: [String: NativeTerminalPane] = [:]
     private var backstop: NSView?
     private var eventMonitor: Any?
+    private var resignKeyObserver: NSObjectProtocol?
     private weak var keyboardOwnerPane: NativeTerminalPane?
     private weak var pointerCapturePane: NativeTerminalPane?
     private var consumedAppShortcutKeyCodes: Set<UInt16> = []
@@ -403,6 +404,10 @@ final class NativeTerminalHost {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
         }
+        if let resignKeyObserver {
+            NotificationCenter.default.removeObserver(resignKeyObserver)
+            self.resignKeyObserver = nil
+        }
         setKeyboardOwner(nil)
         consumedAppShortcutKeyCodes.removeAll()
         pointerCapturePane = nil
@@ -479,8 +484,38 @@ final class NativeTerminalHost {
         return nil
     }
 
+    /// Consumed-shortcut key codes arm a one-shot swallow of a matching keyUp.
+    /// When the window loses key status mid-chord (the global show/hide
+    /// shortcut, app deactivation with ⌘ held) those keyUps are delivered to
+    /// another app or nowhere, so the armed entries would otherwise wait to
+    /// swallow an unrelated future release. The keyDown-side invariant in
+    /// routeKeyEvent already heals same-window staleness; this clears the rest
+    /// the moment the keyUps stop being ours to see.
+    private func windowDidResignKey(_ resigned: NSWindow?) {
+        guard let resigned, resigned === window else { return }
+        consumedAppShortcutKeyCodes.removeAll()
+        for pane in panes.values {
+            pane.consumedShortcutKeyCodes.removeAll()
+        }
+    }
+
     private func installEventMonitor() {
         guard eventMonitor == nil else { return }
+        if resignKeyObserver == nil {
+            resignKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: nil,
+                queue: .main
+            ) { notification in
+                // Delivered on the main queue; hop into the main actor for the
+                // host's state. The window comparison happens inside, since the
+                // host resolves its window lazily.
+                let resigned = notification.object as? NSWindow
+                MainActor.assumeIsolated {
+                    NativeTerminalHost.shared.windowDidResignKey(resigned)
+                }
+            }
+        }
         let mask: NSEvent.EventTypeMask = [
             .leftMouseDown,
             .leftMouseUp,

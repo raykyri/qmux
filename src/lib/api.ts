@@ -620,11 +620,27 @@ let nativeTerminalWebPointerUpdate: Promise<void> = Promise.resolve();
 
 function queueNativeTerminalWebPointerClaim(claimed: boolean) {
   // Preserve start/end order even when a very short drag releases before the
-  // first invoke has completed. Errors are intentionally absorbed so a failed
-  // native bridge call cannot poison later drag ownership updates.
+  // first invoke has completed. The claim is global native state — a dropped
+  // update (a release especially) leaves every terminal mouse-dead until some
+  // later claim cycle happens to rewrite it — so transient bridge failures
+  // are retried. Retries run inside the serialized chain, so a newer update
+  // can never be overtaken by an older retry; errors are still absorbed at
+  // the end so a persistent failure cannot poison later ownership updates.
   nativeTerminalWebPointerUpdate = nativeTerminalWebPointerUpdate
     .catch(() => undefined)
-    .then(() => invoke<void>("native_terminal_set_web_pointer_claimed", { claimed }))
+    .then(async () => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await invoke<void>("native_terminal_set_web_pointer_claimed", { claimed });
+          return;
+        } catch (err) {
+          if (attempt >= 2) {
+            throw err;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+        }
+      }
+    })
     .catch(() => undefined);
 }
 

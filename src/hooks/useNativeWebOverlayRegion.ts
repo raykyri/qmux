@@ -15,6 +15,9 @@ let nextRegionSequence = 0;
 export function useNativeWebOverlayRegion<T extends HTMLElement>(enabled: boolean) {
   const elementRef = useRef<T | null>(null);
   const regionIdRef = useRef<string | null>(null);
+  // Bumped on every registration; release retries from an earlier
+  // registration stop the moment a newer one owns the region.
+  const registrationRef = useRef(0);
   if (regionIdRef.current === null) {
     nextRegionSequence += 1;
     regionIdRef.current = `web-overlay-${nextRegionSequence}`;
@@ -26,6 +29,7 @@ export function useNativeWebOverlayRegion<T extends HTMLElement>(enabled: boolea
     if (!enabled || !regionId || !element) {
       return;
     }
+    const registration = ++registrationRef.current;
     let frame: number | null = null;
     const sync = () => {
       frame = null;
@@ -60,14 +64,28 @@ export function useNativeWebOverlayRegion<T extends HTMLElement>(enabled: boolea
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
-      void setNativeTerminalWebOverlayRegion({
-        regionId,
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        visible: false,
-      }).catch(() => undefined);
+      // A dropped release leaves a phantom web-owned rectangle over the
+      // terminal — pointer events inside it bypass Ghostty indefinitely — so
+      // transient failures retry. A newer registration of this same region
+      // (the control re-enabled) supersedes the release and stops the loop.
+      const release = (attempt: number) => {
+        if (registrationRef.current !== registration) {
+          return;
+        }
+        void setNativeTerminalWebOverlayRegion({
+          regionId,
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0,
+          visible: false,
+        }).catch(() => {
+          if (attempt < 2) {
+            window.setTimeout(() => release(attempt + 1), 50 * (attempt + 1));
+          }
+        });
+      };
+      release(0);
     };
   }, [enabled]);
 

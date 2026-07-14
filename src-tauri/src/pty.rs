@@ -59,6 +59,12 @@ const CHILD_WATCH_INTERVAL: Duration = Duration::from_secs(2);
 /// `pgrep` walk off the steady-state path.
 const DESCENDANT_REFRESH_TICKS: u32 = 8;
 
+/// How many watch intervals the child watcher waits after its SIGTERM burst
+/// before escalating to SIGKILL, for descendants that ignore SIGTERM while
+/// holding the PTY slave open (which blocks the reader's EOF cleanup and
+/// leaves a dead pane stuck "Running" forever).
+const KILL_ESCALATION_TICKS: u32 = 2;
+
 /// Panes whose attach was requested before their native surface had committed
 /// real geometry. Replaying durable scrollback into a surface that still has
 /// its zero-frame default grid renders history at the wrong width; the fit
@@ -1652,6 +1658,23 @@ fn start_child_watcher(
             let _ = unsafe { libc::kill(-(root_pid as libc::pid_t), libc::SIGTERM) };
             for pid in &descendants {
                 let _ = unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };
+            }
+            // A descendant that ignores SIGTERM (a hung agent, an uninterruptible
+            // helper) keeps the slave open and the dead pane lingering as
+            // "Running" indefinitely. Give the tree a couple of intervals to
+            // unwind, then escalate to SIGKILL. The pane check is the same
+            // liveness handle as above: if the reader's EOF cleanup already ran,
+            // there is nothing left to escalate against.
+            for _ in 0..KILL_ESCALATION_TICKS {
+                thread::sleep(CHILD_WATCH_INTERVAL);
+                match state.pane_child(&pane_id) {
+                    Ok(Some(current)) if Arc::ptr_eq(&current, &child) => {}
+                    _ => return,
+                }
+            }
+            let _ = unsafe { libc::kill(-(root_pid as libc::pid_t), libc::SIGKILL) };
+            for pid in &descendants {
+                let _ = unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
             }
             break;
         }
