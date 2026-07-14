@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -367,6 +370,31 @@ export default function ResearchSidebarSection({
     }
   }
 
+  // Row-level click handling, shared by the row and its select button. The row
+  // takes pointer capture on pointerdown (for drag reordering), and a captured
+  // pointer retargets the gesture's mouseup — and therefore its click — to the
+  // capturing row, so a handler on the inner button alone never fires. The
+  // terminal pane tabs handle clicks on their row for the same reason.
+  function selectTreeFromClick(event: ReactMouseEvent<HTMLElement>, treeId: string) {
+    if (suppressClickRef.current) {
+      return;
+    }
+    // A double-click still selects the research on its first click, but does
+    // not start a second redundant detail fetch before the rename dialog opens.
+    if (event.detail > 1) {
+      return;
+    }
+    // An uncaptured click on the menu trigger bubbles here; opening the menu
+    // must not also switch the selection.
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-research-menu-trigger]")
+    ) {
+      return;
+    }
+    onSelect(treeId);
+  }
+
   function dragClasses(treeId: string, archived: boolean, index: number, length: number) {
     return `${draggingTreeId === treeId ? " is-dragging" : ""}${
       dropTarget?.archived === archived && dropTarget.index === index
@@ -398,6 +426,7 @@ export default function ResearchSidebarSection({
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerCancel}
+            onClick={(event) => selectTreeFromClick(event, tree.id)}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -411,15 +440,8 @@ export default function ResearchSidebarSection({
               aria-current={activeTreeId === tree.id ? "page" : undefined}
               title={tree.title}
               onClick={(event) => {
-                if (suppressClickRef.current) {
-                  return;
-                }
-                // A double-click still selects the research on its first click,
-                // but does not start a second redundant detail fetch before the
-                // rename dialog opens.
-                if (event.detail <= 1) {
-                  onSelect(tree.id);
-                }
+                event.stopPropagation();
+                selectTreeFromClick(event, tree.id);
               }}
               onDoubleClick={(event) => {
                 event.stopPropagation();
@@ -476,6 +498,7 @@ export default function ResearchSidebarSection({
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerCancel}
+                onClick={(event) => selectTreeFromClick(event, tree.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -487,10 +510,9 @@ export default function ResearchSidebarSection({
                   className="control-button research-sidebar-select"
                   aria-current={activeTreeId === tree.id ? "page" : undefined}
                   title={tree.title}
-                  onClick={() => {
-                    if (!suppressClickRef.current) {
-                      onSelect(tree.id);
-                    }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    selectTreeFromClick(event, tree.id);
                   }}
                 >
                   <span className="research-sidebar-copy">
