@@ -149,14 +149,14 @@
 }
 
 /* A queued turn gated on another agent reads as suspended: the card border goes
-   dashed and an hourglass pill under the text names what it waits on. */
+   dashed and a pill under the text names what it waits on. */
 .queued-turn.has-wait {
   border-style: dashed;
   border-color: var(--status-info-border-strong);
 }
 
-/* Shared pill shape for the badges under a queued turn's text: the hourglass wait
-   pill and the branch delivery pill differ only in tint and glyph. */
+/* Shared pill shape for the badges under a queued turn's text: the wait pill and
+   branch delivery pill differ in tint, with delivery also carrying a glyph. */
 .queued-turn-wait-label,
 .queued-turn-delivery-label {
   grid-column: 1 / -1;
@@ -174,10 +174,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
-}
-
-.queued-turn-wait-label::before {
-  content: "⧗ ";
 }
 
 /* A queued turn delivered elsewhere (fork / new session). */

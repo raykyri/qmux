@@ -57,7 +57,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   const onePrimaryModifier = command !== control;
 
   if (
-    !command &&
+    command &&
     !control &&
     option &&
     !shift &&

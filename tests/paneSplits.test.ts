@@ -74,7 +74,7 @@ function assertApprox(actual: number, expected: number) {
   );
 }
 
-test("Option-Arrow pane moves stay within sibling and group boundaries", () => {
+test("Option-Command-Arrow pane moves stay within sibling and group boundaries", () => {
   const flat = panes(["a", "b", "c"]);
   assert.deepEqual(movePaneSubtreeBy(flat, "b", -1).map((item) => item.id), ["b", "a", "c"]);
   assert.deepEqual(movePaneSubtreeBy(flat, "b", 1).map((item) => item.id), ["a", "c", "b"]);

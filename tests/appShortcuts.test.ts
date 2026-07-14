@@ -46,16 +46,25 @@ test("resolves qmux command and control shortcuts", () => {
   assert.deepEqual(resolveAppShortcut(shortcut({ key: "`", metaKey: true })), {
     type: "toggleSidebarMode",
   });
-  assert.deepEqual(resolveAppShortcut(shortcut({ key: "ArrowUp", altKey: true })), {
-    type: "moveSidebarItem",
-    direction: -1,
-  });
-  assert.deepEqual(resolveAppShortcut(shortcut({ key: "ArrowDown", altKey: true })), {
-    type: "moveSidebarItem",
-    direction: 1,
-  });
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "ArrowUp", metaKey: true, altKey: true })),
+    {
+      type: "moveSidebarItem",
+      direction: -1,
+    },
+  );
+  assert.deepEqual(
+    resolveAppShortcut(shortcut({ key: "ArrowDown", metaKey: true, altKey: true })),
+    {
+      type: "moveSidebarItem",
+      direction: 1,
+    },
+  );
+  assert.equal(resolveAppShortcut(shortcut({ key: "ArrowUp", altKey: true })), null);
   assert.equal(
-    resolveAppShortcut(shortcut({ key: "ArrowUp", altKey: true, editableTarget: true })),
+    resolveAppShortcut(
+      shortcut({ key: "ArrowUp", metaKey: true, altKey: true, editableTarget: true }),
+    ),
     null,
   );
   assert.deepEqual(
@@ -223,6 +232,11 @@ test("show/hide accelerator conflicts name the shadowed in-app shortcut", () => 
   );
   assert.equal(showHideShortcutConflict("Command+T"), "open a new tab");
   assert.equal(showHideShortcutConflict("Control+4"), "focus tab 4");
+  assert.equal(
+    showHideShortcutConflict("Option+Command+Up"),
+    "move the active tab",
+  );
+  assert.equal(showHideShortcutConflict("Option+Up"), null);
   assert.equal(
     showHideShortcutConflict("Shift+Command+["),
     "cycle tabs",

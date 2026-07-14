@@ -2524,10 +2524,6 @@
   white-space: nowrap;
 }
 
-.home-cascade-wait-pill::before {
-  content: "⧗ ";
-}
-
 /* Rendered as a button when the awaited lane is on this page: jumps to it. */
 button.home-cascade-wait-pill {
   cursor: pointer;

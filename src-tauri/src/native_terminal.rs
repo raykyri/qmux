@@ -164,7 +164,7 @@ fn classify_app_shortcut(
     };
     let one_primary_modifier = command != control;
 
-    if !command && !control && option && !shift && (key == "arrowup" || key == "arrowdown") {
+    if command && !control && option && !shift && (key == "arrowup" || key == "arrowdown") {
         return Some(AppShortcutCommand::MoveSidebarItem(if key == "arrowup" {
             -1
         } else {
@@ -1340,12 +1340,16 @@ mod tests {
             Some(AppShortcutCommand::ToggleSidebarMode)
         );
         assert_eq!(
-            super::classify_app_shortcut("ArrowUp", false, false, true, false),
+            super::classify_app_shortcut("ArrowUp", false, false, true, true),
             Some(AppShortcutCommand::MoveSidebarItem(-1))
         );
         assert_eq!(
-            super::classify_app_shortcut("ArrowDown", false, false, true, false),
+            super::classify_app_shortcut("ArrowDown", false, false, true, true),
             Some(AppShortcutCommand::MoveSidebarItem(1))
+        );
+        assert_eq!(
+            super::classify_app_shortcut("ArrowUp", false, false, true, false),
+            None
         );
         assert_eq!(
             AppShortcutCommand::MoveSidebarItem(-1).event_fields(),
