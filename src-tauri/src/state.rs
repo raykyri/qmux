@@ -99,6 +99,13 @@ const RECENT_SESSION_TOUCH_COARSENESS_MS: u128 = 5_000;
 pub struct PaneBacklog {
     pub ready: bool,
     pub buffer: Vec<u8>,
+    /// Whether durable scrollback has already been handed to this pane's native
+    /// surface. `attach_pane` only releases `ready` after the whole attach
+    /// succeeds, so a failed backlog flush makes the frontend retry the attach;
+    /// without this flag the retry would replay the durable history a second
+    /// time and double every restored line on screen. Set once the history is
+    /// delivered, so retries skip replay and resume at the failed step.
+    pub replayed: bool,
 }
 
 #[derive(Clone)]

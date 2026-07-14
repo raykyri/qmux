@@ -928,17 +928,32 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
             if let Ok(mut deferred) = DEFERRED_ATTACHES.lock() {
                 deferred.remove(&pane_id);
             }
-            let restored = read_pane_scrollback(&state.config().workspace_root, &pane_id)?;
-            if !restored.is_empty() {
-                let restored = sanitize_scrollback_replay(&restored);
-                if !restored.is_empty() {
-                    crate::native_terminal::receive(&pane_id, &restored, true)?;
+            // Replay durable scrollback exactly once. `ready` only flips after
+            // the backlog flush below succeeds, so a failed flush makes the
+            // frontend retry the whole attach; without the `replayed` guard the
+            // retry would hand this history to the surface again and double
+            // every restored line.
+            if !backlog.replayed {
+                let restored = read_pane_scrollback(&state.config().workspace_root, &pane_id)?;
+                if restored.is_empty() {
+                    backlog.replayed = true;
+                } else {
+                    let restored = sanitize_scrollback_replay(&restored);
+                    if !restored.is_empty() {
+                        crate::native_terminal::receive(&pane_id, &restored, true)?;
+                    }
+                    // History is on the surface now. Flip `replayed` before the
+                    // reset and backlog steps so their failure-triggered retries
+                    // never render it twice. `receive` is all-or-nothing, so a
+                    // failure above left the surface untouched with `replayed`
+                    // still false, leaving the retry a clean re-delivery.
+                    backlog.replayed = true;
+                    crate::native_terminal::receive(
+                        &pane_id,
+                        RESTORED_SCROLLBACK_TERMINAL_RESET,
+                        true,
+                    )?;
                 }
-                crate::native_terminal::receive(
-                    &pane_id,
-                    RESTORED_SCROLLBACK_TERMINAL_RESET,
-                    true,
-                )?;
             }
         }
         if !backlog.buffer.is_empty() {
