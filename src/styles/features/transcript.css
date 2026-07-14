@@ -1225,6 +1225,24 @@ header + .turn-blocks {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.38);
 }
 
+/* The unobtrusive first-step affordance shown on a selection; it never steals
+   focus, so ordinary select-to-copy is unaffected until the user opts in. */
+.transcript-annotation-prompt {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  min-height: 27px;
+  padding: 0 10px;
+  color: var(--text-interactive);
+  font-family: var(--font-ui);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.transcript-annotation-prompt:hover {
+  background: #3a403c;
+}
+
 .transcript-annotation-quote,
 .transcript-annotation-item-quote {
   max-height: 66px;

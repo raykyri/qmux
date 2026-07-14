@@ -171,6 +171,11 @@ function messageRootFor(root: HTMLElement, node: Node): HTMLElement | null {
 interface ComposeState {
   messageKey: string;
   anchor: MessageAnnotationAnchor;
+  // Two-step: a selection first shows a small "Annotate" affordance (editing
+  // false) so it never steals focus from the live selection or hijacks
+  // select-to-copy; the comment textarea (which autofocuses) only mounts once the
+  // user opts in.
+  editing: boolean;
   left: number;
   top: number;
 }
@@ -224,42 +229,40 @@ export default function TranscriptAnnotationLayer({
 
   const grouped = groupAnnotationsByMessage(annotations);
 
-  // Paint: resolve every annotation against its message's live projection and
-  // feed the ranges into the shared registry. Runs after layout and whenever the
+  // Resolve every annotation against its message's live projection: store the
+  // offsets for click hit-testing (which must work even where the Custom
+  // Highlight API is unavailable) and feed the ranges into the shared registry
+  // for painting (a no-op without the API). Runs after layout and whenever the
   // annotation set or the rendered DOM changes.
   useLayoutEffect(() => {
     const owner = ownerRef.current;
     const timeline = timelineRef.current;
     const resolved = new Map<string, ResolvedRange[]>();
-    if (!timeline || !highlightApi() || annotations.length === 0) {
-      resolvedRef.current = resolved;
-      setOwnerRanges(owner, []);
-      return () => clearOwnerRanges(owner);
-    }
     const ranges: Range[] = [];
-    for (const [messageKey, list] of grouped) {
-      const block = timeline.querySelector<HTMLElement>(
-        `.turn-blocks[data-message-key="${CSS.escape(messageKey)}"]`,
-      );
-      if (!block) {
-        continue;
-      }
-      const projection = block.textContent ?? "";
-      const resolvedForMessage: ResolvedRange[] = [];
-      for (const annotation of list) {
-        const offsets = resolveAnnotationOffset(projection, annotation.anchor);
-        if (!offsets) {
+    if (timeline && annotations.length > 0) {
+      for (const [messageKey, list] of grouped) {
+        const block = timeline.querySelector<HTMLElement>(
+          `.turn-blocks[data-message-key="${CSS.escape(messageKey)}"]`,
+        );
+        if (!block) {
           continue;
         }
-        const range = rangeForTextOffsets(block, offsets.start, offsets.end);
-        if (!range) {
-          continue;
+        const projection = block.textContent ?? "";
+        const resolvedForMessage: ResolvedRange[] = [];
+        for (const annotation of list) {
+          const offsets = resolveAnnotationOffset(projection, annotation.anchor);
+          if (!offsets) {
+            continue;
+          }
+          resolvedForMessage.push({ annotation, ...offsets });
+          const range = rangeForTextOffsets(block, offsets.start, offsets.end);
+          if (range) {
+            ranges.push(range);
+          }
         }
-        ranges.push(range);
-        resolvedForMessage.push({ annotation, ...offsets });
-      }
-      if (resolvedForMessage.length > 0) {
-        resolved.set(messageKey, resolvedForMessage);
+        if (resolvedForMessage.length > 0) {
+          resolved.set(messageKey, resolvedForMessage);
+        }
       }
     }
     resolvedRef.current = resolved;
@@ -359,9 +362,15 @@ export default function TranscriptAnnotationLayer({
               offsets.end + TRANSCRIPT_ANNOTATION_CONTEXT_LENGTH,
             ),
           },
+          editing: false,
           left: Math.max(8, Math.min(rect.left, window.innerWidth - 300)),
           top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 160)),
         });
+        return;
+      }
+      // A plain click on a link runs the link handler; don't also pop the notes
+      // popover for it.
+      if (event.target instanceof Element && event.target.closest("a")) {
         return;
       }
       // Collapsed click: open the notes popover when it lands on an annotation.
@@ -463,7 +472,25 @@ export default function TranscriptAnnotationLayer({
 
   return (
     <>
-      {compose
+      {compose && !compose.editing
+        ? createPortal(
+            <button
+              type="button"
+              className="transcript-annotation-popover transcript-annotation-prompt"
+              style={{ left: compose.left, top: compose.top }}
+              // mousedown (not click) so the live selection is still present when
+              // we switch to the input; a click would first collapse it.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                setCompose((current) => (current ? { ...current, editing: true } : current));
+              }}
+            >
+              Annotate
+            </button>,
+            document.body,
+          )
+        : null}
+      {compose && compose.editing
         ? createPortal(
             <div
               className="transcript-annotation-popover transcript-annotation-compose"
