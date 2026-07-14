@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   appShortcutAllowsRepeat,
+  appShortcutTargetsActivePane,
   contextualizeAppShortcut,
   parseAppShortcutCommand,
   resolveAppShortcut,
@@ -234,4 +235,28 @@ test("show/hide accelerator conflicts name the shadowed in-app shortcut", () => 
   assert.equal(showHideShortcutConflict("Shift+Command+A"), null);
   assert.equal(showHideShortcutConflict("Command+F13"), null);
   assert.equal(showHideShortcutConflict(null), null);
+});
+
+test("only pane-targeted commands are withheld from an unknown origin pane", () => {
+  // These act on whatever pane is active, so a chord whose origin pane React
+  // no longer knows must not run them against an unintended pane.
+  assert.equal(appShortcutTargetsActivePane({ type: "closePane" }), true);
+  assert.equal(appShortcutTargetsActivePane({ type: "splitPaneBelow" }), true);
+  assert.equal(
+    appShortcutTargetsActivePane({ type: "toggleTranscriptOrBrowser" }),
+    true,
+  );
+  // Everything else is pane-independent and must survive: the native monitor
+  // already consumed the keystroke, so withholding these would lose it.
+  assert.equal(appShortcutTargetsActivePane({ type: "toggleSidebarMode" }), false);
+  assert.equal(appShortcutTargetsActivePane({ type: "focusHome" }), false);
+  assert.equal(appShortcutTargetsActivePane({ type: "openSettings" }), false);
+  assert.equal(
+    appShortcutTargetsActivePane({ type: "focusTab", tabIndex: 0 }),
+    false,
+  );
+  assert.equal(
+    appShortcutTargetsActivePane({ type: "cyclePaneTab", direction: 1 }),
+    false,
+  );
 });

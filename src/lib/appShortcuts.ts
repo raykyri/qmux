@@ -164,6 +164,21 @@ export function contextualizeAppShortcut(
   return command;
 }
 
+// Commands whose execution acts on the currently active pane (close, split,
+// the per-pane transcript/browser toggle). The native terminal shortcut path
+// uses this to decide what may still run when the chord's origin pane no
+// longer exists in React: running one of these against a different pane than
+// the user aimed at would be worse than dropping the keystroke, while every
+// other command (mode toggles, Home, settings, palette…) is safe to run from
+// anywhere.
+export function appShortcutTargetsActivePane(command: AppShortcutCommand): boolean {
+  return (
+    command.type === "closePane" ||
+    command.type === "splitPaneBelow" ||
+    command.type === "toggleTranscriptOrBrowser"
+  );
+}
+
 // Human-readable action phrases for the settings conflict warning.
 function appShortcutLabel(command: AppShortcutCommand): string {
   switch (command.type) {

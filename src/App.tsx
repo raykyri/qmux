@@ -108,6 +108,7 @@ import {
 } from "./lib/appHelpers";
 import {
   appShortcutAllowsRepeat,
+  appShortcutTargetsActivePane,
   contextualizeAppShortcut,
   resolveAppShortcut,
   showHideShortcutConflict,
@@ -8321,7 +8322,14 @@ export default function App() {
         // adopt the native side's authority — activate that pane, then run
         // the command against it. setActivePaneId updates activePaneRef /
         // activePaneIdRef synchronously, so executeShortcut below targets it.
+        // A pane React no longer knows can still run commands that don't act
+        // on the active pane (mode toggles, Home, settings…); pane-targeted
+        // commands stay dropped rather than hitting a pane the user never
+        // aimed at.
         if (!panesRef.current.some((pane) => pane.id === paneId)) {
+          if (!appShortcutTargetsActivePane(command)) {
+            executeShortcut(command, repeat);
+          }
           return;
         }
         setActivePaneId(paneId);
