@@ -251,8 +251,10 @@
    currently scoped folder. */
 .research-folder-switcher {
   position: relative;
-  /* Same 4px margin as the mode toggle and action row so all three align. */
-  margin: 2px 4px 0;
+  /* The parent sidebar gap is 14px, while Terminal Home to first group is the
+     pane-list gap (2px) plus Home's bottom margin (4px). Pull this sibling up
+     so Research Home to folder switcher matches that 6px rhythm. */
+  margin: -8px 4px 0;
 }
 
 .research-folder-trigger {
