@@ -641,7 +641,7 @@ header + .turn-blocks {
 }
 
 .turn-markdown blockquote {
-  border-left: 2px solid #3d4a4d;
+  border-left: 2px solid var(--markdown-blockquote-border);
   padding-left: 9px;
   color: var(--text-secondary);
 }
@@ -752,8 +752,8 @@ header + .turn-blocks {
 .turn-markdown th,
 .turn-markdown td {
   padding: 8px 12px;
-  border-right: 1px solid #262d2f;
-  border-bottom: 1px solid #262d2f;
+  border-right: 1px solid var(--markdown-table-border);
+  border-bottom: 1px solid var(--markdown-table-border);
   text-align: left;
   vertical-align: top;
   /* Override the ambient `anywhere` so columns size to words and only long

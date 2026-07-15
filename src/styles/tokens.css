@@ -55,7 +55,6 @@
 
   /* Shared stacking levels for portaled chrome. Local component layers continue
      to use small integers inside their own stacking contexts. */
-  --z-browser-overlay: 8;
   --z-popover: 15;
   --z-select-popover: 50;
   --z-dialog: 20;
@@ -177,11 +176,10 @@
   --field-bg: #111315;
   --field-bg-hover: #16191b;
   --panel-bg: #1b2022;
-  --panel-highlight-bg: #1f2426;
   --popover-bg: #1d2224;
   --content-card-bg: #1d2224;
   --content-inset-bg: #15191b;
-  --context-menu-bg: #1c1f22;
+  --context-menu-bg: var(--pane-hover-bg);
   --popover-item-hover-bg: #283032;
   --chrome-header-bg: #14171a;
   --pane-hover-bg: #1b1f21;
@@ -190,6 +188,8 @@
     var(--pane-hover-bg) 75%,
     var(--right-pane-bg) 25%
   );
+  --markdown-table-border: #262d2f;
+  --markdown-blockquote-border: #3d4a4d;
   --transcript-code-bg: #111416;
   --transcript-code-header-bg: #0d1012;
   --surface-divider: #2a2d2f;
@@ -205,7 +205,6 @@
   --accent-subtle: rgba(143, 214, 199, 0.08);
   --accent-active-bg: #243430;
   --accent-strong: #6cae9d;
-  --accent-strong-hover: #7cc0ae;
 
   --control-bg: #24282b;
   --control-bg-hover: #2c3134;
@@ -227,26 +226,27 @@
   --field-bg: #171615;
   --field-bg-hover: #1e1d1a;
   --panel-bg: var(--field-bg);
-  --panel-highlight-bg: #27241f;
   --popover-bg: var(--field-bg);
   --content-card-bg: #222120;
   --content-inset-bg: #1d1c19;
-  --context-menu-bg: #231f1b;
-  --popover-item-hover-bg: #322e28;
+  --context-menu-bg: #23221f;
+  --popover-item-hover-bg: #322f2b;
   --chrome-header-bg: #171716;
-  --pane-hover-bg: #23211e;
+  --pane-hover-bg: #23211f;
   --markdown-table-header-bg: color-mix(
     in srgb,
     var(--pane-hover-bg) 75%,
     var(--right-pane-bg) 25%
   );
+  --markdown-table-border: #2d2b28;
+  --markdown-blockquote-border: #4a433b;
   --transcript-code-bg: #171512;
   --transcript-code-header-bg: #12110f;
   --surface-divider: #2d2d2c;
   --surface-border-strong: #373634;
   --dialog-border: #3f3c37;
-  --chrome-control-bg: rgba(31, 29, 26, 0.9);
-  --chrome-control-bg-hover: rgba(44, 40, 35, 0.95);
+  --chrome-control-bg: rgba(31, 29, 27, 0.9);
+  --chrome-control-bg-hover: rgba(44, 41, 37, 0.95);
   --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);
 
   --accent-color: #33adff;
@@ -255,7 +255,6 @@
   --accent-subtle: rgba(51, 173, 255, 0.08);
   --accent-active-bg: #263a49;
   --accent-strong: #268fd6;
-  --accent-strong-hover: #339fe6;
 
   --control-bg: #282827;
   --control-bg-hover: #313130;

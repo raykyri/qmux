@@ -808,7 +808,7 @@
 .research-unexpected-content {
   min-width: 0;
   padding: 8px 10px;
-  border-left: 2px solid #3d4a4d;
+  border-left: 2px solid var(--markdown-blockquote-border);
   color: var(--text-activity);
   background: rgba(255, 255, 255, 0.018);
 }
