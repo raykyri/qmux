@@ -361,6 +361,21 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Returns the newest `cap` bytes of a captured log, nudged forward to a line
+/// boundary so the tail doesn't begin mid-scalar when it is later replayed.
+/// Used to bound the scrollback an undo snapshot keeps resident: the durable
+/// log is deleted when a pane closes, so the snapshot is the only copy, and the
+/// undo stack holds many of them — storing each full multi-MB log would pin
+/// hundreds of MB for a convenience buffer. Buffers already within `cap` are
+/// returned as-is (no copy).
+pub fn bounded_scrollback_tail(bytes: Vec<u8>, cap: usize) -> Vec<u8> {
+    if bytes.len() <= cap {
+        return bytes;
+    }
+    let start = safe_cut_boundary(&bytes, bytes.len() - cap);
+    bytes[start..].to_vec()
+}
+
 /// Advances a raw cut offset to a safe boundary so the retained tail doesn't
 /// begin mid-scalar or mid-escape. Prefers the byte after the next `\n` (a line
 /// boundary is virtually never straddled by a UTF-8 scalar or an ANSI escape),
@@ -791,6 +806,20 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
+    }
+
+    #[test]
+    fn bounded_scrollback_tail_keeps_recent_bytes_on_a_boundary() {
+        // Under the cap: returned verbatim.
+        assert_eq!(
+            bounded_scrollback_tail(b"short".to_vec(), 1024),
+            b"short".to_vec()
+        );
+        // Over the cap: the newest bytes, beginning at a line boundary.
+        let input = b"line one\nline two\nline three\n".to_vec();
+        let tail = bounded_scrollback_tail(input, 12);
+        assert!(tail.len() <= 12);
+        assert_eq!(tail, b"line three\n".to_vec());
     }
 
     #[test]
