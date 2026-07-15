@@ -7,7 +7,7 @@ use crate::research::{
     ResearchNodeContent, ResearchNodeKind, ResearchNodeStatus, ResearchTree, ResearchTreeDetail,
     ResearchTreeSummary, UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
 };
-use crate::scrollback::{bounded_scrollback_tail, read_pane_scrollback, remove_pane_scrollback};
+use crate::scrollback::{bounded_undo_scrollback, read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
 use crate::transcript::Turn;
 use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
@@ -4417,7 +4417,7 @@ impl AppState {
 
         snapshot.scrollback =
             match read_pane_scrollback(&self.inner.config.workspace_root, &snapshot.pane.id) {
-                Ok(bytes) => bounded_scrollback_tail(bytes, MAX_UNDO_SCROLLBACK_BYTES),
+                Ok(bytes) => bounded_undo_scrollback(&bytes, MAX_UNDO_SCROLLBACK_BYTES),
                 Err(err) => {
                     eprintln!(
                         "qmux: failed to capture scrollback for closed pane {}: {err}",
