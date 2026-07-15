@@ -1896,6 +1896,21 @@ fn main() {
                 // Re-level persisted nesting now that we know which panes actually
                 // came back (exited panes are not respawned).
                 state.normalize_pane_layout();
+                // Now that the surviving panes are known, sweep scrollback logs
+                // and trim scratch files no live pane owns — orphans a kill or an
+                // unrecovered pane left on disk holding raw terminal output.
+                // Backgrounded like the state-dir scratch sweep; the live pane-id
+                // set is captured up front and new panes self-heal a racing delete.
+                {
+                    let workspace_root = state.config().workspace_root.clone();
+                    let live_pane_ids: std::collections::HashSet<String> = state
+                        .list_panes()
+                        .map(|panes| panes.into_iter().map(|pane| pane.id).collect())
+                        .unwrap_or_default();
+                    std::thread::spawn(move || {
+                        scrollback::remove_orphaned_scrollback(&workspace_root, &live_pane_ids);
+                    });
+                }
                 app.manage(state.clone());
                 app.manage(SleepGuard::default());
                 // Watchdog for the hidden-at-boot window: if the frontend fails
