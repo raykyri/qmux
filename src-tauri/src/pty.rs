@@ -1988,7 +1988,6 @@ mod tests {
     use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
     use std::cell::RefCell;
     use std::io;
-    use std::os::unix::process::CommandExt;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1996,16 +1995,6 @@ mod tests {
         haystack
             .windows(needle.len())
             .any(|window| window == needle)
-    }
-
-    fn wait_for_test_child(child: &mut std::process::Child) -> bool {
-        for _ in 0..50 {
-            if child.try_wait().ok().flatten().is_some() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        false
     }
 
     #[test]

@@ -526,7 +526,7 @@ enum DispatchOutcome {
 }
 
 /// Sends a turn already claimed via [`AppState::claim_ready_agent_turn`] /
-/// [`AppState::claim_next_turn_or_mark_idle`], then clears the draining guard. On any
+/// [`AppState::claim_next_turn_or_settle`], then clears the draining guard. On any
 /// failure the turn is requeued and the guard cleared before returning the error, so a
 /// failed send neither loses the turn nor wedges the queue (a still-set guard would
 /// block every future drain). A turn carrying a `delivery` directive goes to a new
@@ -962,7 +962,7 @@ fn send_agent_turn(
         // A direct send only reaches here from a can-send (already-ready) status, so
         // there is nothing to clear; but when the same command is *drained from the
         // queue*, the agent is still Running from the just-finished turn, and the
-        // drain path (claim_next_turn_or_mark_idle's Sent branch) leaves that Running
+        // drain path (claim_next_turn_or_settle's Sent branch) leaves that Running
         // in place — wedging the pane at "Working…" and freezing the queue behind it.
         // Demote that stale working status so the queue can't deadlock. Skills that do
         // start a real turn re-promote via their own UserPromptSubmit/PreToolUse hooks.

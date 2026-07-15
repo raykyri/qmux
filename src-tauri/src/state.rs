@@ -6072,11 +6072,6 @@ impl AppState {
         Ok(outcome)
     }
 
-    /// Normal-completion wrapper that retains the established `Done` settlement.
-    pub fn claim_next_turn_or_mark_idle(&self, agent_id: &str) -> Result<IdleAdvance, String> {
-        self.claim_next_turn_or_settle(agent_id, AgentStatus::Done)
-    }
-
     /// Clears the draining guard set by a successful claim, allowing the next drain to
     /// proceed. Best-effort: a poisoned lock just leaves the guard set, which fails safe
     /// (no further auto-drain) rather than risking a double-send.
@@ -9812,7 +9807,7 @@ mod tests {
         // still settle the research node and start automatic retirement.
         assert!(matches!(
             state
-                .claim_next_turn_or_mark_idle("research-agent")
+                .claim_next_turn_or_settle("research-agent", AgentStatus::Done)
                 .unwrap(),
             IdleAdvance::Idle
         ));
@@ -11552,7 +11547,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_next_turn_or_mark_idle_holds_for_typing_then_drains() {
+    fn claim_next_turn_or_settle_holds_for_typing_then_drains() {
         let workspace = temp_workspace();
         let state = AppState::new(test_config(workspace));
         state.insert_agent(sample_agent("agent-1")).unwrap();
@@ -11564,7 +11559,9 @@ mod tests {
         // While the user is typing the idle advance settles to Done and holds the queue,
         // setting the status atomically with reading the typing flag.
         assert!(matches!(
-            state.claim_next_turn_or_mark_idle("agent-1").unwrap(),
+            state
+                .claim_next_turn_or_settle("agent-1", AgentStatus::Done)
+                .unwrap(),
             IdleAdvance::Idle
         ));
         assert!(matches!(
@@ -11578,7 +11575,10 @@ mod tests {
 
         // Once typing clears, the next advance claims the held turn instead of stalling.
         state.set_agent_typing("agent-1", false).unwrap();
-        match state.claim_next_turn_or_mark_idle("agent-1").unwrap() {
+        match state
+            .claim_next_turn_or_settle("agent-1", AgentStatus::Done)
+            .unwrap()
+        {
             IdleAdvance::Sent { turn, .. } => assert_eq!(turn.text, "queued"),
             _ => panic!("expected the held turn to drain once typing cleared"),
         }

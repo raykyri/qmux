@@ -667,6 +667,38 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{PaneBackend, PaneInfo, PaneKind, PaneRuntime, PaneStatus};
+    use crate::workspace::{GroupInfo, WorkspaceScope};
+    use portable_pty::{Child, ChildKiller, ExitStatus, PtySize, native_pty_system};
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug)]
+    struct FakeChild;
+
+    impl ChildKiller for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(FakeChild)
+        }
+    }
+
+    impl Child for FakeChild {
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            Ok(ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
 
     #[test]
     fn markdown_page_csp_blocks_scripts() {
@@ -803,14 +835,15 @@ mod tests {
             .to_string()
     }
 
-    /// Builds an `AppState` whose workspace root is `root`, for serving tests.
-    fn test_state(root: &Path, base: &Path) -> AppState {
+    /// Builds an `AppState` with a live pane scoped to `root`, matching the
+    /// production invariant required before a pane file token may serve files.
+    fn test_state(root: &Path, base: &Path, pane_id: &str) -> AppState {
         use crate::config::{
             AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
             OpencodeAdapterConfig, QmuxConfig,
         };
         let config = QmuxConfig {
-            workspace_root: root.to_path_buf(),
+            workspace_root: base.join("state"),
             socket_path: base.join("x.sock"),
             adapters: AdapterConfigs {
                 claude: ClaudeAdapterConfig {
@@ -830,7 +863,63 @@ mod tests {
             claude_plugin_dir: PathBuf::new(),
             opencode_plugin_dir: PathBuf::new(),
         };
-        AppState::new(config)
+        let state = AppState::new(config);
+        state
+            .insert_group_after(
+                GroupInfo {
+                    id: "group-1".to_string(),
+                    name: "group-1".to_string(),
+                    name_override: None,
+                    dir: root.display().to_string(),
+                    managed_dir: base.join("managed").display().to_string(),
+                    base_repo: None,
+                    base_ref: None,
+                    parent_id: None,
+                    created_at: 1,
+                    collapsed: false,
+                    scope: WorkspaceScope::Terminal,
+                    imported_research_archive_id: None,
+                    agents: Vec::new(),
+                },
+                None,
+            )
+            .unwrap();
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+        state
+            .insert_pane(PaneRuntime {
+                info: PaneInfo {
+                    id: pane_id.to_string(),
+                    title: "Shell".to_string(),
+                    kind: PaneKind::Shell,
+                    agent_id: None,
+                    group_id: "group-1".to_string(),
+                    cwd: root.display().to_string(),
+                    cols: 80,
+                    rows: 24,
+                    status: PaneStatus::Running,
+                    last_active_at: 1,
+                    recovered: false,
+                    depth: 0,
+                },
+                backend: PaneBackend::HostPty {
+                    child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                    master: Arc::new(Mutex::new(pair.master)),
+                    writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+                    backlog: Default::default(),
+                    native_surface: false,
+                },
+            })
+            .unwrap();
+        state
     }
 
     #[test]
@@ -843,11 +932,8 @@ mod tests {
         std::fs::write(root.join("hello.txt"), b"hello world").unwrap();
         std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
 
-        let state = test_state(&root, &base);
+        let state = test_state(&root, &base, "pane-1");
         let info = start_file_server(state.clone()).unwrap();
-        // The URL token is a per-pane file token; mint one for a pane whose only root is
-        // the workspace root (it isn't in the model, so `pane_file_roots` falls back to
-        // just the workspace root).
         let token = state.pane_file_token("pane-1").unwrap();
 
         let hello = std::fs::canonicalize(root.join("hello.txt")).unwrap();
@@ -894,7 +980,7 @@ mod tests {
         let source = "# Hello\n\nSome *text* in a table:\n\n| a | b |\n| - | - |\n| 1 | 2 |\n";
         std::fs::write(root.join("doc.md"), source).unwrap();
 
-        let state = test_state(&root, &base);
+        let state = test_state(&root, &base, "pane-md");
         let info = start_file_server(state.clone()).unwrap();
         let token = state.pane_file_token("pane-md").unwrap();
         let doc = std::fs::canonicalize(root.join("doc.md")).unwrap();
