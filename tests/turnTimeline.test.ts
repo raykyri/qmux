@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
+  formatPlainTextTranscript,
   timelineItemsAfterLastToolCall,
   timelineItemsContainTranscriptActivity,
 } from "../src/lib/turnTimeline";
@@ -82,6 +83,38 @@ test("assistant text copy preserves original markdown and omits non-answer conte
   assert.equal(
     assistantTextFromTimelineItems(items),
     "# Heading\n\nA **bold** conclusion.",
+  );
+});
+
+test("plain text transcript copy includes only user and assistant message text", () => {
+  nextIndex = 0;
+  const transcript = formatPlainTextTranscript(
+    [
+      turn("system", [text("system prompt")]),
+      turn("user", [text("Question before tools")]),
+      turn("assistant", [
+        { type: "raw", value: { thinking: "private reasoning" } },
+        toolUse("tool-1", "Read", { file_path: "secret.txt" }),
+      ]),
+      turn("user", [toolResult("tool-1", "tool result")]),
+      turn("assistant", [text("Answer with **markdown**.")]),
+      turn("user", [
+        text(`# Injected\n<system-reminder>\nDo not copy this.\n</system-reminder>\n\nVisible follow-up`),
+      ]),
+      turn("user", [
+        text(`<user-instructions>\nHidden only.\n</user-instructions>`),
+      ]),
+    ],
+    "Codex",
+  );
+
+  assert.equal(
+    transcript,
+    [
+      "User:\nQuestion before tools",
+      "Codex:\nAnswer with **markdown**.",
+      "User:\nVisible follow-up",
+    ].join("\n\n"),
   );
 });
 

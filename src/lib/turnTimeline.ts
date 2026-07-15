@@ -4,7 +4,10 @@
 // reaches ESM-only markdown packages that the node test runner can't load.
 
 import type { ThreadParticipant, Turn, TurnBlock } from "../types";
-import { taggedUserInstructionDetails } from "./taggedInstructions";
+import {
+  stripTaggedUserInstructionBlocks,
+  taggedUserInstructionDetails,
+} from "./taggedInstructions";
 
 export type TextBlock = Extract<TurnBlock, { type: "text" }>;
 export type ToolUseBlock = Extract<TurnBlock, { type: "toolUse" }>;
@@ -62,6 +65,38 @@ export function assistantTextFromTimelineItems(items: MessageItem[]) {
     )
     .join("\n\n")
     .trim();
+}
+
+export function formatPlainTextTranscript(turns: Turn[], assistantLabel: string) {
+  return buildTimelineItems(turns, false)
+    .flatMap((item) => {
+      if (item.role !== "user" && item.role !== "assistant") {
+        return [];
+      }
+      const text = plainTextMessageItemText(item);
+      if (!text) {
+        return [];
+      }
+      return [`${messageRoleLabel(item, assistantLabel)}:\n${text}`];
+    })
+    .join("\n\n");
+}
+
+function plainTextMessageItemText(item: MessageItem) {
+  const text = item.blocks
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("\n\n");
+  const stripped =
+    item.role === "user" ? stripTaggedUserInstructionBlocks(text) : text;
+  const trimmed = stripped.trim();
+  return trimmed ? trimmed : null;
+}
+
+function messageRoleLabel(item: MessageItem, assistantLabel: string) {
+  if (item.participant?.label) {
+    return item.participant.label;
+  }
+  return item.role === "assistant" ? assistantLabel : "User";
 }
 
 function containsToolActivity(item: ActivityItem) {

@@ -121,6 +121,7 @@ import {
   pendingGraphOverlayTurns,
   threadIdForAgent,
 } from "./lib/threadGraph";
+import { formatPlainTextTranscript } from "./lib/turnTimeline";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
@@ -519,10 +520,11 @@ interface PendingFirstMessageTitle {
 interface AgentTurnInfo {
   turns: Turn[];
   assistantLabel: string;
-  // Formats the full transcript string on first call and caches it. Only the
-  // copy actions consume it, so eagerly formatting every agent's transcript on
+  // Formats transcript strings on first call and caches them. Only the copy
+  // actions consume these, so eagerly formatting every agent's transcript on
   // every turn/status event was pure waste; use hasTranscript for emptiness.
   getTranscript: () => string;
+  getPlainTextTranscript: () => string;
   hasTranscript: boolean;
 }
 
@@ -532,6 +534,7 @@ interface TurnPaneSurface {
   turns: Turn[];
   assistantLabel: string;
   getTranscript: () => string;
+  getPlainTextTranscript: () => string;
   hasTranscript: boolean;
   transcriptNotice: string | null;
   transcriptOptions: TranscriptOption[];
@@ -1891,11 +1894,14 @@ export default function App() {
       // Every turn formats at least its role label, so emptiness is just "no
       // turns" — the full string is only ever built for the copy actions.
       let transcript: string | null = null;
+      let plainTextTranscript: string | null = null;
       const info: AgentTurnInfo = {
         turns: visibleTurns,
         assistantLabel,
         getTranscript: () =>
           (transcript ??= formatTurnsTranscript(visibleTurns, assistantLabel)),
+        getPlainTextTranscript: () =>
+          (plainTextTranscript ??= formatPlainTextTranscript(visibleTurns, assistantLabel)),
         hasTranscript: visibleTurns.length > 0,
       };
       cache.set(agent.id, { agentKey, agentTurns, storedGraph, storedBranchTurns, info });
@@ -3129,6 +3135,7 @@ export default function App() {
         turns: [],
         assistantLabel: "Claude",
         getTranscript: () => "",
+        getPlainTextTranscript: () => "",
         hasTranscript: false,
       };
     }
@@ -3137,6 +3144,7 @@ export default function App() {
         turns: [],
         assistantLabel: getAgentUiAdapter(agent.adapter).label,
         getTranscript: () => "",
+        getPlainTextTranscript: () => "",
         hasTranscript: false,
       }
     );
@@ -3208,6 +3216,7 @@ export default function App() {
       turns: turnInfo.turns,
       assistantLabel: turnInfo.assistantLabel,
       getTranscript: turnInfo.getTranscript,
+      getPlainTextTranscript: turnInfo.getPlainTextTranscript,
       hasTranscript: turnInfo.hasTranscript,
       transcriptNotice: agent ? (transcriptNoticeByAgent[agent.id] ?? null) : null,
       transcriptOptions: agent ? (transcriptOptionsByAgent[agent.id] ?? []) : [],
@@ -9326,7 +9335,8 @@ export default function App() {
                 requireCmdEnterToSend={settings.requireCmdEnterToSend}
                 pasteProtection={pasteProtection}
                 hasTranscript={surface.hasTranscript}
-                transcriptCopyText={() =>
+                transcriptCopyPlainText={() => surface.getPlainTextTranscript()}
+                transcriptCopyJsonText={() =>
                   formatTranscriptCopyJson({
                     agent,
                     pane: surface.pane,

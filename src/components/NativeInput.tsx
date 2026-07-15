@@ -239,7 +239,8 @@ interface NativeInputProps {
   requireCmdEnterToSend: boolean;
   pasteProtection: PasteProtectionSettings;
   hasTranscript: boolean;
-  transcriptCopyText: () => string;
+  transcriptCopyPlainText: () => string;
+  transcriptCopyJsonText: () => string;
   composerPolicy: ComposerPolicy;
   shortcutLabelForPane: (paneId?: string | null) => string | null;
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
@@ -278,7 +279,8 @@ export default function NativeInput({
   requireCmdEnterToSend,
   pasteProtection,
   hasTranscript,
-  transcriptCopyText,
+  transcriptCopyPlainText,
+  transcriptCopyJsonText,
   composerPolicy,
   shortcutLabelForPane,
   onQueueChange,
@@ -932,13 +934,26 @@ export default function NativeInput({
     }
   }
 
-  async function copyTranscript() {
+  async function copyTranscriptPlainText() {
     if (!hasTranscript) {
       return;
     }
 
     try {
-      await writeClipboardText(transcriptCopyText());
+      await writeClipboardText(transcriptCopyPlainText());
+      showToast("Copied to clipboard");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function copyTranscriptJson() {
+    if (!hasTranscript) {
+      return;
+    }
+
+    try {
+      await writeClipboardText(transcriptCopyJsonText());
       showToast("Copied to clipboard");
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1671,10 +1686,22 @@ export default function NativeInput({
                   disabled={!hasTranscript}
                   onClick={() => {
                     setMenuOpen(false);
-                    void copyTranscript();
+                    void copyTranscriptPlainText();
                   }}
                 >
                   Copy transcript
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="menu-item composer-menu-item"
+                  disabled={!hasTranscript}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void copyTranscriptJson();
+                  }}
+                >
+                  Copy transcript as JSON
                 </button>
                 {recentMessages.length > 0 ? (
                   <>
