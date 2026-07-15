@@ -11344,6 +11344,12 @@ export default function App() {
               themeName={terminalThemeName}
               pasteProtection={pasteProtection}
               deferGeometryUpdates={terminalGeometryResizing}
+              // The expanded transcript is an opaque overlay covering the whole
+              // stage; a visible pane under it must hold its native reveal one
+              // frame on switch so the overlay paints before the surface appears.
+              coveredByOverlay={
+                activeTranscriptVisibleExpanded && visibleTerminalPaneIdSet.has(pane.id)
+              }
               readOnly={
                 groupById.get(pane.groupId)?.scope === "research" &&
                 agentByPaneId.get(pane.id)?.status !== "awaitingPermission" &&

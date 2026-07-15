@@ -45,6 +45,11 @@ interface TerminalPaneProps {
   /// Hold the last native frame while an internal resize drag updates the DOM.
   /// The final rectangle is applied when the drag ends.
   deferGeometryUpdates: boolean;
+  /// True while this pane's surface is fully hidden behind an opaque web overlay
+  /// (the expanded transcript). The surface keeps its geometry and stays visible,
+  /// but its hidden→visible reveal is held one frame on the switch that first
+  /// covers it so the overlay paints before the native surface appears.
+  coveredByOverlay: boolean;
   inputBlocked: boolean;
   /** Allows viewing and scrolling while preventing all terminal input. */
   readOnly?: boolean;
@@ -86,6 +91,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     themeName,
     pasteProtection,
     deferGeometryUpdates,
+    coveredByOverlay,
     inputBlocked,
     readOnly = false,
     webEditableFocused,
@@ -140,6 +146,13 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const searchOpenRef = useRef(searchOpen);
   const searchFocusPendingRef = useRef(false);
   const terminalFocusPendingRef = useRef(false);
+  // The last visibility reported to the native surface, and whether the one-frame
+  // reveal hold has already been spent for the current covered→visible transition.
+  // Together these keep the surface's hidden→visible AppKit reveal from beating
+  // WebKit's paint of the opaque expanded-transcript overlay above it — otherwise
+  // the raw terminal flashes for a frame when control-tabbing to a covered pane.
+  const nativeSurfaceVisibleRef = useRef(false);
+  const coveredRevealHeldRef = useRef(false);
   const confirmOpenRef = useRef(confirmOpen);
   searchOpenRef.current = searchOpen;
   confirmOpenRef.current = confirmOpen;
@@ -307,7 +320,37 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     const syncLayout = () => {
       frame = null;
       const rect = host.getBoundingClientRect();
-      const surfaceVisible = visible && rect.width > 0 && rect.height > 0;
+      const wantSurfaceVisible = visible && rect.width > 0 && rect.height > 0;
+      let surfaceVisible = wantSurfaceVisible;
+      // When a pane that is fully covered by the opaque expanded-transcript overlay
+      // becomes visible, its native surface's hidden→visible transition can reach
+      // AppKit before WebKit paints the covering overlay, flashing the raw terminal
+      // for a frame on a control-tab switch. Hold that first reveal one frame so the
+      // overlay paints first; the surface then shows behind it and stays visible, so
+      // collapsing the transcript still reveals the terminal instantly. Only the
+      // hidden→visible transition is held: a surface already visible when the
+      // transcript expands is never hidden (that would SIGWINCH the TUI).
+      if (
+        wantSurfaceVisible &&
+        coveredByOverlay &&
+        !nativeSurfaceVisibleRef.current &&
+        !coveredRevealHeldRef.current
+      ) {
+        // Release the hold only from the rAF callback, never synchronously: a
+        // second layout pass in the same pre-paint commit must keep holding
+        // rather than reveal early (which would defeat the hold and flash again).
+        surfaceVisible = false;
+        if (frame !== null) {
+          cancelAnimationFrame(frame);
+        }
+        frame = requestAnimationFrame(() => {
+          coveredRevealHeldRef.current = true;
+          syncLayout();
+        });
+      } else if (!wantSurfaceVisible) {
+        coveredRevealHeldRef.current = false;
+      }
+      nativeSurfaceVisibleRef.current = surfaceVisible;
       const ownsKeyboard =
         surfaceVisible &&
         active &&
@@ -379,6 +422,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [
     active,
     confirmOpen,
+    coveredByOverlay,
     deferGeometryUpdates,
     focus,
     focusSearchInput,
