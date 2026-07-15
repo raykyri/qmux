@@ -336,9 +336,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         !nativeSurfaceVisibleRef.current &&
         !coveredRevealHeldRef.current
       ) {
+        // Release the hold only from the rAF callback, never synchronously: a
+        // second layout pass in the same pre-paint commit must keep holding
+        // rather than reveal early (which would defeat the hold and flash again).
         surfaceVisible = false;
-        coveredRevealHeldRef.current = true;
-        scheduleLayout();
+        if (frame !== null) {
+          cancelAnimationFrame(frame);
+        }
+        frame = requestAnimationFrame(() => {
+          coveredRevealHeldRef.current = true;
+          syncLayout();
+        });
       } else if (!wantSurfaceVisible) {
         coveredRevealHeldRef.current = false;
       }
