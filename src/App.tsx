@@ -9445,7 +9445,7 @@ export default function App() {
         ref={sidebarRef}
         className={`sidebar${sidebarWidth < LEFT_SIDEBAR_COMPACT_WIDTH ? " is-narrow" : ""}${
           settings.codeMode ? " is-code-mode" : ""
-        }`}
+        }${sidebarMode === "research" ? " is-research-mode" : ""}`}
       >
         <div className="titlebar-drag" data-tauri-drag-region aria-hidden="true" />
         <SidebarModeToggle
@@ -9794,7 +9794,7 @@ export default function App() {
               <div className="sidebar-action-with-hint">
                 <button className="control-button" type="button" onClick={() => void createResearchFromSidebar()}>
                   <Plus size={14} aria-hidden="true" />
-                  <span>New research</span>
+                  <span>New query</span>
                 </button>
                 {shortcutHintsShown ? (
                   <span
@@ -9808,7 +9808,7 @@ export default function App() {
               <div className="sidebar-action-with-hint">
                 <button className="control-button" type="button" onClick={() => void createDocumentFromSidebar()}>
                   <FileText size={14} aria-hidden="true" />
-                  <span>New document</span>
+                  <span>New doc</span>
                 </button>
               </div>
             </>

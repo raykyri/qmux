@@ -34,13 +34,14 @@
 }
 
 .sidebar {
+  --sidebar-stack-gap: 14px;
   position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
   max-height: 100%;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sidebar-stack-gap);
   overflow: hidden;
   /* Mostly-opaque tint over the macOS vibrancy material: just a hint of
      translucency so it reads as a native source list without the desktop
@@ -400,7 +401,7 @@
   min-width: 0;
   /* Interior padding holds the 4px trimmed from the sidebar's horizontal padding,
      so tabs keep their width while the card grows outward and gains breathing room. */
-  padding: 6px;
+  padding: 3.5px 6px;
   border: 1px solid var(--surface-border-subtle);
   border-radius: 7px;
   background: var(--sidebar-group-bg);
@@ -412,11 +413,6 @@
 
 .pane-group + .pane-group {
   margin-top: 3px;
-}
-
-.pane-group.is-collapsed {
-  padding-top: 3.5px;
-  padding-bottom: 3.5px;
 }
 
 .pane-group-header {

@@ -1,5 +1,19 @@
 /* Research documents and their dedicated terminal workspaces live in the
    Research sidebar mode; ordinary terminal groups never share this list. */
+.sidebar.is-research-mode {
+  gap: 0;
+}
+
+/* Keep the fixed controls in their existing positions while moving the space
+   around the research list into its scrollable area. */
+.sidebar.is-research-mode .sidebar-mode-toggle {
+  margin-bottom: var(--sidebar-stack-gap);
+}
+
+.sidebar.is-research-mode .pane-list {
+  padding-block: var(--sidebar-stack-gap);
+}
+
 .research-sidebar-section {
   padding: 7px 7px 5px;
 }
@@ -174,6 +188,12 @@
   margin-top: 2px;
   margin-right: 5px;
   color: #8f9893;
+  transform: translateY(1px);
+}
+
+/* Optically center the fixed Research Home glyph with the research-row icons. */
+.research-home-row .pane-tab svg {
+  transform: translateY(1px);
 }
 
 .research-sidebar-copy {
@@ -251,10 +271,9 @@
    currently scoped folder. */
 .research-folder-switcher {
   position: relative;
-  /* The parent sidebar gap is 14px, while Terminal Home to first group is the
-     pane-list gap (2px) plus Home's bottom margin (4px). Pull this sibling up
-     so Research Home to folder switcher matches that 6px rhythm. */
-  margin: -8px 4px 0;
+  /* Research mode removes the parent gap so the list can own its surrounding
+     space. Re-create the Terminal Home-to-first-group 6px rhythm here. */
+  margin: 6px 4px 0;
 }
 
 .research-folder-trigger {
