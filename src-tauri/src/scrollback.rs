@@ -327,6 +327,13 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     let marker = alternate_screen.then_some(b"\x1b[?1049h".as_slice());
     let retained_cap = SCROLLBACK_LOG_CAP as usize - marker.map_or(0, <[u8]>::len);
     let keep_from = canonical.len().saturating_sub(retained_cap);
+    // The cap is a raw byte offset, so it can land inside a multi-byte UTF-8
+    // scalar or an SGR/cursor escape and leave the retained tail beginning with
+    // orphaned continuation bytes (rendered as replacement chars) or a stripped
+    // escape's stray parameter digits (rendered literally) at the top of every
+    // restored scrollback. Nudge the cut forward to the next line boundary,
+    // which escapes and scalars almost never straddle.
+    let keep_from = safe_cut_boundary(&canonical, keep_from);
     let mut tail = canonical[keep_from..].to_vec();
     if let Some(marker) = marker {
         tail.extend_from_slice(marker);
@@ -352,6 +359,31 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
         let _ = dir.sync_all();
     }
     Ok(())
+}
+
+/// Advances a raw cut offset to a safe boundary so the retained tail doesn't
+/// begin mid-scalar or mid-escape. Prefers the byte after the next `\n` (a line
+/// boundary is virtually never straddled by a UTF-8 scalar or an ANSI escape),
+/// searching only a bounded window so a marker-free blob can't shift the cut far
+/// off the cap; failing that, at least steps past any UTF-8 continuation bytes
+/// so the tail starts on a lead byte. Only ever moves the cut forward, so the
+/// retained tail stays within the byte cap.
+fn safe_cut_boundary(bytes: &[u8], start: usize) -> usize {
+    // `start == 0` means the whole canonical buffer fit under the cap — keep it
+    // all rather than trimming a first line off untrimmed history.
+    if start == 0 || start >= bytes.len() {
+        return start.min(bytes.len());
+    }
+    const LINE_SCAN_WINDOW: usize = 8 * 1024;
+    let limit = (start + LINE_SCAN_WINDOW).min(bytes.len());
+    if let Some(offset) = bytes[start..limit].iter().position(|&byte| byte == b'\n') {
+        return start + offset + 1;
+    }
+    let mut index = start;
+    while index < bytes.len() && (0x80..=0xbf).contains(&bytes[index]) {
+        index += 1;
+    }
+    index
 }
 
 /// Writes `bytes` to `path` and fsyncs the file before returning, so its contents are
@@ -759,6 +791,54 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
+    }
+
+    #[test]
+    fn safe_cut_boundary_prefers_the_next_line_start() {
+        // Mid-line cut jumps to just after the next newline.
+        assert_eq!(safe_cut_boundary(b"aaa\nbbb\nccc", 1), 4);
+        assert_eq!(safe_cut_boundary(b"aaa\nbbb\nccc", 4), 8);
+        // Offset 0 keeps everything (canonical fit under the cap).
+        assert_eq!(safe_cut_boundary(b"aaa\nbbb", 0), 0);
+        // Past the end clamps to the length.
+        assert_eq!(safe_cut_boundary(b"aaa", 9), 3);
+    }
+
+    #[test]
+    fn safe_cut_boundary_skips_utf8_continuation_bytes_without_a_newline() {
+        // "é界" = C3 A9 E4 B8 96, no newline anywhere. Cutting at offset 1 (a
+        // continuation byte) advances to the next lead byte at offset 2.
+        let bytes = "é界".as_bytes();
+        assert_eq!(bytes[0], 0xc3);
+        assert_eq!(safe_cut_boundary(bytes, 1), 2);
+        // Already on a lead byte with no newline: left where it is.
+        assert_eq!(safe_cut_boundary(bytes, 2), 2);
+    }
+
+    // A raw byte cut at the cap can split a UTF-8 scalar and leave the restored
+    // tail starting with orphaned continuation bytes. The boundary nudge must
+    // land the tail on a line start, keeping it valid UTF-8.
+    #[test]
+    fn trim_keeps_the_retained_tail_on_a_scalar_boundary() {
+        let workspace = temp_workspace();
+        let line = "héllo-世界\n".as_bytes();
+        let count = (SCROLLBACK_TRIM_TRIGGER as usize / line.len()) + 2;
+        let mut data = Vec::with_capacity(count * line.len());
+        for _ in 0..count {
+            data.extend_from_slice(line);
+        }
+        append_pane_scrollback(&workspace, "pane-1", &data).unwrap();
+
+        let restored = read_pane_scrollback(&workspace, "pane-1").unwrap();
+        assert!(restored.len() <= SCROLLBACK_LOG_CAP as usize);
+        assert!(
+            std::str::from_utf8(&restored).is_ok(),
+            "retained tail must not begin mid-scalar"
+        );
+        assert!(
+            restored.starts_with(line),
+            "retained tail should begin at a line boundary"
+        );
     }
 
     #[test]
