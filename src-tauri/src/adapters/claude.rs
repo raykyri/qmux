@@ -24,6 +24,8 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const CLAUDE_HOOK_EVENTS: &[&str] = &[
@@ -232,7 +234,7 @@ impl ClaudeAdapter {
             ));
         }
         let pane_id = state.next_id("pane");
-        let settings_path = match write_hook_settings(state.config()) {
+        let settings_path = match write_hook_settings(state.config(), &pane_id) {
             Ok(settings_path) => settings_path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -364,7 +366,8 @@ impl ClaudeAdapter {
             )
         })?;
 
-        let settings_path = match write_hook_settings(state.config()) {
+        let pane_id = state.next_id("pane");
+        let settings_path = match write_hook_settings(state.config(), &pane_id) {
             Ok(settings_path) => settings_path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -372,7 +375,6 @@ impl ClaudeAdapter {
             }
         };
 
-        let pane_id = state.next_id("pane");
         let mut args = vec![
             "--settings".to_string(),
             settings_path.display().to_string(),
@@ -461,7 +463,7 @@ impl ClaudeAdapter {
             )
         })?;
 
-        let settings_path = write_hook_settings(state.config())?;
+        let settings_path = write_hook_settings(state.config(), &pane.id)?;
         let mut args = vec![
             "--settings".to_string(),
             settings_path.display().to_string(),
@@ -586,7 +588,7 @@ impl ClaudeAdapter {
         };
         let agent =
             record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
-        let settings_path = match write_hook_settings(state.config()) {
+        let settings_path = match write_hook_settings(state.config(), &request.pane_id) {
             Ok(settings_path) => settings_path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -1310,10 +1312,64 @@ pub struct PrepareShellClaudeLaunchRequest {
     pub args: Vec<String>,
 }
 
-pub fn write_hook_settings(config: &QmuxConfig) -> Result<PathBuf, String> {
-    let qmux_dir = config.workspace_root.join(".qmux");
-    fs::create_dir_all(&qmux_dir)
-        .map_err(|err| format!("failed to create {}: {err}", qmux_dir.display()))?;
+/// Generates a random hex nonce for a per-spawn hook-settings filename, so the path
+/// is not guessable by another same-user process trying to pre-plant or locate it.
+fn hook_settings_nonce() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|err| format!("failed to generate hook settings nonce: {err}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Writes a per-pane, per-spawn Claude hook-settings file and returns its path for
+/// `--settings`.
+///
+/// This used to write one fixed, shared `.qmux/qmux-hooks.json` that every Claude
+/// pane loaded. Because that path was stable and writable by any process running as
+/// the desktop user, a prompt-injected agent in one pane could overwrite it to inject
+/// a lifecycle-hook command into *another* pane's Claude — which runs with that pane's
+/// `QMUX_TOKEN` — crossing qmux's per-pane authority boundary. Writing a fresh,
+/// unpredictably-named file per spawn under a `0700` `.qmux/hooks/` dir, created with
+/// `O_EXCL` at `0600`, removes the shared target and the pre-planted-file/symlink
+/// race: there is no stable path to overwrite, and a file planted at our random path
+/// makes the exclusive create fail (we error out rather than write through it). A
+/// same-user process can still overwrite our specific file in the window before Claude
+/// reads it — same-uid file tampering is not preventable — but it can no longer target
+/// a shared file or a guessable per-pane path.
+pub fn write_hook_settings(config: &QmuxConfig, pane_id: &str) -> Result<PathBuf, String> {
+    // qmux mints pane ids itself, but validate before using one in a filename so a
+    // malformed caller can never traverse out of the hooks dir or spoof another pane's
+    // prefix during the prune below.
+    if pane_id.is_empty()
+        || !pane_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(format!("invalid pane id for hook settings: {pane_id:?}"));
+    }
+
+    let hooks_dir = config.workspace_root.join(".qmux").join("hooks");
+    fs::create_dir_all(&hooks_dir)
+        .map_err(|err| format!("failed to create {}: {err}", hooks_dir.display()))?;
+    // Keep the hooks dir owner-only (the enclosing .qmux is already 0700; enforce it
+    // here too so the per-spawn files are never group/other-readable).
+    fs::set_permissions(&hooks_dir, fs::Permissions::from_mode(0o700))
+        .map_err(|err| format!("failed to restrict {}: {err}", hooks_dir.display()))?;
+
+    // Drop this pane's previous hook file(s) so the directory stays bounded to one file
+    // per live pane instead of growing on every spawn/resume.
+    if let Ok(entries) = fs::read_dir(&hooks_dir) {
+        let prefix = format!("{pane_id}-");
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
 
     let qmux_cli = env::current_exe()
         .map_err(|err| format!("failed to resolve qmux executable for hooks: {err}"))?;
@@ -1353,10 +1409,20 @@ pub fn write_hook_settings(config: &QmuxConfig) -> Result<PathBuf, String> {
     );
 
     let settings = json!({ "hooks": hooks });
-    let settings_path = qmux_dir.join("qmux-hooks.json");
     let raw = serde_json::to_string_pretty(&settings)
         .map_err(|err| format!("failed to encode hook settings: {err}"))?;
-    fs::write(&settings_path, raw)
+
+    let settings_path = hooks_dir.join(format!("{pane_id}-{}.json", hook_settings_nonce()?));
+    // create_new (O_CREAT|O_EXCL) at 0600: never follow/truncate a pre-existing path,
+    // so a planted file or symlink at our random target fails the create instead of
+    // being written through.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&settings_path)
+        .map_err(|err| format!("failed to create {}: {err}", settings_path.display()))?;
+    file.write_all(raw.as_bytes())
         .map_err(|err| format!("failed to write {}: {err}", settings_path.display()))?;
     Ok(settings_path)
 }
@@ -2320,12 +2386,39 @@ mod tests {
             opencode_plugin_dir: PathBuf::new(),
         };
 
-        let settings_path = write_hook_settings(&config).unwrap();
+        let settings_path = write_hook_settings(&config, "pane-1").unwrap();
 
-        assert_eq!(settings_path, workspace_root.join(".qmux/qmux-hooks.json"));
+        // Per-pane, per-spawn file under a 0700 `.qmux/hooks/` dir, created 0600.
+        let hooks_dir = workspace_root.join(".qmux/hooks");
+        assert!(
+            settings_path.starts_with(&hooks_dir),
+            "unexpected hook path: {settings_path:?}"
+        );
+        let name = settings_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            name.starts_with("pane-1-") && name.ends_with(".json"),
+            "unexpected hook filename: {name}"
+        );
         assert!(settings_path.is_file());
+        assert_eq!(
+            fs::metadata(&settings_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert!(!project_dir.join(".qmux/qmux-hooks.json").exists());
-        let raw = fs::read_to_string(settings_path).unwrap();
+
+        // A second spawn for the same pane prunes the first file so the dir stays
+        // bounded to one file per pane, and mints a fresh unguessable name.
+        let second_path = write_hook_settings(&config, "pane-1").unwrap();
+        assert_ne!(second_path, settings_path);
+        assert!(!settings_path.exists());
+        assert!(second_path.is_file());
+
+        let raw = fs::read_to_string(&second_path).unwrap();
         assert!(raw.contains("\"hooks\""));
         for event in CLAUDE_HOOK_EVENTS {
             assert!(

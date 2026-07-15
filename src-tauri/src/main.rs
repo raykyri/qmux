@@ -210,6 +210,65 @@ fn openrouter_key_set(state: tauri::State<'_, AppState>, key: String) -> Result<
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenRouterProxyResponse {
+    status: u16,
+    body: String,
+}
+
+/// Proxies an OpenRouter chat-completion request through the backend so the API key
+/// never leaves the owner-only preferences file / the Rust process. The renderer
+/// passes only the (non-secret) request payload; the key is read here and attached as
+/// the `Authorization` header. The upstream status + raw body are returned so the
+/// frontend keeps its existing response parsing and reasoning-effort retry logic.
+/// Doing the request here rather than as a webview `fetch` keeps the key out of the
+/// renderer heap on the request path and lets the webview CSP drop `openrouter.ai`
+/// from `connect-src`.
+#[tauri::command]
+async fn openrouter_chat_completion(
+    app: tauri::AppHandle,
+    payload: serde_json::Value,
+) -> Result<OpenRouterProxyResponse, String> {
+    // Read the key under the state guard, then drop it before the await below.
+    let key = {
+        let state = app.state::<AppState>();
+        persistence::load_preferences(&state.config().workspace_root)?
+            .open_router_key
+            .unwrap_or_default()
+    };
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("No OpenRouter API key is configured.".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build HTTP client: {err}"))?;
+    let response = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Content-Type", "application/json")
+        .header("X-Title", "qmux")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| {
+            if err.is_timeout() {
+                "OpenRouter request timed out.".to_string()
+            } else {
+                format!("OpenRouter request failed: {err}")
+            }
+        })?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("failed to read OpenRouter response: {err}"))?;
+    Ok(OpenRouterProxyResponse { status, body })
+}
+
 #[tauri::command(async)]
 fn launcher_adapter_preference_set(
     state: tauri::State<'_, AppState>,
@@ -1940,6 +1999,7 @@ fn main() {
             launcher_adapter_preference_set,
             openrouter_key_get,
             openrouter_key_set,
+            openrouter_chat_completion,
             active_tab_get,
             active_tab_set,
             open_external_url,

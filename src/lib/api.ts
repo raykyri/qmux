@@ -68,6 +68,16 @@ export function setOpenRouterKey(key: string) {
   return invoke<void>("openrouter_key_set", { key });
 }
 
+// Proxies an OpenRouter chat-completion request through the Rust backend, which
+// attaches the API key from the owner-only preferences file. The key is never sent
+// from (or held for the request in) the renderer. Returns the upstream HTTP status
+// and raw response body so the caller keeps its own parsing/retry logic.
+export function openRouterChatCompletion(payload: unknown) {
+  return invoke<{ status: number; body: string }>("openrouter_chat_completion", {
+    payload,
+  });
+}
+
 // The prompt library: reusable composer messages stored as markdown files, one
 // file per prompt, in a global (~/.qmux/prompts/) or per-project
 // (~/.qmux/projects/<basename>-<hash>/prompts/) scope. `projectDir` is the

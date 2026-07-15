@@ -14,10 +14,14 @@ process started outside qmux's setup will not have these hooks.
 Different agents have different hook configuration formats and
 payloads, so each integration is contained in an adapter:
 
-For Claude, we write <qmux workspace root>/.qmux/qmux-hooks.json, then
+For Claude, we write a per-pane, per-spawn settings file under
+<qmux workspace root>/.qmux/hooks/<pane-id>-<nonce>.json (created 0600
+in a 0700 dir with O_EXCL, and the pane's previous file pruned), then
 start Claude with --settings <that file>. This applies to
 launcher-created agents, resumes/forks, and claude run inside a qmux
-shell wrapper.
+shell wrapper. Using a fresh, unpredictable path per spawn — rather than
+one shared, same-user-writable qmux-hooks.json — keeps a process in one
+pane from tampering with the hook commands another pane's Claude loads.
 For the exact hooks, see src-tauri/src/adapters/claude.rs:23.
 
 For Codex, we write a qmux-managed profile under `CODEX_HOME`:

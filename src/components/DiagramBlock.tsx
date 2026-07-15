@@ -1,5 +1,6 @@
 import { isValidElement, useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
+import DOMPurify from "dompurify";
 import { safeHref } from "../lib/links";
 
 // Renders fenced ```mermaid and ```dot/```graphviz blocks from transcript markdown as SVG,
@@ -59,64 +60,61 @@ function getViz(): Promise<Viz> {
   return vizPromise;
 }
 
-// Both SVGs are injected via dangerouslySetInnerHTML, and the source is agent-authored. Parse the
-// SVG as a document rather than trying to sanitize XML with regular expressions: Graphviz can
-// emit links and external resource references, and SVG also has active elements/attributes that
-// do not exist in ordinary markdown. Safe anchor destinations are stored as inert data for the
-// delegated React handlers below; they never remain as directly navigable SVG hrefs.
+// The rendered SVG is agent-authored and injected via dangerouslySetInnerHTML into the
+// (privileged) main webview, so it is sanitized with DOMPurify's SVG profile — a
+// maintained sanitizer that handles the mutation-XSS foot-guns (XML-serialize →
+// HTML-reparse, namespace confusion) a hand-rolled denylist misses. DOMPurify strips
+// scripts, event handlers, foreignObject, and javascript:/data: URIs; the hook below
+// additionally routes anchor destinations through our safeHref allowlist and the
+// delegated React click handler (data-qmux-href) so a diagram link is never directly
+// navigable, and keeps non-anchor references local (#id) so injected paint-server /
+// use / image references can't fetch external resources.
+const DIAGRAM_SANITIZE_CONFIG = {
+  USE_PROFILES: { svg: true, svgFilters: true },
+  ADD_ATTR: ["data-qmux-href"],
+};
+
+function diagramSanitizerHook(node: Element): void {
+  // href and namespaced xlink:href both surface with local name "href".
+  const hrefAttrs = Array.from(node.attributes).filter(
+    (attribute) => attribute.localName.toLowerCase() === "href",
+  );
+  if (hrefAttrs.length === 0) {
+    return;
+  }
+  if (node.nodeName.toLowerCase() === "a") {
+    const raw = hrefAttrs.map((attribute) => attribute.value).find((value) => value.trim() !== "");
+    for (const attribute of hrefAttrs) {
+      node.removeAttributeNode(attribute);
+    }
+    const safe = safeHref(raw);
+    if (safe) {
+      node.setAttribute("data-qmux-href", safe);
+      node.setAttribute("href", "#");
+    }
+    return;
+  }
+  // Non-anchor element: keep only local (#id) references; drop anything that could
+  // fetch a network/file/data resource.
+  for (const attribute of hrefAttrs) {
+    if (!attribute.value.trim().startsWith("#")) {
+      node.removeAttributeNode(attribute);
+    }
+  }
+}
+
 function sanitizeSvg(svg: string): string {
-  const document = new DOMParser().parseFromString(svg, "image/svg+xml");
-  if (document.querySelector("parsererror")) {
+  DOMPurify.addHook("afterSanitizeAttributes", diagramSanitizerHook);
+  let clean: string;
+  try {
+    clean = DOMPurify.sanitize(svg, DIAGRAM_SANITIZE_CONFIG);
+  } finally {
+    DOMPurify.removeHook("afterSanitizeAttributes");
+  }
+  if (!clean.trim()) {
     throw new Error("diagram renderer returned invalid SVG");
   }
-
-  document
-    .querySelectorAll("script, foreignObject, iframe, object, embed, image, audio, video, animate, animateMotion, animateTransform, set")
-    .forEach((element) => element.remove());
-
-  for (const element of Array.from(document.querySelectorAll("*"))) {
-    for (const attribute of Array.from(element.attributes)) {
-      const name = attribute.localName.toLowerCase();
-      if (
-        name.startsWith("on") ||
-        name === "src" ||
-        name === "action" ||
-        name === "formaction" ||
-        name === "data-qmux-href"
-      ) {
-        element.removeAttributeNode(attribute);
-        continue;
-      }
-      if (name === "style" && /url\s*\(/i.test(attribute.value)) {
-        element.removeAttributeNode(attribute);
-        continue;
-      }
-      if (name !== "href") {
-        continue;
-      }
-
-      if (element.localName.toLowerCase() === "a") {
-        const safe = safeHref(attribute.value);
-        element.removeAttributeNode(attribute);
-        if (safe) {
-          element.setAttribute("data-qmux-href", safe);
-          element.setAttribute("href", "#");
-        }
-      } else if (!attribute.value.trim().startsWith("#")) {
-        // Preserve local paint-server/use references, but never let an injected SVG
-        // element fetch a network, file, data, or custom-scheme resource.
-        element.removeAttributeNode(attribute);
-      }
-    }
-  }
-
-  for (const style of Array.from(document.querySelectorAll("style"))) {
-    if (/@import\b|url\s*\(/i.test(style.textContent ?? "")) {
-      style.remove();
-    }
-  }
-
-  return new XMLSerializer().serializeToString(document.documentElement);
+  return clean;
 }
 
 let mermaidSeq = 0;

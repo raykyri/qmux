@@ -254,6 +254,7 @@ import {
   getLauncherAdapterPreference,
   getOpenRouterKey,
   setOpenRouterKey,
+  openRouterChatCompletion,
   getAgentDraft,
   getShowHideShortcut,
   activatePane,
@@ -484,9 +485,10 @@ const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
 const MAX_OPENROUTER_TITLE_SOURCE_CHARS = 4000;
 const OPENROUTER_TITLE_MAX_COMPLETION_TOKENS = 1000;
-const OPENROUTER_TITLE_TIMEOUT_MS = 15_000;
 const FIRST_MESSAGE_TITLE_LOOKAHEAD_LIMIT = 5;
-const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
+// The OpenRouter chat-completion request is proxied through the Rust backend
+// (openRouterChatCompletion) so the API key is attached server-side; the renderer
+// never sends it and the request timeout is enforced in the backend.
 const APP_TOAST_TIMEOUT_MS = 5000;
 const TITLE_GENERATION_TEST_MESSAGE =
   "Review the launch plan, identify the highest-risk blockers, and suggest next steps.";
@@ -547,7 +549,8 @@ interface TurnPaneSurface {
 }
 
 interface OpenRouterTitleConfig {
-  apiKey: string;
+  // The API key is no longer carried here: the request is proxied through the backend
+  // (see openRouterChatCompletion), which reads the key from the preferences file.
   model: string;
 }
 
@@ -646,10 +649,12 @@ function firstMessageTitleConfig(
   }
 
   // OpenRouter sends first-message text to a third-party service, so selecting the
-  // provider is the consent boundary; key/model are still required to make a call.
-  const apiKey = settings.openRouterKey.trim();
+  // provider is the consent boundary; a configured key and model are still required
+  // to make a call. The key stays out of the returned config — the backend proxy
+  // attaches it — but its presence still gates whether a request is attempted.
+  const hasKey = settings.openRouterKey.trim().length > 0;
   const model = settings.openRouterModel.trim();
-  return apiKey && model ? { provider: "openRouter", apiKey, model } : null;
+  return hasKey && model ? { provider: "openRouter", model } : null;
 }
 
 function firstMessageTitleProviderLabel(config: FirstMessageTitleConfig): string {
@@ -1035,15 +1040,14 @@ function openRouterTitlePayload(
   return payload;
 }
 
-async function readOpenRouterPayload(response: Response): Promise<unknown> {
-  const raw = await response.text();
+function parseOpenRouterBody(raw: string, ok: boolean): unknown {
   if (!raw.trim()) {
     return null;
   }
   try {
     return JSON.parse(raw) as unknown;
   } catch {
-    if (response.ok) {
+    if (ok) {
       throw new Error("OpenRouter returned invalid JSON.");
     }
     return raw;
@@ -1058,41 +1062,18 @@ async function summarizeFirstMessageTitle(
   for (let index = 0; index < attempts.length; index += 1) {
     const reasoningEffort = attempts[index];
     const payload = openRouterTitlePayload(sourceMessage, titleConfig, reasoningEffort);
-    const abortController = new AbortController();
-    const timeout = window.setTimeout(
-      () => abortController.abort(),
-      OPENROUTER_TITLE_TIMEOUT_MS,
-    );
-    let response: Response;
-    try {
-      response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${titleConfig.apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "qmux",
-        },
-        body: JSON.stringify(payload),
-        signal: abortController.signal,
-      });
-    } catch (err) {
-      if (abortController.signal.aborted) {
-        throw new Error("OpenRouter title request timed out after 15 seconds.");
-      }
-      throw err;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-    const responsePayload = await readOpenRouterPayload(response);
-    if (!response.ok) {
-      const message = openRouterPayloadErrorMessage(responsePayload) ?? response.statusText;
-      if (
-        index < attempts.length - 1 &&
-        isOpenRouterReasoningConfigError(response.status, message)
-      ) {
+    // Routed through the Rust backend so the API key is attached server-side and
+    // never enters the renderer on the request path. The backend enforces the
+    // request timeout and returns the upstream status + raw body.
+    const { status, body } = await openRouterChatCompletion(payload);
+    const ok = status >= 200 && status < 300;
+    const responsePayload = parseOpenRouterBody(body, ok);
+    if (!ok) {
+      const message = openRouterPayloadErrorMessage(responsePayload) ?? `HTTP ${status}`;
+      if (index < attempts.length - 1 && isOpenRouterReasoningConfigError(status, message)) {
         continue;
       }
-      throw new Error(`OpenRouter request failed (${response.status}): ${message}`);
+      throw new Error(`OpenRouter request failed (${status}): ${message}`);
     }
 
     const payloadError = openRouterPayloadErrorMessage(responsePayload);
