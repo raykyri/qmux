@@ -4777,6 +4777,8 @@ export default function App() {
     }
   }, [activePaneId, paneSplits, panes]);
 
+  // Switching back from Research can restore the same terminal pane ID, so the
+  // sidebar mode must also trigger this after the terminal rows are rendered.
   useLayoutEffect(() => {
     if (!activePaneId) {
       return;
@@ -4795,7 +4797,7 @@ export default function App() {
     if (selectedRow) {
       scrollChildIntoViewVertically(paneList, selectedRow);
     }
-  }, [activePaneId]);
+  }, [activePaneId, sidebarMode]);
 
   // Report the focused pane to the backend so it can stamp `last_active_at`, which
   // feeds the group's spawn-cwd heuristic (most-recently-active shell pane). One
