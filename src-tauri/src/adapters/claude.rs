@@ -858,7 +858,14 @@ impl ClaudeAdapter {
             }
             "Stop" | "StopFailure" => {
                 let waiting_on_subagents = if let Some(agent) = agent.as_mut() {
-                    if state.agent_has_active_subagents(&agent.id)? {
+                    // Claude 2.1.145+ reports its live task registry directly on
+                    // Stop. This closes the race where a background agent is
+                    // launched before qmux observes SubagentStart (and also covers
+                    // background work that is not a subagent). Older versions omit
+                    // the field and continue to rely on the hook-backed tracker.
+                    if has_reported_background_tasks(&notification.payload)
+                        || state.agent_has_active_subagents(&agent.id)?
+                    {
                         agent.status = AgentStatus::Running;
                         state.set_agent_status(&agent.id, agent.status)?;
                         true
@@ -1664,6 +1671,13 @@ fn payload_contains(value: &Value, needle: &str) -> bool {
         }),
         _ => false,
     }
+}
+
+fn has_reported_background_tasks(payload: &Value) -> bool {
+    payload
+        .get("background_tasks")
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| !tasks.is_empty())
 }
 
 fn is_subagent_payload(value: &Value) -> bool {
@@ -2968,6 +2982,38 @@ mod tests {
         assert_eq!(event.event_type, "agent.done");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::Done));
+    }
+
+    #[test]
+    fn stop_waits_for_reported_background_tasks_without_subagent_hooks() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        let event = ingest(
+            &state,
+            hook(
+                "Stop",
+                json!({
+                    "background_tasks": [{
+                        "id": "task-1",
+                        "type": "subagent",
+                        "status": "running"
+                    }]
+                }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.running");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        let event = ingest(&state, hook("Stop", json!({ "background_tasks": [] })));
+        assert_eq!(event.event_type, "agent.done");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
     }
 
     #[test]
