@@ -51,6 +51,13 @@ export const BODY_FONT_OPTIONS: BodyFontOption[] = [
     localNames: ["Anthropic Sans Text Regular", "AnthropicSansText-Regular"],
   },
   {
+    id: "valley-sans",
+    label: "Valley Sans",
+    // Optional host font; both static and variable desktop builds expose these names.
+    stack: `"Valley Sans", ${SYSTEM_BODY_FONT_STACK}`,
+    localNames: ["Valley Sans Regular", "ValleySans-Regular"],
+  },
+  {
     id: "system",
     label: "System",
     stack: SYSTEM_BODY_FONT_STACK,

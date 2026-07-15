@@ -523,6 +523,9 @@ fn markdown_body_font(font_id: Option<&str>) -> &'static str {
         Some("anthropic-sans-text") => {
             "'Anthropic Sans Text', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         }
+        Some("valley-sans") => {
+            "'Valley Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        }
         _ => "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     }
 }
@@ -751,6 +754,10 @@ mod tests {
         let selected_page = render_markdown_page(path, source, Some("anthropic-sans-text"));
         assert!(selected_page.contains("font-family: 'Anthropic Sans Text', ui-sans-serif"));
         assert!(!selected_page.contains("__QMUX_BODY_FONT__"));
+
+        let valley_page = render_markdown_page(path, source, Some("valley-sans"));
+        assert!(valley_page.contains("font-family: 'Valley Sans', ui-sans-serif"));
+        assert!(!valley_page.contains("__QMUX_BODY_FONT__"));
 
         let unknown_page = render_markdown_page(path, source, Some("body{};color:red"));
         assert!(unknown_page.contains("font-family: ui-sans-serif, system-ui"));
