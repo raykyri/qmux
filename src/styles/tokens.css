@@ -185,6 +185,11 @@
   --popover-item-hover-bg: #283032;
   --chrome-header-bg: #14171a;
   --pane-hover-bg: #1b1f21;
+  --markdown-table-header-bg: color-mix(
+    in srgb,
+    var(--pane-hover-bg) 75%,
+    var(--right-pane-bg) 25%
+  );
   --transcript-code-bg: #111416;
   --transcript-code-header-bg: #0d1012;
   --surface-divider: #2a2d2f;
@@ -230,6 +235,11 @@
   --popover-item-hover-bg: #322e28;
   --chrome-header-bg: #171716;
   --pane-hover-bg: #23211e;
+  --markdown-table-header-bg: color-mix(
+    in srgb,
+    var(--pane-hover-bg) 75%,
+    var(--right-pane-bg) 25%
+  );
   --transcript-code-bg: #171512;
   --transcript-code-header-bg: #12110f;
   --surface-divider: #2d2d2c;

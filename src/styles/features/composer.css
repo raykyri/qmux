@@ -440,7 +440,7 @@
   padding: 7px 13px;
   border: 1px solid #364245;
   border-radius: 999px;
-  background: #1d2325;
+  background: var(--markdown-table-header-bg);
   color: var(--text-primary);
   font-size: var(--fs-sm);
   line-height: 1;

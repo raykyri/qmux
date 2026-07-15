@@ -871,7 +871,7 @@ header + .turn-blocks {
 /* Header row: a surface a step lighter than the pane (the old #15191b was
    indistinguishable from it) plus a stronger divider, so it reads as a header. */
 .turn-markdown th {
-  background: #1d2325;
+  background: var(--markdown-table-header-bg);
   color: var(--text-heading);
   font-weight: 600;
   border-bottom-color: #38403f;
@@ -1194,4 +1194,3 @@ header + .turn-blocks {
   padding: 2px 7px;
   font-size: var(--fs-sm);
 }
-
