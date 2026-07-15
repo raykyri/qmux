@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
 
 const SCROLLBACK_DIR: &str = "terminal";
 const STATE_DIR: &str = ".qmux";
@@ -21,6 +21,17 @@ const SCROLLBACK_LOG_CAP: u64 = 8 * 1024 * 1024;
 /// `SCROLLBACK_TRIM_TRIGGER - SCROLLBACK_LOG_CAP` bytes of output, at the cost
 /// of the on-disk file transiently exceeding the cap by up to the slack.
 const SCROLLBACK_TRIM_TRIGGER: u64 = SCROLLBACK_LOG_CAP + SCROLLBACK_LOG_CAP / 2;
+/// Ceiling on trims running at once, across all panes. A trim reads the whole
+/// log (up to the trigger) and builds its sanitized rewrite in memory — several
+/// tens of MB transiently — and per-pane locks deliberately let every pane trim
+/// independently. Without a global ceiling, a burst that pushes many noisy panes
+/// past the trigger together (a fan-out of agents all dumping build output)
+/// would run all their trims at once and multiply that transient by the pane
+/// count, spiking to hundreds of MB. Bounding the concurrency caps the peak
+/// while still letting a handful proceed in parallel; trims are rare (one per
+/// `SCROLLBACK_TRIM_TRIGGER - SCROLLBACK_LOG_CAP` bytes of output per pane), so
+/// the occasional wait costs little.
+const MAX_CONCURRENT_TRIMS: usize = 4;
 
 /// One entry per pane log, keyed by the log's path. Scrollback I/O used to
 /// serialize every pane behind one global mutex, so a noisy pane's trim — a
@@ -32,6 +43,41 @@ const SCROLLBACK_TRIM_TRIGGER: u64 = SCROLLBACK_LOG_CAP + SCROLLBACK_LOG_CAP / 2
 /// lookup/insert/remove, never across I/O.
 static PANE_LOGS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<PaneLog>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Available trim slots (see `MAX_CONCURRENT_TRIMS`) plus the condvar sleepers
+/// wait on when none are free.
+static TRIM_PERMITS: LazyLock<(Mutex<usize>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(MAX_CONCURRENT_TRIMS), Condvar::new()));
+
+/// RAII trim slot: `acquire` blocks until one of the `MAX_CONCURRENT_TRIMS`
+/// slots is free, and `Drop` returns it — so an early `?` return or a panic
+/// inside the trim can never leak a slot and permanently shrink the ceiling.
+/// Acquired while holding the trimming pane's log lock; nothing takes a pane
+/// lock while holding a permit, so the pane-lock → permit order can't deadlock.
+struct TrimPermit;
+
+impl TrimPermit {
+    fn acquire() -> Self {
+        let (lock, cvar) = &*TRIM_PERMITS;
+        let mut available = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *available == 0 {
+            available = cvar
+                .wait(available)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *available -= 1;
+        TrimPermit
+    }
+}
+
+impl Drop for TrimPermit {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*TRIM_PERMITS;
+        let mut available = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *available += 1;
+        cvar.notify_one();
+    }
+}
 
 /// Per-pane log state: the append handle, kept open across chunks so the
 /// steady-state append path skips the open/close (and mkdir + chmod) syscalls
@@ -264,6 +310,9 @@ fn trim_scratch_writer_pid(name: &str) -> Option<u32> {
 /// once the file has grown past `SCROLLBACK_TRIM_TRIGGER`, so the rewrite cost
 /// is amortized over the slack instead of paid per append.
 fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
+    // Bound the peak memory of simultaneous trims. Held for the whole rewrite;
+    // released on drop at function exit (including the error paths below).
+    let _permit = TrimPermit::acquire();
     let mut file = fs::File::open(path)
         .map_err(|err| format!("failed to reopen scrollback {}: {err}", path.display()))?;
     let mut captured = Vec::with_capacity(len as usize);
@@ -684,6 +733,32 @@ mod tests {
             read_pane_scrollback(&workspace, "pane-1").unwrap().len(),
             SCROLLBACK_LOG_CAP as usize + 5
         );
+    }
+
+    // More panes trim at once than there are permits, so some trims must wait
+    // on the semaphore. They must all still complete correctly and release their
+    // slots — no deadlock, no cross-pane corruption under the shared permit.
+    #[test]
+    fn concurrent_trims_exceeding_the_permit_ceiling_all_complete() {
+        let workspace = temp_workspace();
+        let panes = MAX_CONCURRENT_TRIMS * 2;
+        let handles: Vec<_> = (0..panes)
+            .map(|i| {
+                let workspace = workspace.clone();
+                std::thread::spawn(move || {
+                    let pane = format!("pane-{i}");
+                    let mut data = vec![b'a'; SCROLLBACK_TRIM_TRIGGER as usize];
+                    data.extend_from_slice(b"tail");
+                    append_pane_scrollback(&workspace, &pane, &data).unwrap();
+                    let restored = read_pane_scrollback(&workspace, &pane).unwrap();
+                    assert_eq!(restored.len(), SCROLLBACK_LOG_CAP as usize);
+                    assert!(restored.ends_with(b"tail"));
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 
     #[test]
