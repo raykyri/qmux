@@ -201,12 +201,15 @@
   --popover-item-hover-bg: #283032;
   --chrome-header-bg: #14171a;
   --pane-hover-bg: #1b1f21;
+  --pane-tab-hover-bg: var(--pane-hover-bg);
   --markdown-table-header-bg: color-mix(
     in srgb,
     var(--pane-hover-bg) 75%,
     var(--right-pane-bg) 25%
   );
   --markdown-table-border: #262d2f;
+  --markdown-table-frame-border: #2f3639;
+  --markdown-table-header-border: #38403f;
   --markdown-blockquote-border: #3d4a4d;
   --transcript-code-bg: #111416;
   --transcript-code-header-bg: #0d1012;
@@ -261,13 +264,16 @@
   --popover-item-hover-bg: #322f2b;
   --chrome-header-bg: #171716;
   --pane-hover-bg: #23211f;
+  --pane-tab-hover-bg: var(--right-pane-bg);
   --markdown-table-header-bg: color-mix(
     in srgb,
     var(--pane-hover-bg) 75%,
     var(--right-pane-bg) 25%
   );
-  --markdown-table-border: #2d2b28;
-  --markdown-blockquote-border: #4a433b;
+  --markdown-table-border: #332d27;
+  --markdown-table-frame-border: #39332c;
+  --markdown-table-header-border: #453a30;
+  --markdown-blockquote-border: #45484a;
   --transcript-code-bg: #171512;
   --transcript-code-header-bg: #12110f;
   --surface-divider: #2d2d2c;

@@ -121,7 +121,7 @@
   min-width: 0;
   flex: 1;
   min-height: 30px;
-  padding: 5px 4px 5px 8px;
+  padding: 5px 4px 4px 8px;
   border: 0;
   border-radius: var(--radius-md);
   color: inherit;
@@ -237,6 +237,7 @@
   font-weight: 700;
   text-transform: uppercase;
   background: rgba(90, 130, 178, 0.16);
+  transform: translateY(2px);
 }
 
 .research-sidebar-row.is-archived {
@@ -752,7 +753,7 @@
 
 ::highlight(qmux-research-highlights) {
   color: inherit;
-  background: rgba(224, 190, 79, 0.42);
+  background: #162f90;
 }
 
 .research-highlight-action {
