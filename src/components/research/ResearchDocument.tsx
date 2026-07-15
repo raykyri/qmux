@@ -54,6 +54,7 @@ import type {
   UpdateResearchDocumentResult,
 } from "../../types";
 import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
+import DomSearchBar from "../DomSearchBar";
 import {
   RawTranscriptDisclosure,
   TranscriptActivityItem,
@@ -1614,6 +1615,12 @@ export default function ResearchDocument({
               </button>
             ) : null}
           </header>
+
+          <DomSearchBar
+            active
+            placeholder="Find in research"
+            rootRef={documentScrollRef}
+          />
 
           <article
             ref={documentScrollRef}

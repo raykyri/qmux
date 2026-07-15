@@ -17,9 +17,6 @@ import { createPortal } from "react-dom";
 import { Ellipsis } from "lucide-react";
 import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
 import {
-  IS_MAC,
-  isEditableTarget,
-  isTerminalTarget,
   placePanePopover,
   turnPaneRectFrom,
 } from "../lib/appHelpers";
@@ -31,13 +28,6 @@ import {
   taggedUserInstructionDetails,
 } from "../lib/taggedInstructions";
 import {
-  applySearchHighlights,
-  clearSearchHighlights,
-  collectSearchRanges,
-  nearestSearchRangeIndex,
-  scrollSearchRangeIntoView,
-} from "../lib/transcriptSearch";
-import {
   buildTimelineItems,
   hasToolCall,
   messageItemIsTaggedInstruction,
@@ -45,7 +35,7 @@ import {
   sameMessageItem,
 } from "../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../lib/turnTimeline";
-import PaneSearchBar from "./PaneSearchBar";
+import DomSearchBar from "./DomSearchBar";
 import TranscriptPickerLink from "./TranscriptPickerLink";
 import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
@@ -201,45 +191,6 @@ export default function TurnOverlay({
   const stickToBottomRef = useRef(true);
   const [composerHeight, setComposerHeight] = useState(0);
   const [composerBaseHeight, setComposerBaseHeight] = useState(0);
-
-  // Find-in-transcript. Matches are DOM ranges over the rendered timeline; the
-  // range list lives in a ref (ranges are live DOM handles, not render state)
-  // while index/count drive the bar's label and the highlight repaint.
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
-  const [searchUseRegex, setSearchUseRegex] = useState(false);
-  const [searchResults, setSearchResults] = useState<{ index: number; count: number }>({
-    index: -1,
-    count: 0,
-  });
-  // The term actually fed to the (expensive) rescan, debounced behind searchTerm so
-  // typing doesn't walk the whole timeline DOM and read per-match geometry on every
-  // keystroke. The input shows searchTerm immediately; only the scan waits.
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
-  // Bumped when a <details> in the timeline toggles: that reveals or hides text,
-  // which changes the set of searchable (rendered) matches.
-  const [searchDomNonce, setSearchDomNonce] = useState(0);
-  const searchRangesRef = useRef<Range[]>([]);
-  // A stable per-instance token identifying this overlay's ownership of the (global)
-  // search highlight registry. See lib/transcriptSearch.ts.
-  const searchOwnerRef = useRef<object>({});
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-  // WebKit does not reliably emit focusout when a focused element is removed
-  // with its subtree. If this overlay unmounts while its find input holds
-  // focus (pane close, transcript collapse), blur it while it is still
-  // attached — layout-effect cleanup runs before React detaches the node — so
-  // the app-level sampler clears webEditableFocused instead of leaving every
-  // terminal keyboard-dead until the next real focus event. Mirrors the same
-  // backstop on TerminalPane's find input.
-  useLayoutEffect(() => {
-    return () => {
-      const input = searchInputRef.current;
-      if (input && document.activeElement === input) {
-        input.blur();
-      }
-    };
-  }, []);
 
   const scrollToBottom = () => {
     const timeline = timelineRef.current;
@@ -613,204 +564,6 @@ export default function TurnOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stickyUserEnabled, timelineItems, composerHeight, effectiveQueueSplitHeight, agentId, thinking]);
 
-  // Cmd-F (macOS) / Ctrl-F opens the find bar for the active pane's transcript.
-  // Captured on window because clicking transcript text leaves focus on <body>,
-  // so a section-level key handler would never see the combo.
-  useEffect(() => {
-    if (!searchHotkeyActive) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const findCombo = IS_MAC
-        ? event.metaKey && !event.ctrlKey
-        : event.ctrlKey && !event.metaKey;
-      if (
-        event.defaultPrevented ||
-        !findCombo ||
-        event.altKey ||
-        (event.key !== "f" && event.key !== "F")
-      ) {
-        return;
-      }
-      const target = event.target;
-      if (target instanceof HTMLElement) {
-        // The terminal owns find while focused (its native handler opens its bar),
-        // and editable fields outside this pane (ask modal, settings, Home)
-        // keep the combo for themselves.
-        if (isTerminalTarget(target)) {
-          return;
-        }
-        if (!sidebarRef.current?.contains(target) && isEditableTarget(target)) {
-          return;
-        }
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      setSearchOpen(true);
-      // Refocus/select even when the bar is already open, matching the terminal.
-      window.requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [searchHotkeyActive]);
-
-  // Opening the bar focuses its input; a different transcript closes it.
-  useEffect(() => {
-    if (searchOpen) {
-      searchInputRef.current?.focus();
-      searchInputRef.current?.select();
-    }
-  }, [searchOpen]);
-
-  useEffect(() => {
-    setSearchOpen(false);
-  }, [agentId]);
-
-  // Expanding/collapsing a tool call or thinking block changes which text is
-  // rendered, so rescan on any <details> toggle within the timeline. `toggle`
-  // does not bubble, but capture listeners still see it.
-  useEffect(() => {
-    if (!searchOpen) {
-      return;
-    }
-    const timeline = timelineRef.current;
-    if (!timeline) {
-      return;
-    }
-    const handleToggle = () => setSearchDomNonce((nonce) => nonce + 1);
-    timeline.addEventListener("toggle", handleToggle, true);
-    return () => timeline.removeEventListener("toggle", handleToggle, true);
-  }, [searchOpen]);
-
-  // Debounce the term into debouncedSearchTerm so the rescan below fires once typing
-  // settles, not per keystroke. Clearing the term takes effect immediately (no scan
-  // cost, and the user expects the highlights gone at once).
-  useEffect(() => {
-    if (searchTerm === "") {
-      setDebouncedSearchTerm("");
-      return;
-    }
-    const handle = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 120);
-    return () => window.clearTimeout(handle);
-  }, [searchTerm]);
-
-  // Rescan whenever the debounced term/options change or the rendered timeline does
-  // (new turns, toggled details). Runs after the DOM commit, so ranges are built over
-  // current text nodes. The active match snaps to the one nearest the viewport, so
-  // typing refines the term without yanking the view to the top.
-  //
-  // Term/option changes rescan immediately (the user is waiting on the result;
-  // the term itself is already debounced above). Content changes rescan behind
-  // a trailing timer instead: a streaming agent commits new timeline items
-  // several times a second, and walking every text node plus reading per-match
-  // geometry at that rate makes search-while-streaming far more expensive than
-  // the stream itself. The timer is arm-once (not reset per change), so
-  // staleness stays bounded at the interval even if commits arrive faster than
-  // it — a resettable debounce would starve for as long as the stream runs.
-  // The latest scan callback lives in a ref so the delayed run always uses
-  // current term/options; content-driven runs also skip the scroll-into-view
-  // in the repaint effect below, so a background rescan never yanks the
-  // viewport while the user reads.
-  const debouncedSearchTermRef = useRef(debouncedSearchTerm);
-  debouncedSearchTermRef.current = debouncedSearchTerm;
-  const suppressSearchScrollRef = useRef(false);
-  const contentRescanTimerRef = useRef<number | null>(null);
-  const rescanSearchRef = useRef((_contentDriven: boolean) => {});
-  rescanSearchRef.current = (contentDriven: boolean) => {
-    const timeline = timelineRef.current;
-    if (!timeline) {
-      return;
-    }
-    const ranges =
-      debouncedSearchTerm === ""
-        ? []
-        : collectSearchRanges(timeline, debouncedSearchTerm, {
-            caseSensitive: searchCaseSensitive,
-            regex: searchUseRegex,
-          });
-    searchRangesRef.current = ranges;
-    suppressSearchScrollRef.current = contentDriven;
-    setSearchResults({ index: nearestSearchRangeIndex(timeline, ranges), count: ranges.length });
-  };
-  useEffect(() => {
-    if (!searchOpen) {
-      return;
-    }
-    rescanSearchRef.current(false);
-  }, [searchOpen, debouncedSearchTerm, searchCaseSensitive, searchUseRegex]);
-  useEffect(() => {
-    if (
-      !searchOpen ||
-      debouncedSearchTermRef.current === "" ||
-      contentRescanTimerRef.current !== null
-    ) {
-      return;
-    }
-    contentRescanTimerRef.current = window.setTimeout(() => {
-      contentRescanTimerRef.current = null;
-      rescanSearchRef.current(true);
-    }, 250);
-  }, [searchOpen, timelineItems, searchDomNonce]);
-  // Closing the bar (or unmounting) cancels any pending content rescan.
-  useEffect(() => {
-    if (searchOpen) {
-      return;
-    }
-    if (contentRescanTimerRef.current !== null) {
-      window.clearTimeout(contentRescanTimerRef.current);
-      contentRescanTimerRef.current = null;
-    }
-  }, [searchOpen]);
-  useEffect(
-    () => () => {
-      if (contentRescanTimerRef.current !== null) {
-        window.clearTimeout(contentRescanTimerRef.current);
-      }
-    },
-    [],
-  );
-
-  // Repaint highlights and bring the active match into view on every result change.
-  // Only the active pane paints: the highlight registry has one slot per name, so in
-  // split view two open find bars would otherwise overwrite and clear each other's
-  // highlights. An inactive (or closed) bar releases its paint but still navigates by
-  // scrolling. Closing the bar or unmounting clears our own highlights.
-  useEffect(() => {
-    const owner = searchOwnerRef.current;
-    if (!searchOpen || !searchHotkeyActive) {
-      clearSearchHighlights(owner);
-      return;
-    }
-    const ranges = searchRangesRef.current;
-    applySearchHighlights(owner, ranges, searchResults.index);
-    // Content-driven rescans repaint but never scroll: the user didn't ask to
-    // navigate, and re-centering the nearest match mid-stream would pull the
-    // viewport away from what they're reading.
-    const suppressScroll = suppressSearchScrollRef.current;
-    suppressSearchScrollRef.current = false;
-    const active = ranges[searchResults.index];
-    const timeline = timelineRef.current;
-    if (active && timeline && !suppressScroll) {
-      scrollSearchRangeIntoView(timeline, active);
-    }
-    return () => clearSearchHighlights(owner);
-  }, [searchOpen, searchHotkeyActive, searchResults]);
-
-  const stepSearch = (delta: 1 | -1) => {
-    // Explicit navigation always scrolls, even if a content rescan set the
-    // suppress flag in the same tick.
-    suppressSearchScrollRef.current = false;
-    setSearchResults((current) => {
-      if (current.count === 0) {
-        return current;
-      }
-      return { ...current, index: (current.index + delta + current.count) % current.count };
-    });
-  };
-
   return (
     <section
       ref={sidebarRef}
@@ -818,23 +571,13 @@ export default function TurnOverlay({
       aria-label="Agent turns"
     >
       {header}
-      {searchOpen ? (
-        <PaneSearchBar
-          inputRef={searchInputRef}
-          placeholder="Find in transcript"
-          term={searchTerm}
-          onTermChange={setSearchTerm}
-          matchIndex={searchResults.index}
-          matchCount={searchResults.count}
-          caseSensitive={searchCaseSensitive}
-          onCaseSensitiveChange={setSearchCaseSensitive}
-          useRegex={searchUseRegex}
-          onUseRegexChange={setSearchUseRegex}
-          onFindNext={() => stepSearch(1)}
-          onFindPrevious={() => stepSearch(-1)}
-          onClose={() => setSearchOpen(false)}
-        />
-      ) : null}
+      <DomSearchBar
+        active={searchHotkeyActive}
+        placeholder="Find in transcript"
+        rootRef={timelineRef}
+        hotkeyScopeRef={sidebarRef}
+        resetKey={agentId}
+      />
       {queueSplit ? (
         <div
           className="turn-queue-resizer"

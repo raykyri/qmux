@@ -96,7 +96,7 @@
   padding: 10px 0 10px 10px;
 }
 
-/* The find bar shared by the terminal and the right-pane transcript. */
+/* The find bar shared by terminals, transcripts, and research documents. */
 .pane-search {
   position: absolute;
   top: 10px;
@@ -198,7 +198,7 @@
   cursor: default;
 }
 
-/* Transcript search matches, painted via the CSS Custom Highlight API (names
+/* Rendered-pane search matches, painted via the CSS Custom Highlight API (names
    registered in lib/transcriptSearch.ts). Colors mirror the terminal's
    SEARCH_DECORATIONS so find reads the same on both sides of the split. */
 ::highlight(transcript-search-match) {
@@ -210,4 +210,3 @@
   background-color: #a8842f;
   color: #111315;
 }
-

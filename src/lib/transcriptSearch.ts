@@ -1,13 +1,13 @@
-// DOM-range search over the rendered transcript. The transcript is React-rendered
-// markdown, so matches are painted with the CSS Custom Highlight API instead of
-// wrapping text in marker elements (which would fight React's reconciliation).
+// DOM-range search over React-rendered pane content. Matches are painted with
+// the CSS Custom Highlight API instead of marker elements, which would fight
+// React's reconciliation.
 
 export interface TranscriptSearchOptions {
   caseSensitive: boolean;
   regex: boolean;
 }
 
-// Highlight registry names, referenced by ::highlight() rules in styles.css.
+// Highlight registry names, referenced by ::highlight() rules in terminal.css.
 export const TRANSCRIPT_SEARCH_HIGHLIGHT = "transcript-search-match";
 export const TRANSCRIPT_SEARCH_ACTIVE_HIGHLIGHT = "transcript-search-active-match";
 
@@ -55,10 +55,9 @@ function buildHighlight(Highlight: new () => HighlightLike, ranges: Range[]): Hi
 }
 
 // The registry keys are global and there is one painted slot per name, so only one
-// transcript can own the highlights at a time. Multiple TurnOverlays mount at once in
-// split view; without an owner, one pane's paint or cleanup would silently wipe
-// another's. Callers pass an opaque per-instance token; only the current owner may
-// repaint or clear, so a background overlay can't clobber the active one.
+// rendered pane can own the highlights at a time. Multiple searchable panes can
+// remain mounted; without an owner, one pane's cleanup would silently wipe
+// another's paint. Only the current owner may repaint or clear the registry.
 let highlightOwner: object | null = null;
 
 // Paints all matches plus the active match for `owner`, taking ownership of the
