@@ -135,8 +135,32 @@ impl PaneLog {
             .file
             .as_mut()
             .expect("scrollback handle was just opened");
-        file.write_all(chunk)
-            .map_err(|err| format!("failed to append scrollback {}: {err}", path.display()))?;
+        // The length before the write, so a short write (ENOSPC/EDQUOT/EIO after
+        // some bytes already landed) can be rolled back. A partial chunk left at
+        // EOF would become a *mid-file* torn escape once the next chunk appends
+        // behind it, and replay's unterminated-control scan drops everything
+        // from a dangling control to the next terminator — silently eating the
+        // real scrollback past the seam, and permanently once a trim rewrites
+        // the canonical tail. This adds one fstat to the append path (it already
+        // fstats after the write); on an fd that is negligible next to the write
+        // itself, and it is the price of never persisting a torn fragment.
+        let pre_len = file
+            .metadata()
+            .map_err(|err| format!("failed to stat scrollback {}: {err}", path.display()))?
+            .len();
+        if let Err(err) = file.write_all(chunk) {
+            // Truncate the partial write back to a clean tail and drop the cached
+            // handle so the next append reopens and re-validates. Both are
+            // best-effort: if the truncate itself fails the log keeps a fragment,
+            // but abandoning the handle still stops this writer from silently
+            // appending behind it.
+            rollback_partial_append(file, pre_len);
+            self.file = None;
+            return Err(format!(
+                "failed to append scrollback {}: {err}",
+                path.display()
+            ));
+        }
         // fstat on the open handle instead of a path stat: the post-append
         // length decides whether the trim trigger tripped, and the link count
         // tells us whether the file still exists at its path at all.
@@ -148,6 +172,15 @@ impl PaneLog {
         }
         Ok(Some(metadata.len()))
     }
+}
+
+/// Truncates a partially written chunk back to `pre_len` after a failed append,
+/// so the log never retains a torn escape fragment that would strand replay's
+/// unterminated-control scan. Best-effort: on a filesystem where the shrink
+/// fails the fragment survives, but the caller also drops its cached handle so
+/// the next append reopens against whatever tail remains.
+fn rollback_partial_append(file: &File, pre_len: u64) {
+    let _ = file.set_len(pre_len);
 }
 
 /// The pane's log entry, created on first use. Removal drops the entry (see
@@ -496,8 +529,18 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
 
         if code == CSI || (code == ESC && bytes.get(index + 1) == Some(&b'[')) {
             let start = index + if code == CSI { prefix_len } else { 2 };
-            let Some(end) = find_csi_end(bytes, start) else {
-                break;
+            let end = match find_csi_end(bytes, start) {
+                CsiEnd::Final(end) => end,
+                CsiEnd::Aborted { resume } => {
+                    // A torn CSI (a program killed mid-sequence, a `cat`ed
+                    // binary): drop the partial introducer + params and re-parse
+                    // from the abort point, so the escape that follows it isn't
+                    // swallowed. Emitting nothing matches a real terminal
+                    // discarding an interrupted control.
+                    index = resume;
+                    continue;
+                }
+                CsiEnd::Incomplete => break,
             };
             let csi = parse_csi(bytes, start, end);
             let alternate_set = csi.is_alternate_screen(b'h');
@@ -611,8 +654,53 @@ impl ParsedCsi {
     }
 }
 
-fn find_csi_end(bytes: &[u8], start: usize) -> Option<usize> {
-    (start..bytes.len()).find(|index| (0x40..=0x7e).contains(&bytes[*index]))
+/// Outcome of scanning a CSI body (the bytes after the `\x1b[` / 8-bit CSI
+/// introducer) for its terminator.
+enum CsiEnd {
+    /// A well-formed final byte (0x40-0x7e) sits at this index.
+    Final(usize),
+    /// A byte a CSI body cannot contain aborted the sequence. The partial CSI
+    /// must be discarded and the main loop resumed at `resume`: a consuming
+    /// abort (CAN/SUB) is skipped past, while an introducer (ESC or a C1
+    /// control) is left in place so it re-opens a fresh sequence instead of
+    /// being eaten by the torn one.
+    Aborted { resume: usize },
+    /// Ran to end of input with only valid body bytes — an unterminated CSI at
+    /// EOF (e.g. a program killed mid-write). Drop the remainder.
+    Incomplete,
+}
+
+/// Locates the end of a CSI control. A CSI body is parameter bytes (0x30-0x3f)
+/// and intermediate bytes (0x20-0x2f) terminated by a final byte (0x40-0x7e);
+/// any other byte means the sequence was torn. Bailing on that torn byte —
+/// rather than scanning past it for the next 0x40-0x7e — is what stops a
+/// truncated CSI from swallowing the escape that follows it, which would drop
+/// that escape's rendering and, when it was an alternate-screen toggle,
+/// permanently mistrack the screen state (leaving every later line discarded as
+/// phantom alternate-screen content, then baked onto disk by the next trim's
+/// re-injected marker). Mirrors the abort handling `find_string_control_end`
+/// already has for string controls.
+fn find_csi_end(bytes: &[u8], start: usize) -> CsiEnd {
+    let mut index = start;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if (0x40..=0x7e).contains(&byte) {
+            return CsiEnd::Final(index);
+        }
+        if (0x20..=0x3f).contains(&byte) {
+            index += 1;
+            continue;
+        }
+        // CAN and SUB *are* the abort and are consumed; ESC and C1 controls
+        // introduce a new sequence and must be re-parsed from their own byte.
+        let resume = if matches!(byte, 0x18 | 0x1a) {
+            index + 1
+        } else {
+            index
+        };
+        return CsiEnd::Aborted { resume };
+    }
+    CsiEnd::Incomplete
 }
 
 fn parse_csi(bytes: &[u8], start: usize, end: usize) -> ParsedCsi {
@@ -1148,6 +1236,80 @@ mod tests {
     fn replay_sanitizer_drops_utf8_text_inside_alternate_screen() {
         let input = "before\r\n\x1b[?1049h😀 hidden\r\n\x1b[?1049lafter\r\n".as_bytes();
         assert_eq!(sanitize_scrollback_replay(input), b"before\r\nafter\r\n");
+    }
+
+    // A CSI torn mid-parameter (a program killed before its final byte, a
+    // `cat`ed binary) must not scan past the escape that follows it. The torn
+    // `\x1b[1` is dropped and the following SGR + text survive intact.
+    #[test]
+    fn replay_sanitizer_aborts_an_interrupted_csi_before_a_following_escape() {
+        let input = b"before\x1b[1\x1b[32mgreen\x1b[0mafter";
+        assert_eq!(
+            sanitize_scrollback_replay(input),
+            b"before\x1b[32mgreen\x1b[0mafter"
+        );
+    }
+
+    // With the alternate screen open, a torn CSI immediately before the
+    // `?1049l` exit must not eat that exit — otherwise the sanitizer stays stuck
+    // in alternate-screen mode and discards every later line as phantom TUI
+    // content (and a later trim would bake that stuck state onto disk).
+    #[test]
+    fn replay_sanitizer_interrupted_csi_does_not_strand_alternate_screen() {
+        let input = b"\x1b[?1049hhidden\x1b[1\x1b[?1049lvisible after restore\r\n";
+        assert_eq!(
+            sanitize_scrollback_replay(input),
+            b"visible after restore\r\n"
+        );
+    }
+
+    // The mirror case: a torn CSI right before `?1049h` must not hide the
+    // alternate-screen *enter*, or the hidden repaint leaks into primary history.
+    #[test]
+    fn replay_sanitizer_interrupted_csi_still_detects_alternate_screen_enter() {
+        let input = b"visible\r\n\x1b[1\x1b[?1049hhidden repaint\x1b[?1049lmore\r\n";
+        assert_eq!(sanitize_scrollback_replay(input), b"visible\r\nmore\r\n");
+    }
+
+    // CAN aborts a torn CSI and is itself consumed; the real output after it
+    // keeps rendering rather than being swallowed to the next final byte.
+    #[test]
+    fn replay_sanitizer_interrupted_csi_aborted_by_can_keeps_following_output() {
+        assert_eq!(
+            sanitize_scrollback_replay(b"before\x1b[1\x18after"),
+            b"beforeafter"
+        );
+    }
+
+    // A chunk that was only partially written before its append failed must be
+    // truncated back to the clean tail, so replay never sees a mid-file torn
+    // control that would swallow the real scrollback behind it.
+    #[test]
+    fn rollback_partial_append_truncates_to_the_clean_tail() {
+        let workspace = temp_workspace();
+        let path = pane_scrollback_path(&workspace, "pane-1").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"good\n").unwrap();
+        let pre_len = file.metadata().unwrap().len();
+        // The partial write of a chunk whose tail is mid-OSC, then the rollback.
+        file.write_all(b"\x1b]8;;http://x").unwrap();
+        rollback_partial_append(&file, pre_len);
+
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap(),
+            b"good\n"
+        );
+        // A subsequent normal append lands cleanly on the restored tail.
+        append_pane_scrollback(&workspace, "pane-1", b"next\n").unwrap();
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap(),
+            b"good\nnext\n"
+        );
     }
 
     #[test]
