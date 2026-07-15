@@ -70,6 +70,9 @@ interface TurnOverlayProps {
   // Identifies the agent whose transcript is shown; a change means a different
   // transcript loaded, which is when we jump the view to the latest turn.
   agentId?: string;
+  // Identifies the prompt-library listener that can handle "save message as
+  // prompt" requests. Unlike agentId, this is absent for detached transcripts.
+  savePromptAgentId?: string | null;
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
@@ -148,6 +151,7 @@ export default function TurnOverlay({
   header,
   input,
   agentId,
+  savePromptAgentId,
   notice,
   transcriptOptions = [],
   transcriptPath = null,
@@ -908,6 +912,7 @@ export default function TurnOverlay({
                 key={item.key}
                 item={item}
                 agentId={agentId}
+                savePromptAgentId={savePromptAgentId}
                 assistantLabel={assistantLabel}
                 showName={showName}
                 stickyClassName={stickyClassName}
@@ -943,6 +948,7 @@ export default function TurnOverlay({
 const MessageTimelineItemView = memo(function MessageTimelineItemView({
   item,
   agentId,
+  savePromptAgentId,
   assistantLabel,
   showName,
   stickyClassName = "",
@@ -952,6 +958,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
 }: {
   item: MessageItem;
   agentId?: string;
+  savePromptAgentId?: string | null;
   assistantLabel: string;
   showName: boolean;
   stickyClassName?: string;
@@ -965,6 +972,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
         <MessageItemView
           item={item}
           agentId={agentId}
+          savePromptAgentId={savePromptAgentId}
           assistantLabel={assistantLabel}
           showName={showName}
           stickyClassName={stickyClassName}
@@ -989,6 +997,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
 (previous, next) =>
   previous.assistantLabel === next.assistantLabel &&
   previous.agentId === next.agentId &&
+  previous.savePromptAgentId === next.savePromptAgentId &&
   previous.showName === next.showName &&
   previous.stickyClassName === next.stickyClassName &&
   previous.titleGenerationEnabled === next.titleGenerationEnabled &&
@@ -999,6 +1008,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
 function MessageItemView({
   item,
   agentId,
+  savePromptAgentId,
   assistantLabel,
   showName,
   stickyClassName = "",
@@ -1008,6 +1018,7 @@ function MessageItemView({
 }: {
   item: MessageItem;
   agentId?: string;
+  savePromptAgentId?: string | null;
   assistantLabel: string;
   showName: boolean;
   stickyClassName?: string;
@@ -1021,7 +1032,7 @@ function MessageItemView({
     showName &&
       !taggedInstructionMessage &&
       messageText &&
-      (titleGenerationEnabled || agentId),
+      (titleGenerationEnabled || savePromptAgentId),
   );
   return (
     <article
@@ -1036,7 +1047,7 @@ function MessageItemView({
           </span>
           {showMessageActions && messageText ? (
             <MessageTitleMenu
-              agentId={agentId}
+              savePromptAgentId={savePromptAgentId}
               messageText={messageText}
               titleGenerationEnabled={titleGenerationEnabled}
               titleGenerationBusy={titleGenerationBusy}
@@ -1063,13 +1074,13 @@ const TITLE_MENU_PREFERRED_WIDTH = 180;
 // Portaled so the scrollable timeline cannot clip it; right-aligned so it grows
 // toward the pane center.
 function MessageTitleMenu({
-  agentId,
+  savePromptAgentId,
   messageText,
   titleGenerationEnabled,
   titleGenerationBusy,
   onRegenerateTitleFromUserMessage,
 }: {
-  agentId?: string;
+  savePromptAgentId?: string | null;
   messageText: string;
   titleGenerationEnabled: boolean;
   titleGenerationBusy: boolean;
@@ -1206,7 +1217,7 @@ function MessageTitleMenu({
               >
                 Copy message
               </button>
-              {agentId ? (
+              {savePromptAgentId ? (
                 <button
                   type="button"
                   role="menuitem"
@@ -1216,7 +1227,7 @@ function MessageTitleMenu({
                     event.stopPropagation();
                     setOpen(false);
                     requestSaveDraftAsPrompt(
-                      agentId,
+                      savePromptAgentId,
                       stripTaggedUserInstructionBlocks(messageText),
                       { lockToGlobal: false },
                     );

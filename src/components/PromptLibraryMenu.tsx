@@ -263,6 +263,7 @@ export default function PromptLibraryMenu({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [pos, setPos] = useState<{
     left: number;
     top: number;
@@ -304,7 +305,12 @@ export default function PromptLibraryMenu({
       return;
     }
     return listenToSaveDraftAsPrompt(agentId, (text, lockToGlobal) => {
-      setEditContent(text);
+      setOpen(true);
+      setView({ kind: "list" });
+      setSearch("");
+      setError(null);
+      setDropScope(null);
+      setEditContent(text.trim());
       setEditScope("global");
       setDialogError(null);
       setDialog({
@@ -429,6 +435,18 @@ export default function PromptLibraryMenu({
     };
   }, [open, position, view, prompts, search]);
 
+  useLayoutEffect(() => {
+    if (dialog?.kind !== "editor") {
+      return;
+    }
+    const textarea = editorTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [dialog, editContent]);
+
   const insert = (text: string) => {
     onInsert?.(text);
     setOpen(false);
@@ -457,6 +475,7 @@ export default function PromptLibraryMenu({
     if (dialog?.kind !== "editor" || busy || editContent.trim().length === 0) {
       return;
     }
+    const content = editContent.trim();
     setBusy(true);
     try {
       const original = dialog.original;
@@ -465,11 +484,11 @@ export default function PromptLibraryMenu({
       const name =
         original && original.scope === editScope
           ? original.name
-          : derivePromptName(editContent, namesInScope(editScope, original ?? undefined));
+          : derivePromptName(content, namesInScope(editScope, original ?? undefined));
       await saveSavedPrompt(
         editScope,
         name,
-        editContent,
+        content,
         projectDir,
         original ? { scope: original.scope, name: original.name } : null,
       );
@@ -769,9 +788,10 @@ export default function PromptLibraryMenu({
             Prompt · use {"{placeholders}"} for fill-ins
           </span>
           <textarea
+            ref={editorTextareaRef}
             className="form-field prompt-library-editor prompt-editor-dialog-textarea"
             value={editContent}
-            rows={8}
+            rows={3}
             autoFocus
             placeholder={"Review {target} for correctness bugs…"}
             onChange={(event) => setEditContent(event.target.value)}

@@ -9251,6 +9251,7 @@ export default function App() {
         showActivityDetail={settings.showToolCalls}
         stickyUserMessages={settings.stickyUserMessages}
         agentId={agent?.id ?? surface.pane.id}
+        savePromptAgentId={agent?.id ?? null}
         searchHotkeyActive={surface.pane.id === activePane?.id}
         assistantLabel={surface.assistantLabel}
         notice={agent ? surface.transcriptNotice : null}

@@ -629,7 +629,6 @@
 
 .prompt-library-editor {
   width: 100%;
-  min-height: 90px;
   padding: 6px 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
@@ -639,7 +638,8 @@
   font-size: var(--fs-base);
   line-height: 1.4;
   outline: none;
-  resize: vertical;
+  overflow-y: hidden;
+  resize: none;
 }
 
 .prompt-library-editor:hover {
@@ -648,7 +648,8 @@
 
 .prompt-library-editor:focus {
   border-color: var(--focus-ring);
-  box-shadow: inset 0 0 0 1px var(--focus-ring);
+  outline: none;
+  box-shadow: none;
 }
 
 .prompt-library-actions {
@@ -701,7 +702,7 @@
 }
 
 .prompt-editor-dialog-textarea {
-  min-height: 160px;
+  min-height: calc(4.2em + 14px);
 }
 
 /* The prompt being deleted, quoted in the confirm dialog. Two clamped lines:
