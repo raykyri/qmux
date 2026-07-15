@@ -2204,11 +2204,17 @@ mod tests {
         assert_eq!(moved.name, "notes");
         assert_eq!(moved.name_override.as_deref(), Some("My research"));
         // The history never left global state; only the record moved.
-        assert_eq!(state.list_research_trees_with_archived(true).unwrap().len(), 1);
+        assert_eq!(
+            state.list_research_trees_with_archived(true).unwrap().len(),
+            1
+        );
         let node = state.research_node(&detail.tree.root_node_id).unwrap();
         assert_eq!(
             node.worktree_dir,
-            std::fs::canonicalize(&source).unwrap().display().to_string()
+            std::fs::canonicalize(&source)
+                .unwrap()
+                .display()
+                .to_string()
         );
         // Neither folder gains or loses anything: no `.qmux` appears, the
         // source keeps its contents, and the destination keeps its own.
@@ -2379,7 +2385,9 @@ mod tests {
         state
             .fail_research_node(&donor_detail.tree.root_node_id, "settled".to_string())
             .unwrap();
-        let donor_archive = state.detached_research_archive(&donor_workspace.id).unwrap();
+        let donor_archive = state
+            .detached_research_archive(&donor_workspace.id)
+            .unwrap();
         crate::research::write_detached_research_pending(
             &source,
             &donor_archive,

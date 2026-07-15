@@ -614,6 +614,25 @@ pub enum IdleResolution {
 /// queued turn. Writes status/paused with field-scoped setters so a concurrent hook
 /// update can't clobber them. Shared by the Claude and Codex idle handlers.
 pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolution, String> {
+    advance_after_settlement(state, agent_id, AgentStatus::Done, true)
+}
+
+/// Handles an interrupted turn without presenting it as completed work. Queue draining
+/// remains identical to a normal idle boundary, but an agent with nothing to send waits
+/// for input and does not release dependents that asked to wait for actual completion.
+pub fn advance_after_interruption(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<IdleResolution, String> {
+    advance_after_settlement(state, agent_id, AgentStatus::AwaitingInput, false)
+}
+
+fn advance_after_settlement(
+    state: &AppState,
+    agent_id: &str,
+    settled_status: AgentStatus,
+    release_waiters: bool,
+) -> Result<IdleResolution, String> {
     // A different completion signal (for example a transcript abort marker racing a
     // Stop hook) may already have drained a queued turn. Until that send receives its
     // prompt-submit echo, another idle signal belongs to the previous turn and must
@@ -645,12 +664,12 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
             return Ok(IdleResolution::Idle);
         }
         // Atomically claim a ready turn, observe that another drain owns the agent, or
-        // settle to Done — all under one model lock. This both serializes draining (so a
-        // racing trigger can't double-send) and folds the typing check into the same lock as
-        // the Done write, closing the typing/idle lost-wakeup. The user-is-typing case is
-        // handled inside as an idle settle (the queue is held; it resumes when the frontend
-        // clears the typing flag).
-        match state.claim_next_turn_or_mark_idle(agent_id)? {
+        // settle to the requested ready status — all under one model lock. This both
+        // serializes draining (so a racing trigger can't double-send) and folds the typing
+        // check into the same lock as the status write, closing the typing/idle lost-wakeup.
+        // The user-is-typing case is handled inside as an idle settle (the queue is held;
+        // it resumes when the frontend clears the typing flag).
+        match state.claim_next_turn_or_settle(agent_id, settled_status)? {
             IdleAdvance::Sent { turn, pending } => {
                 let is_delivery = turn.delivery.is_some();
                 match send_claimed_turn(state, agent_id, turn, pending) {
@@ -663,8 +682,10 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
                             // (surfaced as a queue error by the caller) doesn't
                             // strand the tab in a stale Running status that no
                             // future idle hook will ever clear.
-                            state.set_agent_status(agent_id, AgentStatus::Done)?;
-                            release_waiters_for_agent(state, agent_id)?;
+                            state.set_agent_status(agent_id, settled_status)?;
+                            if release_waiters {
+                                release_waiters_for_agent(state, agent_id)?;
+                            }
                         }
                         return Err(err);
                     }
@@ -675,7 +696,9 @@ pub fn advance_after_idle(state: &AppState, agent_id: &str) -> Result<IdleResolu
                 return Ok(IdleResolution::Idle);
             }
             IdleAdvance::Idle => {
-                release_waiters_for_agent(state, agent_id)?;
+                if release_waiters {
+                    release_waiters_for_agent(state, agent_id)?;
+                }
                 return Ok(IdleResolution::Idle);
             }
         }
@@ -1937,6 +1960,22 @@ mod tests {
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Running
+        ));
+    }
+
+    #[test]
+    fn interruption_settles_agent_to_awaiting_input() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+
+        let resolution = advance_after_interruption(&state, "agent-1").unwrap();
+
+        assert!(matches!(resolution, IdleResolution::Idle));
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::AwaitingInput
         ));
     }
 

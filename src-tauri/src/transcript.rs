@@ -1,7 +1,7 @@
 use crate::adapters::{TranscriptLifecycleEvent, adapter_registry};
 use crate::events::QmuxEvent;
 use crate::state::{AgentSendSource, AppState};
-use crate::turn_queue::{IdleResolution, advance_after_idle};
+use crate::turn_queue::{IdleResolution, advance_after_interruption};
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -334,6 +334,23 @@ fn transcript_lifecycle_agent_event(
     let Some(agent) = state.agent(agent_id)? else {
         return Ok(None);
     };
+    if lifecycle_event == TranscriptLifecycleEvent::TurnStarted {
+        // Codex can append the replacement turn immediately after an abort while its
+        // UserPromptSubmit hook races the 350ms transcript poll. Only revive the
+        // interruption state we set ourselves: a delayed task_started from a turn whose
+        // Stop hook already reached Done must not resurrect completed work.
+        if !matches!(agent.status, AgentStatus::AwaitingInput) {
+            return Ok(None);
+        }
+        state.set_agent_status(agent_id, AgentStatus::Running)?;
+        return transcript_lifecycle_updated_agent_event(
+            state,
+            agent_id,
+            transcript_path,
+            lifecycle_event,
+            "agent.running",
+        );
+    }
     if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
         return Ok(None);
     }
@@ -344,7 +361,7 @@ fn transcript_lifecycle_agent_event(
         return Ok(None);
     }
 
-    match advance_after_idle(state, agent_id) {
+    match advance_after_interruption(state, agent_id) {
         Ok(IdleResolution::Drained) => transcript_lifecycle_updated_agent_event(
             state,
             agent_id,
@@ -358,7 +375,7 @@ fn transcript_lifecycle_agent_event(
                 agent_id,
                 transcript_path,
                 lifecycle_event,
-                "agent.done",
+                "agent.interrupted",
             )
         }
         Err(err) => Ok(Some(QmuxEvent::new(
@@ -1457,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn transcript_lifecycle_interruption_marks_running_agent_done() {
+    fn transcript_lifecycle_interruption_marks_running_agent_awaiting_input() {
         let state = test_state();
         state
             .insert_agent(sample_agent(AgentStatus::Running))
@@ -1472,8 +1489,48 @@ mod tests {
         .unwrap()
         .expect("interruption should emit an agent event");
 
-        assert_eq!(event.event_type, "agent.done");
+        assert_eq!(event.event_type, "agent.interrupted");
         assert_eq!(event.payload["transcriptLifecycleEvent"], "interrupted");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::AwaitingInput));
+    }
+
+    #[test]
+    fn transcript_turn_start_restores_running_after_interruption() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingInput))
+            .unwrap();
+
+        let event = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::TurnStarted,
+        )
+        .unwrap()
+        .expect("turn start should emit an agent event");
+
+        assert_eq!(event.event_type, "agent.running");
+        assert_eq!(event.payload["transcriptLifecycleEvent"], "turnStarted");
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(matches!(agent.status, AgentStatus::Running));
+    }
+
+    #[test]
+    fn delayed_transcript_turn_start_does_not_revive_done_agent() {
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+
+        let event = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::TurnStarted,
+        )
+        .unwrap();
+
+        assert!(event.is_none());
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::Done));
     }

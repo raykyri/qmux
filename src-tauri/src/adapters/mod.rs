@@ -382,12 +382,14 @@ pub struct PermissionAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TranscriptLifecycleEvent {
     Interrupted,
+    TurnStarted,
 }
 
 impl TranscriptLifecycleEvent {
     pub fn as_str(self) -> &'static str {
         match self {
             TranscriptLifecycleEvent::Interrupted => "interrupted",
+            TranscriptLifecycleEvent::TurnStarted => "turnStarted",
         }
     }
 }

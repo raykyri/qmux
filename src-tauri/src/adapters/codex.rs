@@ -2026,8 +2026,11 @@ fn parse_transcript_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEve
         return None;
     }
     let payload = value.get("payload")?;
-    (payload.get("type").and_then(Value::as_str) == Some("turn_aborted"))
-        .then_some(TranscriptLifecycleEvent::Interrupted)
+    match payload.get("type").and_then(Value::as_str) {
+        Some("turn_aborted") => Some(TranscriptLifecycleEvent::Interrupted),
+        Some("task_started") => Some(TranscriptLifecycleEvent::TurnStarted),
+        _ => None,
+    }
 }
 
 fn parse_codex_message_blocks(content: Option<&Value>) -> Option<Vec<TurnBlock>> {
@@ -3240,10 +3243,19 @@ trusted_hash = "sha256:trusted"
             "payload": { "type": "user_message", "message": "fix the bug" }
         })
         .to_string();
+        let task_started_line = json!({
+            "type": "event_msg",
+            "payload": { "type": "task_started", "turn_id": "turn-2" }
+        })
+        .to_string();
 
         assert_eq!(
             parse_transcript_lifecycle_event(&abort_line),
             Some(TranscriptLifecycleEvent::Interrupted)
+        );
+        assert_eq!(
+            parse_transcript_lifecycle_event(&task_started_line),
+            Some(TranscriptLifecycleEvent::TurnStarted)
         );
         assert_eq!(parse_transcript_lifecycle_event(&user_message_line), None);
     }

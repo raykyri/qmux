@@ -514,13 +514,13 @@ pub enum AgentTurnClaim {
     Idle,
 }
 
-/// Result of [`AppState::claim_next_turn_or_mark_idle`].
+/// Result of [`AppState::claim_next_turn_or_settle`].
 pub enum IdleAdvance {
     /// A ready turn was claimed; the agent is marked draining and the caller must send it.
     Sent { turn: QueuedTurn, pending: usize },
     /// Another drain owns the agent; the caller must leave its status untouched.
     Busy,
-    /// Nothing was sent; the agent has been settled to `Done` under the lock.
+    /// Nothing was sent; the agent has been settled to the requested ready status.
     Idle,
 }
 
@@ -6010,14 +6010,23 @@ impl AppState {
     }
 
     /// The idle-handler variant of [`claim_ready_agent_turn`]: atomically decides, under
-    /// the model lock, what an agent going idle should do. Returns `Busy` when another
-    /// drain already owns the agent (the caller must not touch its status); `Sent` after
-    /// claiming a ready turn for the caller to send; or `Idle` after settling the agent
-    /// to `Done`. Crucially the typing check and the `Done` write happen under the same
-    /// lock, so a racing `set_agent_typing(false)` that clears the flag and re-reads the
-    /// status observes `Done` and drains the held turn — closing the lost-wakeup where
-    /// it would otherwise see a stale `Running`, skip its drain, and strand the queue.
-    pub fn claim_next_turn_or_mark_idle(&self, agent_id: &str) -> Result<IdleAdvance, String> {
+    /// the model lock, what an agent reaching a ready state should do. Returns `Busy`
+    /// when another drain already owns the agent (the caller must not touch its status),
+    /// `Sent` after claiming a ready turn for the caller to send, or `Idle` after settling
+    /// the agent to `settled_status`. Crucially the typing check and status write happen
+    /// under the same lock, so a racing `set_agent_typing(false)` that clears the flag and
+    /// re-reads the status observes a ready state and drains the held turn — closing the
+    /// lost-wakeup where it would otherwise see stale `Running`, skip its drain, and
+    /// strand the queue.
+    pub fn claim_next_turn_or_settle(
+        &self,
+        agent_id: &str,
+        settled_status: AgentStatus,
+    ) -> Result<IdleAdvance, String> {
+        debug_assert!(matches!(
+            settled_status,
+            AgentStatus::AwaitingInput | AgentStatus::Done | AgentStatus::Idle
+        ));
         let (outcome, settled_agent) = {
             let mut model = self
                 .inner
@@ -6030,10 +6039,10 @@ impl AppState {
                 return Ok(IdleAdvance::Busy);
             }
             if model.agent_typing.contains(agent_id) {
-                // User is mid-keystroke: hold the queue and settle to idle, atomically
-                // with reading the typing flag (see the doc comment).
+                // User is mid-keystroke: hold the queue and settle atomically with
+                // reading the typing flag (see the doc comment).
                 let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
-                    agent.status = AgentStatus::Done;
+                    agent.status = settled_status;
                     agent.clone()
                 });
                 (IdleAdvance::Idle, settled_agent)
@@ -6046,22 +6055,26 @@ impl AppState {
                 (IdleAdvance::Sent { turn, pending }, None)
             } else {
                 let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
-                    agent.status = AgentStatus::Done;
+                    agent.status = settled_status;
                     agent.clone()
                 });
                 (IdleAdvance::Idle, settled_agent)
             }
         };
-        // Unlike set_agent_status, the Done write above must stay inside the
-        // queue/typing decision's lock to avoid a lost wakeup. Run the same
-        // post-write synchronization after releasing it so a background
-        // research pane reaches Complete and schedules retirement without
-        // waiting for some later transcript or focus-triggered update.
+        // The status write above must stay inside the queue/typing decision's lock.
+        // Run the same post-write synchronization after releasing it so a background
+        // research pane can react to a terminal status without waiting for another
+        // transcript or focus-triggered update.
         if let Some(agent) = settled_agent.as_ref() {
             self.sync_research_node_from_agent(agent)?;
         }
         self.persist();
         Ok(outcome)
+    }
+
+    /// Normal-completion wrapper that retains the established `Done` settlement.
+    pub fn claim_next_turn_or_mark_idle(&self, agent_id: &str) -> Result<IdleAdvance, String> {
+        self.claim_next_turn_or_settle(agent_id, AgentStatus::Done)
     }
 
     /// Clears the draining guard set by a successful claim, allowing the next drain to

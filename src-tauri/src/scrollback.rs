@@ -1064,7 +1064,11 @@ mod tests {
         };
 
         // A read of a never-appended pane returns empty and inserts nothing.
-        assert!(read_pane_scrollback(&workspace, "pane-1").unwrap().is_empty());
+        assert!(
+            read_pane_scrollback(&workspace, "pane-1")
+                .unwrap()
+                .is_empty()
+        );
         assert!(!present(&path), "read must not insert a map entry");
 
         // A leftover log from a previous process (on disk, no writer) still
@@ -1160,7 +1164,10 @@ mod tests {
 
         remove_orphaned_scrollback(&workspace, &HashSet::new());
 
-        assert!(!dead_scratch.exists(), "dead-pid trim scratch should be swept");
+        assert!(
+            !dead_scratch.exists(),
+            "dead-pid trim scratch should be swept"
+        );
         assert!(
             live_scratch.exists(),
             "a live process's in-flight trim scratch must be left alone"
