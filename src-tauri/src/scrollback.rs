@@ -161,6 +161,18 @@ fn pane_log(path: &Path) -> Arc<Mutex<PaneLog>> {
         .clone()
 }
 
+/// The pane's log entry only if one already exists, without inserting. Reads use
+/// this so a read of a pane that has no live writer (a closed pane whose entry
+/// was dropped, or one only ever read) doesn't leave a permanent empty entry
+/// behind, which over a long session would accumulate one per such pane id.
+fn existing_pane_log(path: &Path) -> Option<Arc<Mutex<PaneLog>>> {
+    PANE_LOGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(path)
+        .cloned()
+}
+
 /// Locks a pane's log entry, recovering from poisoning: the entry guards a
 /// file handle whose worst post-panic state is a partially appended chunk,
 /// which the next append and replay tolerate.
@@ -172,8 +184,12 @@ fn lock_pane_log(entry: &Arc<Mutex<PaneLog>>) -> MutexGuard<'_, PaneLog> {
 
 pub fn read_pane_scrollback(workspace_root: &Path, pane_id: &str) -> Result<Vec<u8>, String> {
     let path = pane_scrollback_path(workspace_root, pane_id)?;
-    let entry = pane_log(&path);
-    let _log = lock_pane_log(&entry);
+    // Serialize against a concurrent append/trim of this pane by holding its log
+    // lock while reading — but only if the pane has a live entry. A trim's swap
+    // is an atomic rename, so a lock-free read of a pane with no active writer
+    // still sees a whole file, never a half-written one.
+    let entry = existing_pane_log(&path);
+    let _log = entry.as_ref().map(lock_pane_log);
     match fs::read(&path) {
         Ok(bytes) => Ok(bytes),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -891,6 +907,32 @@ mod tests {
             read_pane_scrollback(&workspace, "pane-1").unwrap(),
             b"after"
         );
+    }
+
+    #[test]
+    fn reading_scrollback_does_not_leak_a_map_entry() {
+        let workspace = temp_workspace();
+        let path = pane_scrollback_path(&workspace, "pane-1").unwrap();
+        let present = |path: &Path| {
+            PANE_LOGS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(path)
+        };
+
+        // A read of a never-appended pane returns empty and inserts nothing.
+        assert!(read_pane_scrollback(&workspace, "pane-1").unwrap().is_empty());
+        assert!(!present(&path), "read must not insert a map entry");
+
+        // A leftover log from a previous process (on disk, no writer) still
+        // reads correctly, still without leaving an entry behind.
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"from a previous process").unwrap();
+        assert_eq!(
+            read_pane_scrollback(&workspace, "pane-1").unwrap(),
+            b"from a previous process"
+        );
+        assert!(!present(&path), "read must not insert a map entry");
     }
 
     #[test]
