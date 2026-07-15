@@ -45,7 +45,8 @@
       "minimumSystemVersion": "13.0"
     },
     "resources": {
-      "../qmux-plugin/": "qmux-plugin"
+      "../qmux-plugin/": "qmux-plugin",
+      "../src/assets/fonts/ValleySans-OFL.txt": "licenses/ValleySans-OFL.txt"
     },
     "icon": [
       "icons/32x32.png",

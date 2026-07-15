@@ -39,6 +39,11 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 /// Backoff after a failed accept, so persistent accept errors (e.g. EMFILE under
 /// FD exhaustion) can't spin the accept loop hot.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+const VALLEY_SANS_ROMAN_PATH: &str = "/__qmux/fonts/ValleySans-Variable.woff2";
+const VALLEY_SANS_ITALIC_PATH: &str = "/__qmux/fonts/ValleySans-VariableItalic.woff2";
+const VALLEY_SANS_ROMAN: &[u8] = include_bytes!("../../src/assets/fonts/ValleySans-Variable.woff2");
+const VALLEY_SANS_ITALIC: &[u8] =
+    include_bytes!("../../src/assets/fonts/ValleySans-VariableItalic.woff2");
 
 pub struct FileServerInfo {
     pub port: u16,
@@ -241,6 +246,11 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         Some((path, query)) => (path, Some(query)),
         None => (without_fragment, None),
     };
+    // These public, bundled assets contain no pane data and need no capability token.
+    // Rendered Markdown lives in an opaque-origin iframe, so allow font CORS explicitly.
+    if let Some(response) = embedded_font_response(path, is_head) {
+        return response;
+    }
     let raw_requested = query.is_some_and(|q| q.split('&').any(|p| p == "raw" || p == "raw=1"));
     let body_font_id = query_parameter(query, "qmux-body-font");
     // The path is "/<token>/<abs path>": the first segment is the per-pane token, and
@@ -374,6 +384,23 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     response
 }
 
+fn embedded_font_response(path: &str, is_head: bool) -> Option<Response> {
+    let bytes = match path {
+        VALLEY_SANS_ROMAN_PATH => VALLEY_SANS_ROMAN,
+        VALLEY_SANS_ITALIC_PATH => VALLEY_SANS_ITALIC,
+        _ => return None,
+    };
+    let mut response = Response::new(200, "OK");
+    response.header("Content-Type", "font/woff2");
+    response.header("Content-Length", &bytes.len().to_string());
+    response.header("Cache-Control", "public, max-age=31536000, immutable");
+    response.header("Access-Control-Allow-Origin", "*");
+    if !is_head {
+        response.body.extend_from_slice(bytes);
+    }
+    Some(response)
+}
+
 /// CSP applied to every served file. Served files always come back from
 /// `http://127.0.0.1:<port>` (see `file_url`), so passive subresources are pinned to
 /// that exact origin — a report's sibling CSS/JS/images/fonts render, but the document
@@ -501,6 +528,7 @@ fn is_markdown(path: &Path) -> bool {
 /// grays handle the accents in both themes, and the file CSP already allows inline
 /// styles.
 const MARKDOWN_PAGE_CSS: &str = "\
+__QMUX_FONT_FACE__\
 :root { color-scheme: light dark; }\
 body { margin: 0; font-family: __QMUX_BODY_FONT__; line-height: 1.6; background: #ffffff; color: #1f2328; }\
 @media (prefers-color-scheme: dark) { body { background: #1e2227; color: #e2e6ea; } }\
@@ -514,6 +542,17 @@ table { border-collapse: collapse; display: block; overflow-x: auto; }\
 th, td { border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.35em 0.7em; }\
 img { max-width: 100%; }\
 hr { border: none; border-top: 1px solid rgba(127, 127, 127, 0.3); }";
+
+const VALLEY_SANS_MARKDOWN_FONT_FACE_CSS: &str = "\
+@font-face { font-family: 'Valley Sans'; src: url('/__qmux/fonts/ValleySans-Variable.woff2') format('woff2'); font-style: normal; font-weight: 100 900; font-display: swap; }\
+@font-face { font-family: 'Valley Sans'; src: url('/__qmux/fonts/ValleySans-VariableItalic.woff2') format('woff2'); font-style: italic; font-weight: 100 900; font-display: swap; }";
+
+fn markdown_font_face_css(font_id: Option<&str>) -> &'static str {
+    match font_id {
+        Some("valley-sans") => VALLEY_SANS_MARKDOWN_FONT_FACE_CSS,
+        _ => "",
+    }
+}
 
 fn markdown_body_font(font_id: Option<&str>) -> &'static str {
     match font_id {
@@ -551,8 +590,9 @@ fn render_markdown_page(path: &Path, source: &str, body_font_id: Option<&str>) -
             .and_then(|name| name.to_str())
             .unwrap_or("Markdown"),
     );
-    let markdown_page_css =
-        MARKDOWN_PAGE_CSS.replace("__QMUX_BODY_FONT__", markdown_body_font(body_font_id));
+    let markdown_page_css = MARKDOWN_PAGE_CSS
+        .replace("__QMUX_FONT_FACE__", markdown_font_face_css(body_font_id))
+        .replace("__QMUX_BODY_FONT__", markdown_body_font(body_font_id));
     format!(
         "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -718,6 +758,31 @@ mod tests {
     }
 
     #[test]
+    fn embedded_valley_sans_fonts_are_cacheable_and_cors_readable() {
+        let response = embedded_font_response(VALLEY_SANS_ROMAN_PATH, false).unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, VALLEY_SANS_ROMAN);
+        assert!(
+            response
+                .headers
+                .contains(&("Content-Type".to_string(), "font/woff2".to_string()))
+        );
+        assert!(
+            response
+                .headers
+                .contains(&("Access-Control-Allow-Origin".to_string(), "*".to_string()))
+        );
+
+        let head = embedded_font_response(VALLEY_SANS_ITALIC_PATH, true).unwrap();
+        assert!(head.body.is_empty());
+        assert!(head.headers.contains(&(
+            "Content-Length".to_string(),
+            VALLEY_SANS_ITALIC.len().to_string()
+        )));
+        assert!(embedded_font_response("/__qmux/fonts/unknown.woff2", false).is_none());
+    }
+
+    #[test]
     fn loopback_host_header_accepts_loopback_and_rejects_remote() {
         assert!(is_loopback_host_header("127.0.0.1:5173"));
         assert!(is_loopback_host_header("localhost:5173"));
@@ -786,10 +851,14 @@ mod tests {
         let selected_page = render_markdown_page(path, source, Some("anthropic-sans-text"));
         assert!(selected_page.contains("font-family: 'Anthropic Sans Text', ui-sans-serif"));
         assert!(!selected_page.contains("__QMUX_BODY_FONT__"));
+        assert!(!selected_page.contains("ValleySans-Variable.woff2"));
 
         let valley_page = render_markdown_page(path, source, Some("valley-sans"));
         assert!(valley_page.contains("font-family: 'Valley Sans', ui-sans-serif"));
+        assert!(valley_page.contains("ValleySans-Variable.woff2"));
+        assert!(valley_page.contains("ValleySans-VariableItalic.woff2"));
         assert!(!valley_page.contains("__QMUX_BODY_FONT__"));
+        assert!(!valley_page.contains("__QMUX_FONT_FACE__"));
 
         let unknown_page = render_markdown_page(path, source, Some("body{};color:red"));
         assert!(unknown_page.contains("font-family: ui-sans-serif, system-ui"));

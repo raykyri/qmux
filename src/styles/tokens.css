@@ -30,6 +30,24 @@
   font-display: block;
 }
 
+/* Valley Sans 100–900 variable webfonts, bundled under the SIL OFL 1.1.
+   Source: HelsinkiTypeStudio/valley-sans@932cfad79399ed06430ace86af05127224d245b3 */
+@font-face {
+  font-family: "Valley Sans";
+  src: url("../assets/fonts/ValleySans-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Valley Sans";
+  src: url("../assets/fonts/ValleySans-VariableItalic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
   /* Type scale. Controls and body share --fs-base; the two main typing surfaces
      (composer + launcher) use --fs-input; xs/sm are for hints, badges, meta. */

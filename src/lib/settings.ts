@@ -53,9 +53,8 @@ export const BODY_FONT_OPTIONS: BodyFontOption[] = [
   {
     id: "valley-sans",
     label: "Valley Sans",
-    // Optional host font; both static and variable desktop builds expose these names.
+    // Roman and italic variable faces are bundled with qmux under the SIL OFL 1.1.
     stack: `"Valley Sans", ${SYSTEM_BODY_FONT_STACK}`,
-    localNames: ["Valley Sans Regular", "ValleySans-Regular"],
   },
   {
     id: "system",
@@ -82,7 +81,7 @@ async function localFontIsAvailable(localName: string): Promise<boolean> {
   }
 }
 
-/** Returns generic fonts plus locally installed optional faces, in menu order. */
+/** Returns bundled/generic fonts plus locally installed optional faces, in menu order. */
 export async function detectAvailableBodyFonts(): Promise<BodyFontOption[]> {
   if (typeof FontFace === "undefined") {
     return BODY_FONT_OPTIONS.filter((option) => option.localNames === undefined);
