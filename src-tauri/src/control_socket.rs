@@ -48,6 +48,7 @@ struct ControlResponse {
 
 pub fn start_control_socket(state: AppState) -> Result<(), String> {
     let socket_path = state.config().socket_path.clone();
+    crate::shell_jobs::start_shell_job_monitor(state.clone());
 
     // Restrict the socket's parent directory to the owning user *before* binding.
     // With the directory untraversable by other accounts, the socket is never
@@ -212,7 +213,29 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // the tab reverts to a plain shell instead of lingering with a stale agent
             // status. Scoped to the authed pane like pane.set_cwd; any claimed paneId is
             // advisory, so the wrapper can only ever detach its own pane's agent.
-            let detached = crate::workspace::detach_pane_agent(state, &authed_pane)?;
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DetachShellAgentPayload {
+                job_id: Option<String>,
+                agent_id: Option<String>,
+            }
+            let payload = serde_json::from_value::<DetachShellAgentPayload>(request.payload)
+                .map_err(|err| format!("invalid agent detach payload: {err}"))?;
+            let detached = match (payload.job_id.as_deref(), payload.agent_id.as_deref()) {
+                (Some(job_id), Some(agent_id)) => {
+                    let Some(info) = state.unregister_shell_agent_job(
+                        job_id,
+                        Some(agent_id),
+                        Some(&authed_pane),
+                    ) else {
+                        return Ok(json!({ "detached": false }));
+                    };
+                    crate::shell_jobs::emit_job_removed(state, &info);
+                    crate::workspace::detach_pane_agent_if_matches(state, &authed_pane, agent_id)?
+                }
+                // Compatibility for a shell wrapper launched by an older qmux build.
+                _ => crate::workspace::detach_pane_agent(state, &authed_pane)?,
+            };
             // The exited agent may have left its TUI's terminal modes active in
             // the surviving shell's surface (kitty keyboard flags, mouse/focus
             // reporting, the alternate screen) — this detach is the only moment
@@ -237,6 +260,8 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                     pane_id: launch.pane_id,
                     cwd: launch.cwd,
                     args: launch.args,
+                    shell_job_id: None,
+                    supervisor_pid: None,
                 },
             )?;
             let settings_path = prepared

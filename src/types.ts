@@ -128,6 +128,15 @@ export interface AgentInfo {
   createdAt: number;
 }
 
+export type ShellAgentJobState = "foreground" | "backgrounded" | "stopped";
+
+export interface ShellAgentJobInfo {
+  jobId: string;
+  agentId: string;
+  paneId: string;
+  state: ShellAgentJobState;
+}
+
 export type ResearchNodeStatus =
   | "queued"
   | "starting"

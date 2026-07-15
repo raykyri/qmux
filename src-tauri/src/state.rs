@@ -177,6 +177,40 @@ struct AppStateInner {
     // lock so live keystrokes are never blocked behind a submit. Reclaimed in
     // `remove_pane`.
     pane_send_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Live shell-launched agent jobs. Process ids, process groups, and terminal
+    /// foreground ownership die with this app process, so none of this belongs in
+    /// state.json; recovered shells register their freshly resumed job again.
+    shell_agent_jobs: Mutex<HashMap<String, ShellAgentJob>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellAgentJobState {
+    Foreground,
+    Backgrounded,
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellAgentJobInfo {
+    pub job_id: String,
+    pub agent_id: String,
+    pub pane_id: String,
+    pub state: ShellAgentJobState,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ShellAgentJobTarget {
+    pub job_id: String,
+    pub supervisor_pid: u32,
+}
+
+#[derive(Clone, Debug)]
+struct ShellAgentJob {
+    info: ShellAgentJobInfo,
+    supervisor_pid: u32,
+    missing_samples: u8,
 }
 
 #[derive(Default)]
@@ -897,8 +931,125 @@ impl AppState {
                 file_server: Mutex::new(None),
                 control_socket_identity: Mutex::new(None),
                 pane_send_locks: Mutex::new(HashMap::new()),
+                shell_agent_jobs: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    pub fn register_shell_agent_job(
+        &self,
+        job_id: String,
+        agent_id: String,
+        pane_id: String,
+        supervisor_pid: u32,
+    ) -> Result<ShellAgentJobInfo, String> {
+        if job_id.trim().is_empty() || supervisor_pid == 0 {
+            return Err("shell agent job metadata is invalid".to_string());
+        }
+        let info = ShellAgentJobInfo {
+            job_id: job_id.clone(),
+            agent_id,
+            pane_id,
+            state: ShellAgentJobState::Foreground,
+        };
+        let mut jobs = self
+            .inner
+            .shell_agent_jobs
+            .lock()
+            .map_err(|_| "shell agent job lock poisoned".to_string())?;
+        jobs.insert(
+            job_id,
+            ShellAgentJob {
+                info: info.clone(),
+                supervisor_pid,
+                missing_samples: 0,
+            },
+        );
+        Ok(info)
+    }
+
+    pub fn list_shell_agent_jobs(&self) -> Result<Vec<ShellAgentJobInfo>, String> {
+        let jobs = self
+            .inner
+            .shell_agent_jobs
+            .lock()
+            .map_err(|_| "shell agent job lock poisoned".to_string())?;
+        Ok(jobs.values().map(|job| job.info.clone()).collect())
+    }
+
+    pub(crate) fn shell_agent_job_targets(&self) -> Vec<ShellAgentJobTarget> {
+        self.inner
+            .shell_agent_jobs
+            .lock()
+            .map(|jobs| {
+                jobs.values()
+                    .map(|job| ShellAgentJobTarget {
+                        job_id: job.info.job_id.clone(),
+                        supervisor_pid: job.supervisor_pid,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn update_shell_agent_job_sample(
+        &self,
+        job_id: &str,
+        state: ShellAgentJobState,
+    ) -> Option<ShellAgentJobInfo> {
+        let mut jobs = self.inner.shell_agent_jobs.lock().ok()?;
+        let job = jobs.get_mut(job_id)?;
+        job.missing_samples = 0;
+        if job.info.state == state {
+            return None;
+        }
+        job.info.state = state;
+        Some(job.info.clone())
+    }
+
+    /// Records that a supervisor was absent from one successful process-table
+    /// sample. Two consecutive misses are required before retiring it so a fork/exit
+    /// race or a transiently incomplete `ps` result cannot detach a live primary.
+    pub(crate) fn note_shell_agent_job_missing(&self, job_id: &str) -> Option<ShellAgentJobInfo> {
+        let mut jobs = self.inner.shell_agent_jobs.lock().ok()?;
+        let job = jobs.get_mut(job_id)?;
+        job.missing_samples = job.missing_samples.saturating_add(1);
+        if job.missing_samples < 2 {
+            return None;
+        }
+        jobs.remove(job_id).map(|job| job.info)
+    }
+
+    pub fn unregister_shell_agent_job(
+        &self,
+        job_id: &str,
+        agent_id: Option<&str>,
+        pane_id: Option<&str>,
+    ) -> Option<ShellAgentJobInfo> {
+        let mut jobs = self.inner.shell_agent_jobs.lock().ok()?;
+        let matches = jobs.get(job_id).is_some_and(|job| {
+            agent_id.is_none_or(|agent_id| job.info.agent_id == agent_id)
+                && pane_id.is_none_or(|pane_id| job.info.pane_id == pane_id)
+        });
+        matches
+            .then(|| jobs.remove(job_id))
+            .flatten()
+            .map(|job| job.info)
+    }
+
+    pub fn unregister_shell_agent_jobs_for_pane(&self, pane_id: &str) -> Vec<ShellAgentJobInfo> {
+        let Ok(mut jobs) = self.inner.shell_agent_jobs.lock() else {
+            return Vec::new();
+        };
+        let job_ids = jobs
+            .iter()
+            .filter(|(_, job)| job.info.pane_id == pane_id)
+            .map(|(job_id, _)| job_id.clone())
+            .collect::<Vec<_>>();
+        job_ids
+            .into_iter()
+            .filter_map(|job_id| jobs.remove(&job_id).map(|job| job.info))
+            .collect()
     }
 
     /// Records the loopback file server's port + access token (set once at startup).
@@ -4744,6 +4895,9 @@ impl AppState {
         // Separate lock from `model`.
         if let Ok(mut locks) = self.inner.pane_send_locks.lock() {
             locks.remove(pane_id);
+        }
+        for info in self.unregister_shell_agent_jobs_for_pane(pane_id) {
+            crate::shell_jobs::emit_job_removed(self, &info);
         }
         if let Err(err) = self.detach_research_pane_inner(
             pane_id,
@@ -13285,5 +13439,64 @@ mod tests {
         let state = AppState::new(config);
         state.restore_session();
         assert_eq!(state.agent_draft("agent-1").unwrap(), None);
+    }
+
+    #[test]
+    fn shell_agent_jobs_track_transitions_and_require_two_missing_samples() {
+        let state = AppState::new(test_config(temp_workspace()));
+        let registered = state
+            .register_shell_agent_job(
+                "job-1".to_string(),
+                "agent-1".to_string(),
+                "pane-1".to_string(),
+                42,
+            )
+            .unwrap();
+        assert_eq!(registered.state, ShellAgentJobState::Foreground);
+        assert!(
+            state
+                .update_shell_agent_job_sample("job-1", ShellAgentJobState::Foreground)
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .update_shell_agent_job_sample("job-1", ShellAgentJobState::Backgrounded)
+                .unwrap()
+                .state,
+            ShellAgentJobState::Backgrounded
+        );
+        assert!(state.note_shell_agent_job_missing("job-1").is_none());
+        assert_eq!(
+            state
+                .note_shell_agent_job_missing("job-1")
+                .unwrap()
+                .agent_id,
+            "agent-1"
+        );
+        assert!(state.list_shell_agent_jobs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_shell_job_cleanup_must_match_its_agent() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state
+            .register_shell_agent_job(
+                "job-1".to_string(),
+                "agent-old".to_string(),
+                "pane-1".to_string(),
+                42,
+            )
+            .unwrap();
+        assert!(
+            state
+                .unregister_shell_agent_job("job-1", Some("agent-new"), Some("pane-1"))
+                .is_none()
+        );
+        assert_eq!(state.list_shell_agent_jobs().unwrap().len(), 1);
+        assert!(
+            state
+                .unregister_shell_agent_job("job-1", Some("agent-old"), Some("pane-1"))
+                .is_some()
+        );
     }
 }

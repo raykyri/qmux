@@ -997,6 +997,14 @@ pub fn detach_pane_agent(state: &AppState, pane_id: &str) -> Result<Option<Agent
     let Some(current) = state.agent_by_pane(pane_id)? else {
         return Ok(None);
     };
+    detach_known_pane_agent(state, pane_id, current)
+}
+
+fn detach_known_pane_agent(
+    state: &AppState,
+    pane_id: &str,
+    current: AgentInfo,
+) -> Result<Option<AgentInfo>, String> {
     let has_queue = !state.list_agent_turn_queue(&current.id)?.is_empty();
     let orphaned_queue_pane_id = has_queue.then(|| pane_id.to_string());
     let detached = state.mutate_agent(&current.id, |agent| {
@@ -1014,6 +1022,26 @@ pub fn detach_pane_agent(state: &AppState, pane_id: &str) -> Result<Option<Agent
         crate::turn_queue::release_waiters_for_agent(state, &detached.id)?;
     }
     Ok(detached)
+}
+
+/// Detaches only the named agent when it still owns `pane_id`. Shell jobs can
+/// outlive their foreground tenure: an older background job exiting must never
+/// detach a newer agent that the user launched in the same shell meanwhile.
+pub fn detach_pane_agent_if_matches(
+    state: &AppState,
+    pane_id: &str,
+    expected_agent_id: &str,
+) -> Result<Option<AgentInfo>, String> {
+    let Some(current) = state.agent_by_pane(pane_id)? else {
+        return Ok(None);
+    };
+    if current.id != expected_agent_id {
+        return Ok(None);
+    }
+    // Use the agent resolved above rather than looking the pane binding up again:
+    // a replacement can attach between these operations, and a second lookup could
+    // otherwise detach that newer primary on behalf of this stale job.
+    detach_known_pane_agent(state, pane_id, current)
 }
 
 pub fn mark_agent_spawn_failed(
@@ -2878,6 +2906,28 @@ mod tests {
     fn detach_pane_agent_is_a_noop_for_an_unowned_pane() {
         let state = test_state();
         assert!(detach_pane_agent(&state, "pane-empty").unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_shell_job_cannot_detach_replacement_agent() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(
+                "agent-new",
+                Some("pane-1"),
+                AgentStatus::Running,
+            ))
+            .unwrap();
+
+        assert!(
+            detach_pane_agent_if_matches(&state, "pane-1", "agent-old")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            state.agent_by_pane("pane-1").unwrap().unwrap().id,
+            "agent-new"
+        );
     }
 
     #[test]

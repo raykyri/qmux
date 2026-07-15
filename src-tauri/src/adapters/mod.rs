@@ -314,6 +314,10 @@ pub struct PrepareShellAgentLaunchRequest {
     pub cwd: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub shell_job_id: Option<String>,
+    #[serde(default)]
+    pub supervisor_pid: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -709,9 +713,23 @@ pub fn agent_prepare_shell_launch(
     state: &AppState,
     request: PrepareShellAgentLaunchRequest,
 ) -> Result<PreparedShellAgentLaunch, String> {
-    adapter_registry(state.config())
+    let shell_job_id = request.shell_job_id.clone();
+    let supervisor_pid = request.supervisor_pid;
+    let pane_id = request.pane_id.clone();
+    let prepared = adapter_registry(state.config())
         .get(&request.adapter_id)?
-        .prepare_shell_launch(state, request)
+        .prepare_shell_launch(state, request)?;
+    if let (Some(job_id), Some(supervisor_pid)) = (shell_job_id, supervisor_pid) {
+        let agent_id = prepared
+            .envs
+            .iter()
+            .find(|env| env.key == "QMUX_AGENT_ID")
+            .map(|env| env.value.clone())
+            .ok_or_else(|| "prepared shell launch is missing its agent id".to_string())?;
+        let info = state.register_shell_agent_job(job_id, agent_id, pane_id, supervisor_pid)?;
+        crate::shell_jobs::emit_job_state(state, &info);
+    }
+    Ok(prepared)
 }
 
 pub fn agent_composer_policy(

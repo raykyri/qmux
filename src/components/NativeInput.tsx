@@ -223,6 +223,7 @@ function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean 
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
+  agentMayBeBackgrounded: boolean;
   // The app's copy of the composer text, keyed by agent so it survives tab
   // switches. The live value while typing is component-local (a keystroke must
   // not re-render the whole app); onDraftChange pushes local edits back to the
@@ -271,6 +272,7 @@ interface NativeInputProps {
 export default function NativeInput({
   pane,
   agent,
+  agentMayBeBackgrounded,
   draft,
   queuedTurns,
   waitTargets,
@@ -1539,9 +1541,11 @@ export default function NativeInput({
             }
           }}
           placeholder={
-            awaitingPermission
-              ? "Requesting approval for pending tool use..."
-              : "What should we investigate next?"
+            agentMayBeBackgrounded
+              ? "Agent may be backgrounded"
+              : awaitingPermission
+                ? "Requesting approval for pending tool use..."
+                : "What should we investigate next?"
           }
           rows={1}
         />

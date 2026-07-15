@@ -17,6 +17,7 @@ import type {
   QueuedTurn,
   QueuedTurnDelivery,
   SavedPrompt,
+  ShellAgentJobInfo,
   RemoveQueuedAgentTurnResult,
   ReorderQueuedAgentTurnResult,
   ResearchBranchRemoval,
@@ -41,6 +42,10 @@ import type {
 
 export function getRuntimeConfig() {
   return invoke<RuntimeConfig>("get_runtime_config");
+}
+
+export function listShellAgentJobs() {
+  return invoke<ShellAgentJobInfo[]>("list_shell_agent_jobs");
 }
 
 // Shows the main window. It starts hidden (visible: false in tauri.conf.json)

@@ -27,6 +27,7 @@ import type {
   PaneInfo,
   QmuxEvent,
   QueuedTurn,
+  ShellAgentJobInfo,
   ThreadGraph,
   TranscriptHookEvent,
   Turn,
@@ -85,6 +86,7 @@ export interface UseQmuxEventsHandlers {
   setTurns: Dispatch<SetStateAction<Turn[]>>;
   setThreadGraphs: Dispatch<SetStateAction<ThreadGraph[]>>;
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
+  setShellJobByAgent: Dispatch<SetStateAction<Record<string, ShellAgentJobInfo>>>;
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
   // Resolves an agent id to its thread id (including the backend's synthetic
   // `thread-{agentId}` fallback), or null for an agent the app doesn't know yet.
@@ -148,6 +150,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setTurns,
     setThreadGraphs,
     setTranscriptNoticeByAgent,
+    setShellJobByAgent,
     setAgentQueuedTurns,
     getAgentThreadId,
     refreshAgentTurnQueue,
@@ -333,6 +336,38 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           onTerminalTitleChanged?.(event.paneId, title);
         }
       }
+      if (event.agentId && event.type === "agent.shell_job_state_changed") {
+        const agentId = event.agentId;
+        const job = event.payload.job;
+        if (typeof job === "object" && job !== null) {
+          const candidate = job as Partial<ShellAgentJobInfo>;
+          if (
+            candidate.agentId === agentId &&
+            typeof candidate.jobId === "string" &&
+            typeof candidate.paneId === "string" &&
+            (candidate.state === "foreground" ||
+              candidate.state === "backgrounded" ||
+              candidate.state === "stopped")
+          ) {
+            setShellJobByAgent((current) => ({
+              ...current,
+              [agentId]: candidate as ShellAgentJobInfo,
+            }));
+          }
+        }
+      }
+      if (event.agentId && event.type === "agent.shell_job_removed") {
+        const agentId = event.agentId;
+        const jobId = stringField(event.payload, "jobId");
+        setShellJobByAgent((current) => {
+          if (!jobId || current[agentId]?.jobId !== jobId) {
+            return current;
+          }
+          const next = { ...current };
+          delete next[agentId];
+          return next;
+        });
+      }
       if (event.type === "terminal.search_requested" && event.paneId) {
         onTerminalSearchRequested?.(event.paneId);
       }
@@ -380,7 +415,11 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           nonce: (current?.nonce ?? 0) + 1,
         }));
       }
-      if (event.type.startsWith("agent.")) {
+      if (
+        event.type.startsWith("agent.") &&
+        event.type !== "agent.shell_job_state_changed" &&
+        event.type !== "agent.shell_job_removed"
+      ) {
         // Status events now carry the updated agent: apply it surgically so a busy
         // agent's stream of hook events doesn't refetch and replace the entire list
         // (with the re-renders and ordering hazards that caused). Events without an

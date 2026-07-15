@@ -14,6 +14,7 @@ mod pty;
 mod recovery;
 mod research;
 mod scrollback;
+mod shell_jobs;
 mod show_hide_shortcut;
 mod sleep;
 mod state;
@@ -52,7 +53,10 @@ use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
 };
 use sleep::SleepGuard;
-use state::{AppState, PaneInfo, PaneLayoutEntry, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
+use state::{
+    AppState, PaneInfo, PaneLayoutEntry, PaneSplitInfo, QueuedTurn, RecentSessionInfo,
+    ShellAgentJobInfo,
+};
 use tauri::Manager;
 use transcript::{
     TranscriptOption, Turn, list_agent_transcripts as list_agent_transcript_options,
@@ -629,6 +633,13 @@ fn research_workspace_reveal(
 #[tauri::command]
 fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
     state.list_agents()
+}
+
+#[tauri::command]
+fn list_shell_agent_jobs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ShellAgentJobInfo>, String> {
+    state.list_shell_agent_jobs()
 }
 
 #[tauri::command(async)]
@@ -2018,6 +2029,7 @@ fn main() {
             research_workspace_remove,
             research_workspace_reveal,
             list_agents,
+            list_shell_agent_jobs,
             list_recent_sessions,
             recent_session_resume,
             list_turns,

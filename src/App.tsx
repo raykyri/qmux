@@ -267,6 +267,7 @@ import {
   listenToMenuBarSelectPane,
   listGroups,
   listAgents,
+  listShellAgentJobs,
   listClaudeSkills,
   listNativeTerminalThemes,
   listSavedPrompts,
@@ -325,6 +326,7 @@ import type {
   ResearchTreeSummary,
   RuntimeConfig,
   SavedPrompt,
+  ShellAgentJobInfo,
   ThreadGraph,
   TranscriptHookEvent,
   TranscriptOption,
@@ -1318,6 +1320,17 @@ export default function App() {
   const regeneratingTitlePaneIdsRef = useRef(regeneratingTitlePaneIds);
   regeneratingTitlePaneIdsRef.current = regeneratingTitlePaneIds;
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [shellJobByAgent, setShellJobByAgent] = useState<
+    Record<string, ShellAgentJobInfo>
+  >({});
+  const shellJobEventVersionRef = useRef(0);
+  const setShellJobByAgentFromEvent = useCallback(
+    (update: SetStateAction<Record<string, ShellAgentJobInfo>>) => {
+      shellJobEventVersionRef.current += 1;
+      setShellJobByAgent(update);
+    },
+    [],
+  );
   // Agents we believe are actively working *right now*, used to show the
   // "Working…" indicator at the bottom of the transcript. This is driven by live
   // status transitions (see useQmuxEvents), not the raw status field: an agent
@@ -4843,6 +4856,21 @@ export default function App() {
     [attachPaneWithRetry],
   );
 
+  const hydrateShellAgentJobs = useCallback(async () => {
+    // Subscribe first, then hydrate. If a foreground/background transition lands
+    // while the snapshot is in flight, retry instead of letting that older snapshot
+    // overwrite the live event (or dropping some other recovered job entirely).
+    for (;;) {
+      const eventVersion = shellJobEventVersionRef.current;
+      const jobs = await listShellAgentJobs();
+      if (eventVersion !== shellJobEventVersionRef.current) {
+        continue;
+      }
+      setShellJobByAgent(Object.fromEntries(jobs.map((job) => [job.agentId, job])));
+      return;
+    }
+  }, []);
+
   const handleEventsReady = useCallback(() => {
     eventsReadyRef.current = true;
     const pending = pendingAttachRef.current;
@@ -4850,7 +4878,8 @@ export default function App() {
     for (const paneId of pending) {
       attachPaneWithRetry(paneId);
     }
-  }, [attachPaneWithRetry]);
+    void hydrateShellAgentJobs().catch(() => undefined);
+  }, [attachPaneWithRetry, hydrateShellAgentJobs]);
 
   function savePaneSplits(nextSplits: PaneSplitInfo[], paneSnapshot = panes) {
     const normalized = normalizePaneSplitsForPanes(nextSplits, paneSnapshot);
@@ -5903,6 +5932,7 @@ export default function App() {
     setTurns,
     setThreadGraphs,
     setTranscriptNoticeByAgent,
+    setShellJobByAgent: setShellJobByAgentFromEvent,
     setAgentQueuedTurns,
     // Reads through agentsRef (not the captured `agents` render value) because
     // useQmuxEvents captures its handlers once on mount. threadIdForAgent
@@ -9341,6 +9371,11 @@ export default function App() {
               <NativeInput
                 pane={surface.pane}
                 agent={agent}
+                agentMayBeBackgrounded={
+                  shellJobByAgent[agent.id]?.paneId === surface.pane.id &&
+                  (shellJobByAgent[agent.id]?.state === "backgrounded" ||
+                    shellJobByAgent[agent.id]?.state === "stopped")
+                }
                 draft={surface.draft}
                 queuedTurns={surface.queuedTurns}
                 waitTargets={surface.waitTargets}

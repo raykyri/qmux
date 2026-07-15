@@ -191,6 +191,14 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
         .map_err(|_| "QMUX_PANE_ID is not set; run this from a qmux shell pane".to_string())?;
     let cwd = env::current_dir()
         .map_err(|err| format!("failed to read current directory for agent launch: {err}"))?;
+    let supervisor_pid = std::process::id();
+    let shell_job_id = format!(
+        "shell-job-{supervisor_pid}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
     let launch = request_value(
         "agent.prepare_shell_launch",
         json!({
@@ -198,6 +206,8 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
             "paneId": pane_id,
             "cwd": cwd.display().to_string(),
             "args": args,
+            "shellJobId": shell_job_id,
+            "supervisorPid": supervisor_pid,
         }),
     )?;
     let launch = serde_json::from_value::<PreparedAgentLaunch>(launch)
@@ -205,6 +215,12 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
 
     let mut command = Command::new(&launch.binary);
     command.args(launch.args).current_dir(&launch.cwd);
+    let agent_id = launch
+        .envs
+        .iter()
+        .find(|env| env.key == "QMUX_AGENT_ID")
+        .map(|env| env.value.clone())
+        .ok_or_else(|| "prepared shell launch is missing its agent id".to_string())?;
     for env in launch.envs {
         command.env(env.key, env.value);
     }
@@ -230,12 +246,10 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
         libc::signal(libc::SIGQUIT, libc::SIG_IGN);
     }
 
-    let mut child = command
+    let status = command
         .spawn()
-        .map_err(|err| format!("failed to launch agent binary '{}': {err}", launch.binary))?;
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed to wait for agent binary '{}': {err}", launch.binary))?;
+        .and_then(|mut child| child.wait())
+        .map_err(|err| format!("failed to run agent binary '{}': {err}", launch.binary));
 
     // Cleanup belongs to the runner, not the injected shell function. A suspended or
     // backgrounded job can return control to the shell before exiting; detaching here,
@@ -243,9 +257,14 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
     // job-control stop/continue cycles.
     let _ = request_silent(
         "agent.detach_pane",
-        json!({ "paneId": env::var("QMUX_PANE_ID").ok() }),
+        json!({
+            "paneId": env::var("QMUX_PANE_ID").ok(),
+            "jobId": shell_job_id,
+            "agentId": agent_id,
+        }),
     );
 
+    let status = status?;
     std::process::exit(exit_code_for_status(status));
 }
 
