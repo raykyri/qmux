@@ -744,7 +744,7 @@
   font-size: calc(13px + var(--turn-font-delta, 0px));
   font-weight: 400;
   line-height: 1;
-  background: #303532;
+  background: var(--research-highlight-action-bg);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.38);
   cursor: pointer;
 }

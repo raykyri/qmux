@@ -1531,7 +1531,7 @@
 }
 
 .settings-tabs button.is-active {
-  background: #273034;
+  background: var(--settings-tab-active-bg);
   color: var(--text-heading);
 }
 
@@ -2398,7 +2398,7 @@
   position: relative;
   z-index: 1;
   min-width: 0;
-  border: 1px solid #2b3235;
+  border: 1px solid var(--home-cascade-card-border);
   border-radius: var(--radius-md);
   background: var(--content-inset-bg);
   color: var(--text-body-soft);
@@ -2411,7 +2411,7 @@
   grid-template-columns: minmax(0, 1fr);
   gap: 7px;
   padding: 8px 10px;
-  background: #171d1b;
+  background: var(--home-cascade-current-bg);
 }
 
 .home-cascade-card--current.tone-active {
@@ -2515,7 +2515,7 @@
   border-radius: 999px;
   background: var(--status-info-bg);
   color: var(--status-info-fg);
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: 10px;
   line-height: 17px;
   text-overflow: ellipsis;
@@ -2545,7 +2545,7 @@ button.home-cascade-wait-pill:focus-visible {
   border: 0;
   background: transparent;
   color: #6e7772;
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: 10px;
   line-height: 1.2;
   cursor: pointer;

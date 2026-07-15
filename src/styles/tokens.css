@@ -199,6 +199,16 @@
   --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
   --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
 
+  /* Component surfaces with their own contrast relationships. */
+  --settings-tab-active-bg: #273034;
+  --home-cascade-card-border: #2b3235;
+  --home-cascade-current-bg: #171d1b;
+  --prompt-library-item-menu-bg: #2f383b;
+  --recovered-queue-divider: #2c3336;
+  --research-highlight-action-bg: #303532;
+  --folder-picker-status-border: #364245;
+  --queued-turn-border: #384246;
+
   --accent-color: #8fd6c7;
   --accent-shadow: rgba(143, 214, 199, 0.35);
   --accent-soft: rgba(143, 214, 199, 0.13);
@@ -248,6 +258,15 @@
   --chrome-control-bg: rgba(31, 29, 27, 0.9);
   --chrome-control-bg-hover: rgba(44, 41, 37, 0.95);
   --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);
+
+  --settings-tab-active-bg: #322f2b;
+  --home-cascade-card-border: #34312d;
+  --home-cascade-current-bg: #201e1a;
+  --prompt-library-item-menu-bg: #393531;
+  --recovered-queue-divider: #34312d;
+  --research-highlight-action-bg: #3a3530;
+  --folder-picker-status-border: #49423a;
+  --queued-turn-border: #48413a;
 
   --accent-color: #33adff;
   --accent-shadow: rgba(51, 173, 255, 0.35);

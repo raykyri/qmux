@@ -822,6 +822,14 @@ header + .turn-blocks {
   height: auto;
 }
 
+/* Graphviz emits a Times font presentation attribute, while Mermaid can emit
+   its own label styles. Override both at the application boundary so generated
+   diagram labels follow the selected body font. */
+.turn-diagram-svg svg text,
+.turn-diagram-svg svg tspan {
+  font-family: var(--font-ui) !important;
+}
+
 /* Graphviz draws black-on-transparent, unreadable on the dark pane, so give it a light
    canvas and let wide graphs scroll at their natural size. */
 .turn-diagram-svg[data-lang="dot"] {
@@ -1130,7 +1138,7 @@ header + .turn-blocks {
   flex: 0 1 auto;
   flex-direction: column;
   gap: 8px;
-  border-bottom: 1px solid #2c3336;
+  border-bottom: 1px solid var(--recovered-queue-divider);
   padding-bottom: 10px;
 }
 

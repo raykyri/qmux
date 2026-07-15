@@ -437,7 +437,7 @@
   height: 22px;
   border: 1px solid #3a4245;
   border-radius: 5px;
-  background: #2f383b;
+  background: var(--prompt-library-item-menu-bg);
   color: #b6bfba;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   transform: translateY(-50%);

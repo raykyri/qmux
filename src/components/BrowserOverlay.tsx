@@ -34,6 +34,10 @@ interface BrowserOverlayProps {
   // other workspace files. Left off for trusted localhost dev servers, which need a
   // real same-origin context to function.
   sandbox: boolean;
+  // Passed to the token-gated file server so Markdown documents rendered in
+  // this isolated frame use the same body font as the application. Arbitrary
+  // localhost pages remain untouched.
+  bodyFontId: string;
   size?: BrowserOverlaySize | null;
   toggleShortcutLabel?: string | null;
   // Navigate to a typed address (a URL, or a bare host that gets http:// prefixed).
@@ -52,6 +56,7 @@ export default function BrowserOverlay({
   url,
   reloadNonce,
   sandbox,
+  bodyFontId,
   size,
   toggleShortcutLabel,
   onNavigate,
@@ -210,6 +215,18 @@ export default function BrowserOverlay({
   const closeTitle = toggleShortcutLabel
     ? `Hide browser (Esc, ${toggleShortcutLabel})`
     : "Hide browser (Esc)";
+  const frameUrl = (() => {
+    if (!url || !sandbox) {
+      return url;
+    }
+    try {
+      const parsed = new URL(url);
+      parsed.searchParams.set("qmux-body-font", bodyFontId);
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  })();
 
   return (
     <div
@@ -285,12 +302,12 @@ export default function BrowserOverlay({
         </div>
       </div>
       <div className="browser-overlay-body">
-        {url ? (
+        {frameUrl ? (
           <iframe
-            key={`${url}::${reloadNonce}`}
+            key={`${frameUrl}::${reloadNonce}`}
             ref={frameRef}
             className={`browser-overlay-frame${sandbox ? " is-file-content" : ""}`}
-            src={url}
+            src={frameUrl}
             title="Browser overlay"
             // allow-scripts (so scripted reports still render) without
             // allow-same-origin (opaque origin → can't read the token-gated server).

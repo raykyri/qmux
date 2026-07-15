@@ -213,6 +213,13 @@ fn is_loopback_host_header(host: &str) -> bool {
     false
 }
 
+fn query_parameter<'a>(query: Option<&'a str>, name: &str) -> Option<&'a str> {
+    query?.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == name).then_some(value)
+    })
+}
+
 fn build_response(state: &AppState, head: &RequestHead) -> Response {
     // Reject a non-loopback Host (DNS-rebinding defense-in-depth). A missing Host
     // (e.g. a bare HTTP/1.0 client) is allowed — the per-pane token still gates access
@@ -235,6 +242,7 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         None => (without_fragment, None),
     };
     let raw_requested = query.is_some_and(|q| q.split('&').any(|p| p == "raw" || p == "raw=1"));
+    let body_font_id = query_parameter(query, "qmux-body-font");
     // The path is "/<token>/<abs path>": the first segment is the per-pane token, and
     // everything from the next '/' onward is the percent-encoded absolute path (with
     // its leading slash preserved). Tokens are hex, so they never contain a slash.
@@ -290,7 +298,8 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         let Ok(source) = read_slice(file, 0, total) else {
             return Response::error(500, "Internal Server Error");
         };
-        let page = render_markdown_page(&canonical, &String::from_utf8_lossy(&source));
+        let page =
+            render_markdown_page(&canonical, &String::from_utf8_lossy(&source), body_font_id);
         let mut response = Response::new(200, "OK");
         response.header("Content-Type", "text/html; charset=utf-8");
         response.header("Content-Length", &page.len().to_string());
@@ -493,7 +502,7 @@ fn is_markdown(path: &Path) -> bool {
 /// styles.
 const MARKDOWN_PAGE_CSS: &str = "\
 :root { color-scheme: light dark; }\
-body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; background: #ffffff; color: #1f2328; }\
+body { margin: 0; font-family: __QMUX_BODY_FONT__; line-height: 1.6; background: #ffffff; color: #1f2328; }\
 @media (prefers-color-scheme: dark) { body { background: #1e2227; color: #e2e6ea; } }\
 main { max-width: 48rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }\
 h1, h2 { border-bottom: 1px solid rgba(127, 127, 127, 0.3); padding-bottom: 0.3em; }\
@@ -506,11 +515,23 @@ th, td { border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.35em 0.7em; }\
 img { max-width: 100%; }\
 hr { border: none; border-top: 1px solid rgba(127, 127, 127, 0.3); }";
 
+fn markdown_body_font(font_id: Option<&str>) -> &'static str {
+    match font_id {
+        Some("inter") => {
+            "'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        }
+        Some("anthropic-sans-text") => {
+            "'Anthropic Sans Text', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        }
+        _ => "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    }
+}
+
 /// Renders Markdown source into a complete standalone HTML page. Raw HTML embedded in
 /// the Markdown passes through untouched: the overlay's sandbox + CSP were designed to
 /// contain fully hostile served HTML files, so rendered Markdown gets the same
 /// containment rather than a sanitizer.
-fn render_markdown_page(path: &Path, source: &str) -> String {
+fn render_markdown_page(path: &Path, source: &str, body_font_id: Option<&str>) -> String {
     use pulldown_cmark::{Options, Parser, html};
 
     let mut options = Options::empty();
@@ -527,10 +548,12 @@ fn render_markdown_page(path: &Path, source: &str) -> String {
             .and_then(|name| name.to_str())
             .unwrap_or("Markdown"),
     );
+    let markdown_page_css =
+        MARKDOWN_PAGE_CSS.replace("__QMUX_BODY_FONT__", markdown_body_font(body_font_id));
     format!(
         "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title}</title>\n<style>{MARKDOWN_PAGE_CSS}</style>\n</head>\n\
+         <title>{title}</title>\n<style>{markdown_page_css}</style>\n</head>\n\
          <body>\n<main>\n{body}</main>\n</body>\n</html>\n"
     )
 }
@@ -711,6 +734,27 @@ mod tests {
         assert_eq!(cap_range_end(0, 40, 100), 40);
         // Clamping saturates near u64::MAX rather than overflowing.
         assert_eq!(cap_range_end(u64::MAX - 1, u64::MAX, 100), u64::MAX);
+    }
+
+    #[test]
+    fn rendered_markdown_uses_only_known_body_font_stacks() {
+        let path = Path::new("doc.md");
+        let source = "# Hello";
+        assert_eq!(
+            query_parameter(Some("raw=1&qmux-body-font=inter"), "qmux-body-font"),
+            Some("inter")
+        );
+
+        let default_page = render_markdown_page(path, source, None);
+        assert!(default_page.contains("font-family: ui-sans-serif, system-ui"));
+
+        let selected_page = render_markdown_page(path, source, Some("anthropic-sans-text"));
+        assert!(selected_page.contains("font-family: 'Anthropic Sans Text', ui-sans-serif"));
+        assert!(!selected_page.contains("__QMUX_BODY_FONT__"));
+
+        let unknown_page = render_markdown_page(path, source, Some("body{};color:red"));
+        assert!(unknown_page.contains("font-family: ui-sans-serif, system-ui"));
+        assert!(!unknown_page.contains("body{};color:red"));
     }
 
     /// Issues a GET and returns the full response head (status line + headers) and body.

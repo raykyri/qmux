@@ -1562,6 +1562,19 @@ export default function App() {
     };
   }, [settings.colorTheme]);
 
+  // The selected body font must live at the document root, not only on
+  // .app-shell: menus and dialogs are portaled to document.body to escape pane
+  // clipping, and CSS inheritance follows their DOM parent rather than their
+  // React owner. Keeping the root variable current makes those surfaces follow
+  // the same font selection as the rest of the application.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--font-ui", bodyFontFamily);
+    return () => {
+      root.style.removeProperty("--font-ui");
+    };
+  }, [bodyFontFamily]);
+
   useEffect(() => {
     let disposed = false;
     void detectAvailableBodyFonts().then((availableFonts) => {
@@ -11528,6 +11541,7 @@ export default function App() {
           url={activeBrowserOverlay.url}
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
+          bodyFontId={settings.bodyFontId}
           size={activeBrowserOverlay.size}
           toggleShortcutLabel={activePaneHasTurnPaneHeader ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}
           onNavigate={navigateActiveBrowserOverlay}

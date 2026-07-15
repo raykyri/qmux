@@ -43,7 +43,14 @@ function getMermaid(): Promise<MermaidApi> {
   if (!mermaidPromise) {
     mermaidPromise = import("mermaid").then((mod) => {
       const api = mod.default as unknown as MermaidApi;
-      api.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+      api.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        securityLevel: "strict",
+        // Resolve through the application token so diagram labels follow body
+        // font changes just like the surrounding Markdown.
+        themeVariables: { fontFamily: "var(--font-ui)" },
+      });
       return api;
     });
   }
