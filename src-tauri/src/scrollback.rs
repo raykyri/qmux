@@ -417,12 +417,31 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
 /// undo stack holds many of them — storing each full multi-MB log would pin
 /// hundreds of MB for a convenience buffer. Buffers already within `cap` are
 /// returned as-is (no copy).
-pub fn bounded_scrollback_tail(bytes: Vec<u8>, cap: usize) -> Vec<u8> {
+fn bounded_scrollback_tail(bytes: Vec<u8>, cap: usize) -> Vec<u8> {
     if bytes.len() <= cap {
         return bytes;
     }
     let start = safe_cut_boundary(&bytes, bytes.len() - cap);
     bytes[start..].to_vec()
+}
+
+/// Captures the newest `cap` bytes of a pane's scrollback for an undo snapshot,
+/// made inert and alternate-screen-correct first.
+///
+/// A raw byte cut (what `bounded_scrollback_tail` alone does) can leave the
+/// retained tail beginning *inside* an open alternate screen — the `?1049h`
+/// that opened it having fallen off the front — and replay, which starts in the
+/// primary screen, then renders that hidden TUI repaint as garbled primary
+/// history. Unlike `trim_scrollback_file`, which re-injects a trailing
+/// `?1049h` marker so the *same* live process's future writes stay recognized
+/// as alternate-screen, an undo snapshot is a frozen tail replayed ahead of a
+/// *fresh* process's output, which begins in the primary screen — so no trailing
+/// marker is added (one would wrongly discard the restored pane's own output).
+/// Sanitizing at capture drops the alternate-screen repaint entirely, and as a
+/// bonus lets `cap` retain that much more real primary-screen history, since the
+/// stripped control bytes no longer count against it.
+pub fn bounded_undo_scrollback(bytes: &[u8], cap: usize) -> Vec<u8> {
+    bounded_scrollback_tail(sanitize_scrollback_replay(bytes), cap)
 }
 
 /// Advances a raw cut offset to a safe boundary so the retained tail doesn't
@@ -570,7 +589,21 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
                 // query whose replay would write a reply into the fresh
                 // PTY's input stream. Plain SGR (no prefix) stays.
                 || (csi.final_byte == b'm'
-                    && matches!(csi.parameter_prefix, Some(b'>' | b'?')));
+                    && matches!(csi.parameter_prefix, Some(b'>' | b'?')))
+                // DECSTBM (CSI Pt;Pb r) sets the scroll region and XTRESTORE
+                // (CSI ? Pm r) restores saved private modes: both latch
+                // terminal state onto the resumed *live* session, and the
+                // trailing reset can't clear a scroll region without also
+                // homing the cursor and stranding the restored prompt, so
+                // strip them from replay. DECCARA (CSI ... $ r) shares the `r`
+                // final but carries a `$` intermediate and is real rectangular
+                // rendering, so the empty-intermediate check keeps it.
+                || (csi.final_byte == b'r' && csi.intermediates.is_empty())
+                // DECSCUSR (CSI Ps SP q) sets the cursor style — terminal
+                // state, not rendering. A dead TUI's bar/underline cursor must
+                // not latch onto the restored shell; the reset does not clear
+                // it either.
+                || (csi.final_byte == b'q' && csi.intermediates.as_slice() == b" ");
             if !discard {
                 output.extend_from_slice(&bytes[index..=end]);
             }
@@ -926,6 +959,28 @@ mod tests {
         assert_eq!(tail, b"line three\n".to_vec());
     }
 
+    // An undo snapshot whose retained region begins inside an open alternate
+    // screen (the `?1049h` fell off the front) must not replay the hidden TUI
+    // repaint as primary history. Sanitizing at capture drops it, keeping only
+    // the real primary-screen content on both sides.
+    #[test]
+    fn bounded_undo_scrollback_strips_alternate_screen_repaint() {
+        let mut log = b"primary line\r\n\x1b[?1049h".to_vec();
+        log.extend(std::iter::repeat_n(b'x', 4096)); // alternate-screen repaint
+        log.extend_from_slice(b"\x1b[?1049lafter restore\r\n");
+
+        let snap = bounded_undo_scrollback(&log, 1024);
+
+        assert!(
+            !snap.contains(&b'x'),
+            "snapshot must not store alternate-screen repaint"
+        );
+        assert!(snap.starts_with(b"primary line\r\n"));
+        assert!(snap.ends_with(b"after restore\r\n"));
+        // Idempotent under the replay sanitizer it will pass through again.
+        assert_eq!(sanitize_scrollback_replay(&snap), snap);
+    }
+
     #[test]
     fn safe_cut_boundary_prefers_the_next_line_start() {
         // Mid-line cut jumps to just after the next newline.
@@ -1148,6 +1203,20 @@ mod tests {
         assert_eq!(
             sanitize_scrollback_replay(input),
             b"before\x1b[1;32mok\x1b[0mafter"
+        );
+    }
+
+    // DECSTBM (scroll region) and DECSCUSR (cursor style) are terminal state a
+    // dead TUI must not latch onto the resumed live session; the reset can't
+    // clear a scroll region without homing the cursor, so they are stripped
+    // from replay. A rectangular-attribute op (DECCARA, `$ r`) is real
+    // rendering and its `$` intermediate keeps it, and plain SGR survives.
+    #[test]
+    fn replay_sanitizer_removes_scroll_region_and_cursor_style() {
+        let input = b"before\x1b[2;40r\x1b[4 qmiddle\x1b[1;5;10;20;7$r\x1b[1;32mtail\x1b[0mafter";
+        assert_eq!(
+            sanitize_scrollback_replay(input),
+            b"beforemiddle\x1b[1;5;10;20;7$r\x1b[1;32mtail\x1b[0mafter".to_vec(),
         );
     }
 
