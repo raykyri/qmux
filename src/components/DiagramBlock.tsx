@@ -47,6 +47,9 @@ function getMermaid(): Promise<MermaidApi> {
         startOnLoad: false,
         theme: "dark",
         securityLevel: "strict",
+        // sanitizeSvg strips <foreignObject>, so labels must render as plain
+        // SVG <text> or flowchart node/edge labels are removed entirely.
+        htmlLabels: false,
         // Resolve through the application token so diagram labels follow body
         // font changes just like the surrounding Markdown.
         themeVariables: { fontFamily: "var(--font-ui)" },
