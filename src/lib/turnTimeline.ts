@@ -5,6 +5,7 @@
 
 import type { ThreadParticipant, Turn, TurnBlock } from "../types";
 import {
+  stripTaggedInstructionBlocks,
   stripTaggedUserInstructionBlocks,
   taggedUserInstructionDetails,
 } from "./taggedInstructions";
@@ -508,6 +509,66 @@ export function messageItemText(item: MessageItem): string | null {
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n\n");
   return text.trim() ? text : null;
+}
+
+/** Copyable user/assistant source text, without injected tagged instructions. */
+export function messageItemCopyText(item: MessageItem): string | null {
+  if (item.role !== "user" && item.role !== "assistant") {
+    return null;
+  }
+  const text = messageItemText(item);
+  if (text === null) {
+    return null;
+  }
+  const stripped =
+    item.role === "user"
+      ? stripTaggedUserInstructionBlocks(text)
+      : stripTaggedInstructionBlocks(text);
+  return stripped.trim() ? stripped : null;
+}
+
+/**
+ * One aggregate copy payload per user-delimited assistant run.
+ *
+ * System messages and fully tagged user-role instructions are omitted without
+ * ending the run. Activity-only assistant items and assistant text that
+ * sanitizes to empty are likewise skipped, so the menu lands on the first
+ * visible copyable message.
+ */
+export function assistantRunCopyTextByItemKey(items: MessageItem[]) {
+  const copyTextByKey = new Map<string, string>();
+  let firstAssistantKey: string | null = null;
+  let parts: string[] = [];
+
+  const flush = () => {
+    if (firstAssistantKey && parts.length > 0) {
+      copyTextByKey.set(firstAssistantKey, parts.join("\n\n").trim());
+    }
+    firstAssistantKey = null;
+    parts = [];
+  };
+
+  for (const item of items) {
+    if (item.role === "user") {
+      if (messageItemIsTaggedInstruction(item)) {
+        continue;
+      }
+      flush();
+      continue;
+    }
+    if (item.role !== "assistant") {
+      continue;
+    }
+    const copyText = messageItemCopyText(item);
+    if (!copyText) {
+      continue;
+    }
+    firstAssistantKey ??= item.key;
+    parts.push(copyText);
+  }
+  flush();
+
+  return copyTextByKey;
 }
 
 export function messageItemIsTaggedInstruction(item: MessageItem) {

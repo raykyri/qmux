@@ -186,7 +186,7 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
         ? createPortal(
             <div
               ref={popoverRef}
-              className="popover-surface popover-surface--context turn-title-menu-popover turn-markdown-code-menu-popover"
+              className="popover-surface popover-surface--context turn-message-menu-popover turn-markdown-code-menu-popover"
               role="menu"
               aria-label="Code block options"
               style={
@@ -205,7 +205,7 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
                 type="button"
                 role="menuitemcheckbox"
                 aria-checked={wrap}
-                className="menu-item turn-title-menu-item"
+                className="menu-item turn-message-menu-item"
                 onClick={() => {
                   setWrap((value) => !value);
                   setOpen(false);
@@ -216,7 +216,7 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
               <button
                 type="button"
                 role="menuitem"
-                className="menu-item turn-title-menu-item"
+                className="menu-item turn-message-menu-item"
                 onClick={() => {
                   setOpen(false);
                   void writeClipboardText(nodeText(children));

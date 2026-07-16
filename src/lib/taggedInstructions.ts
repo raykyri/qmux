@@ -9,6 +9,15 @@ export function stripTaggedUserInstructionBlocks(text: string): string {
   return leading.removed || stripped.removed ? stripped.text : text;
 }
 
+// Remove line-leading tagged blocks without treating a preceding Markdown
+// heading as an injected-label prefix. Assistant answers often use headings as
+// real content, so their copy path must preserve those while cutting out any
+// embedded system/instruction blocks.
+export function stripTaggedInstructionBlocks(text: string): string {
+  const stripped = stripInlineTaggedInstructionBlocks(text, markdownCodeRanges(text));
+  return stripped.removed ? stripped.text : text;
+}
+
 export function taggedUserInstructionDetails(text: string): TaggedUserInstructionDetails | null {
   const contentStart = taggedInstructionContentStart(text);
   if (contentStart === null) {
@@ -51,7 +60,15 @@ function stripLeadingTaggedInstructionBlocks(text: string): { text: string; remo
   }
 }
 
-function stripInlineTaggedInstructionBlocks(text: string): { text: string; removed: boolean } {
+interface TextRange {
+  start: number;
+  end: number;
+}
+
+function stripInlineTaggedInstructionBlocks(
+  text: string,
+  protectedRanges: TextRange[] = [],
+): { text: string; removed: boolean } {
   let result = "";
   let index = 0;
   let removed = false;
@@ -64,7 +81,7 @@ function stripInlineTaggedInstructionBlocks(text: string): { text: string; remov
     }
 
     result += text.slice(index, nextTag);
-    const block = isLineContentStart(text, nextTag)
+    const block = !rangeContains(protectedRanges, nextTag) && isLineContentStart(text, nextTag)
       ? parseTaggedInstructionBlockAt(text, nextTag)
       : null;
     if (block === null) {
@@ -78,6 +95,66 @@ function stripInlineTaggedInstructionBlocks(text: string): { text: string; remov
   }
 
   return { text: result, removed };
+}
+
+function markdownCodeRanges(text: string): TextRange[] {
+  const ranges: TextRange[] = [];
+  let fence: { marker: "`" | "~"; length: number } | null = null;
+  let lineStart = 0;
+
+  while (lineStart <= text.length) {
+    const newline = text.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? text.length : newline;
+    const line = stripTrailingCarriageReturn(text.slice(lineStart, lineEnd));
+    const fenceRun = markdownFenceRun(line);
+    const lineRange = { start: lineStart, end: newline === -1 ? lineEnd : lineEnd + 1 };
+
+    if (fence) {
+      ranges.push(lineRange);
+      if (
+        fenceRun?.marker === fence.marker &&
+        fenceRun.length >= fence.length &&
+        trimHorizontalWhitespace(line.slice(fenceRun.end)).length === 0
+      ) {
+        fence = null;
+      }
+    } else if (fenceRun) {
+      ranges.push(lineRange);
+      fence = { marker: fenceRun.marker, length: fenceRun.length };
+    } else if (line.startsWith("\t") || line.startsWith("    ")) {
+      ranges.push(lineRange);
+    }
+
+    if (newline === -1) {
+      break;
+    }
+    lineStart = newline + 1;
+  }
+
+  return ranges;
+}
+
+function markdownFenceRun(
+  line: string,
+): { marker: "`" | "~"; length: number; end: number } | null {
+  let start = 0;
+  while (start < 3 && line[start] === " ") {
+    start += 1;
+  }
+  const marker = line[start];
+  if (marker !== "`" && marker !== "~") {
+    return null;
+  }
+  let end = start;
+  while (line[end] === marker) {
+    end += 1;
+  }
+  const length = end - start;
+  return length >= 3 ? { marker, length, end } : null;
+}
+
+function rangeContains(ranges: TextRange[], index: number) {
+  return ranges.some((range) => index >= range.start && index < range.end);
 }
 
 function parseTaggedInstructionSequenceFrom(

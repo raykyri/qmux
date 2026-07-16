@@ -459,7 +459,7 @@
   color: var(--text-primary);
 }
 
-/* The row menu itself: portaled, mirroring .turn-title-menu-popover. */
+/* The row menu itself: portaled, mirroring .turn-message-menu-popover. */
 .prompt-library-row-menu-popover {
   z-index: calc(var(--z-popover) + 1);
   gap: 2px;

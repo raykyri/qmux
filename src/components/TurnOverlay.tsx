@@ -23,13 +23,12 @@ import {
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { requestSaveDraftAsPrompt } from "../lib/promptLibrary";
+import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
 import {
-  stripTaggedUserInstructionBlocks,
-  taggedUserInstructionDetails,
-} from "../lib/taggedInstructions";
-import {
+  assistantRunCopyTextByItemKey,
   buildTimelineItems,
   hasToolCall,
+  messageItemCopyText,
   messageItemIsTaggedInstruction,
   messageItemText,
   sameMessageItem,
@@ -448,6 +447,10 @@ export default function TurnOverlay({
     () => buildTimelineItems(turns, showActivityDetail),
     [turns, showActivityDetail],
   );
+  const assistantRunCopyText = useMemo(
+    () => assistantRunCopyTextByItemKey(timelineItems),
+    [timelineItems],
+  );
 
   // The last real user message (a bubble — not a tagged instruction, not a
   // dropped turn) is the sticky candidate: it pins to the top of the pane while
@@ -658,6 +661,7 @@ export default function TurnOverlay({
                 savePromptAgentId={savePromptAgentId}
                 assistantLabel={assistantLabel}
                 showName={showName}
+                assistantCopyText={assistantRunCopyText.get(item.key) ?? null}
                 stickyClassName={stickyClassName}
                 titleGenerationEnabled={titleGenerationEnabled}
                 onRegenerateTitleFromUserMessage={handleRegenerateTitleFromUserMessage}
@@ -694,6 +698,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   savePromptAgentId,
   assistantLabel,
   showName,
+  assistantCopyText,
   stickyClassName = "",
   titleGenerationEnabled,
   onRegenerateTitleFromUserMessage,
@@ -704,6 +709,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   savePromptAgentId?: string | null;
   assistantLabel: string;
   showName: boolean;
+  assistantCopyText?: string | null;
   stickyClassName?: string;
   titleGenerationEnabled: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
@@ -718,6 +724,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
           savePromptAgentId={savePromptAgentId}
           assistantLabel={assistantLabel}
           showName={showName}
+          assistantCopyText={assistantCopyText}
           stickyClassName={stickyClassName}
           titleGenerationEnabled={titleGenerationEnabled}
           onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
@@ -742,6 +749,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   previous.agentId === next.agentId &&
   previous.savePromptAgentId === next.savePromptAgentId &&
   previous.showName === next.showName &&
+  previous.assistantCopyText === next.assistantCopyText &&
   previous.stickyClassName === next.stickyClassName &&
   previous.titleGenerationEnabled === next.titleGenerationEnabled &&
   previous.titleGenerationBusy === next.titleGenerationBusy &&
@@ -754,6 +762,7 @@ function MessageItemView({
   savePromptAgentId,
   assistantLabel,
   showName,
+  assistantCopyText,
   stickyClassName = "",
   titleGenerationEnabled,
   onRegenerateTitleFromUserMessage,
@@ -764,35 +773,49 @@ function MessageItemView({
   savePromptAgentId?: string | null;
   assistantLabel: string;
   showName: boolean;
+  assistantCopyText?: string | null;
   stickyClassName?: string;
   titleGenerationEnabled: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
   titleGenerationBusy: boolean;
 }) {
   const taggedInstructionMessage = messageItemIsTaggedInstruction(item);
-  const messageText = item.role === "user" ? messageItemText(item) : null;
-  const showMessageActions = Boolean(
-    showName &&
-      !taggedInstructionMessage &&
-      messageText &&
-      (titleGenerationEnabled || savePromptAgentId),
+  const messageText =
+    item.role === "user" || item.role === "assistant" ? messageItemText(item) : null;
+  const copyText =
+    item.role === "assistant"
+      ? assistantCopyText ?? null
+      : messageItemCopyText(item);
+  const showUserMessageActions = Boolean(
+    item.role === "user" && showName && (titleGenerationEnabled || savePromptAgentId),
   );
+  const showMessageActions = Boolean(
+    !taggedInstructionMessage &&
+      messageText &&
+      copyText &&
+      (item.role === "assistant" || showUserMessageActions),
+  );
+  const showHeader = !taggedInstructionMessage && (showName || showMessageActions);
   return (
     <article
       className={`turn-card role-${item.role}${
         taggedInstructionMessage ? " is-tagged-instruction-message" : ""
       }${timelineStatusClass(item.status)}${stickyClassName}`}
     >
-      {showName && !taggedInstructionMessage ? (
-        <header>
-          <span className="turn-card-role-label">
-            {turnRoleLabel(item.role, assistantLabel, item.participant)}
-          </span>
-          {showMessageActions && messageText ? (
-            <MessageTitleMenu
-              savePromptAgentId={savePromptAgentId}
+      {showHeader ? (
+        <header className={showName ? undefined : "is-actions-only"}>
+          {showName ? (
+            <span className="turn-card-role-label">
+              {turnRoleLabel(item.role, assistantLabel, item.participant)}
+            </span>
+          ) : null}
+          {showMessageActions && messageText && copyText ? (
+            <MessageActionsMenu
+              savePromptAgentId={item.role === "user" ? savePromptAgentId : null}
               messageText={messageText}
-              titleGenerationEnabled={titleGenerationEnabled}
+              copyText={copyText}
+              copyLabel={item.role === "assistant" ? "Copy response" : "Copy message"}
+              titleGenerationEnabled={item.role === "user" && titleGenerationEnabled}
               titleGenerationBusy={titleGenerationBusy}
               onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
             />
@@ -809,22 +832,26 @@ function MessageItemView({
 }
 
 // Preferred natural width for the message "..." menu; placement clamps to the pane.
-const TITLE_MENU_PREFERRED_WIDTH = 180;
+const MESSAGE_MENU_PREFERRED_WIDTH = 180;
 
-// The "..." menu shown at the right of a user message header. Opens a small popover
-// with actions for regenerating the tab title, copying the message, or saving it to
-// the prompt library.
+// The "..." menu shown at the right of a message header. Assistant messages only
+// offer Copy; user messages can also regenerate the tab title or save to the
+// prompt library.
 // Portaled so the scrollable timeline cannot clip it; right-aligned so it grows
 // toward the pane center.
-function MessageTitleMenu({
+function MessageActionsMenu({
   savePromptAgentId,
   messageText,
+  copyText,
+  copyLabel,
   titleGenerationEnabled,
   titleGenerationBusy,
   onRegenerateTitleFromUserMessage,
 }: {
   savePromptAgentId?: string | null;
   messageText: string;
+  copyText: string;
+  copyLabel: string;
   titleGenerationEnabled: boolean;
   titleGenerationBusy: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
@@ -849,7 +876,7 @@ function MessageTitleMenu({
     setPos(
       placePanePopover({
         triggerRect: trigger.getBoundingClientRect(),
-        popoverSize: { width: TITLE_MENU_PREFERRED_WIDTH, height },
+        popoverSize: { width: MESSAGE_MENU_PREFERRED_WIDTH, height },
         paneRect: turnPaneRectFrom(trigger),
         align: "end",
         prefer: "below",
@@ -896,16 +923,15 @@ function MessageTitleMenu({
   }, [open, positionMenu]);
 
   return (
-    <span className="turn-title-menu">
+    <span className="turn-message-menu">
       <button
         ref={triggerRef}
         type="button"
-        className="control-button turn-title-regenerate-button"
-        title="Title options"
-        aria-label="Title options"
+        className="control-button turn-message-menu-trigger"
+        title="Message options"
+        aria-label="Message options"
         aria-haspopup="menu"
         aria-expanded={open}
-        onMouseDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
           setOpen((current) => !current);
@@ -917,7 +943,7 @@ function MessageTitleMenu({
         ? createPortal(
             <div
               ref={popoverRef}
-              className="popover-surface popover-surface--context turn-title-menu-popover"
+              className="popover-surface popover-surface--context turn-message-menu-popover"
               role="menu"
               style={
                 pos
@@ -925,7 +951,7 @@ function MessageTitleMenu({
                       left: pos.left,
                       top: pos.top,
                       maxHeight: pos.maxHeight,
-                      width: Math.min(TITLE_MENU_PREFERRED_WIDTH, pos.maxWidth),
+                      width: Math.min(MESSAGE_MENU_PREFERRED_WIDTH, pos.maxWidth),
                       maxWidth: pos.maxWidth,
                     }
                   : { left: -9999, top: -9999 }
@@ -935,9 +961,8 @@ function MessageTitleMenu({
                 <button
                   type="button"
                   role="menuitem"
-                  className="menu-item turn-title-menu-item"
+                  className="menu-item turn-message-menu-item"
                   disabled={titleGenerationBusy}
-                  onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
                     setOpen(false);
@@ -950,28 +975,26 @@ function MessageTitleMenu({
               <button
                 type="button"
                 role="menuitem"
-                className="menu-item turn-title-menu-item"
-                onMouseDown={(event) => event.stopPropagation()}
+                className="menu-item turn-message-menu-item"
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpen(false);
-                  void writeClipboardText(stripTaggedUserInstructionBlocks(messageText));
+                  void writeClipboardText(copyText);
                 }}
               >
-                Copy message
+                {copyLabel}
               </button>
               {savePromptAgentId ? (
                 <button
                   type="button"
                   role="menuitem"
-                  className="menu-item turn-title-menu-item"
-                  onMouseDown={(event) => event.stopPropagation()}
+                  className="menu-item turn-message-menu-item"
                   onClick={(event) => {
                     event.stopPropagation();
                     setOpen(false);
                     requestSaveDraftAsPrompt(
                       savePromptAgentId,
-                      stripTaggedUserInstructionBlocks(messageText),
+                      copyText,
                       { lockToGlobal: false },
                     );
                   }}

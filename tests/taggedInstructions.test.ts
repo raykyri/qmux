@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { stripTaggedUserInstructionBlocks } from "../src/lib/taggedInstructions";
+import {
+  stripTaggedInstructionBlocks,
+  stripTaggedUserInstructionBlocks,
+} from "../src/lib/taggedInstructions";
 
 test("removes embedded tagged instruction blocks from copied user messages", () => {
   const message = [
@@ -39,4 +42,64 @@ test("preserves inline tag examples that are part of user-authored prose", () =>
   const message = "Explain how <strong>important</strong> is rendered.";
 
   assert.equal(stripTaggedUserInstructionBlocks(message), message);
+});
+
+test("generic tagged-block stripping preserves preceding Markdown headings", () => {
+  const message = [
+    "# Visible answer",
+    "",
+    "<system-reminder>",
+    "Hidden instructions.",
+    "</system-reminder>",
+    "",
+    "Keep this conclusion.",
+  ].join("\n");
+
+  assert.equal(
+    stripTaggedInstructionBlocks(message),
+    "# Visible answer\n\n\n\nKeep this conclusion.",
+  );
+});
+
+test("generic tagged-block stripping preserves fenced and indented code", () => {
+  const message = [
+    "Examples:",
+    "",
+    "```xml",
+    "<system-reminder>",
+    "Literal fenced XML.",
+    "</system-reminder>",
+    "```",
+    "",
+    "    <user-instructions>",
+    "    Literal indented XML.",
+    "    </user-instructions>",
+    "",
+    "<system-reminder>",
+    "Hidden instructions.",
+    "</system-reminder>",
+    "",
+    "Visible conclusion.",
+  ].join("\n");
+
+  assert.equal(
+    stripTaggedInstructionBlocks(message),
+    [
+      "Examples:",
+      "",
+      "```xml",
+      "<system-reminder>",
+      "Literal fenced XML.",
+      "</system-reminder>",
+      "```",
+      "",
+      "    <user-instructions>",
+      "    Literal indented XML.",
+      "    </user-instructions>",
+      "",
+      "",
+      "",
+      "Visible conclusion.",
+    ].join("\n"),
+  );
 });

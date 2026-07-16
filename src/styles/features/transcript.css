@@ -348,13 +348,13 @@
   min-width: 0;
 }
 
-.turn-title-menu {
+.turn-message-menu {
   position: relative;
   margin-left: auto;
   display: inline-flex;
 }
 
-.turn-title-regenerate-button {
+.turn-message-menu-trigger {
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -372,32 +372,32 @@
   cursor: pointer;
 }
 
-.turn-title-regenerate-button:hover:not(:disabled),
-.turn-title-regenerate-button:focus-visible:not(:disabled) {
+.turn-message-menu-trigger:hover:not(:disabled),
+.turn-message-menu-trigger:focus-visible:not(:disabled) {
   background: transparent;
   color: var(--text-body-soft);
 }
 
-.turn-title-regenerate-button:focus-visible {
+.turn-message-menu-trigger:focus-visible {
   outline: 1px solid var(--focus-ring);
   outline-offset: 2px;
   box-shadow: none;
 }
 
-.turn-title-regenerate-button:disabled {
+.turn-message-menu-trigger:disabled {
   cursor: default;
   opacity: 0.45;
 }
 
 /* Portaled so the scrollable timeline cannot clip it; right-aligned to the "..."
    button (grows left / toward the pane center). left/top/width from placement. */
-.turn-title-menu-popover {
+.turn-message-menu-popover {
   gap: 2px;
   padding: 4px;
   overflow-y: auto;
 }
 
-.turn-title-menu-item {
+.turn-message-menu-item {
   /* Reset the bold uppercase inherited from the turn-card header — these
      should read as normal menu items. */
   font-weight: 400;
@@ -405,7 +405,7 @@
   white-space: nowrap;
 }
 
-.turn-title-menu-item:disabled {
+.turn-message-menu-item:disabled {
   cursor: default;
   opacity: 0.55;
 }

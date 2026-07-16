@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assistantRunCopyTextByItemKey,
   assistantTextFromTimelineItems,
   buildTimelineItems,
   formatPlainTextTranscript,
+  messageItemCopyText,
+  messageItemText,
   timelineItemsAfterLastToolCall,
   timelineItemsContainTranscriptActivity,
 } from "../src/lib/turnTimeline";
@@ -83,6 +86,102 @@ test("assistant text copy preserves original markdown and omits non-answer conte
   assert.equal(
     assistantTextFromTimelineItems(items),
     "# Heading\n\nA **bold** conclusion.",
+  );
+});
+
+test("message copy strips tagged instructions and rejects system messages", () => {
+  nextIndex = 0;
+  const items = buildTimelineItems([
+    turn("assistant", [
+      text("# Visible answer"),
+      text(
+        [
+          "```xml",
+          "<system-reminder>",
+          "Literal code sample.",
+          "</system-reminder>",
+          "```",
+          "",
+          "<system-reminder>",
+          "Hidden system instructions.",
+          "</system-reminder>",
+          "",
+          "Keep **this** conclusion.",
+        ].join("\n"),
+      ),
+      { type: "raw", value: { thinking: "hidden reasoning" } },
+    ]),
+    turn("system", [text("Never copy this system message.")]),
+  ]);
+
+  assert.equal(
+    messageItemCopyText(items[0]),
+    [
+      "# Visible answer",
+      "",
+      "```xml",
+      "<system-reminder>",
+      "Literal code sample.",
+      "</system-reminder>",
+      "```",
+      "",
+      "",
+      "",
+      "Keep **this** conclusion.",
+    ].join("\n"),
+  );
+  assert.equal(messageItemCopyText(items[1]), null);
+});
+
+test("assistant run copy appears once per user block and skips system messages", () => {
+  nextIndex = 0;
+  const items = buildTimelineItems([
+    turn("system", [text("Initial system context.")]),
+    turn("assistant", [text("Opening answer.")]),
+    turn("system", [text("System context between assistant messages.")]),
+    turn("assistant", [text("Opening continuation.")]),
+    turn("user", [text("First question.")]),
+    turn("system", [text("System context before the response.")]),
+    turn("assistant", [text("First response."), toolUse("tool-1")]),
+    turn("user", [toolResult("tool-1", "tool output")]),
+    turn("assistant", [text("Second response.")]),
+    turn("user", [
+      text("<system-reminder>\nUser-role system context.\n</system-reminder>"),
+    ]),
+    turn("system", [text("More hidden system context.")]),
+    turn("assistant", [text("Third response.")]),
+    turn("user", [text("Second question.")]),
+    turn("assistant", [
+      text("<system-reminder>\nHidden assistant instruction.\n</system-reminder>"),
+    ]),
+    turn("system", [text("System context after empty assistant text.")]),
+    turn("assistant", [text("Final response.")]),
+  ]);
+  const copyTextByKey = assistantRunCopyTextByItemKey(items);
+  const itemWithText = (value: string) => {
+    const item = items.find((candidate) => messageItemText(candidate) === value);
+    assert.ok(item, `missing timeline item for ${value}`);
+    return item;
+  };
+
+  const opening = itemWithText("Opening answer.");
+  const openingContinuation = itemWithText("Opening continuation.");
+  const first = itemWithText("First response.");
+  const second = itemWithText("Second response.");
+  const third = itemWithText("Third response.");
+  const final = itemWithText("Final response.");
+
+  assert.deepEqual([...copyTextByKey.entries()], [
+    [opening.key, "Opening answer.\n\nOpening continuation."],
+    [first.key, "First response.\n\nSecond response.\n\nThird response."],
+    [final.key, "Final response."],
+  ]);
+  assert.equal(copyTextByKey.has(openingContinuation.key), false);
+  assert.equal(copyTextByKey.has(second.key), false);
+  assert.equal(copyTextByKey.has(third.key), false);
+  assert.equal(
+    [...copyTextByKey.values()].some((value) => value.includes("System context")),
+    false,
   );
 });
 
