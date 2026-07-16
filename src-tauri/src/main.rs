@@ -11,6 +11,7 @@ mod native_terminal;
 mod persistence;
 mod prompt_library;
 mod pty;
+mod publishing;
 mod recovery;
 mod research;
 mod scrollback;
@@ -2011,6 +2012,12 @@ fn main() {
             openrouter_key_get,
             openrouter_key_set,
             openrouter_chat_completion,
+            publishing::publishing_auth_status,
+            publishing::publishing_auth_begin,
+            publishing::publishing_auth_poll,
+            publishing::publishing_auth_disconnect,
+            publishing::publishing_publish,
+            publishing::publishing_list,
             active_tab_get,
             active_tab_set,
             open_external_url,

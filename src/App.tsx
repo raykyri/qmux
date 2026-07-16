@@ -63,6 +63,7 @@ import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import HomeCascades from "./components/HomeCascades";
 import type { HomeCascadeWorkstream } from "./components/HomeCascades";
 import LinkContextMenu from "./components/LinkContextMenu";
+import PublishDialog, { type PublishDialogTarget } from "./components/PublishDialog";
 import SidebarModeToggle from "./components/SidebarModeToggle";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -122,6 +123,7 @@ import {
   threadIdForAgent,
 } from "./lib/threadGraph";
 import { formatPlainTextTranscript } from "./lib/turnTimeline";
+import { createTranscriptPublicationDraft } from "./lib/publicationDrafts";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
@@ -1515,6 +1517,7 @@ export default function App() {
   const [newResearchOpen, setNewResearchOpen] = useState(false);
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
   const [newDocumentInitialMarkdown, setNewDocumentInitialMarkdown] = useState("");
+  const [publicationTarget, setPublicationTarget] = useState<PublishDialogTarget | null>(null);
   const [markdownDropTargetActive, setMarkdownDropTargetActive] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const markdownImportRequestSeqRef = useRef(0);
@@ -5279,6 +5282,7 @@ export default function App() {
     settingsOpen ||
     newResearchOpen ||
     newDocumentOpen ||
+    Boolean(publicationTarget) ||
     commandPaletteOpen ||
     Boolean(
       closeDialog ||
@@ -7845,6 +7849,7 @@ export default function App() {
     settingsOpen ||
     newResearchOpen ||
     newDocumentOpen ||
+    Boolean(publicationTarget) ||
     Boolean(renamePaneId || renameGroupId);
   useEffect(() => {
     if (modalEditorOpen) {
@@ -9397,6 +9402,25 @@ export default function App() {
                     hooks: hookEventsByAgentRef.current[agent.id] ?? [],
                   })
                 }
+                onPublishTranscript={() => {
+                  const turnsSnapshot = surface.turns;
+                  const title =
+                    surface.pane.title.trim() ||
+                    `${surface.assistantLabel} transcript`;
+                  setPublicationTarget({
+                    kindLabel: "transcript",
+                    initialTitle: title,
+                    previewText: surface.getPlainTextTranscript(),
+                    buildDraft: (publicationTitle) =>
+                      createTranscriptPublicationDraft({
+                        title: publicationTitle,
+                        pane: surface.pane,
+                        agent,
+                        turns: turnsSnapshot,
+                        assistantLabel: surface.assistantLabel,
+                      }),
+                  });
+                }}
                 composerPolicy={getAgentUiAdapter(agent.adapter).composerPolicy(agent)}
                 shortcutLabelForPane={shortcutLabelForPaneId}
                 onQueueChange={setAgentQueuedTurns}
@@ -11354,6 +11378,7 @@ export default function App() {
               defaultForkAdapterId={defaultForkAdapterId}
               onError={setError}
               onToast={showAppToast}
+              onPublish={setPublicationTarget}
             />
           ) : null}
           {researchSurfaceActive && !activeResearchTreeId ? (
@@ -11427,6 +11452,7 @@ export default function App() {
                 (settingsOpen ||
                   newResearchOpen ||
                   newDocumentOpen ||
+                  Boolean(publicationTarget) ||
                   // The ⌘K palette floats over the stage and its rows commit on
                   // click; a pointer-live pane under it would swallow the
                   // mouse-up (dead item clicks) and steal the keyboard from the
@@ -11633,6 +11659,18 @@ export default function App() {
           setNewDocumentInitialMarkdown("");
         }}
         onCreate={submitNewDocument}
+      />
+
+      <PublishDialog
+        target={publicationTarget}
+        onClose={() => setPublicationTarget(null)}
+        onPublished={(binding) => {
+          if (binding.warning) {
+            showAppToast(binding.warning, "warning");
+          } else {
+            showAppToast(`Published to ${binding.shareUrl}`);
+          }
+        }}
       />
 
       {appToast ? (

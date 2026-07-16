@@ -131,6 +131,32 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+### Publishing configuration
+
+Transcript and research publishing uses a GitHub OAuth App with Device Flow
+enabled and the `gist` scope. The OAuth client ID is public configuration; no
+client secret is embedded in qmux.
+
+```
+QMUX_GITHUB_CLIENT_ID=<oauth-client-id> npm run dev:tauri
+```
+
+Release builds should set `QMUX_GITHUB_CLIENT_ID` at compile time. Published
+links default to `https://qmux.app/p/<gist-id>`; set `QMUX_SHARE_BASE_URL` to
+override that origin for a development or staging build. `QMUX_GITHUB_TOKEN`
+is a non-UI development override for automated testing with an existing token.
+
+The qmux.app server serves the existing landing page at `/` and publications at
+`/p/<gist-id>`:
+
+```
+npm run build:site
+HOST=127.0.0.1 PORT=8787 npm run start:site
+```
+
+`GITHUB_READER_TOKEN` is optional for the server. When set, it raises the GitHub
+API rate limit for publication reads; it is never sent to the browser.
+
 ## Using the App
 
 - `Cmd-T`: open a shell pane in code mode; outside code mode, open the agent

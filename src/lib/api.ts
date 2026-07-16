@@ -3,6 +3,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { PaneLayoutItem } from "./paneTree";
 import type { WorktreeLocation } from "./settings";
 import type {
+  PublicationBinding,
+  PublishPublicationRequest,
+  PublishingAuthPollResult,
+  PublishingAuthStatus,
+  PublishingDeviceAuthorization,
+} from "./publication";
+import type {
   AgentInfo,
   ClaudeSkill,
   GroupInfo,
@@ -81,6 +88,30 @@ export function openRouterChatCompletion(payload: unknown) {
   return invoke<{ status: number; body: string }>("openrouter_chat_completion", {
     payload,
   });
+}
+
+export function getPublishingAuthStatus() {
+  return invoke<PublishingAuthStatus>("publishing_auth_status");
+}
+
+export function beginPublishingAuth() {
+  return invoke<PublishingDeviceAuthorization>("publishing_auth_begin");
+}
+
+export function pollPublishingAuth(deviceCode: string) {
+  return invoke<PublishingAuthPollResult>("publishing_auth_poll", { deviceCode });
+}
+
+export function disconnectPublishingAuth() {
+  return invoke<PublishingAuthStatus>("publishing_auth_disconnect");
+}
+
+export function publishPublication(request: PublishPublicationRequest) {
+  return invoke<PublicationBinding>("publishing_publish", { request });
+}
+
+export function listPublications() {
+  return invoke<PublicationBinding[]>("publishing_list");
 }
 
 // The prompt library: reusable composer messages stored as markdown files, one

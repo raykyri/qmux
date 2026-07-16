@@ -1,11 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, ScrollText, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, ScrollText, Share2, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
 import {
   createResearchHighlight,
   getResearchNodeContent,
+  getResearchTree,
   listClaudeSkills,
   removeResearchHighlights,
 } from "../../lib/api";
@@ -43,6 +44,10 @@ import {
   timelineItemsAfterLastToolCall,
   timelineItemsContainTranscriptActivity,
 } from "../../lib/turnTimeline";
+import {
+  createResearchPublicationDraft,
+  researchNodeSnapshotMatches,
+} from "../../lib/publicationDrafts";
 import type { MessageBlock, MessageItem } from "../../lib/turnTimeline";
 import type {
   ResearchBranchRemoval,
@@ -55,6 +60,7 @@ import type {
 } from "../../types";
 import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
 import DomSearchBar from "../DomSearchBar";
+import type { PublishDialogTarget } from "../PublishDialog";
 import {
   RawTranscriptDisclosure,
   TranscriptActivityItem,
@@ -96,6 +102,7 @@ interface ResearchDocumentProps {
   defaultForkAdapterId?: string | null;
   onError: (message: string) => void;
   onToast: (message: string, tone?: "normal" | "warning") => void;
+  onPublish: (target: PublishDialogTarget) => void;
 }
 
 // The backend caps snapshots at 64MB, which is still far beyond what markdown
@@ -117,8 +124,8 @@ const OVERSIZED_MARKDOWN_POLICY = {
 
 const RESEARCH_SWIPE_IDLE_MS = 180;
 const FOLLOWUP_MENU_WIDTH = 190;
-const FOLLOWUP_MENU_HEIGHT = 38;
-const DOCUMENT_MENU_HEIGHT = 80;
+const FOLLOWUP_MENU_HEIGHT = 154;
+const DOCUMENT_MENU_HEIGHT = 196;
 const FOLLOWUP_MENU_MARGIN = 8;
 
 interface FollowupMenu {
@@ -392,6 +399,7 @@ export default function ResearchDocument({
   defaultForkAdapterId,
   onError,
   onToast,
+  onPublish,
 }: ResearchDocumentProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   // Browser-style visit history for the header's back/forward controls, reset
@@ -627,6 +635,55 @@ export default function ResearchDocument({
     }
     const rect = trigger.getBoundingClientRect();
     openFollowupMenu(nodeId, rect.right - FOLLOWUP_MENU_WIDTH, rect.bottom + 4);
+  }
+
+  function openResearchPublisher(mode: "answer" | "tree", node: ResearchNode) {
+    const detailSnapshot = detailRef.current;
+    if (!detailSnapshot) {
+      return;
+    }
+    const terminalNodes = detailSnapshot.nodes.filter((candidate) =>
+      isTerminalResearchStatus(candidate.status),
+    );
+    const nodes = mode === "answer" ? [node] : terminalNodes;
+    const preview =
+      mode === "answer"
+        ? content?.node.id === node.id
+          ? rawAnswer
+          : node.responsePreview?.trim() || researchNodeDisplayTitle(node, detailSnapshot)
+        : researchTreePreview(detailSnapshot, terminalNodes);
+    setFollowupMenu(null);
+    onPublish({
+      kindLabel: mode === "answer" ? "research answer" : "research tree",
+      initialTitle:
+        mode === "answer"
+          ? researchNodeDisplayTitle(node, detailSnapshot)
+          : detailSnapshot.tree.title,
+      previewText: preview,
+      buildDraft: async (title) => {
+        const contents = await mapWithConcurrency(nodes, 4, (candidate) =>
+          getResearchNodeContent(candidate.id),
+        );
+        const latestDetail = await getResearchTree(detailSnapshot.tree.id);
+        for (const expectedNode of nodes) {
+          const latestNode = latestDetail.nodes.find(
+            (candidate) => candidate.id === expectedNode.id,
+          );
+          if (!latestNode || !researchNodeSnapshotMatches(expectedNode, latestNode)) {
+            throw new Error(
+              "Research changed while preparing the publication. Review the latest results and publish again.",
+            );
+          }
+        }
+        return createResearchPublicationDraft({
+          title,
+          detail: detailSnapshot,
+          selectedNodeId: node.id,
+          mode,
+          contents,
+        });
+      },
+    });
   }
 
   async function confirmBranchRemoval() {
@@ -1909,6 +1966,47 @@ export default function ResearchDocument({
                   onContextMenu={(event) => event.preventDefault()}
                 >
                   <div className="group-context-actions">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="control-button"
+                      disabled={!isTerminalResearchStatus(node.status)}
+                      title={
+                        isTerminalResearchStatus(node.status)
+                          ? undefined
+                          : "This result must finish before it can be published"
+                      }
+                      onClick={() => openResearchPublisher("answer", node)}
+                    >
+                      <Share2 size={13} aria-hidden="true" />
+                      <span>Publish answer</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="control-button"
+                      disabled={
+                        !detail.nodes.some(
+                          (candidate) =>
+                            candidate.id === detail.tree.rootNodeId &&
+                            isTerminalResearchStatus(candidate.status),
+                        )
+                      }
+                      title={
+                        detail.nodes.some(
+                          (candidate) =>
+                            candidate.id === detail.tree.rootNodeId &&
+                            isTerminalResearchStatus(candidate.status),
+                        )
+                          ? undefined
+                          : "The root result must finish before publishing the tree"
+                      }
+                      onClick={() => openResearchPublisher("tree", node)}
+                    >
+                      <Share2 size={13} aria-hidden="true" />
+                      <span>Publish research</span>
+                    </button>
+                    <div className="context-menu-divider" role="separator" />
                     {rootNode && node.kind === "document" ? (
                       <>
                         <button className="control-button"
@@ -2101,4 +2199,56 @@ export default function ResearchDocument({
       </>
     </TranscriptLinkActionsProvider>
   );
+}
+
+function isTerminalResearchStatus(status: ResearchNode["status"]) {
+  return status === "complete" || status === "failed" || status === "cancelled";
+}
+
+function researchNodeDisplayTitle(node: ResearchNode, detail: ResearchTreeDetail) {
+  if (node.id === detail.tree.rootNodeId) {
+    return node.title?.trim() || detail.tree.title;
+  }
+  return (
+    node.title?.trim() ||
+    node.prompt.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ||
+    "Research follow-up"
+  );
+}
+
+function researchTreePreview(detail: ResearchTreeDetail, nodes: ResearchNode[]) {
+  const lines = [
+    detail.tree.title,
+    "",
+    `${nodes.length} published result${nodes.length === 1 ? "" : "s"}`,
+  ];
+  for (const node of nodes) {
+    lines.push(
+      `- ${researchNodeDisplayTitle(node, detail)}${
+        node.status === "complete" ? "" : ` (${node.status})`
+      }`,
+    );
+  }
+  return lines.join("\n");
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>,
+) {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), values.length) },
+    async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(values[index]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }

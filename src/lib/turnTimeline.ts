@@ -56,6 +56,13 @@ export interface ActivityGroupItem {
 export type ActivityLeafItem = ToolEntry | ThinkingItem;
 export type ActivityItem = ActivityLeafItem | ActivityGroupItem;
 
+export interface PlainTextTranscriptMessage {
+  id: string;
+  role: "user" | "assistant";
+  label: string;
+  text: string;
+}
+
 /** Original assistant text, before Markdown rendering, in timeline order. */
 export function assistantTextFromTimelineItems(items: MessageItem[]) {
   return items
@@ -68,6 +75,15 @@ export function assistantTextFromTimelineItems(items: MessageItem[]) {
 }
 
 export function formatPlainTextTranscript(turns: Turn[], assistantLabel: string) {
+  return plainTextTranscriptMessages(turns, assistantLabel)
+    .map((message) => `${message.label}:\n${message.text}`)
+    .join("\n\n");
+}
+
+export function plainTextTranscriptMessages(
+  turns: Turn[],
+  assistantLabel: string,
+): PlainTextTranscriptMessage[] {
   return buildTimelineItems(turns, false)
     .flatMap((item) => {
       if (item.role !== "user" && item.role !== "assistant") {
@@ -77,9 +93,15 @@ export function formatPlainTextTranscript(turns: Turn[], assistantLabel: string)
       if (!text) {
         return [];
       }
-      return [`${messageRoleLabel(item, assistantLabel)}:\n${text}`];
-    })
-    .join("\n\n");
+      return [
+        {
+          id: item.key,
+          role: item.role,
+          label: messageRoleLabel(item, assistantLabel),
+          text,
+        },
+      ];
+    });
 }
 
 function plainTextMessageItemText(item: MessageItem) {

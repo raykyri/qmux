@@ -242,6 +242,7 @@ interface NativeInputProps {
   hasTranscript: boolean;
   transcriptCopyPlainText: () => string;
   transcriptCopyJsonText: () => string;
+  onPublishTranscript: () => void;
   composerPolicy: ComposerPolicy;
   shortcutLabelForPane: (paneId?: string | null) => string | null;
   onQueueChange: (agentId: string, queuedTurns: QueuedTurn[]) => void;
@@ -283,6 +284,7 @@ export default function NativeInput({
   hasTranscript,
   transcriptCopyPlainText,
   transcriptCopyJsonText,
+  onPublishTranscript,
   composerPolicy,
   shortcutLabelForPane,
   onQueueChange,
@@ -1706,6 +1708,18 @@ export default function NativeInput({
                   }}
                 >
                   Copy transcript as JSON
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="menu-item composer-menu-item"
+                  disabled={!hasTranscript}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onPublishTranscript();
+                  }}
+                >
+                  Publish transcript…
                 </button>
                 {recentMessages.length > 0 ? (
                   <>
