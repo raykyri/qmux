@@ -31,6 +31,10 @@ export interface PublishedResearchNode {
   responseRevision: string | null;
   status: "complete" | "failed" | "cancelled";
   createdAt: number;
+  contribution?: {
+    githubLogin: string;
+    proposalCommentId: number;
+  } | null;
 }
 
 interface PublicationBase {
@@ -100,9 +104,36 @@ export interface PublicationBinding {
   isPublic: boolean;
   source: PublicationSource;
   publicNodeIds: Record<string, string>;
+  proposalStates: Record<string, PublicationProposalState>;
+  publicationCreatedAt?: string | null;
   warning?: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface PublicationProposalState {
+  proposalCommentId: number;
+  status: "accepted" | "declined";
+  authorLogin: string;
+  parentPublicNodeId: string;
+  prompt: string;
+  answerMarkdown?: string | null;
+  localNodeId?: string | null;
+  resolutionCommentId?: number | null;
+  publishedPublicNodeId?: string | null;
+}
+
+export interface PublicationProposal {
+  commentId: number;
+  authorLogin: string;
+  authorUrl: string;
+  parentPublicNodeId: string;
+  parentNodeId?: string | null;
+  prompt: string;
+  answerMarkdown?: string | null;
+  createdAt: string;
+  status: "pending" | "accepted" | "declined";
+  localNodeId?: string | null;
 }
 
 export interface PublishingAuthStatus {
@@ -125,6 +156,15 @@ export type PublishingAuthPollResult =
   | { status: "connected"; account: PublishingAuthStatus };
 
 export interface PublishPublicationRequest {
+  publicationId: string;
+  title: string;
+  isPublic: boolean;
+  files: Record<string, string>;
+  source: PublicationSource;
+  publicNodeIds: Record<string, string>;
+}
+
+export interface SyncPublicationRequest {
   publicationId: string;
   title: string;
   isPublic: boolean;
@@ -307,6 +347,13 @@ export function validatePublication(value: unknown): Publication {
     if (responseRevision && !SHA256_PATTERN.test(responseRevision)) {
       throw new Error(`research.nodes[${index}].responseRevision is invalid`);
     }
+    const contribution =
+      item.contribution === null || item.contribution === undefined
+        ? null
+        : publishedContribution(
+            item.contribution,
+            `research.nodes[${index}].contribution`,
+          );
     return {
       id: publicNodeId(item.id, `research.nodes[${index}].id`),
       parentId:
@@ -325,6 +372,7 @@ export function validatePublication(value: unknown): Publication {
       responseRevision,
       status,
       createdAt: finiteNumber(item.createdAt, `research.nodes[${index}].createdAt`),
+      ...(contribution ? { contribution } : {}),
     };
   });
   const ids = new Set(nodes.map((node) => node.id));
@@ -350,6 +398,23 @@ export function validatePublication(value: unknown): Publication {
       nodes,
     },
   };
+}
+
+function publishedContribution(value: unknown, label: string) {
+  const item = objectValue(value, label);
+  const githubLogin = boundedString(item.githubLogin, `${label}.githubLogin`, 39);
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(githubLogin)) {
+    throw new Error(`${label}.githubLogin is invalid`);
+  }
+  const proposalCommentId = item.proposalCommentId;
+  if (
+    typeof proposalCommentId !== "number" ||
+    !Number.isSafeInteger(proposalCommentId) ||
+    proposalCommentId <= 0
+  ) {
+    throw new Error(`${label}.proposalCommentId is invalid`);
+  }
+  return { githubLogin, proposalCommentId };
 }
 
 export function validatePublicationFiles(files: Record<string, string>) {

@@ -124,6 +124,7 @@ import {
 } from "./lib/threadGraph";
 import { formatPlainTextTranscript } from "./lib/turnTimeline";
 import { createTranscriptPublicationDraft } from "./lib/publicationDrafts";
+import type { PublicationBinding } from "./lib/publication";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
@@ -278,6 +279,7 @@ import {
   listThreadGraphs,
   listTurns,
   listPanes,
+  listPublications,
   listResearchActivity,
   listResearchTrees,
   getResearchTree,
@@ -1518,6 +1520,7 @@ export default function App() {
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
   const [newDocumentInitialMarkdown, setNewDocumentInitialMarkdown] = useState("");
   const [publicationTarget, setPublicationTarget] = useState<PublishDialogTarget | null>(null);
+  const [publicationBindings, setPublicationBindings] = useState<PublicationBinding[]>([]);
   const [markdownDropTargetActive, setMarkdownDropTargetActive] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const markdownImportRequestSeqRef = useRef(0);
@@ -4574,6 +4577,7 @@ export default function App() {
           existingAgents,
           existingResearchTrees,
           existingResearchActivity,
+          existingPublications,
         ] = await Promise.all([
           getRuntimeConfig(),
           getLauncherAdapterPreference().catch(() => null),
@@ -4584,6 +4588,7 @@ export default function App() {
           listAgents(),
           listResearchTrees(true).catch((): ResearchTreeSummary[] => []),
           listResearchActivity().catch((): ResearchNode[] => []),
+          listPublications().catch((): PublicationBinding[] => []),
         ]);
         if (cancelled) {
           return;
@@ -4603,6 +4608,7 @@ export default function App() {
         setResearchTrees(partitionedResearchTrees.active);
         setArchivedResearchTrees(partitionedResearchTrees.archived);
         setResearchActivity(existingResearchActivity);
+        setPublicationBindings(existingPublications);
         void hydrateSecondaryFast(existingAgents);
         void hydrateSecondaryHeavy();
         const savedResearchTreeId = localStorage.getItem(ACTIVE_RESEARCH_TREE_KEY);
@@ -5834,8 +5840,19 @@ export default function App() {
     [removeResearchTreeAndSelectFallback],
   );
   const createResearchFollowup = useCallback(
-    async (parentNodeId: string, prompt: string) => {
-      const node = await forkResearchNode(parentNodeId, prompt);
+    async (
+      parentNodeId: string,
+      prompt: string,
+      publicationProposal?: {
+        publicationId: string;
+        commentId: number;
+      } | null,
+    ) => {
+      const node = await forkResearchNode(
+        parentNodeId,
+        prompt,
+        publicationProposal,
+      );
       void applyGeneratedResearchNodeTitle(node.id, prompt);
       void refreshResearchNavigation().catch(() => undefined);
       const treeId = activeResearchTreeIdRef.current;
@@ -11379,6 +11396,22 @@ export default function App() {
               onError={setError}
               onToast={showAppToast}
               onPublish={setPublicationTarget}
+              publicationBinding={
+                publicationBindings.find(
+                  (binding) =>
+                    binding.source.kind === "researchTree" &&
+                    binding.source.treeId === activeResearchTreeId,
+                ) ?? null
+              }
+              onPublicationBindingChange={(binding) => {
+                setPublicationBindings((current) => [
+                  binding,
+                  ...current.filter(
+                    (candidate) =>
+                      candidate.publicationId !== binding.publicationId,
+                  ),
+                ]);
+              }}
             />
           ) : null}
           {researchSurfaceActive && !activeResearchTreeId ? (
@@ -11665,10 +11698,20 @@ export default function App() {
         target={publicationTarget}
         onClose={() => setPublicationTarget(null)}
         onPublished={(binding) => {
+          setPublicationBindings((current) => [
+            binding,
+            ...current.filter(
+              (candidate) => candidate.publicationId !== binding.publicationId,
+            ),
+          ]);
           if (binding.warning) {
             showAppToast(binding.warning, "warning");
           } else {
-            showAppToast(`Published to ${binding.shareUrl}`);
+            showAppToast(
+              publicationTarget?.binding
+                ? `Updated ${binding.shareUrl}`
+                : `Published to ${binding.shareUrl}`,
+            );
           }
         }}
       />

@@ -166,6 +166,10 @@ export interface ResearchNode {
   id: string;
   treeId: string;
   parentNodeId?: string | null;
+  publicationProposal?: {
+    publicationId: string;
+    commentId: number;
+  } | null;
   prompt: string;
   /** Short generated title for breadcrumbs and menus; the document body still
    * shows the full prompt. */

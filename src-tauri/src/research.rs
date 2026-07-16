@@ -120,6 +120,8 @@ pub struct ResearchNode {
     pub tree_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_proposal: Option<ResearchPublicationProposal>,
     pub prompt: String,
     /// Short generated title for breadcrumbs and menus. The full prompt stays
     /// the document's displayed user query.
@@ -166,6 +168,13 @@ pub struct ResearchNode {
     pub completed_at: Option<u128>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub highlights: Vec<ResearchHighlight>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchPublicationProposal {
+    pub publication_id: String,
+    pub comment_id: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1432,6 +1441,7 @@ mod tests {
             id: "research-node-1".to_string(),
             tree_id: tree.id.clone(),
             parent_node_id: None,
+            publication_proposal: None,
             prompt: "Question".to_string(),
             title: None,
             response_preview: Some("Answer".to_string()),

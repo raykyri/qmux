@@ -1072,6 +1072,124 @@
   gap: 20px;
 }
 
+.research-publication-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--surface-border-subtle);
+}
+
+.research-publication-proposals-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.research-publication-proposals-heading h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-subtle);
+  font-size: var(--research-meta-font-size);
+  font-weight: 650;
+}
+
+.research-publication-proposals-heading button {
+  display: inline-flex;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.research-publication-proposal {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 0 0;
+  border-top: 1px solid var(--surface-border-subtle);
+}
+
+.research-publication-proposal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: calc(var(--research-meta-font-size) - 1px);
+  text-transform: capitalize;
+}
+
+.research-publication-proposal header strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.research-publication-proposal header span.is-accepted {
+  color: var(--status-success-fg);
+}
+
+.research-publication-proposal header span.is-declined,
+.research-publication-proposal-error {
+  color: var(--status-failed-fg);
+}
+
+.research-publication-proposal .turn-markdown {
+  color: var(--text-interactive);
+  font-size: var(--research-meta-font-size);
+  line-height: 1.45;
+}
+
+.research-publication-proposal details {
+  color: var(--text-faint);
+  font-size: calc(var(--research-meta-font-size) - 1px);
+}
+
+.research-publication-proposal details summary {
+  cursor: pointer;
+}
+
+.research-publication-proposal details .turn-markdown {
+  margin-top: 8px;
+}
+
+.research-publication-proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.research-publication-proposal-actions button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: calc(var(--research-meta-font-size) - 1px);
+}
+
+.research-publication-proposal-result {
+  align-self: flex-start;
+  padding: 3px 8px;
+  font-size: calc(var(--research-meta-font-size) - 1px);
+}
+
+.research-publication-proposal-error {
+  margin: 0;
+  font-size: calc(var(--research-meta-font-size) - 1px);
+  line-height: 1.4;
+}
+
 /* Rendered as plain link blocks rather than cards: no border, background, or
    other card affordances. */
 .research-followup-card {

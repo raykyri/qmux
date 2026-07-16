@@ -28,7 +28,17 @@
 }
 
 .publication-dialog-footer {
+  justify-content: flex-end;
   border-top: 1px solid var(--surface-divider);
+}
+
+.publication-dialog .icon-button {
+  width: 26px;
+  height: 26px;
+}
+
+.publication-dialog .icon-button:hover:not(:disabled) {
+  background: var(--control-bg-hover);
 }
 
 .publication-dialog-kicker {
@@ -247,14 +257,6 @@
   line-height: 1.45;
 }
 
-.publication-destination {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
-}
-
 .publication-dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -298,6 +300,7 @@
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns:minmax(0, 1fr) auto auto;
+  align-items: center;
   gap: 7px;
 }
 

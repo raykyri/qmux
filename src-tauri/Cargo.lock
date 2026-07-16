@@ -2947,6 +2947,7 @@ checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
 name = "qmux"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs",
  "getrandom 0.2.17",
  "keyring",
@@ -2955,6 +2956,7 @@ dependencies = [
  "portable-pty",
  "pulldown-cmark",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

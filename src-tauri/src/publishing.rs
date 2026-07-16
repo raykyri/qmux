@@ -1,4 +1,5 @@
 use crate::{persistence, state::AppState};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +25,13 @@ const PUBLICATION_README_FILE: &str = "README.md";
 const MAX_PUBLICATION_FILES: usize = 250;
 const MAX_PUBLICATION_FILE_BYTES: usize = 10_000_000;
 const MAX_PUBLICATION_TOTAL_BYTES: usize = 12_000_000;
+const MAX_GIST_COMMENTS: usize = 300;
+const MAX_GITHUB_COMMENTS_RESPONSE_BYTES: usize = 5_000_000;
+const MAX_PROPOSAL_PROMPT_CHARACTERS: usize = 10_000;
+const MAX_PROPOSAL_ANSWER_CHARACTERS: usize = 40_000;
+const PROPOSAL_MARKER_PREFIX: &str = "<!-- qmux-proposal:v1 ";
+const PROPOSAL_RESOLUTION_MARKER_PREFIX: &str = "<!-- qmux-proposal-resolution:v1 ";
+const COMMENT_MARKER_SUFFIX: &str = " -->";
 
 static PUBLICATIONS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -60,7 +68,7 @@ pub enum PublishingAuthPollResult {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicationSource {
     kind: String,
@@ -71,6 +79,18 @@ pub struct PublicationSource {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishPublicationRequest {
+    publication_id: String,
+    title: String,
+    is_public: bool,
+    files: BTreeMap<String, String>,
+    source: PublicationSource,
+    #[serde(default)]
+    public_node_ids: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPublicationRequest {
     publication_id: String,
     title: String,
     is_public: bool,
@@ -95,10 +115,60 @@ pub struct PublicationBinding {
     source: PublicationSource,
     #[serde(default)]
     public_node_ids: BTreeMap<String, String>,
+    #[serde(default)]
+    proposal_states: BTreeMap<String, PublicationProposalState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_created_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
     created_at: u64,
     updated_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationProposalState {
+    proposal_comment_id: u64,
+    status: String,
+    author_login: String,
+    parent_public_node_id: String,
+    prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answer_markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution_comment_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    published_public_node_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationProposal {
+    comment_id: u64,
+    author_login: String,
+    author_url: String,
+    parent_public_node_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_node_id: Option<String>,
+    prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    answer_markdown: Option<String>,
+    created_at: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_node_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePublicationProposalRequest {
+    publication_id: String,
+    proposal_comment_id: u64,
+    status: String,
+    #[serde(default)]
+    local_node_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -153,6 +223,11 @@ struct GitHubGist {
     id: String,
     html_url: String,
     #[serde(default)]
+    description: Option<String>,
+    public: bool,
+    #[serde(default)]
+    files: BTreeMap<String, GitHubGistFile>,
+    #[serde(default)]
     owner: Option<GitHubUser>,
     #[serde(default)]
     history: Vec<GitHubGistRevision>,
@@ -161,6 +236,60 @@ struct GitHubGist {
 #[derive(Debug, Deserialize)]
 struct GitHubGistRevision {
     version: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubGistComment {
+    id: u64,
+    body: String,
+    created_at: String,
+    #[serde(default)]
+    user: Option<GitHubCommentUser>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubCommentUser {
+    login: String,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResearchProposalPayload {
+    publication_id: String,
+    parent_node_id: String,
+    prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answer_markdown: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProposalResolutionPayload {
+    publication_id: String,
+    proposal_comment_id: u64,
+    proposal_digest: String,
+    status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_node_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubGistFile {
+    #[serde(default)]
+    size: usize,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    raw_url: Option<String>,
+}
+
+struct RemoteGist {
+    gist: GitHubGist,
+    etag: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -173,6 +302,18 @@ struct CreateGistRequest<'a> {
 #[derive(Serialize)]
 struct CreateGistFile<'a> {
     content: &'a str,
+}
+
+#[derive(Serialize)]
+struct UpdateGistRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    files: BTreeMap<String, Option<UpdateGistFile>>,
+}
+
+#[derive(Serialize)]
+struct UpdateGistFile {
+    content: String,
 }
 
 #[tauri::command]
@@ -344,8 +485,17 @@ pub async fn publishing_publish(
     if !status.is_success() {
         return Err(github_response_error("publish Gist", status, &body));
     }
-    let gist: GitHubGist = serde_json::from_str(&body)
+    let mut gist: GitHubGist = serde_json::from_str(&body)
         .map_err(|error| format!("invalid GitHub Gist response: {error}"))?;
+    // The Gist now exists; a missing revision only weakens the next sync's
+    // external-edit check, so recover it best-effort instead of failing the
+    // publish and losing the local binding.
+    if gist.history.is_empty()
+        && let Ok(remote) = fetch_gist(&client, &token.access_token, &gist.id).await
+    {
+        gist = remote.gist;
+    }
+    let revision = latest_gist_revision(&gist);
     let now = now_millis();
     let mut binding = PublicationBinding {
         publication_id: request.publication_id,
@@ -353,13 +503,12 @@ pub async fn publishing_publish(
         gist_url: gist.html_url,
         share_url: format!("{}/p/{}", share_base_url(), gist.id),
         owner_login: gist.owner.map(|owner| owner.login).or(token.login),
-        revision: gist
-            .history
-            .first()
-            .map(|revision| revision.version.clone()),
+        revision,
         is_public: request.is_public,
         source: request.source,
         public_node_ids: request.public_node_ids,
+        proposal_states: BTreeMap::new(),
+        publication_created_at: publication_created_at(&request.files),
         warning: None,
         created_at: now,
         updated_at: now,
@@ -372,11 +521,384 @@ pub async fn publishing_publish(
     Ok(binding)
 }
 
+#[tauri::command]
+pub async fn publishing_sync(
+    state: tauri::State<'_, AppState>,
+    mut request: SyncPublicationRequest,
+) -> Result<PublicationBinding, String> {
+    validate_sync_request(&request)?;
+    let workspace_root = state.config().workspace_root.clone();
+    let existing = publication_binding(&workspace_root, &request.publication_id)?
+        .ok_or_else(|| "This publication is no longer linked to a local Gist.".to_string())?;
+    if existing.source != request.source {
+        return Err("The publication source does not match its saved Gist binding.".to_string());
+    }
+    if existing.is_public != request.is_public {
+        return Err("A Gist's visibility cannot be changed while syncing.".to_string());
+    }
+
+    let token = github_access_token()?
+        .ok_or_else(|| "Connect a GitHub account before syncing this publication.".to_string())?;
+    let client = http_client()?;
+    let remote = fetch_gist(&client, &token.access_token, &existing.gist_id).await?;
+    let account = fetch_github_user(&client, &token.access_token).await?;
+    let owner = remote
+        .gist
+        .owner
+        .as_ref()
+        .map(|owner| owner.login.as_str())
+        .ok_or_else(|| "GitHub did not identify the owner of this Gist.".to_string())?;
+    if owner != account.login {
+        return Err(format!(
+            "The connected GitHub account @{account} does not own this Gist.",
+            account = account.login
+        ));
+    }
+    if remote.gist.public != existing.is_public {
+        return Err("The Gist visibility no longer matches the saved publication.".to_string());
+    }
+    // GitHub occasionally omits the revision history; skip the external-edit
+    // check in that case rather than blocking the sync.
+    let current_revision = latest_gist_revision(&remote.gist);
+    if existing
+        .revision
+        .as_deref()
+        .zip(current_revision.as_deref())
+        .is_some_and(|(saved, current)| saved != current)
+    {
+        return Err(
+            "The Gist changed outside qmux after its last sync. Review the Gist before updating it."
+                .to_string(),
+        );
+    }
+
+    let current_index_file = remote
+        .gist
+        .files
+        .get(PUBLICATION_INDEX_FILE)
+        .ok_or_else(|| format!("The linked Gist no longer contains {PUBLICATION_INDEX_FILE}."))?;
+    let current_index =
+        load_gist_file_content(&client, current_index_file, PUBLICATION_INDEX_FILE).await?;
+    validate_remote_publication_identity(&current_index, &request.publication_id, &request.source)?;
+    preserve_remote_created_at(&mut request.files, &current_index)?;
+    validate_sync_request(&request)?;
+    let desired_description = format!("{} — published with qmux", request.title.trim());
+    let files =
+        build_gist_update_files(&client, &remote.gist, &current_index, &request.files).await?;
+
+    let mut gist = if files.is_empty()
+        && remote.gist.description.as_deref() == Some(desired_description.as_str())
+    {
+        remote.gist
+    } else {
+        let payload = UpdateGistRequest {
+            description: (remote.gist.description.as_deref() != Some(desired_description.as_str()))
+                .then_some(desired_description),
+            files,
+        };
+        let mut builder = client
+            .patch(format!("{GITHUB_API_BASE}/gists/{}", existing.gist_id))
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {}", token.access_token))
+            .header("User-Agent", GITHUB_USER_AGENT)
+            .header("X-GitHub-Api-Version", GITHUB_API_VERSION);
+        if let Some(etag) = remote.etag.as_deref() {
+            builder = builder.header("If-Match", etag);
+        }
+        let response = builder
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|error| github_request_error("sync Gist", error))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| format!("failed to read GitHub Gist sync response: {error}"))?;
+        if status == StatusCode::PRECONDITION_FAILED {
+            return Err(
+                "The Gist changed while qmux was preparing the update. Review it and try again."
+                    .to_string(),
+            );
+        }
+        if !status.is_success() {
+            return Err(github_response_error("sync Gist", status, &body));
+        }
+        serde_json::from_str(&body)
+            .map_err(|error| format!("invalid GitHub Gist sync response: {error}"))?
+    };
+    // The Gist update already landed; recover a missing revision best-effort
+    // instead of failing the sync after the fact.
+    if gist.history.is_empty()
+        && let Ok(remote) = fetch_gist(&client, &token.access_token, &gist.id).await
+    {
+        gist = remote.gist;
+    }
+    let revision = latest_gist_revision(&gist);
+    let publication_id = existing.publication_id.clone();
+    let mut proposal_states = existing.proposal_states;
+    let mut warning = sync_published_proposal_links(
+        &client,
+        &token.access_token,
+        &gist.id,
+        &publication_id,
+        &request.public_node_ids,
+        &mut proposal_states,
+    )
+    .await
+    .err()
+    .map(|error| {
+        format!(
+            "The publication was updated, but qmux could not link every accepted proposal to its published result: {error}"
+        )
+    });
+
+    let now = now_millis();
+    let mut binding = PublicationBinding {
+        publication_id,
+        gist_id: gist.id.clone(),
+        gist_url: gist.html_url,
+        share_url: format!("{}/p/{}", share_base_url(), gist.id),
+        owner_login: gist.owner.map(|owner| owner.login).or(Some(account.login)),
+        revision,
+        is_public: existing.is_public,
+        source: request.source,
+        public_node_ids: request.public_node_ids,
+        proposal_states,
+        publication_created_at: publication_created_at(&request.files),
+        warning: warning.clone(),
+        created_at: existing.created_at,
+        updated_at: now,
+    };
+    if let Err(error) = upsert_publication_binding(&workspace_root, &binding) {
+        append_warning(
+            &mut warning,
+            format!(
+                "The Gist was updated, but qmux could not save its local publication binding: {error}"
+            ),
+        );
+        binding.warning = warning;
+    }
+    Ok(binding)
+}
+
 #[tauri::command(async)]
 pub fn publishing_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<PublicationBinding>, String> {
     Ok(load_publication_store(&state.config().workspace_root)?.bindings)
+}
+
+#[tauri::command]
+pub async fn publishing_list_proposals(
+    state: tauri::State<'_, AppState>,
+    publication_id: String,
+) -> Result<Vec<PublicationProposal>, String> {
+    if !valid_public_identifier(&publication_id) {
+        return Err("publicationId has an invalid format.".to_string());
+    }
+    let workspace_root = state.config().workspace_root.clone();
+    let mut binding = publication_binding(&workspace_root, &publication_id)?
+        .ok_or_else(|| "This publication is no longer linked to a local Gist.".to_string())?;
+    let tree_id = ensure_research_tree_binding(&binding)?;
+    let token = github_access_token()?
+        .ok_or_else(|| "Connect the GitHub account that owns this publication.".to_string())?;
+    let client = http_client()?;
+    let remote = fetch_gist(&client, &token.access_token, &binding.gist_id).await?;
+    let account = fetch_github_user(&client, &token.access_token).await?;
+    ensure_gist_owner(&remote.gist, &account.login)?;
+    let comments = fetch_gist_comments(&client, &token.access_token, &binding.gist_id).await?;
+    let mut changed = reconcile_proposal_node_states(
+        state.inner(),
+        &mut binding,
+        &tree_id,
+        &remote.gist,
+        &comments,
+    )?;
+    changed |= reconcile_proposal_resolution_states(&mut binding, &remote.gist, &comments);
+    if changed {
+        binding.updated_at = now_millis();
+        upsert_publication_binding(&workspace_root, &binding)?;
+    }
+    Ok(collect_publication_proposals(
+        &binding,
+        &remote.gist,
+        &comments,
+    ))
+}
+
+#[tauri::command]
+pub async fn publishing_resolve_proposal(
+    state: tauri::State<'_, AppState>,
+    request: ResolvePublicationProposalRequest,
+) -> Result<PublicationBinding, String> {
+    if !valid_public_identifier(&request.publication_id) || request.proposal_comment_id == 0 {
+        return Err("The publication proposal identifier is invalid.".to_string());
+    }
+    if request.status != "accepted" && request.status != "declined" {
+        return Err("A proposal can only be accepted or declined.".to_string());
+    }
+    let workspace_root = state.config().workspace_root.clone();
+    let mut binding = publication_binding(&workspace_root, &request.publication_id)?
+        .ok_or_else(|| "This publication is no longer linked to a local Gist.".to_string())?;
+    let tree_id = ensure_research_tree_binding(&binding)?;
+    let token = github_access_token()?
+        .ok_or_else(|| "Connect the GitHub account that owns this publication.".to_string())?;
+    let client = http_client()?;
+    let remote = fetch_gist(&client, &token.access_token, &binding.gist_id).await?;
+    let account = fetch_github_user(&client, &token.access_token).await?;
+    ensure_gist_owner(&remote.gist, &account.login)?;
+    let comments = fetch_gist_comments(&client, &token.access_token, &binding.gist_id).await?;
+    let proposal_comment = comments
+        .iter()
+        .find(|comment| comment.id == request.proposal_comment_id)
+        .ok_or_else(|| "The proposal comment was not found on GitHub.".to_string())?;
+    let proposal = parse_research_proposal(&proposal_comment.body)
+        .ok_or_else(|| "The GitHub comment is not a valid qmux research proposal.".to_string())?;
+    if proposal.publication_id != request.publication_id {
+        return Err("The proposal belongs to a different publication.".to_string());
+    }
+    let author_login = proposal_comment
+        .user
+        .as_ref()
+        .map(|user| user.login.clone())
+        .filter(|login| valid_github_login(login))
+        .ok_or_else(|| "GitHub did not identify the proposal author.".to_string())?;
+    let parent_node_id = binding
+        .public_node_ids
+        .iter()
+        .find_map(|(private_id, public_id)| {
+            (public_id == &proposal.parent_node_id).then(|| private_id.clone())
+        })
+        .ok_or_else(|| {
+            "The proposal targets a research result that is no longer linked.".to_string()
+        })?;
+    let proposal_digest = research_proposal_digest(&proposal)?;
+    let saved_state = binding
+        .proposal_states
+        .get(&request.proposal_comment_id.to_string())
+        .filter(|state| {
+            proposal_state_matches(state, request.proposal_comment_id, &author_login, &proposal)
+        })
+        .cloned();
+
+    let local_node_id = if request.status == "accepted" {
+        let local_node_id = request
+            .local_node_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                "Accepting a proposal requires the created research node.".to_string()
+            })?;
+        let local_node = state.research_node(local_node_id)?;
+        if local_node.tree_id != tree_id
+            || local_node.parent_node_id.as_deref() != Some(parent_node_id.as_str())
+            || local_node.prompt != proposal.prompt
+            || !local_node
+                .publication_proposal
+                .as_ref()
+                .is_some_and(|reference| {
+                    reference.publication_id == request.publication_id
+                        && reference.comment_id == request.proposal_comment_id
+                })
+        {
+            return Err("The accepted research node does not match this proposal.".to_string());
+        }
+        if saved_state
+            .as_ref()
+            .and_then(|saved| saved.local_node_id.as_deref())
+            .is_some_and(|saved_id| saved_id != local_node.id)
+        {
+            return Err(
+                "This proposal is already linked to a different local research node.".to_string(),
+            );
+        }
+        Some(local_node.id)
+    } else {
+        if request.local_node_id.is_some() {
+            return Err("Declined proposals cannot reference a local research node.".to_string());
+        }
+        if saved_state
+            .as_ref()
+            .is_some_and(|saved| saved.local_node_id.is_some())
+        {
+            return Err(
+                "This proposal already created a local result; finish accepting it instead."
+                    .to_string(),
+            );
+        }
+        None
+    };
+
+    let existing_resolution = comments
+        .iter()
+        .filter_map(|comment| {
+            let resolution = parse_proposal_resolution(&comment.body)?;
+            let user = comment.user.as_ref()?;
+            (user.login == account.login
+                && resolution.publication_id == request.publication_id
+                && resolution.proposal_comment_id == request.proposal_comment_id
+                && resolution.proposal_digest == proposal_digest)
+                .then_some((comment.id, resolution))
+        })
+        .max_by_key(|(comment_id, _)| *comment_id);
+    if let Some((_, resolution)) = existing_resolution.as_ref()
+        && resolution.status != request.status
+    {
+        return Err("This proposal already has a different owner resolution.".to_string());
+    }
+    let existing_resolution_comment_id = existing_resolution
+        .as_ref()
+        .map(|(comment_id, _)| *comment_id);
+    let mut proposal_state = PublicationProposalState {
+        proposal_comment_id: request.proposal_comment_id,
+        status: request.status.clone(),
+        author_login,
+        parent_public_node_id: proposal.parent_node_id,
+        prompt: proposal.prompt,
+        answer_markdown: proposal.answer_markdown,
+        local_node_id,
+        resolution_comment_id: existing_resolution_comment_id,
+        published_public_node_id: saved_state.and_then(|saved| {
+            (existing_resolution_comment_id.is_some()
+                && saved.status == request.status
+                && saved.resolution_comment_id == existing_resolution_comment_id)
+                .then_some(saved.published_public_node_id)
+                .flatten()
+        }),
+    };
+    if request.status == "accepted" && existing_resolution_comment_id.is_none() {
+        binding.proposal_states.insert(
+            request.proposal_comment_id.to_string(),
+            proposal_state.clone(),
+        );
+        binding.updated_at = now_millis();
+        upsert_publication_binding(&workspace_root, &binding)?;
+    }
+    let resolution_comment_id = if let Some(comment_id) = existing_resolution_comment_id {
+        comment_id
+    } else {
+        let body = encode_proposal_resolution(&ProposalResolutionPayload {
+            publication_id: request.publication_id.clone(),
+            proposal_comment_id: request.proposal_comment_id,
+            proposal_digest,
+            status: request.status.clone(),
+            public_node_id: None,
+        })?;
+        create_gist_comment(&client, &token.access_token, &binding.gist_id, &body).await?
+    };
+    proposal_state.resolution_comment_id = Some(resolution_comment_id);
+    binding
+        .proposal_states
+        .insert(request.proposal_comment_id.to_string(), proposal_state);
+    binding.warning = None;
+    binding.updated_at = now_millis();
+    if let Err(error) = upsert_publication_binding(&workspace_root, &binding) {
+        binding.warning = Some(format!(
+            "GitHub recorded the proposal resolution, but qmux could not finish saving its local mapping: {error}"
+        ));
+    }
+    Ok(binding)
 }
 
 fn auth_status() -> Result<PublishingAuthStatus, String> {
@@ -490,6 +1012,7 @@ fn has_gist_scope(scope: Option<&str>) -> bool {
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
+    crate::ensure_rustls_crypto_provider()?;
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -518,6 +1041,980 @@ async fn fetch_github_user(
         return Err(github_response_error("load GitHub account", status, &body));
     }
     serde_json::from_str(&body).map_err(|error| format!("invalid GitHub account response: {error}"))
+}
+
+async fn fetch_gist(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+) -> Result<RemoteGist, String> {
+    let response = client
+        .get(format!("{GITHUB_API_BASE}/gists/{gist_id}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .send()
+        .await
+        .map_err(|error| github_request_error("load linked Gist", error))?;
+    let status = response.status();
+    let etag = response
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("failed to read linked GitHub Gist response: {error}"))?;
+    if !status.is_success() {
+        return Err(github_response_error("load linked Gist", status, &body));
+    }
+    let gist = serde_json::from_str(&body)
+        .map_err(|error| format!("invalid linked GitHub Gist response: {error}"))?;
+    Ok(RemoteGist { gist, etag })
+}
+
+fn ensure_research_tree_binding(binding: &PublicationBinding) -> Result<String, String> {
+    if binding.source.kind != "researchTree" {
+        return Err("Only published research trees accept contributed follow-ups.".to_string());
+    }
+    binding
+        .source
+        .detail
+        .get("treeId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "The publication is missing its local research tree binding.".to_string())
+}
+
+fn ensure_gist_owner(gist: &GitHubGist, login: &str) -> Result<(), String> {
+    let owner = gist
+        .owner
+        .as_ref()
+        .map(|owner| owner.login.as_str())
+        .ok_or_else(|| "GitHub did not identify the owner of this Gist.".to_string())?;
+    if owner == login {
+        Ok(())
+    } else {
+        Err(format!(
+            "The connected GitHub account @{login} does not own this Gist."
+        ))
+    }
+}
+
+async fn fetch_gist_comments(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+) -> Result<Vec<GitHubGistComment>, String> {
+    let max_pages = MAX_GIST_COMMENTS.div_ceil(100);
+    let (first_page, last_page) =
+        fetch_gist_comments_page(client, access_token, gist_id, 1).await?;
+    let page_numbers = if let Some(last_page) = last_page {
+        let first = last_page.saturating_sub(max_pages - 1).max(1);
+        (first..=last_page).collect::<Vec<_>>()
+    } else {
+        (1..=max_pages).collect::<Vec<_>>()
+    };
+    let mut comments = Vec::new();
+    for page in page_numbers {
+        let mut page_comments = if page == 1 {
+            first_page.clone()
+        } else {
+            fetch_gist_comments_page(client, access_token, gist_id, page)
+                .await?
+                .0
+        };
+        let page_len = page_comments.len();
+        comments.append(&mut page_comments);
+        if (last_page.is_none() && page_len < 100) || comments.len() >= MAX_GIST_COMMENTS {
+            break;
+        }
+    }
+    comments.truncate(MAX_GIST_COMMENTS);
+    Ok(comments)
+}
+
+async fn fetch_gist_comments_page(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+    page: usize,
+) -> Result<(Vec<GitHubGistComment>, Option<usize>), String> {
+    let response = client
+        .get(format!(
+            "{GITHUB_API_BASE}/gists/{gist_id}/comments?per_page=100&page={page}"
+        ))
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .send()
+        .await
+        .map_err(|error| github_request_error("load Gist comments", error))?;
+    let status = response.status();
+    let last_page = response
+        .headers()
+        .get("link")
+        .and_then(|value| value.to_str().ok())
+        .and_then(github_last_page);
+    let body = read_reqwest_text_limited(
+        response,
+        MAX_GITHUB_COMMENTS_RESPONSE_BYTES,
+        "GitHub comments response",
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(github_response_error("load Gist comments", status, &body));
+    }
+    let comments = serde_json::from_str(&body)
+        .map_err(|error| format!("invalid GitHub comments response: {error}"))?;
+    Ok((comments, last_page))
+}
+
+fn github_last_page(link: &str) -> Option<usize> {
+    link.split(',').find_map(|segment| {
+        let mut parts = segment.split(';');
+        let target = parts.next()?.trim();
+        if !parts.any(|value| value.trim() == r#"rel="last""#) {
+            return None;
+        }
+        let url = target.strip_prefix('<')?.strip_suffix('>')?;
+        reqwest::Url::parse(url)
+            .ok()?
+            .query_pairs()
+            .find_map(|(key, value)| (key == "page").then(|| value.parse().ok()).flatten())
+            .filter(|page| *page > 0)
+    })
+}
+
+async fn create_gist_comment(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+    body: &str,
+) -> Result<u64, String> {
+    let response = client
+        .post(format!("{GITHUB_API_BASE}/gists/{gist_id}/comments"))
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .json(&serde_json::json!({ "body": body }))
+        .send()
+        .await
+        .map_err(|error| github_request_error("resolve Gist proposal", error))?;
+    let status = response.status();
+    let response_body = read_reqwest_text_limited(
+        response,
+        MAX_GITHUB_COMMENTS_RESPONSE_BYTES,
+        "GitHub comment response",
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(github_response_error(
+            "resolve Gist proposal",
+            status,
+            &response_body,
+        ));
+    }
+    let comment: GitHubGistComment = serde_json::from_str(&response_body)
+        .map_err(|error| format!("invalid GitHub comment response: {error}"))?;
+    if comment.id == 0 {
+        return Err("GitHub returned an invalid proposal resolution comment.".to_string());
+    }
+    Ok(comment.id)
+}
+
+async fn update_gist_comment(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+    comment_id: u64,
+    body: &str,
+) -> Result<(), String> {
+    let response = client
+        .patch(format!(
+            "{GITHUB_API_BASE}/gists/{gist_id}/comments/{comment_id}"
+        ))
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .json(&serde_json::json!({ "body": body }))
+        .send()
+        .await
+        .map_err(|error| github_request_error("link resolved Gist proposal", error))?;
+    let status = response.status();
+    let response_body = read_reqwest_text_limited(
+        response,
+        MAX_GITHUB_COMMENTS_RESPONSE_BYTES,
+        "GitHub comment response",
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(github_response_error(
+            "link resolved Gist proposal",
+            status,
+            &response_body,
+        ));
+    }
+    Ok(())
+}
+
+async fn sync_published_proposal_links(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+    publication_id: &str,
+    public_node_ids: &BTreeMap<String, String>,
+    proposal_states: &mut BTreeMap<String, PublicationProposalState>,
+) -> Result<(), String> {
+    for state in proposal_states.values_mut() {
+        if state.status != "accepted" {
+            continue;
+        }
+        let Some(local_node_id) = state.local_node_id.as_deref() else {
+            continue;
+        };
+        let Some(resolution_comment_id) = state.resolution_comment_id else {
+            continue;
+        };
+        let Some(public_node_id) = public_node_ids.get(local_node_id) else {
+            continue;
+        };
+        if state.published_public_node_id.as_deref() == Some(public_node_id.as_str()) {
+            continue;
+        }
+        let proposal = ResearchProposalPayload {
+            publication_id: publication_id.to_string(),
+            parent_node_id: state.parent_public_node_id.clone(),
+            prompt: state.prompt.clone(),
+            answer_markdown: state.answer_markdown.clone(),
+        };
+        if !proposal_state_matches(
+            state,
+            state.proposal_comment_id,
+            &state.author_login,
+            &proposal,
+        ) {
+            return Err(format!(
+                "saved proposal {} is invalid",
+                state.proposal_comment_id
+            ));
+        }
+        let body = encode_proposal_resolution(&ProposalResolutionPayload {
+            publication_id: publication_id.to_string(),
+            proposal_comment_id: state.proposal_comment_id,
+            proposal_digest: research_proposal_digest(&proposal)?,
+            status: state.status.clone(),
+            public_node_id: Some(public_node_id.clone()),
+        })?;
+        update_gist_comment(client, access_token, gist_id, resolution_comment_id, &body).await?;
+        state.published_public_node_id = Some(public_node_id.clone());
+    }
+    Ok(())
+}
+
+async fn read_reqwest_text_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(format!("{label} exceeds the {max_bytes} byte limit."));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("failed to read {label}: {error}"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(format!("{label} exceeds the {max_bytes} byte limit."));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{label} is not valid UTF-8."))
+}
+
+fn collect_publication_proposals(
+    binding: &PublicationBinding,
+    gist: &GitHubGist,
+    comments: &[GitHubGistComment],
+) -> Vec<PublicationProposal> {
+    let owner_login = gist.owner.as_ref().map(|owner| owner.login.as_str());
+    let private_by_public = binding
+        .public_node_ids
+        .iter()
+        .map(|(private_id, public_id)| (public_id.clone(), private_id.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut proposals = comments
+        .iter()
+        .filter_map(|comment| {
+            let payload = parse_research_proposal(&comment.body)?;
+            if payload.publication_id != binding.publication_id {
+                return None;
+            }
+            let user = comment.user.as_ref()?;
+            if !valid_github_login(&user.login) {
+                return None;
+            }
+            let proposal_digest = research_proposal_digest(&payload).ok()?;
+            let saved = binding
+                .proposal_states
+                .get(&comment.id.to_string())
+                .filter(|state| proposal_state_matches(state, comment.id, &user.login, &payload));
+            let status = owner_login
+                .and_then(|owner_login| {
+                    latest_proposal_resolution(
+                        comments,
+                        owner_login,
+                        &binding.publication_id,
+                        comment.id,
+                        &proposal_digest,
+                    )
+                })
+                .map(|(_, resolution)| resolution.status)
+                .unwrap_or_else(|| "pending".to_string());
+            let local_node_id = (status != "declined")
+                .then(|| {
+                    saved
+                        .filter(|state| state.status == "accepted")
+                        .and_then(|state| state.local_node_id.clone())
+                })
+                .flatten();
+            Some(PublicationProposal {
+                comment_id: comment.id,
+                author_login: user.login.clone(),
+                author_url: trusted_github_profile_url(user.html_url.as_deref(), &user.login),
+                parent_public_node_id: payload.parent_node_id.clone(),
+                parent_node_id: private_by_public
+                    .get(payload.parent_node_id.as_str())
+                    .map(|value| (*value).to_string()),
+                prompt: payload.prompt,
+                answer_markdown: payload.answer_markdown,
+                created_at: comment.created_at.clone(),
+                status,
+                local_node_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    proposals.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.comment_id.cmp(&right.comment_id))
+    });
+    proposals
+}
+
+fn proposal_state_matches(
+    state: &PublicationProposalState,
+    comment_id: u64,
+    author_login: &str,
+    proposal: &ResearchProposalPayload,
+) -> bool {
+    state.proposal_comment_id == comment_id
+        && (state.status == "accepted" || state.status == "declined")
+        && state.author_login == author_login
+        && valid_github_login(&state.author_login)
+        && state.parent_public_node_id == proposal.parent_node_id
+        && valid_public_identifier(&state.parent_public_node_id)
+        && state.prompt == proposal.prompt
+        && state.answer_markdown == proposal.answer_markdown
+        && state
+            .resolution_comment_id
+            .is_none_or(|comment_id| comment_id > 0)
+        && state
+            .published_public_node_id
+            .as_deref()
+            .is_none_or(valid_public_identifier)
+}
+
+fn latest_proposal_resolution(
+    comments: &[GitHubGistComment],
+    owner_login: &str,
+    publication_id: &str,
+    proposal_comment_id: u64,
+    proposal_digest: &str,
+) -> Option<(u64, ProposalResolutionPayload)> {
+    comments
+        .iter()
+        .filter_map(|comment| {
+            let resolution = parse_proposal_resolution(&comment.body)?;
+            let login = comment.user.as_ref()?.login.as_str();
+            (login == owner_login
+                && resolution.publication_id == publication_id
+                && resolution.proposal_comment_id == proposal_comment_id
+                && resolution.proposal_digest == proposal_digest)
+                .then_some((comment.id, resolution))
+        })
+        .max_by_key(|(comment_id, _)| *comment_id)
+}
+
+fn reconcile_proposal_node_states(
+    state: &AppState,
+    binding: &mut PublicationBinding,
+    tree_id: &str,
+    gist: &GitHubGist,
+    comments: &[GitHubGistComment],
+) -> Result<bool, String> {
+    let detail = state.research_tree(tree_id)?;
+    let owner_login = gist.owner.as_ref().map(|owner| owner.login.as_str());
+    let private_by_public = binding
+        .public_node_ids
+        .iter()
+        .map(|(private_id, public_id)| (public_id.clone(), private_id.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut changed = false;
+    for comment in comments {
+        let Some(proposal) = parse_research_proposal(&comment.body) else {
+            continue;
+        };
+        if proposal.publication_id != binding.publication_id {
+            continue;
+        }
+        let Some(author_login) = comment
+            .user
+            .as_ref()
+            .map(|user| user.login.as_str())
+            .filter(|login| valid_github_login(login))
+        else {
+            continue;
+        };
+        let Some(parent_node_id) = private_by_public
+            .get(proposal.parent_node_id.as_str())
+            .map(String::as_str)
+        else {
+            continue;
+        };
+        let matching_nodes = detail
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.parent_node_id.as_deref() == Some(parent_node_id)
+                    && node.prompt == proposal.prompt
+                    && node.publication_proposal.as_ref().is_some_and(|reference| {
+                        reference.publication_id == binding.publication_id
+                            && reference.comment_id == comment.id
+                    })
+            })
+            .collect::<Vec<_>>();
+        if matching_nodes.len() > 1 {
+            return Err(format!(
+                "Proposal {} is linked to multiple local research nodes.",
+                comment.id
+            ));
+        }
+        let Some(local_node) = matching_nodes.first() else {
+            continue;
+        };
+        let proposal_digest = research_proposal_digest(&proposal)?;
+        let resolution = owner_login.and_then(|owner_login| {
+            latest_proposal_resolution(
+                comments,
+                owner_login,
+                &binding.publication_id,
+                comment.id,
+                &proposal_digest,
+            )
+        });
+        if resolution
+            .as_ref()
+            .is_some_and(|(_, resolution)| resolution.status != "accepted")
+        {
+            return Err(format!(
+                "Proposal {} has a local result but an incompatible owner resolution.",
+                comment.id
+            ));
+        }
+        let resolution_comment_id = resolution.map(|(comment_id, _)| comment_id);
+        let key = comment.id.to_string();
+        if let Some(saved) = binding.proposal_states.get_mut(&key) {
+            if !proposal_state_matches(saved, comment.id, author_login, &proposal)
+                || saved.status != "accepted"
+            {
+                return Err(format!(
+                    "Proposal {} has an incompatible saved local mapping.",
+                    comment.id
+                ));
+            }
+            if saved
+                .local_node_id
+                .as_deref()
+                .is_some_and(|node_id| node_id != local_node.id)
+            {
+                return Err(format!(
+                    "Proposal {} is already linked to a different local research node.",
+                    comment.id
+                ));
+            }
+            if saved.local_node_id.as_deref() != Some(local_node.id.as_str())
+                || (resolution_comment_id.is_some()
+                    && saved.resolution_comment_id != resolution_comment_id)
+            {
+                saved.local_node_id = Some(local_node.id.clone());
+                if resolution_comment_id.is_some() {
+                    saved.resolution_comment_id = resolution_comment_id;
+                }
+                changed = true;
+            }
+        } else {
+            binding.proposal_states.insert(
+                key,
+                PublicationProposalState {
+                    proposal_comment_id: comment.id,
+                    status: "accepted".to_string(),
+                    author_login: author_login.to_string(),
+                    parent_public_node_id: proposal.parent_node_id,
+                    prompt: proposal.prompt,
+                    answer_markdown: proposal.answer_markdown,
+                    local_node_id: Some(local_node.id.clone()),
+                    resolution_comment_id,
+                    published_public_node_id: None,
+                },
+            );
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+fn reconcile_proposal_resolution_states(
+    binding: &mut PublicationBinding,
+    gist: &GitHubGist,
+    comments: &[GitHubGistComment],
+) -> bool {
+    let Some(owner_login) = gist.owner.as_ref().map(|owner| owner.login.as_str()) else {
+        return false;
+    };
+    let mut changed = false;
+    for comment in comments {
+        let Some(proposal) = parse_research_proposal(&comment.body) else {
+            continue;
+        };
+        if proposal.publication_id != binding.publication_id {
+            continue;
+        }
+        let Some(author_login) = comment.user.as_ref().map(|user| user.login.as_str()) else {
+            continue;
+        };
+        let Ok(proposal_digest) = research_proposal_digest(&proposal) else {
+            continue;
+        };
+        let Some((resolution_comment_id, resolution)) = latest_proposal_resolution(
+            comments,
+            owner_login,
+            &binding.publication_id,
+            comment.id,
+            &proposal_digest,
+        ) else {
+            continue;
+        };
+        let Some(state) = binding.proposal_states.get_mut(&comment.id.to_string()) else {
+            continue;
+        };
+        if proposal_state_matches(state, comment.id, author_login, &proposal)
+            && state.status == resolution.status
+            && state.resolution_comment_id != Some(resolution_comment_id)
+        {
+            state.resolution_comment_id = Some(resolution_comment_id);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn parse_research_proposal(body: &str) -> Option<ResearchProposalPayload> {
+    let payload: ResearchProposalPayload = parse_comment_marker(body, PROPOSAL_MARKER_PREFIX)?;
+    if !valid_public_identifier(&payload.publication_id)
+        || !valid_public_identifier(&payload.parent_node_id)
+        || payload.prompt.trim().is_empty()
+        || payload.prompt.chars().count() > MAX_PROPOSAL_PROMPT_CHARACTERS
+        || payload
+            .answer_markdown
+            .as_deref()
+            .is_some_and(|answer| answer.chars().count() > MAX_PROPOSAL_ANSWER_CHARACTERS)
+    {
+        return None;
+    }
+    Some(ResearchProposalPayload {
+        publication_id: payload.publication_id,
+        parent_node_id: payload.parent_node_id,
+        prompt: payload.prompt.trim().to_string(),
+        answer_markdown: payload
+            .answer_markdown
+            .map(|answer| answer.trim().to_string())
+            .filter(|answer| !answer.is_empty()),
+    })
+}
+
+fn research_proposal_digest(payload: &ResearchProposalPayload) -> Result<String, String> {
+    let input = serde_json::to_vec(&(
+        &payload.publication_id,
+        &payload.parent_node_id,
+        &payload.prompt,
+        &payload.answer_markdown,
+    ))
+    .map_err(|error| format!("failed to encode proposal digest input: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(input)))
+}
+
+fn parse_proposal_resolution(body: &str) -> Option<ProposalResolutionPayload> {
+    let payload: ProposalResolutionPayload =
+        parse_comment_marker(body, PROPOSAL_RESOLUTION_MARKER_PREFIX)?;
+    if !valid_public_identifier(&payload.publication_id)
+        || payload.proposal_comment_id == 0
+        || !valid_sha256(&payload.proposal_digest)
+        || (payload.status != "accepted" && payload.status != "declined")
+        || payload
+            .public_node_id
+            .as_deref()
+            .is_some_and(|node_id| !valid_public_identifier(node_id))
+    {
+        return None;
+    }
+    Some(payload)
+}
+
+fn parse_comment_marker<T: for<'de> Deserialize<'de>>(body: &str, prefix: &str) -> Option<T> {
+    let encoded = body
+        .strip_prefix(prefix)?
+        .split_once(COMMENT_MARKER_SUFFIX)?
+        .0;
+    if encoded.is_empty() || encoded.len() > 100_000 {
+        return None;
+    }
+    let decoded = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn encode_proposal_resolution(payload: &ProposalResolutionPayload) -> Result<String, String> {
+    let raw = serde_json::to_vec(payload)
+        .map_err(|error| format!("failed to encode proposal resolution: {error}"))?;
+    let encoded = URL_SAFE_NO_PAD.encode(raw);
+    let message = if payload.status == "accepted" {
+        "Accepted this follow-up into the owner's qmux research tree."
+    } else {
+        "The owner declined this follow-up."
+    };
+    Ok(format!(
+        "{PROPOSAL_RESOLUTION_MARKER_PREFIX}{encoded}{COMMENT_MARKER_SUFFIX}\n\n{message}"
+    ))
+}
+
+fn valid_github_login(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 39
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn trusted_github_profile_url(value: Option<&str>, login: &str) -> String {
+    let fallback = format!("https://github.com/{login}");
+    let Some(value) = value else {
+        return fallback;
+    };
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return fallback;
+    };
+    if url.scheme() == "https"
+        && url.host_str() == Some("github.com")
+        && url.username().is_empty()
+        && url.password().is_none()
+    {
+        url.to_string()
+    } else {
+        fallback
+    }
+}
+
+fn latest_gist_revision(gist: &GitHubGist) -> Option<String> {
+    gist.history
+        .first()
+        .map(|revision| revision.version.clone())
+        .filter(|revision| !revision.is_empty())
+}
+
+async fn load_gist_file_content(
+    client: &reqwest::Client,
+    file: &GitHubGistFile,
+    label: &str,
+) -> Result<String, String> {
+    if file.size > MAX_PUBLICATION_FILE_BYTES {
+        return Err(format!(
+            "{label} exceeds the {MAX_PUBLICATION_FILE_BYTES} byte publication limit."
+        ));
+    }
+    if !file.truncated
+        && let Some(content) = file.content.as_deref()
+    {
+        if content.len() > MAX_PUBLICATION_FILE_BYTES {
+            return Err(format!(
+                "{label} exceeds the {MAX_PUBLICATION_FILE_BYTES} byte publication limit."
+            ));
+        }
+        return Ok(content.to_string());
+    }
+    let raw_url = file
+        .raw_url
+        .as_deref()
+        .ok_or_else(|| format!("{label} is truncated and has no raw URL."))?;
+    let parsed = reqwest::Url::parse(raw_url)
+        .map_err(|error| format!("{label} has an invalid raw URL: {error}"))?;
+    validate_github_raw_url(&parsed, label)?;
+    let mut response = client
+        .get(parsed)
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .send()
+        .await
+        .map_err(|error| github_request_error(&format!("load {label}"), error))?;
+    validate_github_raw_url(response.url(), label)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "GitHub could not provide {label} (HTTP {}).",
+            status.as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PUBLICATION_FILE_BYTES as u64)
+    {
+        return Err(format!(
+            "{label} exceeds the {MAX_PUBLICATION_FILE_BYTES} byte publication limit."
+        ));
+    }
+    let mut bytes = Vec::with_capacity(file.size.min(MAX_PUBLICATION_FILE_BYTES));
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("failed to read {label}: {error}"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PUBLICATION_FILE_BYTES {
+            return Err(format!(
+                "{label} exceeds the {MAX_PUBLICATION_FILE_BYTES} byte publication limit."
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{label} is not valid UTF-8."))
+}
+
+fn validate_github_raw_url(url: &reqwest::Url, label: &str) -> Result<(), String> {
+    let trusted = url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(
+            url.host_str(),
+            Some("gist.githubusercontent.com" | "raw.githubusercontent.com")
+        );
+    if trusted {
+        Ok(())
+    } else {
+        Err(format!("{label} has an untrusted raw URL."))
+    }
+}
+
+async fn build_gist_update_files(
+    client: &reqwest::Client,
+    gist: &GitHubGist,
+    current_index: &str,
+    desired_files: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Option<UpdateGistFile>>, String> {
+    let current_value: Value = serde_json::from_str(current_index)
+        .map_err(|error| format!("The linked {PUBLICATION_INDEX_FILE} is invalid: {error}"))?;
+    let desired_index = desired_files
+        .get(PUBLICATION_INDEX_FILE)
+        .expect("sync request validation requires publication.json");
+    let desired_value: Value = serde_json::from_str(desired_index)
+        .map_err(|error| format!("{PUBLICATION_INDEX_FILE} is invalid JSON: {error}"))?;
+    let current_owned = publication_owned_files(&current_value)?;
+    let mut desired_owned = publication_owned_files(&desired_value)?;
+    desired_owned.extend(desired_files.keys().cloned());
+    let current_hashes = research_file_hashes(&current_value);
+    let desired_hashes = research_file_hashes(&desired_value);
+    let mut update = BTreeMap::new();
+
+    for (name, desired_content) in desired_files {
+        let unchanged = if name == PUBLICATION_INDEX_FILE {
+            current_index == desired_content
+        } else if desired_hashes.get(name).is_some()
+            && desired_hashes.get(name) == current_hashes.get(name)
+        {
+            true
+        } else if let Some(remote_file) = gist.files.get(name) {
+            load_gist_file_content(client, remote_file, name).await? == *desired_content
+        } else {
+            false
+        };
+        if !unchanged {
+            update.insert(
+                name.clone(),
+                Some(UpdateGistFile {
+                    content: desired_content.clone(),
+                }),
+            );
+        }
+    }
+    for name in current_owned.difference(&desired_owned) {
+        update.insert(name.clone(), None);
+    }
+    Ok(update)
+}
+
+fn publication_owned_files(value: &Value) -> Result<HashSet<String>, String> {
+    let root = value
+        .as_object()
+        .ok_or_else(|| format!("{PUBLICATION_INDEX_FILE} must contain an object."))?;
+    let mut files = HashSet::from([
+        PUBLICATION_INDEX_FILE.to_string(),
+        PUBLICATION_README_FILE.to_string(),
+    ]);
+    match root.get("kind").and_then(Value::as_str) {
+        Some("transcript") => {
+            let text_file = root
+                .get("transcript")
+                .and_then(Value::as_object)
+                .and_then(|transcript| transcript.get("textFile"))
+                .and_then(Value::as_str)
+                .filter(|name| valid_publication_filename(name))
+                .ok_or_else(|| {
+                    format!("{PUBLICATION_INDEX_FILE} has invalid transcript file metadata.")
+                })?;
+            files.insert(text_file.to_string());
+        }
+        Some("research-answer" | "research-tree") => {
+            let nodes = root
+                .get("research")
+                .and_then(Value::as_object)
+                .and_then(|research| research.get("nodes"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    format!("{PUBLICATION_INDEX_FILE} has invalid research metadata.")
+                })?;
+            for node in nodes {
+                let answer_file = node
+                    .as_object()
+                    .and_then(|item| item.get("answerFile"))
+                    .and_then(Value::as_str)
+                    .filter(|name| valid_publication_filename(name))
+                    .ok_or_else(|| {
+                        format!("{PUBLICATION_INDEX_FILE} has invalid research file metadata.")
+                    })?;
+                files.insert(answer_file.to_string());
+            }
+        }
+        _ => {
+            return Err(format!(
+                "{PUBLICATION_INDEX_FILE} has an unsupported publication kind."
+            ));
+        }
+    }
+    Ok(files)
+}
+
+fn research_file_hashes(value: &Value) -> HashMap<String, String> {
+    value
+        .get("research")
+        .and_then(Value::as_object)
+        .and_then(|research| research.get("nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            let item = node.as_object()?;
+            Some((
+                item.get("answerFile")?.as_str()?.to_string(),
+                item.get("contentHash")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn validate_remote_publication_identity(
+    raw: &str,
+    expected_publication_id: &str,
+    source: &PublicationSource,
+) -> Result<(), String> {
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|error| format!("The linked {PUBLICATION_INDEX_FILE} is invalid: {error}"))?;
+    let root = value
+        .as_object()
+        .ok_or_else(|| format!("The linked {PUBLICATION_INDEX_FILE} must contain an object."))?;
+    if root.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || root.get("publicationId").and_then(Value::as_str) != Some(expected_publication_id)
+    {
+        return Err("The linked Gist contains a different qmux publication.".to_string());
+    }
+    let expected_kind = match source.kind.as_str() {
+        "transcript" => "transcript",
+        "researchAnswer" => "research-answer",
+        "researchTree" => "research-tree",
+        _ => return Err("The saved publication source is unsupported.".to_string()),
+    };
+    if root.get("kind").and_then(Value::as_str) != Some(expected_kind) {
+        return Err("The linked Gist publication type no longer matches qmux.".to_string());
+    }
+    Ok(())
+}
+
+fn publication_created_at(files: &BTreeMap<String, String>) -> Option<String> {
+    serde_json::from_str::<Value>(files.get(PUBLICATION_INDEX_FILE)?)
+        .ok()?
+        .get("createdAt")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn preserve_remote_created_at(
+    files: &mut BTreeMap<String, String>,
+    current_index: &str,
+) -> Result<(), String> {
+    let current: Value = serde_json::from_str(current_index)
+        .map_err(|error| format!("The linked {PUBLICATION_INDEX_FILE} is invalid: {error}"))?;
+    let created_at = current
+        .get("createdAt")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 64)
+        .ok_or_else(|| {
+            format!("The linked {PUBLICATION_INDEX_FILE} has an invalid createdAt value.")
+        })?;
+    let desired_raw = files
+        .get(PUBLICATION_INDEX_FILE)
+        .expect("sync request validation requires publication.json");
+    let mut desired: Value = serde_json::from_str(desired_raw)
+        .map_err(|error| format!("{PUBLICATION_INDEX_FILE} is invalid JSON: {error}"))?;
+    if desired.get("createdAt").and_then(Value::as_str) == Some(created_at) {
+        return Ok(());
+    }
+    let root = desired
+        .as_object_mut()
+        .ok_or_else(|| format!("{PUBLICATION_INDEX_FILE} must contain an object."))?;
+    root.insert(
+        "createdAt".to_string(),
+        Value::String(created_at.to_string()),
+    );
+    root.remove("contentHash");
+    let hash = format!("{:x}", Sha256::digest(canonical_json(&desired).as_bytes()));
+    desired
+        .as_object_mut()
+        .expect("publication root checked above")
+        .insert("contentHash".to_string(), Value::String(hash));
+    let encoded = serde_json::to_string_pretty(&desired)
+        .map_err(|error| format!("failed to encode {PUBLICATION_INDEX_FILE}: {error}"))?;
+    files.insert(PUBLICATION_INDEX_FILE.to_string(), format!("{encoded}\n"));
+    Ok(())
 }
 
 fn github_request_error(action: &str, error: reqwest::Error) -> String {
@@ -555,27 +2052,48 @@ fn github_response_error(action: &str, status: StatusCode, body: &str) -> String
 }
 
 fn validate_publish_request(request: &PublishPublicationRequest) -> Result<(), String> {
-    if !valid_public_identifier(&request.publication_id) {
+    validate_publication_payload(
+        &request.publication_id,
+        &request.title,
+        &request.files,
+        &request.public_node_ids,
+    )
+}
+
+fn validate_sync_request(request: &SyncPublicationRequest) -> Result<(), String> {
+    validate_publication_payload(
+        &request.publication_id,
+        &request.title,
+        &request.files,
+        &request.public_node_ids,
+    )
+}
+
+fn validate_publication_payload(
+    publication_id: &str,
+    title: &str,
+    files: &BTreeMap<String, String>,
+    public_node_ids: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !valid_public_identifier(publication_id) {
         return Err("publicationId has an invalid format.".to_string());
     }
-    let title = request.title.trim();
+    let title = title.trim();
     if title.is_empty() || title.chars().count() > 240 {
         return Err("Publication title must contain 1 to 240 characters.".to_string());
     }
-    if request.files.is_empty() || request.files.len() > MAX_PUBLICATION_FILES {
+    if files.is_empty() || files.len() > MAX_PUBLICATION_FILES {
         return Err(format!(
             "A publication must contain between 1 and {MAX_PUBLICATION_FILES} files."
         ));
     }
-    if !request.files.contains_key(PUBLICATION_INDEX_FILE)
-        || !request.files.contains_key(PUBLICATION_README_FILE)
-    {
+    if !files.contains_key(PUBLICATION_INDEX_FILE) || !files.contains_key(PUBLICATION_README_FILE) {
         return Err(format!(
             "A publication must contain {PUBLICATION_INDEX_FILE} and {PUBLICATION_README_FILE}."
         ));
     }
     let mut total_bytes = 0usize;
-    for (name, content) in &request.files {
+    for (name, content) in files {
         if !valid_publication_filename(name) {
             return Err(format!("Publication filename {name:?} is invalid."));
         }
@@ -592,11 +2110,23 @@ fn validate_publish_request(request: &PublishPublicationRequest) -> Result<(), S
             "Publication exceeds the {MAX_PUBLICATION_TOTAL_BYTES} byte total limit."
         ));
     }
-    let index = request
-        .files
+    let mut seen_public_node_ids = HashSet::new();
+    for (private_id, public_id) in public_node_ids {
+        if private_id.trim().is_empty() || private_id.len() > 256 {
+            return Err(
+                "A private research node ID in the publication binding is invalid.".to_string(),
+            );
+        }
+        if !valid_public_identifier(public_id) || !seen_public_node_ids.insert(public_id) {
+            return Err(
+                "A public research node ID in the publication binding is invalid.".to_string(),
+            );
+        }
+    }
+    let index = files
         .get(PUBLICATION_INDEX_FILE)
         .expect("required publication index checked above");
-    validate_publication_index(index, &request.publication_id, title, &request.files)
+    validate_publication_index(index, publication_id, title, files)
 }
 
 fn validate_publication_index(
@@ -822,6 +2352,26 @@ fn validate_research_index(
                 "{PUBLICATION_INDEX_FILE} research node {id} has an invalid createdAt."
             ));
         }
+        if let Some(contribution) = item.get("contribution")
+            && !contribution.is_null()
+        {
+            let contribution = contribution.as_object().ok_or_else(|| {
+                format!("{PUBLICATION_INDEX_FILE} research node {id} has an invalid contribution.")
+            })?;
+            if !contribution
+                .get("githubLogin")
+                .and_then(Value::as_str)
+                .is_some_and(valid_github_login)
+                || !contribution
+                    .get("proposalCommentId")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|comment_id| comment_id > 0)
+            {
+                return Err(format!(
+                    "{PUBLICATION_INDEX_FILE} research node {id} has an invalid contribution."
+                ));
+            }
+        }
     }
 
     if !node_ids.contains(root_node_id) {
@@ -991,6 +2541,16 @@ fn load_publication_store(workspace_root: &Path) -> Result<PublicationStore, Str
     Ok(store)
 }
 
+fn publication_binding(
+    workspace_root: &Path,
+    publication_id: &str,
+) -> Result<Option<PublicationBinding>, String> {
+    Ok(load_publication_store(workspace_root)?
+        .bindings
+        .into_iter()
+        .find(|binding| binding.publication_id == publication_id))
+}
+
 fn upsert_publication_binding(
     workspace_root: &Path,
     binding: &PublicationBinding,
@@ -1056,6 +2616,15 @@ fn now_millis() -> u64 {
 
 fn default_poll_interval() -> u64 {
     5
+}
+
+fn append_warning(warning: &mut Option<String>, message: String) {
+    if let Some(existing) = warning {
+        existing.push(' ');
+        existing.push_str(&message);
+    } else {
+        *warning = Some(message);
+    }
 }
 
 #[cfg(test)]
@@ -1206,6 +2775,155 @@ mod tests {
                 .unwrap_err()
                 .contains("disconnected")
         );
+    }
+
+    #[test]
+    fn sync_plan_updates_metadata_and_deletes_only_removed_publication_files() {
+        let current = research_request();
+        let mut desired = research_request();
+        let mut publication: Value =
+            serde_json::from_str(&desired.files[PUBLICATION_INDEX_FILE]).unwrap();
+        publication["updatedAt"] = Value::String("2026-07-16T13:00:00.000Z".to_string());
+        publication["research"]["selectedNodeId"] = Value::String("node_root1234".to_string());
+        publication["research"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        rehash_publication(&mut publication);
+        desired.files.insert(
+            PUBLICATION_INDEX_FILE.to_string(),
+            serde_json::to_string_pretty(&publication).unwrap(),
+        );
+        desired.files.insert(
+            PUBLICATION_README_FILE.to_string(),
+            "# Research updated\n".to_string(),
+        );
+        desired.files.remove("node_child123.md");
+        let mut gist = GitHubGist {
+            id: "gist12345".to_string(),
+            html_url: "https://gist.github.com/gist12345".to_string(),
+            description: Some("Research — published with qmux".to_string()),
+            public: false,
+            files: current
+                .files
+                .iter()
+                .map(|(name, content)| {
+                    (
+                        name.clone(),
+                        GitHubGistFile {
+                            size: content.len(),
+                            truncated: false,
+                            content: Some(content.clone()),
+                            raw_url: None,
+                        },
+                    )
+                })
+                .collect(),
+            owner: Some(GitHubUser {
+                login: "owner".to_string(),
+            }),
+            history: vec![GitHubGistRevision {
+                version: "a".repeat(40),
+            }],
+        };
+        gist.files.insert(
+            "unrelated.txt".to_string(),
+            GitHubGistFile {
+                size: 4,
+                truncated: false,
+                content: Some("keep".to_string()),
+                raw_url: None,
+            },
+        );
+        let client = http_client().unwrap();
+        let update = tauri::async_runtime::block_on(build_gist_update_files(
+            &client,
+            &gist,
+            &current.files[PUBLICATION_INDEX_FILE],
+            &desired.files,
+        ))
+        .unwrap();
+
+        assert!(update.contains_key(PUBLICATION_INDEX_FILE));
+        assert!(update.contains_key(PUBLICATION_README_FILE));
+        assert!(!update.contains_key("node_root1234.md"));
+        assert!(matches!(update.get("node_child123.md"), Some(None)));
+        assert!(!update.contains_key("unrelated.txt"));
+    }
+
+    #[test]
+    fn sync_preserves_the_remote_publication_creation_time() {
+        let current = research_request();
+        let mut desired = research_request();
+        let mut publication: Value =
+            serde_json::from_str(&desired.files[PUBLICATION_INDEX_FILE]).unwrap();
+        publication["createdAt"] = Value::String("2026-07-16T12:00:05.000Z".to_string());
+        rehash_publication(&mut publication);
+        desired.files.insert(
+            PUBLICATION_INDEX_FILE.to_string(),
+            serde_json::to_string_pretty(&publication).unwrap(),
+        );
+
+        preserve_remote_created_at(&mut desired.files, &current.files[PUBLICATION_INDEX_FILE])
+            .unwrap();
+        validate_publish_request(&desired).unwrap();
+        let preserved: Value =
+            serde_json::from_str(&desired.files[PUBLICATION_INDEX_FILE]).unwrap();
+        assert_eq!(
+            preserved["createdAt"],
+            Value::String("2026-07-16T12:00:00.000Z".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_contributed_follow_up_and_owner_resolution_comments() {
+        let proposal = ResearchProposalPayload {
+            publication_id: "pub_research123".to_string(),
+            parent_node_id: "node_root1234".to_string(),
+            prompt: "Which evidence would change the answer?".to_string(),
+            answer_markdown: Some("A proposed answer.".to_string()),
+        };
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&proposal).unwrap());
+        let body =
+            format!("{PROPOSAL_MARKER_PREFIX}{encoded}{COMMENT_MARKER_SUFFIX}\n\nVisible proposal");
+        assert_eq!(
+            parse_research_proposal(&body).unwrap().prompt,
+            proposal.prompt
+        );
+        let proposal_digest = research_proposal_digest(&proposal).unwrap();
+        assert_eq!(
+            proposal_digest,
+            "21624f06261ded78175de979485cc047abfe4fd1508fa3009b4f3cfd2de3a9d9"
+        );
+
+        let resolution = ProposalResolutionPayload {
+            publication_id: proposal.publication_id.clone(),
+            proposal_comment_id: 42,
+            proposal_digest: proposal_digest.clone(),
+            status: "accepted".to_string(),
+            public_node_id: None,
+        };
+        let resolution_body = encode_proposal_resolution(&resolution).unwrap();
+        assert_eq!(
+            parse_proposal_resolution(&resolution_body)
+                .unwrap()
+                .proposal_comment_id,
+            42
+        );
+        let mut edited = proposal;
+        edited.prompt.push_str(" Edited.");
+        assert_ne!(research_proposal_digest(&edited).unwrap(), proposal_digest);
+    }
+
+    #[test]
+    fn parses_the_last_github_pagination_page() {
+        assert_eq!(
+            github_last_page(
+                r#"<https://api.github.com/gists/abc/comments?per_page=100&page=2>; rel="next", <https://api.github.com/gists/abc/comments?per_page=100&page=6>; rel="last""#
+            ),
+            Some(6)
+        );
+        assert_eq!(github_last_page("not a link"), None);
     }
 
     #[test]

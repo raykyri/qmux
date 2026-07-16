@@ -4,10 +4,12 @@ import type { PaneLayoutItem } from "./paneTree";
 import type { WorktreeLocation } from "./settings";
 import type {
   PublicationBinding,
+  PublicationProposal,
   PublishPublicationRequest,
   PublishingAuthPollResult,
   PublishingAuthStatus,
   PublishingDeviceAuthorization,
+  SyncPublicationRequest,
 } from "./publication";
 import type {
   AgentInfo,
@@ -110,8 +112,27 @@ export function publishPublication(request: PublishPublicationRequest) {
   return invoke<PublicationBinding>("publishing_publish", { request });
 }
 
+export function syncPublication(request: SyncPublicationRequest) {
+  return invoke<PublicationBinding>("publishing_sync", { request });
+}
+
 export function listPublications() {
   return invoke<PublicationBinding[]>("publishing_list");
+}
+
+export function listPublicationProposals(publicationId: string) {
+  return invoke<PublicationProposal[]>("publishing_list_proposals", { publicationId });
+}
+
+export function resolvePublicationProposal(request: {
+  publicationId: string;
+  proposalCommentId: number;
+  status: "accepted" | "declined";
+  localNodeId?: string | null;
+}) {
+  return invoke<PublicationBinding>("publishing_resolve_proposal", {
+    request,
+  });
 }
 
 // The prompt library: reusable composer messages stored as markdown files, one
@@ -360,8 +381,19 @@ export function getResearchNodeContent(nodeId: string) {
   return invoke<ResearchNodeContent>("get_research_node_content", { nodeId });
 }
 
-export function forkResearchNode(parentNodeId: string, prompt: string) {
-  return invoke<ResearchNode>("fork_research_node", { parentNodeId, prompt });
+export function forkResearchNode(
+  parentNodeId: string,
+  prompt: string,
+  publicationProposal?: {
+    publicationId: string;
+    commentId: number;
+  } | null,
+) {
+  return invoke<ResearchNode>("fork_research_node", {
+    parentNodeId,
+    prompt,
+    publicationProposal: publicationProposal ?? null,
+  });
 }
 
 export function cancelResearchNode(nodeId: string) {

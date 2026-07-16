@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowRight, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, ScrollText, Share2, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
 import {
@@ -8,10 +8,16 @@ import {
   getResearchNodeContent,
   getResearchTree,
   listClaudeSkills,
+  listPublicationProposals,
   removeResearchHighlights,
+  resolvePublicationProposal,
 } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { growComposerTextarea } from "../../lib/composerTextarea";
+import type {
+  PublicationBinding,
+  PublicationProposal,
+} from "../../lib/publication";
 import {
   EMPTY_RESEARCH_HISTORY,
   canGoBack as historyCanGoBack,
@@ -82,7 +88,14 @@ interface ResearchDocumentProps {
   detailError?: string | null;
   /** Refetches the active tree's detail after a failed load. */
   onRetryDetail?: () => void;
-  onFork: (parentNodeId: string, prompt: string) => Promise<ResearchNode>;
+  onFork: (
+    parentNodeId: string,
+    prompt: string,
+    publicationProposal?: {
+      publicationId: string;
+      commentId: number;
+    } | null,
+  ) => Promise<ResearchNode>;
   onRemoveBranch: (nodeId: string) => Promise<ResearchBranchRemoval>;
   onRemoveTree: (treeId: string) => Promise<void>;
   onUpdateDocument: (input: {
@@ -103,6 +116,8 @@ interface ResearchDocumentProps {
   onError: (message: string) => void;
   onToast: (message: string, tone?: "normal" | "warning") => void;
   onPublish: (target: PublishDialogTarget) => void;
+  publicationBinding?: PublicationBinding | null;
+  onPublicationBindingChange: (binding: PublicationBinding) => void;
 }
 
 // The backend caps snapshots at 64MB, which is still far beyond what markdown
@@ -400,6 +415,8 @@ export default function ResearchDocument({
   onError,
   onToast,
   onPublish,
+  publicationBinding,
+  onPublicationBindingChange,
 }: ResearchDocumentProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   // Browser-style visit history for the header's back/forward controls, reset
@@ -427,6 +444,10 @@ export default function ResearchDocument({
   const [savingHighlight, setSavingHighlight] = useState(false);
   const [highlightDomNonce, setHighlightDomNonce] = useState(0);
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
+  const [publicationProposals, setPublicationProposals] = useState<PublicationProposal[]>([]);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [proposalActionId, setProposalActionId] = useState<number | null>(null);
+  const [proposalRetryNodeIds, setProposalRetryNodeIds] = useState<Record<number, string>>({});
   const treeId = detail?.tree.id ?? null;
   const documentScrollRef = useRef<HTMLElement | null>(null);
   const followupTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -452,6 +473,26 @@ export default function ResearchDocument({
   treeIdRef.current = treeId;
   detailRef.current = detail;
   contentNodeIdRef.current = content?.node.id ?? null;
+
+  const refreshPublicationProposals = useCallback(async () => {
+    const publicationId = publicationBinding?.publicationId;
+    if (!publicationId) {
+      setPublicationProposals([]);
+      setProposalError(null);
+      return;
+    }
+    try {
+      const proposals = await listPublicationProposals(publicationId);
+      setPublicationProposals(proposals);
+      setProposalError(null);
+    } catch (error) {
+      setProposalError(error instanceof Error ? error.message : String(error));
+    }
+  }, [publicationBinding?.publicationId]);
+
+  useEffect(() => {
+    void refreshPublicationProposals();
+  }, [refreshPublicationProposals, publicationBinding?.updatedAt]);
 
   // A selection anchor belongs to one rendered projection. Navigation or a
   // transcript-visibility change invalidates its offsets, so never leave an
@@ -652,6 +693,10 @@ export default function ResearchDocument({
           ? rawAnswer
           : node.responsePreview?.trim() || researchNodeDisplayTitle(node, detailSnapshot)
         : researchTreePreview(detailSnapshot, terminalNodes);
+    const existingBinding =
+      mode === "tree" && publicationBinding?.source.kind === "researchTree"
+        ? publicationBinding
+        : null;
     setFollowupMenu(null);
     onPublish({
       kindLabel: mode === "answer" ? "research answer" : "research tree",
@@ -660,6 +705,7 @@ export default function ResearchDocument({
           ? researchNodeDisplayTitle(node, detailSnapshot)
           : detailSnapshot.tree.title,
       previewText: preview,
+      binding: existingBinding,
       buildDraft: async (title) => {
         const contents = await mapWithConcurrency(nodes, 4, (candidate) =>
           getResearchNodeContent(candidate.id),
@@ -681,6 +727,28 @@ export default function ResearchDocument({
           selectedNodeId: node.id,
           mode,
           contents,
+          publicationId: existingBinding?.publicationId,
+          createdAt:
+            existingBinding?.publicationCreatedAt ??
+            (existingBinding ? new Date(existingBinding.createdAt).toISOString() : undefined),
+          updatedAt: existingBinding ? new Date().toISOString() : undefined,
+          publicNodeIds: existingBinding?.publicNodeIds,
+          contributionsByNodeId: Object.fromEntries(
+            Object.values(existingBinding?.proposalStates ?? {})
+              .filter(
+                (state) =>
+                  state.status === "accepted" &&
+                  Boolean(state.localNodeId) &&
+                  Boolean(state.resolutionCommentId),
+              )
+              .map((state) => [
+                state.localNodeId!,
+                {
+                  githubLogin: state.authorLogin,
+                  proposalCommentId: state.proposalCommentId,
+                },
+              ]),
+          ),
         });
       },
     });
@@ -1449,12 +1517,84 @@ export default function ResearchDocument({
     }
   }
 
+  async function resolveProposal(
+    proposal: PublicationProposal,
+    status: "accepted" | "declined",
+  ) {
+    const binding = publicationBinding;
+    if (!binding || proposalActionId !== null) {
+      return;
+    }
+    if (status === "accepted" && (!proposal.parentNodeId || archived)) {
+      setProposalError(
+        archived
+          ? "Restore this research before accepting contributed follow-ups."
+          : "This proposal targets a result that is no longer available locally.",
+      );
+      return;
+    }
+    setProposalActionId(proposal.commentId);
+    setProposalError(null);
+    try {
+      let localNodeId: string | null = null;
+      if (status === "accepted") {
+        localNodeId =
+          proposal.localNodeId ??
+          proposalRetryNodeIds[proposal.commentId] ??
+          null;
+        if (!localNodeId) {
+          const child = await onFork(
+            proposal.parentNodeId!,
+            proposal.prompt,
+            {
+              publicationId: binding.publicationId,
+              commentId: proposal.commentId,
+            },
+          );
+          localNodeId = child.id;
+          setProposalRetryNodeIds((current) => ({
+            ...current,
+            [proposal.commentId]: child.id,
+          }));
+        }
+      }
+      const nextBinding = await resolvePublicationProposal({
+        publicationId: binding.publicationId,
+        proposalCommentId: proposal.commentId,
+        status,
+        localNodeId,
+      });
+      onPublicationBindingChange(nextBinding);
+      setProposalRetryNodeIds((current) => {
+        const next = { ...current };
+        delete next[proposal.commentId];
+        return next;
+      });
+      await refreshPublicationProposals();
+      onToast(status === "accepted" ? "Proposal accepted" : "Proposal declined");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProposalError(message);
+      onError(message);
+    } finally {
+      setProposalActionId(null);
+    }
+  }
+
   // Prefer the event-driven node over the last content fetch for metadata:
   // detail updates arrive without reparsing the transcript. The chrome
   // (breadcrumb, prompt, follow-ups) renders from this alone, so switching
   // nodes no longer blanks the whole document while content loads — only the
   // response section waits for the fetch.
   const displayNode = selectedDetailNode ?? content?.node ?? null;
+  const displayPublicNodeId = displayNode
+    ? publicationBinding?.publicNodeIds[displayNode.id] ?? null
+    : null;
+  const visiblePublicationProposals = publicationProposals.filter(
+    (proposal) =>
+      proposal.parentNodeId === displayNode?.id ||
+      proposal.parentPublicNodeId === displayPublicNodeId,
+  );
 
   useEffect(() => {
     setMetadataNow(Date.now());
@@ -1938,6 +2078,107 @@ export default function ResearchDocument({
                       </button>
                     ))}
                   </div>
+                  {publicationBinding &&
+                  (visiblePublicationProposals.length > 0 || proposalError) ? (
+                    <section
+                      className="research-publication-proposals"
+                      aria-labelledby="research-publication-proposals-title"
+                    >
+                      <div className="research-publication-proposals-heading">
+                        <h3 id="research-publication-proposals-title">
+                          Community proposals
+                        </h3>
+                        <button
+                          type="button"
+                          className="control-button"
+                          aria-label="Refresh community proposals"
+                          title="Refresh"
+                          disabled={proposalActionId !== null}
+                          onClick={() => void refreshPublicationProposals()}
+                        >
+                          <RefreshCw size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                      {proposalError ? (
+                        <p className="research-publication-proposal-error" role="alert">
+                          {proposalError}
+                        </p>
+                      ) : null}
+                      {visiblePublicationProposals.map((proposal) => (
+                        <article
+                          className="research-publication-proposal"
+                          key={proposal.commentId}
+                        >
+                          <header>
+                            <strong>@{proposal.authorLogin}</strong>
+                            <span className={`is-${proposal.status}`}>
+                              {proposal.status}
+                            </span>
+                          </header>
+                          <TranscriptMarkdown
+                            text={proposal.prompt}
+                            imageBehavior="open"
+                            inline
+                          />
+                          {proposal.answerMarkdown ? (
+                            <details>
+                              <summary>Proposed answer</summary>
+                              <TranscriptMarkdown
+                                text={proposal.answerMarkdown}
+                                imageBehavior="open"
+                              />
+                            </details>
+                          ) : null}
+                          {proposal.status === "pending" ? (
+                            <div className="research-publication-proposal-actions">
+                              <button
+                                type="button"
+                                className="control-button"
+                                disabled={
+                                  proposalActionId !== null ||
+                                  archived ||
+                                  !proposal.parentNodeId
+                                }
+                                onClick={() => void resolveProposal(proposal, "accepted")}
+                              >
+                                {proposalActionId === proposal.commentId ? (
+                                  <LoaderCircle
+                                    className="research-spinner"
+                                    size={13}
+                                    aria-hidden="true"
+                                  />
+                                ) : (
+                                  <Check size={13} aria-hidden="true" />
+                                )}
+                                {proposal.localNodeId ? "Finish acceptance" : "Accept"}
+                              </button>
+                              <button
+                                type="button"
+                                className="control-button"
+                                disabled={
+                                  proposalActionId !== null ||
+                                  Boolean(proposal.localNodeId)
+                                }
+                                onClick={() => void resolveProposal(proposal, "declined")}
+                              >
+                                <X size={13} aria-hidden="true" />
+                                Decline
+                              </button>
+                            </div>
+                          ) : proposal.localNodeId &&
+                            detail.nodes.some((node) => node.id === proposal.localNodeId) ? (
+                            <button
+                              type="button"
+                              className="control-button research-publication-proposal-result"
+                              onClick={() => selectNode(proposal.localNodeId!)}
+                            >
+                              Open local result
+                            </button>
+                          ) : null}
+                        </article>
+                      ))}
+                    </section>
+                  ) : null}
                 </aside>
               </div>
             </div>

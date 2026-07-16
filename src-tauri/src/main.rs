@@ -995,6 +995,7 @@ async fn fork_research_node(
     state: tauri::State<'_, AppState>,
     parent_node_id: String,
     prompt: String,
+    publication_proposal: Option<research::ResearchPublicationProposal>,
 ) -> Result<ResearchNode, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1006,7 +1007,12 @@ async fn fork_research_node(
             let parent = state.research_node(&parent_node_id)?;
             let workspace = state.research_workspace_for_node(&parent_node_id)?;
             validate_launch_workspace(&state, Some(&workspace.id), LaunchOrigin::Research)?;
-            let child = state.create_research_child(&parent_node_id, prompt)?;
+            let child = match publication_proposal {
+                Some(proposal) => {
+                    state.create_research_child_for_proposal(&parent_node_id, prompt, proposal)?
+                }
+                None => state.create_research_child(&parent_node_id, prompt)?,
+            };
             (parent, workspace, child)
         };
         if parent.kind == research::ResearchNodeKind::Document {
@@ -1821,7 +1827,20 @@ async fn generate_foundation_tab_title(message: String) -> Result<String, String
     .map_err(|err| format!("Apple Foundation Models task failed: {err}"))?
 }
 
+pub(crate) fn ensure_rustls_crypto_provider() -> Result<(), String> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    rustls::crypto::CryptoProvider::get_default()
+        .map(|_| ())
+        .ok_or_else(|| "failed to install the rustls ring crypto provider".to_string())
+}
+
 fn main() {
+    ensure_rustls_crypto_provider().unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(1);
+    });
     match cli::run_cli_if_requested() {
         Ok(true) => return,
         Ok(false) => {}
@@ -2017,7 +2036,10 @@ fn main() {
             publishing::publishing_auth_poll,
             publishing::publishing_auth_disconnect,
             publishing::publishing_publish,
+            publishing::publishing_sync,
             publishing::publishing_list,
+            publishing::publishing_list_proposals,
+            publishing::publishing_resolve_proposal,
             active_tab_get,
             active_tab_set,
             open_external_url,

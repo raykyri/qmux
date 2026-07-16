@@ -186,6 +186,10 @@ test("research tree publications expose only public topology and readable node f
     "How should updates work?",
     "Incremental updates",
   );
+  child.publicationProposal = {
+    publicationId: "pub_private_link123",
+    commentId: 99,
+  };
   const detail: ResearchTreeDetail = {
     tree: {
       id: "private-tree-id",
@@ -227,6 +231,14 @@ test("research tree publications expose only public topology and readable node f
   assert.equal(publishedChild.responseRevision, "b".repeat(64));
   assert.match(draft.files[publishedChild.answerFile], /Compare durable response revisions/);
   assert.match(draft.files[PUBLICATION_README_FILE], /Incremental updates/);
+  assert.equal(
+    draft.files[PUBLICATION_INDEX_FILE].includes("publicationProposal"),
+    false,
+  );
+  assert.equal(
+    draft.files[PUBLICATION_INDEX_FILE].includes("pub_private_link123"),
+    false,
+  );
 
   const publicFiles = JSON.stringify(draft.files);
   for (const privateValue of [
@@ -245,6 +257,98 @@ test("research tree publications expose only public topology and readable node f
   assert.deepEqual(
     parsePublicationJson(draft.files[PUBLICATION_INDEX_FILE]),
     draft.publication,
+  );
+});
+
+test("research sync preserves publication and node identities while adding results", async () => {
+  const root = researchNode("private-sync-root", null, "Root question?", "Root result");
+  const child = researchNode(
+    "private-sync-child",
+    root.id,
+    "Existing follow-up?",
+    "Existing result",
+  );
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "private-tree-id",
+      title: "Synced research",
+      rootNodeId: root.id,
+      workspaceId: "private-workspace",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    nodes: [root, child],
+  };
+  const first = await createResearchPublicationDraft({
+    title: detail.tree.title,
+    detail,
+    selectedNodeId: child.id,
+    mode: "tree",
+    publicationId: "pub_syncstage3",
+    createdAt: "2026-07-16T12:00:00.000Z",
+    contents: [
+      researchContent(root, "Root answer.", "a".repeat(64)),
+      researchContent(child, "Existing answer.", "b".repeat(64)),
+    ],
+  });
+  const added = {
+    ...researchNode(
+      "private-sync-added",
+      child.id,
+      "New published follow-up?",
+      "New result",
+    ),
+    createdAt: 3,
+  };
+  const updated = await createResearchPublicationDraft({
+    title: "Synced research updated",
+    detail: {
+      tree: { ...detail.tree, updatedAt: 3 },
+      nodes: [root, child, added],
+    },
+    selectedNodeId: added.id,
+    mode: "tree",
+    publicationId: first.publication.publicationId,
+    createdAt: first.publication.createdAt,
+    updatedAt: "2026-07-16T13:00:00.000Z",
+    publicNodeIds: first.publicNodeIds,
+    contributionsByNodeId: {
+      [added.id]: {
+        githubLogin: "contributor",
+        proposalCommentId: 42,
+      },
+    },
+    contents: [
+      researchContent(root, "Root answer.", "a".repeat(64)),
+      researchContent(child, "Existing answer.", "b".repeat(64)),
+      researchContent(added, "New answer.", "c".repeat(64)),
+    ],
+  });
+
+  assert.equal(updated.publication.publicationId, first.publication.publicationId);
+  assert.equal(updated.publication.createdAt, first.publication.createdAt);
+  assert.equal(updated.publication.updatedAt, "2026-07-16T13:00:00.000Z");
+  assert.equal(updated.publicNodeIds[root.id], first.publicNodeIds[root.id]);
+  assert.equal(updated.publicNodeIds[child.id], first.publicNodeIds[child.id]);
+  assert.ok(updated.publicNodeIds[added.id]);
+  assert.equal(
+    Object.values(first.publicNodeIds).includes(updated.publicNodeIds[added.id]),
+    false,
+  );
+  assert.deepEqual(
+    updated.publication.kind === "research-tree"
+      ? updated.publication.research.nodes.find(
+          (node) => node.id === updated.publicNodeIds[added.id],
+        )?.contribution
+      : null,
+    {
+      githubLogin: "contributor",
+      proposalCommentId: 42,
+    },
+  );
+  assert.match(
+    updated.files[`${updated.publicNodeIds[added.id]}.md`],
+    /Proposed by \[@contributor\]/,
   );
 });
 

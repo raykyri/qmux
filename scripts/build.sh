@@ -3,6 +3,15 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 
+# Use the repository's local build configuration when the caller did not
+# provide a GitHub OAuth client ID explicitly. Automatically export sourced
+# values so they are available to the Tauri and Cargo subprocesses.
+if [[ -z "${QMUX_GITHUB_CLIENT_ID:-}" && -f "$script_dir/../.env" ]]; then
+  set -a
+  source "$script_dir/../.env"
+  set +a
+fi
+
 # `tauri` lives in node_modules/.bin; put it on PATH so this script also works
 # when invoked directly (e.g. from release.sh) rather than through `npm run`.
 export PATH="$script_dir/../node_modules/.bin:$PATH"

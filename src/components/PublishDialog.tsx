@@ -4,7 +4,6 @@ import {
   ExternalLink,
   GitBranch,
   Globe2,
-  Link2,
   LoaderCircle,
   LockKeyhole,
   X,
@@ -17,6 +16,7 @@ import {
   openExternalUrl,
   pollPublishingAuth,
   publishPublication,
+  syncPublication,
 } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import type {
@@ -30,6 +30,7 @@ export interface PublishDialogTarget {
   kindLabel: string;
   initialTitle: string;
   previewText: string;
+  binding?: PublicationBinding | null;
   buildDraft: (title: string) => Promise<PublicationDraft>;
 }
 
@@ -66,7 +67,7 @@ export default function PublishDialog({
       return;
     }
     setTitle(target.initialTitle);
-    setIsPublic(false);
+    setIsPublic(target.binding?.isPublic ?? false);
     setAuthorization(null);
     setPublishing(false);
     setResult(null);
@@ -151,6 +152,7 @@ export default function PublishDialog({
   }
 
   const activeTarget = target;
+  const updating = Boolean(activeTarget.binding);
   const canPublish = Boolean(title.trim()) && auth?.connected === true && !busy;
 
   async function connect() {
@@ -188,14 +190,23 @@ export default function PublishDialog({
     setError(null);
     try {
       const draft = await activeTarget.buildDraft(title.trim());
-      const binding = await publishPublication({
-        publicationId: draft.publication.publicationId,
-        title: draft.publication.title,
-        isPublic,
-        files: draft.files,
-        source: draft.source,
-        publicNodeIds: draft.publicNodeIds,
-      });
+      const binding = activeTarget.binding
+        ? await syncPublication({
+            publicationId: draft.publication.publicationId,
+            title: draft.publication.title,
+            isPublic: activeTarget.binding.isPublic,
+            files: draft.files,
+            source: draft.source,
+            publicNodeIds: draft.publicNodeIds,
+          })
+        : await publishPublication({
+            publicationId: draft.publication.publicationId,
+            title: draft.publication.title,
+            isPublic,
+            files: draft.files,
+            source: draft.source,
+            publicNodeIds: draft.publicNodeIds,
+          });
       setResult(binding);
       onPublished(binding);
     } catch (reason) {
@@ -233,7 +244,9 @@ export default function PublishDialog({
       >
         <header className="publication-dialog-header">
           <div>
-            <p className="publication-dialog-kicker">Publish {target.kindLabel}</p>
+            <p className="publication-dialog-kicker">
+              {updating ? "Update" : "Publish"} {target.kindLabel}
+            </p>
             <h2 id="publication-dialog-title">GitHub Gist</h2>
           </div>
           <button
@@ -254,7 +267,7 @@ export default function PublishDialog({
               <Check size={18} />
             </div>
             <div>
-              <h3>Published</h3>
+              <h3>{updating ? "Updated" : "Published"}</h3>
               <p>{result.isPublic ? "Public Gist" : "Secret Gist"}</p>
             </div>
             <div className="publication-link-row">
@@ -306,7 +319,7 @@ export default function PublishDialog({
                 />
               </label>
 
-              <fieldset className="publication-visibility">
+              <fieldset className="publication-visibility" disabled={updating}>
                 <legend>Visibility</legend>
                 <div className="publication-segmented-control">
                   <label className={!isPublic ? "is-selected" : undefined}>
@@ -331,7 +344,9 @@ export default function PublishDialog({
                   </label>
                 </div>
                 <p>
-                  {isPublic
+                  {updating
+                    ? "Visibility stays unchanged when an existing Gist is updated."
+                    : isPublic
                     ? "Public Gists appear in discovery and on your GitHub profile."
                     : "Secret Gists are unlisted, not private. Anyone with the link can read them."}
                 </p>
@@ -425,10 +440,6 @@ export default function PublishDialog({
             </div>
 
             <footer className="publication-dialog-footer">
-              <div className="publication-destination">
-                <Link2 size={14} aria-hidden="true" />
-                qmux.app
-              </div>
               <div className="publication-dialog-actions">
                 <button
                   type="button"
@@ -449,7 +460,7 @@ export default function PublishDialog({
                   ) : (
                     <Globe2 size={14} aria-hidden="true" />
                   )}
-                  Publish
+                  {updating ? "Update" : "Publish"}
                 </button>
               </div>
             </footer>

@@ -38,6 +38,7 @@ interface TranscriptPublicationInput {
   assistantLabel: string;
   publicationId?: string;
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export async function createTranscriptPublicationDraft(
@@ -45,6 +46,7 @@ export async function createTranscriptPublicationDraft(
 ): Promise<PublicationDraft> {
   const title = normalizePublicationTitle(input.title, "Published transcript");
   const createdAt = input.createdAt ?? new Date().toISOString();
+  const updatedAt = input.updatedAt ?? createdAt;
   const publicationId = input.publicationId ?? generatePublicationId();
   const messages = plainTextTranscriptMessages(input.turns, input.assistantLabel);
   if (messages.length === 0) {
@@ -56,7 +58,7 @@ export async function createTranscriptPublicationDraft(
     kind: "transcript",
     title,
     createdAt,
-    updatedAt: createdAt,
+    updatedAt,
     transcript: {
       textFile: PUBLICATION_TRANSCRIPT_FILE,
       messages,
@@ -92,6 +94,12 @@ interface ResearchPublicationInput {
   contents: ResearchNodeContent[];
   publicationId?: string;
   createdAt?: string;
+  updatedAt?: string;
+  publicNodeIds?: Record<string, string>;
+  contributionsByNodeId?: Record<
+    string,
+    { githubLogin: string; proposalCommentId: number }
+  >;
 }
 
 const TERMINAL_RESEARCH_STATUSES = new Set(["complete", "failed", "cancelled"]);
@@ -101,6 +109,7 @@ export async function createResearchPublicationDraft(
 ): Promise<PublicationDraft> {
   const title = normalizePublicationTitle(input.title, "Published research");
   const createdAt = input.createdAt ?? new Date().toISOString();
+  const updatedAt = input.updatedAt ?? createdAt;
   const publicationId = input.publicationId ?? generatePublicationId();
   const contentByNodeId = new Map(input.contents.map((content) => [content.node.id, content]));
   const selected = input.detail.nodes.find((node) => node.id === input.selectedNodeId);
@@ -133,8 +142,14 @@ export async function createResearchPublicationDraft(
   }
 
   const publicNodeIds = Object.fromEntries(
-    candidates.map((node) => [node.id, generatePublicNodeId()]),
+    candidates.map((node) => [
+      node.id,
+      input.publicNodeIds?.[node.id] ?? generatePublicNodeId(),
+    ]),
   );
+  if (new Set(Object.values(publicNodeIds)).size !== candidates.length) {
+    throw new Error("The saved publication contains duplicate public research node IDs.");
+  }
   const publicNodes: PublishedResearchNode[] = [];
   const answerFiles: Record<string, string> = {};
   for (const node of candidates) {
@@ -145,7 +160,8 @@ export async function createResearchPublicationDraft(
       throw new Error(`The response for "${researchNodeTitle(node, input.detail)}" is empty.`);
     }
     const answerFile = `${publicNodeId}.md`;
-    const fileContent = researchNodeMarkdown(input.detail, node, answer);
+    const contribution = input.contributionsByNodeId?.[node.id] ?? null;
+    const fileContent = researchNodeMarkdown(input.detail, node, answer, contribution);
     answerFiles[answerFile] = fileContent;
     publicNodes.push({
       id: publicNodeId,
@@ -161,6 +177,7 @@ export async function createResearchPublicationDraft(
       responseRevision: content.responseRevision ?? null,
       status: node.status as "complete" | "failed" | "cancelled",
       createdAt: node.createdAt,
+      ...(contribution ? { contribution } : {}),
     });
   }
 
@@ -175,7 +192,7 @@ export async function createResearchPublicationDraft(
     kind: input.mode === "answer" ? "research-answer" : "research-tree",
     title,
     createdAt,
-    updatedAt: createdAt,
+    updatedAt,
     research: {
       rootNodeId,
       selectedNodeId,
@@ -247,8 +264,16 @@ function researchNodeTitle(node: ResearchNode, detail: ResearchTreeDetail) {
   return normalizePublicationTitle(node.title ?? promptLine ?? "", "Research follow-up");
 }
 
-function researchNodeMarkdown(detail: ResearchTreeDetail, node: ResearchNode, answer: string) {
+function researchNodeMarkdown(
+  detail: ResearchTreeDetail,
+  node: ResearchNode,
+  answer: string,
+  contribution?: { githubLogin: string; proposalCommentId: number } | null,
+) {
   const title = researchNodeTitle(node, detail);
+  const credit = contribution
+    ? `> Proposed by [@${contribution.githubLogin}](https://github.com/${contribution.githubLogin}) in Gist comment ${contribution.proposalCommentId}.\n\n`
+    : "";
   const prompt =
     (node.kind ?? "run") === "document" || !node.prompt.trim()
       ? ""
@@ -260,7 +285,7 @@ function researchNodeMarkdown(detail: ResearchTreeDetail, node: ResearchNode, an
       : node.status === "cancelled"
         ? "This research run was cancelled without a response."
         : "No response is available.");
-  return `# ${markdownHeading(title)}\n\n${prompt}## Answer\n\n${response}\n`;
+  return `# ${markdownHeading(title)}\n\n${credit}${prompt}## Answer\n\n${response}\n`;
 }
 
 function researchReadme(
@@ -282,7 +307,8 @@ function researchReadme(
       return;
     }
     const status = node.status === "complete" ? "" : ` · ${node.status}`;
-    lines.push(`${"  ".repeat(depth)}- [${markdownLinkLabel(node.title)}](${node.answerFile})${status}`);
+    const credit = node.contribution ? ` · proposed by @${node.contribution.githubLogin}` : "";
+    lines.push(`${"  ".repeat(depth)}- [${markdownLinkLabel(node.title)}](${node.answerFile})${status}${credit}`);
     for (const child of children.get(node.id) ?? []) {
       append(child.id, depth + 1);
     }

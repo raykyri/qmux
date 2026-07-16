@@ -157,6 +157,31 @@ HOST=127.0.0.1 PORT=8787 npm run start:site
 `GITHUB_READER_TOKEN` is optional for the server. When set, it raises the GitHub
 API rate limit for publication reads; it is never sent to the browser.
 
+Hosted Gist comments use the OAuth App's web flow. Configure its callback URL as
+`https://qmux.app/auth/github/callback`, then provide the server-side client
+secret and an independent cookie-encryption secret:
+
+```
+GITHUB_OAUTH_CLIENT_ID=<oauth-client-id>
+GITHUB_OAUTH_CLIENT_SECRET=<oauth-client-secret>
+QMUX_SESSION_SECRET=<at-least-32-random-characters>
+QMUX_PUBLIC_ORIGIN=https://qmux.app
+```
+
+Viewer access tokens are kept in encrypted, HTTP-only session cookies and are
+used only to create comments through GitHub's Gist comments API. The comment
+body remains readable on GitHub and carries a hidden qmux publication/node
+anchor so research-node discussions render in the correct place.
+
+Published research trees also accept structured follow-up proposals. Signed-in
+readers can propose a question and optional answer on a published result; the
+proposal is stored as a Gist comment. The publication owner can refresh,
+accept, or decline proposals from the matching research tree in qmux. Accepting
+creates a local child research run, and the next publication sync includes that
+result with contributor attribution in `publication.json`, `README.md`, and the
+node Markdown file. Owner resolutions remain visible as Gist comments so the
+hosted view can show proposal status without a separate collaboration database.
+
 ## Using the App
 
 - `Cmd-T`: open a shell pane in code mode; outside code mode, open the agent

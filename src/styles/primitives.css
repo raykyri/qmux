@@ -1,3 +1,5 @@
+/* Neutralize the native button chrome so the icon renders in theme colors;
+   contexts that want a filled/bordered look layer their own class on top. */
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -5,7 +7,20 @@
   flex-wrap: nowrap;
   min-height: 0;
   padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+
+.icon-button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
 }
 
 .link-button {
