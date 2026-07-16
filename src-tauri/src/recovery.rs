@@ -170,6 +170,7 @@ pub fn resume_recent_session(
     let pane = PaneInfo {
         id: state.next_id("pane"),
         title: adapter.display_name().to_string(),
+        last_osc_title: None,
         kind: PaneKind::Agent,
         agent_id: Some(agent.id.clone()),
         group_id: agent.group_id.clone(),

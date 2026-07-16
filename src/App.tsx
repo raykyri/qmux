@@ -1305,7 +1305,12 @@ export default function App() {
     },
     [applyRecoveredDismissals],
   );
-  const [terminalTitleByPane, setTerminalTitleByPane] = useState<Record<string, string>>({});
+  // Live OSC events override the recovery snapshot, including with explicit
+  // null when a title sanitizes empty. Missing keys fall back to the pane's
+  // persisted lastOscTitle.
+  const [terminalTitleByPane, setTerminalTitleByPane] = useState<
+    Record<string, string | null>
+  >({});
   const [terminalOverlayBlockedPaneIds, setTerminalOverlayBlockedPaneIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -2269,14 +2274,6 @@ export default function App() {
         return;
       }
       setTerminalTitleByPane((current) => {
-        if (!pending) {
-          if (!(paneId in current)) {
-            return current;
-          }
-          const next = { ...current };
-          delete next[paneId];
-          return next;
-        }
         if (current[paneId] === pending) {
           return current;
         }
@@ -2311,7 +2308,9 @@ export default function App() {
   }
 
   function displayPaneTitle(pane: PaneInfo, agent: AgentInfo | undefined): string {
-    const terminalTitle = terminalTitleByPane[pane.id];
+    const terminalTitle = Object.prototype.hasOwnProperty.call(terminalTitleByPane, pane.id)
+      ? terminalTitleByPane[pane.id]
+      : pane.lastOscTitle;
     return terminalTitle && paneUsesDefaultTitle(pane, agent) ? terminalTitle : pane.title;
   }
 
@@ -4384,7 +4383,9 @@ export default function App() {
     ? displayPaneTitle(contextMenuPane, contextMenuAgent)
     : "";
   const contextMenuTerminalTitle = contextMenuPane
-    ? (terminalTitleByPane[contextMenuPane.id] ?? null)
+    ? Object.prototype.hasOwnProperty.call(terminalTitleByPane, contextMenuPane.id)
+      ? terminalTitleByPane[contextMenuPane.id]
+      : (contextMenuPane.lastOscTitle ?? null)
     : null;
   const groupMenuGroup = groupMenu ? groups.find((group) => group.id === groupMenu.groupId) : null;
   const appleFoundationTitleAvailable = appleFoundationModelsTitleAvailable(config);

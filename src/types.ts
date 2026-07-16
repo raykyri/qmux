@@ -34,6 +34,8 @@ export interface ClaudeSkill {
 export interface PaneInfo {
   id: string;
   title: string;
+  /** Last sanitized OSC 0/2 title reported by the terminal program. */
+  lastOscTitle?: string | null;
   kind: PaneKind;
   agentId?: string | null;
   groupId: string;

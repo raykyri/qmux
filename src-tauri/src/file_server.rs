@@ -968,6 +968,7 @@ mod tests {
                 info: PaneInfo {
                     id: pane_id.to_string(),
                     title: "Shell".to_string(),
+                    last_osc_title: None,
                     kind: PaneKind::Shell,
                     agent_id: None,
                     group_id: "group-1".to_string(),

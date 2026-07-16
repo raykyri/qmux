@@ -891,11 +891,21 @@ pub extern "C" fn qmux_native_terminal_did_change_title(
         return;
     };
     with_app_state(|state| {
+        let event_title = match state.update_last_osc_title(&pane_id, &title) {
+            Ok(title) => title.unwrap_or_default(),
+            Err(err) => {
+                eprintln!("qmux: failed to record native title for pane {pane_id}: {err}");
+                // Persistence is best-effort. Preserve the pre-existing live
+                // behavior even if the model is temporarily unavailable; the
+                // frontend still applies its own sanitization.
+                title
+            }
+        };
         state.emit(QmuxEvent::new(
             "terminal.title_changed",
             Some(pane_id),
             None,
-            serde_json::json!({ "title": title }),
+            serde_json::json!({ "title": event_title }),
         ));
     });
 }

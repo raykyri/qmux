@@ -81,6 +81,16 @@ const MAX_RECENT_SESSIONS: usize = 80;
 /// bookkeeping — pane content itself lives in the PTYs, not in state.json.
 const PERSIST_DEBOUNCE: Duration = Duration::from_millis(200);
 
+/// OSC titles can change continuously (progress counters, spinners, build
+/// percentages). Keep the newest value in memory immediately, but only make
+/// title-only activity dirty on this coarser cadence so a busy terminal does
+/// not force a full state.json rewrite every few hundred milliseconds.
+const LAST_OSC_TITLE_PERSIST_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Matches the frontend's display cap. OSC titles are untrusted terminal
+/// output, so normalize and bound them before they enter persisted state.
+const MAX_LAST_OSC_TITLE_CHARS: usize = 160;
+
 const RECENT_SESSION_PREVIEW_MAX_CHARS: usize = 90;
 
 /// How far a recent session's `last_active_at` must drift before a touch that
@@ -151,6 +161,10 @@ struct AppStateInner {
     persist_dirty: Mutex<bool>,
     persist_wake: Condvar,
     persister_spawned: AtomicBool,
+    // At most one coarse OSC-title persistence timer is live at a time. The
+    // normal state persister still performs the eventual atomic snapshot;
+    // this only delays the dirty mark for title-only activity.
+    last_osc_title_persist_scheduled: AtomicBool,
     // Why restore_session had to fall back or drop entries, held until startup
     // surfaces it in a GUI dialog — a Finder launch never shows stderr, and a
     // silently discarded session looks like the app ate the user's tabs.
@@ -674,6 +688,36 @@ fn sanitize_active_tab_id(tab_id: Option<String>) -> Option<String> {
     })
 }
 
+fn sanitize_last_osc_title(raw_title: &str) -> Option<String> {
+    let mut title = String::new();
+    let mut chars = 0_usize;
+    let mut pending_space = false;
+
+    for ch in raw_title.chars() {
+        if ch.is_control() || ch.is_whitespace() {
+            if !title.is_empty() {
+                pending_space = true;
+            }
+            continue;
+        }
+        if pending_space {
+            if chars >= MAX_LAST_OSC_TITLE_CHARS {
+                break;
+            }
+            title.push(' ');
+            chars += 1;
+            pending_space = false;
+        }
+        if chars >= MAX_LAST_OSC_TITLE_CHARS {
+            break;
+        }
+        title.push(ch);
+        chars += 1;
+    }
+
+    (!title.is_empty()).then_some(title)
+}
+
 fn ensure_agent_thread_metadata(state: &AppState, model: &mut Model, agent: &mut AgentInfo) {
     let had_thread_id = agent
         .thread_id
@@ -832,6 +876,11 @@ pub struct PaneRuntime {
 pub struct PaneInfo {
     pub id: String,
     pub title: String,
+    /// Last title reported by OSC 0/2. Kept separate from `title`: the latter is
+    /// the durable user/generated name and must continue to override terminal
+    /// programs when it differs from the pane's default title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_osc_title: Option<String>,
     pub kind: PaneKind,
     pub agent_id: Option<String>,
     pub group_id: String,
@@ -924,6 +973,7 @@ impl AppState {
                 persist_dirty: Mutex::new(false),
                 persist_wake: Condvar::new(),
                 persister_spawned: AtomicBool::new(false),
+                last_osc_title_persist_scheduled: AtomicBool::new(false),
                 recovery_warning: Mutex::new(None),
                 preflighted_state: Mutex::new(None),
                 exit_confirmed: AtomicBool::new(false),
@@ -6897,6 +6947,70 @@ impl AppState {
         Ok(())
     }
 
+    /// Records the newest OSC 0/2 title for a pane without changing its durable
+    /// user/generated `title`. Live callers receive the normalized value so the
+    /// event stream and the recovery snapshot use identical text.
+    pub fn update_last_osc_title(
+        &self,
+        pane_id: &str,
+        raw_title: &str,
+    ) -> Result<Option<String>, String> {
+        let title = sanitize_last_osc_title(raw_title);
+        let changed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let Some(pane) = model.panes.get_mut(pane_id) else {
+                // Native title callbacks can arrive after pane teardown. Treat
+                // that as a harmless late delivery rather than surfacing an
+                // error from the AppKit main thread.
+                return Ok(title);
+            };
+            if pane.info.last_osc_title == title {
+                false
+            } else {
+                pane.info.last_osc_title = title.clone();
+                true
+            }
+        };
+        if changed {
+            self.schedule_last_osc_title_persist();
+        }
+        Ok(title)
+    }
+
+    fn schedule_last_osc_title_persist(&self) {
+        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        if cfg!(test) {
+            self.persist_now();
+            return;
+        }
+        if self
+            .inner
+            .last_osc_title_persist_scheduled
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let state = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(LAST_OSC_TITLE_PERSIST_INTERVAL);
+            state
+                .inner
+                .last_osc_title_persist_scheduled
+                .store(false, Ordering::SeqCst);
+            // The ordinary persister adds its short coalescing window and owns
+            // snapshot ordering. A clean exit may already have committed and
+            // disabled persistence, in which case this is a no-op.
+            state.persist();
+        });
+    }
+
     pub fn rename_pane(&self, pane_id: &str, title: String) -> Result<PaneInfo, String> {
         let title = title.trim().to_string();
         if title.is_empty() {
@@ -8333,6 +8447,7 @@ mod tests {
         PaneInfo {
             id: id.to_string(),
             title: "Shell".to_string(),
+            last_osc_title: None,
             kind: PaneKind::Shell,
             agent_id: agent_id.map(ToString::to_string),
             group_id: "group-1".to_string(),
@@ -13375,6 +13490,59 @@ mod tests {
             .enqueue_agent_turn("agent-1", "ghost".to_string())
             .unwrap();
         assert!(!crate::persistence::state_path(&workspace).exists());
+    }
+
+    #[test]
+    fn osc_title_sanitization_matches_the_frontend_contract() {
+        assert_eq!(
+            sanitize_last_osc_title("  Build\u{1b}\n  42%  ").as_deref(),
+            Some("Build 42%")
+        );
+        assert_eq!(sanitize_last_osc_title(" \n\t\u{7f} "), None);
+        assert_eq!(
+            sanitize_last_osc_title(&"x".repeat(MAX_LAST_OSC_TITLE_CHARS + 20))
+                .expect("non-empty title")
+                .chars()
+                .count(),
+            MAX_LAST_OSC_TITLE_CHARS
+        );
+    }
+
+    #[test]
+    fn last_osc_title_round_trips_without_replacing_the_base_title() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            let mut pane = sample_pane_runtime("pane-1");
+            pane.info.title = "Shell".to_string();
+            state.insert_pane(pane).unwrap();
+
+            assert_eq!(
+                state
+                    .update_last_osc_title("pane-1", "  Reviewing\u{1b}\nchanges  ")
+                    .unwrap()
+                    .as_deref(),
+                Some("Reviewing changes")
+            );
+            let current = state.list_panes().unwrap();
+            assert_eq!(current[0].title, "Shell");
+            assert_eq!(
+                current[0].last_osc_title.as_deref(),
+                Some("Reviewing changes")
+            );
+        }
+
+        let restored = AppState::new(config);
+        let panes = restored.restore_session();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].title, "Shell");
+        assert_eq!(
+            panes[0].last_osc_title.as_deref(),
+            Some("Reviewing changes")
+        );
     }
 
     #[test]

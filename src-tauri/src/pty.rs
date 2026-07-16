@@ -152,6 +152,7 @@ pub struct PtySpawnSpec {
     pub group_id: String,
     pub kind: PaneKind,
     pub title: String,
+    pub last_osc_title: Option<String>,
     pub program: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
@@ -265,18 +266,25 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
         cols: pane.cols,
         rows: pane.rows,
     });
-    spawn_pty(
+    let mut spec = shell_spawn_spec(
         state,
-        shell_spawn_spec(
-            state,
-            pane.id.clone(),
-            pane.group_id.clone(),
-            cwd,
-            initial_size,
-            true,
-            resume_command,
-        )?,
-    )
+        pane.id.clone(),
+        pane.group_id.clone(),
+        cwd,
+        initial_size,
+        true,
+        resume_command,
+    )?;
+    // A shell pane may carry a manual/generated base title as well as a cached
+    // OSC title. Recovery previously rebuilt every shell as literal "Shell",
+    // discarding even explicitly renamed tabs.
+    apply_recovered_shell_titles(&mut spec, pane);
+    spawn_pty(state, spec)
+}
+
+fn apply_recovered_shell_titles(spec: &mut PtySpawnSpec, pane: &PaneInfo) {
+    spec.title.clone_from(&pane.title);
+    spec.last_osc_title.clone_from(&pane.last_osc_title);
 }
 
 /// Resolves the shell command that resumes a captured agent session through its
@@ -381,6 +389,7 @@ fn shell_spawn_spec(
         group_id,
         kind: PaneKind::Shell,
         title: "Shell".to_string(),
+        last_osc_title: None,
         program: shell,
         args,
         cwd,
@@ -841,6 +850,7 @@ fn spawn_portable_pty(
     let pane = PaneInfo {
         id: pane_id.clone(),
         title: spec.title,
+        last_osc_title: spec.last_osc_title,
         kind: spec.kind,
         agent_id: spec.agent_id,
         group_id: spec.group_id,
@@ -2525,6 +2535,7 @@ mod tests {
                 group_id: "group-1".to_string(),
                 kind: PaneKind::Shell,
                 title: "test".to_string(),
+                last_osc_title: None,
                 program: "/bin/sh".to_string(),
                 args,
                 cwd: std::env::temp_dir(),
@@ -2534,6 +2545,44 @@ mod tests {
             },
         )
         .expect("spawning a test PTY")
+    }
+
+    #[test]
+    fn recovered_shell_preserves_base_and_osc_titles() {
+        let mut spec = PtySpawnSpec {
+            pane_id: Some("pane-1".to_string()),
+            agent_id: None,
+            group_id: "group-1".to_string(),
+            kind: PaneKind::Shell,
+            title: "Shell".to_string(),
+            last_osc_title: None,
+            program: "/bin/sh".to_string(),
+            args: Vec::new(),
+            cwd: std::env::temp_dir(),
+            envs: Vec::new(),
+            initial_size: None,
+            recovered: true,
+        };
+        let pane = PaneInfo {
+            id: "pane-1".to_string(),
+            title: "Generated review title".to_string(),
+            last_osc_title: Some("Agent OSC title".to_string()),
+            kind: PaneKind::Shell,
+            agent_id: None,
+            group_id: "group-1".to_string(),
+            cwd: std::env::temp_dir().display().to_string(),
+            cols: 100,
+            rows: 24,
+            status: PaneStatus::Running,
+            last_active_at: 0,
+            recovered: true,
+            depth: 0,
+        };
+
+        apply_recovered_shell_titles(&mut spec, &pane);
+
+        assert_eq!(spec.title, "Generated review title");
+        assert_eq!(spec.last_osc_title.as_deref(), Some("Agent OSC title"));
     }
 
     fn git(repo: &Path, args: &[&str]) {
