@@ -16,6 +16,10 @@ import {
   listenToSaveDraftAsPrompt,
 } from "../lib/promptLibrary";
 import type { PromptScope, SavedPrompt } from "../types";
+import {
+  ComposerSubmitShortcutGlyph,
+  isComposerSubmitShortcut,
+} from "./ComposerSubmitShortcut";
 import ConfirmDialogActionButton from "./ConfirmDialogActionButton";
 
 const MENU_PREFERRED_WIDTH = 300;
@@ -28,13 +32,14 @@ const PROMPT_DRAG_TYPE = "application/x-qmux-prompt";
 const DERIVED_NAME_CHARS = 60;
 
 // What the popover is currently showing: the searchable prompt list or the
-// placeholder fill-in form for one prompt. Editing happens in a modal dialog.
+// placeholder fill-in form for one prompt. Editing happens in a pane-local dialog.
 type View =
   | { kind: "list" }
   | { kind: "fill"; prompt: SavedPrompt; placeholders: string[] };
 
-// Centered modal dialogs, portaled above everything (including the popover,
-// which stays open underneath so the list is fresh when the dialog closes).
+// The editor is portaled into its right pane so it never covers a native terminal;
+// delete confirmation remains an app-level modal. The popover stays open underneath
+// so the list is fresh when either dialog closes.
 type Dialog =
   | { kind: "editor"; original: SavedPrompt | null; lockedScope?: PromptScope }
   | { kind: "delete"; prompt: SavedPrompt };
@@ -48,7 +53,7 @@ interface PromptLibraryMenuProps {
   // The active pane's project directory (group dir, or base repo for
   // worktrees). Keys the Project scope; absent hides that section.
   projectDir?: string | null;
-  // Display form of projectDir (home-relative), shown under the Project heading.
+  // Display form of projectDir (home-relative), shown beside the Project heading.
   projectPath?: string | null;
 }
 
@@ -235,7 +240,8 @@ function PromptRowMenu({
 // ~/.qmux/projects/, so repos stay clean). Prompts are titleless — each row is
 // just the prompt text, and the backing filename is derived from its first
 // line. Rows drag-and-drop between the sections to move a prompt's home.
-// Editing, creating, and deleting happen in centered modal dialogs;
+// Editing and creating happen at the top of the owning right pane; deleting uses
+// a centered confirmation dialog.
 // `{placeholder}` slots discovered in a prompt's text get a fill-in step
 // before insertion, Smithers-style.
 export default function PromptLibraryMenu({
@@ -472,7 +478,12 @@ export default function PromptLibraryMenu({
       .map((prompt) => prompt.name);
 
   const saveEditor = async () => {
-    if (dialog?.kind !== "editor" || busy || editContent.trim().length === 0) {
+    if (
+      dialog?.kind !== "editor" ||
+      busy ||
+      prompts === null ||
+      editContent.trim().length === 0
+    ) {
       return;
     }
     const content = editContent.trim();
@@ -550,6 +561,7 @@ export default function PromptLibraryMenu({
   const query = search.trim().toLowerCase();
   const matchesQuery = (prompt: SavedPrompt) =>
     query.length === 0 || prompt.content.toLowerCase().includes(query);
+  const hasProjectPrompts = (prompts ?? []).some((prompt) => prompt.scope === "project");
 
   const sectionDropHandlers = (scope: PromptScope) => ({
     onDragOver: (event: DragEvent) => {
@@ -678,7 +690,7 @@ export default function PromptLibraryMenu({
       />
       <div className="prompt-library-list">
         {section("global", "Global")}
-        {hasProjectScope ? (
+        {hasProjectScope && hasProjectPrompts ? (
           <>
             <div className="prompt-library-divider" role="separator" />
             {section("project", "Project", projectPath ?? projectDir)}
@@ -740,6 +752,8 @@ export default function PromptLibraryMenu({
     }
   };
 
+  const editorSaveDisabled = editContent.trim().length === 0 || prompts === null;
+
   const editorDialog =
     dialog?.kind === "editor" ? (
       <div
@@ -748,6 +762,12 @@ export default function PromptLibraryMenu({
         aria-modal="true"
         aria-label={dialog.original ? "Edit prompt" : "New prompt"}
         onKeyDown={(event) => {
+          if (isComposerSubmitShortcut(event, true)) {
+            event.preventDefault();
+            event.stopPropagation();
+            void saveEditor();
+            return;
+          }
           if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
@@ -757,46 +777,41 @@ export default function PromptLibraryMenu({
       >
         <h2>{dialog.original ? "Edit prompt" : "New prompt"}</h2>
         {hasProjectScope && !dialog.lockedScope ? (
-          <div className="prompt-library-field">
-            <span className="prompt-library-field-label">Saved in</span>
-            <div className="prompt-library-scope-picker" role="radiogroup" aria-label="Saved in">
-              {(
-                [
-                  ["global", "Global"],
-                  ["project", "Project"],
-                ] as const
-              ).map(([scope, label]) => (
-                <button
-                  key={scope}
-                  type="button"
-                  role="radio"
-                  aria-checked={editScope === scope}
-                  className={`control-button prompt-library-scope-option${
-                    editScope === scope ? " is-active" : ""
-                  }`}
-                  title={scope === "project" ? (projectPath ?? projectDir ?? undefined) : undefined}
-                  onClick={() => setEditScope(scope)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+          <div className="prompt-library-scope-picker" role="radiogroup" aria-label="Prompt scope">
+            {(
+              [
+                ["global", "Global"],
+                ["project", "Project"],
+              ] as const
+            ).map(([scope, label]) => (
+              <button
+                key={scope}
+                type="button"
+                role="radio"
+                aria-checked={editScope === scope}
+                className={`control-button prompt-library-scope-option${
+                  editScope === scope ? " is-active" : ""
+                }`}
+                title={scope === "project" ? (projectPath ?? projectDir ?? undefined) : undefined}
+                onClick={() => setEditScope(scope)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         ) : null}
-        <label className="prompt-library-field">
-          <span className="prompt-library-field-label">
-            Prompt · use {"{placeholders}"} for fill-ins
-          </span>
+        <div className="prompt-library-field">
           <textarea
             ref={editorTextareaRef}
             className="form-field prompt-library-editor prompt-editor-dialog-textarea"
+            aria-label="Prompt"
             value={editContent}
             rows={3}
             autoFocus
             placeholder={"Review {target} for correctness bugs…"}
             onChange={(event) => setEditContent(event.target.value)}
           />
-        </label>
+        </div>
         {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
         <div className="confirm-dialog-actions">
           <button className="control-button" type="button" onClick={closeDialog}>
@@ -805,10 +820,12 @@ export default function PromptLibraryMenu({
           <ConfirmDialogActionButton
             pending={busy}
             pendingLabel="Saving…"
-            disabled={editContent.trim().length === 0 || prompts === null}
+            disabled={editorSaveDisabled}
+            aria-keyshortcuts="Meta+Enter"
             onClick={() => void saveEditor()}
           >
-            Save
+            <span>Save</span>
+            <ComposerSubmitShortcutGlyph requireCmdEnter className="shortcut-hint" />
           </ConfirmDialogActionButton>
         </div>
       </div>
@@ -888,7 +905,23 @@ export default function PromptLibraryMenu({
             document.body,
           )
         : null}
-      {dialog
+      {dialog?.kind === "editor"
+        ? createPortal(
+            <div
+              className="confirm-dialog-backdrop prompt-editor-dialog-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                  closeDialog();
+                }
+              }}
+            >
+              {editorDialog}
+            </div>,
+            triggerRef.current?.closest(".turn-pane") ?? document.body,
+          )
+        : null}
+      {dialog?.kind === "delete"
         ? createPortal(
             <div
               className="confirm-dialog-backdrop"
@@ -899,7 +932,6 @@ export default function PromptLibraryMenu({
                 }
               }}
             >
-              {editorDialog}
               {deleteDialog}
             </div>,
             document.body,

@@ -359,7 +359,7 @@
   flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -380,11 +380,13 @@
 
 .prompt-library-item-main {
   display: flex;
+  align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 6px 8px;
+  min-height: 30px;
+  padding: 5px 30px 5px 9px;
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-primary);
   text-align: left;
@@ -400,19 +402,21 @@
   cursor: default;
 }
 
-/* Prompts are titleless: the row is the prompt text itself, clamped to two
-   physical lines so long prompts stay scannable. Slightly dimmed from full
-   foreground so a list of multi-line rows doesn't read as one wall of text. */
+/* Prompts are titleless: show enough source text to identify the prompt while
+   keeping long entries bounded. The row-menu gutter above keeps its trigger
+   from covering the clamped text or final ellipsis. */
 .prompt-library-item-text {
   display: -webkit-box;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   color: #c9cfc9;
   font-size: var(--fs-base);
-  line-height: 1.35;
-  white-space: pre-wrap;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: normal;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
 
 .prompt-library-item-main:hover:not(:disabled) .prompt-library-item-text {
@@ -424,8 +428,8 @@
 }
 
 /* The row's single action: a floating "…" trigger that overlays the row's right
-   edge (no layout shift) and appears only on hover/focus, like the message-title
-   menu in the right sidebar. Solid background keeps it legible over row text. */
+   edge (no layout shift) and appears only on hover/focus. Its resting state has
+   no chrome; hover restores the old solid fill so it stays legible over text. */
 .prompt-library-item-menu-trigger {
   position: absolute;
   top: 50%;
@@ -433,13 +437,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid #3a4245;
+  width: 20px;
+  height: 20px;
+  border: 0;
   border-radius: 5px;
-  background: var(--prompt-library-item-menu-bg);
+  background: transparent;
   color: #b6bfba;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  box-shadow: none;
   transform: translateY(-50%);
   cursor: pointer;
   opacity: 0;
@@ -455,7 +459,7 @@
 
 .prompt-library-item-menu-trigger:hover,
 .prompt-library-item-menu-trigger.is-open {
-  background: #374043;
+  background: var(--prompt-library-item-menu-bg);
   color: var(--text-primary);
 }
 
@@ -503,7 +507,7 @@
 .prompt-library-section {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   padding: 3px;
   border: 1px dashed transparent;
   border-radius: var(--radius-md);
@@ -518,17 +522,17 @@
 
 .prompt-library-section-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 2px;
   padding: 2px 5px 1px;
 }
 
 .prompt-library-section-heading {
   display: flex;
+  align-items: baseline;
   flex: 1 1 auto;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
+  gap: 5px;
 }
 
 .prompt-library-section-label {
@@ -541,8 +545,9 @@
   white-space: nowrap;
 }
 
-/* The project's home-relative path, shown under the Project heading. */
+/* The project's home-relative path, shown beside the Project heading. */
 .prompt-library-section-path {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--text-faint);
@@ -695,10 +700,20 @@
   overflow-wrap: anywhere;
 }
 
-/* The centered new/edit prompt modal, reusing the confirm-dialog surface but
-   wider so multi-line prompts are comfortable to write. */
+/* The new/edit prompt dialog stays entirely inside its owning right pane so the
+   web layer never has to capture mouse input over a native terminal. */
+.prompt-editor-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 5px;
+}
+
 .prompt-editor-dialog {
-  width: min(560px, 100%);
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .prompt-editor-dialog-textarea {

@@ -52,7 +52,7 @@ interface TurnPaneHeaderProps {
   // has no agent composer, which disables the prompt-library trigger.
   onInsertPrompt?: (text: string) => void;
   // The pane's project directory (keys the prompt library's Project scope) and
-  // its home-relative display form (shown under the Project heading).
+  // its home-relative display form (shown beside the Project heading).
   promptProjectDir?: string | null;
   promptProjectPath?: string | null;
 }

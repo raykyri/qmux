@@ -198,7 +198,7 @@
   --content-card-bg: #1d2224;
   --content-inset-bg: #15191b;
   --context-menu-bg: var(--pane-hover-bg);
-  --popover-item-hover-bg: #283032;
+  --popover-item-hover-bg: var(--pane-tab-hover-bg);
   --chrome-header-bg: #14171a;
   --pane-hover-bg: #1b1f21;
   --pane-tab-hover-bg: var(--pane-hover-bg);
@@ -261,7 +261,7 @@
   --content-card-bg: #222120;
   --content-inset-bg: #1d1c19;
   --context-menu-bg: #23221f;
-  --popover-item-hover-bg: #322f2b;
+  --popover-item-hover-bg: var(--pane-tab-hover-bg);
   --chrome-header-bg: #171716;
   --pane-hover-bg: #23211f;
   --pane-tab-hover-bg: var(--right-pane-bg);
