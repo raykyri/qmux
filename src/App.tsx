@@ -103,7 +103,6 @@ import {
   IS_MAC,
   isTerminalTarget,
   measureTerminalCellSize,
-  reconcileQueuedTurnCollapse,
   selectPaneAfterClose,
   statusLabel,
 } from "./lib/appHelpers";
@@ -546,7 +545,6 @@ interface TurnPaneSurface {
   transcriptOptions: TranscriptOption[];
   queuedTurns: QueuedTurn[];
   waitTargets: WaitTarget[];
-  collapsedQueuedTurns: boolean[];
   draft: string;
   orphanedQueues: OrphanedQueueGroup[];
   queueSplit: boolean;
@@ -1382,9 +1380,6 @@ export default function App() {
   // lazily when an agent is viewed and refreshed when its transcript rotates.
   const [transcriptOptionsByAgent, setTranscriptOptionsByAgent] = useState<
     Record<string, TranscriptOption[]>
-  >({});
-  const [collapsedQueuedTurnsByAgent, setCollapsedQueuedTurnsByAgent] = useState<
-    Record<string, boolean[]>
   >({});
   const [waitTargetHoverAgentId, setWaitTargetHoverAgentId] = useState<string | null>(null);
   // The agent whose split cell a queued-card drag is currently hovering, so that
@@ -2746,7 +2741,6 @@ export default function App() {
     };
     setTranscriptNoticeByAgent(pruneRecord);
     setTranscriptOptionsByAgent(pruneRecord);
-    setCollapsedQueuedTurnsByAgent(pruneRecord);
     setProcessingNewMessageByAgent(pruneRecord);
     setThinkingAgentIds((current) => {
       const next = new Set([...current].filter((id) => ids.has(id)));
@@ -3253,7 +3247,6 @@ export default function App() {
       transcriptOptions: agent ? (transcriptOptionsByAgent[agent.id] ?? []) : [],
       queuedTurns: agent ? (queuedTurnsByAgent[agent.id] ?? []) : [],
       waitTargets: waitTargetsForAgent(agent),
-      collapsedQueuedTurns: agent ? (collapsedQueuedTurnsByAgent[agent.id] ?? []) : [],
       draft: agent ? (draftsByAgent[agent.id] ?? "") : "",
       orphanedQueues,
       queueSplit: agent ? (queueSplitByAgent[agent.id] ?? false) : false,
@@ -3443,20 +3436,8 @@ export default function App() {
   }, [agents]);
 
   function replaceQueuedTurnsByAgent(nextQueues: Record<string, QueuedTurn[]>) {
-    const previousQueues = queuedTurnsByAgentRef.current;
     queuedTurnsByAgentRef.current = nextQueues;
     setQueuedTurnsByAgentState(nextQueues);
-    setCollapsedQueuedTurnsByAgent((current) => {
-      const nextCollapsedByAgent: Record<string, boolean[]> = {};
-      for (const [agentId, queuedTurns] of Object.entries(nextQueues)) {
-        nextCollapsedByAgent[agentId] = reconcileQueuedTurnCollapse(
-          previousQueues[agentId] ?? [],
-          queuedTurns,
-          current[agentId] ?? [],
-        );
-      }
-      return nextCollapsedByAgent;
-    });
   }
 
   function setAgentQueuedTurns(agentId: string, queuedTurns: QueuedTurn[]) {
@@ -3470,20 +3451,6 @@ export default function App() {
     };
     queuedTurnsByAgentRef.current = nextQueues;
     setQueuedTurnsByAgentState(nextQueues);
-    setCollapsedQueuedTurnsByAgent((current) => {
-      const nextCollapsed = {
-        ...current,
-        [agentId]: reconcileQueuedTurnCollapse(
-          previousQueues[agentId] ?? [],
-          queuedTurns,
-          current[agentId] ?? [],
-        ),
-      };
-      if (queuedTurns.length === 0) {
-        delete nextCollapsed[agentId];
-      }
-      return nextCollapsed;
-    });
   }
 
   // Records a composer draft: the in-memory copy updates immediately so the text
@@ -3545,24 +3512,6 @@ export default function App() {
         () => undefined,
       );
     }
-  }
-
-  function toggleQueuedTurnCollapsed(agentId: string, index: number) {
-    setCollapsedQueuedTurnsByAgent((current) => {
-      const queuedTurns = queuedTurnsByAgentRef.current[agentId] ?? [];
-      if (index < 0 || index >= queuedTurns.length) {
-        return current;
-      }
-      const collapsedTurns = current[agentId] ?? [];
-      const nextCollapsedTurns = queuedTurns.map(
-        (_, turnIndex) => collapsedTurns[turnIndex] ?? false,
-      );
-      nextCollapsedTurns[index] = !nextCollapsedTurns[index];
-      return {
-        ...current,
-        [agentId]: nextCollapsedTurns,
-      };
-    });
   }
 
   // Normalizes an absolute path for display by anchoring home-relative paths
@@ -9404,7 +9353,6 @@ export default function App() {
                 draft={surface.draft}
                 queuedTurns={surface.queuedTurns}
                 waitTargets={surface.waitTargets}
-                collapsedQueuedTurns={surface.collapsedQueuedTurns}
                 queueSplit={queueSplit}
                 requireCmdEnterToSend={settings.requireCmdEnterToSend}
                 pasteProtection={pasteProtection}
@@ -9447,7 +9395,6 @@ export default function App() {
                 }
                 onDraftChange={setAgentDraft}
                 registerDraftFlusher={registerComposerDraftFlusher}
-                onQueuedTurnCollapseToggle={toggleQueuedTurnCollapsed}
                 onWaitTargetHover={setWaitTargetHoverAgentId}
                 onForkWithPrompt={({ useWorktree, prompt }) =>
                   forkPane(surface.pane, {

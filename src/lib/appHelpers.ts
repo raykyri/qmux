@@ -423,25 +423,6 @@ export function upsertThreadGraphs(
   return changed ? next : previous;
 }
 
-export function reconcileQueuedTurnCollapse(
-  previousTurns: QueuedTurn[],
-  nextTurns: QueuedTurn[],
-  previousCollapsed: boolean[],
-) {
-  const usedPreviousIndexes = new Set<number>();
-  return nextTurns.map((nextTurn) => {
-    const previousIndex = previousTurns.findIndex(
-      (previousTurn, index) =>
-        previousTurn.text === nextTurn.text && !usedPreviousIndexes.has(index),
-    );
-    if (previousIndex === -1) {
-      return false;
-    }
-    usedPreviousIndexes.add(previousIndex);
-    return previousCollapsed[previousIndex] ?? false;
-  });
-}
-
 // On macOS the find shortcut is Cmd-F; on other platforms it is Ctrl-F. (Ctrl-F
 // is readline's forward-char, so on the Mac we leave it for the terminal.)
 export const IS_MAC =

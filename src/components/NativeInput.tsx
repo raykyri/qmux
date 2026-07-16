@@ -61,13 +61,7 @@ import {
 // short enough that tab indicators and crash recovery stay effectively live.
 const DRAFT_PUSH_DEBOUNCE_MS = 150;
 
-// A quick, subtle ease for the queued-turn collapse/expand. CSS can't transition
-// to/from `auto`, so we measure both layouts and tween between explicit pixel
-// heights, then hand control back to CSS once it settles.
-const QUEUED_TURN_ANIM_MS = 120;
 const QUEUE_DRAG_START_THRESHOLD = 4;
-const QUEUE_DRAG_CLICK_SUPPRESS_MS = 100;
-const QUEUED_TURN_CLICK_DELAY_MS = 220;
 // Terminal title progress markers tend to be leading glyphs and spacing; strip
 // those only for the queued-turn wait footer so the stored wait target stays raw.
 const WAIT_TITLE_PROGRESS_PREFIX_RE =
@@ -156,70 +150,6 @@ function waitFooterLabelWithShortcut(label: string, shortcutLabel?: string | nul
   return shortcutLabel ? `${quotedTitle} (${shortcutLabel})` : quotedTitle;
 }
 
-function QueuedTurnText({ turn, collapsed }: { turn: string; collapsed: boolean }) {
-  const ref = useRef<HTMLSpanElement | null>(null);
-  const naturalHeight = useRef<number | null>(null);
-  const initialized = useRef(false);
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) {
-      return;
-    }
-    // The ancestor's is-collapsed class has already flipped, so the element is in
-    // its target layout; capture that resting height with transitions off.
-    el.style.transition = "none";
-    el.style.height = "auto";
-    const to = el.offsetHeight;
-
-    const reduceMotion =
-      el.closest(".reduce-motion") !== null ||
-      (typeof window.matchMedia === "function" &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-
-    if (!initialized.current || reduceMotion) {
-      // First mount (or a remount from reorder) and reduced-motion changes
-      // should settle immediately at the target height.
-      initialized.current = true;
-      naturalHeight.current = to;
-      el.style.height = "";
-      el.style.transition = "";
-      return;
-    }
-
-    const from = naturalHeight.current ?? to;
-    naturalHeight.current = to;
-    if (from === to) {
-      el.style.height = "";
-      el.style.transition = "";
-      return;
-    }
-
-    el.style.height = `${from}px`;
-    // Force a reflow so the start height is registered before the ease begins.
-    void el.offsetHeight;
-    el.style.transition = `height ${QUEUED_TURN_ANIM_MS}ms ease`;
-    el.style.height = `${to}px`;
-
-    const handleEnd = () => {
-      el.style.height = "";
-      el.style.transition = "";
-      naturalHeight.current = el.offsetHeight;
-      el.removeEventListener("transitionend", handleEnd);
-    };
-    el.addEventListener("transitionend", handleEnd);
-    return () => {
-      el.removeEventListener("transitionend", handleEnd);
-    };
-  }, [collapsed]);
-
-  return (
-    <span ref={ref} className="queued-turn-text">
-      {turn}
-    </span>
-  );
-}
-
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
@@ -232,7 +162,6 @@ interface NativeInputProps {
   draft: string;
   queuedTurns: QueuedTurn[];
   waitTargets: WaitTarget[];
-  collapsedQueuedTurns: boolean[];
   // When the queue and transcript are shown together (the top-right "show both"
   // toggle), an empty queue gets a centered placeholder instead of collapsing to
   // nothing above the composer.
@@ -255,7 +184,6 @@ interface NativeInputProps {
   // debounced local edits reach the draft store before it writes to disk.
   // Returns the unregister function.
   registerDraftFlusher: (flush: () => void) => () => void;
-  onQueuedTurnCollapseToggle: (agentId: string, index: number) => void;
   onWaitTargetHover: (agentId: string | null) => void;
   onForkWithPrompt: (options: {
     useWorktree: boolean;
@@ -277,7 +205,6 @@ export default function NativeInput({
   draft,
   queuedTurns,
   waitTargets,
-  collapsedQueuedTurns,
   queueSplit,
   requireCmdEnterToSend,
   pasteProtection,
@@ -292,7 +219,6 @@ export default function NativeInput({
   onMoveQueuedTurn,
   onDraftChange,
   registerDraftFlusher,
-  onQueuedTurnCollapseToggle,
   onWaitTargetHover,
   onForkWithPrompt,
   onTurnSubmitted,
@@ -406,8 +332,6 @@ export default function NativeInput({
   const queuePointerDragRef = useRef<QueuePointerDrag | null>(null);
   // The other agent's split cell a queued-card drag currently hovers, if any.
   const crossDropAgentIdRef = useRef<string | null>(null);
-  const suppressQueuedTurnClickRef = useRef(false);
-  const queuedTurnClickTimer = useRef<number | null>(null);
   // Recently sent or removed messages, per agent, so the menu can offer them for
   // quick re-copy. Kept here (not in the backend) as a session convenience.
   const [recentByAgent, setRecentByAgent] = useState<Record<string, string[]>>({});
@@ -710,39 +634,11 @@ export default function NativeInput({
     stack.scrollTop = getQueueScroll(agent.id) ?? 0;
   }, [agent.id, getQueueScroll]);
 
-  // After queueing a long item, older turns collapse and the stack gets shorter —
-  // which can strand the scroll position past the new end, leaving the queue stuck
-  // showing empty space below the last item. Watch the stack and its rows for size
-  // changes and, whenever the scroll has fallen past the bottom, snap it back down
-  // so the latest item stays in view. Only acts on the invalid over-scrolled
-  // region, so it never fights a user who has scrolled up to read earlier items.
-  useEffect(() => {
-    const stack = queueStackRef.current;
-    if (!stack) {
-      return;
-    }
-    const clampToBottom = () => {
-      const max = stack.scrollHeight - stack.clientHeight;
-      if (max >= 0 && stack.scrollTop > max + 1) {
-        stack.scrollTop = stack.scrollHeight;
-      }
-    };
-    const observer = new ResizeObserver(clampToBottom);
-    observer.observe(stack);
-    // The stack's own box doesn't change when a row collapses; observe the rows so
-    // their height animations are caught too.
-    for (const child of Array.from(stack.children)) {
-      observer.observe(child);
-    }
-    return () => observer.disconnect();
-  }, [queuedTurns.length]);
-
   useEffect(() => {
     return () => {
       if (toastTimer.current !== null) {
         window.clearTimeout(toastTimer.current);
       }
-      clearQueuedTurnClickTimer();
     };
   }, []);
 
@@ -1116,11 +1012,6 @@ export default function NativeInput({
     }
 
     event.preventDefault();
-    suppressQueuedTurnClickRef.current = true;
-    window.setTimeout(() => {
-      suppressQueuedTurnClickRef.current = false;
-    }, QUEUE_DRAG_CLICK_SUPPRESS_MS);
-
     const crossTargetAgentId = crossDropAgentIdRef.current;
     if (crossTargetAgentId) {
       clearQueueDrag();
@@ -1163,43 +1054,11 @@ export default function NativeInput({
     clearQueueDrag();
   }
 
-  function clearQueuedTurnClickTimer() {
-    if (queuedTurnClickTimer.current === null) {
-      return;
-    }
-    window.clearTimeout(queuedTurnClickTimer.current);
-    queuedTurnClickTimer.current = null;
-  }
-
-  function handleQueuedTurnToggleClick(
-    event: ReactMouseEvent<HTMLButtonElement>,
-    index: number,
-  ) {
-    if (suppressQueuedTurnClickRef.current) {
-      suppressQueuedTurnClickRef.current = false;
-      return;
-    }
-    if (event.detail > 1) {
-      return;
-    }
-    clearQueuedTurnClickTimer();
-    queuedTurnClickTimer.current = window.setTimeout(() => {
-      queuedTurnClickTimer.current = null;
-      onQueuedTurnCollapseToggle(agent.id, index);
-    }, QUEUED_TURN_CLICK_DELAY_MS);
-  }
-
-  function handleQueuedTurnDoubleClick(event: ReactMouseEvent<HTMLButtonElement>) {
+  function handleQueuedTurnDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
     event.preventDefault();
     event.stopPropagation();
-    clearQueuedTurnClickTimer();
-
-    const text = event.currentTarget.querySelector(".queued-turn-text");
-    if (!text) {
-      return;
-    }
     const range = document.createRange();
-    range.selectNodeContents(text);
+    range.selectNodeContents(event.currentTarget);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
@@ -1323,7 +1182,6 @@ export default function NativeInput({
           onScroll={(event) => saveQueueScroll(agent.id, event.currentTarget.scrollTop)}
         >
           {queuedTurns.map((turn, index) => {
-            const collapsed = collapsedQueuedTurns[index] ?? false;
             // Suppress the drop line at the dragged row's own current position.
             const activeDrop =
               dropIndex === null || dropIndex === draggingIndex || dropIndex === (draggingIndex ?? -1) + 1
@@ -1331,7 +1189,6 @@ export default function NativeInput({
                 : dropIndex;
             const className = [
               "queued-turn",
-              collapsed ? "is-collapsed" : "",
               turn.waitFor ? "has-wait" : "",
               index === draggingIndex ? "is-dragging" : "",
               activeDrop === index ? "is-drop-before" : "",
@@ -1350,16 +1207,9 @@ export default function NativeInput({
                 onPointerUp={handleQueuePointerUp}
                 onPointerCancel={handleQueuePointerCancel}
               >
-                <button
-                  type="button"
-                  className="control-button queued-turn-toggle"
-                  aria-expanded={!collapsed}
-                  aria-label={collapsed ? "Expand queued turn" : "Collapse queued turn"}
-                  onClick={(event) => handleQueuedTurnToggleClick(event, index)}
-                  onDoubleClick={handleQueuedTurnDoubleClick}
-                >
-                  <QueuedTurnText turn={turn.text} collapsed={collapsed} />
-                </button>
+                <div className="queued-turn-text" onDoubleClick={handleQueuedTurnDoubleClick}>
+                  {turn.text}
+                </div>
                 <div className="queued-turn-actions">
                   <button
                     type="button"
