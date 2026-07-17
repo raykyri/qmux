@@ -817,8 +817,17 @@ fn find_string_control_end(
         if allow_bel && byte == bel {
             return Some(index + 1);
         }
-        if byte == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
-            return Some(index + 2);
+        if byte == 0x1b {
+            if bytes.get(index + 1) == Some(&b'\\') {
+                return Some(index + 2);
+            }
+            // Any other ESC aborts the string control in the VT parser and
+            // starts a new sequence of its own. Resume at the ESC itself so a
+            // dangling OSC/DCS (terminator never written) can't swallow the
+            // escape that follows it — most consequentially an
+            // alternate-screen toggle, whose loss would mistrack screen state
+            // for the rest of the log and be baked in by the next trim.
+            return Some(index);
         }
         index += valid_utf8_sequence_len(bytes, index).max(1);
     }
@@ -1408,6 +1417,34 @@ mod tests {
         assert_eq!(
             sanitize_scrollback_replay(b"before\x1bPstuck payload\x1aafter"),
             b"beforeafter"
+        );
+    }
+
+    // A dangling string control is also aborted by a bare ESC (the VT parser
+    // starts a new sequence there), so the escape that follows a torn OSC/DCS
+    // keeps its meaning instead of being scanned over as string payload. The
+    // alternate-screen toggles are the load-bearing case: a swallowed exit
+    // leaves the sanitizer discarding everything as phantom alt-screen
+    // content, and a swallowed enter leaks hidden repaint into history.
+    #[test]
+    fn replay_sanitizer_aborts_unterminated_string_control_on_escape() {
+        // Dangling OSC inside the alternate screen must not eat the exit.
+        assert_eq!(
+            sanitize_scrollback_replay(b"pre\x1b[?1049h\x1b]2;task\x1b[?1049lpost"),
+            b"prepost"
+        );
+        // Dangling OSC in the primary screen must not eat the enter; the BEL
+        // inside the repaint would otherwise terminate the scan mid-TUI.
+        assert_eq!(
+            sanitize_scrollback_replay(
+                b"pre\x1b]2;task\x1b[?1049hrepaint\x07more\x1b[?1049lpost\r\n"
+            ),
+            b"prepost\r\n"
+        );
+        // A torn DCS aborts the same way; the following SGR still renders.
+        assert_eq!(
+            sanitize_scrollback_replay(b"before\x1bPunfinished\x1b[31mred"),
+            b"before\x1b[31mred"
         );
     }
 
