@@ -911,7 +911,21 @@ pub fn agent_prepare_shell_launch(
     {
         Ok(prepared) => prepared,
         Err(err) => {
-            if let Some(agent_id) = prepared_agent_id {
+            // The caller authenticated for this pane only, and `prepared_agent_id`
+            // is a caller-supplied environment value — the very thing
+            // `prepared_shell_agent` refuses to honor across workspaces or panes
+            // on the success path (and whose validation error may be exactly why
+            // we are here). Apply the same ownership scope before recording a
+            // failure, so one pane's token can't flip an unrelated agent to
+            // Failed by naming it in a failing prepare.
+            if let Some(agent_id) = prepared_agent_id
+                && let Some(agent) = state.agent(&agent_id)?
+                && state.pane_group_id(&pane_id)?.as_deref() == Some(agent.group_id.as_str())
+                && agent
+                    .pane_id
+                    .as_deref()
+                    .is_none_or(|bound| bound == pane_id)
+            {
                 let failed = mark_agent_spawn_failed(state, &agent_id, &pane_id)?;
                 state.emit(QmuxEvent::new(
                     "agent.spawn_failed",
@@ -1104,6 +1118,40 @@ mod tests {
             paused: false,
             created_at: 1,
         }
+    }
+
+    // A failing prepare names its agent via a caller-controlled environment
+    // value. The failure path must apply the same ownership scope as the
+    // success path: one pane's token must not flip an agent bound elsewhere
+    // (or in another workspace) to Failed by naming it in a doomed prepare.
+    #[test]
+    fn failing_prepare_does_not_fail_an_out_of_scope_prepared_agent() {
+        let state = AppState::new(test_config());
+        state
+            .insert_agent(session_agent("agent-1", Some("pane-9"), "/work", "sess-1"))
+            .unwrap();
+
+        let err = agent_prepare_shell_launch(
+            &state,
+            PrepareShellAgentLaunchRequest {
+                adapter_id: "claude".to_string(),
+                pane_id: "pane-1".to_string(),
+                cwd: "/work".to_string(),
+                args: Vec::new(),
+                shell_job_id: None,
+                supervisor_pid: None,
+                prepared_agent_id: Some("agent-1".to_string()),
+            },
+        )
+        .unwrap_err();
+        assert!(!err.is_empty());
+
+        let agent = state.agent("agent-1").unwrap().expect("agent exists");
+        assert!(
+            matches!(agent.status, AgentStatus::Idle),
+            "an agent outside the failing pane's scope must keep its status"
+        );
+        assert_eq!(agent.pane_id.as_deref(), Some("pane-9"));
     }
 
     #[test]
