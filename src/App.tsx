@@ -261,6 +261,7 @@ import {
   openRouterChatCompletion,
   getAgentDraft,
   getGlobalTaskLauncherHotkey,
+  openGlobalTaskLauncher,
   getShowHideShortcut,
   activatePane,
   getRuntimeConfig,
@@ -356,13 +357,30 @@ const GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS: ReadonlyArray<{
   value: GlobalTaskLauncherHotkey;
   label: string;
   accelerator: string | null;
+  /** Compact form for shortcut-hint slots (the ⌘K palette row). */
+  glyph: string;
 }> = [
-  { value: "doubleControl", label: "Double-tap Control", accelerator: null },
-  { value: "doubleOption", label: "Double-tap Option", accelerator: null },
-  { value: "doubleCommand", label: "Double-tap Command", accelerator: null },
-  { value: "Control+Space", label: "Control-Space", accelerator: "Control+Space" },
-  { value: "Option+Space", label: "Option-Space", accelerator: "Option+Space" },
-  { value: "Command+Space", label: "Command-Space", accelerator: "Command+Space" },
+  { value: "doubleControl", label: "Double-tap Control", accelerator: null, glyph: "⌃ ⌃" },
+  { value: "doubleOption", label: "Double-tap Option", accelerator: null, glyph: "⌥ ⌥" },
+  { value: "doubleCommand", label: "Double-tap Command", accelerator: null, glyph: "⌘ ⌘" },
+  {
+    value: "Control+Space",
+    label: "Control-Space",
+    accelerator: "Control+Space",
+    glyph: "⌃Space",
+  },
+  {
+    value: "Option+Space",
+    label: "Option-Space",
+    accelerator: "Option+Space",
+    glyph: "⌥Space",
+  },
+  {
+    value: "Command+Space",
+    label: "Command-Space",
+    accelerator: "Command+Space",
+    glyph: "⌘Space",
+  },
 ];
 // Sentinel "active pane" value for the fixed Home tab. It's not a real pane, so it
 // lives outside the `panes` list — it can't be closed, reordered, or nested, and
@@ -6121,6 +6139,15 @@ function MainApp() {
         action: () => focusPaneTab(pane.id),
       });
     }
+    commands.push({
+      id: "action:quick-launch",
+      section: "Actions",
+      title: "Quick launch: dispatch a task to an agent tab",
+      hint: GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS.find(
+        (option) => option.value === globalTaskLauncherSetting.hotkey,
+      )?.glyph,
+      action: () => void openGlobalTaskLauncher().catch(() => undefined),
+    });
     commands.push({
       id: "action:new-tab",
       section: "Actions",

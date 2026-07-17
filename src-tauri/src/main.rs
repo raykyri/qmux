@@ -2176,6 +2176,7 @@ fn main() {
             show_hide_shortcut_capture_set,
             global_task_launcher::global_task_launcher_hotkey_get,
             global_task_launcher::global_task_launcher_hotkey_set,
+            global_task_launcher::global_task_launcher_open,
         ])
         .build(tauri::generate_context!())
         .expect("error while building qmux")

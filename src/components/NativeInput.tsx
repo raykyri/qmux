@@ -34,7 +34,12 @@ import {
 } from "../lib/composerSlashCommands";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
-import { FORK_REQUIREMENT_TITLE, QUEUE_DELIVERY_OPTIONS } from "../lib/composerActions";
+import {
+  FORK_REQUIREMENT_TITLE,
+  QUEUE_DELIVERY_OPTIONS,
+  waitTargetStatusDotClass,
+  waitTargetStatusLabel,
+} from "../lib/composerActions";
 import { useConfirm } from "../hooks/useConfirm";
 import { listenToComposerInsert, requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import type {
@@ -46,12 +51,7 @@ import type {
   SubmitAgentTurnResult,
   WaitTarget,
 } from "../types";
-import {
-  agentCanFork,
-  agentStatusTone,
-  placePanePopover,
-  turnPaneRectFrom,
-} from "../lib/appHelpers";
+import { agentCanFork, placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -77,32 +77,6 @@ type QueuePointerDrag = {
   startY: number;
   active: boolean;
 };
-
-function waitTargetStatusLabel(target: WaitTarget) {
-  const queueCount = target.queueCount ?? 0;
-  if ((target.status === "done" || target.status === "idle") && queueCount > 0) {
-    return target.queueBlocked ? "Waiting" : `${queueCount} queued`;
-  }
-  switch (target.status) {
-    case "starting":
-      return "Starting";
-    case "running":
-      return "Working";
-    case "awaitingInput":
-      return "Awaiting input";
-    case "awaitingPermission":
-      return "Awaiting decision";
-    default:
-      return target.status;
-  }
-}
-
-function waitTargetStatusDotClass(target: WaitTarget) {
-  const statusTone = agentStatusTone(target.status);
-  const statusClass = target.status === "awaitingInput" ? " status-awaiting-input" : "";
-  const waitingClass = target.queueBlocked ? " is-waiting-on-pane" : "";
-  return `pane-tab-dot wait-target-status-dot status-${statusTone}${statusClass}${waitingClass}`;
-}
 
 function waitFooterTitle(label: string) {
   return label.replace(WAIT_TITLE_PROGRESS_PREFIX_RE, "").trim() || label.trim();
