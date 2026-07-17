@@ -87,7 +87,6 @@
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 30px;
   padding-right: 3px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -120,8 +119,7 @@
   align-items: start;
   min-width: 0;
   flex: 1;
-  min-height: 30px;
-  padding: 5px 4px 3px 8px;
+  padding: 4px 4px 4px 8px;
   border: 0;
   border-radius: var(--radius-md);
   color: inherit;
