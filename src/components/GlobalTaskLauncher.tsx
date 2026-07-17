@@ -662,7 +662,6 @@ export default function GlobalTaskLauncher() {
           value={value}
           disabled={!selected && !loading}
           placeholder={loading ? "Loading agent tabs…" : "Describe a task…"}
-          rows={5}
           onChange={(event) => setValue(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
