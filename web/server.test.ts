@@ -582,6 +582,68 @@ test("the public server rate-limits the publication route per client", async (t)
   await limited.arrayBuffer();
 });
 
+test("the public server uses Fly-Client-IP for rate limits on Fly", async (t) => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response("Not Found", { status: 404 });
+  const server = createQmuxWebServer({
+    fetchImpl,
+    rateLimit: { windowMs: 60_000, maxRequests: 1 },
+    trustFlyClientIp: true,
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const request = (gistId: string, clientIp: string) =>
+    fetch(`http://127.0.0.1:${address.port}/p/${gistId}`, {
+      headers: { "Fly-Client-IP": clientIp },
+    });
+  const firstClient = await request("flyclient001", "203.0.113.1");
+  assert.equal(firstClient.status, 404);
+  await firstClient.arrayBuffer();
+  const secondClient = await request("flyclient002", "203.0.113.2");
+  assert.equal(secondClient.status, 404);
+  await secondClient.arrayBuffer();
+  const limited = await request("flyclient003", "203.0.113.1");
+  assert.equal(limited.status, 429);
+  await limited.arrayBuffer();
+  const invalidHeader = await request("flyclient004", "not-an-ip");
+  assert.equal(invalidHeader.status, 404);
+  await invalidHeader.arrayBuffer();
+  const invalidHeaderLimited = await request("flyclient005", "still-not-an-ip");
+  assert.equal(invalidHeaderLimited.status, 429);
+  await invalidHeaderLimited.arrayBuffer();
+});
+
+test("the public server ignores Fly-Client-IP outside Fly", async (t) => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response("Not Found", { status: 404 });
+  const server = createQmuxWebServer({
+    fetchImpl,
+    rateLimit: { windowMs: 60_000, maxRequests: 1 },
+    trustFlyClientIp: false,
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const first = await fetch(`http://127.0.0.1:${address.port}/p/socketclient01`, {
+    headers: { "Fly-Client-IP": "203.0.113.1" },
+  });
+  assert.equal(first.status, 404);
+  await first.arrayBuffer();
+  const limited = await fetch(
+    `http://127.0.0.1:${address.port}/p/socketclient02`,
+    { headers: { "Fly-Client-IP": "203.0.113.2" } },
+  );
+  assert.equal(limited.status, 429);
+  await limited.arrayBuffer();
+});
+
 test("the public server backs off all ids after an upstream rate limit", async (t) => {
   let fetchCount = 0;
   const fetchImpl: typeof fetch = async () => {

@@ -1,0 +1,17 @@
+*
+
+!.dockerignore
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.node.json
+
+!web/
+!web/**
+
+!src/
+!src/**
+
+!site/
+!site/**

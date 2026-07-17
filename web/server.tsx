@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import React from "react";
@@ -155,6 +156,10 @@ interface ServerOptions extends GitHubWebAuthOptions {
   siteDir?: string;
   githubToken?: string | null;
   now?: () => number;
+  // Fly Proxy supplies the real client address in Fly-Client-IP. Enable this
+  // automatically on Fly, while allowing tests and other trusted-proxy
+  // deployments to opt in explicitly.
+  trustFlyClientIp?: boolean;
   // Per-client budget for the publication route; `null` disables it (used by
   // tests that intentionally issue many requests from one address).
   rateLimit?: { windowMs: number; maxRequests: number } | null;
@@ -191,6 +196,8 @@ export function createQmuxRequestHandler(options: ServerOptions = {}) {
     negativeCache: new Map(),
     rateLimit,
     rateLimiter: new Map(),
+    trustFlyClientIp:
+      options.trustFlyClientIp ?? Boolean(process.env.FLY_APP_NAME),
     upstreamCooldownUntil: 0,
     webAuth,
     activePublicationLoads: 0,
@@ -244,6 +251,7 @@ interface RouteContext {
   negativeCache: Map<string, NegativeCacheEntry>;
   rateLimit: { windowMs: number; maxRequests: number } | null;
   rateLimiter: Map<string, RateLimitEntry>;
+  trustFlyClientIp: boolean;
   upstreamCooldownUntil: number;
   activePublicationLoads: number;
 }
@@ -1215,16 +1223,15 @@ class PublicationHttpError extends Error {
   }
 }
 
-// Fixed-window per-client limit on the GitHub-backed publication route. The key
-// is the socket peer address: a forwarded-for header is caller-controlled and
-// trusting it by default would let an attacker spoof past the limit, so a
-// deployment behind a trusted proxy must add that mapping deliberately.
+// Fixed-window per-client limit on the GitHub-backed publication route. Fly
+// Proxy's client header is trusted only inside a Fly Machine; elsewhere the
+// socket peer remains authoritative so callers cannot spoof past the limit.
 function enforcePublicationRateLimit(request: IncomingMessage, context: RouteContext) {
   if (!context.rateLimit) {
     return;
   }
   const now = context.now();
-  const key = request.socket?.remoteAddress ?? "unknown";
+  const key = publicationRateLimitKey(request, context);
   const entry = context.rateLimiter.get(key);
   if (!entry || entry.resetAt <= now) {
     if (context.rateLimiter.size >= MAX_RATE_LIMIT_ENTRIES) {
@@ -1246,6 +1253,22 @@ function enforcePublicationRateLimit(request: IncomingMessage, context: RouteCon
     );
   }
   entry.count += 1;
+}
+
+function publicationRateLimitKey(
+  request: IncomingMessage,
+  context: RouteContext,
+) {
+  if (context.trustFlyClientIp) {
+    const flyClientIp = request.headers["fly-client-ip"];
+    if (typeof flyClientIp === "string") {
+      const normalizedIp = flyClientIp.trim();
+      if (isIP(normalizedIp) !== 0) {
+        return normalizedIp;
+      }
+    }
+  }
+  return request.socket?.remoteAddress ?? "unknown";
 }
 
 // Records a deterministic upstream verdict so repeat requests for the same bad
