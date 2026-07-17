@@ -1,12 +1,14 @@
 use crate::adapters::{
     AdapterNotification, PrepareShellAgentLaunchRequest, PrepareShellClaudeLaunchRequest,
-    agent_fork, agent_prepare_shell_launch, ingest_adapter_notification,
+    adapter_registry, agent_fork, agent_prepare_shell_launch, ingest_adapter_notification,
 };
 use crate::connection_limit::ConnectionLimiter;
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::AppState;
-use crate::workspace::{LaunchOrigin, validate_launch_workspace};
+use crate::workspace::{
+    LaunchOrigin, recover_shell_agent_from_session_start, validate_launch_workspace,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
@@ -283,9 +285,69 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // Bind the notification to the authenticated pane regardless of what the
             // caller claims, so hook status can only be reported for its own pane.
             notification.pane_id = Some(authed_pane.clone());
-            if let Some(agent_id) = notification.agent_id.as_deref() {
-                ensure_agent_scope(state, &authed_pane, agent_id)?;
+
+            let mut recovered_agent = None;
+            if notification.event == "SessionStart" && state.agent_by_pane(&authed_pane)?.is_none()
+            {
+                let adapter_id = notification
+                    .agent_id
+                    .as_deref()
+                    .and_then(|agent_id| state.agent(agent_id).ok().flatten())
+                    .map(|agent| agent.adapter)
+                    .or_else(|| notification.adapter_id.clone())
+                    .or_else(|| {
+                        notification
+                            .payload
+                            .get("adapterId")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                    .ok_or_else(|| {
+                        "SessionStart cannot recover a missing agent without an adapter id"
+                            .to_string()
+                    })?;
+                // Validate before creating durable state; an authenticated pane may
+                // recover only one of qmux's configured agent adapters.
+                adapter_registry(state.config()).get(&adapter_id)?;
+                let pane = state
+                    .list_panes()?
+                    .into_iter()
+                    .find(|pane| pane.id == authed_pane)
+                    .ok_or_else(|| format!("pane {authed_pane} was not found"))?;
+                let recovered = recover_shell_agent_from_session_start(
+                    state,
+                    &pane,
+                    &adapter_id,
+                    notification.agent_id.as_deref(),
+                )?;
+                notification.agent_id = Some(recovered.id.clone());
+                recovered_agent = Some(recovered);
             }
+
+            if let Some(agent_id) = notification.agent_id.as_deref() {
+                if state.agent(agent_id)?.is_some() {
+                    ensure_agent_scope(state, &authed_pane, agent_id)?;
+                } else if let Some(bound) = state.agent_by_pane(&authed_pane)? {
+                    // A recovered record may have a new qmux id while the already
+                    // running process keeps reporting the stale/missing prepared id.
+                    // The pane token is the authority boundary, so route that unknown
+                    // id to the agent now bound to the same authenticated pane.
+                    notification.agent_id = Some(bound.id);
+                } else {
+                    return Err(format!("agent {agent_id} was not found"));
+                }
+            }
+            if let Some(agent) = recovered_agent.as_ref() {
+                state.emit(QmuxEvent::new(
+                    "agent.spawned",
+                    Some(authed_pane.clone()),
+                    Some(agent.id.clone()),
+                    json!({ "agent": agent, "source": "session_start_recovery" }),
+                ));
+            }
+            // Emit the recovered binding before ingestion starts a transcript-tail
+            // thread. Its first read may immediately emit the full history, and the
+            // frontend must know which right pane owns those turns first.
             let outcome = ingest_adapter_notification(state, notification)?;
             for event in outcome.into_events() {
                 state.emit(event);

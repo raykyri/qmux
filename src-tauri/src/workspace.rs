@@ -842,6 +842,14 @@ pub fn prepare_agent_workspace(
     let _guard = AGENT_WORKSPACE_CREATION_LOCK
         .lock()
         .map_err(|_| "agent workspace creation lock poisoned".to_string())?;
+    prepare_agent_workspace_locked(state, request, None)
+}
+
+fn prepare_agent_workspace_locked(
+    state: &AppState,
+    request: PrepareAgentWorkspaceRequest,
+    agent_id_override: Option<String>,
+) -> Result<AgentInfo, String> {
     let mut group = match request.group_id.as_deref() {
         Some(group_id) => state
             .group(group_id)?
@@ -867,7 +875,7 @@ pub fn prepare_agent_workspace(
         )?,
     };
 
-    let agent_id = state.next_id("agent");
+    let agent_id = agent_id_override.unwrap_or_else(|| state.next_id("agent"));
     let agent_name = format!("agent-{}", group.agents.len() + 1);
     // An agent roots at its explicit base_repo, else the group's base_repo hint, else
     // the group's advisory cwd (its most-recently-active shell pane), else the group's
@@ -938,6 +946,109 @@ pub fn prepare_agent_workspace(
     state.update_group(group)?;
     state.insert_agent(agent.clone())?;
     Ok(agent)
+}
+
+/// Restores the pane-to-agent binding when an authenticated SessionStart is the
+/// first lifecycle signal qmux can observe for a shell-launched agent.
+///
+/// Normally qmux's injected `codex` / `claude` / `opencode` / `grok` shell
+/// function calls `agent.prepare_shell_launch` before exec. That creates and
+/// attaches the agent early enough for the right pane to exist before a fast
+/// SessionStart hook. If that preparation record is later lost or detached while
+/// the launched process still owns the pane token, its authenticated hook can
+/// arrive without a binding. Recover it here so SessionStart can bind the native
+/// session and load its transcript instead of silently becoming a no-op. This also
+/// covers other adapter integration paths that can emit an authenticated
+/// SessionStart without going through the injected shell function.
+pub fn recover_shell_agent_from_session_start(
+    state: &AppState,
+    pane: &crate::state::PaneInfo,
+    adapter_id: &str,
+    preferred_agent_id: Option<&str>,
+) -> Result<AgentInfo, String> {
+    let _guard = AGENT_WORKSPACE_CREATION_LOCK
+        .lock()
+        .map_err(|_| "agent workspace creation lock poisoned".to_string())?;
+
+    // Serialize with ordinary shell preparation and recheck under the shared
+    // guard: a nearly simultaneous prepare must win rather than minting a second
+    // agent for the same pane.
+    if let Some(agent) = state.agent_by_pane(&pane.id)? {
+        return Ok(agent);
+    }
+    if !matches!(pane.kind, crate::state::PaneKind::Shell) {
+        return Err(format!(
+            "cannot recover a shell agent in non-shell pane {}",
+            pane.id
+        ));
+    }
+
+    let preferred_agent_id = preferred_agent_id
+        .map(str::trim)
+        .filter(|agent_id| !agent_id.is_empty());
+    let agent = if let Some(agent_id) = preferred_agent_id
+        && let Some(existing) = state.agent(agent_id)?
+    {
+        if existing.pane_id.is_some()
+            || existing.group_id != pane.group_id
+            || existing.adapter != adapter_id
+            || existing.worktree_dir != pane.cwd
+        {
+            return Err(format!(
+                "agent {agent_id} cannot be recovered into pane {}",
+                pane.id
+            ));
+        }
+        existing
+    } else {
+        // Retain a qmux-minted id when the record itself disappeared. The running
+        // shell supervisor and every later hook still carry that id; changing it
+        // here would prevent the supervisor from detaching this recovered binding
+        // when the native agent process exits. Never accept an arbitrary id as a
+        // durable key—the hook payload is pane-authenticated but can still be
+        // influenced by code running inside that pane.
+        let recovered_agent_id = preferred_agent_id
+            .filter(|agent_id| is_qmux_agent_id(agent_id))
+            .map(ToString::to_string);
+        prepare_agent_workspace_locked(
+            state,
+            PrepareAgentWorkspaceRequest {
+                group_id: Some(pane.group_id.clone()),
+                base_repo: Some(pane.cwd.clone()),
+                base_ref: Some("HEAD".to_string()),
+                adapter: adapter_id.to_string(),
+                model: None,
+                // This is an agent running inside the shell's own directory, not a
+                // qmux-managed isolated worktree.
+                use_worktree: false,
+            },
+            recovered_agent_id,
+        )?
+    };
+    let attached = attach_agent_pane(state, &agent.id, pane.id.clone())?;
+    state
+        .set_agent_status(&attached.id, AgentStatus::Idle)?
+        .ok_or_else(|| {
+            format!(
+                "agent {} disappeared during SessionStart recovery",
+                attached.id
+            )
+        })
+}
+
+fn is_qmux_agent_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("agent-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(millis), Some(sequence), None)
+            if !millis.is_empty()
+                && !sequence.is_empty()
+                && millis.bytes().all(|byte| byte.is_ascii_digit())
+                && sequence.bytes().all(|byte| byte.is_ascii_digit())
+    )
 }
 
 pub fn attach_agent_pane(
@@ -1810,6 +1921,101 @@ mod tests {
             paused: false,
             created_at: 1,
         }
+    }
+
+    fn sample_shell_pane(id: &str, group_id: &str, cwd: &Path) -> crate::state::PaneInfo {
+        crate::state::PaneInfo {
+            id: id.to_string(),
+            title: "Shell".to_string(),
+            last_osc_title: None,
+            kind: crate::state::PaneKind::Shell,
+            agent_id: None,
+            group_id: group_id.to_string(),
+            cwd: cwd.display().to_string(),
+            cols: 80,
+            rows: 24,
+            status: crate::state::PaneStatus::Running,
+            last_active_at: 1,
+            recovered: false,
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn session_start_recovery_creates_one_idle_shell_agent() {
+        let workspace = temp_workspace("session-start-recovery");
+        let project = workspace.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(workspace.join("managed"));
+        let group = create_group(
+            &state,
+            CreateGroupRequest {
+                name: None,
+                dir: Some(project.display().to_string()),
+                after_group_id: None,
+                base_repo: Some(project.display().to_string()),
+                base_ref: Some("HEAD".to_string()),
+            },
+        )
+        .unwrap();
+        let pane = sample_shell_pane("pane-shell", &group.id, &project);
+
+        let first =
+            recover_shell_agent_from_session_start(&state, &pane, "codex", Some("agent-123-456"))
+                .unwrap();
+        let second = recover_shell_agent_from_session_start(
+            &state,
+            &pane,
+            "codex",
+            Some("stale-prepared-id"),
+        )
+        .unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.id, "agent-123-456");
+        assert_eq!(first.pane_id.as_deref(), Some("pane-shell"));
+        assert_eq!(first.status, AgentStatus::Idle);
+        assert_eq!(first.adapter, "codex");
+        assert_eq!(first.worktree_dir, project.display().to_string());
+        assert_eq!(state.list_agents().unwrap().len(), 1);
+        assert_eq!(
+            state.group(&group.id).unwrap().unwrap().agents,
+            vec![first.id]
+        );
+    }
+
+    #[test]
+    fn session_start_recovery_refuses_non_shell_panes() {
+        let workspace = temp_workspace("session-start-agent-pane");
+        let project = workspace.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let state = test_state_with_workspace(workspace.join("managed"));
+        let group = create_group(
+            &state,
+            CreateGroupRequest {
+                name: None,
+                dir: Some(project.display().to_string()),
+                after_group_id: None,
+                base_repo: Some(project.display().to_string()),
+                base_ref: Some("HEAD".to_string()),
+            },
+        )
+        .unwrap();
+        let mut pane = sample_shell_pane("pane-agent", &group.id, &project);
+        pane.kind = crate::state::PaneKind::Agent;
+
+        let err = recover_shell_agent_from_session_start(&state, &pane, "codex", None).unwrap_err();
+
+        assert!(err.contains("non-shell pane"), "unexpected error: {err}");
+        assert!(state.list_agents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_start_recovery_only_preserves_qmux_agent_ids() {
+        assert!(is_qmux_agent_id("agent-1784252381261-2616"));
+        assert!(!is_qmux_agent_id("agent-stale"));
+        assert!(!is_qmux_agent_id("../agent-1-2"));
+        assert!(!is_qmux_agent_id("agent-1-2-extra"));
     }
 
     #[test]

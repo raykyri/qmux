@@ -53,6 +53,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
                     "event": event,
                     "paneId": env::var("QMUX_PANE_ID").ok(),
                     "agentId": env::var("QMUX_AGENT_ID").ok(),
+                    "adapterId": env::var("QMUX_ADAPTER_ID").ok(),
                     "payload": payload,
                 }),
             )?;
@@ -202,7 +203,7 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
     let launch = request_value(
         "agent.prepare_shell_launch",
         json!({
-            "adapterId": adapter_id,
+            "adapterId": adapter_id.clone(),
             "paneId": pane_id,
             "cwd": cwd.display().to_string(),
             "args": args,
@@ -225,6 +226,10 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
     for env in launch.envs {
         command.env(env.key, env.value);
     }
+    // Lifecycle notifications normally resolve their adapter through the bound
+    // agent id. Preserve an explicit hint as well so an authenticated SessionStart
+    // can reconstruct that binding if preparation state was lost.
+    command.env("QMUX_ADAPTER_ID", &adapter_id);
 
     // The agent must own Ctrl-C/Ctrl-\ itself, so restore the default disposition in the
     // child after fork (it inherits the SIG_IGN we install below before exec). SIGTSTP is
