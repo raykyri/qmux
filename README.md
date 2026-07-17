@@ -119,7 +119,7 @@ Development:
 
 ```
 # Build the frontend only
-npm run build:web
+npm run build:site:frontend
 
 # Check Rust formatting
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -150,7 +150,7 @@ The qmux.app server serves the existing landing page at `/` and publications at
 `/p/<gist-id>`:
 
 ```
-npm run build:site
+npm run build:site:server
 HOST=127.0.0.1 PORT=8787 npm run start:site
 ```
 

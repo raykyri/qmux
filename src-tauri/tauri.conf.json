@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build:web",
+    "beforeBuildCommand": "npm run build:site:frontend",
     "frontendDist": "../dist"
   },
   "app": {
@@ -45,7 +45,7 @@
       "minimumSystemVersion": "13.0"
     },
     "resources": {
-      "../qmux-plugin/": "qmux-plugin",
+      "../qmux-claude-plugin/": "qmux-claude-plugin",
       "../qmux-opencode-plugin/plugins/qmux-notify.js": "qmux-opencode-plugin/plugins/qmux-notify.js",
       "../src/assets/fonts/ValleySans-OFL.txt": "licenses/ValleySans-OFL.txt"
     },

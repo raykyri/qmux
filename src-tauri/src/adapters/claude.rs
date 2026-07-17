@@ -3890,7 +3890,8 @@ mod tests {
             OpencodeAdapterConfig,
         };
 
-        let plugin_dir = env::temp_dir().join(format!("qmux-plugin-list-{}", std::process::id()));
+        let plugin_dir =
+            env::temp_dir().join(format!("qmux-claude-plugin-list-{}", std::process::id()));
         let _ = fs::remove_dir_all(&plugin_dir);
         let manifest_dir = plugin_dir.join(".claude-plugin");
         fs::create_dir_all(&manifest_dir).unwrap();
@@ -3970,7 +3971,7 @@ mod tests {
                 },
             },
             legacy_claude_binary: None,
-            claude_plugin_dir: env::temp_dir().join("qmux-nonexistent-plugin-dir"),
+            claude_plugin_dir: env::temp_dir().join("qmux-nonexistent-claude-plugin-dir"),
             opencode_plugin_dir: PathBuf::new(),
         };
 
@@ -3984,7 +3985,8 @@ mod tests {
             OpencodeAdapterConfig,
         };
 
-        let plugin_dir = env::temp_dir().join(format!("qmux-plugin-dup-{}", std::process::id()));
+        let plugin_dir =
+            env::temp_dir().join(format!("qmux-claude-plugin-dup-{}", std::process::id()));
         let _ = fs::remove_dir_all(&plugin_dir);
         let manifest_dir = plugin_dir.join(".claude-plugin");
         fs::create_dir_all(&manifest_dir).unwrap();

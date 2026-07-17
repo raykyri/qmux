@@ -20,7 +20,7 @@ pub struct QmuxConfig {
     pub legacy_claude_binary: Option<String>,
     /// Directory of the qmux-managed Claude plugin whose `skills/` are injected
     /// into launched Claude agents via `--plugin-dir`. Resolved at load time from
-    /// `QMUX_CLAUDE_PLUGIN_DIR` or `<cwd>/qmux-plugin`; never read from or written
+    /// `QMUX_CLAUDE_PLUGIN_DIR` or `<cwd>/qmux-claude-plugin`; never read from or written
     /// to the config JSON (it is derived, not configured).
     #[serde(skip)]
     pub claude_plugin_dir: PathBuf,
@@ -310,18 +310,18 @@ fn resolve_claude_plugin_dir(cwd: &Path) -> PathBuf {
 }
 
 /// Pure resolver (testable): the explicit override always wins; otherwise the first
-/// existing candidate is used, falling back to `<cwd>/qmux-plugin` when none exist.
+/// existing candidate is used, falling back to `<cwd>/qmux-claude-plugin` when none exist.
 /// Candidates cover the ways qmux runs:
-/// - `<cwd>/qmux-plugin` — dev (`tauri dev`) or a binary run from the repo root.
-/// - `<exe_dir>/qmux-plugin` — plugin copied next to the binary.
-/// - `<exe_dir>/../Resources/qmux-plugin` — the macOS `.app` bundle (Finder launch).
-/// - `<exe_dir>/../../../qmux-plugin` — `src-tauri/target/<profile>/qmux` -> repo root.
+/// - `<cwd>/qmux-claude-plugin` — dev (`tauri dev`) or a binary run from the repo root.
+/// - `<exe_dir>/qmux-claude-plugin` — plugin copied next to the binary.
+/// - `<exe_dir>/../Resources/qmux-claude-plugin` — the macOS `.app` bundle (Finder launch).
+/// - `<exe_dir>/../../../qmux-claude-plugin` — `src-tauri/target/<profile>/qmux` -> repo root.
 fn pick_claude_plugin_dir(
     cwd: &Path,
     override_dir: Option<&Path>,
     exe_dir: Option<&Path>,
 ) -> PathBuf {
-    pick_plugin_dir(cwd, override_dir, exe_dir, "qmux-plugin")
+    pick_plugin_dir(cwd, override_dir, exe_dir, "qmux-claude-plugin")
 }
 
 /// Resolves the qmux-managed opencode plugin directory. Honors an explicit
@@ -740,22 +740,22 @@ mod tests {
 
     #[test]
     fn plugin_dir_prefers_first_existing_candidate() {
-        let base = env::temp_dir().join(format!("qmux-plugindir-{}", std::process::id()));
+        let base = env::temp_dir().join(format!("qmux-claude-plugindir-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let cwd = base.join("cwd");
         let exe_dir = base.join("exe");
         fs::create_dir_all(&cwd).unwrap();
         fs::create_dir_all(&exe_dir).unwrap();
 
-        // Nothing exists yet -> falls back to <cwd>/qmux-plugin.
+        // Nothing exists yet -> falls back to <cwd>/qmux-claude-plugin.
         assert_eq!(
             pick_claude_plugin_dir(&cwd, None, Some(&exe_dir)),
-            cwd.join("qmux-plugin")
+            cwd.join("qmux-claude-plugin")
         );
 
         // An exe-adjacent plugin is found even though cwd has none — the case that
         // previously failed when the process cwd was not the repo root.
-        let exe_plugin = exe_dir.join("qmux-plugin");
+        let exe_plugin = exe_dir.join("qmux-claude-plugin");
         fs::create_dir_all(&exe_plugin).unwrap();
         assert_eq!(
             pick_claude_plugin_dir(&cwd, None, Some(&exe_dir)),
@@ -763,7 +763,7 @@ mod tests {
         );
 
         // The cwd candidate takes precedence once it exists.
-        let cwd_plugin = cwd.join("qmux-plugin");
+        let cwd_plugin = cwd.join("qmux-claude-plugin");
         fs::create_dir_all(&cwd_plugin).unwrap();
         assert_eq!(
             pick_claude_plugin_dir(&cwd, None, Some(&exe_dir)),
