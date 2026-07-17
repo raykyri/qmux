@@ -680,6 +680,14 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool, usize)
                 continue;
             }
             if next == b'c' {
+                // RIS resets the terminal to its initial state, which includes
+                // returning to the primary screen. Keep the tracker in step:
+                // a TUI killed inside the alternate screen followed by the
+                // user's `reset` (whose rs1 is exactly `ESC c`) must not leave
+                // every later line discarded as phantom alternate-screen
+                // content. The RIS itself stays stripped — a full reset is
+                // terminal state, not scrollback rendering.
+                alternate_screen = false;
                 index += 2;
                 continue;
             }
@@ -1115,6 +1123,18 @@ mod tests {
         assert!(
             restored.starts_with(line),
             "retained tail should begin at a line boundary"
+        );
+    }
+
+    // A dead TUI can leave the alternate screen latched with no `?1049l` ever
+    // written; the user's `reset` (rs1 = `ESC c`) returns the real terminal to
+    // the primary screen, and replay must agree or every later line vanishes.
+    #[test]
+    fn ris_returns_replay_to_the_primary_screen() {
+        let input = b"before\r\n\x1b[?1049hhidden\x1bc$ prompt after reset\r\n";
+        assert_eq!(
+            sanitize_scrollback_replay(input),
+            b"before\r\n$ prompt after reset\r\n"
         );
     }
 
