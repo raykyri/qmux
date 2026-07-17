@@ -48,7 +48,15 @@ export async function createTranscriptPublicationDraft(
   const createdAt = input.createdAt ?? new Date().toISOString();
   const updatedAt = input.updatedAt ?? createdAt;
   const publicationId = input.publicationId ?? generatePublicationId();
-  const messages = plainTextTranscriptMessages(input.turns, input.assistantLabel);
+  // Timeline keys embed the originating turn id, which carries the internal
+  // agent id (and with it the agent's creation timestamp) — local identifiers
+  // this feature elsewhere deliberately keeps out of published files (research
+  // nodes mint public ids for exactly that reason). Published message ids are
+  // only ever used as list keys on the public page, so replace them with
+  // ordinals before anything leaves the machine.
+  const messages = plainTextTranscriptMessages(input.turns, input.assistantLabel).map(
+    (message, index) => ({ ...message, id: `m-${index + 1}` }),
+  );
   if (messages.length === 0) {
     throw new Error("This transcript has no publishable user or assistant messages.");
   }

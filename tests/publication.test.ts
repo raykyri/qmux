@@ -101,6 +101,48 @@ test("transcript publications include only the redacted public projection", asyn
   assert.deepEqual(parsePublicationJson(serialized), draft.publication);
 });
 
+// Real turn ids are `{agentId}-{sourceIndex}` with agent ids of the form
+// `agent-{unix_millis}-{seq}`, so timeline-derived message ids would publish
+// the internal agent id and its creation timestamp. Published ids must be
+// minted ordinals, like research public node ids are.
+test("transcript publications do not embed the internal agent id in message ids", async () => {
+  const timestampedAgent: AgentInfo = {
+    ...agent,
+    id: "agent-1752652345678-42",
+  };
+  const timestampedTurn = (index: number, role: string, text: string): Turn => ({
+    id: `${timestampedAgent.id}-${index}`,
+    agentId: timestampedAgent.id,
+    sessionId: timestampedAgent.sessionId,
+    role,
+    blocks: [{ type: "text", text }],
+    sourceIndex: index,
+  });
+  const draft = await createTranscriptPublicationDraft({
+    title: "Ids",
+    pane,
+    agent: timestampedAgent,
+    assistantLabel: "Codex",
+    publicationId: "pub_12345678",
+    createdAt: "2026-07-16T12:00:00.000Z",
+    turns: [
+      timestampedTurn(0, "user", "Question"),
+      timestampedTurn(1, "assistant", "Answer"),
+    ],
+  });
+
+  const serialized = draft.files[PUBLICATION_INDEX_FILE];
+  assert.equal(serialized.includes(timestampedAgent.id), false);
+  const publication = parsePublicationJson(serialized);
+  assert.equal(publication.kind, "transcript");
+  assert.deepEqual(
+    publication.kind === "transcript"
+      ? publication.transcript.messages.map((message) => message.id)
+      : [],
+    ["m-1", "m-2"],
+  );
+});
+
 test("publication file validation rejects paths and oversized files", () => {
   assert.throws(
     () =>
