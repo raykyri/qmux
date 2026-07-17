@@ -5,7 +5,14 @@ export interface TaggedUserInstructionDetails {
 
 export function stripTaggedUserInstructionBlocks(text: string): string {
   const leading = stripLeadingTaggedInstructionBlocks(text);
-  const stripped = stripInlineTaggedInstructionBlocks(leading.text);
+  // Protect fenced/indented code the same way the assistant path does: a
+  // user message quoting XML-ish tags inside a code block (a pasted hook
+  // file, a config sample) is content, not an injected instruction block,
+  // and it flows into clipboard copies and published transcripts.
+  const stripped = stripInlineTaggedInstructionBlocks(
+    leading.text,
+    markdownCodeRanges(leading.text),
+  );
   return leading.removed || stripped.removed ? stripped.text : text;
 }
 

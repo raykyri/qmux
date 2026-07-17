@@ -44,6 +44,35 @@ test("preserves inline tag examples that are part of user-authored prose", () =>
   assert.equal(stripTaggedUserInstructionBlocks(message), message);
 });
 
+test("user-message stripping preserves fenced and indented code", () => {
+  const message = [
+    "Please review this hook file:",
+    "",
+    "```xml",
+    "<system-reminder>",
+    "Literal fenced XML the user pasted.",
+    "</system-reminder>",
+    "```",
+    "",
+    "    <config>",
+    "    Literal indented XML.",
+    "    </config>",
+    "",
+    "<system-reminder>",
+    "Actually injected instructions.",
+    "</system-reminder>",
+    "",
+    "What does it do?",
+  ].join("\n");
+
+  const copied = stripTaggedUserInstructionBlocks(message);
+
+  assert.equal(copied.includes("Literal fenced XML the user pasted."), true);
+  assert.equal(copied.includes("Literal indented XML."), true);
+  assert.equal(copied.includes("Actually injected instructions."), false);
+  assert.equal(copied.includes("What does it do?"), true);
+});
+
 test("generic tagged-block stripping preserves preceding Markdown headings", () => {
   const message = [
     "# Visible answer",
