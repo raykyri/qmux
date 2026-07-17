@@ -158,6 +158,10 @@ pub struct AppPreferences {
     /// shortcut is registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_hide_shortcut: Option<String>,
+    /// Fixed-choice global shortcut that opens the task launcher. Absent uses
+    /// double-tap Option, the launcher default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_launcher_hotkey: Option<String>,
     /// OpenRouter API key used for tab-title generation. Kept here — in the
     /// owner-only (0600) preferences file — rather than in webview localStorage,
     /// so the secret isn't sitting in a store any injected script could read at

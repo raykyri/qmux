@@ -51,6 +51,7 @@ import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
 import { CODEX_ADAPTER_ID } from "./adapters/codex";
 import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "./lib/adapterIcons";
 import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
+import GlobalTaskLauncher from "./components/GlobalTaskLauncher";
 import NativeInput from "./components/NativeInput";
 import {
   ComposerSubmitShortcutGlyph,
@@ -259,6 +260,7 @@ import {
   setOpenRouterKey,
   openRouterChatCompletion,
   getAgentDraft,
+  getGlobalTaskLauncherHotkey,
   getShowHideShortcut,
   activatePane,
   getRuntimeConfig,
@@ -305,6 +307,7 @@ import {
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
   setAgentTyping,
+  setGlobalTaskLauncherHotkey,
   setShowHideShortcut,
   setShowHideShortcutCaptureActive,
   setPreventSleep,
@@ -319,6 +322,8 @@ import {
 import type {
   AgentInfo,
   ClaudeSkill,
+  GlobalTaskLauncherHotkey,
+  GlobalTaskLauncherSetting,
   GroupInfo,
   InitialPaneSize,
   PaneInfo,
@@ -347,6 +352,18 @@ const LEFT_SIDEBAR_MAX_WIDTH = 420;
 const LEFT_SIDEBAR_COMPACT_WIDTH = 270;
 const PANE_TAB_DRAG_START_THRESHOLD = 4;
 const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
+const GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS: ReadonlyArray<{
+  value: GlobalTaskLauncherHotkey;
+  label: string;
+  accelerator: string | null;
+}> = [
+  { value: "doubleControl", label: "Double-tap Control", accelerator: null },
+  { value: "doubleOption", label: "Double-tap Option", accelerator: null },
+  { value: "doubleCommand", label: "Double-tap Command", accelerator: null },
+  { value: "Control+Space", label: "Control-Space", accelerator: "Control+Space" },
+  { value: "Option+Space", label: "Option-Space", accelerator: "Option+Space" },
+  { value: "Command+Space", label: "Command-Space", accelerator: "Command+Space" },
+];
 // Sentinel "active pane" value for the fixed Home tab. It's not a real pane, so it
 // lives outside the `panes` list — it can't be closed, reordered, or nested, and
 // selecting it shows the empty content placeholder (the launcher).
@@ -1198,7 +1215,7 @@ function defaultPaneTitle(
   );
 }
 
-export default function App() {
+function MainApp() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
@@ -1548,6 +1565,15 @@ export default function App() {
     });
   const [showHideShortcutSaving, setShowHideShortcutSaving] = useState(false);
   const showHideShortcutRequestRef = useRef(0);
+  const [globalTaskLauncherSetting, setGlobalTaskLauncherSetting] =
+    useState<GlobalTaskLauncherSetting>({
+      hotkey: "doubleOption",
+      registered: false,
+      error: null,
+    });
+  const [globalTaskLauncherHotkeySaving, setGlobalTaskLauncherHotkeySaving] =
+    useState(false);
+  const globalTaskLauncherHotkeyRequestRef = useRef(0);
   const showHideShortcutValue = showHideShortcutSetting.accelerator ?? "";
   const showHideShortcutMessage =
     showHideShortcutSetting.error ??
@@ -1562,6 +1588,9 @@ export default function App() {
   const showHideShortcutConflictLabel = showHideShortcutConflict(
     showHideShortcutValue || null,
   );
+  const globalTaskLauncherHotkeyMessage =
+    globalTaskLauncherSetting.error ??
+    (!globalTaskLauncherSetting.registered ? "Global quick launch hotkey is not active." : null);
   const bodyFontFamily = bodyFontStackFor(settings.bodyFontId);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
@@ -1618,6 +1647,26 @@ export default function App() {
       });
     });
 
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    void getGlobalTaskLauncherHotkey()
+      .then((setting) => {
+        if (!disposed) setGlobalTaskLauncherSetting(setting);
+      })
+      .catch((err) => {
+        if (!disposed) {
+          setGlobalTaskLauncherSetting((current) => ({
+            ...current,
+            registered: false,
+            error: unknownErrorMessage(err),
+          }));
+        }
+      });
     return () => {
       disposed = true;
     };
@@ -8617,6 +8666,29 @@ export default function App() {
     }
   }
 
+  async function updateGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey) {
+    const request = ++globalTaskLauncherHotkeyRequestRef.current;
+    setGlobalTaskLauncherHotkeySaving(true);
+    setGlobalTaskLauncherSetting((current) => ({ ...current, hotkey, error: null }));
+    try {
+      const setting = await setGlobalTaskLauncherHotkey(hotkey);
+      if (globalTaskLauncherHotkeyRequestRef.current === request) {
+        setGlobalTaskLauncherSetting(setting);
+      }
+    } catch (err) {
+      if (globalTaskLauncherHotkeyRequestRef.current === request) {
+        setGlobalTaskLauncherSetting((current) => ({
+          ...current,
+          error: unknownErrorMessage(err),
+        }));
+      }
+    } finally {
+      if (globalTaskLauncherHotkeyRequestRef.current === request) {
+        setGlobalTaskLauncherHotkeySaving(false);
+      }
+    }
+  }
+
   function captureShowHideShortcut(event: ReactKeyboardEvent<HTMLInputElement>) {
     event.preventDefault();
     event.stopPropagation();
@@ -10558,6 +10630,54 @@ export default function App() {
             </label>
 
             <div className="settings-row settings-shortcut-row">
+              <label htmlFor="settings-global-task-launcher-hotkey" className="settings-label">
+                Global quick launch hotkey
+              </label>
+              <select
+                id="settings-global-task-launcher-hotkey"
+                className="form-field settings-input"
+                value={globalTaskLauncherSetting.hotkey}
+                disabled={globalTaskLauncherHotkeySaving}
+                aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
+                aria-describedby={
+                  globalTaskLauncherHotkeyMessage
+                    ? "settings-global-task-launcher-hotkey-message"
+                    : undefined
+                }
+                onChange={(event) =>
+                  void updateGlobalTaskLauncherHotkey(
+                    event.currentTarget.value as GlobalTaskLauncherHotkey,
+                  )
+                }
+              >
+                {GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS.map((option) => (
+                  <option
+                    key={option.value}
+                    value={option.value}
+                    disabled={Boolean(
+                      option.accelerator && option.accelerator === showHideShortcutValue,
+                    )}
+                  >
+                    {option.label}
+                    {option.accelerator === showHideShortcutValue ? " (used by Show/hide)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {globalTaskLauncherHotkeyMessage || globalTaskLauncherHotkeySaving ? (
+              <p
+                id="settings-global-task-launcher-hotkey-message"
+                className={`settings-hint settings-shortcut-message${
+                  globalTaskLauncherHotkeyMessage ? " is-error" : ""
+                }`}
+              >
+                {globalTaskLauncherHotkeySaving
+                  ? "Saving hotkey..."
+                  : globalTaskLauncherHotkeyMessage}
+              </p>
+            ) : null}
+
+            <div className="settings-row settings-shortcut-row">
               <label htmlFor="settings-show-hide-shortcut" className="settings-label">
                 Show/hide app shortcut
               </label>
@@ -11684,4 +11804,11 @@ export default function App() {
       ) : null}
     </main>
   );
+}
+
+export default function App() {
+  if (new URLSearchParams(window.location.search).has("global-task-launcher")) {
+    return <GlobalTaskLauncher />;
+  }
+  return <MainApp />;
 }

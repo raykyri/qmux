@@ -34,6 +34,7 @@ import {
 } from "../lib/composerSlashCommands";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
+import { FORK_REQUIREMENT_TITLE, QUEUE_DELIVERY_OPTIONS } from "../lib/composerActions";
 import { useConfirm } from "../hooks/useConfirm";
 import { listenToComposerInsert, requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import type {
@@ -113,37 +114,6 @@ function queuedTurnDeliveryLabel(delivery: QueuedTurnDelivery) {
   }
   return delivery.useWorktree ? "Fork in worktree" : "Fork session";
 }
-
-const FORK_REQUIREMENT_TITLE =
-  "Forking requires a supported agent session that has run a turn";
-
-// The delivery choices offered by the queue dropdown, above the wait targets.
-const QUEUE_DELIVERY_OPTIONS: Array<{
-  label: string;
-  title: string;
-  needsFork: boolean;
-  delivery: QueuedTurnDelivery;
-}> = [
-  {
-    label: "Queue and fork",
-    title: "When reached, fork this session and send the message to the fork",
-    needsFork: true,
-    delivery: { kind: "fork" },
-  },
-  {
-    label: "Queue and fork in worktree",
-    title:
-      "When reached, fork this session into a fresh git worktree and send the message to the fork",
-    needsFork: true,
-    delivery: { kind: "fork", useWorktree: true },
-  },
-  {
-    label: "Queue in new session",
-    title: "When reached, start a fresh session in the same directory with this message",
-    needsFork: false,
-    delivery: { kind: "newSession" },
-  },
-];
 
 function waitFooterLabelWithShortcut(label: string, shortcutLabel?: string | null) {
   const quotedTitle = `"${waitFooterTitle(label)}"`;

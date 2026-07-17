@@ -5,6 +5,7 @@ mod connection_limit;
 mod control_socket;
 mod events;
 mod file_server;
+mod global_task_launcher;
 mod launch_path;
 mod menu_bar;
 mod native_terminal;
@@ -79,6 +80,15 @@ use workspace::{
     move_research_workspace, remove_agent_worktree, remove_research_workspace, rename_group,
     rename_research_workspace, set_group_collapsed, set_group_dir, validate_launch_workspace,
 };
+
+fn handle_global_shortcut(
+    app: &tauri::AppHandle,
+    shortcut: &tauri_plugin_global_shortcut::Shortcut,
+    event: tauri_plugin_global_shortcut::ShortcutEvent,
+) {
+    show_hide_shortcut::handle_global_shortcut(app, shortcut, event);
+    global_task_launcher::handle_global_shortcut(app, shortcut, event);
+}
 
 /// Menu ids for the custom items installed by `customize_app_menu`.
 #[cfg(desktop)]
@@ -1873,17 +1883,20 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(show_hide_shortcut::handle_global_shortcut)
+                .with_handler(handle_global_shortcut)
                 .build(),
         )
         .on_window_event({
             let state = state.clone();
-            move |_window, event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event
-                    && state.should_confirm_exit()
-                {
-                    api.prevent_close();
-                    state.request_exit_confirmation();
+            move |window, event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if window.label() == "global-task-launcher" {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else if state.should_confirm_exit() {
+                        api.prevent_close();
+                        state.request_exit_confirmation();
+                    }
                 }
             }
         })
@@ -1892,8 +1905,13 @@ fn main() {
         // document's qmux-event listener; clear the readiness flag so native
         // shortcut classifiers stop consuming chords until the new document
         // re-subscribes and calls mark_events_listener_ready again.
-        .on_page_load(|_, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Started {
+        .on_page_load(|webview, payload| {
+            // The quick-launch webview has its own event subscription. Loading
+            // or reloading it must not revoke the main document's native
+            // terminal shortcut readiness.
+            if webview.label() == "main"
+                && payload.event() == tauri::webview::PageLoadEvent::Started
+            {
                 native_terminal::set_events_listener_ready(false);
             }
         })
@@ -1930,6 +1948,9 @@ fn main() {
                 }
                 app.manage(show_hide_shortcut::ShowHideShortcutState::default());
                 show_hide_shortcut::init(app.handle(), &state.config().workspace_root);
+                app.manage(global_task_launcher::GlobalTaskLauncherState::default());
+                global_task_launcher::create_window(app)?;
+                global_task_launcher::init(app.handle(), &state.config().workspace_root);
                 // On macOS, give the window an NSVisualEffectView so the sidebar can
                 // read as a native, translucent source list (Finder/Mail/Xcode). The
                 // frontend paints the content panes opaque and leaves the sidebar
@@ -2153,6 +2174,8 @@ fn main() {
             show_hide_shortcut_get,
             show_hide_shortcut_set,
             show_hide_shortcut_capture_set,
+            global_task_launcher::global_task_launcher_hotkey_get,
+            global_task_launcher::global_task_launcher_hotkey_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building qmux")

@@ -14,6 +14,8 @@ import type {
 import type {
   AgentInfo,
   ClaudeSkill,
+  GlobalTaskLauncherHotkey,
+  GlobalTaskLauncherSetting,
   GroupInfo,
   InitialPaneSize,
   MoveQueuedAgentTurnResult,
@@ -230,6 +232,14 @@ export function setShowHideShortcut(accelerator: string | null) {
 
 export function setShowHideShortcutCaptureActive(active: boolean) {
   return invoke<ShowHideShortcutSetting>("show_hide_shortcut_capture_set", { active });
+}
+
+export function getGlobalTaskLauncherHotkey() {
+  return invoke<GlobalTaskLauncherSetting>("global_task_launcher_hotkey_get");
+}
+
+export function setGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey) {
+  return invoke<GlobalTaskLauncherSetting>("global_task_launcher_hotkey_set", { hotkey });
 }
 
 export function updateMenuBar(snapshot: MenuBarSnapshot) {
