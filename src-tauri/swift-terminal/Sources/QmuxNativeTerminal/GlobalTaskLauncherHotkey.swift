@@ -15,6 +15,14 @@ private final class GlobalTaskLauncherHotkeyMonitor {
     private var targetDown = false
     private var contaminated = false
     private var lastTapAt: TimeInterval?
+    // System-wide keyDown counters sampled at the start of the current hold and
+    // when the first tap was registered. Comparing them at release detects a
+    // key pressed during the modifier hold (Option+arrow word navigation, an
+    // Option dead-key accent) or typing between the two taps — the false
+    // triggers the keyDown monitors miss without Accessibility permission,
+    // since those counters are readable without it.
+    private var keyPressesAtHoldStart: UInt32 = 0
+    private var keyPressesAtLastTap: UInt32 = 0
 
     private init() {}
 
@@ -80,23 +88,37 @@ private final class GlobalTaskLauncherHotkeyMonitor {
         if isDown && !targetDown {
             targetDown = true
             contaminated = !otherFlags.isEmpty
+            keyPressesAtHoldStart = systemKeyDownCount()
             return
         }
         guard !isDown && targetDown else { return }
         targetDown = false
+        let keyPresses = systemKeyDownCount()
+        // Any key pressed while the modifier was held means this was a chord in
+        // another app, not a bare tap.
+        if keyPresses != keyPressesAtHoldStart {
+            contaminated = true
+        }
         guard !contaminated && otherFlags.isEmpty else {
             resetTap()
             return
         }
 
         let now = ProcessInfo.processInfo.systemUptime
-        if let lastTapAt, now - lastTapAt <= 0.36 {
+        // A genuine double-tap is two bare taps in quick succession with nothing
+        // typed in between; a key pressed between the taps rules it out.
+        if let lastTapAt, now - lastTapAt <= 0.36, keyPresses == keyPressesAtLastTap {
             resetTap()
             globalTaskLauncherDidTrigger()
         } else {
             lastTapAt = now
+            keyPressesAtLastTap = keyPresses
             contaminated = false
         }
+    }
+
+    private func systemKeyDownCount() -> UInt32 {
+        CGEventSource.counterForEventType(.combinedSessionState, eventType: .keyDown)
     }
 
     private func resetTap() {
