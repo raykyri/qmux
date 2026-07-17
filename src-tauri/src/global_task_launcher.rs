@@ -1,9 +1,13 @@
+use crate::show_hide_shortcut::{ShortcutRegistry, replace_active_registration};
 use crate::{persistence, state::AppState};
 use serde::Serialize;
 use std::{
     path::Path,
     str::FromStr,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicI32, Ordering},
+    },
 };
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
@@ -12,6 +16,10 @@ const WINDOW_LABEL: &str = "global-task-launcher";
 const DEFAULT_HOTKEY: &str = "doubleOption";
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+/// Discriminant currently installed in the Swift double-tap monitor's single
+/// slot (0 = none). Installing a hotkey replaces the slot, so releasing one
+/// must be a no-op when another double-tap binding has already taken it over.
+static INSTALLED_DOUBLE_MODIFIER: AtomicI32 = AtomicI32::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LauncherHotkey {
@@ -134,6 +142,59 @@ pub fn create_window<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The launcher's two hotkey backends behind the shared show/hide replacement
+/// transaction: space chords live in the global accelerator registry, double-tap
+/// hotkeys in the Swift modifier monitor's single slot. Registrations are keyed
+/// by `LauncherHotkey::value()` strings.
+struct LauncherHotkeyRegistry<'a, R: Runtime> {
+    app: &'a AppHandle<R>,
+}
+
+impl<R: Runtime> ShortcutRegistry for LauncherHotkeyRegistry<'_, R> {
+    fn register(&self, value: &str) -> Result<(), String> {
+        let hotkey = LauncherHotkey::parse(value)?;
+        match hotkey.accelerator() {
+            Some(accelerator) => {
+                let shortcut =
+                    Shortcut::from_str(accelerator).map_err(|error| error.to_string())?;
+                self.app
+                    .global_shortcut()
+                    .register(shortcut)
+                    .map_err(|error| error.to_string())
+            }
+            None => set_double_modifier_tracked(hotkey.modifier_code()),
+        }
+    }
+
+    fn unregister(&self, value: &str) -> Result<(), String> {
+        let hotkey = LauncherHotkey::parse(value)?;
+        match hotkey.accelerator() {
+            Some(accelerator) => {
+                let shortcut =
+                    Shortcut::from_str(accelerator).map_err(|error| error.to_string())?;
+                self.app
+                    .global_shortcut()
+                    .unregister(shortcut)
+                    .map_err(|error| error.to_string())
+            }
+            None if INSTALLED_DOUBLE_MODIFIER.load(Ordering::SeqCst) == hotkey.modifier_code() => {
+                set_double_modifier_tracked(0)
+            }
+            // Another double-tap binding already replaced this slot.
+            None => Ok(()),
+        }
+    }
+
+    fn is_registered(&self, value: &str) -> bool {
+        LauncherHotkey::parse(value).is_ok_and(|hotkey| match hotkey.accelerator() {
+            Some(accelerator) => Shortcut::from_str(accelerator)
+                .map(|shortcut| self.app.global_shortcut().is_registered(shortcut))
+                .unwrap_or(false),
+            None => INSTALLED_DOUBLE_MODIFIER.load(Ordering::SeqCst) == hotkey.modifier_code(),
+        })
+    }
+}
+
 pub fn init(app: &AppHandle, workspace_root: &Path) {
     // Retain the concrete desktop handle for the modifier-only Swift callback,
     // which has no Tauri event-loop argument of its own.
@@ -146,7 +207,9 @@ pub fn init(app: &AppHandle, workspace_root: &Path) {
     let configured =
         LauncherHotkey::parse(&configured_value).unwrap_or(LauncherHotkey::DoubleOption);
     let state = app.state::<GlobalTaskLauncherState>();
-    let result = activate(app, configured);
+    let result = LauncherHotkeyRegistry { app }
+        .register(configured.value())
+        .map_err(|error| format!("Couldn't register {}: {error}", configured.value()));
     let mut inner = state
         .inner
         .lock()
@@ -236,44 +299,50 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
         .operation
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let previous = {
+    let (previous, previous_registered) = {
         let inner = state
             .inner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        inner.configured.unwrap_or(LauncherHotkey::DoubleOption)
+        (
+            inner.configured.unwrap_or(LauncherHotkey::DoubleOption),
+            inner.registered,
+        )
     };
-    if previous == replacement && state.status().registered {
+    if previous == replacement && previous_registered {
         return Ok(state.status());
     }
 
-    deactivate(&app, previous);
-    let activation = activate(&app, replacement).and_then(|()| {
-        persistence::update_preferences(&app_state.config().workspace_root, |preferences| {
-            preferences.global_launcher_hotkey = Some(replacement.value().to_string());
-        })
-    });
+    let registry = LauncherHotkeyRegistry { app: &app };
+    let result = replace_active_registration(
+        &registry,
+        previous_registered.then(|| previous.value()),
+        Some(replacement.value()),
+        || {
+            persistence::update_preferences(&app_state.config().workspace_root, |preferences| {
+                preferences.global_launcher_hotkey = Some(replacement.value().to_string());
+            })
+        },
+    );
 
-    // Resolve the outcome — including any rollback — *before* taking `inner`.
-    // For a double-tap hotkey, deactivate/activate cross into Swift via
-    // DispatchQueue.main.sync, and the main thread takes `inner` on every
-    // global-shortcut press (`handles`) and settings read (`status`); holding
-    // `inner` across that sync call deadlocks the main thread. The `operation`
-    // lock (held for this whole command, and taken nowhere else) still
-    // serializes concurrent hotkey changes.
-    let (configured, registered, error) = match activation {
+    // Resolve the outcome — including any rollback and the registration probe —
+    // *before* taking `inner`. For a double-tap hotkey the transaction crosses
+    // into Swift via DispatchQueue.main.sync, and the main thread takes `inner`
+    // on every global-shortcut press (`handles`) and settings read (`status`);
+    // holding `inner` across those calls deadlocks the main thread. The
+    // `operation` lock (held for this whole command, and taken nowhere else)
+    // still serializes concurrent hotkey changes.
+    let (configured, registered, error) = match result {
         Ok(()) => (replacement, true, None),
         Err(error) => {
-            deactivate(&app, replacement);
-            let rollback = activate(&app, previous);
-            let registered = rollback.is_ok();
-            let error = match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    format!("{error}. Restoring the previous hotkey also failed: {rollback_error}")
-                }
-            };
-            (previous, registered, Some(error))
+            // The transaction restored (or reported) the previous registration;
+            // probe the registry rather than trust it so Settings reflects the
+            // real state.
+            (
+                previous,
+                registry.is_registered(previous.value()),
+                Some(error),
+            )
         }
     };
 
@@ -288,26 +357,10 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
     Ok(state.status())
 }
 
-fn activate<R: Runtime>(app: &AppHandle<R>, hotkey: LauncherHotkey) -> Result<(), String> {
-    if let Some(accelerator) = hotkey.accelerator() {
-        let shortcut = Shortcut::from_str(accelerator)
-            .map_err(|error| format!("Couldn't use {accelerator}: {error}"))?;
-        app.global_shortcut()
-            .register(shortcut)
-            .map_err(|error| format!("Couldn't register {accelerator}: {error}"))
-    } else {
-        set_double_modifier(hotkey.modifier_code())
-    }
-}
-
-fn deactivate<R: Runtime>(app: &AppHandle<R>, hotkey: LauncherHotkey) {
-    if let Some(accelerator) = hotkey.accelerator() {
-        if let Ok(shortcut) = Shortcut::from_str(accelerator) {
-            let _ = app.global_shortcut().unregister(shortcut);
-        }
-    } else {
-        let _ = set_double_modifier(0);
-    }
+fn set_double_modifier_tracked(modifier: i32) -> Result<(), String> {
+    set_double_modifier(modifier)?;
+    INSTALLED_DOUBLE_MODIFIER.store(modifier, Ordering::SeqCst);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

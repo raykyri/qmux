@@ -21,6 +21,8 @@ import { agentCanFork, agentStatusLabel } from "../lib/appHelpers";
 import {
   FORK_REQUIREMENT_TITLE,
   QUEUE_DELIVERY_OPTIONS,
+  deriveComposerGating,
+  planComposerSubmission,
   waitTargetStatusDotClass,
   waitTargetStatusLabel,
 } from "../lib/composerActions";
@@ -60,6 +62,10 @@ function targetStatus(target: LauncherTarget): string {
     ? ` · shell ${target.shellJob.state === "foreground" ? "foreground" : target.shellJob.state}`
     : "";
   return `${tabKind} · ${status}${queue}${shell}`;
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 export default function GlobalTaskLauncher() {
@@ -139,7 +145,7 @@ export default function GlobalTaskLauncher() {
       );
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setLoading(false);
     }
@@ -154,9 +160,11 @@ export default function GlobalTaskLauncher() {
     void launcherWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
         visibleRef.current = true;
-        setLoading(true);
         setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
-        void refresh().then(() => requestAnimationFrame(() => textareaRef.current?.focus()));
+        // Focus immediately: the textarea stays enabled through the refresh so
+        // the first keystrokes after the hotkey land in the draft.
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        void refresh();
       } else {
         visibleRef.current = false;
         if (refreshTimerRef.current !== null) {
@@ -194,23 +202,23 @@ export default function GlobalTaskLauncher() {
   const policy = selected
     ? getAgentUiAdapter(selected.agent.adapter).composerPolicy(selected.agent)
     : null;
-  const canSend = Boolean(selected && policy?.readyStatuses.includes(selected.agent.status));
-  const canQueue = Boolean(selected && policy?.queueStatuses.includes(selected.agent.status));
-  const canSteer = Boolean(selected && policy?.steerStatuses.includes(selected.agent.status));
-  const hasQueue = Boolean(selected?.queue.length);
-  const canAppendQueue = Boolean(
-    selected && selected.agent.status !== "failed" && (canQueue || hasQueue),
+  const {
+    canSend,
+    canSteer,
+    canAppendQueue,
+    submitShortcutWouldTargetSend,
+    submitShortcutWouldTargetQueue,
+  } = deriveComposerGating(
+    policy,
+    selected?.agent.status ?? null,
+    selected?.queue.length ?? 0,
+    submitting,
   );
   const canFork = agentCanFork(selected?.agent);
   const hasValue = value.trim().length > 0;
   const parsedSlashCommand = useMemo(() => parseComposerSlashCommand(value), [value]);
   const permissionActions =
     selected?.agent.status === "awaitingPermission" ? (policy?.permissionActions ?? []) : [];
-  // Which button the submit shortcut lands on, mirroring the composer: send to
-  // a ready agent with an empty queue, queue behind everything else.
-  const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueue;
-  const submitShortcutWouldTargetQueue =
-    !submitShortcutWouldTargetSend && !submitting && canAppendQueue;
 
   const waitTargets = useMemo<WaitTarget[]>(
     () =>
@@ -247,7 +255,7 @@ export default function GlobalTaskLauncher() {
       // summoned from rather than leaving qmux activated.
       await dismissGlobalTaskLauncher();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
       requestAnimationFrame(() => textareaRef.current?.focus());
     } finally {
       setSubmitting(false);
@@ -256,32 +264,27 @@ export default function GlobalTaskLauncher() {
 
   function submit(mode: SubmitAgentTurnMode) {
     if (!selected) return;
-    const text = value.trim();
-    const slash = parseComposerSlashCommand(value);
-    if (slash.kind === "incomplete") {
-      setError(`Add a message after ${slash.command.token}`);
+    const plan = planComposerSubmission(parsedSlashCommand, canFork);
+    if (plan.kind === "reject") {
+      setError(plan.message);
       return;
     }
-    if (slash.kind === "ready") {
-      if (!canFork) {
-        setError(FORK_REQUIREMENT_TITLE);
-        return;
-      }
+    if (plan.kind === "fork") {
       void finishSubmission(() =>
         forkAgent(selected.pane.id, {
           nest: true,
-          useWorktree: slash.command.useWorktree,
-          prompt: slash.prompt,
+          useWorktree: plan.useWorktree,
+          prompt: plan.prompt,
         }),
       );
       return;
     }
-    void finishSubmission(() => submitAgentTurn(selected.agent.id, text, mode));
+    void finishSubmission(() => submitAgentTurn(selected.agent.id, value.trim(), mode));
   }
 
   function submitDefault() {
-    if (canSend && !hasQueue) submit("send");
-    else if (canAppendQueue) submit("queue");
+    if (submitShortcutWouldTargetSend) submit("send");
+    else if (submitShortcutWouldTargetQueue) submit("queue");
   }
 
   return (
@@ -319,7 +322,7 @@ export default function GlobalTaskLauncher() {
         <textarea
           ref={textareaRef}
           value={value}
-          disabled={!selected || loading}
+          disabled={!selected && !loading}
           placeholder={loading ? "Loading agent tabs…" : "Describe a task…"}
           rows={5}
           onChange={(event) => setValue(event.currentTarget.value)}
@@ -342,10 +345,15 @@ export default function GlobalTaskLauncher() {
               disabled={submitting || !selected}
               onClick={() => {
                 if (!selected) return;
-                void finishSubmission(
-                  () => submitPaneInput(selected.pane.id, action.input),
-                  true,
-                );
+                // Unlike a task submission, answering a permission prompt keeps
+                // the window open and the typed draft intact, mirroring the
+                // composer.
+                setSubmitting(true);
+                setError(null);
+                void submitPaneInput(selected.pane.id, action.input)
+                  .then(() => refresh())
+                  .catch((cause) => setError(errorMessage(cause)))
+                  .finally(() => setSubmitting(false));
               }}
             >
               {action.label}
@@ -407,9 +415,7 @@ export default function GlobalTaskLauncher() {
                     setSubmitting(true);
                     void unpauseAgent(selected.agent.id)
                       .then(() => refresh())
-                      .catch((cause) =>
-                        setError(cause instanceof Error ? cause.message : String(cause)),
-                      )
+                      .catch((cause) => setError(errorMessage(cause)))
                       .finally(() => setSubmitting(false));
                   }}
                 >
