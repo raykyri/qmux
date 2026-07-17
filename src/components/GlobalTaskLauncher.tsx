@@ -64,6 +64,12 @@ function targetStatus(target: LauncherTarget): string {
 export default function GlobalTaskLauncher() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  // The launcher window is created hidden and kept alive for the whole app
+  // lifetime, so without this gate its webview would refetch panes, agents,
+  // groups, shell jobs, and every agent's turn queue on every backend event —
+  // ~12×/second under a busy agent — while never on screen. Only the visible
+  // window needs live data; focus/blur drive this flag.
+  const visibleRef = useRef(false);
   const [targets, setTargets] = useState<LauncherTarget[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [value, setValue] = useState("");
@@ -146,10 +152,16 @@ export default function GlobalTaskLauncher() {
 
     void launcherWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
+        visibleRef.current = true;
         setLoading(true);
         setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
         void refresh().then(() => requestAnimationFrame(() => textareaRef.current?.focus()));
       } else {
+        visibleRef.current = false;
+        if (refreshTimerRef.current !== null) {
+          window.clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
         setQueueMenuOpen(false);
         void launcherWindow.hide();
       }
@@ -158,13 +170,17 @@ export default function GlobalTaskLauncher() {
       else unlistenFocus = unlisten;
     });
     void listenToEvents(() => {
+      // Skip the refetch while hidden; the focus handler refreshes on show.
+      if (!visibleRef.current) return;
       if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = window.setTimeout(() => void refresh(), 80);
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenEvents = unlisten;
     });
-    void refresh().then(() => requestAnimationFrame(() => textareaRef.current?.focus()));
+    // One-time pre-warm so the first show renders instantly; ongoing refreshes
+    // are gated on visibility above.
+    void refresh();
     return () => {
       disposed = true;
       unlistenFocus?.();
