@@ -5896,6 +5896,28 @@ impl AppState {
     }
 
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
+        self.append_turn_internal(turn, None).map(|_| ())
+    }
+
+    /// Tail-scoped append: applies only while `transcript_path` is still the
+    /// agent's bound transcript, and reports whether it applied. A tail checks
+    /// its binding at the top of each poll, but a rebind (rewind rotation, a
+    /// session picker choice, recovery) can land between that check and this
+    /// write — an unconditional write would splice the dead file's parse over
+    /// the new tail's timeline. Checking under the model lock closes that race.
+    pub fn append_turn_for_transcript(
+        &self,
+        turn: Turn,
+        transcript_path: &str,
+    ) -> Result<bool, String> {
+        self.append_turn_internal(turn, Some(transcript_path))
+    }
+
+    fn append_turn_internal(
+        &self,
+        turn: Turn,
+        bound_transcript_path: Option<&str>,
+    ) -> Result<bool, String> {
         let (should_persist_state, agent_for_graph, graph_store) = {
             let mut model = self
                 .inner
@@ -5903,6 +5925,14 @@ impl AppState {
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
             let agent_id = turn.agent_id.clone();
+            if let Some(bound_transcript_path) = bound_transcript_path {
+                let still_bound = model.agents.get(&agent_id).is_some_and(|agent| {
+                    agent.transcript_path.as_deref() == Some(bound_transcript_path)
+                });
+                if !still_bound {
+                    return Ok(false);
+                }
+            }
             let is_user_turn = turn.role == "user";
             bump_agent_activity_locked(&mut model, &agent_id);
             let turns = model.turns.entry(agent_id.clone()).or_default();
@@ -5972,10 +6002,35 @@ impl AppState {
         {
             self.persist();
         }
-        Ok(())
+        Ok(true)
     }
 
-    pub fn replace_turns(&self, agent_id: &str, mut turns: Vec<Turn>) -> Result<(), String> {
+    pub fn replace_turns(&self, agent_id: &str, turns: Vec<Turn>) -> Result<(), String> {
+        self.replace_turns_internal(agent_id, turns, None)
+            .map(|_| ())
+    }
+
+    /// Tail-scoped replace: applies only while `transcript_path` is still the
+    /// agent's bound transcript, and reports whether it applied. See
+    /// [`Self::append_turn_for_transcript`] for the race this closes — for a
+    /// replace the stakes are higher, since a stale tail's late full-window
+    /// refresh would wholesale swap the new transcript's timeline for the dead
+    /// file's parse.
+    pub fn replace_turns_for_transcript(
+        &self,
+        agent_id: &str,
+        transcript_path: &str,
+        turns: Vec<Turn>,
+    ) -> Result<bool, String> {
+        self.replace_turns_internal(agent_id, turns, Some(transcript_path))
+    }
+
+    fn replace_turns_internal(
+        &self,
+        agent_id: &str,
+        mut turns: Vec<Turn>,
+        bound_transcript_path: Option<&str>,
+    ) -> Result<bool, String> {
         let turns_for_graph = turns.clone();
         let (should_persist_state, agent_for_graph, graph_store) = {
             let mut model = self
@@ -5983,6 +6038,14 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if let Some(bound_transcript_path) = bound_transcript_path {
+                let still_bound = model.agents.get(agent_id).is_some_and(|agent| {
+                    agent.transcript_path.as_deref() == Some(bound_transcript_path)
+                });
+                if !still_bound {
+                    return Ok(false);
+                }
+            }
             if turns.len() > MAX_TURNS_PER_AGENT {
                 let overflow = turns.len() - MAX_TURNS_PER_AGENT;
                 turns.drain(..overflow);
@@ -6040,7 +6103,7 @@ impl AppState {
         {
             self.persist();
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Test convenience: queues a plain text turn with no directives. Production
@@ -11183,6 +11246,72 @@ mod tests {
             parent_native_id: None,
             native_message_id: None,
         }
+    }
+
+    // A tail re-checks its binding inside the write: a rebind (rewind
+    // rotation, session picker choice, recovery) landing between a tail's
+    // loop-top check and its write must not let the dead file's parse land
+    // over the new transcript's timeline.
+    #[test]
+    fn transcript_scoped_turn_writes_apply_only_while_bound() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        let mut agent = sample_agent("agent-1");
+        agent.worktree_dir = workspace.display().to_string();
+        agent.transcript_path = Some("/tmp/current.jsonl".to_string());
+        state.insert_agent(agent).unwrap();
+
+        assert!(
+            state
+                .append_turn_for_transcript(
+                    sample_user_turn("agent-1", "live"),
+                    "/tmp/current.jsonl"
+                )
+                .unwrap()
+        );
+
+        let mut stale = sample_user_turn("agent-1", "stale");
+        stale.id = "agent-1-9".to_string();
+        stale.source_index = 9;
+        assert!(
+            !state
+                .append_turn_for_transcript(stale, "/tmp/old.jsonl")
+                .unwrap()
+        );
+        assert!(
+            !state
+                .replace_turns_for_transcript(
+                    "agent-1",
+                    "/tmp/old.jsonl",
+                    vec![sample_user_turn("agent-1", "stale history")],
+                )
+                .unwrap()
+        );
+
+        let turns = state.list_turns(Some("agent-1")).unwrap();
+        assert_eq!(turns.len(), 1);
+        match turns[0].blocks.as_slice() {
+            [crate::transcript::TurnBlock::Text { text }] => assert_eq!(text, "live"),
+            blocks => panic!("unexpected blocks: {blocks:?}"),
+        }
+
+        assert!(
+            state
+                .replace_turns_for_transcript(
+                    "agent-1",
+                    "/tmp/current.jsonl",
+                    vec![sample_user_turn("agent-1", "refreshed")],
+                )
+                .unwrap()
+        );
+        let turns = state.list_turns(Some("agent-1")).unwrap();
+        assert_eq!(turns.len(), 1);
+        match turns[0].blocks.as_slice() {
+            [crate::transcript::TurnBlock::Text { text }] => assert_eq!(text, "refreshed"),
+            blocks => panic!("unexpected blocks: {blocks:?}"),
+        }
+
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

@@ -218,15 +218,25 @@ pub fn start_transcript_tail(
                 raw_line_offset = snapshot.start_line_index;
                 let turns =
                     adapter.resolve_transcript_turns(&agent_id, raw_line_offset, &raw_lines);
-                if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
-                    state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
-                } else {
-                    state.emit(QmuxEvent::new(
-                        "turn.updated",
-                        None,
-                        Some(agent_id.clone()),
-                        json!({ "reset": true, "turns": turns }),
-                    ));
+                // Bound-checked write: a rebind can land between this tail's
+                // loop-top binding check and here, and an unconditional replace
+                // would swap the new transcript's timeline for this dead file's
+                // parse. A skipped write emits nothing; the next loop-top check
+                // retires this tail.
+                match state.replace_turns_for_transcript(&agent_id, &transcript_path, turns.clone())
+                {
+                    Err(err) => {
+                        state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                    }
+                    Ok(true) => {
+                        state.emit(QmuxEvent::new(
+                            "turn.updated",
+                            None,
+                            Some(agent_id.clone()),
+                            json!({ "reset": true, "turns": turns }),
+                        ));
+                    }
+                    Ok(false) => {}
                 }
                 line_index = raw_line_offset + raw_lines.len();
                 consumed = snapshot.consumed_bytes;
@@ -243,15 +253,23 @@ pub fn start_transcript_tail(
                     trim_transcript_window(&mut raw_lines, &mut raw_line_offset);
                     let turns =
                         adapter.resolve_transcript_turns(&agent_id, raw_line_offset, &raw_lines);
-                    if let Err(err) = state.replace_turns(&agent_id, turns.clone()) {
-                        state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
-                    } else {
-                        state.emit(QmuxEvent::new(
-                            "turn.updated",
-                            None,
-                            Some(agent_id.clone()),
-                            json!({ "reset": true, "turns": turns }),
-                        ));
+                    match state.replace_turns_for_transcript(
+                        &agent_id,
+                        &transcript_path,
+                        turns.clone(),
+                    ) {
+                        Err(err) => {
+                            state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
+                        }
+                        Ok(true) => {
+                            state.emit(QmuxEvent::new(
+                                "turn.updated",
+                                None,
+                                Some(agent_id.clone()),
+                                json!({ "reset": true, "turns": turns }),
+                            ));
+                        }
+                        Ok(false) => {}
                     }
                 }
                 for line in lines {
@@ -262,16 +280,25 @@ pub fn start_transcript_tail(
                     {
                         // Surface a persistence failure rather than silently emitting a
                         // turn the store never recorded, which would drift the UI
-                        // timeline from recovered state.
-                        if let Err(err) = state.append_turn(turn.clone()) {
-                            state.emit(transcript_persist_error(&agent_id, &transcript_path, &err));
-                        } else {
-                            state.emit(QmuxEvent::new(
-                                "turn.appended",
-                                None,
-                                Some(agent_id.clone()),
-                                json!({ "turn": turn }),
-                            ));
+                        // timeline from recovered state. A write skipped because the
+                        // agent rebound mid-poll emits nothing.
+                        match state.append_turn_for_transcript(turn.clone(), &transcript_path) {
+                            Err(err) => {
+                                state.emit(transcript_persist_error(
+                                    &agent_id,
+                                    &transcript_path,
+                                    &err,
+                                ));
+                            }
+                            Ok(true) => {
+                                state.emit(QmuxEvent::new(
+                                    "turn.appended",
+                                    None,
+                                    Some(agent_id.clone()),
+                                    json!({ "turn": turn }),
+                                ));
+                            }
+                            Ok(false) => {}
                         }
                     }
                     if !should_refresh_turns {
