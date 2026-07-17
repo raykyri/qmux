@@ -26,7 +26,15 @@ const MAX_PUBLICATION_FILES: usize = 250;
 const MAX_PUBLICATION_FILE_BYTES: usize = 10_000_000;
 const MAX_PUBLICATION_TOTAL_BYTES: usize = 12_000_000;
 const MAX_GIST_COMMENTS: usize = 300;
-const MAX_GITHUB_COMMENTS_RESPONSE_BYTES: usize = 5_000_000;
+/// Comments fetched per page. Sized together with the response-byte cap below
+/// so a page of maximum-size comments always fits: gist comment bodies run up
+/// to 65,536 characters, or ~400 KB after worst-case JSON escaping, and any
+/// GitHub user can post them on a visible gist. At 100 per page a spammer's
+/// page overflowed the old 5 MB cap and the fail-closed read error disabled
+/// proposal listing and resolution for the publication until the comments were
+/// hand-deleted on GitHub.
+const GIST_COMMENTS_PER_PAGE: usize = 25;
+const MAX_GITHUB_COMMENTS_RESPONSE_BYTES: usize = 16_000_000;
 const MAX_PROPOSAL_PROMPT_CHARACTERS: usize = 10_000;
 const MAX_PROPOSAL_ANSWER_CHARACTERS: usize = 40_000;
 const PROPOSAL_MARKER_PREFIX: &str = "<!-- qmux-proposal:v1 ";
@@ -1161,7 +1169,7 @@ async fn fetch_gist_comments(
     access_token: &str,
     gist_id: &str,
 ) -> Result<Vec<GitHubGistComment>, String> {
-    let max_pages = MAX_GIST_COMMENTS.div_ceil(100);
+    let max_pages = MAX_GIST_COMMENTS.div_ceil(GIST_COMMENTS_PER_PAGE);
     let (first_page, last_page) =
         fetch_gist_comments_page(client, access_token, gist_id, 1).await?;
     let page_numbers = if let Some(last_page) = last_page {
@@ -1181,7 +1189,9 @@ async fn fetch_gist_comments(
         };
         let page_len = page_comments.len();
         comments.append(&mut page_comments);
-        if (last_page.is_none() && page_len < 100) || comments.len() >= MAX_GIST_COMMENTS {
+        if (last_page.is_none() && page_len < GIST_COMMENTS_PER_PAGE)
+            || comments.len() >= MAX_GIST_COMMENTS
+        {
             break;
         }
     }
@@ -1197,7 +1207,7 @@ async fn fetch_gist_comments_page(
 ) -> Result<(Vec<GitHubGistComment>, Option<usize>), String> {
     let response = client
         .get(format!(
-            "{GITHUB_API_BASE}/gists/{gist_id}/comments?per_page=100&page={page}"
+            "{GITHUB_API_BASE}/gists/{gist_id}/comments?per_page={GIST_COMMENTS_PER_PAGE}&page={page}"
         ))
         .header("Accept", "application/vnd.github+json")
         .header("Authorization", format!("Bearer {access_token}"))
