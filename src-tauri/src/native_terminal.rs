@@ -765,6 +765,7 @@ mod imp {
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
 mod imp {
+    use super::NativeTerminalKeyboardOwnerUpdate;
     use super::NativeTerminalLayout;
     use super::NativeTerminalSeedSettings;
     use super::NativeTerminalSettings;

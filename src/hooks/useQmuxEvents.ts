@@ -532,8 +532,16 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const turn = event.payload.turn;
         if (isTurn(turn)) {
           setTurns((current) => {
-            if (current.some((existing) => existing.id === turn.id)) {
-              return current;
+            const existingIndex = current.findIndex((existing) => existing.id === turn.id);
+            if (existingIndex !== -1) {
+              // Positional turn ids can be reused across a transcript
+              // rewrite/rebind, so a same-id append carries the id's newest
+              // content and belongs at the tail. An identical re-delivery
+              // keeps the array (and downstream memos) untouched.
+              if (JSON.stringify(current[existingIndex]) === JSON.stringify(turn)) {
+                return current;
+              }
+              return [...current.filter((_, index) => index !== existingIndex), turn];
             }
             const next = [...current, turn];
             const agentTurnCount = next.reduce(

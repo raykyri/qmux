@@ -556,6 +556,30 @@ impl ThreadStore {
                     node.base.created_at = existing.base.created_at;
                     node.base.created_order = existing.base.created_order;
                 }
+                // An appended turn is the branch's newest. A same-id re-delivery of
+                // the branch tail keeps its slot, but a positional id collision with
+                // a mid-branch node (a rotated/rewritten transcript's numbering
+                // overlapping a longer past one) must not inherit that slot — every
+                // later turn would render above this one. Re-tail it instead.
+                let lands_mid_branch = branch_max_turn_order(graph, &branch_id)
+                    .is_some_and(|max_order| node.base.created_order < max_order);
+                if lands_mid_branch {
+                    node.base.parent_turn_ids = graph
+                        .branches
+                        .get(&branch_id)
+                        .map(|branch| branch.head_turn_ids.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|head_id| head_id != &turn.id)
+                        .collect();
+                    node.base.created_order = allocate_created_order(graph);
+                    graph.nodes.insert(turn.id.clone(), ThreadNode::Turn(node));
+                    if let Some(branch) = graph.branches.get_mut(&branch_id) {
+                        branch.head_turn_ids = vec![turn.id.clone()];
+                    }
+                    recompute_root_turn_ids(graph);
+                    return;
+                }
                 graph.nodes.insert(turn.id.clone(), ThreadNode::Turn(node));
                 recompute_root_turn_ids(graph);
                 return;
@@ -630,6 +654,35 @@ impl ThreadStore {
                 graph.nodes.remove(&node_id);
             }
 
+            // Turn ids are positional (`{agent}-{source line}`), so a rewritten or
+            // rotated transcript (a codex rewind that reuses line indexes, a rebind
+            // onto a replayed rollout) can reuse an id for different content at a
+            // different position. Keeping an id-matched node's created_order is only
+            // sound while the kept orders, read in list order, stay strictly
+            // increasing and no unmatched turn precedes a matched one — a fresh
+            // allocation always exceeds every existing order, so a kept order after
+            // it would sort the branch out of transcript order (continued turns
+            // rendering above the last message). On any conflict, reassign the whole
+            // list in order instead of inheriting.
+            let mut kept_orders_consistent = true;
+            let mut last_kept_order: Option<u64> = None;
+            let mut needs_fresh_order = false;
+            for turn in turns {
+                match scoped_nodes.get(&turn.id) {
+                    Some(existing) => {
+                        let order = existing.base.created_order;
+                        if needs_fresh_order
+                            || last_kept_order.is_some_and(|previous| previous >= order)
+                        {
+                            kept_orders_consistent = false;
+                            break;
+                        }
+                        last_kept_order = Some(order);
+                    }
+                    None => needs_fresh_order = true,
+                }
+            }
+
             let mut previous_turn_id: Option<String> = None;
             for turn in turns {
                 let parent_turn_ids = previous_turn_id
@@ -644,11 +697,18 @@ impl ThreadStore {
                     })
                     .collect::<Vec<_>>();
                 let mut node = turn_node_from_turn(agent, turn, parent_turn_ids, 0);
-                if let Some(existing) = scoped_nodes.get(&turn.id) {
-                    node.base.created_at = existing.base.created_at;
-                    node.base.created_order = existing.base.created_order;
-                } else {
-                    node.base.created_order = allocate_created_order(graph);
+                match scoped_nodes.get(&turn.id) {
+                    Some(existing) if kept_orders_consistent => {
+                        node.base.created_at = existing.base.created_at;
+                        node.base.created_order = existing.base.created_order;
+                    }
+                    Some(existing) => {
+                        node.base.created_at = existing.base.created_at;
+                        node.base.created_order = allocate_created_order(graph);
+                    }
+                    None => {
+                        node.base.created_order = allocate_created_order(graph);
+                    }
                 }
                 graph.nodes.insert(turn.id.clone(), ThreadNode::Turn(node));
                 previous_turn_id = Some(turn.id.clone());
@@ -859,6 +919,20 @@ fn node_created_order(node: &ThreadNode) -> u64 {
     node_base(node).created_order
 }
 
+/// Highest created_order among a branch's turn nodes — the branch tail's slot.
+fn branch_max_turn_order(graph: &ThreadGraph, branch_id: &str) -> Option<u64> {
+    graph
+        .nodes
+        .values()
+        .filter_map(|node| match node {
+            ThreadNode::Turn(turn_node) if turn_node.base.branch_id == branch_id => {
+                Some(turn_node.base.created_order)
+            }
+            _ => None,
+        })
+        .max()
+}
+
 fn thread_lock(thread_id: &str) -> Result<Arc<Mutex<()>>, String> {
     let mut locks = THREAD_LOCKS
         .lock()
@@ -1033,6 +1107,207 @@ mod tests {
         assert_eq!(graph.next_created_order, 2);
         match node.turn.blocks.as_slice() {
             [TurnBlock::Text { text }] => assert_eq!(text, "updated text"),
+            blocks => panic!("unexpected blocks: {blocks:?}"),
+        }
+
+        fs::remove_dir_all(worktree).unwrap();
+    }
+
+    fn branch_turn_ids_in_created_order(graph: &ThreadGraph) -> Vec<String> {
+        let mut nodes = graph
+            .nodes
+            .values()
+            .filter_map(|node| match node {
+                ThreadNode::Turn(turn_node) => {
+                    Some((turn_node.base.created_order, turn_node.base.id.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        nodes.sort();
+        nodes.into_iter().map(|(_, id)| id).collect()
+    }
+
+    // A rebind onto a rotated/replayed rollout re-parses the transcript with
+    // shifted line indexes, so some replacement ids collide with nodes that held
+    // *different* content at other positions. Inheriting those nodes' created
+    // orders while unmatched ids allocate fresh (max+1) orders interleaves old
+    // and new orders — the branch then renders out of transcript order, with
+    // continued turns appearing above the last message. The replace must fall
+    // back to reassigning the whole list in order.
+    #[test]
+    fn replace_reassigns_orders_when_reused_ids_would_break_list_order() {
+        let worktree = temp_worktree("qmux-thread-graph-reused-ids");
+        let agent = sample_agent(worktree.display().to_string());
+        let store = ThreadStore::new(worktree.clone());
+        for (id, index) in [
+            ("agent-1-3", 3),
+            ("agent-1-4", 4),
+            ("agent-1-6", 6),
+            ("agent-1-7", 7),
+        ] {
+            store
+                .append_turn_node(&agent, &sample_turn("agent-1", id, "user", index))
+                .unwrap();
+        }
+
+        // The re-parsed file names its newest turn with a previously used id
+        // ("agent-1-7") while earlier turns use previously unseen ids.
+        let replacement = vec![
+            sample_turn("agent-1", "agent-1-1", "user", 1),
+            sample_turn("agent-1", "agent-1-2", "assistant", 2),
+            sample_turn("agent-1", "agent-1-5", "user", 5),
+            sample_turn("agent-1", "agent-1-7", "assistant", 7),
+        ];
+        store
+            .replace_agent_branch_turns(&agent, &replacement)
+            .unwrap();
+
+        let graph = read_snapshot(&agent.worktree_dir, "thread-1")
+            .unwrap()
+            .expect("snapshot exists");
+        assert_eq!(
+            branch_turn_ids_in_created_order(&graph),
+            vec!["agent-1-1", "agent-1-2", "agent-1-5", "agent-1-7"],
+        );
+
+        // Turns appended after the reassignment continue at the branch tail.
+        store
+            .append_turn_node(&agent, &sample_turn("agent-1", "agent-1-9", "user", 9))
+            .unwrap();
+        let graph = read_snapshot(&agent.worktree_dir, "thread-1")
+            .unwrap()
+            .expect("snapshot exists");
+        assert_eq!(
+            branch_turn_ids_in_created_order(&graph),
+            vec![
+                "agent-1-1",
+                "agent-1-2",
+                "agent-1-5",
+                "agent-1-7",
+                "agent-1-9"
+            ],
+        );
+
+        fs::remove_dir_all(worktree).unwrap();
+    }
+
+    // The hot path — a same-content window re-parse (every Claude typed prompt,
+    // every codex abort/rollback marker) — must keep created orders untouched so
+    // graph identity and downstream memoization survive the refresh.
+    #[test]
+    fn consistent_replace_keeps_created_orders_without_reallocating() {
+        let worktree = temp_worktree("qmux-thread-graph-consistent-replace");
+        let agent = sample_agent(worktree.display().to_string());
+        let store = ThreadStore::new(worktree.clone());
+        let turns = vec![
+            sample_turn("agent-1", "agent-1-0", "user", 0),
+            sample_turn("agent-1", "agent-1-1", "assistant", 1),
+            sample_turn("agent-1", "agent-1-2", "user", 2),
+        ];
+        for turn in &turns {
+            store.append_turn_node(&agent, turn).unwrap();
+        }
+
+        store.replace_agent_branch_turns(&agent, &turns).unwrap();
+
+        let graph = read_snapshot(&agent.worktree_dir, "thread-1")
+            .unwrap()
+            .expect("snapshot exists");
+        let orders = ["agent-1-0", "agent-1-1", "agent-1-2"]
+            .into_iter()
+            .map(|id| graph.nodes.get(id).map(node_created_order).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(orders, vec![0, 1, 2]);
+        assert_eq!(graph.next_created_order, 3);
+
+        fs::remove_dir_all(worktree).unwrap();
+    }
+
+    // An appended turn is by definition the branch's newest. When its positional
+    // id collides with a mid-branch node left from a longer past numbering (a
+    // stale tail racing a rebind), inheriting that slot would pin the branch's
+    // real tail below it and render every continued message above the last one.
+    #[test]
+    fn colliding_append_moves_to_the_branch_tail() {
+        let worktree = temp_worktree("qmux-thread-graph-colliding-append");
+        let agent = sample_agent(worktree.display().to_string());
+        let store = ThreadStore::new(worktree.clone());
+        for (id, index) in [("agent-1-5", 5), ("agent-1-9", 9), ("agent-1-12", 12)] {
+            store
+                .append_turn_node(&agent, &sample_turn("agent-1", id, "user", index))
+                .unwrap();
+        }
+
+        let mut continued = sample_turn("agent-1", "agent-1-9", "assistant", 9);
+        continued.blocks = vec![TurnBlock::Text {
+            text: "continued".to_string(),
+        }];
+        store.append_turn_node(&agent, &continued).unwrap();
+
+        let graph = read_snapshot(&agent.worktree_dir, "thread-1")
+            .unwrap()
+            .expect("snapshot exists");
+        assert_eq!(
+            branch_turn_ids_in_created_order(&graph),
+            vec!["agent-1-5", "agent-1-12", "agent-1-9"],
+        );
+        let Some(ThreadNode::Turn(node)) = graph.nodes.get("agent-1-9") else {
+            panic!("missing re-tailed turn");
+        };
+        match node.turn.blocks.as_slice() {
+            [TurnBlock::Text { text }] => assert_eq!(text, "continued"),
+            blocks => panic!("unexpected blocks: {blocks:?}"),
+        }
+        let branch = graph.branches.get("branch-1").expect("branch exists");
+        assert_eq!(branch.head_turn_ids, vec!["agent-1-9"]);
+
+        fs::remove_dir_all(worktree).unwrap();
+    }
+
+    // A truncating replace (a rewind whose shrink the tail observed) keeps the
+    // retained prefix in place; the continuation that reuses the dropped line
+    // indexes appends cleanly at the tail.
+    #[test]
+    fn append_after_truncating_replace_lands_at_the_branch_tail() {
+        let worktree = temp_worktree("qmux-thread-graph-truncating-replace");
+        let agent = sample_agent(worktree.display().to_string());
+        let store = ThreadStore::new(worktree.clone());
+        let full = (0..5)
+            .map(|index| {
+                sample_turn(
+                    "agent-1",
+                    &format!("agent-1-{index}"),
+                    if index % 2 == 0 { "user" } else { "assistant" },
+                    index,
+                )
+            })
+            .collect::<Vec<_>>();
+        for turn in &full {
+            store.append_turn_node(&agent, turn).unwrap();
+        }
+
+        store
+            .replace_agent_branch_turns(&agent, &full[..3])
+            .unwrap();
+        let mut rewound = sample_turn("agent-1", "agent-1-3", "user", 3);
+        rewound.blocks = vec![TurnBlock::Text {
+            text: "edited message".to_string(),
+        }];
+        store.append_turn_node(&agent, &rewound).unwrap();
+
+        let graph = read_snapshot(&agent.worktree_dir, "thread-1")
+            .unwrap()
+            .expect("snapshot exists");
+        assert_eq!(
+            branch_turn_ids_in_created_order(&graph),
+            vec!["agent-1-0", "agent-1-1", "agent-1-2", "agent-1-3"],
+        );
+        let Some(ThreadNode::Turn(node)) = graph.nodes.get("agent-1-3") else {
+            panic!("missing rewound turn");
+        };
+        match node.turn.blocks.as_slice() {
+            [TurnBlock::Text { text }] => assert_eq!(text, "edited message"),
             blocks => panic!("unexpected blocks: {blocks:?}"),
         }
 

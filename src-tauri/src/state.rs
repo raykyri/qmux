@@ -5906,6 +5906,10 @@ impl AppState {
             let is_user_turn = turn.role == "user";
             bump_agent_activity_locked(&mut model, &agent_id);
             let turns = model.turns.entry(agent_id.clone()).or_default();
+            // Positional turn ids can be reused across a transcript rewrite or
+            // rebind; the appended turn is the newest content for its id, so drop
+            // any stale same-id entry rather than duplicating it mid-list.
+            turns.retain(|existing| existing.id != turn.id);
             turns.push(turn.clone());
             if turns.len() > MAX_TURNS_PER_AGENT {
                 let overflow = turns.len() - MAX_TURNS_PER_AGENT;
