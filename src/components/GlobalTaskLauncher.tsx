@@ -1,11 +1,11 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ChevronDown } from "lucide-react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentUiAdapter } from "../adapters";
 import {
   dismissGlobalTaskLauncher,
   forkAgent,
+  getRuntimeConfig,
   listAgentTurnQueue,
   listAgents,
   listGroups,
@@ -18,12 +18,15 @@ import {
   submitPaneInput,
   unpauseAgent,
 } from "../lib/api";
-import { agentCanFork, agentStatusLabel, agentStatusTone } from "../lib/appHelpers";
+import { agentCanFork, agentStatusLabel, defaultPaneTitle } from "../lib/appHelpers";
 import {
   FORK_REQUIREMENT_TITLE,
   QUEUE_DELIVERY_OPTIONS,
+  agentTabStatusDotClass,
+  agentTabStatusPill,
   deriveComposerGating,
   planComposerSubmission,
+  queueWaitsOnOtherAgent,
   waitTargetStatusDotClass,
   waitTargetStatusLabel,
 } from "../lib/composerActions";
@@ -38,6 +41,7 @@ import type {
   GroupInfo,
   PaneInfo,
   QueuedTurn,
+  RuntimeConfig,
   ShellAgentJobInfo,
   SubmitAgentTurnMode,
   WaitTarget,
@@ -49,34 +53,22 @@ interface LauncherTarget {
   group: GroupInfo | undefined;
   shellJob: ShellAgentJobInfo | undefined;
   queue: QueuedTurn[];
+  title: string;
 }
 
-function targetTitle(target: LauncherTarget): string {
-  return target.pane.lastOscTitle?.trim() || target.pane.title;
-}
-
-function targetWaitsOnOtherPane(target: LauncherTarget): boolean {
-  const firstQueued = target.queue[0];
-  return Boolean(firstQueued?.waitFor && firstQueued.waitFor.agentId !== target.agent.id);
-}
-
-/** Status pill text for a target row, following the sidebar tab rule: queue
- * count while working or idle, otherwise the status label — with "Running"
- * left to the pulsing dot alone. */
-function targetStatusPill(target: LauncherTarget): string | null {
-  const queued = target.queue.length;
-  if ((target.agent.status === "running" || target.agent.status === "idle") && queued > 0) {
-    return `${queued} ${targetWaitsOnOtherPane(target) ? "waiting" : "queued"}`;
-  }
-  const label = agentStatusLabel(target.agent.status);
-  return label === "Running" ? null : label;
-}
-
-function targetStatusDotClass(target: LauncherTarget): string {
-  const awaitingInput =
-    target.agent.status === "awaitingInput" ? " status-awaiting-input" : "";
-  const waiting = targetWaitsOnOtherPane(target) ? " is-waiting-on-pane" : "";
-  return `pane-tab-dot status-${agentStatusTone(target.agent.status)}${awaitingInput}${waiting}`;
+/** Mirrors the sidebar's displayPaneTitle rule: the live terminal (OSC) title
+ * only stands in while the pane still carries its default title, so a renamed
+ * or auto-titled tab keeps the name the user knows it by. (The sidebar also
+ * tracks renames made this session in memory; the stored-title comparison is
+ * the durable half of that rule and matches the sidebar after a restart.) */
+function resolveTargetTitle(
+  pane: PaneInfo,
+  agent: AgentInfo,
+  config: RuntimeConfig | null,
+): string {
+  const oscTitle = pane.lastOscTitle?.trim();
+  const fallback = defaultPaneTitle(pane, agent, config);
+  return oscTitle && fallback !== null && pane.title === fallback ? oscTitle : pane.title;
 }
 
 /** Hover summary for a target row: the detail the old dropdown label spelled
@@ -85,7 +77,7 @@ function targetDetails(target: LauncherTarget): string {
   const kind = target.pane.kind === "shell" ? "Shell tab" : "Agent tab";
   const queued = target.queue.length > 0 ? `${target.queue.length} queued` : null;
   const shell = target.shellJob ? `shell ${target.shellJob.state}` : null;
-  return [targetTitle(target), kind, agentStatusLabel(target.agent.status), queued, shell]
+  return [target.title, kind, agentStatusLabel(target.agent.status), queued, shell]
     .filter(Boolean)
     .join(" · ");
 }
@@ -96,19 +88,16 @@ function targetOptionDomId(agentId: string): string {
 
 /** Matches the main window's tab-cycling chords (⌃Tab / ⌃⇧Tab and ⌘⇧[ / ⌘⇧])
  * so retargeting the launcher rides the same muscle memory without leaving the
- * draft. */
-function cycleChordDirection(event: ReactKeyboardEvent<HTMLElement>): -1 | 1 | null {
+ * draft. Brackets match the produced character — with the same "{"/"}"
+ * normalization as the main window's shortcut parser — not the physical key,
+ * so non-US layouts agree with the main window about which chord this is. */
+function cycleChordDirection(event: KeyboardEvent): -1 | 1 | null {
   if (!event.metaKey && event.ctrlKey && !event.altKey && event.key === "Tab") {
     return event.shiftKey ? -1 : 1;
   }
-  if (
-    event.metaKey &&
-    !event.ctrlKey &&
-    !event.altKey &&
-    event.shiftKey &&
-    (event.code === "BracketLeft" || event.code === "BracketRight")
-  ) {
-    return event.code === "BracketLeft" ? -1 : 1;
+  if (event.metaKey && !event.ctrlKey && !event.altKey && event.shiftKey) {
+    if (event.key === "[" || event.key === "{") return -1;
+    if (event.key === "]" || event.key === "}") return 1;
   }
   return null;
 }
@@ -140,7 +129,11 @@ function errorMessage(cause: unknown): string {
 
 export default function GlobalTaskLauncher() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  // Adapter labels for default-title resolution; fetched once (retried until
+  // it succeeds) since the adapter set is fixed for the app's lifetime.
+  const runtimeConfigRef = useRef<RuntimeConfig | null>(null);
   // The launcher window is created hidden and kept alive for the whole app
   // lifetime, so without this gate its webview would refetch panes, agents,
   // groups, shell jobs, and every agent's turn queue on every backend event —
@@ -175,6 +168,11 @@ export default function GlobalTaskLauncher() {
 
   const refresh = useCallback(async () => {
     try {
+      if (runtimeConfigRef.current === null) {
+        runtimeConfigRef.current = await getRuntimeConfig().catch(
+          (): RuntimeConfig | null => null,
+        );
+      }
       const [panes, agents, groups, shellJobs] = await Promise.all([
         listPanes(),
         listAgents(),
@@ -204,6 +202,7 @@ export default function GlobalTaskLauncher() {
             group: groupById.get(pane.groupId),
             shellJob: shellJobByAgent.get(agent.id),
             queue: queues[index],
+            title: resolveTargetTitle(pane, agent, runtimeConfigRef.current),
           };
         })
         .sort((left, right) => {
@@ -271,7 +270,47 @@ export default function GlobalTaskLauncher() {
     };
   }, [refresh]);
 
-  const selected = targets.find((target) => target.agent.id === selectedAgentId) ?? null;
+  // The filter only applies while its input is rendered (2+ targets); gating
+  // the needle too keeps the list truthful for the render in between a target
+  // dying and the cleanup effect below clearing the leftover text.
+  const filterActive = targets.length > 1;
+  const visibleTargets = useMemo(() => {
+    // Same substring matching as the ⌘K palette, over the fields the column
+    // shows: tab title and group name.
+    const needle = filterActive ? filter.trim().toLowerCase() : "";
+    if (needle.length === 0) return targets;
+    return targets.filter(
+      (target) =>
+        target.title.toLowerCase().includes(needle) ||
+        (target.group?.name ?? "").toLowerCase().includes(needle),
+    );
+  }, [targets, filter, filterActive]);
+
+  // Clear leftover filter text when the input unmounts so a later remount
+  // doesn't resume a stale query.
+  useEffect(() => {
+    if (!filterActive) setFilter((current) => (current ? "" : current));
+  }, [filterActive]);
+
+  // A filter that hides the selected target snaps selection to the first match
+  // so the highlighted row is always the one a submit would hit — and closes
+  // the queue menu, which would otherwise silently retarget mid-flight.
+  // Automatic moves bypass selectTarget: only explicit picks and submissions
+  // update the remembered target.
+  useEffect(() => {
+    if (visibleTargets.length === 0) return;
+    if (!visibleTargets.some((target) => target.agent.id === selectedAgentId)) {
+      setSelectedAgentId(visibleTargets[0].agent.id);
+      setQueueMenuOpen(false);
+    }
+  }, [visibleTargets, selectedAgentId]);
+
+  // Deriving the selection from the *visible* list keeps every downstream
+  // consumer honest: when the filter matches nothing, there is no selected
+  // target, so the compose column disables rather than dispatching to a tab
+  // the list says doesn't exist.
+  const selected =
+    visibleTargets.find((target) => target.agent.id === selectedAgentId) ?? null;
   const policy = selected
     ? getAgentUiAdapter(selected.agent.adapter).composerPolicy(selected.agent)
     : null;
@@ -293,43 +332,24 @@ export default function GlobalTaskLauncher() {
   const permissionActions =
     selected?.agent.status === "awaitingPermission" ? (policy?.permissionActions ?? []) : [];
 
-  // Same substring matching as the ⌘K palette, over the fields the column
-  // shows: tab title and group name.
-  const visibleTargets = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    if (needle.length === 0) return targets;
-    return targets.filter(
-      (target) =>
-        targetTitle(target).toLowerCase().includes(needle) ||
-        (target.group?.name ?? "").toLowerCase().includes(needle),
-    );
-  }, [targets, filter]);
-
-  // A filter that hides the selected target snaps selection to the first match
-  // so the highlighted row is always the one a submit would hit. Automatic
-  // moves bypass selectTarget: only explicit picks and submissions update the
-  // remembered target.
-  useEffect(() => {
-    if (visibleTargets.length === 0) return;
-    if (!visibleTargets.some((target) => target.agent.id === selectedAgentId)) {
-      setSelectedAgentId(visibleTargets[0].agent.id);
-    }
-  }, [visibleTargets, selectedAgentId]);
-
-  // Targets bucketed into contiguous runs per group (the sorted list keeps a
-  // group's panes together), so the column can label groups like the sidebar.
+  // Targets bucketed into runs of consecutive rows sharing a group, so the
+  // rendered order always mirrors visibleTargets — the order every keyboard
+  // path steps through. (Pane order can interleave groups; a group that
+  // appears twice just gets its header twice.)
   const targetGroups = useMemo(() => {
     const buckets: { key: string; name: string | null; targets: LauncherTarget[] }[] = [];
-    const bucketByKey = new Map<string, (typeof buckets)[number]>();
     for (const target of visibleTargets) {
       const key = target.group?.id ?? "";
-      let bucket = bucketByKey.get(key);
-      if (!bucket) {
-        bucket = { key, name: target.group?.name?.trim() || null, targets: [] };
-        bucketByKey.set(key, bucket);
-        buckets.push(bucket);
+      const last = buckets[buckets.length - 1];
+      if (last && last.key === key) {
+        last.targets.push(target);
+      } else {
+        buckets.push({
+          key,
+          name: target.group?.name?.trim() || null,
+          targets: [target],
+        });
       }
-      bucket.targets.push(target);
     }
     return buckets;
   }, [visibleTargets]);
@@ -347,7 +367,7 @@ export default function GlobalTaskLauncher() {
           {
             agentId: target.agent.id,
             paneId: target.pane.id,
-            label: targetTitle(target),
+            label: target.title,
             status: target.agent.status,
             queueCount: target.queue.length,
             queueBlocked: Boolean(target.queue[0]?.waitFor),
@@ -357,10 +377,10 @@ export default function GlobalTaskLauncher() {
     [selected, targets],
   );
 
-  // Every path here is an explicit pick (click, list arrows, cycle chord), so
-  // it doubles as the write point for the remembered target. "keep" leaves
-  // focus where it is — the cycle chord retargets mid-draft — but still
-  // scrolls the new selection into view.
+  // Every path here is an explicit pick (click, list arrows, filter arrows,
+  // cycle chord), so it doubles as the write point for the remembered target.
+  // "keep" leaves focus where it is — the cycle chord retargets mid-draft —
+  // but still scrolls the new selection into view.
   function selectTarget(agentId: string, focus: "textarea" | "option" | "keep") {
     setSelectedAgentId(agentId);
     saveLastTargetAgentId(agentId);
@@ -375,6 +395,57 @@ export default function GlobalTaskLauncher() {
       }
     });
   }
+
+  /** One mover for all keyboard paths (list arrows, filter arrows, cycle
+   * chord) so they can't drift: steps clamp or wrap per caller, Home/End are
+   * absolute. */
+  function moveSelection(
+    step: -1 | 1 | "home" | "end",
+    wrap: boolean,
+    focus: "option" | "keep",
+  ) {
+    if (visibleTargets.length === 0) return;
+    const index = visibleTargets.findIndex((target) => target.agent.id === selectedAgentId);
+    const last = visibleTargets.length - 1;
+    const next =
+      step === "home"
+        ? 0
+        : step === "end"
+          ? last
+          : wrap
+            ? (index + step + visibleTargets.length) % visibleTargets.length
+            : Math.min(Math.max(index + step, 0), last);
+    const target = visibleTargets[next];
+    if (target && target.agent.id !== selectedAgentId) {
+      selectTarget(target.agent.id, focus);
+    }
+  }
+
+  // Escape and the cycle chords live on window, not on <main>: a live refresh
+  // can unmount the focused option row, dropping DOM focus to <body>, where
+  // events never reach React handlers inside #root. Escape pops one layer at
+  // a time — queue menu, then a focused filter's text, then the window —
+  // mirroring the composer, where Escape closes menus instead of the surface.
+  const windowKeydownRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  windowKeydownRef.current = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (queueMenuOpen) setQueueMenuOpen(false);
+      else if (filter && document.activeElement === filterInputRef.current) setFilter("");
+      else void dismissGlobalTaskLauncher();
+      return;
+    }
+    const direction = cycleChordDirection(event);
+    if (direction !== null) {
+      event.preventDefault();
+      moveSelection(direction, true, "keep");
+    }
+  };
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => windowKeydownRef.current(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
 
   async function finishSubmission(operation: () => Promise<unknown>, allowEmpty = false) {
     if (!selected || submitting || (!allowEmpty && !hasValue)) return;
@@ -425,149 +496,129 @@ export default function GlobalTaskLauncher() {
   }
 
   return (
-    <main
-      className="global-task-launcher"
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          void dismissGlobalTaskLauncher();
-          return;
-        }
-        const direction = cycleChordDirection(event);
-        if (direction !== null && visibleTargets.length > 0) {
-          event.preventDefault();
-          const index = visibleTargets.findIndex(
-            (target) => target.agent.id === selectedAgentId,
-          );
-          const next =
-            visibleTargets[(index + direction + visibleTargets.length) % visibleTargets.length];
-          if (next) selectTarget(next.agent.id, "keep");
-        }
-      }}
-    >
-      <aside className="global-task-launcher-targets">
+    <main className="global-task-launcher">
+      <aside
+        className="global-task-launcher-targets"
+        aria-labelledby="global-task-launcher-targets-label"
+      >
         <div
           className="global-task-launcher-targets-header"
           id="global-task-launcher-targets-label"
         >
           Send task to
         </div>
-        {targets.length > 1 ? (
+        {filterActive ? (
           <input
-            className="global-task-launcher-filter"
+            ref={filterInputRef}
+            className="form-field global-task-launcher-filter"
             type="text"
             placeholder="Filter tabs…"
             aria-label="Filter agent tabs"
             aria-controls="global-task-launcher-target-list"
+            aria-activedescendant={
+              selected ? targetOptionDomId(selected.agent.id) : undefined
+            }
             value={filter}
             onChange={(event) => setFilter(event.currentTarget.value)}
             onKeyDown={(event) => {
               // Palette-style keys: arrows pick without leaving the field,
-              // Enter hands off to the draft, Escape clears before it (on a
-              // second press, via bubbling) dismisses the window.
+              // Enter hands off to the draft. (Escape layering lives in the
+              // window keydown handler.)
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
-                if (visibleTargets.length === 0) return;
-                const index = visibleTargets.findIndex(
-                  (target) => target.agent.id === selectedAgentId,
-                );
-                const step = event.key === "ArrowDown" ? 1 : -1;
-                const next =
-                  visibleTargets[
-                    (index + step + visibleTargets.length) % visibleTargets.length
-                  ];
-                if (next) selectTarget(next.agent.id, "keep");
+                moveSelection(event.key === "ArrowDown" ? 1 : -1, true, "keep");
                 return;
               }
               if (event.key === "Enter") {
                 event.preventDefault();
                 textareaRef.current?.focus();
-                return;
-              }
-              if (event.key === "Escape" && filter.length > 0) {
-                event.stopPropagation();
-                setFilter("");
               }
             }}
           />
         ) : null}
-        <div
-          className="global-task-launcher-target-list"
-          id="global-task-launcher-target-list"
-          role="listbox"
-          aria-labelledby="global-task-launcher-targets-label"
-          onKeyDown={(event) => {
-            if (
-              visibleTargets.length === 0 ||
-              !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
-            ) {
-              return;
-            }
-            event.preventDefault();
-            const index = visibleTargets.findIndex(
-              (target) => target.agent.id === selectedAgentId,
-            );
-            const next =
-              event.key === "ArrowDown"
-                ? Math.min(index + 1, visibleTargets.length - 1)
-                : event.key === "ArrowUp"
-                  ? Math.max(index - 1, 0)
-                  : event.key === "Home"
-                    ? 0
-                    : visibleTargets.length - 1;
-            const target = visibleTargets[next];
-            if (target && target.agent.id !== selectedAgentId) {
-              selectTarget(target.agent.id, "option");
-            }
-          }}
-        >
-          {targets.length === 0 ? (
-            <div className="global-task-launcher-target-empty">
-              {loading ? "Loading agent tabs…" : "No live agent tabs"}
-            </div>
-          ) : visibleTargets.length === 0 ? (
-            <div className="global-task-launcher-target-empty">No matching tabs</div>
-          ) : null}
-          {targetGroups.map((bucket) => (
-            <div
-              key={bucket.key || "ungrouped"}
-              className="global-task-launcher-target-group"
-            >
-              {bucket.name ? (
-                <div className="global-task-launcher-group-label" title={bucket.name}>
-                  {bucket.name}
-                </div>
-              ) : null}
-              {bucket.targets.map((target) => {
-                const isSelected = target.agent.id === selectedAgentId;
-                const pill = targetStatusPill(target);
-                return (
-                  <div
-                    key={target.agent.id}
-                    className={`pane-tab-row${isSelected ? " is-selected" : ""}`}
-                  >
-                    <button
-                      type="button"
-                      role="option"
-                      id={targetOptionDomId(target.agent.id)}
-                      aria-selected={isSelected}
-                      tabIndex={isSelected ? 0 : -1}
-                      className="control-button pane-tab"
-                      title={targetDetails(target)}
-                      onClick={() => selectTarget(target.agent.id, "textarea")}
+        {targets.length === 0 ? (
+          <div className="global-task-launcher-target-empty">
+            {loading ? "Loading agent tabs…" : "No live agent tabs"}
+          </div>
+        ) : visibleTargets.length === 0 ? (
+          <div className="global-task-launcher-target-empty">No matching tabs</div>
+        ) : (
+          <div
+            className="global-task-launcher-target-list"
+            id="global-task-launcher-target-list"
+            role="listbox"
+            aria-labelledby="global-task-launcher-targets-label"
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                moveSelection(event.key === "ArrowDown" ? 1 : -1, false, "option");
+              } else if (event.key === "Home" || event.key === "End") {
+                event.preventDefault();
+                moveSelection(event.key === "Home" ? "home" : "end", false, "option");
+              }
+            }}
+          >
+            {targetGroups.map((bucket, bucketIndex) => {
+              const labelId = bucket.name
+                ? `global-task-launcher-group-${bucketIndex}`
+                : undefined;
+              return (
+                <div
+                  key={`${bucket.key || "ungrouped"}:${bucketIndex}`}
+                  className="global-task-launcher-target-group"
+                  role="group"
+                  aria-labelledby={labelId}
+                >
+                  {bucket.name ? (
+                    <div
+                      className="global-task-launcher-group-label"
+                      id={labelId}
+                      title={bucket.name}
                     >
-                      <span className={targetStatusDotClass(target)} aria-hidden="true" />
-                      <span className="pane-tab-content">
-                        <span className="pane-tab-title">{targetTitle(target)}</span>
-                        {pill ? <small>{pill}</small> : null}
-                      </span>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+                      {bucket.name}
+                    </div>
+                  ) : null}
+                  {bucket.targets.map((target) => {
+                    const isSelected = target.agent.id === selectedAgentId;
+                    const waits = queueWaitsOnOtherAgent(target.agent.id, target.queue);
+                    const pill = agentTabStatusPill(
+                      target.agent.status,
+                      target.queue.length,
+                      waits,
+                    );
+                    return (
+                      <div
+                        key={target.agent.id}
+                        className={`pane-tab-row${isSelected ? " is-selected" : ""}`}
+                        role="presentation"
+                      >
+                        <button
+                          type="button"
+                          role="option"
+                          id={targetOptionDomId(target.agent.id)}
+                          aria-selected={isSelected}
+                          tabIndex={isSelected ? 0 : -1}
+                          className="control-button pane-tab"
+                          title={targetDetails(target)}
+                          onClick={() => selectTarget(target.agent.id, "textarea")}
+                        >
+                          <span
+                            className={agentTabStatusDotClass(target.agent.status, waits)}
+                            aria-hidden="true"
+                          />
+                          <span className="pane-tab-content">
+                            <span className="pane-tab-title">{target.title}</span>
+                            {pill ? <small>{pill}</small> : null}
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        )}
         {targets.length > 1 ? (
           <div className="global-task-launcher-targets-hint" aria-hidden="true">
             ⌃⇥ switches target
@@ -611,7 +662,6 @@ export default function GlobalTaskLauncher() {
           value={value}
           disabled={!selected && !loading}
           placeholder={loading ? "Loading agent tabs…" : "Describe a task…"}
-          rows={5}
           onChange={(event) => setValue(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {

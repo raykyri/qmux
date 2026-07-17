@@ -216,11 +216,12 @@ hosted view can show proposal status without a separate collaboration database.
   shell or agent tabs — with the same actions as the right-pane composer:
   Send, Send Now, and Queue with its queue-options dropdown (fork,
   fork-in-worktree, new-session, and queue-after-session targets). Targets
-  are listed in a sidebar-style column (status dot, tab name, group);
-  `Ctrl-Tab` / `Ctrl-Shift-Tab` (or `Cmd-Shift-[` / `Cmd-Shift-]`) switch
-  the target without leaving the draft, and the launcher reopens on the tab
-  you last dispatched to. The popup works from any app, without raising the
-  qmux window. Change the hotkey in Settings between double-tap
+  are listed in a sidebar-style column (status dot, tab name, group) with a
+  filter field to narrow them; `Ctrl-Tab` / `Ctrl-Shift-Tab` (or
+  `Cmd-Shift-[` / `Cmd-Shift-]`) switch the target without leaving the
+  draft, the compose pane previews turns already queued on the selected
+  tab, and the launcher reopens on the tab you last dispatched to. The
+  popup works from any app, without raising the qmux window. Change the hotkey in Settings between double-tap
   Control/Option/Command and Control/Option/Command-Space (options used by
   the show/hide shortcut are disabled); it is also available from the
   `Cmd-K` palette.

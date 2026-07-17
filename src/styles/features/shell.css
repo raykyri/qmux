@@ -1480,14 +1480,12 @@
   font-size: var(--fs-sm);
 }
 
+/* Composes .form-field (the shared text-input recipe); only the launcher
+   column's layout and compact type are local. */
 .global-task-launcher-filter {
   flex: none;
-  min-height: var(--control-h-md);
   margin: 0 0 8px;
   padding: 0 9px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background: var(--field-bg);
   color: var(--text-strong);
   font-size: var(--fs-sm);
 }
@@ -1522,6 +1520,13 @@
   padding: 2px 6px;
   color: var(--text-muted);
   font-size: var(--fs-sm);
+}
+
+/* The sidebar hides the dot on row hover/focus to swap in its × close button;
+   launcher rows have no close button, so the status dot stays put. */
+.global-task-launcher .pane-tab-row:hover .pane-tab-dot,
+.global-task-launcher .pane-tab-row:focus-within .pane-tab-dot {
+  visibility: visible;
 }
 
 .global-task-launcher-targets-hint {
@@ -1586,7 +1591,9 @@
 
 .global-task-launcher textarea {
   flex: 1 1 auto;
-  min-height: 0;
+  /* Floor under the flexible draft area: the queue preview caps near 90px and
+     the error row at 72px, so worst-case the column still fits 420px. */
+  min-height: 110px;
   resize: none;
   padding: 12px;
   border: 1px solid var(--control-border);
@@ -1632,6 +1639,9 @@
 }
 
 .global-task-launcher-error {
+  flex: none;
+  max-height: 72px;
+  overflow-y: auto;
   color: var(--danger-fg-strong);
   font-size: var(--fs-sm);
 }

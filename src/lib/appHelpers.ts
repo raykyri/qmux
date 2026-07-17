@@ -3,6 +3,7 @@ import {
   TERMINAL_FONT_SIZE,
 } from "./terminalFont";
 import { FONT_OPTIONS } from "./settings";
+import { findAgentUiAdapter } from "../adapters";
 import { CLAUDE_ADAPTER_ID } from "../adapters/claude";
 import { CODEX_ADAPTER_ID } from "../adapters/codex";
 import { GROK_ADAPTER_ID } from "../adapters/grok";
@@ -13,6 +14,7 @@ import type {
   PaneSplitInfo,
   QmuxEvent,
   QueuedTurn,
+  RuntimeConfig,
   ThreadGraph,
   TranscriptCopyPayload,
   TranscriptHookEvent,
@@ -26,6 +28,29 @@ let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
 export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+export const DEFAULT_SHELL_TITLE = "Shell";
+
+/** The title a pane is created with ("Shell" or the adapter's label). A pane
+ * whose stored title differs has been renamed or auto-titled; shared by the
+ * sidebar and the quick launcher so both resolve tab names by the same rule. */
+export function defaultPaneTitle(
+  pane: PaneInfo,
+  agent: AgentInfo | undefined,
+  config: RuntimeConfig | null,
+): string | null {
+  if (pane.kind === "shell") {
+    return DEFAULT_SHELL_TITLE;
+  }
+  if (!agent) {
+    return null;
+  }
+  return (
+    config?.adapters.find((adapter) => adapter.id === agent.adapter)?.label ??
+    findAgentUiAdapter(agent.adapter)?.label ??
+    null
+  );
 }
 
 /** Fixed-position placement for a popover anchored to a control inside a pane. */
