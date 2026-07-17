@@ -125,7 +125,7 @@ pub struct PublicationBinding {
     updated_at: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicationProposalState {
     proposal_comment_id: u64,
@@ -636,6 +636,9 @@ pub async fn publishing_sync(
     }
     let revision = latest_gist_revision(&gist);
     let publication_id = existing.publication_id.clone();
+    // Snapshot the states as loaded so the write below can tell which keys
+    // this sync actually changed and merge them over the freshest store copy.
+    let original_proposal_states = existing.proposal_states.clone();
     let mut proposal_states = existing.proposal_states;
     let mut warning = sync_published_proposal_links(
         &client,
@@ -654,7 +657,7 @@ pub async fn publishing_sync(
     });
 
     let now = now_millis();
-    let mut binding = PublicationBinding {
+    let template = PublicationBinding {
         publication_id,
         gist_id: gist.id.clone(),
         gist_url: gist.html_url,
@@ -664,21 +667,41 @@ pub async fn publishing_sync(
         is_public: existing.is_public,
         source: request.source,
         public_node_ids: request.public_node_ids,
-        proposal_states,
+        proposal_states: proposal_states.clone(),
         publication_created_at: publication_created_at(&request.files),
         warning: warning.clone(),
         created_at: existing.created_at,
         updated_at: now,
     };
-    if let Err(error) = upsert_publication_binding(&workspace_root, &binding) {
-        append_warning(
-            &mut warning,
-            format!(
-                "The Gist was updated, but qmux could not save its local publication binding: {error}"
-            ),
-        );
-        binding.warning = warning;
-    }
+    // The sync owns every scalar field of the binding, but proposal states can
+    // gain entries while its uploads are in flight (a proposal accepted in the
+    // research pane); write those through a merge so they survive.
+    let merge_result = update_publication_binding_with(&workspace_root, &template, |stored| {
+        let concurrent_states = std::mem::take(&mut stored.proposal_states);
+        *stored = template.clone();
+        stored.proposal_states = concurrent_states;
+        for (key, state) in &proposal_states {
+            if original_proposal_states.get(key) != Some(state)
+                || !stored.proposal_states.contains_key(key)
+            {
+                stored.proposal_states.insert(key.clone(), state.clone());
+            }
+        }
+    });
+    let binding = match merge_result {
+        Ok(binding) => binding,
+        Err(error) => {
+            append_warning(
+                &mut warning,
+                format!(
+                    "The Gist was updated, but qmux could not save its local publication binding: {error}"
+                ),
+            );
+            let mut binding = template;
+            binding.warning = warning;
+            binding
+        }
+    };
     Ok(binding)
 }
 
@@ -708,6 +731,7 @@ pub async fn publishing_list_proposals(
     let account = fetch_github_user(&client, &token.access_token).await?;
     ensure_gist_owner(&remote.gist, &account.login)?;
     let comments = fetch_gist_comments(&client, &token.access_token, &binding.gist_id).await?;
+    let original_proposal_states = binding.proposal_states.clone();
     let mut changed = reconcile_proposal_node_states(
         state.inner(),
         &mut binding,
@@ -717,8 +741,20 @@ pub async fn publishing_list_proposals(
     )?;
     changed |= reconcile_proposal_resolution_states(&mut binding, &remote.gist, &comments);
     if changed {
-        binding.updated_at = now_millis();
-        upsert_publication_binding(&workspace_root, &binding)?;
+        let now = now_millis();
+        // Reconcile touches individual proposal states; merge just those over
+        // the freshest store copy so a resolve or sync that landed during this
+        // listing's GitHub fetches isn't clobbered by a whole-binding write.
+        binding = update_publication_binding_with(&workspace_root, &binding, |stored| {
+            for (key, state) in &binding.proposal_states {
+                if original_proposal_states.get(key) != Some(state)
+                    || !stored.proposal_states.contains_key(key)
+                {
+                    stored.proposal_states.insert(key.clone(), state.clone());
+                }
+            }
+            stored.updated_at = now;
+        })?;
     }
     Ok(collect_publication_proposals(
         &binding,
@@ -868,12 +904,17 @@ pub async fn publishing_resolve_proposal(
         }),
     };
     if request.status == "accepted" && existing_resolution_comment_id.is_none() {
-        binding.proposal_states.insert(
-            request.proposal_comment_id.to_string(),
-            proposal_state.clone(),
-        );
-        binding.updated_at = now_millis();
-        upsert_publication_binding(&workspace_root, &binding)?;
+        // Persist the acceptance before posting the resolution comment, but
+        // merge into the freshest store copy — a sync finishing during this
+        // command's GitHub fetches must not be overwritten wholesale.
+        let now = now_millis();
+        binding = update_publication_binding_with(&workspace_root, &binding, |stored| {
+            stored.proposal_states.insert(
+                request.proposal_comment_id.to_string(),
+                proposal_state.clone(),
+            );
+            stored.updated_at = now;
+        })?;
     }
     let resolution_comment_id = if let Some(comment_id) = existing_resolution_comment_id {
         comment_id
@@ -888,15 +929,26 @@ pub async fn publishing_resolve_proposal(
         create_gist_comment(&client, &token.access_token, &binding.gist_id, &body).await?
     };
     proposal_state.resolution_comment_id = Some(resolution_comment_id);
-    binding
-        .proposal_states
-        .insert(request.proposal_comment_id.to_string(), proposal_state);
-    binding.warning = None;
-    binding.updated_at = now_millis();
-    if let Err(error) = upsert_publication_binding(&workspace_root, &binding) {
-        binding.warning = Some(format!(
-            "GitHub recorded the proposal resolution, but qmux could not finish saving its local mapping: {error}"
-        ));
+    let now = now_millis();
+    let merge_result = update_publication_binding_with(&workspace_root, &binding, |stored| {
+        stored.proposal_states.insert(
+            request.proposal_comment_id.to_string(),
+            proposal_state.clone(),
+        );
+        stored.warning = None;
+        stored.updated_at = now;
+    });
+    match merge_result {
+        Ok(updated) => binding = updated,
+        Err(error) => {
+            binding
+                .proposal_states
+                .insert(request.proposal_comment_id.to_string(), proposal_state);
+            binding.updated_at = now;
+            binding.warning = Some(format!(
+                "GitHub recorded the proposal resolution, but qmux could not finish saving its local mapping: {error}"
+            ));
+        }
     }
     Ok(binding)
 }
@@ -2568,23 +2620,45 @@ fn upsert_publication_binding(
     workspace_root: &Path,
     binding: &PublicationBinding,
 ) -> Result<(), String> {
+    update_publication_binding_with(workspace_root, binding, |stored| {
+        *stored = binding.clone();
+    })
+    .map(|_| ())
+}
+
+/// Applies a command's changes to a binding against the *current* store state
+/// instead of overwriting it with the command's stale snapshot. Commands load
+/// a binding and then hold it across long GitHub round-trips; a concurrent
+/// command can persist changes in that window (a proposal resolve during a
+/// sync's uploads, a sync during a listing's reconcile), and a whole-binding
+/// write-back would silently discard them until the next reconcile rebuilt
+/// what it could. `apply` receives the freshest stored copy (or `fallback`
+/// when the binding is no longer stored) and mutates only what the command
+/// owns; the merged result is persisted and returned.
+fn update_publication_binding_with(
+    workspace_root: &Path,
+    fallback: &PublicationBinding,
+    apply: impl FnOnce(&mut PublicationBinding),
+) -> Result<PublicationBinding, String> {
     let _guard = PUBLICATIONS_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut store = load_publication_store(workspace_root)?;
-    if let Some(existing) = store
+    let position = store
         .bindings
-        .iter_mut()
-        .find(|existing| existing.publication_id == binding.publication_id)
-    {
-        *existing = binding.clone();
-    } else {
-        store.bindings.push(binding.clone());
-    }
+        .iter()
+        .position(|existing| existing.publication_id == fallback.publication_id);
+    let mut binding = match position {
+        Some(position) => store.bindings.remove(position),
+        None => fallback.clone(),
+    };
+    apply(&mut binding);
+    store.bindings.push(binding.clone());
     store
         .bindings
         .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    save_publication_store(workspace_root, &store)
+    save_publication_store(workspace_root, &store)?;
+    Ok(binding)
 }
 
 fn save_publication_store(workspace_root: &Path, store: &PublicationStore) -> Result<(), String> {
@@ -2643,6 +2717,150 @@ fn append_warning(warning: &mut Option<String>, message: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_workspace() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let seq = WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("qmux-publishing-{nanos}-{seq}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_proposal_state(comment_id: u64, node: Option<&str>) -> PublicationProposalState {
+        PublicationProposalState {
+            proposal_comment_id: comment_id,
+            status: "accepted".to_string(),
+            author_login: "contributor".to_string(),
+            parent_public_node_id: "node_parent12".to_string(),
+            prompt: "Question".to_string(),
+            answer_markdown: None,
+            local_node_id: node.map(str::to_string),
+            resolution_comment_id: None,
+            published_public_node_id: None,
+        }
+    }
+
+    fn sample_binding(updated_at: u64) -> PublicationBinding {
+        PublicationBinding {
+            publication_id: "pub_12345678".to_string(),
+            gist_id: "gist123".to_string(),
+            gist_url: "https://gist.github.com/owner/gist123".to_string(),
+            share_url: "https://qmux.app/p/gist123".to_string(),
+            owner_login: Some("owner".to_string()),
+            revision: Some("rev1".to_string()),
+            is_public: false,
+            source: PublicationSource {
+                kind: "research-tree".to_string(),
+                detail: BTreeMap::new(),
+            },
+            public_node_ids: BTreeMap::new(),
+            proposal_states: BTreeMap::new(),
+            publication_created_at: None,
+            warning: None,
+            created_at: 1,
+            updated_at,
+        }
+    }
+
+    // The store can change while a command holds its loaded binding across
+    // GitHub round-trips. The merge write-back must keep concurrent proposal
+    // states (a resolve landing mid-sync) while the command's own changes win.
+    #[test]
+    fn binding_updates_merge_over_concurrent_store_changes() {
+        let workspace = temp_workspace();
+        // The store as a sync command loaded it: one accepted proposal.
+        let mut loaded = sample_binding(10);
+        loaded
+            .proposal_states
+            .insert("1".to_string(), sample_proposal_state(1, None));
+        upsert_publication_binding(&workspace, &loaded).unwrap();
+
+        // While the sync's uploads run, a resolve links proposal 1 to a local
+        // node and accepts a brand-new proposal 2.
+        let mut concurrent = loaded.clone();
+        concurrent.proposal_states.insert(
+            "1".to_string(),
+            sample_proposal_state(1, Some("node_local1")),
+        );
+        concurrent.proposal_states.insert(
+            "2".to_string(),
+            sample_proposal_state(2, Some("node_local2")),
+        );
+        concurrent.updated_at = 20;
+        upsert_publication_binding(&workspace, &concurrent).unwrap();
+
+        // The sync writes back: it changed the revision but none of the
+        // proposal states it loaded — the same merge shape publishing_sync
+        // uses must preserve both concurrent updates.
+        let mut template = loaded.clone();
+        template.revision = Some("rev2".to_string());
+        template.updated_at = 30;
+        let original_states = loaded.proposal_states.clone();
+        let synced_states = template.proposal_states.clone();
+        let merged = update_publication_binding_with(&workspace, &template, |stored| {
+            let concurrent_states = std::mem::take(&mut stored.proposal_states);
+            *stored = template.clone();
+            stored.proposal_states = concurrent_states;
+            for (key, state) in &synced_states {
+                if original_states.get(key) != Some(state)
+                    || !stored.proposal_states.contains_key(key)
+                {
+                    stored.proposal_states.insert(key.clone(), state.clone());
+                }
+            }
+        })
+        .unwrap();
+
+        assert_eq!(merged.revision.as_deref(), Some("rev2"));
+        assert_eq!(merged.proposal_states.len(), 2);
+        assert_eq!(
+            merged.proposal_states["1"].local_node_id.as_deref(),
+            Some("node_local1")
+        );
+        assert_eq!(
+            merged.proposal_states["2"].local_node_id.as_deref(),
+            Some("node_local2")
+        );
+        let stored = publication_binding(&workspace, "pub_12345678")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.proposal_states.len(), 2);
+        assert_eq!(stored.revision.as_deref(), Some("rev2"));
+    }
+
+    // A key-scoped update (a resolve) must overlay the freshest stored copy,
+    // not resurrect the stale binding it loaded before its network calls.
+    #[test]
+    fn key_scoped_binding_updates_keep_fresh_scalar_fields() {
+        let workspace = temp_workspace();
+        let loaded = sample_binding(10);
+        upsert_publication_binding(&workspace, &loaded).unwrap();
+
+        // A sync completes while the resolve holds its stale copy.
+        let mut concurrent = loaded.clone();
+        concurrent.revision = Some("rev2".to_string());
+        concurrent.updated_at = 20;
+        upsert_publication_binding(&workspace, &concurrent).unwrap();
+
+        let merged = update_publication_binding_with(&workspace, &loaded, |stored| {
+            stored
+                .proposal_states
+                .insert("3".to_string(), sample_proposal_state(3, None));
+            stored.updated_at = 30;
+        })
+        .unwrap();
+
+        assert_eq!(merged.revision.as_deref(), Some("rev2"));
+        assert_eq!(merged.updated_at, 30);
+        assert!(merged.proposal_states.contains_key("3"));
+    }
 
     fn valid_request() -> PublishPublicationRequest {
         let index = r#"{
