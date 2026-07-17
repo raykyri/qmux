@@ -1540,6 +1540,50 @@
   padding: 12px;
 }
 
+/* Read-only peek at the selected tab's pending queue, above the draft so the
+   order reads chronologically: these run first, the new task lines up after. */
+.global-task-launcher-queue-preview {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.global-task-launcher-queue-preview-label {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.global-task-launcher-queue-preview-turn {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.global-task-launcher-queue-preview-index {
+  flex: none;
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
+}
+
+.global-task-launcher-queue-preview-text {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-task-launcher-queue-preview-wait,
+.global-task-launcher-queue-preview-more {
+  flex: none;
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
+}
+
 .global-task-launcher textarea {
   flex: 1 1 auto;
   min-height: 0;

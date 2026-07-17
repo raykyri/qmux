@@ -576,6 +576,36 @@ export default function GlobalTaskLauncher() {
       </aside>
 
       <section className="global-task-launcher-compose" aria-label="Quick launch task">
+        {selected && selected.queue.length > 0 ? (
+          <div
+            className="global-task-launcher-queue-preview"
+            aria-label={`${selected.queue.length} turns already queued on this tab`}
+          >
+            <div className="global-task-launcher-queue-preview-label">
+              Queued ({selected.queue.length})
+            </div>
+            {selected.queue.slice(0, 3).map((turn, index) => (
+              <div
+                key={index}
+                className="global-task-launcher-queue-preview-turn"
+                title={turn.text}
+              >
+                <span className="global-task-launcher-queue-preview-index">{index + 1}</span>
+                <span className="global-task-launcher-queue-preview-text">{turn.text}</span>
+                {turn.waitFor ? (
+                  <span className="global-task-launcher-queue-preview-wait">
+                    waits for {turn.waitFor.label ?? "another tab"}
+                  </span>
+                ) : null}
+              </div>
+            ))}
+            {selected.queue.length > 3 ? (
+              <div className="global-task-launcher-queue-preview-more">
+                +{selected.queue.length - 3} more
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <textarea
           ref={textareaRef}
           value={value}
