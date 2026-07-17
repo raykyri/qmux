@@ -2,8 +2,7 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
     SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, prepared_shell_agent,
-    record_shell_fork_lineage, record_shell_resume_identity, reusable_session_agent,
-    shell_quote_arg,
+    record_shell_session_lineage, reusable_session_agent, shell_quote_arg,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -491,9 +490,14 @@ impl OpencodeAdapter {
                 }
             }
         };
-        let agent =
-            record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
-        let agent = record_shell_resume_identity(state, agent, resume_session_id.as_deref())?;
+        let agent = record_shell_session_lineage(
+            state,
+            agent,
+            self.id(),
+            fork_point.as_deref(),
+            resume_session_id.as_deref(),
+            &cwd_str,
+        )?;
         let agent = attach_opencode_agent_pane(
             state,
             &agent.id,

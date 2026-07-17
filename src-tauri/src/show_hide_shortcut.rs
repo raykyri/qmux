@@ -276,7 +276,7 @@ fn normalize_accelerator(accelerator: Option<String>) -> Result<Option<String>, 
     Ok(Some(display_accelerator(shortcut)))
 }
 
-trait ShortcutRegistry {
+pub(crate) trait ShortcutRegistry {
     fn register(&self, accelerator: &str) -> Result<(), String>;
     fn unregister(&self, accelerator: &str) -> Result<(), String>;
     fn is_registered(&self, accelerator: &str) -> bool;
@@ -309,7 +309,7 @@ impl<R: Runtime> ShortcutRegistry for TauriShortcutRegistry<'_, R> {
 /// Registers the replacement before releasing the current shortcut. Persistence
 /// happens only after the OS transition succeeds; a persistence failure restores
 /// the previous registration before returning.
-fn replace_active_registration(
+pub(crate) fn replace_active_registration(
     registry: &impl ShortcutRegistry,
     previous: Option<&str>,
     next: Option<&str>,

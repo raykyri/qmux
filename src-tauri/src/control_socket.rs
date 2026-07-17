@@ -1,6 +1,7 @@
 use crate::adapters::{
     AdapterNotification, PrepareShellAgentLaunchRequest, PrepareShellClaudeLaunchRequest,
     adapter_registry, agent_fork, agent_prepare_shell_launch, ingest_adapter_notification,
+    notification_adapter_hint,
 };
 use crate::connection_limit::ConnectionLimiter;
 use crate::events::QmuxEvent;
@@ -286,23 +287,10 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // caller claims, so hook status can only be reported for its own pane.
             notification.pane_id = Some(authed_pane.clone());
 
-            let mut recovered_agent = None;
             if notification.event == "SessionStart" && state.agent_by_pane(&authed_pane)?.is_none()
             {
-                let adapter_id = notification
-                    .agent_id
-                    .as_deref()
-                    .and_then(|agent_id| state.agent(agent_id).ok().flatten())
-                    .map(|agent| agent.adapter)
-                    .or_else(|| notification.adapter_id.clone())
-                    .or_else(|| {
-                        notification
-                            .payload
-                            .get("adapterId")
-                            .and_then(Value::as_str)
-                            .map(ToString::to_string)
-                    })
-                    .ok_or_else(|| {
+                let adapter_id =
+                    notification_adapter_hint(state, &notification)?.ok_or_else(|| {
                         "SessionStart cannot recover a missing agent without an adapter id"
                             .to_string()
                     })?;
@@ -320,8 +308,7 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                     &adapter_id,
                     notification.agent_id.as_deref(),
                 )?;
-                notification.agent_id = Some(recovered.id.clone());
-                recovered_agent = Some(recovered);
+                notification.agent_id = Some(recovered.id);
             }
 
             if let Some(agent_id) = notification.agent_id.as_deref() {
@@ -337,17 +324,6 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                     return Err(format!("agent {agent_id} was not found"));
                 }
             }
-            if let Some(agent) = recovered_agent.as_ref() {
-                state.emit(QmuxEvent::new(
-                    "agent.spawned",
-                    Some(authed_pane.clone()),
-                    Some(agent.id.clone()),
-                    json!({ "agent": agent, "source": "session_start_recovery" }),
-                ));
-            }
-            // Emit the recovered binding before ingestion starts a transcript-tail
-            // thread. Its first read may immediately emit the full history, and the
-            // frontend must know which right pane owns those turns first.
             let outcome = ingest_adapter_notification(state, notification)?;
             for event in outcome.into_events() {
                 state.emit(event);

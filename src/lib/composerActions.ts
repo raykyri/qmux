@@ -1,8 +1,69 @@
+import type { AgentStatus, ComposerPolicy } from "../adapters";
 import type { QueuedTurnDelivery, WaitTarget } from "../types";
 import { agentStatusTone } from "./appHelpers";
+import type { ParsedComposerSlashCommand } from "./composerSlashCommands";
 
 export const FORK_REQUIREMENT_TITLE =
   "Forking requires a supported agent session that has run a turn";
+
+/** Capability gating shared by the right-pane composer and the global task
+ * launcher, derived in one place so both surfaces enable Send/Send Now/Queue
+ * and route the submit shortcut identically. */
+export interface ComposerGating {
+  canSend: boolean;
+  canSteer: boolean;
+  canAppendQueue: boolean;
+  submitShortcutWouldTargetSend: boolean;
+  submitShortcutWouldTargetQueue: boolean;
+}
+
+export function deriveComposerGating(
+  policy: ComposerPolicy | null,
+  status: AgentStatus | null,
+  queueLength: number,
+  submitting: boolean,
+): ComposerGating {
+  const canSend = Boolean(policy && status && policy.readyStatuses.includes(status));
+  const canQueue = Boolean(policy && status && policy.queueStatuses.includes(status));
+  const canSteer = Boolean(policy && status && policy.steerStatuses.includes(status));
+  const hasQueue = queueLength > 0;
+  const canAppendQueue = Boolean(status && status !== "failed" && (canQueue || hasQueue));
+  // Where the submit shortcut lands: send to a ready agent with an empty
+  // queue, queue behind everything else.
+  const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueue;
+  const submitShortcutWouldTargetQueue =
+    !submitShortcutWouldTargetSend && !submitting && canAppendQueue;
+  return {
+    canSend,
+    canSteer,
+    canAppendQueue,
+    submitShortcutWouldTargetSend,
+    submitShortcutWouldTargetQueue,
+  };
+}
+
+/** How a composer submission dispatches given its parsed slash command, shared
+ * so /fork and /worktree behave identically in the composer and the launcher. */
+export type ComposerSubmissionPlan =
+  | { kind: "reject"; message: string }
+  | { kind: "fork"; useWorktree: boolean; prompt: string }
+  | { kind: "turn" };
+
+export function planComposerSubmission(
+  parsed: ParsedComposerSlashCommand,
+  canFork: boolean,
+): ComposerSubmissionPlan {
+  if (parsed.kind === "incomplete") {
+    return { kind: "reject", message: `Add a message after ${parsed.command.token}` };
+  }
+  if (parsed.kind === "ready") {
+    if (!canFork) {
+      return { kind: "reject", message: FORK_REQUIREMENT_TITLE };
+    }
+    return { kind: "fork", useWorktree: parsed.command.useWorktree, prompt: parsed.prompt };
+  }
+  return { kind: "turn" };
+}
 
 /** Status text for a queue-after wait target, shared by the right-pane
  * composer's queue dropdown and the global task launcher's. */

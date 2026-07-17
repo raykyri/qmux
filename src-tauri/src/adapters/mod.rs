@@ -126,6 +126,21 @@ pub(crate) fn record_shell_resume_identity(
         })
 }
 
+/// Records the shell-launch lineage for a resolved agent in one step — fork
+/// provenance, then any concrete resumed session identity — so every adapter
+/// makes a single call and cannot skip half of the ritual.
+pub(crate) fn record_shell_session_lineage(
+    state: &AppState,
+    agent: AgentInfo,
+    adapter_id: &str,
+    fork_point: Option<&str>,
+    resume_session_id: Option<&str>,
+    cwd: &str,
+) -> Result<AgentInfo, String> {
+    let agent = record_shell_fork_lineage(state, agent, adapter_id, fork_point, cwd)?;
+    record_shell_resume_identity(state, agent, resume_session_id)
+}
+
 /// Resolves a qmux-reserved agent for an automatically started shell command.
 /// Ordinary commands typed by the user do not carry `prepared_agent_id` and keep
 /// the existing create/reuse behavior. A prepared id must describe an unbound
@@ -980,23 +995,44 @@ fn notification_adapter_id(
         return Ok(agent.adapter);
     }
 
+    notification_adapter_fallback(state, notification)?
+        .ok_or_else(|| "hook.notify could not resolve an agent adapter for this pane".to_string())
+}
+
+/// Like `notification_adapter_id`, but tolerant of a claimed agent id whose
+/// record no longer exists: SessionStart recovery resolves the adapter from
+/// the remaining hints instead of failing on the stale id. Kept beside the
+/// strict resolver so the two hint chains cannot drift.
+pub(crate) fn notification_adapter_hint(
+    state: &AppState,
+    notification: &AdapterNotification,
+) -> Result<Option<String>, String> {
+    if let Some(agent_id) = notification.agent_id.as_deref()
+        && let Some(agent) = state.agent(agent_id)?
+    {
+        return Ok(Some(agent.adapter));
+    }
+
+    notification_adapter_fallback(state, notification)
+}
+
+fn notification_adapter_fallback(
+    state: &AppState,
+    notification: &AdapterNotification,
+) -> Result<Option<String>, String> {
     if let Some(pane_id) = notification.pane_id.as_deref()
         && let Some(agent) = state.agent_by_pane(pane_id)?
     {
-        return Ok(agent.adapter);
+        return Ok(Some(agent.adapter));
     }
 
-    notification
-        .adapter_id
-        .clone()
-        .or_else(|| {
-            notification
-                .payload
-                .get("adapterId")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-        })
-        .ok_or_else(|| "hook.notify could not resolve an agent adapter for this pane".to_string())
+    Ok(notification.adapter_id.clone().or_else(|| {
+        notification
+            .payload
+            .get("adapterId")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    }))
 }
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
+use crate::events::QmuxEvent;
 use crate::persistence::{self, WorktreeLocation};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -1026,14 +1028,25 @@ pub fn recover_shell_agent_from_session_start(
         )?
     };
     let attached = attach_agent_pane(state, &agent.id, pane.id.clone())?;
-    state
+    let recovered = state
         .set_agent_status(&attached.id, AgentStatus::Idle)?
         .ok_or_else(|| {
             format!(
                 "agent {} disappeared during SessionStart recovery",
                 attached.id
             )
-        })
+        })?;
+    // Emit the recovered binding before the caller ingests the notification and
+    // starts a transcript-tail thread. Its first read may immediately emit the
+    // full history, and the frontend must know which right pane owns those
+    // turns first.
+    state.emit(QmuxEvent::new(
+        "agent.spawned",
+        Some(pane.id.clone()),
+        Some(recovered.id.clone()),
+        json!({ "agent": &recovered, "source": "session_start_recovery" }),
+    ));
+    Ok(recovered)
 }
 
 fn is_qmux_agent_id(value: &str) -> bool {

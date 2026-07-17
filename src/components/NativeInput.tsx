@@ -37,6 +37,8 @@ import type { PasteProtectionSettings } from "../lib/paste";
 import {
   FORK_REQUIREMENT_TITLE,
   QUEUE_DELIVERY_OPTIONS,
+  deriveComposerGating,
+  planComposerSubmission,
   waitTargetStatusDotClass,
   waitTargetStatusLabel,
 } from "../lib/composerActions";
@@ -349,11 +351,14 @@ export default function NativeInput({
 
   const awaitingPermission = agent.status === "awaitingPermission";
   const paused = agent.paused ?? false;
-  const canSend = composerPolicy.readyStatuses.includes(agent.status);
-  const canQueue = composerPolicy.queueStatuses.includes(agent.status);
-  const canSteer = composerPolicy.steerStatuses.includes(agent.status);
+  const {
+    canSend,
+    canSteer,
+    canAppendQueue,
+    submitShortcutWouldTargetSend,
+    submitShortcutWouldTargetQueue,
+  } = deriveComposerGating(composerPolicy, agent.status, queuedTurns.length, submitting);
   const hasQueuedTurns = queuedTurns.length > 0;
-  const canAppendQueue = agent.status !== "failed" && (canQueue || hasQueuedTurns);
   const hasSubmitValue = value.trim().length > 0;
   const sendDisabled = submitting || !canSend || !hasSubmitValue;
   // Delivery to a brand-new session only needs an adapter, which every agent has,
@@ -368,9 +373,6 @@ export default function NativeInput({
   const slashMenuOpen =
     textareaFocused && slashMatches.length > 0 && slashDismissedValue !== value;
   const waitDisabled = submitting || agent.status === "failed" || !hasSubmitValue;
-  const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueuedTurns;
-  const submitShortcutWouldTargetQueue =
-    !submitShortcutWouldTargetSend && !submitting && canAppendQueue;
   const submitShortcutTargetsSend = submitShortcutWouldTargetSend && hasSubmitValue;
   const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
@@ -623,23 +625,19 @@ export default function NativeInput({
       return;
     }
 
-    const slashCommand = parseComposerSlashCommand(text);
-    if (slashCommand.kind === "incomplete") {
-      onError(`Add a message after ${slashCommand.command.token}`);
+    const plan = planComposerSubmission(parseComposerSlashCommand(text), canQueueFork);
+    if (plan.kind === "reject") {
+      onError(plan.message);
       return;
     }
-    if (slashCommand.kind === "ready") {
-      if (!canQueueFork) {
-        onError(FORK_REQUIREMENT_TITLE);
-        return;
-      }
+    if (plan.kind === "fork") {
       setMenuOpen(false);
       setWaitOpen(false);
       setSubmitting(true);
       try {
         const forked = await onForkWithPrompt({
-          useWorktree: slashCommand.command.useWorktree,
-          prompt: slashCommand.prompt,
+          useWorktree: plan.useWorktree,
+          prompt: plan.prompt,
         });
         if (forked) {
           recordRecentMessage(trimmed);

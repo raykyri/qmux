@@ -2,8 +2,8 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
     ShellCommandIntegration, SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
-    prepared_shell_agent, record_shell_fork_lineage, record_shell_resume_identity,
-    reusable_session_agent, shell_quote_arg, shell_quote_path,
+    prepared_shell_agent, record_shell_session_lineage, reusable_session_agent, shell_quote_arg,
+    shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -638,9 +638,14 @@ impl ClaudeAdapter {
                 )?,
             },
         };
-        let agent =
-            record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
-        let agent = record_shell_resume_identity(state, agent, resume_session_id.as_deref())?;
+        let agent = record_shell_session_lineage(
+            state,
+            agent,
+            self.id(),
+            fork_point.as_deref(),
+            resume_session_id.as_deref(),
+            &cwd_str,
+        )?;
         let settings_path = match write_hook_settings(state.config(), &request.pane_id) {
             Ok(settings_path) => settings_path,
             Err(err) => {
