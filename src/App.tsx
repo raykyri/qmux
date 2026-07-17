@@ -9371,7 +9371,11 @@ function MainApp() {
         showActivityDetail={settings.showToolCalls}
         stickyUserMessages={settings.stickyUserMessages}
         agentId={agent?.id ?? surface.pane.id}
-        savePromptAgentId={agent?.id ?? null}
+        // The save request is a window event handled only by the prompt
+        // library menu inside TurnPaneHeader. Headerless surfaces (split
+        // cells, split right-pane mode) mount no listener, so offering the
+        // menu item there would dispatch into the void — hide it instead.
+        savePromptAgentId={showHeader ? (agent?.id ?? null) : null}
         searchHotkeyActive={activeSurface === "pane" && surface.pane.id === activePane?.id}
         assistantLabel={surface.assistantLabel}
         notice={agent ? surface.transcriptNotice : null}
