@@ -239,29 +239,36 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
         })
     });
 
-    let mut inner = state
-        .inner
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    match activation {
-        Ok(()) => {
-            inner.configured = Some(replacement);
-            inner.registered = true;
-            inner.error = None;
-        }
+    // Resolve the outcome — including any rollback — *before* taking `inner`.
+    // For a double-tap hotkey, deactivate/activate cross into Swift via
+    // DispatchQueue.main.sync, and the main thread takes `inner` on every
+    // global-shortcut press (`handles`) and settings read (`status`); holding
+    // `inner` across that sync call deadlocks the main thread. The `operation`
+    // lock (held for this whole command, and taken nowhere else) still
+    // serializes concurrent hotkey changes.
+    let (configured, registered, error) = match activation {
+        Ok(()) => (replacement, true, None),
         Err(error) => {
             deactivate(&app, replacement);
             let rollback = activate(&app, previous);
-            inner.configured = Some(previous);
-            inner.registered = rollback.is_ok();
-            inner.error = Some(match rollback {
+            let registered = rollback.is_ok();
+            let error = match rollback {
                 Ok(()) => error,
                 Err(rollback_error) => {
                     format!("{error}. Restoring the previous hotkey also failed: {rollback_error}")
                 }
-            });
+            };
+            (previous, registered, Some(error))
         }
-    }
+    };
+
+    let mut inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    inner.configured = Some(configured);
+    inner.registered = registered;
+    inner.error = error;
     drop(inner);
     Ok(state.status())
 }
