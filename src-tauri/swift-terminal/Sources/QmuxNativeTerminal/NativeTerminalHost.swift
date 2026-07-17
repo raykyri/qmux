@@ -1030,6 +1030,9 @@ final class NativeTerminalHost {
             }
         }
         forward(event, to: pane.view)
+        if event.type == .scrollWheel {
+            pane.reportPassiveActivation()
+        }
         if isPointerUp(event) {
             pointerCapturePane = nil
         }

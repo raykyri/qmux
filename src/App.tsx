@@ -109,6 +109,11 @@ import {
 } from "./lib/appHelpers";
 import { desiredNativeTerminalKeyboardOwner } from "./lib/nativeTerminalKeyboard";
 import {
+  applicableSpeculativeAcknowledgements,
+  terminalAttentionProbeIsDue,
+  terminalPaneHasUserAttention,
+} from "./lib/terminalAttention";
+import {
   appShortcutAllowsRepeat,
   appShortcutTargetsActivePane,
   contextualizeAppShortcut,
@@ -1587,6 +1592,10 @@ function MainApp() {
   // the restoration focus can land in the same millisecond as the window
   // focus event that caused it.
   const focusOrderSeqRef = useRef(0);
+  // Pointer, wheel, and input events can arrive in dense bursts. One backend
+  // Done probe per pane per short attention window closes event-order races
+  // without turning every key repeat or trackpad tick into IPC.
+  const terminalAttentionProbeAtRef = useRef(new Map<string, number>());
   const lastUserInputSeqRef = useRef(0);
   const lastWindowFocusSeqRef = useRef(0);
   const userInputSinceWindowFocus = useCallback(
@@ -4171,19 +4180,26 @@ function MainApp() {
     setAgents((current) => current.map((agent) => updatedById.get(agent.id) ?? agent));
   }
 
-  async function acknowledgeAgentStatuses(targetAgents: AgentInfo[], includeFailed = false) {
-    const dismissibleAgents = targetAgents.filter(
-      (agent) => agent.status === "done" || (includeFailed && agent.status === "failed"),
-    );
+  async function acknowledgeAgentStatuses(
+    targetAgents: AgentInfo[],
+    includeFailed = false,
+    checkBackend = false,
+  ) {
+    const dismissibleAgents = checkBackend
+      ? targetAgents
+      : targetAgents.filter(
+          (agent) => agent.status === "done" || (includeFailed && agent.status === "failed"),
+        );
     if (dismissibleAgents.length === 0) {
       return;
     }
     setError(null);
     try {
+      const acknowledged = await Promise.all(
+        dismissibleAgents.map((agent) => acknowledgeAgent(agent.id, includeFailed)),
+      );
       replaceAgents(
-        await Promise.all(
-          dismissibleAgents.map((agent) => acknowledgeAgent(agent.id, includeFailed)),
-        ),
+        checkBackend ? applicableSpeculativeAcknowledgements(acknowledged) : acknowledged,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -4232,11 +4248,31 @@ function MainApp() {
     }
   }
 
-  function acknowledgePaneIfDone(paneId: string | null) {
-    if (!paneId || !document.hasFocus()) {
+  function acknowledgePaneIfDone(paneId: string | null, checkBackend = false) {
+    if (!paneId) {
       return;
     }
-    void acknowledgeAgentStatuses(agentsForSplitStatusGroup(paneId));
+    if (
+      !terminalPaneHasUserAttention({
+        activeSurface: activeSurfaceRef.current,
+        activePaneId: activePaneIdRef.current,
+        paneId,
+        paneExists: panesRef.current.some((pane) => pane.id === paneId),
+        documentFocused: document.hasFocus(),
+        documentVisible: document.visibilityState === "visible",
+      })
+    ) {
+      return;
+    }
+    if (checkBackend) {
+      const now = performance.now();
+      const lastProbeAt = terminalAttentionProbeAtRef.current.get(paneId);
+      if (!terminalAttentionProbeIsDue(lastProbeAt, now)) {
+        return;
+      }
+      terminalAttentionProbeAtRef.current.set(paneId, now);
+    }
+    void acknowledgeAgentStatuses(agentsForSplitStatusGroup(paneId), false, checkBackend);
   }
 
   function maxTurnPaneWidth() {
@@ -4883,8 +4919,16 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    // Probe the backend on a real view transition. Its Done event can still be
+    // crossing the event bridge, so the local agent snapshot is not sufficient.
+    acknowledgePaneIfDone(activePaneId, true);
+  }, [activePaneId, activeSurface]);
+
+  useEffect(() => {
+    // If the pane was already visible when Done arrived, acknowledge it as soon
+    // as the event reaches React instead of waiting for another focus change.
     acknowledgePaneIfDone(activePaneId);
-  }, [activePaneId]);
+  }, [activePaneId, activeSurface, agents, paneSplits]);
 
   // Selecting a pane clears its one-time "Restored" badge automatically — the same
   // dismiss-on-select behavior as a done agent's review status — so it's never a
@@ -4932,10 +4976,46 @@ function MainApp() {
   }, [activePaneId]);
 
   useEffect(() => {
-    const handleFocus = () => acknowledgePaneIfDone(activePaneId);
+    const handleFocus = () => acknowledgePaneIfDone(activePaneIdRef.current, true);
+    const handleBlur = () => terminalAttentionProbeAtRef.current.clear();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        handleFocus();
+      }
+    };
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let unlistenNativeFocus: (() => void) | undefined;
     window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, [activePaneId]);
+    window.addEventListener("blur", handleBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    void appWindow
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) {
+          handleFocus();
+          // Tauri can report native focus just before WebKit updates
+          // document.hasFocus(). Sample once more after that handoff.
+          requestAnimationFrame(handleFocus);
+        } else {
+          handleBlur();
+        }
+      })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenNativeFocus = unlisten;
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      unlistenNativeFocus?.();
+    };
+  }, []);
 
   // Flushes a pane's pre-attach output backlog, retrying on failure. attachPane is
   // idempotent (a repeat call is a no-op once the pane is already flushed), so retrying
@@ -5065,6 +5145,7 @@ function MainApp() {
   }, []);
   const activateTerminalPane = useCallback((paneId: string) => {
     setActivePaneId(paneId);
+    acknowledgePaneIfDone(paneId, true);
   }, []);
   const clearResearchUnseen = useCallback((treeId: string) => {
     // Both attention flags: viewing acknowledges failures exactly like
@@ -6154,6 +6235,7 @@ function MainApp() {
 
   function focusPaneTab(paneId: string) {
     setActivePaneId(paneId);
+    acknowledgePaneIfDone(paneId, true);
     requestAnimationFrame(() => {
       terminalPaneRefs.current.get(paneId)?.focus();
     });
@@ -6351,7 +6433,7 @@ function MainApp() {
         return;
       }
       focusPaneTab(paneId);
-      acknowledgePaneIfDone(paneId);
+      acknowledgePaneIfDone(paneId, true);
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -6540,7 +6622,7 @@ function MainApp() {
       void selectResearchTree(researchNode.treeId);
     }
     focusPaneTab(paneId);
-    acknowledgePaneIfDone(paneId);
+    acknowledgePaneIfDone(paneId, true);
   }
 
   function handlePaneTabDoubleClick(pane: PaneInfo) {
@@ -7824,7 +7906,11 @@ function MainApp() {
     noteUserInput,
   };
   const stableNoteUserInput = useCallback(
-    (agentId: string) => terminalHandlersRef.current.noteUserInput(agentId),
+    (agentId: string) => {
+      const paneId = agentsRef.current.find((agent) => agent.id === agentId)?.paneId ?? null;
+      acknowledgePaneIfDone(paneId, true);
+      terminalHandlersRef.current.noteUserInput(agentId);
+    },
     [],
   );
   const updateTerminalOverlayState = useCallback((paneId: string, open: boolean) => {
@@ -11860,6 +11946,8 @@ function MainApp() {
               ? `turn-pane is-expanded${splitRightPaneMode ? " is-headerless-expanded" : ""}`
               : "turn-pane"
           }
+          onPointerDownCapture={() => activateTerminalPane(activeTurnPaneSurface.pane.id)}
+          onFocusCapture={() => activateTerminalPane(activeTurnPaneSurface.pane.id)}
         >
           {activeTranscriptVisibleExpanded ? null : renderTurnPaneResizer()}
           {renderTurnPaneSurface(activeTurnPaneSurface, !splitRightPaneMode)}

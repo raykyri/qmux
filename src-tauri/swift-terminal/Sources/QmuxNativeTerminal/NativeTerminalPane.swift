@@ -327,6 +327,18 @@ final class NativeTerminalPane: NSObject,
         paneID.withCString { nativeTerminalDidActivate($0) }
     }
 
+    private var lastPassiveActivationAt: TimeInterval = 0
+
+    /// Wheel traffic can contain dozens of events per gesture. Report enough
+    /// to let qmux treat scrolling as attention without flooding the event
+    /// bridge for every trackpad tick.
+    func reportPassiveActivation() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastPassiveActivationAt >= 0.25 else { return }
+        lastPassiveActivationAt = now
+        reportActivation()
+    }
+
     func pasteApprovedText(_ text: String) -> Bool {
         view.pasteApprovedText(text)
     }

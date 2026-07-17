@@ -14,6 +14,7 @@
     "start:site": "node dist-site/server.mjs",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
     "test:app-shortcuts": "node scripts/test-app-shortcuts.mjs",
+    "test:terminal-attention": "node scripts/test-terminal-attention.mjs",
     "test:composer-slash-commands": "node scripts/test-composer-slash-commands.mjs",
     "test:claude-turns": "node scripts/test-claude-turns.mjs",
     "test:pane-splits": "node scripts/test-pane-splits.mjs",
