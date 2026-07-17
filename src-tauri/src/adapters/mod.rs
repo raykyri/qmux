@@ -291,6 +291,7 @@ pub(crate) fn parse_claude_native_transcript_value(
         role,
         blocks,
         source_index,
+        timestamp: native_timestamp_ms(value),
         status: None,
         status_reason: None,
         native_id: string_field(value, "uuid"),
@@ -298,6 +299,32 @@ pub(crate) fn parse_claude_native_transcript_value(
             .or_else(|| string_field(value, "parent_uuid")),
         native_message_id: string_field(message, "id"),
     })
+}
+
+/// Best-effort per-record timestamp from a native transcript value, in
+/// milliseconds since the Unix epoch: RFC3339 strings or numeric epochs under
+/// the common field spellings. None when the record carries no usable time.
+pub(crate) fn native_timestamp_ms(value: &Value) -> Option<i64> {
+    let field = value
+        .get("timestamp")
+        .or_else(|| value.get("created_at"))
+        .or_else(|| value.get("createdAt"))?;
+    match field {
+        Value::String(text) => crate::transcript::rfc3339_to_epoch_ms(text),
+        Value::Number(number) => {
+            let raw = number
+                .as_i64()
+                .or_else(|| number.as_f64().map(|float| float as i64))?;
+            // Second-resolution epochs sit far below any millisecond epoch of
+            // the same era; scale them up rather than misreading them as 1970.
+            if raw >= 1_000_000_000_000 {
+                Some(raw)
+            } else {
+                raw.checked_mul(1_000)
+            }
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn parse_claude_native_lifecycle_event(line: &str) -> Option<TranscriptLifecycleEvent> {

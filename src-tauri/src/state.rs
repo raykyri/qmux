@@ -11240,6 +11240,7 @@ mod tests {
                 text: text.to_string(),
             }],
             source_index: 0,
+            timestamp: None,
             status: None,
             status_reason: None,
             native_id: None,

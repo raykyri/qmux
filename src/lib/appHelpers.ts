@@ -58,6 +58,21 @@ export function latestUserTurnText(turns: Turn[]): string | null {
   return null;
 }
 
+/** When the conversation last moved: the newest non-superseded turn that
+ * carries a native timestamp. */
+export function latestTurnTimestamp(turns: Turn[]): number | null {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn.status === "superseded") {
+      continue;
+    }
+    if (typeof turn.timestamp === "number") {
+      return turn.timestamp;
+    }
+  }
+  return null;
+}
+
 /** The last words the agent said: the final non-empty text block of the most
  * recent assistant turn that has one. Tool-only turns (an agent mid-work) are
  * walked past so the latest spoken reply still surfaces. */

@@ -24,8 +24,10 @@ import {
   agentStatusLabel,
   defaultPaneTitle,
   latestAssistantTurnText,
+  latestTurnTimestamp,
   latestUserTurnText,
 } from "../lib/appHelpers";
+import { formatRelativeTime } from "../lib/transcriptSessions";
 import { collapseImageMarkers } from "../lib/imageMarkers";
 import {
   stripTaggedInstructionBlocks,
@@ -98,12 +100,13 @@ function targetOptionDomId(agentId: string): string {
   return `global-task-launcher-option-${agentId}`;
 }
 
-/** The tail of the last exchange with a target: what the user last sent and
- * the agent's latest reply, so a summon shows whether it continues an
- * existing conversation. */
+/** The tail of the last exchange with a target: what the user last sent, the
+ * agent's latest reply, and when the conversation last moved, so a summon
+ * shows whether it continues an existing conversation. */
 interface AgentExchange {
   userText: string | null;
   agentText: string | null;
+  at: number | null;
 }
 
 /** One display line for the context strip: injected instruction blocks and
@@ -389,6 +392,7 @@ export default function GlobalTaskLauncher() {
         const next: AgentExchange = {
           userText: latestUserTurnText(normalized),
           agentText: latestAssistantTurnText(normalized),
+          at: latestTurnTimestamp(normalized),
         };
         exchangeCacheRef.current.set(exchangeAgentId, next);
         setExchange(next);
@@ -596,9 +600,13 @@ export default function GlobalTaskLauncher() {
   const queuedTurns = selected?.queue ?? [];
   const hasExchange = Boolean(youLine || agentLine);
   const contextHeader = hasExchange
-    ? queuedTurns.length > 0
-      ? `Last exchange · ${queuedTurns.length} queued`
-      : "Last exchange"
+    ? [
+        "Last exchange",
+        exchange?.at != null ? formatRelativeTime(exchange.at) : null,
+        queuedTurns.length > 0 ? `${queuedTurns.length} queued` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
     : `Queued (${queuedTurns.length})`;
 
   return (

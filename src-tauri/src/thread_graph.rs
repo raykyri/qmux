@@ -1033,6 +1033,7 @@ mod tests {
                 text: format!("{role} text"),
             }],
             source_index,
+            timestamp: None,
             status: None,
             status_reason: None,
             native_id: Some(format!("native-{id}")),

@@ -1954,6 +1954,7 @@ fn parse_transcript_line(agent_id: &str, source_index: usize, line: &str) -> Opt
         role,
         blocks,
         source_index,
+        timestamp: super::native_timestamp_ms(&value),
         status: None,
         status_reason: None,
         native_id: codex_payload_turn_id(payload),
