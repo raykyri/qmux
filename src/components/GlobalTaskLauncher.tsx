@@ -149,6 +149,7 @@ export default function GlobalTaskLauncher() {
   const visibleRef = useRef(false);
   const [targets, setTargets] = useState<LauncherTarget[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(loadLastTargetAgentId);
+  const [filter, setFilter] = useState("");
   const [value, setValue] = useState("");
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -231,6 +232,8 @@ export default function GlobalTaskLauncher() {
       if (focused) {
         visibleRef.current = true;
         setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
+        // A stale filter from the previous launch would silently hide tabs.
+        setFilter("");
         // Focus immediately: the textarea stays enabled through the refresh so
         // the first keystrokes after the hotkey land in the draft.
         requestAnimationFrame(() => textareaRef.current?.focus());
@@ -290,12 +293,35 @@ export default function GlobalTaskLauncher() {
   const permissionActions =
     selected?.agent.status === "awaitingPermission" ? (policy?.permissionActions ?? []) : [];
 
+  // Same substring matching as the ⌘K palette, over the fields the column
+  // shows: tab title and group name.
+  const visibleTargets = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    if (needle.length === 0) return targets;
+    return targets.filter(
+      (target) =>
+        targetTitle(target).toLowerCase().includes(needle) ||
+        (target.group?.name ?? "").toLowerCase().includes(needle),
+    );
+  }, [targets, filter]);
+
+  // A filter that hides the selected target snaps selection to the first match
+  // so the highlighted row is always the one a submit would hit. Automatic
+  // moves bypass selectTarget: only explicit picks and submissions update the
+  // remembered target.
+  useEffect(() => {
+    if (visibleTargets.length === 0) return;
+    if (!visibleTargets.some((target) => target.agent.id === selectedAgentId)) {
+      setSelectedAgentId(visibleTargets[0].agent.id);
+    }
+  }, [visibleTargets, selectedAgentId]);
+
   // Targets bucketed into contiguous runs per group (the sorted list keeps a
   // group's panes together), so the column can label groups like the sidebar.
   const targetGroups = useMemo(() => {
     const buckets: { key: string; name: string | null; targets: LauncherTarget[] }[] = [];
     const bucketByKey = new Map<string, (typeof buckets)[number]>();
-    for (const target of targets) {
+    for (const target of visibleTargets) {
       const key = target.group?.id ?? "";
       let bucket = bucketByKey.get(key);
       if (!bucket) {
@@ -306,7 +332,7 @@ export default function GlobalTaskLauncher() {
       bucket.targets.push(target);
     }
     return buckets;
-  }, [targets]);
+  }, [visibleTargets]);
 
   const waitTargets = useMemo<WaitTarget[]>(
     () =>
@@ -356,6 +382,10 @@ export default function GlobalTaskLauncher() {
     setError(null);
     try {
       await operation();
+      // A successful dispatch is the strongest signal for the remembered
+      // target — it also covers selections made by the filter's auto-snap,
+      // which selectTarget never sees.
+      saveLastTargetAgentId(selected.agent.id);
       setValue("");
       setQueueMenuOpen(false);
       // Explicit dismissal: hand focus back to the app the launcher was
@@ -404,10 +434,13 @@ export default function GlobalTaskLauncher() {
           return;
         }
         const direction = cycleChordDirection(event);
-        if (direction !== null && targets.length > 0) {
+        if (direction !== null && visibleTargets.length > 0) {
           event.preventDefault();
-          const index = targets.findIndex((target) => target.agent.id === selectedAgentId);
-          const next = targets[(index + direction + targets.length) % targets.length];
+          const index = visibleTargets.findIndex(
+            (target) => target.agent.id === selectedAgentId,
+          );
+          const next =
+            visibleTargets[(index + direction + visibleTargets.length) % visibleTargets.length];
           if (next) selectTarget(next.agent.id, "keep");
         }
       }}
@@ -419,28 +452,70 @@ export default function GlobalTaskLauncher() {
         >
           Send task to
         </div>
+        {targets.length > 1 ? (
+          <input
+            className="global-task-launcher-filter"
+            type="text"
+            placeholder="Filter tabs…"
+            aria-label="Filter agent tabs"
+            aria-controls="global-task-launcher-target-list"
+            value={filter}
+            onChange={(event) => setFilter(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              // Palette-style keys: arrows pick without leaving the field,
+              // Enter hands off to the draft, Escape clears before it (on a
+              // second press, via bubbling) dismisses the window.
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                if (visibleTargets.length === 0) return;
+                const index = visibleTargets.findIndex(
+                  (target) => target.agent.id === selectedAgentId,
+                );
+                const step = event.key === "ArrowDown" ? 1 : -1;
+                const next =
+                  visibleTargets[
+                    (index + step + visibleTargets.length) % visibleTargets.length
+                  ];
+                if (next) selectTarget(next.agent.id, "keep");
+                return;
+              }
+              if (event.key === "Enter") {
+                event.preventDefault();
+                textareaRef.current?.focus();
+                return;
+              }
+              if (event.key === "Escape" && filter.length > 0) {
+                event.stopPropagation();
+                setFilter("");
+              }
+            }}
+          />
+        ) : null}
         <div
           className="global-task-launcher-target-list"
+          id="global-task-launcher-target-list"
           role="listbox"
           aria-labelledby="global-task-launcher-targets-label"
           onKeyDown={(event) => {
             if (
-              targets.length === 0 ||
+              visibleTargets.length === 0 ||
               !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
             ) {
               return;
             }
             event.preventDefault();
-            const index = targets.findIndex((target) => target.agent.id === selectedAgentId);
+            const index = visibleTargets.findIndex(
+              (target) => target.agent.id === selectedAgentId,
+            );
             const next =
               event.key === "ArrowDown"
-                ? Math.min(index + 1, targets.length - 1)
+                ? Math.min(index + 1, visibleTargets.length - 1)
                 : event.key === "ArrowUp"
                   ? Math.max(index - 1, 0)
                   : event.key === "Home"
                     ? 0
-                    : targets.length - 1;
-            const target = targets[next];
+                    : visibleTargets.length - 1;
+            const target = visibleTargets[next];
             if (target && target.agent.id !== selectedAgentId) {
               selectTarget(target.agent.id, "option");
             }
@@ -450,6 +525,8 @@ export default function GlobalTaskLauncher() {
             <div className="global-task-launcher-target-empty">
               {loading ? "Loading agent tabs…" : "No live agent tabs"}
             </div>
+          ) : visibleTargets.length === 0 ? (
+            <div className="global-task-launcher-target-empty">No matching tabs</div>
           ) : null}
           {targetGroups.map((bucket) => (
             <div

@@ -1480,6 +1480,18 @@
   font-size: var(--fs-sm);
 }
 
+.global-task-launcher-filter {
+  flex: none;
+  min-height: var(--control-h-md);
+  margin: 0 0 8px;
+  padding: 0 9px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+}
+
 .global-task-launcher-target-list {
   display: flex;
   flex: 1 1 auto;
