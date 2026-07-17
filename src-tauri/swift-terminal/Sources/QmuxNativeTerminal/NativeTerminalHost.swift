@@ -32,6 +32,10 @@ final class NativeTerminalHost {
     private var desiredKeyboardOwnerRevision: UInt64 = 0
     private weak var keyboardOwnerPane: NativeTerminalPane?
     private weak var pointerCapturePane: NativeTerminalPane?
+    /// Cancels a deferred release handoff (see setKeyboardOwner) when
+    /// ownership changes again before it fires — most often a pane-to-pane
+    /// move whose claim lands one bridge call after the release.
+    private var webViewHandoffGeneration: UInt64 = 0
     private var consumedAppShortcutKeyCodes: Set<UInt16> = []
     private var webPointerRoutingClaimed = false
     /// When true, the next pointer-up clears `webPointerRoutingClaimed`. Used for
@@ -489,6 +493,10 @@ final class NativeTerminalHost {
                 previous?.reportCommandModifier(active: false)
             }
         }
+        // Every ownership call supersedes a still-pending release handoff: a
+        // new owner takes the responder directly below, and a re-release
+        // schedules its own.
+        webViewHandoffGeneration &+= 1
 
         guard let pane else {
             if let previous, let window, window.firstResponder === previous.view {
@@ -496,11 +504,36 @@ final class NativeTerminalHost {
                 // window: ownership is released exactly when web UI (dialogs,
                 // editables, Escape handlers) needs the keyboard, and a
                 // window-level first responder dead-ends key events that
-                // WebKit would deliver to the DOM.
-                if let webView = window.contentView.flatMap({ findWebView(in: $0) }) {
-                    window.makeFirstResponder(webView)
-                } else {
-                    window.makeFirstResponder(nil)
+                // WebKit would deliver to the DOM. But not synchronously —
+                // a release is often followed within a beat by a claim: the
+                // desired owner parks ineligible until its surface's first
+                // layout lands (a spawning split pane), or a transient web
+                // blocker flickers off again. Making the webview first
+                // responder for that gap has WebKit re-emit focus on its
+                // remembered DOM element, churn the frontend can misread as
+                // user intent (composer restore, split-cell activation).
+                // Defer one main-queue hop so an immediately following claim
+                // cancels the handoff; a genuine release still reaches the
+                // webview within the same event-loop turn.
+                let generation = webViewHandoffGeneration
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          generation == self.webViewHandoffGeneration,
+                          self.keyboardOwnerPane == nil,
+                          let window = self.window
+                    else { return }
+                    let responder = window.firstResponder
+                    // The released view may since have left the hierarchy
+                    // (pane close), which strands the responder on the window
+                    // itself — exactly the dead-end this handoff exists to fix.
+                    guard responder === previous.view || responder === window else {
+                        return
+                    }
+                    if let webView = window.contentView.flatMap({ self.findWebView(in: $0) }) {
+                        window.makeFirstResponder(webView)
+                    } else {
+                        window.makeFirstResponder(nil)
+                    }
                 }
             }
             return true

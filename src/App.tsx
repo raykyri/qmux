@@ -1578,6 +1578,21 @@ function MainApp() {
   // keeps WebKit as the key target (Cmd+C copies the selection instead of
   // running Ghostty's copy on the terminal).
   const [webSelectionActive, setWebSelectionActive] = useState(false);
+  // Orders user-input events against page-focus gains so a focus event can be
+  // classified as user-driven (a click or key since the page last became
+  // focused) versus WebKit re-emitting focus on its remembered element after
+  // the webview regains first responder. Surface handoffs and right-pane
+  // layout transitions produce the latter constantly, and they must never be
+  // read as the user activating a pane. Sequence counters, not timestamps —
+  // the restoration focus can land in the same millisecond as the window
+  // focus event that caused it.
+  const focusOrderSeqRef = useRef(0);
+  const lastUserInputSeqRef = useRef(0);
+  const lastWindowFocusSeqRef = useRef(0);
+  const userInputSinceWindowFocus = useCallback(
+    () => lastUserInputSeqRef.current > lastWindowFocusSeqRef.current,
+    [],
+  );
   const [settingsTab, setSettingsTab] = useState<"basic" | "advanced">("basic");
   const [openRouterKeyVisible, setOpenRouterKeyVisible] = useState(false);
   const [showHideShortcutSetting, setShowHideShortcutSetting] =
@@ -7874,6 +7889,7 @@ function MainApp() {
       setWebEditableFocused(document.hasFocus() && isEditableTarget(event.target));
     };
     const bounceStolenFocus = () => {
+      lastWindowFocusSeqRef.current = ++focusOrderSeqRef.current;
       schedule();
       requestAnimationFrame(() => {
         if (isEditableTarget(document.activeElement)) {
@@ -7893,6 +7909,12 @@ function MainApp() {
         }
       });
     };
+    // Also stamps the input-vs-window-focus ordering used to tell user-driven
+    // focus from WebKit's own restoration churn (see the refs' declaration).
+    const noteUserIntent = () => {
+      lastUserInputSeqRef.current = ++focusOrderSeqRef.current;
+      schedule();
+    };
     window.addEventListener("focusin", handleFocusIn);
     window.addEventListener("focusout", schedule);
     window.addEventListener("blur", schedule);
@@ -7905,16 +7927,16 @@ function MainApp() {
     // while the native surface doesn't own the keyboard, so re-sampling on
     // them is cheap (rAF-coalesced, no-op state update) and heals any such
     // wedge on the user's next keystroke or click, whatever overlay caused it.
-    window.addEventListener("keydown", schedule, true);
-    window.addEventListener("pointerdown", schedule, true);
+    window.addEventListener("keydown", noteUserIntent, true);
+    window.addEventListener("pointerdown", noteUserIntent, true);
     sample();
     return () => {
       window.removeEventListener("focusin", handleFocusIn);
       window.removeEventListener("focusout", schedule);
       window.removeEventListener("blur", schedule);
       window.removeEventListener("focus", bounceStolenFocus);
-      window.removeEventListener("keydown", schedule, true);
-      window.removeEventListener("pointerdown", schedule, true);
+      window.removeEventListener("keydown", noteUserIntent, true);
+      window.removeEventListener("pointerdown", noteUserIntent, true);
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
@@ -7985,6 +8007,43 @@ function MainApp() {
     });
     return () => cancelAnimationFrame(frame);
   }, [modalEditorOpen]);
+
+  // Backstop for the right-pane mount/unmount layout transition: an agent
+  // quitting unmounts its turn-pane cell, and starting a terminal over a split
+  // unmounts the whole strip, while every terminal tab stays open. That
+  // transition can strand keyboard state two ways. An editable unmounting
+  // with its cell leaves webEditableFocused wedged true (WebKit emits no
+  // focusout for removed subtrees — same hazard as the pane-membership
+  // backstop above). And the first-responder churn of the surfaces resizing
+  // can park focus on a remembered right-pane editable no one re-focused,
+  // silently moving the keyboard to a sibling pane's composer. Once layout
+  // settles: drop an intent-less editable restore inside the right pane,
+  // re-sample the editable flag, and re-assert the active pane's keyboard —
+  // TerminalPane.focus() re-checks every web/native input blocker itself.
+  const mountedTurnPaneCellsKey = visibleRightBarSurfaces
+    .map((surface) => surface.pane.id)
+    .join("\n");
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const restored = document.activeElement;
+      if (
+        !userInputSinceWindowFocus() &&
+        restored instanceof HTMLElement &&
+        isEditableTarget(restored) &&
+        restored.closest(".turn-pane")
+      ) {
+        restored.blur();
+      }
+      setWebEditableFocused(
+        document.hasFocus() && isEditableTarget(document.activeElement),
+      );
+      const paneId = activePaneIdRef.current;
+      if (paneId) {
+        terminalPaneRefs.current.get(paneId)?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [mountedTurnPaneCellsKey, userInputSinceWindowFocus]);
 
   // Live snapshot of the app-level overlay state for the Escape dispatcher
   // below, which is registered exactly once. Mirrored every render, read only
@@ -11735,7 +11794,18 @@ function MainApp() {
                   data-queue-drop-agent-id={surface.agent?.id}
                   style={turnPaneSplitCellStyle(surface)}
                   onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
-                  onFocusCapture={() => activateTerminalPane(surface.pane.id)}
+                  onFocusCapture={() => {
+                    // WebKit re-emits focus on its remembered element whenever
+                    // the webview regains first responder — which every
+                    // right-pane unmount/layout transition does. Only focus
+                    // the user caused (a click or key since the page became
+                    // focused) may switch the active pane, or quitting an
+                    // agent / starting a terminal would yank activation to
+                    // whichever sibling last held a composer or resizer.
+                    if (userInputSinceWindowFocus()) {
+                      activateTerminalPane(surface.pane.id);
+                    }
+                  }}
                 >
                   {renderTurnPaneResizer()}
                   {renderTurnPaneSurface(surface, false)}
