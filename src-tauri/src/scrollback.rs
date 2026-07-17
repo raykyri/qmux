@@ -603,7 +603,16 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
                 // state, not rendering. A dead TUI's bar/underline cursor must
                 // not latch onto the restored shell; the reset does not clear
                 // it either.
-                || (csi.final_byte == b'q' && csi.intermediates.as_slice() == b" ");
+                || (csi.final_byte == b'q' && csi.intermediates.as_slice() == b" ")
+                // XTVERSION (CSI > Ps q) asks the terminal to identify itself
+                // (neovim emits it at startup); replaying one makes the fresh
+                // surface type its DCS reply into the resumed shell's input.
+                // Plain CSI q (DECLL) stays.
+                || (csi.final_byte == b'q' && csi.parameter_prefix == Some(b'>'))
+                // XTSMGRAPHICS (CSI ? Pi;Pa;Pv S) sets or *queries* sixel
+                // graphics attributes and always elicits a reply. Plain CSI S
+                // (SU, scroll up) is real rendering and stays.
+                || (csi.final_byte == b'S' && csi.parameter_prefix == Some(b'?'));
             if !discard {
                 output.extend_from_slice(&bytes[index..=end]);
             }
@@ -1220,6 +1229,16 @@ mod tests {
             sanitize_scrollback_replay(input),
             b"before\x1b[1;32mok\x1b[0mafter"
         );
+    }
+
+    // XTVERSION and XTSMGRAPHICS are queries: replaying one makes the fresh
+    // surface write its reply into the resumed shell's input, which shows up
+    // as garbage typed at the prompt. Plain SU (CSI S) is real scrolling.
+    #[test]
+    fn replay_sanitizer_removes_version_and_graphics_queries() {
+        let input = b"before\x1b[>q\x1b[>0q\x1b[?2;1;0S\x1b[3Safter";
+
+        assert_eq!(sanitize_scrollback_replay(input), b"before\x1b[3Safter");
     }
 
     // DECSTBM (scroll region) and DECSCUSR (cursor style) are terminal state a
