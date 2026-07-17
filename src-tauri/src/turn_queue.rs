@@ -651,16 +651,25 @@ fn advance_after_settlement(
     // status that never fires another idle hook. Each iteration re-checks the
     // pause state, so a pause-after delivery turn still halts the queue.
     loop {
+        // The pause branches settle with the caller's status and waiter policy
+        // too: an *interrupted* turn that lands on a pausing agent was still
+        // aborted, so presenting it as Done — and releasing dependents that
+        // asked to wait for actual completion — would defeat the interruption
+        // settlement path.
         if state.take_agent_pending_pause(agent_id)? {
             state.set_agent_paused(agent_id, true)?;
-            state.set_agent_status(agent_id, AgentStatus::Done)?;
-            release_waiters_for_agent(state, agent_id)?;
+            state.set_agent_status(agent_id, settled_status)?;
+            if release_waiters {
+                release_waiters_for_agent(state, agent_id)?;
+            }
             return Ok(IdleResolution::Paused);
         }
         if state.agent_is_paused(agent_id)? {
             // Paused: leave the queue intact and don't auto-send.
-            state.set_agent_status(agent_id, AgentStatus::Done)?;
-            release_waiters_for_agent(state, agent_id)?;
+            state.set_agent_status(agent_id, settled_status)?;
+            if release_waiters {
+                release_waiters_for_agent(state, agent_id)?;
+            }
             return Ok(IdleResolution::Idle);
         }
         // Atomically claim a ready turn, observe that another drain owns the agent, or
@@ -1977,6 +1986,58 @@ mod tests {
         assert!(matches!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::AwaitingInput
+        ));
+    }
+
+    // An interrupted turn that lands on a pausing agent is still aborted work:
+    // the pause branch must not present it as Done, and a dependent that asked
+    // to wait for the target's actual completion must stay queued.
+    #[test]
+    fn interruption_on_pending_pause_keeps_waiters_and_awaiting_input() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Running,
+                Some("target-pane"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("source-pane", Some("source")))
+            .unwrap();
+        state
+            .enqueue_agent_wait_turn_with_target_label(
+                "source",
+                "after target".to_string(),
+                "target",
+                None,
+                None,
+            )
+            .unwrap();
+        state.mark_agent_pending_pause("target").unwrap();
+
+        let resolution = advance_after_interruption(&state, "target").unwrap();
+
+        assert!(matches!(resolution, IdleResolution::Paused));
+        let target = state.agent("target").unwrap().unwrap();
+        assert!(target.paused);
+        assert!(matches!(target.status, AgentStatus::AwaitingInput));
+        // The waiter was not released: its wait turn is still queued and it
+        // was not started.
+        assert_eq!(
+            state.list_agent_turn_queue("source").unwrap(),
+            vec!["after target".to_string()]
+        );
+        assert!(matches!(
+            state.agent("source").unwrap().unwrap().status,
+            AgentStatus::Done
         ));
     }
 
