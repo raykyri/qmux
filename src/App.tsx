@@ -1238,6 +1238,10 @@ function MainApp() {
   const paneListRef = useRef<HTMLElement | null>(null);
   const terminalStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
+  // Opening/closing the right bar resizes native terminal surfaces. Keep the
+  // final focus handoff after that layout commit scoped to the pane whose bar
+  // changed, especially in a split where a sibling surface is also visible.
+  const rightBarFocusFrameRef = useRef<number | null>(null);
   // Becomes true once the single backend event subscription is live. Until then,
   // panes that want to attach are parked here so their pre-attach backlog is only
   // released after the listener can actually deliver it.
@@ -3113,6 +3117,24 @@ function MainApp() {
     setTranscriptExpandedByPane((current) => paneRecordWithFlag(current, paneId, expanded));
   }
 
+  function setRightBarCollapsedForPane(collapsed: boolean, paneId: string | null | undefined) {
+    setRightBarCollapsed(collapsed);
+    if (!paneId) {
+      return;
+    }
+    if (rightBarFocusFrameRef.current !== null) {
+      cancelAnimationFrame(rightBarFocusFrameRef.current);
+    }
+    rightBarFocusFrameRef.current = requestAnimationFrame(() => {
+      rightBarFocusFrameRef.current = null;
+      if (activePaneIdRef.current === paneId) {
+        // TerminalPane.focus() re-checks visibility and all web/native input
+        // blockers, so a composer or modal that still owns focus is preserved.
+        terminalPaneRefs.current.get(paneId)?.focus();
+      }
+    });
+  }
+
   function toggleTranscriptExpandedForPane(paneId: string, splitMode = splitRightPaneMode) {
     if (splitMode) {
       setSplitTranscriptExpandedByPane((current) => toggledPaneRecord(current, paneId));
@@ -3128,7 +3150,7 @@ function MainApp() {
     }
 
     if (rightBarCollapsed) {
-      setRightBarCollapsed(false);
+      setRightBarCollapsedForPane(false, paneId);
       return;
     }
 
@@ -4230,9 +4252,13 @@ function MainApp() {
     return `${fraction * 100}% - ${fraction * totalGutter}px`;
   }
 
-  function splitTrackPosition(fraction: number, precedingGutters: number): string {
+  function splitTrackPosition(
+    fraction: number,
+    precedingGutters: number,
+    inset = 0,
+  ): string {
     return `calc(${splitTrackExtent(fraction)} + ${
-      precedingGutters * TERMINAL_SPLIT_GUTTER_PX
+      precedingGutters * TERMINAL_SPLIT_GUTTER_PX + inset
     }px)`;
   }
 
@@ -9316,7 +9342,7 @@ function MainApp() {
           onClick={(event) => {
             event.stopPropagation();
             activateTerminalPane(surface.pane.id);
-            setRightBarCollapsed(true);
+            setRightBarCollapsedForPane(true, surface.pane.id);
           }}
         >
           <PanelRightClose size={14} aria-hidden="true" />
@@ -9326,9 +9352,22 @@ function MainApp() {
   }
 
   function renderFloatingRightBarRestoreButton() {
-    if (!floatingRestoreButtonVisible) {
+    if (!floatingRestoreButtonVisible || !activeTurnPaneSurface) {
       return null;
     }
+
+    const surface = activeTurnPaneSurface;
+    const splitIndex =
+      activePaneSplit ? activePaneSplit.paneIds.indexOf(surface.pane.id) : -1;
+    // In split mode this control must remain in the active pane's track. Leaving
+    // it at the stage-wide `top: 8px` puts a lower pane's restore control over
+    // the top terminal; native pointer routing can then grant that sibling the
+    // keyboard during the opening gesture before the web overlay registration
+    // has crossed the bridge.
+    const style =
+      splitRightPaneMode && splitIndex >= 0
+        ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8) }
+        : undefined;
 
     return (
       <button
@@ -9337,7 +9376,11 @@ function MainApp() {
         className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
         title="Show right bar"
         aria-label="Show right bar"
-        onClick={() => setRightBarCollapsed(false)}
+        style={style}
+        onClick={() => {
+          activateTerminalPane(surface.pane.id);
+          setRightBarCollapsedForPane(false, surface.pane.id);
+        }}
       >
         <PanelRightOpen size={14} aria-hidden="true" />
       </button>
@@ -9419,7 +9462,9 @@ function MainApp() {
               transcriptExpanded={activeTranscriptExpanded}
               transcriptShortcutLabel={EXPAND_TOGGLE_SHORTCUT_LABEL}
               onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
-              onCollapseRightBar={() => setRightBarCollapsed(true)}
+              onCollapseRightBar={() =>
+                setRightBarCollapsedForPane(true, surface.pane.id)
+              }
               onInsertPrompt={
                 agent ? (text) => requestComposerInsert(agent.id, text) : undefined
               }
