@@ -46,7 +46,7 @@
     },
     "resources": {
       "../qmux-plugin/": "qmux-plugin",
-      "../qmux-opencode-plugin/": "qmux-opencode-plugin",
+      "../qmux-opencode-plugin/plugins/qmux-notify.js": "qmux-opencode-plugin/plugins/qmux-notify.js",
       "../src/assets/fonts/ValleySans-OFL.txt": "licenses/ValleySans-OFL.txt"
     },
     "icon": [
