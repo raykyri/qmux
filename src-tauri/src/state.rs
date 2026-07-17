@@ -5895,6 +5895,10 @@ impl AppState {
         Ok(())
     }
 
+    /// Unconditional append, kept for tests: production tails go through
+    /// [`Self::append_turn_for_transcript`] so a rebind can't splice a dead
+    /// file's parse over the new timeline.
+    #[cfg(test)]
     pub fn append_turn(&self, turn: Turn) -> Result<(), String> {
         self.append_turn_internal(turn, None).map(|_| ())
     }
@@ -6005,6 +6009,9 @@ impl AppState {
         Ok(true)
     }
 
+    /// Unconditional replace, kept for tests: production tails go through
+    /// [`Self::replace_turns_for_transcript`] (see there for the race).
+    #[cfg(test)]
     pub fn replace_turns(&self, agent_id: &str, turns: Vec<Turn>) -> Result<(), String> {
         self.replace_turns_internal(agent_id, turns, None)
             .map(|_| ())
