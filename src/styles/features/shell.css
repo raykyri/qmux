@@ -1545,9 +1545,10 @@
   padding: 12px;
 }
 
-/* Read-only peek at the selected tab's pending queue, above the draft so the
-   order reads chronologically: these run first, the new task lines up after. */
-.global-task-launcher-queue-preview {
+/* Context strip above the draft: the tail of the last exchange with the
+   selected tab (You / Agent) and the turns already queued beneath it, in
+   chronological order — those run first, the new task lines up after. */
+.global-task-launcher-context {
   display: flex;
   flex: none;
   flex-direction: column;
@@ -1555,26 +1556,29 @@
   padding: 0 2px;
 }
 
-.global-task-launcher-queue-preview-label {
+.global-task-launcher-context-label {
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 600;
 }
 
-.global-task-launcher-queue-preview-turn {
+.global-task-launcher-context-row {
   display: flex;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
 }
 
-.global-task-launcher-queue-preview-index {
+/* Shared gutter for the You/Agent labels and queue positions, so the row
+   texts align into one column. */
+.global-task-launcher-context-prefix {
   flex: none;
+  min-width: 34px;
   color: var(--text-subtle);
   font-size: var(--fs-xs);
 }
 
-.global-task-launcher-queue-preview-text {
+.global-task-launcher-context-text {
   overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
@@ -1582,8 +1586,8 @@
   white-space: nowrap;
 }
 
-.global-task-launcher-queue-preview-wait,
-.global-task-launcher-queue-preview-more {
+.global-task-launcher-context-wait,
+.global-task-launcher-context-more {
   flex: none;
   color: var(--text-subtle);
   font-size: var(--fs-xs);
@@ -1591,8 +1595,9 @@
 
 .global-task-launcher textarea {
   flex: 1 1 auto;
-  /* Floor under the flexible draft area: the queue preview caps near 90px and
-     the error row at 72px, so worst-case the column still fits 420px. */
+  /* Floor under the flexible draft area: the context strip caps near 130px
+     (You + Agent + three queue rows) and the error row at 72px, so worst-case
+     the column still fits 420px. */
   min-height: 110px;
   resize: none;
   padding: 12px;

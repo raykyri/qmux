@@ -219,9 +219,10 @@ hosted view can show proposal status without a separate collaboration database.
   are listed in a sidebar-style column (status dot, tab name, group) with a
   filter field to narrow them; `Ctrl-Tab` / `Ctrl-Shift-Tab` (or
   `Cmd-Shift-[` / `Cmd-Shift-]`) switch the target without leaving the
-  draft, the compose pane previews turns already queued on the selected
-  tab, and the launcher reopens on the tab you last dispatched to. The
-  popup works from any app, without raising the qmux window. Change the hotkey in Settings between double-tap
+  draft, the compose pane shows the selected tab's last exchange (the tail
+  of your last message and the agent's reply) with any queued turns
+  beneath it, and the launcher reopens on the tab you last dispatched to.
+  The popup works from any app, without raising the qmux window. Change the hotkey in Settings between double-tap
   Control/Option/Command and Control/Option/Command-Space (options used by
   the show/hide shortcut are disabled); it is also available from the
   `Cmd-K` palette.

@@ -30,6 +30,57 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+export function firstUserTurnText(turn: Turn): string | null {
+  if (turn.role !== "user" || turn.status === "superseded") {
+    return null;
+  }
+
+  for (const block of turn.blocks) {
+    if (block.type !== "text") {
+      continue;
+    }
+    const trimmed = block.text.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+
+  return null;
+}
+
+export function latestUserTurnText(turns: Turn[]): string | null {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const text = firstUserTurnText(turns[index]);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+/** The last words the agent said: the final non-empty text block of the most
+ * recent assistant turn that has one. Tool-only turns (an agent mid-work) are
+ * walked past so the latest spoken reply still surfaces. */
+export function latestAssistantTurnText(turns: Turn[]): string | null {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn.role !== "assistant" || turn.status === "superseded") {
+      continue;
+    }
+    for (let blockIndex = turn.blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const block = turn.blocks[blockIndex];
+      if (block.type !== "text") {
+        continue;
+      }
+      const trimmed = block.text.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
+}
+
 export const DEFAULT_SHELL_TITLE = "Shell";
 
 /** The title a pane is created with ("Shell" or the adapter's label). A pane

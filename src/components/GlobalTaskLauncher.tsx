@@ -11,6 +11,7 @@ import {
   listGroups,
   listPanes,
   listShellAgentJobs,
+  listTurns,
   listenToEvents,
   queueDeliveryAgentTurn,
   queueWaitAgentTurn,
@@ -18,7 +19,18 @@ import {
   submitPaneInput,
   unpauseAgent,
 } from "../lib/api";
-import { agentCanFork, agentStatusLabel, defaultPaneTitle } from "../lib/appHelpers";
+import {
+  agentCanFork,
+  agentStatusLabel,
+  defaultPaneTitle,
+  latestAssistantTurnText,
+  latestUserTurnText,
+} from "../lib/appHelpers";
+import { collapseImageMarkers } from "../lib/imageMarkers";
+import {
+  stripTaggedInstructionBlocks,
+  stripTaggedUserInstructionBlocks,
+} from "../lib/taggedInstructions";
 import {
   FORK_REQUIREMENT_TITLE,
   QUEUE_DELIVERY_OPTIONS,
@@ -84,6 +96,32 @@ function targetDetails(target: LauncherTarget): string {
 
 function targetOptionDomId(agentId: string): string {
   return `global-task-launcher-option-${agentId}`;
+}
+
+/** The tail of the last exchange with a target: what the user last sent and
+ * the agent's latest reply, so a summon shows whether it continues an
+ * existing conversation. */
+interface AgentExchange {
+  userText: string | null;
+  agentText: string | null;
+}
+
+/** One display line for the context strip: injected instruction blocks and
+ * image markers removed, whitespace collapsed to a single line. The You row
+ * keeps the tail rather than the head — the end of the last message is what
+ * says where the conversation left off. */
+function exchangeLine(
+  raw: string | null,
+  clean: (text: string) => string,
+  tailBiased: boolean,
+): { text: string; title: string } | null {
+  if (!raw) return null;
+  const cleaned = collapseImageMarkers(clean(raw)).trim();
+  if (!cleaned) return null;
+  const collapsed = cleaned.replace(/\s+/g, " ");
+  const text =
+    tailBiased && collapsed.length > 110 ? `…${collapsed.slice(-110)}` : collapsed;
+  return { text, title: cleaned };
 }
 
 /** Matches the main window's tab-cycling chords (⌃Tab / ⌃⇧Tab and ⌘⇧[ / ⌘⇧])
@@ -154,6 +192,16 @@ export default function GlobalTaskLauncher() {
   const [requireCmdEnterToSend, setRequireCmdEnterToSend] = useState(
     () => loadSettings().requireCmdEnterToSend,
   );
+  // Last-exchange context per target, cached for the lifetime of one summon
+  // (the cache clears on each window show). Transcripts can be large, so
+  // retargeting hits the cache instead of refetching; a reply that lands while
+  // the window is open shows on the next summon.
+  const exchangeCacheRef = useRef(new Map<string, AgentExchange>());
+  const exchangeRequestRef = useRef(0);
+  const [exchange, setExchange] = useState<AgentExchange | null>(null);
+  // Bumped on each window show so the effect below refetches through the
+  // just-cleared cache even when the selected target didn't change.
+  const [exchangeEpoch, setExchangeEpoch] = useState(0);
 
   useLayoutEffect(() => {
     const settings = loadSettings();
@@ -231,8 +279,12 @@ export default function GlobalTaskLauncher() {
       if (focused) {
         visibleRef.current = true;
         setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
-        // A stale filter from the previous launch would silently hide tabs.
+        // A stale filter from the previous launch would silently hide tabs,
+        // and cached exchange context from the previous summon may predate
+        // replies that landed in between.
         setFilter("");
+        exchangeCacheRef.current.clear();
+        setExchangeEpoch((epoch) => epoch + 1);
         // Focus immediately: the textarea stays enabled through the refresh so
         // the first keystrokes after the hotkey land in the draft.
         requestAnimationFrame(() => textareaRef.current?.focus());
@@ -311,6 +363,42 @@ export default function GlobalTaskLauncher() {
   // the list says doesn't exist.
   const selected =
     visibleTargets.find((target) => target.agent.id === selectedAgentId) ?? null;
+
+  // Fetch the selected target's last exchange (cache-first). The request
+  // counter advances on every selection change — including cache hits — so an
+  // in-flight fetch for a previous target can never overwrite a newer one.
+  const exchangeAgentId = selected?.agent.id ?? "";
+  const exchangeAdapter = selected?.agent.adapter ?? "";
+  useEffect(() => {
+    const request = ++exchangeRequestRef.current;
+    if (!exchangeAgentId) {
+      setExchange(null);
+      return;
+    }
+    const cached = exchangeCacheRef.current.get(exchangeAgentId);
+    if (cached) {
+      setExchange(cached);
+      return;
+    }
+    setExchange(null);
+    void listTurns(exchangeAgentId)
+      .then((turns) => {
+        if (exchangeRequestRef.current !== request) return;
+        const normalized =
+          getAgentUiAdapter(exchangeAdapter).normalizeTurns?.(turns) ?? turns;
+        const next: AgentExchange = {
+          userText: latestUserTurnText(normalized),
+          agentText: latestAssistantTurnText(normalized),
+        };
+        exchangeCacheRef.current.set(exchangeAgentId, next);
+        setExchange(next);
+      })
+      .catch(() => {
+        // Context is a nicety: a failed transcript read leaves the strip
+        // queue-only instead of surfacing an error.
+        if (exchangeRequestRef.current === request) setExchange(null);
+      });
+  }, [exchangeAgentId, exchangeAdapter, exchangeEpoch]);
   const policy = selected
     ? getAgentUiAdapter(selected.agent.adapter).composerPolicy(selected.agent)
     : null;
@@ -495,6 +583,24 @@ export default function GlobalTaskLauncher() {
     else if (submitShortcutWouldTargetQueue) submit("queue");
   }
 
+  const youLine = exchangeLine(
+    exchange?.userText ?? null,
+    stripTaggedUserInstructionBlocks,
+    true,
+  );
+  const agentLine = exchangeLine(
+    exchange?.agentText ?? null,
+    stripTaggedInstructionBlocks,
+    false,
+  );
+  const queuedTurns = selected?.queue ?? [];
+  const hasExchange = Boolean(youLine || agentLine);
+  const contextHeader = hasExchange
+    ? queuedTurns.length > 0
+      ? `Last exchange · ${queuedTurns.length} queued`
+      : "Last exchange"
+    : `Queued (${queuedTurns.length})`;
+
   return (
     <main className="global-task-launcher">
       <aside
@@ -627,32 +733,47 @@ export default function GlobalTaskLauncher() {
       </aside>
 
       <section className="global-task-launcher-compose" aria-label="Quick launch task">
-        {selected && selected.queue.length > 0 ? (
+        {selected && (hasExchange || queuedTurns.length > 0) ? (
           <div
-            className="global-task-launcher-queue-preview"
-            aria-label={`${selected.queue.length} turns already queued on this tab`}
+            className="global-task-launcher-context"
+            aria-label={[
+              hasExchange ? "Last exchange with this tab" : null,
+              queuedTurns.length > 0 ? `${queuedTurns.length} turns queued` : null,
+            ]
+              .filter(Boolean)
+              .join("; ")}
           >
-            <div className="global-task-launcher-queue-preview-label">
-              Queued ({selected.queue.length})
-            </div>
-            {selected.queue.slice(0, 3).map((turn, index) => (
+            <div className="global-task-launcher-context-label">{contextHeader}</div>
+            {youLine ? (
+              <div className="global-task-launcher-context-row" title={youLine.title}>
+                <span className="global-task-launcher-context-prefix">You</span>
+                <span className="global-task-launcher-context-text">{youLine.text}</span>
+              </div>
+            ) : null}
+            {agentLine ? (
+              <div className="global-task-launcher-context-row" title={agentLine.title}>
+                <span className="global-task-launcher-context-prefix">Agent</span>
+                <span className="global-task-launcher-context-text">{agentLine.text}</span>
+              </div>
+            ) : null}
+            {queuedTurns.slice(0, 3).map((turn, index) => (
               <div
                 key={index}
-                className="global-task-launcher-queue-preview-turn"
+                className="global-task-launcher-context-row"
                 title={turn.text}
               >
-                <span className="global-task-launcher-queue-preview-index">{index + 1}</span>
-                <span className="global-task-launcher-queue-preview-text">{turn.text}</span>
+                <span className="global-task-launcher-context-prefix">{index + 1}</span>
+                <span className="global-task-launcher-context-text">{turn.text}</span>
                 {turn.waitFor ? (
-                  <span className="global-task-launcher-queue-preview-wait">
+                  <span className="global-task-launcher-context-wait">
                     waits for {turn.waitFor.label ?? "another tab"}
                   </span>
                 ) : null}
               </div>
             ))}
-            {selected.queue.length > 3 ? (
-              <div className="global-task-launcher-queue-preview-more">
-                +{selected.queue.length - 3} more
+            {queuedTurns.length > 3 ? (
+              <div className="global-task-launcher-context-more">
+                +{queuedTurns.length - 3} more
               </div>
             ) : null}
           </div>
