@@ -1445,54 +1445,85 @@
 }
 
 /* Dedicated borderless window opened by the global quick-launch hotkey. The
-   page itself stays transparent so the rounded surface reads like Spotlight. */
+   webview background stays transparent, so the popup surface itself paints the
+   window edge to edge — its rounded border is the window outline, and depth
+   comes from the native window shadow rather than a padded CSS halo. */
 .global-task-launcher {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
   width: 100%;
   height: 100%;
-  padding: 18px;
-  background: transparent;
+  overflow: hidden;
+  border: 1px solid var(--dialog-border);
+  border-radius: 16px;
+  background: var(--popover-bg);
   color: var(--text-primary);
   font-family: var(--font-ui);
 }
 
-.global-task-launcher-surface {
+/* Target column: the same tab rows the sidebar renders (status dot + title +
+   status pill, no directory line), over a sidebar-toned inset. */
+.global-task-launcher-targets {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: 100%;
-  height: 100%;
-  padding: 16px;
-  border: 1px solid var(--dialog-border);
-  border-radius: 16px;
-  background: var(--popover-bg);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.68);
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 8px 8px;
+  border-right: 1px solid var(--control-border);
+  background: var(--left-pane-bg);
 }
 
-.global-task-launcher-target-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-}
-
-.global-task-launcher-target-row label {
+.global-task-launcher-targets-header {
+  flex: none;
+  padding: 0 6px 8px;
   color: var(--text-muted);
   font-size: var(--fs-sm);
 }
 
-.global-task-launcher-target-row select {
+.global-task-launcher-target-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.global-task-launcher-target-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.global-task-launcher-group-label {
+  overflow: hidden;
+  padding: 0 6px 3px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-task-launcher-target-empty {
+  padding: 2px 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.global-task-launcher-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   min-width: 0;
-  min-height: var(--control-h-lg);
-  padding: 0 9px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background: var(--field-bg);
-  color: var(--text-strong);
+  min-height: 0;
+  padding: 12px;
 }
 
 .global-task-launcher textarea {
   flex: 1 1 auto;
-  min-height: 140px;
+  min-height: 0;
   resize: none;
   padding: 12px;
   border: 1px solid var(--control-border);
@@ -1506,6 +1537,7 @@
 .global-task-launcher-actions {
   position: relative;
   display: flex;
+  flex: none;
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
@@ -1514,7 +1546,6 @@
 
 .global-task-launcher-queue-group {
   position: relative;
-  display: flex;
 }
 
 .global-task-launcher-queue-menu {
