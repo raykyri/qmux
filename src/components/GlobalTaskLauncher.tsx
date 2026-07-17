@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ChevronDown } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentUiAdapter } from "../adapters";
 import {
@@ -17,7 +18,7 @@ import {
   submitPaneInput,
   unpauseAgent,
 } from "../lib/api";
-import { agentCanFork, agentStatusLabel } from "../lib/appHelpers";
+import { agentCanFork, agentStatusLabel, agentStatusTone } from "../lib/appHelpers";
 import {
   FORK_REQUIREMENT_TITLE,
   QUEUE_DELIVERY_OPTIONS,
@@ -54,14 +55,83 @@ function targetTitle(target: LauncherTarget): string {
   return target.pane.lastOscTitle?.trim() || target.pane.title;
 }
 
-function targetStatus(target: LauncherTarget): string {
-  const tabKind = target.pane.kind === "shell" ? "Shell tab" : "Agent tab";
-  const status = agentStatusLabel(target.agent.status);
-  const queue = target.queue.length > 0 ? ` · ${target.queue.length} queued` : "";
-  const shell = target.shellJob
-    ? ` · shell ${target.shellJob.state === "foreground" ? "foreground" : target.shellJob.state}`
-    : "";
-  return `${tabKind} · ${status}${queue}${shell}`;
+function targetWaitsOnOtherPane(target: LauncherTarget): boolean {
+  const firstQueued = target.queue[0];
+  return Boolean(firstQueued?.waitFor && firstQueued.waitFor.agentId !== target.agent.id);
+}
+
+/** Status pill text for a target row, following the sidebar tab rule: queue
+ * count while working or idle, otherwise the status label — with "Running"
+ * left to the pulsing dot alone. */
+function targetStatusPill(target: LauncherTarget): string | null {
+  const queued = target.queue.length;
+  if ((target.agent.status === "running" || target.agent.status === "idle") && queued > 0) {
+    return `${queued} ${targetWaitsOnOtherPane(target) ? "waiting" : "queued"}`;
+  }
+  const label = agentStatusLabel(target.agent.status);
+  return label === "Running" ? null : label;
+}
+
+function targetStatusDotClass(target: LauncherTarget): string {
+  const awaitingInput =
+    target.agent.status === "awaitingInput" ? " status-awaiting-input" : "";
+  const waiting = targetWaitsOnOtherPane(target) ? " is-waiting-on-pane" : "";
+  return `pane-tab-dot status-${agentStatusTone(target.agent.status)}${awaitingInput}${waiting}`;
+}
+
+/** Hover summary for a target row: the detail the old dropdown label spelled
+ * out (tab kind, status, queue depth, shell job) now lives in the tooltip. */
+function targetDetails(target: LauncherTarget): string {
+  const kind = target.pane.kind === "shell" ? "Shell tab" : "Agent tab";
+  const queued = target.queue.length > 0 ? `${target.queue.length} queued` : null;
+  const shell = target.shellJob ? `shell ${target.shellJob.state}` : null;
+  return [targetTitle(target), kind, agentStatusLabel(target.agent.status), queued, shell]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function targetOptionDomId(agentId: string): string {
+  return `global-task-launcher-option-${agentId}`;
+}
+
+/** Matches the main window's tab-cycling chords (⌃Tab / ⌃⇧Tab and ⌘⇧[ / ⌘⇧])
+ * so retargeting the launcher rides the same muscle memory without leaving the
+ * draft. */
+function cycleChordDirection(event: ReactKeyboardEvent<HTMLElement>): -1 | 1 | null {
+  if (!event.metaKey && event.ctrlKey && !event.altKey && event.key === "Tab") {
+    return event.shiftKey ? -1 : 1;
+  }
+  if (
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    event.shiftKey &&
+    (event.code === "BracketLeft" || event.code === "BracketRight")
+  ) {
+    return event.code === "BracketLeft" ? -1 : 1;
+  }
+  return null;
+}
+
+/* The launcher window outlives individual launches, but the app restarts;
+ * remembering the last explicit target lets a fresh window open on the tab the
+ * user most recently dispatched to instead of the first row. */
+const LAST_TARGET_STORAGE_KEY = "qmux.globalTaskLauncher.lastTarget.v1";
+
+function loadLastTargetAgentId(): string {
+  try {
+    return localStorage.getItem(LAST_TARGET_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLastTargetAgentId(agentId: string): void {
+  try {
+    localStorage.setItem(LAST_TARGET_STORAGE_KEY, agentId);
+  } catch {
+    // Storage unavailable; target memory just won't survive restarts.
+  }
 }
 
 function errorMessage(cause: unknown): string {
@@ -78,7 +148,7 @@ export default function GlobalTaskLauncher() {
   // window needs live data; focus/blur drive this flag.
   const visibleRef = useRef(false);
   const [targets, setTargets] = useState<LauncherTarget[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(loadLastTargetAgentId);
   const [value, setValue] = useState("");
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -220,6 +290,24 @@ export default function GlobalTaskLauncher() {
   const permissionActions =
     selected?.agent.status === "awaitingPermission" ? (policy?.permissionActions ?? []) : [];
 
+  // Targets bucketed into contiguous runs per group (the sorted list keeps a
+  // group's panes together), so the column can label groups like the sidebar.
+  const targetGroups = useMemo(() => {
+    const buckets: { key: string; name: string | null; targets: LauncherTarget[] }[] = [];
+    const bucketByKey = new Map<string, (typeof buckets)[number]>();
+    for (const target of targets) {
+      const key = target.group?.id ?? "";
+      let bucket = bucketByKey.get(key);
+      if (!bucket) {
+        bucket = { key, name: target.group?.name?.trim() || null, targets: [] };
+        bucketByKey.set(key, bucket);
+        buckets.push(bucket);
+      }
+      bucket.targets.push(target);
+    }
+    return buckets;
+  }, [targets]);
+
   const waitTargets = useMemo<WaitTarget[]>(
     () =>
       targets.flatMap((target) => {
@@ -242,6 +330,25 @@ export default function GlobalTaskLauncher() {
       }),
     [selected, targets],
   );
+
+  // Every path here is an explicit pick (click, list arrows, cycle chord), so
+  // it doubles as the write point for the remembered target. "keep" leaves
+  // focus where it is — the cycle chord retargets mid-draft — but still
+  // scrolls the new selection into view.
+  function selectTarget(agentId: string, focus: "textarea" | "option" | "keep") {
+    setSelectedAgentId(agentId);
+    saveLastTargetAgentId(agentId);
+    setQueueMenuOpen(false);
+    requestAnimationFrame(() => {
+      if (focus === "textarea") textareaRef.current?.focus();
+      else if (focus === "option") document.getElementById(targetOptionDomId(agentId))?.focus();
+      else {
+        document
+          .getElementById(targetOptionDomId(agentId))
+          ?.scrollIntoView({ block: "nearest" });
+      }
+    });
+  }
 
   async function finishSubmission(operation: () => Promise<unknown>, allowEmpty = false) {
     if (!selected || submitting || (!allowEmpty && !hasValue)) return;
@@ -294,31 +401,104 @@ export default function GlobalTaskLauncher() {
         if (event.key === "Escape") {
           event.preventDefault();
           void dismissGlobalTaskLauncher();
+          return;
+        }
+        const direction = cycleChordDirection(event);
+        if (direction !== null && targets.length > 0) {
+          event.preventDefault();
+          const index = targets.findIndex((target) => target.agent.id === selectedAgentId);
+          const next = targets[(index + direction + targets.length) % targets.length];
+          if (next) selectTarget(next.agent.id, "keep");
         }
       }}
     >
-      <section className="global-task-launcher-surface" aria-label="Quick launch task">
-        <div className="global-task-launcher-target-row">
-          <label htmlFor="global-task-launcher-target">Send task to</label>
-          <select
-            id="global-task-launcher-target"
-            value={selectedAgentId}
-            disabled={loading || targets.length === 0}
-            onChange={(event) => {
-              setSelectedAgentId(event.currentTarget.value);
-              setQueueMenuOpen(false);
-              requestAnimationFrame(() => textareaRef.current?.focus());
-            }}
-          >
-            {targets.length === 0 ? <option value="">No live agent tabs</option> : null}
-            {targets.map((target) => (
-              <option key={target.agent.id} value={target.agent.id}>
-                {`${target.group?.name ? `${target.group.name} › ` : ""}${targetTitle(target)} — ${targetStatus(target)}`}
-              </option>
-            ))}
-          </select>
+      <aside className="global-task-launcher-targets">
+        <div
+          className="global-task-launcher-targets-header"
+          id="global-task-launcher-targets-label"
+        >
+          Send task to
         </div>
+        <div
+          className="global-task-launcher-target-list"
+          role="listbox"
+          aria-labelledby="global-task-launcher-targets-label"
+          onKeyDown={(event) => {
+            if (
+              targets.length === 0 ||
+              !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+            ) {
+              return;
+            }
+            event.preventDefault();
+            const index = targets.findIndex((target) => target.agent.id === selectedAgentId);
+            const next =
+              event.key === "ArrowDown"
+                ? Math.min(index + 1, targets.length - 1)
+                : event.key === "ArrowUp"
+                  ? Math.max(index - 1, 0)
+                  : event.key === "Home"
+                    ? 0
+                    : targets.length - 1;
+            const target = targets[next];
+            if (target && target.agent.id !== selectedAgentId) {
+              selectTarget(target.agent.id, "option");
+            }
+          }}
+        >
+          {targets.length === 0 ? (
+            <div className="global-task-launcher-target-empty">
+              {loading ? "Loading agent tabs…" : "No live agent tabs"}
+            </div>
+          ) : null}
+          {targetGroups.map((bucket) => (
+            <div
+              key={bucket.key || "ungrouped"}
+              className="global-task-launcher-target-group"
+            >
+              {bucket.name ? (
+                <div className="global-task-launcher-group-label" title={bucket.name}>
+                  {bucket.name}
+                </div>
+              ) : null}
+              {bucket.targets.map((target) => {
+                const isSelected = target.agent.id === selectedAgentId;
+                const pill = targetStatusPill(target);
+                return (
+                  <div
+                    key={target.agent.id}
+                    className={`pane-tab-row${isSelected ? " is-selected" : ""}`}
+                  >
+                    <button
+                      type="button"
+                      role="option"
+                      id={targetOptionDomId(target.agent.id)}
+                      aria-selected={isSelected}
+                      tabIndex={isSelected ? 0 : -1}
+                      className="control-button pane-tab"
+                      title={targetDetails(target)}
+                      onClick={() => selectTarget(target.agent.id, "textarea")}
+                    >
+                      <span className={targetStatusDotClass(target)} aria-hidden="true" />
+                      <span className="pane-tab-content">
+                        <span className="pane-tab-title">{targetTitle(target)}</span>
+                        {pill ? <small>{pill}</small> : null}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        {targets.length > 1 ? (
+          <div className="global-task-launcher-targets-hint" aria-hidden="true">
+            ⌃⇥ switches target
+          </div>
+        ) : null}
+      </aside>
 
+      <section className="global-task-launcher-compose" aria-label="Quick launch task">
         <textarea
           ref={textareaRef}
           value={value}
@@ -379,11 +559,11 @@ export default function GlobalTaskLauncher() {
             </button>
           ) : (
             <>
-              {canSend && hasValue ? (
+              {canSend ? (
                 <button
                   type="button"
                   className="control-button"
-                  disabled={submitting}
+                  disabled={submitting || !hasValue}
                   onClick={() => submit("send")}
                 >
                   <span>Send</span>
@@ -395,17 +575,19 @@ export default function GlobalTaskLauncher() {
                   ) : null}
                 </button>
               ) : null}
-              {canSteer ? (
-                <button
-                  type="button"
-                  className="control-button"
-                  disabled={submitting || !hasValue}
-                  onClick={() => submit("steer")}
-                  title="Send now, interrupting the agent's current work"
-                >
-                  Send Now
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="control-button"
+                disabled={submitting || !canSteer || !hasValue}
+                onClick={() => submit("steer")}
+                title={
+                  canSteer
+                    ? "Send now, interrupting the agent's current work"
+                    : "Send Now is available while the agent is working"
+                }
+              >
+                Send Now
+              </button>
               {selected?.agent.paused ? (
                 <button
                   type="button"
@@ -422,7 +604,7 @@ export default function GlobalTaskLauncher() {
                   Unpause
                 </button>
               ) : (
-                <div className="global-task-launcher-queue-group">
+                <div className="global-task-launcher-queue-group queue-button-group">
                   <button
                     type="button"
                     className="control-button queue-button queue-button-main"
