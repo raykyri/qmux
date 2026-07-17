@@ -99,6 +99,7 @@ import {
   agentStatusTone,
   clamp,
   cycleTabId,
+  defaultPaneTitle,
   formatTranscriptCopyJson,
   isEditableTarget,
   IS_MAC,
@@ -523,7 +524,6 @@ const GROUP_CONTEXT_MENU_ESTIMATED_HEIGHT = 270;
 const SETTINGS_CONTEXT_MENU_WIDTH = 180;
 const SETTINGS_CONTEXT_MENU_TERMINAL_HEIGHT = 66;
 const SETTINGS_CONTEXT_MENU_RESEARCH_HEIGHT = 134;
-const DEFAULT_SHELL_TITLE = "Shell";
 const MAX_TERMINAL_TITLE_CHARS = 160;
 const MAX_FIRST_MESSAGE_TITLE_CHARS = 80;
 const MAX_OPENROUTER_TITLE_SOURCE_CHARS = 4000;
@@ -1216,24 +1216,6 @@ function cascadeLatestUserTurn(turns: Turn[]): string | null {
   return stripped.length > 0 ? stripped : null;
 }
 
-
-function defaultPaneTitle(
-  pane: PaneInfo,
-  agent: AgentInfo | undefined,
-  config: RuntimeConfig | null,
-): string | null {
-  if (pane.kind === "shell") {
-    return DEFAULT_SHELL_TITLE;
-  }
-  if (!agent) {
-    return null;
-  }
-  return (
-    config?.adapters.find((adapter) => adapter.id === agent.adapter)?.label ??
-    findAgentUiAdapter(agent.adapter)?.label ??
-    null
-  );
-}
 
 function MainApp() {
   const appRef = useRef<HTMLElement | null>(null);
