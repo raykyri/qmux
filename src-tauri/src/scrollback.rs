@@ -372,9 +372,26 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     // a synthetic entry marker: if a noisy TUI alone exceeds the byte cap,
     // later chunks must not become apparent primary-screen history merely
     // because the real entry sequence fell off the front of the file.
-    let (canonical, alternate_screen) = sanitize_scrollback_replay_with_state(&captured);
+    let (canonical, alternate_screen, consumed) = sanitize_scrollback_replay_with_state(&captured);
     let marker = alternate_screen.then_some(b"\x1b[?1049h".as_slice());
-    let retained_cap = SCROLLBACK_LOG_CAP as usize - marker.map_or(0, <[u8]>::len);
+    // The log regularly ends mid-sequence at trim time — PTY reads split
+    // escapes and multi-byte scalars across appends — and the sanitizer stops
+    // consuming at the incomplete introducer. Carry those raw bytes through
+    // the rewrite so the continuation the next append brings still joins into
+    // a well-formed sequence, instead of the head being dropped and the
+    // continuation rendering as literal fragments (or, for a split `?1049h`,
+    // the alternate-screen enter being lost entirely). Cap the carried tail so
+    // a pathological never-terminated control can't crowd out retained
+    // history; dropping an oversized tail merely restores the cut-at-EOF
+    // behavior.
+    const INCOMPLETE_TAIL_CAP: usize = 64 * 1024;
+    let unconsumed = &captured[consumed..];
+    let raw_tail: &[u8] = if unconsumed.len() <= INCOMPLETE_TAIL_CAP {
+        unconsumed
+    } else {
+        &[]
+    };
+    let retained_cap = SCROLLBACK_LOG_CAP as usize - marker.map_or(0, <[u8]>::len) - raw_tail.len();
     let keep_from = canonical.len().saturating_sub(retained_cap);
     // The cap is a raw byte offset, so it can land inside a multi-byte UTF-8
     // scalar or an SGR/cursor escape and leave the retained tail beginning with
@@ -387,6 +404,10 @@ fn trim_scrollback_file(path: &Path, len: u64) -> Result<(), String> {
     if let Some(marker) = marker {
         tail.extend_from_slice(marker);
     }
+    // After the marker: the marker restores alternate-screen state for future
+    // appends, and the carried tail is the incomplete sequence those appends
+    // will complete.
+    tail.extend_from_slice(raw_tail);
     // Rewrite atomically: write the retained tail to a sibling temp file, then
     // rename it over the log. An in-place `fs::write` truncates the file before
     // writing, so a crash mid-write could leave the scrollback empty or
@@ -509,7 +530,13 @@ pub fn sanitize_scrollback_replay(bytes: &[u8]) -> Vec<u8> {
     sanitize_scrollback_replay_with_state(bytes).0
 }
 
-fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
+/// Returns the sanitized output, whether the stream ended inside the alternate
+/// screen, and how many input bytes were consumed. The consumed count falls
+/// short of `bytes.len()` only when the input ends with an incomplete escape
+/// sequence or a torn multi-byte scalar; replay callers drop that tail (its
+/// continuation will never arrive), while the trim rewrite carries it forward
+/// raw so the continuation the next append brings still joins correctly.
+fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool, usize) {
     const ESC: u8 = 0x1b;
     const BEL: u8 = 0x07;
     const CSI: u8 = 0x9b;
@@ -539,6 +566,14 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
                 }
                 index += utf8_len;
                 continue;
+            }
+            // A multi-byte scalar torn by the end of the capture must not fall
+            // through to byte-wise handling: its lead byte would be emitted as
+            // text and a continuation byte in 0x80-0x9f would then open a
+            // phantom C1 string control. Stop consuming so the caller can
+            // carry the raw tail forward instead.
+            if utf8_len == 0 && incomplete_utf8_prefix_at(bytes, index) {
+                break;
             }
         }
 
@@ -671,7 +706,43 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool) {
         index += prefix_len;
     }
 
-    (output, alternate_screen)
+    // Every `break` above leaves `index` at the introducer of the incomplete
+    // sequence, so `index` doubles as the consumed-byte count.
+    (output, alternate_screen, index)
+}
+
+/// True when `bytes[index..]` is a proper prefix of a valid multi-byte UTF-8
+/// scalar cut short by the end of the buffer — the lead byte demands more
+/// continuation bytes than remain and every byte that is present satisfies the
+/// same constraints `valid_utf8_sequence_len` enforces. Mid-buffer invalid
+/// UTF-8 never matches (a wrong continuation byte fails its range check).
+fn incomplete_utf8_prefix_at(bytes: &[u8], index: usize) -> bool {
+    let Some(first) = bytes.get(index).copied() else {
+        return false;
+    };
+    let expected: usize = match first {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return false,
+    };
+    if index + expected <= bytes.len() {
+        return false;
+    }
+    let second_range = match first {
+        0xe0 => 0xa0..=0xbf,
+        0xed => 0x80..=0x9f,
+        0xf0 => 0x90..=0xbf,
+        0xf4 => 0x80..=0x8f,
+        _ => 0x80..=0xbf,
+    };
+    bytes[index + 1..].iter().enumerate().all(|(offset, byte)| {
+        if offset == 0 {
+            second_range.contains(byte)
+        } else {
+            (0x80..=0xbf).contains(byte)
+        }
+    })
 }
 
 struct ParsedCsi {
@@ -1509,6 +1580,63 @@ mod tests {
         assert_eq!(
             sanitize_scrollback_replay(&restored),
             b"before\r\nafter\r\n"
+        );
+    }
+
+    // A trim can fire while the log ends mid-escape (PTY chunks split escapes
+    // across appends). The partial introducer must survive the rewrite so the
+    // continuation the next append brings still parses as one sequence — here
+    // a split `?1049h` whose loss would leak the hidden repaint into history
+    // and leave a stray "49h" fragment at the seam.
+    #[test]
+    fn trim_preserves_an_incomplete_trailing_escape_for_future_appends() {
+        let workspace = temp_workspace();
+        let mut output = Vec::new();
+        output.extend(std::iter::repeat_n(b'x', SCROLLBACK_TRIM_TRIGGER as usize));
+        output.extend_from_slice(b"\r\nlast line\r\n\x1b[?10");
+        append_pane_scrollback(&workspace, "pane-1", &output).unwrap();
+        append_pane_scrollback(
+            &workspace,
+            "pane-1",
+            b"49hhidden repaint\x1b[?1049lprompt\r\n",
+        )
+        .unwrap();
+
+        let restored = read_pane_scrollback(&workspace, "pane-1").unwrap();
+        let replayed = String::from_utf8_lossy(&sanitize_scrollback_replay(&restored)).into_owned();
+        assert!(
+            replayed.ends_with("last line\r\nprompt\r\n"),
+            "the joined ?1049h must hide the repaint, got tail {:?}",
+            &replayed[replayed.len().saturating_sub(60)..]
+        );
+        assert!(
+            !replayed.contains("49h") && !replayed.contains("hidden repaint"),
+            "no fragment of the split escape or its repaint may leak, got tail {:?}",
+            &replayed[replayed.len().saturating_sub(60)..]
+        );
+    }
+
+    // The same seam with a multi-byte scalar: 🌜 is F0 9F 8C 9C, whose
+    // continuation bytes overlap the C1 controls, so a dropped lead byte would
+    // both mangle the glyph and open a phantom string control on replay.
+    #[test]
+    fn trim_preserves_a_split_utf8_scalar_for_future_appends() {
+        let workspace = temp_workspace();
+        let moon = "🌜".as_bytes();
+        let mut output = Vec::new();
+        output.extend(std::iter::repeat_n(b'x', SCROLLBACK_TRIM_TRIGGER as usize));
+        output.extend_from_slice(b"\r\ntail ");
+        output.extend_from_slice(&moon[..2]);
+        append_pane_scrollback(&workspace, "pane-1", &output).unwrap();
+        append_pane_scrollback(&workspace, "pane-1", &moon[2..]).unwrap();
+        append_pane_scrollback(&workspace, "pane-1", b" done\r\n").unwrap();
+
+        let restored = read_pane_scrollback(&workspace, "pane-1").unwrap();
+        let replayed = sanitize_scrollback_replay(&restored);
+        assert!(
+            replayed.ends_with("tail 🌜 done\r\n".as_bytes()),
+            "the split scalar must replay whole, got tail {:?}",
+            String::from_utf8_lossy(&replayed[replayed.len().saturating_sub(30)..])
         );
     }
 
