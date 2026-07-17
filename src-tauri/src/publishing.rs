@@ -454,9 +454,21 @@ pub async fn publishing_publish(
     request: PublishPublicationRequest,
 ) -> Result<PublicationBinding, String> {
     validate_publish_request(&request)?;
+    let workspace_root = state.config().workspace_root.clone();
+    // A publication id that is already bound must go through sync: creating a
+    // second gist here would silently overwrite the binding and orphan the
+    // first gist — still live on GitHub (possibly public) with no local record
+    // and no way left to manage it from qmux. This is reachable when the
+    // binding failed to save after a publish (that path deliberately returns
+    // success-with-warning) or when a stale view still shows Publish.
+    if let Some(existing) = publication_binding(&workspace_root, &request.publication_id)? {
+        return Err(format!(
+            "This content is already published at {}. Update the existing publication instead of publishing it again.",
+            existing.share_url
+        ));
+    }
     let token = github_access_token()?
         .ok_or_else(|| "Connect a GitHub account before publishing this content.".to_string())?;
-    let workspace_root = state.config().workspace_root.clone();
     let client = http_client()?;
     let files = request
         .files
