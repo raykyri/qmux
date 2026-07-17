@@ -1505,11 +1505,21 @@ fn reconcile_proposal_node_states(
                     })
             })
             .collect::<Vec<_>>();
+        // Anomalies below are *skipped*, never turned into hard errors: they
+        // arise from supported flows (two instances accepting the same
+        // proposal, an accept fork surviving a failed resolve after the owner
+        // declined elsewhere), and an error here would propagate out of
+        // publishing_list_proposals and keep the entire proposals pane failing
+        // on every refresh until a node is hand-deleted. Skipping leaves the
+        // saved state untouched — the listing still renders the proposal from
+        // the comments themselves — and reconciliation resumes on its own if
+        // the ambiguity is resolved.
         if matching_nodes.len() > 1 {
-            return Err(format!(
-                "Proposal {} is linked to multiple local research nodes.",
+            eprintln!(
+                "qmux: proposal {} is linked to multiple local research nodes; leaving its saved state unchanged",
                 comment.id
-            ));
+            );
+            continue;
         }
         let Some(local_node) = matching_nodes.first() else {
             continue;
@@ -1528,10 +1538,11 @@ fn reconcile_proposal_node_states(
             .as_ref()
             .is_some_and(|(_, resolution)| resolution.status != "accepted")
         {
-            return Err(format!(
-                "Proposal {} has a local result but an incompatible owner resolution.",
+            eprintln!(
+                "qmux: proposal {} has a local result but an incompatible owner resolution; leaving its saved state unchanged",
                 comment.id
-            ));
+            );
+            continue;
         }
         let resolution_comment_id = resolution.map(|(comment_id, _)| comment_id);
         let key = comment.id.to_string();
@@ -1539,20 +1550,22 @@ fn reconcile_proposal_node_states(
             if !proposal_state_matches(saved, comment.id, author_login, &proposal)
                 || saved.status != "accepted"
             {
-                return Err(format!(
-                    "Proposal {} has an incompatible saved local mapping.",
+                eprintln!(
+                    "qmux: proposal {} has an incompatible saved local mapping; leaving it unchanged",
                     comment.id
-                ));
+                );
+                continue;
             }
             if saved
                 .local_node_id
                 .as_deref()
                 .is_some_and(|node_id| node_id != local_node.id)
             {
-                return Err(format!(
-                    "Proposal {} is already linked to a different local research node.",
+                eprintln!(
+                    "qmux: proposal {} is already linked to a different local research node; leaving it unchanged",
                     comment.id
-                ));
+                );
+                continue;
             }
             if saved.local_node_id.as_deref() != Some(local_node.id.as_str())
                 || (resolution_comment_id.is_some()
