@@ -33,15 +33,20 @@ pub struct NativeTerminalLayout {
     pub width: f64,
     pub height: f64,
     pub visible: bool,
-    pub focused: bool,
     pub accepts_pointer_input: bool,
-    pub accepts_keyboard_input: bool,
     /// Whether a pointer gesture may optimistically grant this pane the
-    /// keyboard before the next layout update. False when the keyboard denial
+    /// keyboard before React confirms the desired owner. False when the keyboard denial
     /// is hard policy (read-only research panes, blocked input) rather than a
     /// transient focus state.
     pub accepts_keyboard_claim: bool,
     pub defer_geometry: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTerminalKeyboardOwnerUpdate {
+    pub pane_id: Option<String>,
+    pub revision: u64,
 }
 
 /// A DOM rectangle that keeps pointer events routed to the webview even where
@@ -260,6 +265,7 @@ fn classify_web_app_shortcut(
 #[allow(dead_code)]
 mod imp {
     use super::APP_STATE;
+    use super::NativeTerminalKeyboardOwnerUpdate;
     use super::NativeTerminalLayout;
     use super::NativeTerminalSeedSettings;
     use super::NativeTerminalSettings;
@@ -295,12 +301,11 @@ mod imp {
             width: f64,
             height: f64,
             visible: i32,
-            focused: i32,
             accepts_pointer_input: i32,
-            accepts_keyboard_input: i32,
             accepts_keyboard_claim: i32,
             defer_geometry: i32,
         ) -> i32;
+        fn qmux_native_terminal_set_keyboard_owner(pane_id: *const c_char, revision: u64) -> i32;
         fn qmux_native_terminal_set_web_pointer_claimed(claimed: i32) -> i32;
         fn qmux_native_terminal_set_web_overlay_region(
             region_id: *const c_char,
@@ -497,9 +502,7 @@ mod imp {
                 layout.width,
                 layout.height,
                 i32::from(layout.visible),
-                i32::from(layout.focused),
                 i32::from(layout.accepts_pointer_input),
-                i32::from(layout.accepts_keyboard_input),
                 i32::from(layout.accepts_keyboard_claim),
                 i32::from(layout.defer_geometry),
             )
@@ -511,6 +514,29 @@ mod imp {
                 "native terminal pane {} was not found",
                 layout.pane_id
             ))
+        }
+    }
+
+    pub fn set_keyboard_owner(update: NativeTerminalKeyboardOwnerUpdate) -> Result<(), String> {
+        let pane_id = update
+            .pane_id
+            .as_deref()
+            .map(|pane_id| cstring(pane_id, "pane id"))
+            .transpose()?;
+        // SAFETY: Swift copies the optional string and scalar revision
+        // synchronously on the main actor before returning.
+        if unsafe {
+            qmux_native_terminal_set_keyboard_owner(
+                pane_id
+                    .as_ref()
+                    .map_or(std::ptr::null(), |pane_id| pane_id.as_ptr()),
+                update.revision,
+            )
+        } == 1
+        {
+            Ok(())
+        } else {
+            Err("native terminal host rejected the keyboard owner update".to_string())
         }
     }
 
@@ -780,6 +806,10 @@ mod imp {
     }
 
     pub fn set_layout(_layout: NativeTerminalLayout) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
+    pub fn set_keyboard_owner(_update: NativeTerminalKeyboardOwnerUpdate) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
 
@@ -1178,6 +1208,13 @@ pub fn native_terminal_set_layout(layout: NativeTerminalLayout) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn native_terminal_set_keyboard_owner(
+    update: NativeTerminalKeyboardOwnerUpdate,
+) -> Result<(), String> {
+    imp::set_keyboard_owner(update)
+}
+
+#[tauri::command]
 pub fn native_terminal_set_web_pointer_claimed(claimed: bool) -> Result<(), String> {
     set_web_pointer_claimed(claimed)
 }
@@ -1296,9 +1333,7 @@ mod tests {
             width: 100.0,
             height: 100.0,
             visible: true,
-            focused: true,
             accepts_pointer_input: true,
-            accepts_keyboard_input: true,
             accepts_keyboard_claim: true,
             defer_geometry: false,
         });

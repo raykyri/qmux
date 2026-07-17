@@ -107,6 +107,7 @@ import {
   selectPaneAfterClose,
   statusLabel,
 } from "./lib/appHelpers";
+import { desiredNativeTerminalKeyboardOwner } from "./lib/nativeTerminalKeyboard";
 import {
   appShortcutAllowsRepeat,
   appShortcutTargetsActivePane,
@@ -302,6 +303,7 @@ import {
   setLauncherAdapterPreference,
   setActiveTab,
   setGroupCollapsed,
+  setNativeTerminalKeyboardOwner,
   setNativeTerminalStageBackstop,
   setPaneLayout,
   setPaneSplits as persistPaneSplits,
@@ -3402,6 +3404,55 @@ function MainApp() {
     .map((surface) => surface.agent?.id)
     .filter((agentId): agentId is string => Boolean(agentId));
   const visibleTurnPaneAgentIdsKey = visibleTurnPaneAgentIds.join("\0");
+  const terminalPaneIsReadOnly = (pane: PaneInfo) =>
+    groupById.get(pane.groupId)?.scope === "research" &&
+    agentByPaneId.get(pane.id)?.status !== "awaitingPermission" &&
+    agentByPaneId.get(pane.id)?.status !== "awaitingInput";
+  const activePaneReadOnly = Boolean(activePane && terminalPaneIsReadOnly(activePane));
+  // This is the shared hard-input policy for every visible native surface and
+  // for the logical owner calculation below. Keeping it single-sourced avoids
+  // a modal disabling pointer claims while the owner coordinator still grants
+  // keyboard input (or vice versa).
+  const nativeTerminalInputBlocked = Boolean(
+    settingsOpen ||
+      newResearchOpen ||
+      newDocumentOpen ||
+      publicationTarget ||
+      // The palette and expanded/browser overlays must own both the DOM
+      // gesture and keyboard while they cover the terminal stage.
+      commandPaletteOpen ||
+      activeTranscriptVisibleExpanded ||
+      activeBrowserOverlay?.open ||
+      closeDialog ||
+      exitDialog ||
+      exitPreflightRequest ||
+      renamePaneId ||
+      renameGroupId ||
+      linkMenu ||
+      paneContextMenu ||
+      groupMenu ||
+      settingsMenu ||
+      // Drag/layout gestures and terminal-local search/confirm overlays also
+      // revoke the desired owner until their web interaction completes.
+      draggingPaneId !== null ||
+      terminalGeometryResizing ||
+      terminalOverlayBlockedPaneIds.size > 0,
+  );
+  const desiredNativeKeyboardOwner = desiredNativeTerminalKeyboardOwner({
+    activePaneId: activePane?.id ?? null,
+    paneSurfaceActive: activeSurface === "pane",
+    activePaneVisible: Boolean(activePane && visibleTerminalPaneIdSet.has(activePane.id)),
+    activePaneReadOnly,
+    inputBlocked: nativeTerminalInputBlocked,
+    webEditableFocused,
+    webSelectionActive,
+  });
+  useLayoutEffect(() => {
+    if (!IS_MAC) {
+      return;
+    }
+    void setNativeTerminalKeyboardOwner(desiredNativeKeyboardOwner).catch(() => undefined);
+  }, [desiredNativeKeyboardOwner]);
   // The body calls component-scoped helpers (turnInfoForAgent, displayPaneTitle,
   // paneTabStatus*, queuedTurnsForAgent, paneWaitsOnOtherPane) that are recreated
   // each render, so they are intentionally NOT in the dep array. Instead we depend
@@ -11617,11 +11668,7 @@ function MainApp() {
               coveredByOverlay={
                 activeTranscriptVisibleExpanded && visibleTerminalPaneIdSet.has(pane.id)
               }
-              readOnly={
-                groupById.get(pane.groupId)?.scope === "research" &&
-                agentByPaneId.get(pane.id)?.status !== "awaitingPermission" &&
-                agentByPaneId.get(pane.id)?.status !== "awaitingInput"
-              }
+              readOnly={terminalPaneIsReadOnly(pane)}
               // Only visible panes take the blocking signal: a hidden pane's
               // surface neither owns the keyboard nor receives pointer events,
               // and keeping its prop pinned false means opening a dialog/menu
@@ -11629,34 +11676,7 @@ function MainApp() {
               // screen instead of every mounted tab.
               inputBlocked={
                 visibleTerminalPaneIdSet.has(pane.id) &&
-                (settingsOpen ||
-                  newResearchOpen ||
-                  newDocumentOpen ||
-                  Boolean(publicationTarget) ||
-                  // The ⌘K palette floats over the stage and its rows commit on
-                  // click; a pointer-live pane under it would swallow the
-                  // mouse-up (dead item clicks) and steal the keyboard from the
-                  // palette's filter input on the press.
-                  commandPaletteOpen ||
-                  // The expanded transcript covers the whole stage while the
-                  // pane keeps its geometry (a hide would SIGWINCH the TUI), so
-                  // the covered surface must cede pointer and keyboard to the
-                  // DOM or scrolls/clicks/keys would reach the hidden terminal.
-                  activeTranscriptVisibleExpanded ||
-                  Boolean(activeBrowserOverlay?.open) ||
-                  Boolean(closeDialog) ||
-                  Boolean(exitDialog) ||
-                  Boolean(exitPreflightRequest) ||
-                  Boolean(renamePaneId || renameGroupId) ||
-                  Boolean(linkMenu) ||
-                  // Context/settings menus overhang the terminal stage; while
-                  // one is open the native pointer monitor must not swallow the
-                  // mouse-up of a menu-item click (or feed phantom clicks into
-                  // the terminal underneath).
-                  Boolean(paneContextMenu || groupMenu || settingsMenu) ||
-                  draggingPaneId !== null ||
-                  terminalGeometryResizing ||
-                  terminalOverlayBlockedPaneIds.size > 0)
+                nativeTerminalInputBlocked
               }
               // A live web selection cedes the keyboard to WebKit just like a
               // focused editable: the pane releases ownership, first responder

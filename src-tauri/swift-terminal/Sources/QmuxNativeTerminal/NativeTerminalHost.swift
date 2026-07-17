@@ -24,6 +24,12 @@ final class NativeTerminalHost {
     private var backstop: NSView?
     private var eventMonitor: Any?
     private var resignKeyObserver: NSObjectProtocol?
+    /// React's logical keyboard target, ordered independently from geometry.
+    /// The pane may not exist or be eligible yet; reconciliation applies it
+    /// once creation/visibility catches up without letting a resize choose a
+    /// different owner.
+    private var desiredKeyboardOwnerPaneID: String?
+    private var desiredKeyboardOwnerRevision: UInt64 = 0
     private weak var keyboardOwnerPane: NativeTerminalPane?
     private weak var pointerCapturePane: NativeTerminalPane?
     private var consumedAppShortcutKeyCodes: Set<UInt16> = []
@@ -156,6 +162,9 @@ final class NativeTerminalHost {
         if let currentSettings {
             _ = pane.applySettings(currentSettings)
         }
+        if desiredKeyboardOwnerPaneID == id {
+            _ = reconcileDesiredKeyboardOwner()
+        }
         return true
     }
 
@@ -170,6 +179,9 @@ final class NativeTerminalHost {
     func removePane(id: String) {
         guard let pane = panes.removeValue(forKey: id) else { return }
         TerminalSessionRegistry.shared.unregister(id)
+        if desiredKeyboardOwnerPaneID == id {
+            desiredKeyboardOwnerPaneID = nil
+        }
         if keyboardOwnerPane === pane {
             setKeyboardOwner(nil)
         }
@@ -192,15 +204,13 @@ final class NativeTerminalHost {
         id: String,
         frame: CGRect,
         visible: Bool,
-        focused: Bool,
         acceptsPointerInput: Bool,
-        acceptsKeyboardInput: Bool,
         acceptsKeyboardClaim: Bool,
         deferGeometry: Bool
     ) -> Bool {
         guard let pane = panes[id] else { return false }
+        let keyboardClaimChanged = pane.acceptsKeyboardClaim != acceptsKeyboardClaim
         pane.acceptsPointerInput = acceptsPointerInput
-        pane.acceptsKeyboardInput = acceptsKeyboardInput
         pane.acceptsKeyboardClaim = acceptsKeyboardClaim
         if !acceptsPointerInput, pointerCapturePane === pane {
             pointerCapturePane = nil
@@ -234,16 +244,47 @@ final class NativeTerminalHost {
                 forceFit: visibilityChanged || needsDeferredFit
             )
         }
-        let shouldOwnKeyboard = focused && visible && acceptsKeyboardInput
-        if shouldOwnKeyboard {
-            setKeyboardOwner(pane)
-        } else {
-            pane.isFocused = false
-            if keyboardOwnerPane === pane {
-                setKeyboardOwner(nil)
-            }
+        // Layout is never allowed to select or transfer keyboard ownership.
+        // It may release an owner that has become invalid, or apply the
+        // already-stored desired owner when that exact target becomes newly
+        // eligible after creation/visibility/policy catches up.
+        if keyboardOwnerPane === pane, !visible || !acceptsKeyboardClaim {
+            setKeyboardOwner(nil)
+        }
+        if desiredKeyboardOwnerPaneID == id,
+           visible,
+           acceptsKeyboardClaim,
+           visibilityChanged || keyboardClaimChanged
+        {
+            _ = reconcileDesiredKeyboardOwner()
         }
         return true
+    }
+
+    /// Applies a complete, revisioned desired owner from React. Stale invokes
+    /// are successful no-ops: their state was superseded before reaching the
+    /// main actor and must never reclaim the keyboard.
+    func setDesiredKeyboardOwner(id: String?, revision: UInt64) -> Bool {
+        guard revision > desiredKeyboardOwnerRevision else { return true }
+        desiredKeyboardOwnerRevision = revision
+        desiredKeyboardOwnerPaneID = id
+        return reconcileDesiredKeyboardOwner()
+    }
+
+    @discardableResult
+    private func reconcileDesiredKeyboardOwner() -> Bool {
+        guard let desiredKeyboardOwnerPaneID else {
+            return setKeyboardOwner(nil)
+        }
+        guard let pane = panes[desiredKeyboardOwnerPaneID],
+              !pane.view.isHidden,
+              pane.acceptsKeyboardClaim
+        else {
+            // Keep the desired id pending so create/show/unblock can apply it,
+            // but no ineligible or unrelated pane may retain the keyboard.
+            return setKeyboardOwner(nil)
+        }
+        return setKeyboardOwner(pane)
     }
 
     private func setWindowLiveResizeActive(_ active: Bool) {
@@ -291,11 +332,10 @@ final class NativeTerminalHost {
     }
 
     func focusPane(id: String) -> Bool {
-        guard let pane = panes[id],
-              !pane.view.isHidden,
-              pane.acceptsKeyboardInput
-        else { return false }
-        return setKeyboardOwner(pane)
+        // Imperative recovery may reassert the logical owner after WebKit
+        // first-responder churn, but it cannot choose a new owner.
+        guard desiredKeyboardOwnerPaneID == id else { return false }
+        return reconcileDesiredKeyboardOwner()
     }
 
     func setWebPointerRoutingClaimed(_ claimed: Bool) -> Bool {
@@ -409,6 +449,7 @@ final class NativeTerminalHost {
             self.resignKeyObserver = nil
         }
         setKeyboardOwner(nil)
+        desiredKeyboardOwnerPaneID = nil
         consumedAppShortcutKeyCodes.removeAll()
         pointerCapturePane = nil
         webPointerRoutingClaimed = false
@@ -441,6 +482,7 @@ final class NativeTerminalHost {
         let previous = keyboardOwnerPane
         if previous !== pane {
             previous?.isFocused = false
+            previous?.acceptsKeyboardInput = false
             previous?.consumedShortcutKeyCodes.removeAll()
             keyboardOwnerPane = pane
             if pane == nil {
@@ -465,6 +507,7 @@ final class NativeTerminalHost {
         }
 
         pane.isFocused = true
+        pane.acceptsKeyboardInput = true
         guard let window else { return false }
         if window.firstResponder === pane.view {
             return true
@@ -872,7 +915,6 @@ final class NativeTerminalHost {
         if isMiddleMouseEvent(event) {
             if event.type == .otherMouseDown {
                 if pane.acceptsKeyboardClaim {
-                    pane.acceptsKeyboardInput = true
                     setKeyboardOwner(pane)
                 }
                 pane.reportActivation()
@@ -891,7 +933,6 @@ final class NativeTerminalHost {
             // layout and feed keystrokes into a pane the app promises is
             // read-only.
             if pane.acceptsKeyboardClaim {
-                pane.acceptsKeyboardInput = true
                 setKeyboardOwner(pane)
             }
         }

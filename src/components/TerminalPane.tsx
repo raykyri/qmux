@@ -256,7 +256,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     [focus, openSearch, reportUserInput, requestPaste],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Publish terminal-local blockers in the same commit in which their DOM
+    // focus target appears/disappears. App owns the logical native keyboard
+    // target, so a passive effect would leave one paint where its calculation
+    // still grants the terminal keyboard.
     onOverlayStateChange?.(pane.id, searchOpen || confirmOpen);
     return () => onOverlayStateChange?.(pane.id, false);
   }, [confirmOpen, onOverlayStateChange, pane.id, searchOpen]);
@@ -385,9 +389,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         width: rect.width,
         height: rect.height,
         visible: surfaceVisible,
-        focused: ownsKeyboard,
         acceptsPointerInput: !inputBlocked && !searchOpen && !confirmOpen,
-        acceptsKeyboardInput: ownsKeyboard,
         // Unlike ownsKeyboard this ignores transient web focus states: a click
         // may still claim the keyboard away from a composer, but never into a
         // pane whose input is blocked by policy (read-only research panes).

@@ -113,9 +113,7 @@ public func qmuxNativeTerminalSetLayout(
     _ width: Double,
     _ height: Double,
     _ visible: Int32,
-    _ focused: Int32,
     _ acceptsPointerInput: Int32,
-    _ acceptsKeyboardInput: Int32,
     _ acceptsKeyboardClaim: Int32,
     _ deferGeometry: Int32
 ) -> Int32 {
@@ -125,11 +123,23 @@ public func qmuxNativeTerminalSetLayout(
             id: paneID,
             frame: CGRect(x: x, y: y, width: width, height: height),
             visible: visible == 1,
-            focused: focused == 1,
             acceptsPointerInput: acceptsPointerInput == 1,
-            acceptsKeyboardInput: acceptsKeyboardInput == 1,
             acceptsKeyboardClaim: acceptsKeyboardClaim == 1,
             deferGeometry: deferGeometry == 1
+        ) ? 1 : 0
+    }
+}
+
+@_cdecl("qmux_native_terminal_set_keyboard_owner")
+public func qmuxNativeTerminalSetKeyboardOwner(
+    _ paneID: UnsafePointer<CChar>?,
+    _ revision: UInt64
+) -> Int32 {
+    let ownerPaneID = terminalString(paneID)
+    return onTerminalMain {
+        NativeTerminalHost.shared.setDesiredKeyboardOwner(
+            id: ownerPaneID,
+            revision: revision
         ) ? 1 : 0
     }
 }

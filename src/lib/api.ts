@@ -672,12 +672,10 @@ export interface NativeTerminalLayout {
   width: number;
   height: number;
   visible: boolean;
-  focused: boolean;
   acceptsPointerInput: boolean;
-  acceptsKeyboardInput: boolean;
   /**
    * Whether a pointer gesture may optimistically grant this pane the keyboard
-   * before the next layout update (native click-to-focus). False when the
+   * before React confirms the desired owner (native click-to-focus). False when the
    * keyboard denial is hard policy — read-only research panes, blocked input —
    * rather than a transient focus state like an active web editable.
    */
@@ -687,6 +685,29 @@ export interface NativeTerminalLayout {
 
 export function setNativeTerminalLayout(layout: NativeTerminalLayout) {
   return invoke<void>("native_terminal_set_layout", { layout });
+}
+
+// Seed from wall time so a webview/module reload cannot restart revisions below
+// the native host's last applied value. Multiplying by 1,000 leaves room for
+// bursts within one millisecond while remaining below Number.MAX_SAFE_INTEGER.
+let nativeTerminalKeyboardOwnerRevision = Date.now() * 1_000;
+
+/**
+ * Publishes the frontend's complete desired native keyboard owner. Ownership
+ * updates are revisioned independently from pane geometry so an older invoke
+ * can never overtake a newer activation/release and reclaim the keyboard.
+ */
+export function setNativeTerminalKeyboardOwner(paneId: string | null) {
+  nativeTerminalKeyboardOwnerRevision = Math.max(
+    nativeTerminalKeyboardOwnerRevision + 1,
+    Date.now() * 1_000,
+  );
+  return invoke<void>("native_terminal_set_keyboard_owner", {
+    update: {
+      paneId,
+      revision: nativeTerminalKeyboardOwnerRevision,
+    },
+  });
 }
 
 export interface NativeWebOverlayRegion {
