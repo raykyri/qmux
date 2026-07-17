@@ -2,8 +2,8 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
     SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
-    prepared_shell_agent, record_shell_fork_lineage, reusable_session_agent, shell_quote_arg,
-    shell_quote_path,
+    prepared_shell_agent, record_shell_fork_lineage, record_shell_resume_identity,
+    reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -508,6 +508,7 @@ impl CodexAdapter {
         let pane_group_id = state
             .pane_group_id(&request.pane_id)?
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let resume_session_id = codex_resume_session_id(&request.args).map(str::to_string);
         let fork_point = codex_fork_source_session_id(&request.args).map(str::to_string);
         let agent = match prepared_shell_agent(
             state,
@@ -521,7 +522,7 @@ impl CodexAdapter {
             None => match reusable_session_agent(
                 state,
                 self.id(),
-                codex_resume_session_id(&request.args),
+                resume_session_id.as_deref(),
                 &cwd_str,
             )? {
                 Some(existing) => existing,
@@ -541,6 +542,7 @@ impl CodexAdapter {
         };
         let agent =
             record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
+        let agent = record_shell_resume_identity(state, agent, resume_session_id.as_deref())?;
         let agent = attach_codex_agent_pane(
             state,
             &agent.id,

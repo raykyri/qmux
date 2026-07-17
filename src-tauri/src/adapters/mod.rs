@@ -102,6 +102,30 @@ pub(crate) fn reusable_session_agent(
     }))
 }
 
+/// Records a concrete native session id supplied to a shell-level resume command.
+/// The CLI will keep this identity when it resumes, so make it visible before the
+/// later SessionStart hook arrives. Parsers deliberately pass `None` for selectors
+/// such as `--last` and for forks, whose live session gets a different identity.
+pub(crate) fn record_shell_resume_identity(
+    state: &AppState,
+    agent: AgentInfo,
+    session_id: Option<&str>,
+) -> Result<AgentInfo, String> {
+    let Some(session_id) = session_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(agent);
+    };
+    state
+        .mutate_agent(&agent.id, |agent| {
+            agent.session_id = Some(session_id.to_string());
+        })?
+        .ok_or_else(|| {
+            format!(
+                "agent {} disappeared while recording resumed session identity",
+                agent.id
+            )
+        })
+}
+
 /// Resolves a qmux-reserved agent for an automatically started shell command.
 /// Ordinary commands typed by the user do not carry `prepared_agent_id` and keep
 /// the existing create/reuse behavior. A prepared id must describe an unbound
@@ -1159,6 +1183,38 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn shell_resume_identity_is_visible_before_the_start_hook() {
+        let state = AppState::new(test_config());
+        let mut agent = session_agent("agent-1", None, "/work", "placeholder");
+        agent.session_id = None;
+        state.insert_agent(agent.clone()).unwrap();
+
+        let agent = record_shell_resume_identity(&state, agent, Some(" resumed-session ")).unwrap();
+
+        assert_eq!(agent.session_id.as_deref(), Some("resumed-session"));
+        assert_eq!(
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("resumed-session")
+        );
+    }
+
+    #[test]
+    fn shell_resume_identity_waits_for_hook_without_a_concrete_id() {
+        let state = AppState::new(test_config());
+        let agent = session_agent("agent-1", None, "/work", "known-session");
+        state.insert_agent(agent.clone()).unwrap();
+
+        let agent = record_shell_resume_identity(&state, agent, None).unwrap();
+
+        assert_eq!(agent.session_id.as_deref(), Some("known-session"));
     }
 
     #[test]
