@@ -693,6 +693,7 @@ fn sanitize_last_osc_title(raw_title: &str) -> Option<String> {
     let mut title = String::new();
     let mut chars = 0_usize;
     let mut pending_space = false;
+    let mut truncated = false;
 
     for ch in raw_title.chars() {
         if ch.is_control() || ch.is_whitespace() {
@@ -703,6 +704,7 @@ fn sanitize_last_osc_title(raw_title: &str) -> Option<String> {
         }
         if pending_space {
             if chars >= MAX_LAST_OSC_TITLE_CHARS {
+                truncated = true;
                 break;
             }
             title.push(' ');
@@ -710,10 +712,22 @@ fn sanitize_last_osc_title(raw_title: &str) -> Option<String> {
             pending_space = false;
         }
         if chars >= MAX_LAST_OSC_TITLE_CHARS {
+            truncated = true;
             break;
         }
         title.push(ch);
         chars += 1;
+    }
+
+    if truncated {
+        if title.ends_with(' ') {
+            title.pop();
+            chars -= 1;
+        }
+        if chars >= MAX_LAST_OSC_TITLE_CHARS {
+            title.pop();
+        }
+        title.push('…');
     }
 
     (!title.is_empty()).then_some(title)
@@ -13544,11 +13558,19 @@ mod tests {
             Some("Build 42%")
         );
         assert_eq!(sanitize_last_osc_title(" \n\t\u{7f} "), None);
+        let truncated = format!("{}…", "x".repeat(MAX_LAST_OSC_TITLE_CHARS - 1));
         assert_eq!(
-            sanitize_last_osc_title(&"x".repeat(MAX_LAST_OSC_TITLE_CHARS + 20))
-                .expect("non-empty title")
-                .chars()
-                .count(),
+            sanitize_last_osc_title(&"x".repeat(MAX_LAST_OSC_TITLE_CHARS + 20)).as_deref(),
+            Some(truncated.as_str())
+        );
+        assert_eq!(
+            sanitize_last_osc_title(&format!(
+                "{}   more",
+                "x".repeat(MAX_LAST_OSC_TITLE_CHARS - 1)
+            ))
+            .expect("non-empty title")
+            .chars()
+            .count(),
             MAX_LAST_OSC_TITLE_CHARS
         );
     }

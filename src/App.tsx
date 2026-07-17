@@ -580,7 +580,11 @@ function sanitizeTerminalTitle(rawTitle: string): string | null {
   if (!title) {
     return null;
   }
-  return Array.from(title).slice(0, MAX_TERMINAL_TITLE_CHARS).join("");
+  const chars = Array.from(title);
+  if (chars.length <= MAX_TERMINAL_TITLE_CHARS) {
+    return title;
+  }
+  return `${chars.slice(0, MAX_TERMINAL_TITLE_CHARS - 1).join("").trimEnd()}…`;
 }
 
 function normalizedMessagePreview(rawMessage: string): string | null {
@@ -639,7 +643,7 @@ function sanitizeGeneratedTitle(rawTitle: string): string | null {
     return unquoted;
   }
 
-  return `${chars.slice(0, MAX_FIRST_MESSAGE_TITLE_CHARS - 3).join("").trimEnd()}...`;
+  return `${chars.slice(0, MAX_FIRST_MESSAGE_TITLE_CHARS - 1).join("").trimEnd()}…`;
 }
 
 function firstMessageTitleConfig(

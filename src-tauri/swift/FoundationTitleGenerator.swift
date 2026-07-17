@@ -155,8 +155,8 @@ private func sanitizeTitle(_ rawTitle: String) -> String? {
     if unquoted.count <= maxTitleCharacters {
         return unquoted
     }
-    let end = unquoted.index(unquoted.startIndex, offsetBy: maxTitleCharacters - 3)
-    return String(unquoted[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    let end = unquoted.index(unquoted.startIndex, offsetBy: maxTitleCharacters - 1)
+    return String(unquoted[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
 }
 
 private func describeError(_ error: Error) -> String {
