@@ -145,8 +145,8 @@
 }
 
 .sidebar-mode-attention.is-running {
-  color: #a9d7b4;
-  background: rgba(86, 164, 108, 0.16);
+  color: var(--control-fg-muted);
+  background: var(--surface-fill-hover);
 }
 
 .sidebar-mode-attention.is-unseen {
