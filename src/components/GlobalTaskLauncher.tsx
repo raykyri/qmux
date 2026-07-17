@@ -510,7 +510,7 @@ export default function GlobalTaskLauncher() {
         {filterActive ? (
           <input
             ref={filterInputRef}
-            className="global-task-launcher-filter"
+            className="form-field global-task-launcher-filter"
             type="text"
             placeholder="Filter tabs…"
             aria-label="Filter agent tabs"
