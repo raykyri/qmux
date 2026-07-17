@@ -322,6 +322,20 @@ async function routeRequest(
     await serveStaticFile(response, join(context.siteDir, name), "image/png", request.method);
     return;
   }
+  if (
+    url.pathname === "/fonts/ValleySans-Variable.woff2" ||
+    url.pathname === "/fonts/ValleySans-VariableItalic.woff2"
+  ) {
+    const name = normalize(url.pathname.slice(1));
+    await serveStaticFile(
+      response,
+      join(context.siteDir, name),
+      "font/woff2",
+      request.method,
+      "public, max-age=31536000, immutable",
+    );
+    return;
+  }
 
   const route = publicationRoute(url.pathname);
   if (!route) {
@@ -1860,13 +1874,16 @@ async function serveStaticFile(
   path: string,
   contentType: string,
   method: string | undefined,
+  cacheControl?: string,
 ) {
   try {
     const body = await readFile(path);
     response.writeHead(200, {
       "Content-Type": contentType,
       "Content-Length": body.byteLength,
-      "Cache-Control": contentType.startsWith("image/") ? "public, max-age=86400" : "public, max-age=300",
+      "Cache-Control":
+        cacheControl ??
+        (contentType.startsWith("image/") ? "public, max-age=86400" : "public, max-age=300"),
       "X-Content-Type-Options": "nosniff",
     });
     response.end(method === "HEAD" ? undefined : body);
@@ -1888,7 +1905,7 @@ function sendHtml(
     "Content-Length": Buffer.byteLength(body),
     "Cache-Control": cacheControl,
     "Content-Security-Policy":
-      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     ...extraHeaders,
@@ -1905,10 +1922,14 @@ function formatDate(value: string) {
 }
 
 const PAGE_CSS = `
+/* Valley Sans 100-900 variable webfonts, bundled under the SIL OFL 1.1 (site/fonts/ValleySans-OFL.txt).
+   Source: HelsinkiTypeStudio/valley-sans, same files the desktop app bundles. */
+@font-face { font-family:"Valley Sans"; src:url("/fonts/ValleySans-Variable.woff2") format("woff2"); font-style:normal; font-weight:100 900; font-display:swap; }
+@font-face { font-family:"Valley Sans"; src:url("/fonts/ValleySans-VariableItalic.woff2") format("woff2"); font-style:italic; font-weight:100 900; font-display:swap; }
 :root { color-scheme:light dark; --background:#ffffff; --foreground:#0a0a0a; --muted:#f5f5f5; --muted-foreground:#737373; --border:#e5e5e5; --input:#e5e5e5; --primary:#171717; --primary-foreground:#fafafa; --destructive:#dc2626; --ring:#a3a3a3; }
 @media (prefers-color-scheme: dark) { :root { --background:#0a0a0a; --foreground:#fafafa; --muted:#262626; --muted-foreground:#a3a3a3; --border:#262626; --input:#343434; --primary:#fafafa; --primary-foreground:#171717; --destructive:#f87171; --ring:#525252; } }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--background); color:var(--foreground); font:15px/1.65 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+body { margin:0; background:var(--background); color:var(--foreground); font:15px/1.65 "Valley Sans",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
 a { color:inherit; text-decoration:none; }
 .container { max-width:840px; margin:0 auto; padding:0 24px; }
 .container-wide { max-width:1120px; margin:0 auto; padding:0 24px; }
