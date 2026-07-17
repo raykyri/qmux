@@ -100,8 +100,10 @@ import {
   clamp,
   cycleTabId,
   defaultPaneTitle,
+  firstUserTurnText,
   formatTranscriptCopyJson,
   isEditableTarget,
+  latestUserTurnText,
   IS_MAC,
   isTerminalTarget,
   measureTerminalCellSize,
@@ -1165,24 +1167,6 @@ function createPendingFirstMessageTitle(
   };
 }
 
-function firstUserTurnText(turn: Turn): string | null {
-  if (turn.role !== "user" || turn.status === "superseded") {
-    return null;
-  }
-
-  for (const block of turn.blocks) {
-    if (block.type !== "text") {
-      continue;
-    }
-    const trimmed = block.text.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-  }
-
-  return null;
-}
-
 function latestUserTurnId(turns: Turn[]): string | null {
   let latest: string | null = null;
   for (const turn of turns) {
@@ -1191,16 +1175,6 @@ function latestUserTurnId(turns: Turn[]): string | null {
     }
   }
   return latest;
-}
-
-function latestUserTurnText(turns: Turn[]): string | null {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const text = firstUserTurnText(turns[index]);
-    if (text) {
-      return text;
-    }
-  }
-  return null;
 }
 
 // Strips prepended/inline tagged instruction blocks (<system-reminder> …) from a turn
