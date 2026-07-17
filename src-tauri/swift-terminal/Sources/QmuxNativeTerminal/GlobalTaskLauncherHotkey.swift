@@ -45,7 +45,7 @@ private final class GlobalTaskLauncherHotkeyMonitor {
             }
         }
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(20), leeway: .milliseconds(4))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(4))
         timer.setEventHandler { @MainActor [weak self] in
             self?.sampleModifiers()
         }
