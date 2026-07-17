@@ -10856,7 +10856,7 @@ function MainApp() {
               </label>
               <select
                 id="settings-global-task-launcher-hotkey"
-                className="form-field settings-input"
+                className="settings-select"
                 value={globalTaskLauncherSetting.hotkey}
                 disabled={globalTaskLauncherHotkeySaving}
                 aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
