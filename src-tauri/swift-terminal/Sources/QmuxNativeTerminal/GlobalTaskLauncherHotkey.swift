@@ -128,6 +128,55 @@ private final class GlobalTaskLauncherHotkeyMonitor {
     }
 }
 
+// Records the app that was frontmost when the launcher is summoned so it can be
+// reactivated on dismissal. A "launch from anywhere" overlay that hides itself
+// with the app still activated would otherwise strand the user in qmux's main
+// window instead of the app they came from.
+@MainActor
+private final class GlobalTaskLauncherPreviousApp {
+    static let shared = GlobalTaskLauncherPreviousApp()
+    private var previous: NSRunningApplication?
+
+    private init() {}
+
+    func capture() {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        // If qmux is already frontmost there is nothing to hand focus back to.
+        if let frontmost,
+            frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        {
+            previous = frontmost
+        } else {
+            previous = nil
+        }
+    }
+
+    func restore() {
+        let target = previous
+        previous = nil
+        guard let target, !target.isTerminated else { return }
+        target.activate(options: [.activateIgnoringOtherApps])
+    }
+}
+
+private func runOnMain(_ body: @MainActor @escaping () -> Void) {
+    if Thread.isMainThread {
+        MainActor.assumeIsolated(body)
+    } else {
+        DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
+    }
+}
+
+@_cdecl("qmux_global_task_launcher_capture_previous_app")
+public func qmuxGlobalTaskLauncherCapturePreviousApp() {
+    runOnMain { GlobalTaskLauncherPreviousApp.shared.capture() }
+}
+
+@_cdecl("qmux_global_task_launcher_restore_previous_app")
+public func qmuxGlobalTaskLauncherRestorePreviousApp() {
+    runOnMain { GlobalTaskLauncherPreviousApp.shared.restore() }
+}
+
 @_cdecl("qmux_global_task_launcher_set_double_modifier")
 public func qmuxGlobalTaskLauncherSetDoubleModifier(_ modifier: Int32) -> Int32 {
     if Thread.isMainThread {

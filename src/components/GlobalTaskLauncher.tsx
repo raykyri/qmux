@@ -3,6 +3,7 @@ import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentUiAdapter } from "../adapters";
 import {
+  dismissGlobalTaskLauncher,
   forkAgent,
   listAgentTurnQueue,
   listAgents,
@@ -242,7 +243,9 @@ export default function GlobalTaskLauncher() {
       await operation();
       setValue("");
       setQueueMenuOpen(false);
-      await getCurrentWindow().hide();
+      // Explicit dismissal: hand focus back to the app the launcher was
+      // summoned from rather than leaving qmux activated.
+      await dismissGlobalTaskLauncher();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       requestAnimationFrame(() => textareaRef.current?.focus());
@@ -287,7 +290,7 @@ export default function GlobalTaskLauncher() {
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
-          void getCurrentWindow().hide();
+          void dismissGlobalTaskLauncher();
         }
       }}
     >

@@ -247,6 +247,13 @@ export function openGlobalTaskLauncher() {
   return invoke<void>("global_task_launcher_open");
 }
 
+// Hides the launcher and returns focus to the app it was summoned from. Use on
+// explicit dismissal (submit, Escape); a focus-loss dismissal should hide
+// directly, since the OS has already moved focus to wherever the user clicked.
+export function dismissGlobalTaskLauncher() {
+  return invoke<void>("global_task_launcher_dismiss");
+}
+
 export function updateMenuBar(snapshot: MenuBarSnapshot) {
   return invoke<void>("menu_bar_update", { snapshot });
 }

@@ -177,6 +177,9 @@ pub fn show_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
         return Ok(());
     };
+    // Record whoever is frontmost before we activate qmux, so dismissing the
+    // launcher can hand focus back to the app the user summoned it from.
+    capture_previous_app();
     let main_window = app.get_webview_window("main");
     let main_was_visible = main_window
         .as_ref()
@@ -192,6 +195,18 @@ pub fn show_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     window.center()?;
     window.show()?;
     window.set_focus()?;
+    Ok(())
+}
+
+/// Hides the launcher and returns focus to the app it was summoned from. Used
+/// by the explicit-dismiss paths (submit, Escape); a focus-loss dismissal keeps
+/// a plain `hide` since the OS has already moved focus where the user clicked.
+#[tauri::command]
+pub fn global_task_launcher_dismiss<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    restore_previous_app();
     Ok(())
 }
 
@@ -313,6 +328,32 @@ fn set_double_modifier(modifier: i32) -> Result<(), String> {
 fn set_double_modifier(_modifier: i32) -> Result<(), String> {
     Err("Double-tap launcher hotkeys are currently available on macOS only".to_string())
 }
+
+#[cfg(target_os = "macos")]
+fn capture_previous_app() {
+    unsafe extern "C" {
+        fn qmux_global_task_launcher_capture_previous_app();
+    }
+    // SAFETY: the Swift bridge records the frontmost NSRunningApplication on the
+    // main thread and takes no arguments.
+    unsafe { qmux_global_task_launcher_capture_previous_app() };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_previous_app() {}
+
+#[cfg(target_os = "macos")]
+fn restore_previous_app() {
+    unsafe extern "C" {
+        fn qmux_global_task_launcher_restore_previous_app();
+    }
+    // SAFETY: the Swift bridge reactivates the recorded application on the main
+    // thread and takes no arguments.
+    unsafe { qmux_global_task_launcher_restore_previous_app() };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn restore_previous_app() {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn qmux_global_task_launcher_did_trigger() {
