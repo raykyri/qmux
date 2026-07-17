@@ -284,6 +284,16 @@ struct Model {
     /// A parent Stop ends only its foreground turn while this is non-zero.
     /// Transient: hooks rebuild it for each running process.
     agent_active_subagents: HashMap<String, ActiveSubagents>,
+    /// Agents whose most recent Stop reported still-running background tasks
+    /// (Claude 2.1.145+ sends its live task registry on Stop). Unlike the
+    /// hook-tracked subagent counter above, this snapshot is the only signal
+    /// for background work that never emits Subagent hooks, and it must also
+    /// hold the agent open at the idle-prompt boundary — otherwise the ~60s
+    /// idle notification would settle Done and silently cancel the wait the
+    /// Stop handler just established. Refreshed by every Stop that carries the
+    /// field; cleared when a Stop reports no running tasks, on SessionEnd, and
+    /// with the agent's other transient state. Transient (not persisted).
+    agents_with_reported_background_tasks: HashSet<String>,
     /// Agents with an Esc-interrupt grace watch already in flight. Holding Esc (key
     /// repeat) fires `watch_agent_after_escape` per keystroke; this dedupes so a burst
     /// spawns one watcher thread, not dozens. Cleared when that thread resolves.
@@ -4911,6 +4921,9 @@ impl AppState {
                 model.agent_activity.remove(&agent_id);
                 model.agent_status_activity.remove(&agent_id);
                 model.agent_active_subagents.remove(&agent_id);
+                model
+                    .agents_with_reported_background_tasks
+                    .remove(&agent_id);
                 model.agent_escape_watch.remove(&agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
@@ -5561,6 +5574,40 @@ impl AppState {
         if let Ok(mut model) = self.inner.model.lock() {
             model.agent_active_subagents.remove(agent_id);
         }
+    }
+
+    /// Records whether the agent's most recent Stop reported still-running
+    /// background tasks, so the idle-prompt boundary can honor the same wait
+    /// the Stop handler established (see the field's doc for lifecycle).
+    pub fn set_agent_background_tasks_reported(
+        &self,
+        agent_id: &str,
+        reported: bool,
+    ) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        if reported {
+            model
+                .agents_with_reported_background_tasks
+                .insert(agent_id.to_string());
+        } else {
+            model.agents_with_reported_background_tasks.remove(agent_id);
+        }
+        Ok(())
+    }
+
+    pub fn agent_has_reported_background_tasks(&self, agent_id: &str) -> Result<bool, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agents_with_reported_background_tasks
+            .contains(agent_id))
     }
 
     fn sync_research_node_from_agent(&self, agent: &AgentInfo) -> Result<bool, String> {

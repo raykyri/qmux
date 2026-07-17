@@ -879,7 +879,15 @@ impl ClaudeAdapter {
                 let notification_kind = notification_kind(&notification);
                 if matches!(notification_kind, NotificationKind::IdlePrompt) {
                     let waiting_on_subagents = if let Some(agent) = agent.as_mut() {
-                        if state.agent_has_active_subagents(&agent.id)? {
+                        // Idle prompts fire ~60s into any idle stretch,
+                        // including one a Stop deliberately left open for
+                        // reported background tasks. Honor that recorded wait
+                        // here too, or the idle notification would settle Done
+                        // and silently cancel it. The flag clears when a later
+                        // Stop reports the tasks finished.
+                        if state.agent_has_active_subagents(&agent.id)?
+                            || state.agent_has_reported_background_tasks(&agent.id)?
+                        {
                             agent.status = AgentStatus::Running;
                             state.set_agent_status(&agent.id, agent.status)?;
                             true
@@ -916,7 +924,15 @@ impl ClaudeAdapter {
                     // launched before qmux observes SubagentStart (and also covers
                     // background work that is not a subagent). Older versions omit
                     // the field and continue to rely on the hook-backed tracker.
-                    if has_reported_background_tasks(&notification.payload)
+                    // Only tasks still marked running count: a registry that
+                    // retains completed entries must not pin the agent Running
+                    // forever with nothing left to wait for. The verdict is
+                    // recorded so the idle-prompt handler honors the same wait
+                    // (a snapshot-less Stop leaves the previous verdict alone).
+                    if let Some(active) = reported_background_tasks_active(&notification.payload) {
+                        state.set_agent_background_tasks_reported(&agent.id, active)?;
+                    }
+                    if state.agent_has_reported_background_tasks(&agent.id)?
                         || state.agent_has_active_subagents(&agent.id)?
                     {
                         agent.status = AgentStatus::Running;
@@ -972,6 +988,7 @@ impl ClaudeAdapter {
             "SessionEnd" => {
                 if let Some(agent) = agent.as_ref() {
                     state.clear_agent_subagents(&agent.id);
+                    state.set_agent_background_tasks_reported(&agent.id, false)?;
                 }
                 "agent.session_end"
             }
@@ -1726,11 +1743,21 @@ fn payload_contains(value: &Value, needle: &str) -> bool {
     }
 }
 
-fn has_reported_background_tasks(payload: &Value) -> bool {
-    payload
-        .get("background_tasks")
-        .and_then(Value::as_array)
-        .is_some_and(|tasks| !tasks.is_empty())
+/// Reads Claude's `background_tasks` registry snapshot from a Stop payload.
+/// `None` when the field is absent (older Claude versions — callers keep any
+/// previously recorded verdict and the hook-backed subagent tracker applies);
+/// otherwise whether any reported task is still running. Entries without a
+/// status count as running so a schema drift degrades toward waiting one Stop
+/// too long rather than settling Done under live background work; entries with
+/// a terminal status must not pin the agent, or a registry that retains
+/// completed tasks would wedge the session Running forever.
+fn reported_background_tasks_active(payload: &Value) -> Option<bool> {
+    let tasks = payload.get("background_tasks")?.as_array()?;
+    Some(tasks.iter().any(|task| {
+        task.get("status")
+            .and_then(Value::as_str)
+            .is_none_or(|status| status.eq_ignore_ascii_case("running"))
+    }))
 }
 
 fn is_subagent_payload(value: &Value) -> bool {
@@ -3272,6 +3299,82 @@ mod tests {
         assert_eq!(event.event_type, "agent.done");
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::Done));
+    }
+
+    // The ~60s idle notification must honor the wait a Stop established for
+    // reported background tasks, not settle Done and silently cancel it; a
+    // later Stop reporting the registry empty is the terminating signal.
+    #[test]
+    fn idle_prompt_keeps_waiting_for_reported_background_tasks() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        ingest(
+            &state,
+            hook(
+                "Stop",
+                json!({
+                    "background_tasks": [{
+                        "id": "task-1",
+                        "type": "local_shell",
+                        "status": "running"
+                    }]
+                }),
+            ),
+        );
+        let event = ingest(
+            &state,
+            hook(
+                "Notification.idle_prompt",
+                json!({ "hook_event_name": "Notification" }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.running");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+
+        ingest(&state, hook("Stop", json!({ "background_tasks": [] })));
+        let event = ingest(
+            &state,
+            hook(
+                "Notification.idle_prompt",
+                json!({ "hook_event_name": "Notification" }),
+            ),
+        );
+        assert_eq!(event.event_type, "agent.done");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
+    }
+
+    // A registry that retains finished entries must not pin the agent Running
+    // with nothing left to wait for.
+    #[test]
+    fn stop_ignores_background_tasks_that_already_finished() {
+        let state = test_state();
+        install_agent_pane(&state);
+
+        let event = ingest(
+            &state,
+            hook(
+                "Stop",
+                json!({
+                    "background_tasks": [
+                        { "id": "task-1", "status": "completed" },
+                        { "id": "task-2", "status": "failed" }
+                    ]
+                }),
+            ),
+        );
+
+        assert_eq!(event.event_type, "agent.done");
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
     }
 
     #[test]
