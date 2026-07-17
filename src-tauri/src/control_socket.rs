@@ -262,6 +262,7 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
                     args: launch.args,
                     shell_job_id: None,
                     supervisor_pid: None,
+                    prepared_agent_id: None,
                 },
             )?;
             let settings_path = prepared

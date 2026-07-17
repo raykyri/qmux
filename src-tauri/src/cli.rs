@@ -208,6 +208,7 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
             "args": args,
             "shellJobId": shell_job_id,
             "supervisorPid": supervisor_pid,
+            "preparedAgentId": env::var("QMUX_PREPARED_AGENT_ID").ok(),
         }),
     )?;
     let launch = serde_json::from_value::<PreparedAgentLaunch>(launch)

@@ -5,13 +5,18 @@ pub mod opencode;
 
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
-use crate::pty::InitialPaneSize;
+use crate::pty::{
+    InitialPaneSize, ensure_shell_agent_startup_supported, spawn_shell_agent_command_pane,
+};
 use crate::state::{AppState, PaneInfo};
 use crate::transcript::{Turn, TurnBlock};
 // The canonical JSON string-field extractor. Re-exported so the adapters can reach it
 // as `super::string_field` and share the one definition (see `transcript::string_field`).
 pub(crate) use crate::transcript::string_field;
-use crate::workspace::{AgentInfo, AgentStatus};
+use crate::workspace::{
+    AgentInfo, AgentStatus, PrepareAgentWorkspaceRequest, attach_agent_pane,
+    mark_agent_spawn_failed, prepare_agent_workspace,
+};
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
 use grok::GrokAdapter;
@@ -97,6 +102,58 @@ pub(crate) fn reusable_session_agent(
     }))
 }
 
+/// Resolves a qmux-reserved agent for an automatically started shell command.
+/// Ordinary commands typed by the user do not carry `prepared_agent_id` and keep
+/// the existing create/reuse behavior. A prepared id must describe an unbound
+/// agent for this adapter, pane group, and effective cwd so a forged environment
+/// value cannot claim another workspace's agent record.
+pub(crate) fn prepared_shell_agent(
+    state: &AppState,
+    adapter_id: &str,
+    prepared_agent_id: Option<&str>,
+    pane_id: &str,
+    pane_group_id: &str,
+    cwd: &str,
+) -> Result<Option<AgentInfo>, String> {
+    let Some(agent_id) = prepared_agent_id
+        .map(str::trim)
+        .filter(|agent_id| !agent_id.is_empty())
+    else {
+        return Ok(None);
+    };
+    let agent = state
+        .agent(agent_id)?
+        .ok_or_else(|| format!("prepared agent {agent_id} was not found"))?;
+    if agent.adapter != adapter_id {
+        return Err(format!(
+            "prepared agent {agent_id} uses adapter '{}', not '{adapter_id}'",
+            agent.adapter
+        ));
+    }
+    if agent.group_id != pane_group_id {
+        return Err(format!(
+            "prepared agent {agent_id} belongs to workspace {}, not {pane_group_id}",
+            agent.group_id
+        ));
+    }
+    if agent
+        .pane_id
+        .as_deref()
+        .is_some_and(|bound| bound != pane_id)
+    {
+        return Err(format!(
+            "prepared agent {agent_id} is already attached to a pane"
+        ));
+    }
+    if !same_dir(&agent.worktree_dir, cwd) {
+        return Err(format!(
+            "prepared agent {agent_id} expects working directory {}, not {cwd}",
+            agent.worktree_dir
+        ));
+    }
+    Ok(Some(agent))
+}
+
 /// Records native lineage on a fresh agent created by a shell-level fork command.
 /// The CLI resumes `fork_point` but creates a new native session, so the source qmux
 /// record must remain separate. Preserve qmux parent/root lineage when its source is
@@ -123,8 +180,12 @@ pub(crate) fn record_shell_fork_lineage(
             agent.root_session_id = source
                 .as_ref()
                 .and_then(|source| source.root_session_id.clone())
+                .or_else(|| agent.root_session_id.clone())
                 .or_else(|| Some(fork_point.to_string()));
-            agent.parent_id = source.as_ref().map(|source| source.id.clone());
+            agent.parent_id = source
+                .as_ref()
+                .map(|source| source.id.clone())
+                .or_else(|| agent.parent_id.clone());
         })?
         .ok_or_else(|| {
             format!(
@@ -318,6 +379,8 @@ pub struct PrepareShellAgentLaunchRequest {
     pub shell_job_id: Option<String>,
     #[serde(default)]
     pub supervisor_pid: Option<u32>,
+    #[serde(default)]
+    pub prepared_agent_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -577,7 +640,98 @@ pub fn agent_fork(
     let source = state
         .agent_by_pane(authed_pane)?
         .ok_or_else(|| "no agent is running in this pane to fork".to_string())?;
-    fork_agent_source(state, &source, use_worktree, nest, prompt.as_deref())
+    fork_agent_in_shell(state, &source, use_worktree, nest, prompt.as_deref())
+}
+
+/// Forks an ordinary terminal agent into a new persistent shell pane. The child
+/// agent/worktree is reserved up front, then the shell starts the adapter through
+/// the same `qmux agent-exec` path used when a user types the command manually.
+/// When the adapter exits, the supervisor detaches it and leaves the shell prompt.
+fn fork_agent_in_shell(
+    state: &AppState,
+    source: &AgentInfo,
+    use_worktree: bool,
+    nest: bool,
+    prompt: Option<&str>,
+) -> Result<PaneInfo, String> {
+    if !adapter_supports_fork(&source.adapter) {
+        return Err(FORK_UNSUPPORTED_ERROR.to_string());
+    }
+    ensure_shell_agent_startup_supported()?;
+    let session_id = source
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "this {} session isn't ready to fork yet (no session id); send a turn first",
+                source.adapter
+            )
+        })?
+        .to_string();
+    let mut agent = prepare_agent_workspace(
+        state,
+        PrepareAgentWorkspaceRequest {
+            group_id: Some(source.group_id.clone()),
+            base_repo: if use_worktree {
+                None
+            } else {
+                Some(source.worktree_dir.clone())
+            },
+            base_ref: Some("HEAD".to_string()),
+            adapter: source.adapter.clone(),
+            model: source.model.clone(),
+            use_worktree,
+        },
+    )?;
+    agent.parent_id = Some(source.id.clone());
+    agent.fork_point = Some(session_id.clone());
+    agent.root_session_id = source
+        .root_session_id
+        .clone()
+        .or_else(|| Some(session_id.clone()));
+    agent.status = AgentStatus::Idle;
+    state.update_agent(agent.clone())?;
+
+    let cwd = PathBuf::from(&agent.worktree_dir);
+    if !cwd.is_dir() {
+        return Err(format!(
+            "fork working directory {} does not exist",
+            cwd.display()
+        ));
+    }
+    let args = match source.adapter.as_str() {
+        "claude" => ClaudeAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
+        "codex" => CodexAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
+        "opencode" => OpencodeAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
+        "grok" => GrokAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
+        _ => return Err(FORK_UNSUPPORTED_ERROR.to_string()),
+    };
+    let pane_id = state.next_id("pane");
+    let agent = attach_agent_pane(state, &agent.id, pane_id.clone())?;
+    let pane = match spawn_shell_agent_command_pane(
+        state,
+        pane_id.clone(),
+        agent.group_id.clone(),
+        cwd,
+        &source.adapter,
+        &args,
+        &agent.id,
+    ) {
+        Ok(pane) => pane,
+        Err(err) => {
+            let failed = mark_agent_spawn_failed(state, &agent.id, &pane_id)?;
+            state.emit(QmuxEvent::new(
+                "agent.spawn_failed",
+                Some(pane_id),
+                Some(failed.id.clone()),
+                json!({ "agent": failed, "error": err.clone() }),
+            ));
+            return Err(err);
+        }
+    };
+    finish_fork_spawn(state, source, pane, agent, nest)
 }
 
 /// Adapters with a native fork command. Owns the fork-eligibility check (and its
@@ -604,11 +758,11 @@ pub fn default_fork_adapter(config: &QmuxConfig) -> Result<String, String> {
 
 pub const FORK_UNSUPPORTED_ERROR: &str = "Fork is not supported for this agent adapter";
 
-/// The agent-scoped core of [`agent_fork`], also used by the queue engine to
-/// dispatch fork-delivery turns (where there is no calling pane to authenticate —
-/// the source is the agent that owns the queue). Places the new pane relative to
-/// the source's current pane and emits `agent.forked` so the frontend picks up the
-/// new tab without stealing focus.
+/// Forks directly into a dedicated agent pane. Research runs use this path so
+/// their transient execution panes retain the existing lifecycle; the queue
+/// engine also uses it when dispatching fork-delivery turns without a calling
+/// pane to authenticate. Ordinary UI/control-socket forks go through
+/// [`fork_agent_in_shell`] instead.
 pub fn fork_agent_source(
     state: &AppState,
     source: &AgentInfo,
@@ -631,6 +785,16 @@ pub fn fork_agent_source(
         }
         _ => return Err(FORK_UNSUPPORTED_ERROR.to_string()),
     };
+    finish_fork_spawn(state, source, pane, agent, nest)
+}
+
+fn finish_fork_spawn(
+    state: &AppState,
+    source: &AgentInfo,
+    pane: PaneInfo,
+    agent: AgentInfo,
+    nest: bool,
+) -> Result<PaneInfo, String> {
     if let Some(source_pane) = source.pane_id.as_deref() {
         // Placement is cosmetic and the fork has already spawned. The source
         // pane can legitimately vanish between the fork and this point —
@@ -716,9 +880,25 @@ pub fn agent_prepare_shell_launch(
     let shell_job_id = request.shell_job_id.clone();
     let supervisor_pid = request.supervisor_pid;
     let pane_id = request.pane_id.clone();
-    let prepared = adapter_registry(state.config())
+    let prepared_agent_id = request.prepared_agent_id.clone();
+    let prepared = match adapter_registry(state.config())
         .get(&request.adapter_id)?
-        .prepare_shell_launch(state, request)?;
+        .prepare_shell_launch(state, request)
+    {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            if let Some(agent_id) = prepared_agent_id {
+                let failed = mark_agent_spawn_failed(state, &agent_id, &pane_id)?;
+                state.emit(QmuxEvent::new(
+                    "agent.spawn_failed",
+                    Some(pane_id),
+                    Some(failed.id.clone()),
+                    json!({ "agent": failed, "error": err.clone() }),
+                ));
+            }
+            return Err(err);
+        }
+    };
     if let (Some(job_id), Some(supervisor_pid)) = (shell_job_id, supervisor_pid) {
         let agent_id = prepared
             .envs
@@ -979,6 +1159,70 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn prepared_shell_agent_requires_matching_unbound_identity() {
+        let state = AppState::new(test_config());
+        state
+            .insert_agent(session_agent(
+                "prepared-agent",
+                None,
+                "/tmp/qmux-adapter-tests",
+                "placeholder",
+            ))
+            .unwrap();
+
+        let prepared = prepared_shell_agent(
+            &state,
+            "claude",
+            Some("prepared-agent"),
+            "pane-new",
+            "group-1",
+            "/tmp/qmux-adapter-tests",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(prepared.id, "prepared-agent");
+
+        let err = prepared_shell_agent(
+            &state,
+            "codex",
+            Some("prepared-agent"),
+            "pane-new",
+            "group-1",
+            "/tmp/qmux-adapter-tests",
+        )
+        .unwrap_err();
+        assert!(err.contains("uses adapter"));
+
+        state
+            .mutate_agent("prepared-agent", |agent| {
+                agent.pane_id = Some("pane-live".to_string());
+            })
+            .unwrap();
+        assert!(
+            prepared_shell_agent(
+                &state,
+                "claude",
+                Some("prepared-agent"),
+                "pane-live",
+                "group-1",
+                "/tmp/qmux-adapter-tests",
+            )
+            .unwrap()
+            .is_some()
+        );
+        let err = prepared_shell_agent(
+            &state,
+            "claude",
+            Some("prepared-agent"),
+            "pane-new",
+            "group-1",
+            "/tmp/qmux-adapter-tests",
+        )
+        .unwrap_err();
+        assert!(err.contains("already attached"));
     }
 
     #[test]

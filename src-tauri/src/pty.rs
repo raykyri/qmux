@@ -225,6 +225,69 @@ pub fn spawn_shell_pane(
     )
 }
 
+pub fn ensure_shell_agent_startup_supported() -> Result<(), String> {
+    let shell = pane_shell();
+    ensure_shell_agent_startup_supported_for(&shell)
+}
+
+fn ensure_shell_agent_startup_supported_for(shell: &str) -> Result<(), String> {
+    if matches!(shell_kind(&shell), ShellKind::Unsupported) {
+        return Err(format!(
+            "persistent-shell agent forks require zsh or bash; configured shell '{}' is unsupported",
+            shell
+        ));
+    }
+    Ok(())
+}
+
+/// Opens a regular shell pane and automatically launches an agent command after
+/// the user's shell configuration has loaded. The command deliberately does not
+/// `exec`: `qmux agent-exec` supervises the adapter and returns to the live shell
+/// prompt when the agent exits, matching an agent typed manually in a terminal.
+pub fn spawn_shell_agent_command_pane(
+    state: &AppState,
+    pane_id: String,
+    group_id: String,
+    cwd: PathBuf,
+    adapter_id: &str,
+    agent_args: &[String],
+    prepared_agent_id: &str,
+) -> Result<PaneInfo, String> {
+    let qmux_cli = env::current_exe()
+        .map_err(|err| format!("failed to resolve qmux executable for fork launch: {err}"))?;
+    let startup_command =
+        shell_agent_exec_command(&qmux_cli, adapter_id, agent_args, prepared_agent_id);
+    let spec = shell_spawn_spec(
+        state,
+        pane_id,
+        group_id,
+        cwd,
+        None,
+        false,
+        Some(startup_command),
+    )?;
+    spawn_pty(state, spec)
+}
+
+fn shell_agent_exec_command(
+    qmux_cli: &Path,
+    adapter_id: &str,
+    agent_args: &[String],
+    prepared_agent_id: &str,
+) -> String {
+    let mut command = vec![
+        format!(
+            "QMUX_PREPARED_AGENT_ID={}",
+            shell_quote_str(prepared_agent_id)
+        ),
+        shell_quote(&qmux_cli),
+        "agent-exec".to_string(),
+        shell_quote_str(adapter_id),
+    ];
+    command.extend(agent_args.iter().map(|arg| shell_quote_str(arg)));
+    command.join(" ")
+}
+
 /// Recreates a previously persisted shell pane: same pane id (so UI mappings and
 /// queues keep lining up), reopened in its last-known cwd when that still exists,
 /// at its persisted geometry. Marked recovered so the UI can label it.
@@ -351,7 +414,7 @@ fn shell_spawn_spec(
     cwd: PathBuf,
     initial_size: Option<InitialPaneSize>,
     recovered: bool,
-    resume_command: Option<String>,
+    startup_command: Option<String>,
 ) -> Result<PtySpawnSpec, String> {
     let shell = pane_shell();
     let mut envs = shell_pane_envs(state, &pane_id)?;
@@ -363,7 +426,7 @@ fn shell_spawn_spec(
         &shell,
         &pane_id,
         &shell_commands,
-        resume_command.as_deref(),
+        startup_command.as_deref(),
         login_shell,
     ) {
         Ok(Some(injection)) => {
@@ -510,7 +573,7 @@ fn agent_shell_function_injection(
     shell: &str,
     pane_id: &str,
     shell_commands: &[ShellCommandIntegration],
-    resume_command: Option<&str>,
+    startup_command: Option<&str>,
     login_shell: bool,
 ) -> Result<Option<ShellFunctionInjection>, String> {
     let shell_kind = shell_kind(shell);
@@ -534,7 +597,7 @@ fn agent_shell_function_injection(
             let rcfile = zdotdir.join(".zshrc");
             fs::write(
                 &rcfile,
-                zsh_init_script(&qmux_cli, shell_commands, resume_command, login_shell),
+                zsh_init_script(&qmux_cli, shell_commands, startup_command, login_shell),
             )
             .map_err(|err| {
                 format!(
@@ -555,7 +618,7 @@ fn agent_shell_function_injection(
             let rcfile = root.join("bashrc");
             fs::write(
                 &rcfile,
-                bash_init_script(&qmux_cli, shell_commands, resume_command, login_shell),
+                bash_init_script(&qmux_cli, shell_commands, startup_command, login_shell),
             )
             .map_err(|err| {
                 format!(
@@ -595,13 +658,13 @@ fn shell_kind(shell: &str) -> ShellKind {
 fn zsh_init_script(
     qmux_cli: &Path,
     shell_commands: &[ShellCommandIntegration],
-    resume_command: Option<&str>,
+    startup_command: Option<&str>,
     login_shell: bool,
 ) -> String {
     let cli = shell_quote(qmux_cli);
     let qmux_function = shell_qmux_function(&cli);
     let agent_functions = shell_agent_functions(&cli, shell_commands);
-    let resume = shell_resume_startup(resume_command);
+    let startup = zsh_startup_command(startup_command);
     // A login shell also sources the user's .zprofile (before .zshrc) and .zlogin
     // (after), matching zsh's login startup order. We source these ourselves rather
     // than passing `-l`: ZDOTDIR is redirected to the per-pane integration dir during
@@ -649,20 +712,20 @@ if [ -n "${{QMUX_PANE_ID:-}}" ]; then
   }}
   autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __qmux_report_cwd
 fi
-{resume}"#,
+{startup}"#,
     )
 }
 
 fn bash_init_script(
     qmux_cli: &Path,
     shell_commands: &[ShellCommandIntegration],
-    resume_command: Option<&str>,
+    startup_command: Option<&str>,
     login_shell: bool,
 ) -> String {
     let cli = shell_quote(qmux_cli);
     let qmux_function = shell_qmux_function(&cli);
     let agent_functions = shell_agent_functions(&cli, shell_commands);
-    let resume = shell_resume_startup(resume_command);
+    let startup = bash_startup_command(startup_command);
     // A login shell sources the first existing of the user's login profile files —
     // the same set, in the same order, a real `bash -l` consults — which by
     // convention pulls in ~/.bashrc itself. We can't pass `--login` because bash
@@ -700,19 +763,51 @@ if [ -n "${{QMUX_PANE_ID:-}}" ]; then
     *) PROMPT_COMMAND="__qmux_report_cwd${{PROMPT_COMMAND:+; $PROMPT_COMMAND}}" ;;
   esac
 fi
-{resume}"#,
+{startup}"#,
     )
 }
 
-/// A trailing line that re-runs an agent's resume command in a recovered shell. It
-/// goes through the injected `claude`/`codex` wrapper defined above, so the resumed
-/// session is tracked exactly like a fresh in-shell launch and the shell drops back to
-/// a normal prompt once it exits. Empty when there is nothing to resume.
-fn shell_resume_startup(resume_command: Option<&str>) -> String {
-    match resume_command {
-        Some(command) => format!("{command}\n"),
-        None => String::new(),
-    }
+/// Installs a one-shot zsh `precmd` hook after the user's configuration has
+/// registered its own hooks. Environment managers such as direnv/mise therefore
+/// finish preparing the first prompt before a recovered or forked agent starts.
+fn zsh_startup_command(startup_command: Option<&str>) -> String {
+    let Some(command) = startup_command else {
+        return String::new();
+    };
+    format!(
+        r#"__qmux_startup_command() {{
+  add-zsh-hook -d precmd __qmux_startup_command 2>/dev/null || true
+  unfunction __qmux_startup_command 2>/dev/null || true
+  {command}
+}}
+if autoload -Uz add-zsh-hook 2>/dev/null; then
+  add-zsh-hook precmd __qmux_startup_command || __qmux_startup_command
+else
+  __qmux_startup_command
+fi
+"#
+    )
+}
+
+/// Appends a one-shot function to Bash's `PROMPT_COMMAND`, after any user and
+/// qmux cwd-reporting hooks. The function removes itself before launching so the
+/// agent runs only for the first prompt and the surviving shell remains normal.
+fn bash_startup_command(startup_command: Option<&str>) -> String {
+    let Some(command) = startup_command else {
+        return String::new();
+    };
+    format!(
+        r#"__qmux_startup_command() {{
+  case "$PROMPT_COMMAND" in
+    "__qmux_startup_command") PROMPT_COMMAND="" ;;
+    *"; __qmux_startup_command") PROMPT_COMMAND="${{PROMPT_COMMAND%; __qmux_startup_command}}" ;;
+  esac
+  unset -f __qmux_startup_command
+  {command}
+}}
+PROMPT_COMMAND="${{PROMPT_COMMAND:+$PROMPT_COMMAND; }}__qmux_startup_command"
+"#
+    )
 }
 
 fn shell_agent_functions(cli: &str, shell_commands: &[ShellCommandIntegration]) -> String {
@@ -2234,6 +2329,12 @@ mod tests {
         assert_eq!(shell_kind("/bin/zsh"), ShellKind::Zsh);
         assert_eq!(shell_kind("/opt/homebrew/bin/bash"), ShellKind::Bash);
         assert_eq!(shell_kind("/opt/homebrew/bin/fish"), ShellKind::Unsupported);
+        assert!(ensure_shell_agent_startup_supported_for("/bin/zsh").is_ok());
+        assert!(
+            ensure_shell_agent_startup_supported_for("/opt/homebrew/bin/fish")
+                .unwrap_err()
+                .contains("unsupported")
+        );
     }
 
     #[test]
@@ -2296,7 +2397,26 @@ mod tests {
     }
 
     #[test]
-    fn init_scripts_append_resume_command_when_requested() {
+    fn shell_agent_exec_command_quotes_every_dynamic_argument() {
+        let command = shell_agent_exec_command(
+            Path::new("/Applications/qmux app/qmux"),
+            "codex",
+            &[
+                "fork".to_string(),
+                "sess'1".to_string(),
+                "line one\nline two".to_string(),
+            ],
+            "agent-42",
+        );
+
+        assert_eq!(
+            command,
+            "QMUX_PREPARED_AGENT_ID='agent-42' '/Applications/qmux app/qmux' agent-exec 'codex' 'fork' 'sess'\\''1' 'line one\nline two'"
+        );
+    }
+
+    #[test]
+    fn init_scripts_run_startup_command_from_one_shot_prompt_hooks() {
         let qmux_cli = PathBuf::from("/Applications/qmux app/qmux");
         let shell_commands = [ShellCommandIntegration {
             command_name: "claude",
@@ -2307,11 +2427,26 @@ mod tests {
         let zsh_script = zsh_init_script(&qmux_cli, &shell_commands, Some(resume), true);
         let bash_script = bash_init_script(&qmux_cli, &shell_commands, Some(resume), true);
 
+        assert!(zsh_script.contains("claude() {"));
+        assert!(zsh_script.contains("__qmux_startup_command() {"));
+        assert!(zsh_script.contains("add-zsh-hook precmd __qmux_startup_command"));
+        assert!(zsh_script.contains(resume));
+
+        assert!(bash_script.contains("claude() {"));
+        assert!(bash_script.contains("__qmux_startup_command() {"));
+        assert!(bash_script.contains(
+            r#"PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }__qmux_startup_command""#
+        ));
+        assert!(bash_script.contains(resume));
+
         for script in [zsh_script, bash_script] {
-            // The resume runs through the wrapper defined earlier in the script, and as
-            // the final line so the shell is fully initialized before the agent starts.
-            assert!(script.contains("claude() {"));
-            assert!(script.trim_end().ends_with(resume));
+            let user_rc = script.find("source \"$ZDOTDIR/.zshrc\"").or_else(|| {
+                script
+                    .find(". \"$__qmux_login_rc\"")
+                    .or_else(|| script.find(". \"$QMUX_ORIGINAL_BASHRC\""))
+            });
+            let startup_hook = script.find("__qmux_startup_command() {").unwrap();
+            assert!(user_rc.is_some_and(|user_rc| user_rc < startup_hook));
         }
     }
 

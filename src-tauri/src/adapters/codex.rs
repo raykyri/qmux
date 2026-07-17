@@ -2,7 +2,8 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
     SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
-    record_shell_fork_lineage, reusable_session_agent, shell_quote_arg, shell_quote_path,
+    prepared_shell_agent, record_shell_fork_lineage, reusable_session_agent, shell_quote_arg,
+    shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -183,6 +184,40 @@ impl AgentAdapter for CodexAdapter {
 }
 
 impl CodexAdapter {
+    pub fn shell_fork_args(
+        &self,
+        source: &AgentInfo,
+        _cwd: &Path,
+        prompt: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let session_id = source
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+            .ok_or_else(|| {
+                "this Codex session isn't ready to fork yet (no session id); send a turn first"
+                    .to_string()
+            })?;
+        let mut args = Vec::new();
+        if let Some(model) = source
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            args.push("--model".to_string());
+            args.push(model.to_string());
+        }
+        args.push("fork".to_string());
+        args.push(session_id.to_string());
+        if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+            args.push("--".to_string());
+            args.push(prompt.to_string());
+        }
+        Ok(args)
+    }
+
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
         let binary = self.ensure_binary()?;
         let options = CodexLaunchOptions::from_value(request.options)?;
@@ -474,25 +509,35 @@ impl CodexAdapter {
             .pane_group_id(&request.pane_id)?
             .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
         let fork_point = codex_fork_source_session_id(&request.args).map(str::to_string);
-        let agent = match reusable_session_agent(
+        let agent = match prepared_shell_agent(
             state,
             self.id(),
-            codex_resume_session_id(&request.args),
+            request.prepared_agent_id.as_deref(),
+            &request.pane_id,
+            &pane_group_id,
             &cwd_str,
         )? {
-            Some(existing) => existing,
-            None => prepare_agent_workspace(
+            Some(prepared) => prepared,
+            None => match reusable_session_agent(
                 state,
-                PrepareAgentWorkspaceRequest {
-                    group_id: Some(pane_group_id),
-                    base_repo: Some(cwd_str.clone()),
-                    base_ref: Some("HEAD".to_string()),
-                    adapter: self.id().to_string(),
-                    model: None,
-                    // Typing `codex` in a shell runs in the current directory; no worktree.
-                    use_worktree: false,
-                },
-            )?,
+                self.id(),
+                codex_resume_session_id(&request.args),
+                &cwd_str,
+            )? {
+                Some(existing) => existing,
+                None => prepare_agent_workspace(
+                    state,
+                    PrepareAgentWorkspaceRequest {
+                        group_id: Some(pane_group_id),
+                        base_repo: Some(cwd_str.clone()),
+                        base_ref: Some("HEAD".to_string()),
+                        adapter: self.id().to_string(),
+                        model: None,
+                        // Typing `codex` in a shell runs in the current directory; no worktree.
+                        use_worktree: false,
+                    },
+                )?,
+            },
         };
         let agent =
             record_shell_fork_lineage(state, agent, self.id(), fork_point.as_deref(), &cwd_str)?;
