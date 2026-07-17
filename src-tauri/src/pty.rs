@@ -434,13 +434,30 @@ fn shell_spawn_spec(
             envs.extend(injection.envs);
             envs.push(("QMUX_AGENT_FUNCTIONS".to_string(), "1".to_string()));
         }
+        // A plain shell degrades gracefully when integration can't be set up —
+        // the pane still works, only the wrapper functions are missing. A
+        // fresh fork launch cannot: its startup command lives in the rcfile,
+        // so spawning without it would open an ordinary shell while the
+        // reserved fork agent stays bound and Running forever (no agent-exec
+        // ever reaches the backend to settle it). Fail that spawn instead so
+        // the caller's spawn-failure settlement marks the agent and tells the
+        // user. Recovery respawns (`recovered`) keep degrading: losing a
+        // best-effort session resume is better than losing the pane.
         Ok(None) => {
+            if startup_command.is_some() && !recovered {
+                return Err(format!(
+                    "persistent-shell agent forks require zsh or bash; configured shell '{shell}' is unsupported"
+                ));
+            }
             envs.push((
                 "QMUX_AGENT_FUNCTIONS".to_string(),
                 "unsupported".to_string(),
             ));
         }
         Err(err) => {
+            if startup_command.is_some() && !recovered {
+                return Err(err);
+            }
             envs.push(("QMUX_AGENT_FUNCTIONS".to_string(), "failed".to_string()));
             envs.push(("QMUX_AGENT_FUNCTIONS_ERROR".to_string(), err));
         }
