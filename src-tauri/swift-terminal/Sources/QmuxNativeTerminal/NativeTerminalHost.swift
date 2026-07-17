@@ -187,7 +187,17 @@ final class NativeTerminalHost {
             desiredKeyboardOwnerPaneID = nil
         }
         if keyboardOwnerPane === pane {
+            // Schedules the deferred webview handoff; the removal below then
+            // strands the responder on the window, a state that handoff's
+            // guard accepts and routes to the webview one hop later.
             setKeyboardOwner(nil)
+        } else {
+            // A view can hold AppKit first responder without being the
+            // tracked owner (responder churn qmux never granted). Removing
+            // it while it holds the responder would strand the responder on
+            // the window with no handoff pending, dead-ending keys the DOM
+            // should receive.
+            releaseFirstResponderIfHeld(by: pane.view)
         }
         if pointerCapturePane === pane {
             pointerCapturePane = nil
@@ -221,6 +231,24 @@ final class NativeTerminalHost {
         }
         let visibilityChanged = pane.view.isHidden != !visible
         if visibilityChanged {
+            if !visible,
+               let window,
+               let responder = window.firstResponder as? NSView,
+               responder === pane.view || responder.isDescendant(of: pane.view)
+            {
+                // Hiding the view that holds first responder makes AppKit
+                // promote the next valid key view on its own — in a split
+                // that is the still-visible sibling surface, which then
+                // draws a focused cursor and receives keystrokes qmux never
+                // granted it. Promotion also skips the release handoff below:
+                // its guards would find the responder already moved. Park the
+                // responder on the window instead — deliberately not the
+                // webview, which would have WebKit re-emit focus on its
+                // remembered element (the churn the deferred release handoff
+                // exists to avoid). The ownership release or the next claim
+                // then routes it from the window.
+                window.makeFirstResponder(nil)
+            }
             pane.view.isHidden = !visible
             pane.view.setSurfaceVisible(visible)
         }
@@ -289,6 +317,24 @@ final class NativeTerminalHost {
             return setKeyboardOwner(nil)
         }
         return setKeyboardOwner(pane)
+    }
+
+    /// Hands first responder to the webview when `view` (or a descendant)
+    /// currently holds it despite not going through an ownership release —
+    /// pathological responder state ahead of removing the view, where AppKit
+    /// would otherwise strand the responder on the window with no release
+    /// handoff pending. Ordinary ownership changes route the responder via
+    /// setKeyboardOwner and its deferred webview handoff instead.
+    private func releaseFirstResponderIfHeld(by view: NSView) {
+        guard let window,
+              let responder = window.firstResponder as? NSView,
+              responder === view || responder.isDescendant(of: view)
+        else { return }
+        if let webView = window.contentView.flatMap({ findWebView(in: $0) }) {
+            window.makeFirstResponder(webView)
+        } else {
+            window.makeFirstResponder(nil)
+        }
     }
 
     private func setWindowLiveResizeActive(_ active: Bool) {
@@ -499,7 +545,11 @@ final class NativeTerminalHost {
         webViewHandoffGeneration &+= 1
 
         guard let pane else {
-            if let previous, let window, window.firstResponder === previous.view {
+            let previousView = previous?.view
+            if let window,
+               let responder = window.firstResponder,
+               responder === previousView || responder === window
+            {
                 // Hand the responder to the webview rather than the bare
                 // window: ownership is released exactly when web UI (dialogs,
                 // editables, Escape handlers) needs the keyboard, and a
@@ -515,6 +565,16 @@ final class NativeTerminalHost {
                 // Defer one main-queue hop so an immediately following claim
                 // cancels the handoff; a genuine release still reaches the
                 // webview within the same event-loop turn.
+                //
+                // The guard accepts a responder already parked on the window
+                // as well as one still on the released view: hiding an owning
+                // surface parks the responder on the window (see setLayout)
+                // rather than let AppKit promote a sibling, and a repeated
+                // release — layout releases the owner, then the owner update
+                // releases again with no previous pane — cancelled the
+                // earlier pending handoff via the generation bump above, so
+                // it must schedule its own or the responder dead-ends on the
+                // window and the DOM never gets the keyboard back.
                 let generation = webViewHandoffGeneration
                 DispatchQueue.main.async { [weak self] in
                     guard let self,
@@ -526,7 +586,7 @@ final class NativeTerminalHost {
                     // The released view may since have left the hierarchy
                     // (pane close), which strands the responder on the window
                     // itself — exactly the dead-end this handoff exists to fix.
-                    guard responder === previous.view || responder === window else {
+                    guard responder === previousView || responder === window else {
                         return
                     }
                     if let webView = window.contentView.flatMap({ self.findWebView(in: $0) }) {
@@ -986,6 +1046,16 @@ final class NativeTerminalHost {
                 pane.reportActivation()
                 return nil
             }
+            // The returned press also reaches the webview below, where React
+            // activates the pane under the *DOM* rect at dispatch time. Mid
+            // right-pane transition — or while live-resize defers geometry —
+            // the DOM has already re-laid out while the surfaces on screen
+            // (and this hit-test) still show the old frames, so the two can
+            // disagree. Report the native routing decision too: it reflects
+            // the pixels the user actually clicked, and arriving through the
+            // event bridge it lands after the DOM's optimistic activation
+            // and corrects it whenever they differ.
+            pane.reportActivation()
             DispatchQueue.main.async { [weak self, weak pane] in
                 guard let self, let pane,
                       self.keyboardOwnerPane === pane,
