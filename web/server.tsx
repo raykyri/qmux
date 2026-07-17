@@ -73,6 +73,14 @@ const MAX_CONCURRENT_PUBLICATION_LOADS = 8;
 const MAX_COMMENT_BODY_CHARACTERS = 60_000;
 const MAX_COMMENT_FORM_BYTES = 128_000;
 const MAX_GIST_COMMENTS = 300;
+const SITE_FONT_FILES = new Set([
+  "ValleySans-Variable.woff2",
+  "ValleySans-VariableItalic.woff2",
+  "JetBrainsMono-Regular.woff2",
+  "JetBrainsMono-Italic.woff2",
+  "JetBrainsMono-Bold.woff2",
+  "JetBrainsMono-BoldItalic.woff2",
+]);
 const GIST_ID_PATTERN = /^[A-Za-z0-9]{5,128}$/;
 const REVISION_PATTERN = /^[a-f0-9]{40}$/;
 const GITHUB_RAW_HOSTS = new Set(["gist.githubusercontent.com", "raw.githubusercontent.com"]);
@@ -322,19 +330,18 @@ async function routeRequest(
     await serveStaticFile(response, join(context.siteDir, name), "image/png", request.method);
     return;
   }
-  if (
-    url.pathname === "/fonts/ValleySans-Variable.woff2" ||
-    url.pathname === "/fonts/ValleySans-VariableItalic.woff2"
-  ) {
-    const name = normalize(url.pathname.slice(1));
-    await serveStaticFile(
-      response,
-      join(context.siteDir, name),
-      "font/woff2",
-      request.method,
-      "public, max-age=31536000, immutable",
-    );
-    return;
+  if (url.pathname.startsWith("/fonts/")) {
+    const name = url.pathname.slice("/fonts/".length);
+    if (SITE_FONT_FILES.has(name)) {
+      await serveStaticFile(
+        response,
+        join(context.siteDir, "fonts", name),
+        "font/woff2",
+        request.method,
+        "public, max-age=31536000, immutable",
+      );
+      return;
+    }
   }
 
   const route = publicationRoute(url.pathname);
@@ -1922,10 +1929,14 @@ function formatDate(value: string) {
 }
 
 const PAGE_CSS = `
-/* Valley Sans 100-900 variable webfonts, bundled under the SIL OFL 1.1 (site/fonts/ValleySans-OFL.txt).
-   Source: HelsinkiTypeStudio/valley-sans, same files the desktop app bundles. */
+/* Valley Sans (100-900 variable) and JetBrains Mono webfonts, bundled under the
+   SIL OFL 1.1 (licenses in site/fonts/), same files the desktop app bundles. */
 @font-face { font-family:"Valley Sans"; src:url("/fonts/ValleySans-Variable.woff2") format("woff2"); font-style:normal; font-weight:100 900; font-display:swap; }
 @font-face { font-family:"Valley Sans"; src:url("/fonts/ValleySans-VariableItalic.woff2") format("woff2"); font-style:italic; font-weight:100 900; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-Regular.woff2") format("woff2"); font-style:normal; font-weight:400; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-Italic.woff2") format("woff2"); font-style:italic; font-weight:400; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-Bold.woff2") format("woff2"); font-style:normal; font-weight:700; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-BoldItalic.woff2") format("woff2"); font-style:italic; font-weight:700; font-display:swap; }
 :root { color-scheme:light dark; --background:#ffffff; --foreground:#0a0a0a; --muted:#f5f5f5; --muted-foreground:#737373; --border:#e5e5e5; --input:#e5e5e5; --primary:#171717; --primary-foreground:#fafafa; --destructive:#dc2626; --ring:#a3a3a3; }
 @media (prefers-color-scheme: dark) { :root { --background:#0a0a0a; --foreground:#fafafa; --muted:#262626; --muted-foreground:#a3a3a3; --border:#262626; --input:#343434; --primary:#fafafa; --primary-foreground:#171717; --destructive:#f87171; --ring:#525252; } }
 * { box-sizing:border-box; }
@@ -1962,7 +1973,7 @@ a { color:inherit; text-decoration:none; }
 .prose h2 { margin:26px 0 10px; font-size:18px; line-height:1.3; font-weight:600; letter-spacing:-0.01em; }
 .prose h3 { margin:20px 0 8px; font-size:15px; font-weight:600; }
 .prose pre { overflow:auto; padding:12px 14px; border:1px solid var(--border); border-radius:8px; background:var(--muted); font-size:13px; line-height:1.6; }
-.prose code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:0.9em; }
+.prose code { font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-size:0.9em; font-variant-ligatures:none; }
 .prose pre code { font-size:inherit; }
 .prose :not(pre) > code { padding:2px 5px; border-radius:4px; background:var(--muted); }
 .prose table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
