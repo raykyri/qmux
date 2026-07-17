@@ -211,6 +211,15 @@ hosted view can show proposal status without a separate collaboration database.
 - `Ctrl-W`: close the active pane unless focus is in a terminal or text field.
 - `Cmd-K`: open the command palette (tab navigation, pane actions, saved
   prompts) when focus is outside a terminal.
+- Double-tap `Option` (default): open Quick Launch, a standalone
+  Spotlight-style popup that dispatches a task to any tab with an agent —
+  shell or agent tabs — with the same actions as the right-pane composer:
+  Send, Send Now, and Queue with its queue-options dropdown (fork,
+  fork-in-worktree, new-session, and queue-after-session targets). The popup
+  works from any app, without raising the qmux window. Change the hotkey in
+  Settings between double-tap Control/Option/Command and
+  Control/Option/Command-Space (options used by the show/hide shortcut are
+  disabled); it is also available from the `Cmd-K` palette.
 - `Cmd-,` / `Ctrl-,`: open settings.
 - In the launcher, enter a prompt, and press `Cmd-Enter` to launch by default
   (`Enter` launches when "Require Cmd-Enter to send" is off).

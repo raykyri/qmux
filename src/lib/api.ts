@@ -242,6 +242,11 @@ export function setGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey) {
   return invoke<GlobalTaskLauncherSetting>("global_task_launcher_hotkey_set", { hotkey });
 }
 
+/** Opens the standalone quick-launch window (the ⌘K palette's path to it). */
+export function openGlobalTaskLauncher() {
+  return invoke<void>("global_task_launcher_open");
+}
+
 export function updateMenuBar(snapshot: MenuBarSnapshot) {
   return invoke<void>("menu_bar_update", { snapshot });
 }

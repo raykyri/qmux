@@ -17,9 +17,18 @@ import {
   unpauseAgent,
 } from "../lib/api";
 import { agentCanFork, agentStatusLabel } from "../lib/appHelpers";
-import { FORK_REQUIREMENT_TITLE, QUEUE_DELIVERY_OPTIONS } from "../lib/composerActions";
+import {
+  FORK_REQUIREMENT_TITLE,
+  QUEUE_DELIVERY_OPTIONS,
+  waitTargetStatusDotClass,
+  waitTargetStatusLabel,
+} from "../lib/composerActions";
 import { parseComposerSlashCommand } from "../lib/composerSlashCommands";
 import { bodyFontStackFor, loadSettings } from "../lib/settings";
+import {
+  ComposerSubmitShortcutGlyph,
+  isComposerSubmitShortcut,
+} from "./ComposerSubmitShortcut";
 import type {
   AgentInfo,
   GroupInfo,
@@ -62,6 +71,12 @@ export default function GlobalTaskLauncher() {
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Mirror the composer's submit shortcut ("Require ⌘↵ to send"). Settings live
+  // in localStorage, which this window shares with the main one; re-read on
+  // each focus so a change made in Settings applies to the next launch.
+  const [requireCmdEnterToSend, setRequireCmdEnterToSend] = useState(
+    () => loadSettings().requireCmdEnterToSend,
+  );
 
   useLayoutEffect(() => {
     const settings = loadSettings();
@@ -132,6 +147,7 @@ export default function GlobalTaskLauncher() {
     void launcherWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
         setLoading(true);
+        setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
         void refresh().then(() => requestAnimationFrame(() => textareaRef.current?.focus()));
       } else {
         setQueueMenuOpen(false);
@@ -173,6 +189,11 @@ export default function GlobalTaskLauncher() {
   const parsedSlashCommand = useMemo(() => parseComposerSlashCommand(value), [value]);
   const permissionActions =
     selected?.agent.status === "awaitingPermission" ? (policy?.permissionActions ?? []) : [];
+  // Which button the submit shortcut lands on, mirroring the composer: send to
+  // a ready agent with an empty queue, queue behind everything else.
+  const submitShortcutWouldTargetSend = !submitting && canSend && !hasQueue;
+  const submitShortcutWouldTargetQueue =
+    !submitShortcutWouldTargetSend && !submitting && canAppendQueue;
 
   const waitTargets = useMemo<WaitTarget[]>(
     () =>
@@ -284,7 +305,7 @@ export default function GlobalTaskLauncher() {
           rows={5}
           onChange={(event) => setValue(event.currentTarget.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
               event.preventDefault();
               submitDefault();
             }
@@ -319,9 +340,15 @@ export default function GlobalTaskLauncher() {
               title={!canFork ? FORK_REQUIREMENT_TITLE : undefined}
               onClick={() => submit("send")}
             >
-              {parsedSlashCommand.command.useWorktree
-                ? "Fork in worktree & send"
-                : "Fork & send"}
+              <span>
+                {parsedSlashCommand.command.useWorktree
+                  ? "Fork in worktree & send"
+                  : "Fork & send"}
+              </span>
+              <ComposerSubmitShortcutGlyph
+                requireCmdEnter={requireCmdEnterToSend}
+                className="shortcut-hint"
+              />
             </button>
           ) : (
             <>
@@ -332,7 +359,13 @@ export default function GlobalTaskLauncher() {
                   disabled={submitting}
                   onClick={() => submit("send")}
                 >
-                  Send
+                  <span>Send</span>
+                  {submitShortcutWouldTargetSend ? (
+                    <ComposerSubmitShortcutGlyph
+                      requireCmdEnter={requireCmdEnterToSend}
+                      className="shortcut-hint"
+                    />
+                  ) : null}
                 </button>
               ) : null}
               {canSteer ? (
@@ -341,6 +374,7 @@ export default function GlobalTaskLauncher() {
                   className="control-button"
                   disabled={submitting || !hasValue}
                   onClick={() => submit("steer")}
+                  title="Send now, interrupting the agent's current work"
                 >
                   Send Now
                 </button>
@@ -370,7 +404,13 @@ export default function GlobalTaskLauncher() {
                     disabled={submitting || !canAppendQueue || !hasValue}
                     onClick={() => submit("queue")}
                   >
-                    Queue
+                    <span>Queue</span>
+                    {submitShortcutWouldTargetQueue ? (
+                      <ComposerSubmitShortcutGlyph
+                        requireCmdEnter={requireCmdEnterToSend}
+                        className="shortcut-hint"
+                      />
+                    ) : null}
                   </button>
                   <button
                     type="button"
@@ -378,6 +418,7 @@ export default function GlobalTaskLauncher() {
                     aria-label="Queue options"
                     aria-haspopup="menu"
                     aria-expanded={queueMenuOpen}
+                    title="Queue this turn to a fork, a new session, or after another terminal"
                     disabled={submitting || !selected || !hasValue}
                     onClick={() => setQueueMenuOpen((open) => !open)}
                   >
@@ -413,14 +454,20 @@ export default function GlobalTaskLauncher() {
                         </button>
                       ))}
                       {waitTargets.length > 0 ? (
-                        <div className="composer-menu-label">Queue after existing session…</div>
+                        <>
+                          <div className="composer-menu-divider" role="separator" />
+                          <div className="composer-menu-label wait-target-placeholder">
+                            Queue after existing session…
+                          </div>
+                        </>
                       ) : null}
                       {waitTargets.map((target) => (
                         <button
                           key={target.agentId}
                           type="button"
                           role="menuitem"
-                          className="menu-item composer-menu-item"
+                          className="menu-item wait-target-item"
+                          title={target.label}
                           onClick={() => {
                             if (!selected) return;
                             const text = value.trim();
@@ -435,7 +482,14 @@ export default function GlobalTaskLauncher() {
                             );
                           }}
                         >
-                          {target.label}
+                          <span
+                            className={waitTargetStatusDotClass(target)}
+                            aria-hidden="true"
+                          />
+                          <span className="wait-target-title">{target.label}</span>
+                          <span className="wait-target-status">
+                            {waitTargetStatusLabel(target)}
+                          </span>
                         </button>
                       ))}
                     </div>

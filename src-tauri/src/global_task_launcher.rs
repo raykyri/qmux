@@ -202,6 +202,13 @@ pub fn global_task_launcher_hotkey_get(
     state.status()
 }
 
+/// Opens the launcher window on demand — the ⌘K palette's path to it, so the
+/// launcher stays reachable without the global hotkey.
+#[tauri::command]
+pub fn global_task_launcher_open<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    show_window(&app).map_err(|error| error.to_string())
+}
+
 #[tauri::command(async)]
 pub fn global_task_launcher_hotkey_set<R: Runtime>(
     app: AppHandle<R>,
