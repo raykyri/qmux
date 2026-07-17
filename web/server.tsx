@@ -73,6 +73,14 @@ const MAX_CONCURRENT_PUBLICATION_LOADS = 8;
 const MAX_COMMENT_BODY_CHARACTERS = 60_000;
 const MAX_COMMENT_FORM_BYTES = 128_000;
 const MAX_GIST_COMMENTS = 300;
+const SITE_FONT_FILES = new Set([
+  "ValleySans-Variable.woff2",
+  "ValleySans-VariableItalic.woff2",
+  "JetBrainsMono-Regular.woff2",
+  "JetBrainsMono-Italic.woff2",
+  "JetBrainsMono-Bold.woff2",
+  "JetBrainsMono-BoldItalic.woff2",
+]);
 const GIST_ID_PATTERN = /^[A-Za-z0-9]{5,128}$/;
 const REVISION_PATTERN = /^[a-f0-9]{40}$/;
 const GITHUB_RAW_HOSTS = new Set(["gist.githubusercontent.com", "raw.githubusercontent.com"]);
@@ -321,6 +329,19 @@ async function routeRequest(
     const name = normalize(url.pathname.slice(1));
     await serveStaticFile(response, join(context.siteDir, name), "image/png", request.method);
     return;
+  }
+  if (url.pathname.startsWith("/fonts/")) {
+    const name = url.pathname.slice("/fonts/".length);
+    if (SITE_FONT_FILES.has(name)) {
+      await serveStaticFile(
+        response,
+        join(context.siteDir, "fonts", name),
+        "font/woff2",
+        request.method,
+        "public, max-age=31536000, immutable",
+      );
+      return;
+    }
   }
 
   const route = publicationRoute(url.pathname);
@@ -1307,47 +1328,51 @@ function transcriptPage(
     description,
     body: (
       <>
-        <header className="publication-header">
-          <a className="brand" href="/" aria-label="qmux home">
-            qmux
-          </a>
-          <div className="publication-heading">
-            <p className="publication-kind">Published transcript</p>
+        <header className="site-header">
+          <div className="container site-header-inner">
+            <a className="brand" href="/" aria-label="qmux home">
+              qmux
+            </a>
+            <a className="site-header-link" href={gist.html_url}>
+              View Gist
+            </a>
+          </div>
+        </header>
+        <div className="container">
+          <header className="page-header">
+            <span className="badge">Published transcript</span>
             <h1>{publication.title}</h1>
-            <p className="publication-meta">
+            <p className="page-meta">
               <a href={gist.owner?.html_url ?? gist.html_url}>{author}</a>
               <span>{formatDate(publication.updatedAt)}</span>
               {revision ? <span>Revision {revision.slice(0, 8)}</span> : null}
             </p>
-          </div>
-          <a className="github-link" href={gist.html_url}>
-            View Gist
-          </a>
-        </header>
-        <main className="transcript">
-          {publication.transcript.messages.map((message) => (
-            <article className={`message message-${message.role}`} key={message.id}>
-              <div className="message-label">{message.label}</div>
-              <div className="message-body">
-                <SafeMarkdown>{message.text}</SafeMarkdown>
-              </div>
-            </article>
-          ))}
-        </main>
-        {!revision ? (
-          <PublicationComments
-            gist={gist}
-            publication={publication}
-            nodeId={null}
-            comments={comments}
-            error={commentsError}
-            viewer={viewer}
-            webAuth={webAuth}
-          />
-        ) : null}
-        <footer className="publication-footer">
-          Published with <a href="/">qmux</a>
-        </footer>
+          </header>
+          <main className="transcript">
+            {publication.transcript.messages.map((message) => (
+              <article className={`message message-${message.role}`} key={message.id}>
+                <div className="message-label">{message.label}</div>
+                <div className="message-body prose">
+                  <SafeMarkdown>{message.text}</SafeMarkdown>
+                </div>
+              </article>
+            ))}
+          </main>
+          {!revision ? (
+            <PublicationComments
+              gist={gist}
+              publication={publication}
+              nodeId={null}
+              comments={comments}
+              error={commentsError}
+              viewer={viewer}
+              webAuth={webAuth}
+            />
+          ) : null}
+          <footer className="page-footer">
+            Published with <a href="/">qmux</a>
+          </footer>
+        </div>
       </>
     ),
   });
@@ -1388,18 +1413,25 @@ function researchPage(
     description,
     body: (
       <>
-        <header className="publication-header research-publication-header">
-          <a className="brand" href="/" aria-label="qmux home">
-            qmux
-          </a>
-          <div className="publication-heading">
-            <p className="publication-kind">
+        <header className="site-header">
+          <div className="container-wide site-header-inner">
+            <a className="brand" href="/" aria-label="qmux home">
+              qmux
+            </a>
+            <a className="site-header-link" href={gist.html_url}>
+              View Gist
+            </a>
+          </div>
+        </header>
+        <div className="container-wide">
+          <header className="page-header">
+            <span className="badge">
               {publication.kind === "research-answer"
                 ? "Published research answer"
                 : "Published research"}
-            </p>
+            </span>
             <h1>{publication.title}</h1>
-            <p className="publication-meta">
+            <p className="page-meta">
               <a href={gist.owner?.html_url ?? gist.html_url}>{author}</a>
               <span>{formatDate(publication.updatedAt)}</span>
               <span>
@@ -1408,82 +1440,81 @@ function researchPage(
               </span>
               {revision ? <span>Revision {revision.slice(0, 8)}</span> : null}
             </p>
+          </header>
+          <div className="research-layout">
+            <aside className="research-index" aria-label="Research results">
+              <ResearchTreeNav
+                gistId={gist.id}
+                publication={publication}
+                revision={revision}
+                selectedNodeId={selected.id}
+              />
+            </aside>
+            <main className="research-result">
+              <nav className="research-result-nav" aria-label="Research result navigation">
+                {parent ? (
+                  <a href={publicationNodePath(gist.id, revision, parent.id)}>← Parent</a>
+                ) : (
+                  <span />
+                )}
+                <span className={`badge research-status is-${selected.status}`}>
+                  {selected.status}
+                </span>
+              </nav>
+              {selected.contribution ? (
+                <p className="research-contribution">
+                  Proposed by{" "}
+                  <a href={`https://github.com/${encodeURIComponent(selected.contribution.githubLogin)}`}>
+                    @{selected.contribution.githubLogin}
+                  </a>
+                </p>
+              ) : null}
+              <article className="research-answer prose">
+                <SafeMarkdown>{file.content ?? ""}</SafeMarkdown>
+              </article>
+              {children.length > 0 ? (
+                <section className="research-children">
+                  <h2>Follow-ups</h2>
+                  <div>
+                    {children.map((child) => (
+                      <a
+                        key={child.id}
+                        href={publicationNodePath(gist.id, revision, child.id)}
+                      >
+                        <span>{child.title}</span>
+                        <small>{child.status}</small>
+                      </a>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+              {!revision && publication.kind === "research-tree" ? (
+                <PublicationProposals
+                  gist={gist}
+                  publication={publication}
+                  nodeId={selected.id}
+                  comments={comments}
+                  viewer={viewer}
+                  webAuth={webAuth}
+                />
+              ) : null}
+              {!revision ? (
+                <PublicationComments
+                  gist={gist}
+                  publication={publication}
+                  nodeId={selected.id}
+                  comments={comments}
+                  error={commentsError}
+                  viewer={viewer}
+                  webAuth={webAuth}
+                />
+              ) : null}
+            </main>
           </div>
-          <a className="github-link" href={gist.html_url}>
-            View Gist
-          </a>
-        </header>
-        <div className="research-layout">
-          <aside className="research-index" aria-label="Research results">
-            <ResearchTreeNav
-              gistId={gist.id}
-              publication={publication}
-              revision={revision}
-              selectedNodeId={selected.id}
-            />
-          </aside>
-          <main className="research-result">
-            <nav className="research-result-nav" aria-label="Research result navigation">
-              {parent ? (
-                <a href={publicationNodePath(gist.id, revision, parent.id)}>← Parent</a>
-              ) : (
-                <span />
-              )}
-              <span className={`research-status is-${selected.status}`}>{selected.status}</span>
-            </nav>
-            {selected.contribution ? (
-              <p className="research-contribution">
-                Proposed by{" "}
-                <a href={`https://github.com/${encodeURIComponent(selected.contribution.githubLogin)}`}>
-                  @{selected.contribution.githubLogin}
-                </a>
-              </p>
-            ) : null}
-            <article className="research-answer">
-              <SafeMarkdown>{file.content ?? ""}</SafeMarkdown>
-            </article>
-            {children.length > 0 ? (
-              <section className="research-children">
-                <h2>Follow-ups</h2>
-                <div>
-                  {children.map((child) => (
-                    <a
-                      key={child.id}
-                      href={publicationNodePath(gist.id, revision, child.id)}
-                    >
-                      <span>{child.title}</span>
-                      <small>{child.status}</small>
-                    </a>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-            {!revision && publication.kind === "research-tree" ? (
-              <PublicationProposals
-                gist={gist}
-                publication={publication}
-                nodeId={selected.id}
-                comments={comments}
-                viewer={viewer}
-                webAuth={webAuth}
-              />
-            ) : null}
-            {!revision ? (
-              <PublicationComments
-                gist={gist}
-                publication={publication}
-                nodeId={selected.id}
-                comments={comments}
-                error={commentsError}
-                viewer={viewer}
-                webAuth={webAuth}
-              />
-            ) : null}
-          </main>
+          <footer className="page-footer">
+            Published with <a href="/">qmux</a>
+          </footer>
         </div>
-        <footer className="publication-footer">
-          Published with <a href="/">qmux</a>
-        </footer>
       </>
     ),
   });
@@ -1534,11 +1565,8 @@ function PublicationProposals({
       id="proposals"
       aria-labelledby="proposals-title"
     >
-      <div className="comments-heading">
-        <div>
-          <p className="comments-kicker">Contributions</p>
-          <h2 id="proposals-title">Proposed follow-ups</h2>
-        </div>
+      <div className="section-heading">
+        <h2 id="proposals-title">Proposed follow-ups</h2>
       </div>
       {proposals.length > 0 ? (
         <div className="proposal-list">
@@ -1550,17 +1578,17 @@ function PublicationProposals({
                 <header>
                   <a href={comment.user.htmlUrl}>@{comment.user.login}</a>
                   <time dateTime={comment.createdAt}>{formatDate(comment.createdAt)}</time>
-                  <span className={`proposal-status is-${resolution?.status ?? "pending"}`}>
+                  <span className={`badge proposal-status is-${resolution?.status ?? "pending"}`}>
                     {resolution?.status ?? "pending"}
                   </span>
                 </header>
-                <div className="proposal-question">
+                <div className="proposal-question prose">
                   <SafeMarkdown>{proposal.prompt}</SafeMarkdown>
                 </div>
                 {proposal.answerMarkdown ? (
                   <details>
                     <summary>Proposed answer</summary>
-                    <div className="comment-body">
+                    <div className="comment-body prose">
                       <SafeMarkdown>{proposal.answerMarkdown}</SafeMarkdown>
                     </div>
                   </details>
@@ -1589,6 +1617,7 @@ function PublicationProposals({
           <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
           <label htmlFor="proposal-prompt">Propose a follow-up as @{viewer.login}</label>
           <textarea
+            className="textarea"
             id="proposal-prompt"
             name="prompt"
             required
@@ -1597,16 +1626,19 @@ function PublicationProposals({
           />
           <label htmlFor="proposal-answer">Proposed answer (optional)</label>
           <textarea
+            className="textarea"
             id="proposal-answer"
             name="answerMarkdown"
             maxLength={MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS}
             rows={4}
           />
-          <button type="submit">Submit proposal</button>
+          <button className="btn btn-primary" type="submit">
+            Submit proposal
+          </button>
         </form>
       ) : webAuth ? (
         <a
-          className="github-sign-in"
+          className="btn btn-outline github-sign-in"
           href={`/auth/github?returnTo=${encodeURIComponent(`${returnTo}#proposals`)}`}
         >
           Sign in with GitHub to propose a follow-up
@@ -1649,14 +1681,13 @@ function PublicationComments({
   const commentAction = `${returnTo}/comments`;
   return (
     <section className="publication-comments" id="comments" aria-labelledby="comments-title">
-      <div className="comments-heading">
-        <div>
-          <p className="comments-kicker">Discussion</p>
-          <h2 id="comments-title">
-            {visibleComments.length} {visibleComments.length === 1 ? "comment" : "comments"}
-          </h2>
-        </div>
-        <a href={`${gist.html_url}#comments`}>View on GitHub</a>
+      <div className="section-heading">
+        <h2 id="comments-title">
+          {visibleComments.length} {visibleComments.length === 1 ? "comment" : "comments"}
+        </h2>
+        <a className="section-heading-link" href={`${gist.html_url}#comments`}>
+          View on GitHub
+        </a>
       </div>
       {error ? (
         <p className="comments-error" role="status">
@@ -1669,10 +1700,12 @@ function PublicationComments({
             <article className="publication-comment" key={comment.id}>
               <header>
                 <a href={comment.user.htmlUrl}>@{comment.user.login}</a>
-                {comment.authorAssociation === "OWNER" ? <span>Author</span> : null}
+                {comment.authorAssociation === "OWNER" ? (
+                  <span className="badge">Author</span>
+                ) : null}
                 <time dateTime={comment.createdAt}>{formatDate(comment.createdAt)}</time>
               </header>
-              <div className="comment-body">
+              <div className="comment-body prose">
                 <SafeMarkdown>{comment.body}</SafeMarkdown>
               </div>
             </article>
@@ -1687,24 +1720,29 @@ function PublicationComments({
             <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
             <label htmlFor="comment-body">Comment as @{viewer.login}</label>
             <textarea
+              className="textarea"
               id="comment-body"
               name="body"
               required
               maxLength={MAX_COMMENT_BODY_CHARACTERS}
               rows={5}
             />
-            <button type="submit">Post comment</button>
+            <button className="btn btn-primary" type="submit">
+              Post comment
+            </button>
           </form>
           <form className="sign-out-form" method="post" action="/auth/logout">
             <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
             <input type="hidden" name="returnTo" value={`${returnTo}#comments`} />
             <span>Signed in as @{viewer.login}</span>
-            <button type="submit">Sign out</button>
+            <button className="btn-link" type="submit">
+              Sign out
+            </button>
           </form>
         </div>
       ) : webAuth ? (
         <a
-          className="github-sign-in"
+          className="btn btn-outline github-sign-in"
           href={`/auth/github?returnTo=${encodeURIComponent(`${returnTo}#comments`)}`}
         >
           Sign in with GitHub to comment
@@ -1843,13 +1881,16 @@ async function serveStaticFile(
   path: string,
   contentType: string,
   method: string | undefined,
+  cacheControl?: string,
 ) {
   try {
     const body = await readFile(path);
     response.writeHead(200, {
       "Content-Type": contentType,
       "Content-Length": body.byteLength,
-      "Cache-Control": contentType.startsWith("image/") ? "public, max-age=86400" : "public, max-age=300",
+      "Cache-Control":
+        cacheControl ??
+        (contentType.startsWith("image/") ? "public, max-age=86400" : "public, max-age=300"),
       "X-Content-Type-Options": "nosniff",
     });
     response.end(method === "HEAD" ? undefined : body);
@@ -1871,7 +1912,7 @@ function sendHtml(
     "Content-Length": Buffer.byteLength(body),
     "Cache-Control": cacheControl,
     "Content-Security-Policy":
-      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     ...extraHeaders,
@@ -1888,135 +1929,135 @@ function formatDate(value: string) {
 }
 
 const PAGE_CSS = `
-:root { color-scheme: light dark; --bg:#f7f8f7; --surface:#fff; --text:#202522; --muted:#66706a; --line:#d9dedb; --accent:#177a55; --user:#eef4f1; --code:#edf0ee; }
-@media (prefers-color-scheme: dark) { :root { --bg:#151817; --surface:#1d211f; --text:#e7ebe8; --muted:#9da7a1; --line:#353c38; --accent:#66c79d; --user:#222c27; --code:#272c29; } }
+/* Valley Sans (100-900 variable) and JetBrains Mono webfonts, bundled under the
+   SIL OFL 1.1 (licenses in site/fonts/), same files the desktop app bundles. */
+@font-face { font-family:"Valley Sans"; src:url("/fonts/ValleySans-Variable.woff2") format("woff2"); font-style:normal; font-weight:100 900; font-display:swap; }
+@font-face { font-family:"Valley Sans"; src:url("/fonts/ValleySans-VariableItalic.woff2") format("woff2"); font-style:italic; font-weight:100 900; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-Regular.woff2") format("woff2"); font-style:normal; font-weight:400; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-Italic.woff2") format("woff2"); font-style:italic; font-weight:400; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-Bold.woff2") format("woff2"); font-style:normal; font-weight:700; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("/fonts/JetBrainsMono-BoldItalic.woff2") format("woff2"); font-style:italic; font-weight:700; font-display:swap; }
+:root { color-scheme:light dark; --background:#ffffff; --foreground:#0a0a0a; --muted:#f5f5f5; --muted-foreground:#737373; --border:#e5e5e5; --input:#e5e5e5; --primary:#171717; --primary-foreground:#fafafa; --destructive:#dc2626; --ring:#a3a3a3; }
+@media (prefers-color-scheme: dark) { :root { --background:#0a0a0a; --foreground:#fafafa; --muted:#262626; --muted-foreground:#a3a3a3; --border:#262626; --input:#343434; --primary:#fafafa; --primary-foreground:#171717; --destructive:#f87171; --ring:#525252; } }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--text); font:15px/1.65 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; letter-spacing:0; }
-a { color:var(--accent); text-decoration:none; }
-a:hover { text-decoration:underline; }
-.publication-header { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:24px; align-items:start; max-width:880px; margin:0 auto; padding:34px 28px 26px; border-bottom:1px solid var(--line); }
-.brand { color:var(--text); font-size:17px; font-weight:750; }
-.publication-kind { margin:0 0 4px; color:var(--accent); font-size:12px; font-weight:700; text-transform:uppercase; }
-h1 { margin:0; font-size:38px; line-height:1.15; font-weight:720; overflow-wrap:anywhere; }
-.publication-meta { display:flex; flex-wrap:wrap; gap:8px 16px; margin:12px 0 0; color:var(--muted); font-size:13px; }
-.github-link { padding-top:2px; white-space:nowrap; }
-.transcript { max-width:880px; margin:0 auto; padding:22px 28px 56px; }
-.message { display:grid; grid-template-columns:112px minmax(0,1fr); gap:22px; padding:24px 0; border-bottom:1px solid var(--line); }
-.message-label { color:var(--muted); font-size:13px; font-weight:700; overflow-wrap:anywhere; }
-.message-assistant .message-label { color:var(--accent); }
-.message-body { min-width:0; }
-.message-body > :first-child { margin-top:0; }
-.message-body > :last-child { margin-bottom:0; }
-.message-body p, .message-body ul, .message-body ol, .message-body pre, .message-body table, .message-body blockquote { margin:0 0 16px; }
-.message-body pre { overflow:auto; padding:14px 16px; border:1px solid var(--line); border-radius:6px; background:var(--code); }
-.message-body code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.9em; }
-.message-body :not(pre) > code { padding:2px 5px; border-radius:4px; background:var(--code); }
-.message-body table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
-.message-body th, .message-body td { padding:7px 10px; border:1px solid var(--line); text-align:left; }
-.message-body blockquote { margin-left:0; padding-left:16px; border-left:3px solid var(--line); color:var(--muted); }
-.image-omitted { color:var(--muted); font-style:italic; }
-.publication-footer { max-width:880px; margin:0 auto; padding:20px 28px 44px; color:var(--muted); font-size:13px; }
-.publication-comments { max-width:880px; margin:0 auto; padding:32px 28px 18px; border-top:1px solid var(--line); }
-.comments-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:18px; }
-.comments-kicker { margin:0 0 2px; color:var(--accent); font-size:11px; font-weight:700; text-transform:uppercase; }
-.comments-heading h2 { margin:0; font-size:20px; line-height:1.3; }
-.comments-heading > a { padding-top:4px; font-size:13px; white-space:nowrap; }
+body { margin:0; background:var(--background); color:var(--foreground); font:15px/1.65 "Valley Sans",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+a { color:inherit; text-decoration:none; }
+.container { max-width:840px; margin:0 auto; padding:0 24px; }
+.container-wide { max-width:1120px; margin:0 auto; padding:0 24px; }
+.site-header { border-bottom:1px solid var(--border); }
+.site-header-inner { display:flex; align-items:center; justify-content:space-between; gap:16px; padding-top:14px; padding-bottom:14px; }
+.brand { font-size:15px; font-weight:600; letter-spacing:-0.01em; }
+.site-header-link { color:var(--muted-foreground); font-size:13px; white-space:nowrap; }
+.site-header-link:hover { color:var(--foreground); }
+.page-header { display:grid; justify-items:start; gap:10px; padding:36px 0 28px; border-bottom:1px solid var(--border); }
+.page-header h1 { margin:0; font-size:28px; line-height:1.2; font-weight:600; letter-spacing:-0.02em; overflow-wrap:anywhere; }
+.page-meta { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0; color:var(--muted-foreground); font-size:13px; }
+.page-meta a:hover { color:var(--foreground); }
+.badge { display:inline-flex; align-items:center; padding:2px 9px; border:1px solid var(--border); border-radius:999px; color:var(--muted-foreground); font-size:11px; font-weight:500; line-height:1.5; white-space:nowrap; }
+.btn { display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:7px 16px; border:1px solid transparent; border-radius:6px; background:none; color:var(--foreground); font:inherit; font-size:13px; font-weight:500; line-height:1.5; cursor:pointer; }
+.btn:hover { text-decoration:none; }
+.btn-primary { background:var(--primary); border-color:var(--primary); color:var(--primary-foreground); }
+.btn-primary:hover { opacity:0.9; }
+.btn-outline { border-color:var(--input); }
+.btn-outline:hover { background:var(--muted); }
+.btn-link { padding:0; border:0; background:none; color:var(--muted-foreground); font:inherit; font-size:12px; cursor:pointer; }
+.btn-link:hover { color:var(--foreground); text-decoration:underline; }
+.textarea { width:100%; resize:vertical; padding:10px 12px; border:1px solid var(--input); border-radius:6px; background:transparent; color:var(--foreground); font:inherit; font-size:14px; line-height:1.6; }
+.textarea:focus { outline:none; border-color:var(--ring); box-shadow:0 0 0 3px color-mix(in srgb,var(--ring) 25%,transparent); }
+.prose { min-width:0; }
+.prose > :first-child { margin-top:0; }
+.prose > :last-child { margin-bottom:0; }
+.prose p, .prose ul, .prose ol, .prose pre, .prose table, .prose blockquote { margin:0 0 14px; }
+.prose ul, .prose ol { padding-left:24px; }
+.prose h1 { margin:0 0 18px; font-size:23px; line-height:1.25; font-weight:600; letter-spacing:-0.02em; }
+.prose h2 { margin:26px 0 10px; font-size:18px; line-height:1.3; font-weight:600; letter-spacing:-0.01em; }
+.prose h3 { margin:20px 0 8px; font-size:15px; font-weight:600; }
+.prose pre { overflow:auto; padding:12px 14px; border:1px solid var(--border); border-radius:8px; background:var(--muted); font-size:13px; line-height:1.6; }
+.prose code { font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-size:0.9em; font-variant-ligatures:none; }
+.prose pre code { font-size:inherit; }
+.prose :not(pre) > code { padding:2px 5px; border-radius:4px; background:var(--muted); }
+.prose table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.prose th, .prose td { padding:6px 10px; border:1px solid var(--border); text-align:left; }
+.prose blockquote { margin-left:0; padding-left:14px; border-left:2px solid var(--border); color:var(--muted-foreground); }
+.prose hr { margin:24px 0; border:0; border-top:1px solid var(--border); }
+.prose a { text-decoration:underline; text-underline-offset:3px; text-decoration-color:color-mix(in srgb,currentColor 35%,transparent); }
+.prose a:hover { text-decoration-color:currentColor; }
+.image-omitted { color:var(--muted-foreground); font-style:italic; }
+.transcript { padding:6px 0 48px; }
+.message { display:grid; grid-template-columns:120px minmax(0,1fr); gap:24px; padding:24px 0; }
+.message + .message { border-top:1px solid var(--border); }
+.message-label { color:var(--muted-foreground); font-size:13px; font-weight:500; overflow-wrap:anywhere; }
+.message-assistant .message-label { color:var(--foreground); }
+.page-footer { padding:18px 0 44px; border-top:1px solid var(--border); color:var(--muted-foreground); font-size:13px; }
+.page-footer a:hover { color:var(--foreground); text-decoration:underline; }
+.publication-comments { padding:30px 0 26px; border-top:1px solid var(--border); }
+.section-heading { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:12px; }
+.section-heading h2 { margin:0; font-size:16px; line-height:1.4; font-weight:600; letter-spacing:-0.01em; }
+.section-heading-link { color:var(--muted-foreground); font-size:13px; white-space:nowrap; }
+.section-heading-link:hover { color:var(--foreground); }
 .comments-list { display:grid; }
-.publication-comment { padding:18px 0; border-top:1px solid var(--line); }
-.publication-comment header { display:flex; flex-wrap:wrap; align-items:center; gap:7px 10px; margin-bottom:9px; color:var(--muted); font-size:12px; }
-.publication-comment header > a { font-weight:700; }
-.publication-comment header > span { padding:1px 5px; border:1px solid var(--line); border-radius:4px; font-size:10px; }
-.publication-comment header time { margin-left:auto; }
-.comment-body > :first-child { margin-top:0; }
-.comment-body > :last-child { margin-bottom:0; }
-.comment-body p, .comment-body ul, .comment-body ol, .comment-body pre, .comment-body blockquote { margin:0 0 12px; }
-.comment-body pre { overflow:auto; padding:12px 14px; border:1px solid var(--line); border-radius:6px; background:var(--code); }
-.comment-body code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.9em; }
-.comment-body :not(pre) > code { padding:2px 5px; border-radius:4px; background:var(--code); }
-.comments-empty, .comments-error { margin:0; color:var(--muted); }
-.comments-error { color:#a74444; }
-.comment-composer { margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
-.comment-composer form:first-child { display:grid; gap:9px; }
-.comment-composer label { font-size:13px; font-weight:700; }
-.comment-composer textarea { width:100%; min-height:116px; resize:vertical; padding:11px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; letter-spacing:0; }
-.comment-composer textarea:focus { outline:2px solid color-mix(in srgb,var(--accent) 35%,transparent); outline-offset:1px; border-color:var(--accent); }
-.comment-composer button, .github-sign-in { justify-self:start; display:inline-flex; align-items:center; min-height:34px; padding:7px 11px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; font-size:13px; font-weight:650; cursor:pointer; }
-.comment-composer button:hover, .github-sign-in:hover { border-color:var(--accent); text-decoration:none; }
-.sign-out-form { display:flex; align-items:center; gap:10px; margin-top:14px; color:var(--muted); font-size:12px; }
-.sign-out-form button { min-height:auto; padding:3px 7px; color:var(--muted); font-size:12px; }
-.github-sign-in { margin-top:22px; }
-.publication-proposals { margin-top:38px; padding-top:28px; border-top:1px solid var(--line); }
-.proposal-list { display:grid; gap:18px; }
-.publication-proposal { padding:15px 0 0; border-top:1px solid var(--line); }
-.publication-proposal header { display:flex; flex-wrap:wrap; align-items:center; gap:7px 10px; margin-bottom:9px; color:var(--muted); font-size:12px; }
-.publication-proposal header time { margin-left:auto; }
-.proposal-status { padding:1px 6px; border:1px solid var(--line); border-radius:4px; text-transform:capitalize; }
-.proposal-status.is-accepted { color:var(--accent); }
-.proposal-status.is-declined { color:#a74444; }
-.proposal-question > :first-child { margin-top:0; }
-.proposal-question > :last-child { margin-bottom:0; }
-.publication-proposal details { margin-top:12px; color:var(--muted); font-size:13px; }
+.publication-comment { padding:16px 0; border-top:1px solid var(--border); }
+.publication-comment header, .publication-proposal header { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-bottom:8px; font-size:13px; }
+.publication-comment header > a, .publication-proposal header > a { font-weight:500; }
+.publication-comment header > a:hover, .publication-proposal header > a:hover { text-decoration:underline; }
+.publication-comment header time, .publication-proposal header time { margin-left:auto; color:var(--muted-foreground); font-size:12px; }
+.comment-body { font-size:14px; }
+.comments-empty, .comments-error { margin:0; color:var(--muted-foreground); font-size:14px; }
+.comments-error { color:var(--destructive); }
+.comment-composer { margin-top:20px; padding-top:20px; border-top:1px solid var(--border); }
+.comment-composer form:first-child { display:grid; justify-items:start; gap:10px; }
+.comment-composer label, .proposal-composer label { font-size:14px; font-weight:500; }
+.comment-composer .textarea, .proposal-composer .textarea { justify-self:stretch; }
+.sign-out-form { display:flex; align-items:center; gap:10px; margin-top:12px; color:var(--muted-foreground); font-size:12px; }
+.github-sign-in { margin-top:20px; }
+.publication-proposals { margin-top:34px; padding-top:30px; border-top:1px solid var(--border); }
+.proposal-list { display:grid; }
+.publication-proposal { padding:16px 0; border-top:1px solid var(--border); }
+.proposal-status { text-transform:capitalize; }
+.proposal-status.is-accepted { color:var(--foreground); }
+.proposal-status.is-declined { color:var(--destructive); border-color:color-mix(in srgb,var(--destructive) 35%,var(--border)); }
+.proposal-question { font-size:14px; }
+.publication-proposal details { margin-top:10px; color:var(--muted-foreground); font-size:13px; }
 .publication-proposal details summary { cursor:pointer; }
-.publication-proposal details .comment-body { margin-top:10px; color:var(--text); font-size:15px; }
-.proposal-result-link { display:inline-block; margin-top:12px; font-size:13px; }
-.proposal-composer { display:grid; gap:9px; margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
-.proposal-composer label { font-size:13px; font-weight:700; }
-.proposal-composer textarea { width:100%; resize:vertical; padding:11px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; letter-spacing:0; }
-.proposal-composer textarea:focus { outline:2px solid color-mix(in srgb,var(--accent) 35%,transparent); outline-offset:1px; border-color:var(--accent); }
-.proposal-composer button { justify-self:start; min-height:34px; padding:7px 11px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; font-size:13px; font-weight:650; cursor:pointer; }
-.proposal-composer button:hover { border-color:var(--accent); }
-.research-publication-header { max-width:1120px; }
-.research-layout { display:grid; grid-template-columns:minmax(210px,280px) minmax(0,760px); gap:44px; max-width:1120px; margin:0 auto; padding:30px 28px 60px; }
+.publication-proposal details .comment-body { margin-top:10px; color:var(--foreground); }
+.proposal-result-link { display:inline-block; margin-top:10px; font-size:13px; text-decoration:underline; text-underline-offset:3px; text-decoration-color:color-mix(in srgb,currentColor 35%,transparent); }
+.proposal-result-link:hover { text-decoration-color:currentColor; }
+.proposal-composer { display:grid; justify-items:start; gap:10px; margin-top:20px; padding-top:20px; border-top:1px solid var(--border); }
+.research-layout { display:grid; grid-template-columns:minmax(200px,256px) minmax(0,760px); gap:48px; padding:30px 0 56px; }
 .research-index { min-width:0; }
-.research-index-title { margin:0 0 10px; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }
+.research-index-title { margin:0 0 8px; padding:0 10px; color:var(--muted-foreground); font-size:12px; font-weight:500; }
 .research-index ul { margin:0; padding:0; list-style:none; }
-.research-index ul ul { margin:3px 0 3px 14px; padding-left:10px; border-left:1px solid var(--line); }
-.research-index a { display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:7px 8px; border-radius:5px; color:var(--muted); font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
-.research-index a:hover { background:var(--surface); color:var(--text); text-decoration:none; }
-.research-index a.is-selected { background:var(--user); color:var(--text); font-weight:650; }
-.research-index small, .research-children small { color:var(--muted); font-size:11px; font-weight:400; }
+.research-index ul ul { margin:2px 0 2px 14px; padding-left:8px; border-left:1px solid var(--border); }
+.research-index a { display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:6px 10px; border-radius:6px; color:var(--muted-foreground); font-size:13px; line-height:1.4; overflow-wrap:anywhere; }
+.research-index a:hover { background:var(--muted); color:var(--foreground); }
+.research-index a.is-selected { background:var(--muted); color:var(--foreground); font-weight:500; }
+.research-index small, .research-children small { color:var(--muted-foreground); font-size:11px; font-weight:400; }
 .research-result { min-width:0; }
-.research-result-nav { display:flex; align-items:center; justify-content:space-between; min-height:28px; margin-bottom:16px; font-size:13px; }
-.research-contribution { margin:-6px 0 16px; color:var(--muted); font-size:12px; }
-.research-status { padding:2px 7px; border:1px solid var(--line); border-radius:4px; color:var(--muted); font-size:11px; text-transform:capitalize; }
-.research-status.is-failed { color:#b94040; }
-.research-status.is-cancelled { color:var(--muted); }
-.research-answer { min-width:0; }
-.research-answer > :first-child { margin-top:0; }
-.research-answer > :last-child { margin-bottom:0; }
-.research-answer h1 { margin-bottom:24px; font-size:30px; }
-.research-answer h2 { margin:30px 0 12px; font-size:20px; line-height:1.3; }
-.research-answer h3 { margin:24px 0 10px; font-size:16px; }
-.research-answer p, .research-answer ul, .research-answer ol, .research-answer pre, .research-answer table, .research-answer blockquote { margin:0 0 16px; }
-.research-answer pre { overflow:auto; padding:14px 16px; border:1px solid var(--line); border-radius:6px; background:var(--code); }
-.research-answer code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.9em; }
-.research-answer :not(pre) > code { padding:2px 5px; border-radius:4px; background:var(--code); }
-.research-answer table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
-.research-answer th, .research-answer td { padding:7px 10px; border:1px solid var(--line); text-align:left; }
-.research-answer blockquote { margin-left:0; padding-left:16px; border-left:3px solid var(--line); color:var(--muted); }
-.research-children { margin-top:40px; padding-top:24px; border-top:1px solid var(--line); }
-.research-children h2 { margin:0 0 12px; font-size:15px; }
-.research-children > div { display:grid; gap:7px; }
-.research-children a { display:flex; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:6px; color:var(--text); }
-.research-children a:hover { border-color:var(--accent); text-decoration:none; }
-.research-result > .publication-comments { margin-top:38px; padding:28px 0 0; }
-.error-page { max-width:640px; margin:0 auto; padding:64px 28px; }
-.error-page h1 { margin-top:40px; }
-.error-page p { color:var(--muted); }
+.research-result-nav { display:flex; align-items:center; justify-content:space-between; min-height:24px; margin-bottom:16px; font-size:13px; }
+.research-result-nav > a { color:var(--muted-foreground); }
+.research-result-nav > a:hover { color:var(--foreground); }
+.research-status { text-transform:capitalize; }
+.research-status.is-failed { color:var(--destructive); border-color:color-mix(in srgb,var(--destructive) 35%,var(--border)); }
+.research-contribution { margin:-4px 0 16px; color:var(--muted-foreground); font-size:12px; }
+.research-children { margin-top:40px; padding-top:26px; border-top:1px solid var(--border); }
+.research-children h2 { margin:0 0 12px; font-size:16px; font-weight:600; letter-spacing:-0.01em; }
+.research-children > div { display:grid; gap:8px; }
+.research-children a { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--border); border-radius:8px; font-size:14px; }
+.research-children a:hover { background:var(--muted); }
+.research-result > .publication-comments { margin-top:34px; }
+.error-page { max-width:640px; margin:0 auto; padding:56px 24px 64px; }
+.error-page h1 { margin:36px 0 10px; font-size:24px; line-height:1.25; font-weight:600; letter-spacing:-0.02em; }
+.error-page p { margin:0; color:var(--muted-foreground); }
 @media (max-width:640px) {
-  .publication-header { grid-template-columns:1fr auto; gap:14px; padding:24px 18px 20px; }
-  .publication-heading { grid-column:1 / -1; grid-row:2; }
-  .transcript { padding:8px 18px 40px; }
-  .message { grid-template-columns:1fr; gap:8px; padding:20px 0; }
-  .publication-footer { padding:18px 18px 36px; }
-  .publication-comments { padding:26px 18px 12px; }
-  .comments-heading { align-items:baseline; }
-  .publication-comment header time { width:100%; margin-left:0; }
-  .publication-heading h1, .error-page h1 { font-size:28px; }
-  .research-layout { grid-template-columns:1fr; gap:24px; padding:22px 18px 44px; }
-  .research-index { padding-bottom:20px; border-bottom:1px solid var(--line); }
-  .research-answer h1 { font-size:25px; }
-  .research-result > .publication-comments { padding-left:0; padding-right:0; }
+  .page-header { padding:26px 0 22px; }
+  .page-header h1 { font-size:22px; }
+  .transcript { padding:2px 0 40px; }
+  .message { grid-template-columns:1fr; gap:8px; padding:18px 0; }
+  .publication-comment header time, .publication-proposal header time { width:100%; margin-left:0; }
+  .research-layout { grid-template-columns:1fr; gap:26px; padding:22px 0 44px; }
+  .research-index { padding-bottom:20px; border-bottom:1px solid var(--border); }
+  .prose h1 { font-size:20px; }
+  .error-page h1 { font-size:22px; }
 }
 `;
 
