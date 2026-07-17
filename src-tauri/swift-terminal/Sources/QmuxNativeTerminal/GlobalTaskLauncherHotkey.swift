@@ -54,8 +54,15 @@ private final class GlobalTaskLauncherHotkeyMonitor {
         }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(4))
-        timer.setEventHandler { @MainActor [weak self] in
-            self?.sampleModifiers()
+        // DispatchSource's Swift overlay still expects a plain block at runtime.
+        // An explicitly @MainActor handler uses Swift 6's isolated-closure ABI;
+        // libswiftDispatch then mistakes its function pointer for that block and
+        // crashes in _Block_copy. This source is pinned to the main queue, so
+        // enter the actor explicitly from a nonisolated handler instead.
+        timer.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.sampleModifiers()
+            }
         }
         modifierTimer = timer
         timer.resume()
