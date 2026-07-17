@@ -108,6 +108,11 @@ import {
   selectPaneAfterClose,
   statusLabel,
 } from "./lib/appHelpers";
+import {
+  agentTabStatusDotClass,
+  agentTabStatusPill,
+  queueWaitsOnOtherAgent,
+} from "./lib/composerActions";
 import { desiredNativeTerminalKeyboardOwner } from "./lib/nativeTerminalKeyboard";
 import {
   appShortcutAllowsRepeat,
@@ -2394,11 +2399,7 @@ function MainApp() {
   }
 
   function paneWaitsOnOtherPane(agent: AgentInfo | undefined): boolean {
-    if (!agent) {
-      return false;
-    }
-    const firstQueuedTurn = queuedTurnsForAgent(agent)[0];
-    return Boolean(firstQueuedTurn?.waitFor && firstQueuedTurn.waitFor.agentId !== agent.id);
+    return agent ? queueWaitsOnOtherAgent(agent.id, queuedTurnsForAgent(agent)) : false;
   }
 
   function paneTabStatusTone(agent: AgentInfo | undefined): MenuBarStatusTone {
@@ -2406,13 +2407,15 @@ function MainApp() {
   }
 
   function paneTabStatusLabel(pane: PaneInfo, agent: AgentInfo | undefined): string | null {
-    const queueCount = queuedTurnsForAgent(agent).length;
-    const rawStatus = agent ? agentStatusLabel(agent.status) : statusLabel(pane.status);
-    return (agent?.status === "running" || agent?.status === "idle") && queueCount > 0
-      ? `${queueCount} ${paneWaitsOnOtherPane(agent) ? "waiting" : "queued"}`
-      : rawStatus === "Running"
-        ? null
-        : rawStatus;
+    if (agent) {
+      return agentTabStatusPill(
+        agent.status,
+        queuedTurnsForAgent(agent).length,
+        paneWaitsOnOtherPane(agent),
+      );
+    }
+    const rawStatus = statusLabel(pane.status);
+    return rawStatus === "Running" ? null : rawStatus;
   }
 
   function paneTabStatusMetaLabel(pane: PaneInfo, agent: AgentInfo | undefined): string | null {
@@ -9149,13 +9152,10 @@ function MainApp() {
     const paneAgent = agentByPaneId.get(pane.id);
     const paneDisplayTitle = displayPaneTitle(pane, paneAgent);
     const paneTitleIsUserSet = paneHasUserSetTitle(pane, paneAgent);
-    const paneAgentStatusTone = paneTabStatusTone(paneAgent);
-    const paneAgentStatusClass =
-      paneAgent?.status === "awaitingInput" ? " status-awaiting-input" : "";
     const canClearWorkingStatus =
       allowDrag && (paneAgent?.status === "running" || paneAgent?.status === "starting");
     const paneTopQueueWaitsOnOtherPane = paneWaitsOnOtherPane(paneAgent);
-    const paneWaitingClass = paneTopQueueWaitsOnOtherPane ? " is-waiting-on-pane" : "";
+    const paneDotClass = agentTabStatusDotClass(paneAgent?.status, paneTopQueueWaitsOnOtherPane);
     const paneStatus = paneTabStatusLabel(pane, paneAgent);
     const paneSplit = paneSplitForPane(paneSplits, pane.id);
     // The panes of the active split render as one connected card in the sidebar.
@@ -9268,9 +9268,7 @@ function MainApp() {
           }
         >
           <span
-            className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${paneWaitingClass}${
-              canClearWorkingStatus ? " is-clearable-placeholder" : ""
-            }`}
+            className={`${paneDotClass}${canClearWorkingStatus ? " is-clearable-placeholder" : ""}`}
             aria-hidden="true"
           />
           <span className="pane-tab-content">
@@ -9342,7 +9340,7 @@ function MainApp() {
             }}
           >
             <span
-              className={`pane-tab-dot status-${paneAgentStatusTone}${paneAgentStatusClass}${paneWaitingClass}`}
+              className={paneDotClass}
               aria-hidden="true"
             />
           </button>
@@ -9926,19 +9924,14 @@ function MainApp() {
                           .map(collapsedGroupStatusLabel)
                           .join(", ")}
                       >
-                        {collapsedStatusAgents.map((agent) => {
-                          const statusTone = agentStatusTone(agent.status);
-                          const statusClass =
-                            agent.status === "awaitingInput" ? " status-awaiting-input" : "";
-                          return (
-                            <span
-                              key={agent.id}
-                              className={`pane-tab-dot status-${statusTone}${statusClass}`}
-                              title={collapsedGroupStatusLabel(agent)}
-                              aria-hidden="true"
-                            />
-                          );
-                        })}
+                        {collapsedStatusAgents.map((agent) => (
+                          <span
+                            key={agent.id}
+                            className={agentTabStatusDotClass(agent.status, false)}
+                            title={collapsedGroupStatusLabel(agent)}
+                            aria-hidden="true"
+                          />
+                        ))}
                       </span>
                     ) : null}
                   </span>

@@ -18,17 +18,15 @@ import {
   submitPaneInput,
   unpauseAgent,
 } from "../lib/api";
-import {
-  agentCanFork,
-  agentStatusLabel,
-  agentStatusTone,
-  defaultPaneTitle,
-} from "../lib/appHelpers";
+import { agentCanFork, agentStatusLabel, defaultPaneTitle } from "../lib/appHelpers";
 import {
   FORK_REQUIREMENT_TITLE,
   QUEUE_DELIVERY_OPTIONS,
+  agentTabStatusDotClass,
+  agentTabStatusPill,
   deriveComposerGating,
   planComposerSubmission,
+  queueWaitsOnOtherAgent,
   waitTargetStatusDotClass,
   waitTargetStatusLabel,
 } from "../lib/composerActions";
@@ -71,30 +69,6 @@ function resolveTargetTitle(
   const oscTitle = pane.lastOscTitle?.trim();
   const fallback = defaultPaneTitle(pane, agent, config);
   return oscTitle && fallback !== null && pane.title === fallback ? oscTitle : pane.title;
-}
-
-function targetWaitsOnOtherPane(target: LauncherTarget): boolean {
-  const firstQueued = target.queue[0];
-  return Boolean(firstQueued?.waitFor && firstQueued.waitFor.agentId !== target.agent.id);
-}
-
-/** Status pill text for a target row, following the sidebar tab rule: queue
- * count while working or idle, otherwise the status label — with "Running"
- * left to the pulsing dot alone. */
-function targetStatusPill(target: LauncherTarget): string | null {
-  const queued = target.queue.length;
-  if ((target.agent.status === "running" || target.agent.status === "idle") && queued > 0) {
-    return `${queued} ${targetWaitsOnOtherPane(target) ? "waiting" : "queued"}`;
-  }
-  const label = agentStatusLabel(target.agent.status);
-  return label === "Running" ? null : label;
-}
-
-function targetStatusDotClass(target: LauncherTarget): string {
-  const awaitingInput =
-    target.agent.status === "awaitingInput" ? " status-awaiting-input" : "";
-  const waiting = targetWaitsOnOtherPane(target) ? " is-waiting-on-pane" : "";
-  return `pane-tab-dot status-${agentStatusTone(target.agent.status)}${awaitingInput}${waiting}`;
 }
 
 /** Hover summary for a target row: the detail the old dropdown label spelled
@@ -606,7 +580,12 @@ export default function GlobalTaskLauncher() {
                   ) : null}
                   {bucket.targets.map((target) => {
                     const isSelected = target.agent.id === selectedAgentId;
-                    const pill = targetStatusPill(target);
+                    const waits = queueWaitsOnOtherAgent(target.agent.id, target.queue);
+                    const pill = agentTabStatusPill(
+                      target.agent.status,
+                      target.queue.length,
+                      waits,
+                    );
                     return (
                       <div
                         key={target.agent.id}
@@ -623,7 +602,10 @@ export default function GlobalTaskLauncher() {
                           title={targetDetails(target)}
                           onClick={() => selectTarget(target.agent.id, "textarea")}
                         >
-                          <span className={targetStatusDotClass(target)} aria-hidden="true" />
+                          <span
+                            className={agentTabStatusDotClass(target.agent.status, waits)}
+                            aria-hidden="true"
+                          />
                           <span className="pane-tab-content">
                             <span className="pane-tab-title">{target.title}</span>
                             {pill ? <small>{pill}</small> : null}

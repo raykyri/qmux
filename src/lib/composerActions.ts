@@ -1,6 +1,6 @@
 import type { AgentStatus, ComposerPolicy } from "../adapters";
-import type { QueuedTurnDelivery, WaitTarget } from "../types";
-import { agentStatusTone } from "./appHelpers";
+import type { QueuedTurn, QueuedTurnDelivery, WaitTarget } from "../types";
+import { agentStatusLabel, agentStatusTone } from "./appHelpers";
 import type { ParsedComposerSlashCommand } from "./composerSlashCommands";
 
 export const FORK_REQUIREMENT_TITLE =
@@ -87,10 +87,41 @@ export function waitTargetStatusLabel(target: WaitTarget) {
 }
 
 export function waitTargetStatusDotClass(target: WaitTarget) {
-  const statusTone = agentStatusTone(target.status);
-  const statusClass = target.status === "awaitingInput" ? " status-awaiting-input" : "";
-  const waitingClass = target.queueBlocked ? " is-waiting-on-pane" : "";
-  return `pane-tab-dot wait-target-status-dot status-${statusTone}${statusClass}${waitingClass}`;
+  return `${agentTabStatusDotClass(target.status, Boolean(target.queueBlocked))} wait-target-status-dot`;
+}
+
+/** True when the first queued turn waits on a different agent's session. */
+export function queueWaitsOnOtherAgent(agentId: string, queue: QueuedTurn[]): boolean {
+  const first = queue[0];
+  return Boolean(first?.waitFor && first.waitFor.agentId !== agentId);
+}
+
+/** Status pill text for a tab row, shared by the sidebar and the launcher:
+ * queue count while working or idle, otherwise the status label — with
+ * "Running" left to the pulsing dot alone. */
+export function agentTabStatusPill(
+  status: AgentStatus,
+  queueCount: number,
+  waitsOnOtherPane: boolean,
+): string | null {
+  if ((status === "running" || status === "idle") && queueCount > 0) {
+    return `${queueCount} ${waitsOnOtherPane ? "waiting" : "queued"}`;
+  }
+  const label = agentStatusLabel(status);
+  return label === "Running" ? null : label;
+}
+
+/** The pane-tab status dot's class string, shared by every surface that
+ * renders one: sidebar rows, collapsed-group icons, launcher rows, and
+ * wait-target menu items. */
+export function agentTabStatusDotClass(
+  status: AgentStatus | undefined,
+  waitsOnOtherPane: boolean,
+): string {
+  const tone = status ? agentStatusTone(status) : "idle";
+  const awaitingInput = status === "awaitingInput" ? " status-awaiting-input" : "";
+  const waiting = waitsOnOtherPane ? " is-waiting-on-pane" : "";
+  return `pane-tab-dot status-${tone}${awaitingInput}${waiting}`;
 }
 
 /** Delivery choices shared by the right-pane composer and global launcher. */
