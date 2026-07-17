@@ -444,7 +444,9 @@ test("the public server evicts old publication cache entries", async (t) => {
       { status: 200 },
     );
   };
-  const server = createQmuxWebServer({ fetchImpl });
+  // This test deliberately issues 130 requests from one address; the per-client
+  // rate limit is exercised separately.
+  const server = createQmuxWebServer({ fetchImpl, rateLimit: null });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => server.close());
@@ -525,4 +527,84 @@ test("the public server caps concurrent publication loads", async (t) => {
     assert.equal(response.status, 200);
     await response.arrayBuffer();
   }
+});
+
+test("the public server negative-caches a missing Gist", async (t) => {
+  let fetchCount = 0;
+  const fetchImpl: typeof fetch = async () => {
+    fetchCount += 1;
+    return new Response("Not Found", { status: 404 });
+  };
+  const server = createQmuxWebServer({ fetchImpl });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const first = await fetch(`http://127.0.0.1:${address.port}/p/missing12345`);
+  assert.equal(first.status, 404);
+  await first.arrayBuffer();
+  const second = await fetch(`http://127.0.0.1:${address.port}/p/missing12345`);
+  assert.equal(second.status, 404);
+  await second.arrayBuffer();
+  // The second request for the same missing id is served from the negative
+  // cache, so the shared GitHub token is only spent once.
+  assert.equal(fetchCount, 1);
+});
+
+test("the public server rate-limits the publication route per client", async (t) => {
+  let fetchCount = 0;
+  const fetchImpl: typeof fetch = async () => {
+    fetchCount += 1;
+    return new Response("Not Found", { status: 404 });
+  };
+  const server = createQmuxWebServer({
+    fetchImpl,
+    rateLimit: { windowMs: 60_000, maxRequests: 3 },
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  for (let index = 0; index < 3; index += 1) {
+    const allowed: Response = await fetch(
+      `http://127.0.0.1:${address.port}/p/ratelimit${index}`,
+    );
+    assert.equal(allowed.status, 404);
+    await allowed.arrayBuffer();
+  }
+  const limited = await fetch(`http://127.0.0.1:${address.port}/p/ratelimit9`);
+  assert.equal(limited.status, 429);
+  assert.ok(limited.headers.get("retry-after"));
+  await limited.arrayBuffer();
+});
+
+test("the public server backs off all ids after an upstream rate limit", async (t) => {
+  let fetchCount = 0;
+  const fetchImpl: typeof fetch = async () => {
+    fetchCount += 1;
+    return new Response("rate limited", {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0" },
+    });
+  };
+  const server = createQmuxWebServer({ fetchImpl });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const first = await fetch(`http://127.0.0.1:${address.port}/p/cooldown0001`);
+  assert.equal(first.status, 503);
+  await first.arrayBuffer();
+  // A different id must not spend another upstream call while the shared token
+  // is in its cooldown.
+  const second = await fetch(`http://127.0.0.1:${address.port}/p/cooldown0002`);
+  assert.equal(second.status, 503);
+  await second.arrayBuffer();
+  assert.equal(fetchCount, 1);
 });

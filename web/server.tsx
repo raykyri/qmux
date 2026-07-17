@@ -48,6 +48,20 @@ const GITHUB_API_VERSION = "2026-03-10";
 const LATEST_CACHE_MS = 60_000;
 const REVISION_CACHE_MS = 365 * 24 * 60 * 60 * 1000;
 const COMMENTS_CACHE_MS = 30_000;
+// A deterministic upstream verdict (missing/invalid gist) is cached briefly so a
+// flood of repeat requests for the same bad id can't each spend a GitHub call.
+const NEGATIVE_CACHE_MS = 60_000;
+const MAX_NEGATIVE_CACHE_ENTRIES = 512;
+// When GitHub itself rate-limits the shared reader token, stop calling upstream
+// for a cooldown and serve 503 rather than piling on and prolonging the block.
+const UPSTREAM_COOLDOWN_MS = 60_000;
+// Per-client request budget for the GitHub-backed publication route. Distinct
+// random ids miss every cache and would otherwise each cost an upstream call, so
+// the primary abuse vector (draining the shared token's GitHub quota) is bounded
+// per source rather than only per id. Static assets and auth are exempt.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 120;
+const MAX_RATE_LIMIT_ENTRIES = 4_096;
 const MAX_GITHUB_API_RESPONSE_BYTES = 20_000_000;
 const MAX_GITHUB_COMMENTS_RESPONSE_BYTES = 5_000_000;
 const MAX_PUBLICATION_CACHE_BYTES = 64_000_000;
@@ -141,6 +155,9 @@ interface ServerOptions extends GitHubWebAuthOptions {
   siteDir?: string;
   githubToken?: string | null;
   now?: () => number;
+  // Per-client budget for the publication route; `null` disables it (used by
+  // tests that intentionally issue many requests from one address).
+  rateLimit?: { windowMs: number; maxRequests: number } | null;
 }
 
 export function createQmuxWebServer(options: ServerOptions = {}) {
@@ -157,6 +174,10 @@ export function createQmuxRequestHandler(options: ServerOptions = {}) {
     entries: new Map(),
     totalBytes: 0,
   };
+  const rateLimit =
+    options.rateLimit === undefined
+      ? { windowMs: RATE_LIMIT_WINDOW_MS, maxRequests: RATE_LIMIT_MAX_REQUESTS }
+      : options.rateLimit;
   const context: RouteContext = {
     fetchImpl,
     siteDir,
@@ -167,6 +188,10 @@ export function createQmuxRequestHandler(options: ServerOptions = {}) {
       entries: new Map(),
       totalBytes: 0,
     },
+    negativeCache: new Map(),
+    rateLimit,
+    rateLimiter: new Map(),
+    upstreamCooldownUntil: 0,
     webAuth,
     activePublicationLoads: 0,
   };
@@ -183,9 +208,29 @@ export function createQmuxRequestHandler(options: ServerOptions = {}) {
       if (!(error instanceof PublicationHttpError)) {
         console.error(error);
       }
-      sendHtml(response, status, errorPage("Publication unavailable", message));
+      const extraHeaders =
+        error instanceof PublicationHttpError ? error.headers : undefined;
+      sendHtml(
+        response,
+        status,
+        errorPage("Publication unavailable", message),
+        "no-store",
+        undefined,
+        extraHeaders,
+      );
     }
   };
+}
+
+interface NegativeCacheEntry {
+  status: number;
+  message: string;
+  expiresAt: number;
+}
+
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
 }
 
 interface RouteContext {
@@ -196,6 +241,10 @@ interface RouteContext {
   now: () => number;
   cache: PublicationCache;
   commentsCache: CommentsCache;
+  negativeCache: Map<string, NegativeCacheEntry>;
+  rateLimit: { windowMs: number; maxRequests: number } | null;
+  rateLimiter: Map<string, RateLimitEntry>;
+  upstreamCooldownUntil: number;
   activePublicationLoads: number;
 }
 
@@ -271,6 +320,7 @@ async function routeRequest(
     sendHtml(response, 404, errorPage("Not found", "This page does not exist."));
     return;
   }
+  enforcePublicationRateLimit(request, context);
   if (context.activePublicationLoads >= MAX_CONCURRENT_PUBLICATION_LOADS) {
     throw new PublicationHttpError(
       503,
@@ -859,6 +909,17 @@ async function loadPublication(
     touchCacheEntry(context.cache, key, cached);
     return cached;
   }
+  const negative = context.negativeCache.get(key);
+  if (negative && negative.expiresAt > context.now()) {
+    throw new PublicationHttpError(negative.status, negative.message);
+  }
+  // GitHub is rate-limiting the shared reader token; don't add to the pile-up.
+  if (context.upstreamCooldownUntil > context.now()) {
+    throw new PublicationHttpError(
+      503,
+      "The publication server is briefly rate-limited. Try again shortly.",
+    );
+  }
   const endpoint = revision
     ? `https://api.github.com/gists/${encodeURIComponent(gistId)}/${encodeURIComponent(revision)}`
     : `https://api.github.com/gists/${encodeURIComponent(gistId)}`;
@@ -884,7 +945,20 @@ async function loadPublication(
     return cached;
   }
   if (upstream.status === 404) {
-    throw new PublicationHttpError(404, "The requested Gist was not found.");
+    throwNegativePublication(context, key, 404, "The requested Gist was not found.");
+  }
+  // GitHub rate-limit (429, or 403 with the remaining-quota header at zero):
+  // enter a global cooldown so every id — not just this one — stops calling
+  // upstream until the token recovers.
+  if (
+    upstream.status === 429 ||
+    (upstream.status === 403 && upstream.headers.get("x-ratelimit-remaining") === "0")
+  ) {
+    context.upstreamCooldownUntil = context.now() + UPSTREAM_COOLDOWN_MS;
+    throw new PublicationHttpError(
+      503,
+      "The publication server is briefly rate-limited. Try again shortly.",
+    );
   }
   if (!upstream.ok) {
     throw new PublicationHttpError(
@@ -905,7 +979,14 @@ async function loadPublication(
   }
   const index = gist.files?.[PUBLICATION_INDEX_FILE];
   if (!index) {
-    throw new PublicationHttpError(422, `This Gist does not contain ${PUBLICATION_INDEX_FILE}.`);
+    // Deterministic for this gist's current content — a stranger's gist that
+    // simply isn't a qmux publication. Cache it so probing such ids stays cheap.
+    throwNegativePublication(
+      context,
+      key,
+      422,
+      `This Gist does not contain ${PUBLICATION_INDEX_FILE}.`,
+    );
   }
   const indexContent = await loadGistFileContent(
     index,
@@ -1128,9 +1209,63 @@ class PublicationHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
   }
+}
+
+// Fixed-window per-client limit on the GitHub-backed publication route. The key
+// is the socket peer address: a forwarded-for header is caller-controlled and
+// trusting it by default would let an attacker spoof past the limit, so a
+// deployment behind a trusted proxy must add that mapping deliberately.
+function enforcePublicationRateLimit(request: IncomingMessage, context: RouteContext) {
+  if (!context.rateLimit) {
+    return;
+  }
+  const now = context.now();
+  const key = request.socket?.remoteAddress ?? "unknown";
+  const entry = context.rateLimiter.get(key);
+  if (!entry || entry.resetAt <= now) {
+    if (context.rateLimiter.size >= MAX_RATE_LIMIT_ENTRIES) {
+      for (const [candidate, value] of context.rateLimiter) {
+        if (value.resetAt <= now) {
+          context.rateLimiter.delete(candidate);
+        }
+      }
+    }
+    context.rateLimiter.set(key, { count: 1, resetAt: now + context.rateLimit.windowMs });
+    return;
+  }
+  if (entry.count >= context.rateLimit.maxRequests) {
+    const retryAfter = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+    throw new PublicationHttpError(
+      429,
+      `Too many requests. Try again in ${retryAfter} second${retryAfter === 1 ? "" : "s"}.`,
+      { "Retry-After": String(retryAfter) },
+    );
+  }
+  entry.count += 1;
+}
+
+// Records a deterministic upstream verdict so repeat requests for the same bad
+// id are answered from memory, then throws it.
+function throwNegativePublication(
+  context: RouteContext,
+  key: string,
+  status: number,
+  message: string,
+): never {
+  const now = context.now();
+  if (context.negativeCache.size >= MAX_NEGATIVE_CACHE_ENTRIES) {
+    for (const [candidate, value] of context.negativeCache) {
+      if (value.expiresAt <= now) {
+        context.negativeCache.delete(candidate);
+      }
+    }
+  }
+  context.negativeCache.set(key, { status, message, expiresAt: now + NEGATIVE_CACHE_MS });
+  throw new PublicationHttpError(status, message);
 }
 
 function transcriptPage(
@@ -1706,6 +1841,7 @@ function sendHtml(
   body: string,
   cacheControl = "no-store",
   method?: string,
+  extraHeaders?: Record<string, string>,
 ) {
   response.writeHead(status, {
     "Content-Type": "text/html; charset=utf-8",
@@ -1715,6 +1851,7 @@ function sendHtml(
       "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
+    ...extraHeaders,
   });
   response.end(method === "HEAD" ? undefined : body);
 }
