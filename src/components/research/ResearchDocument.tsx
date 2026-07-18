@@ -732,22 +732,35 @@ export default function ResearchDocument({
   // Highlight mutations are announced as research events but do not replace
   // the response snapshot. Mirror their refreshed node metadata into the
   // loaded content so another window's changes reach both the document and a
-  // subsequently opened edit warning.
+  // subsequently opened edit warning. Bail on an unchanged id list: every
+  // research event rebuilds the highlights array (4×/s while any run in the
+  // tree streams), and adopting each fresh identity re-ran the paint effect's
+  // full text-node walk per event. Highlights are append/remove-only with
+  // unique ids, so id equality means the anchors are unchanged too.
   useEffect(() => {
     if (!selectedDetailNode) {
       return;
     }
-    setContent((current) =>
-      current?.node.id === selectedDetailNode.id
-        ? {
-            ...current,
-            node: {
-              ...current.node,
-              highlights: selectedDetailNode.highlights,
-            },
-          }
-        : current,
-    );
+    setContent((current) => {
+      if (current?.node.id !== selectedDetailNode.id) {
+        return current;
+      }
+      const previous = current.node.highlights ?? [];
+      const next = selectedDetailNode.highlights ?? [];
+      if (
+        previous.length === next.length &&
+        previous.every((highlight, index) => highlight.id === next[index].id)
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        node: {
+          ...current.node,
+          highlights: selectedDetailNode.highlights,
+        },
+      };
+    });
   }, [selectedDetailNode]);
   const selectedNodeStatus = selectedDetailNode?.status ?? null;
   // The run is marked complete before the adapter finishes flushing, so the
@@ -762,10 +775,25 @@ export default function ResearchDocument({
         : [],
     [detail, selectedNodeId],
   );
-  const anchoredChildren = useMemo(
-    () => childNodes.filter((node) => node.queryAnchor),
-    [childNodes],
-  );
+  // Consumed only by the anchor paint effects, which read each node's id and
+  // immutable queryAnchor — so keep the previous array identity while the id
+  // list is unchanged. `childNodes` is rebuilt by every research event (4×/s
+  // while any run in the tree streams, e.g. a follow-up streaming its
+  // preview), and a fresh identity per event re-resolved and repainted every
+  // anchored passage each time. Cards render from `childNodes` directly and
+  // still see fresh prompts/previews/statuses.
+  const anchoredChildrenRef = useRef<ResearchNode[]>([]);
+  const anchoredChildren = useMemo(() => {
+    const next = childNodes.filter((node) => node.queryAnchor);
+    const previous = anchoredChildrenRef.current;
+    if (
+      previous.length !== next.length ||
+      !previous.every((node, index) => node.id === next[index].id)
+    ) {
+      anchoredChildrenRef.current = next;
+    }
+    return anchoredChildrenRef.current;
+  }, [childNodes]);
   const deletingBranch = useMemo(
     () =>
       deletingBranchId && detail
@@ -1460,13 +1488,17 @@ export default function ResearchDocument({
 
   // Diagram rendering and other child-owned Markdown controls can replace text
   // nodes without changing the transcript items. Observe those commits so saved
-  // ranges are rebuilt against the current rendered projection.
+  // ranges are rebuilt against the current rendered projection. Query-anchor
+  // passages (and an in-progress ask) resolve against the same projection, so
+  // they need the observer even when the node has no saved highlights —
+  // without it their paints and card offsets go stale after a diagram lands.
+  const hasAnchoredPassages = anchoredChildren.length > 0 || Boolean(askAnchor);
   useEffect(() => {
     const root = responseContentRootRef.current;
     if (
       !root ||
       !content?.responseRevision ||
-      !content.node.highlights?.length ||
+      (!content.node.highlights?.length && !hasAnchoredPassages) ||
       !researchHighlightApi() ||
       typeof MutationObserver === "undefined"
     ) {
@@ -1493,6 +1525,7 @@ export default function ResearchDocument({
     content?.node.id,
     content?.node.highlights,
     content?.responseRevision,
+    hasAnchoredPassages,
     showAllTurns,
     showFullTrace,
     timelineItems,
@@ -2732,7 +2765,7 @@ export default function ResearchDocument({
                               : ["queued", "starting", "running"].includes(displayNode.status)
                                 ? timelineItems.length > 0
                                   ? "Waiting for the final response…"
-                                  : "Working..."
+                                  : "Working…"
                                 : "No response is available."}
                     </p>
                   ) : (
