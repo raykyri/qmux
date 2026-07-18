@@ -90,6 +90,9 @@ interface HomeRailsProps {
     pauseAfter: boolean,
     rawText: string,
   ) => void;
+  /** Push the agent's top queued turn immediately (the composer menu's
+   * "Send top queued item now!"); shown on the first queued card only. */
+  onSendNextQueuedTurn: (agentId: string) => void;
   onCreateDraft: (text: string) => Promise<boolean>;
   onDeleteDraft: (draftId: string) => void;
   /** Drop a draft on an agent's rail: atomic claim + send-or-queue. */
@@ -482,6 +485,7 @@ export default function HomeRails({
   onRemoveQueuedTurn,
   onUnpauseAgent,
   onSetQueuedTurnPause,
+  onSendNextQueuedTurn,
   onCreateDraft,
   onDeleteDraft,
   onAssignDraft,
@@ -1121,6 +1125,14 @@ export default function HomeRails({
             items={[
               ...(workstream.paused
                 ? [{ label: "Unpause queue", action: () => onUnpauseAgent(workstream.agentId) }]
+                : []),
+              ...(index === 0
+                ? [
+                    {
+                      label: "Send now",
+                      action: () => onSendNextQueuedTurn(workstream.agentId),
+                    },
+                  ]
                 : []),
               {
                 label: "Edit",

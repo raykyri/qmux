@@ -374,6 +374,7 @@ import {
   setWorktreeLocation,
   spawnAgent,
   spawnShell,
+  sendNextQueuedAgentTurn,
   setQueuedTurnPause,
   submitAgentTurn,
   unpauseAgent,
@@ -4435,6 +4436,18 @@ function MainApp() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return false;
+    }
+  }
+
+  // Home-rail card menu: push the top queued turn immediately, the same command
+  // behind the composer menu's "Send top queued item now!".
+  async function sendNextHomeQueuedTurn(agentId: string) {
+    setError(null);
+    try {
+      const result = await sendNextQueuedAgentTurn(agentId);
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -12692,6 +12705,7 @@ function MainApp() {
                   onSetQueuedTurnPause={(agentId, index, pauseAfter, rawText) =>
                     void setHomeQueuedTurnPause(agentId, index, pauseAfter, rawText)
                   }
+                  onSendNextQueuedTurn={(agentId) => void sendNextHomeQueuedTurn(agentId)}
                   onCreateDraft={createHomeDraft}
                   onDeleteDraft={(draftId) => void deleteHomeDraft(draftId)}
                   onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}
