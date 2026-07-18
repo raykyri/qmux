@@ -3151,6 +3151,41 @@ impl AppState {
         research::document_followup_prompt(&title, markdown, question)
     }
 
+    /// The launch prompt for a follow-up on an exported conversation: the
+    /// serialized conversation rides along as context, since exports are
+    /// severed from their source session and there is nothing to fork.
+    /// Conversation snapshots are immutable, so unlike documents no editor
+    /// lock is needed to capture a coherent version.
+    pub fn research_conversation_followup_prompt(
+        &self,
+        node_id: &str,
+        question: &str,
+    ) -> Result<String, String> {
+        let (node, title) = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let node = model
+                .research_nodes
+                .get(node_id)
+                .cloned()
+                .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            let tree = model
+                .research_trees
+                .get(&node.tree_id)
+                .ok_or_else(|| format!("research tree {} was not found", node.tree_id))?;
+            (node, tree.title.clone())
+        };
+        if node.kind != ResearchNodeKind::Conversation {
+            return Err("the research node is not an exported conversation".to_string());
+        }
+        let turns = research::read_response_snapshot(&self.inner.config.workspace_root, node_id)?
+            .ok_or_else(|| "the conversation's content is unavailable".to_string())?;
+        research::conversation_followup_prompt(&title, &turns, question)
+    }
+
     pub fn create_research_child(
         &self,
         parent_node_id: &str,
@@ -3219,27 +3254,46 @@ impl AppState {
             // A document has no session to fork — its follow-ups launch fresh
             // runs on the default adapter, so only run parents need the
             // checkpoint (and only they carry an adapter to inherit).
-            let (adapter, parent_model) =
-                match parent.kind {
-                    ResearchNodeKind::Document => (
-                        crate::adapters::default_fork_adapter(&self.inner.config)?,
-                        None,
-                    ),
-                    // An exported conversation is severed from its session by
-                    // design; its follow-up launch path (serialized-conversation
-                    // context) lands with the conversation viewer.
-                    ResearchNodeKind::Conversation => {
-                        return Err("follow-ups on exported conversations are not available yet"
-                            .to_string());
+            let (adapter, parent_model) = match parent.kind {
+                ResearchNodeKind::Document => (
+                    crate::adapters::default_fork_adapter(&self.inner.config)?,
+                    None,
+                ),
+                // An exported conversation is severed from its session by
+                // design, so its follow-ups also launch fresh runs, with
+                // the serialized conversation as context. The source
+                // terminal's adapter carries over when it can fork —
+                // children are run nodes whose own follow-ups branch —
+                // else the default fork-capable adapter takes over.
+                ResearchNodeKind::Conversation => {
+                    // No highlights exist on conversations (no answer-v1
+                    // projection), and an anchored quote would re-enter the
+                    // launch prompt outside the serializer's tag
+                    // neutralization.
+                    if query_anchor.is_some() {
+                        return Err(
+                            "highlight follow-ups are not available on exported conversations"
+                                .to_string(),
+                        );
                     }
-                    ResearchNodeKind::Run => {
-                        if parent.native_session_id.is_none() {
-                            return Err("research follow-ups require a recorded parent checkpoint"
-                                .to_string());
-                        }
+                    if crate::adapters::adapter_supports_fork(&parent.adapter) {
                         (parent.adapter, parent.model)
+                    } else {
+                        (
+                            crate::adapters::default_fork_adapter(&self.inner.config)?,
+                            None,
+                        )
                     }
-                };
+                }
+                ResearchNodeKind::Run => {
+                    if parent.native_session_id.is_none() {
+                        return Err(
+                            "research follow-ups require a recorded parent checkpoint".to_string()
+                        );
+                    }
+                    (parent.adapter, parent.model)
+                }
+            };
             let workspace = model
                 .groups
                 .get(&tree.workspace_id)
@@ -10285,6 +10339,62 @@ mod tests {
         state.insert_agent(agent).unwrap();
         let err = export_pane(&state, "pane-1", "group-1", None).unwrap_err();
         assert!(err.contains("user prompt"), "{err}");
+    }
+
+    #[test]
+    fn conversation_followups_admit_children_with_serialized_context() {
+        let state = AppState::new(test_config(temp_workspace()));
+        exportable_terminal_setup(&state, AgentStatus::Idle);
+        append_terminal_exchange(&state, 0, "Question", "Answer");
+        let detail = export_pane(&state, "pane-1", "group-1", None).unwrap();
+        let root_id = detail.tree.root_node_id.clone();
+
+        let child = state
+            .create_research_child(&root_id, "Follow-up question".to_string(), None)
+            .unwrap();
+        assert_eq!(child.kind, ResearchNodeKind::Run);
+        assert_eq!(child.parent_node_id.as_deref(), Some(root_id.as_str()));
+        // The source terminal's adapter carries over (claude can fork, which
+        // the run child's own follow-ups will need).
+        assert_eq!(child.adapter, "claude");
+        assert_eq!(child.status, ResearchNodeStatus::Queued);
+
+        let prompt = state
+            .research_conversation_followup_prompt(&root_id, "Follow-up question")
+            .unwrap();
+        assert!(prompt.contains("<conversation title="), "{prompt}");
+        assert!(prompt.contains("Question"), "{prompt}");
+        assert!(prompt.contains("Answer"), "{prompt}");
+        // The bare question stays a suffix so the child's response boundary
+        // still matches it inside the sent prompt.
+        assert!(prompt.ends_with("Follow-up question"), "{prompt}");
+
+        // Run nodes are not servable by the conversation prompt path.
+        let err = state
+            .research_conversation_followup_prompt(&child.id, "Q")
+            .unwrap_err();
+        assert!(err.contains("not an exported conversation"), "{err}");
+
+        // Highlight-targeted follow-ups are refused on conversation parents:
+        // no highlights exist there, and an anchored quote would bypass the
+        // serializer's tag neutralization.
+        let anchor = crate::research::ResearchHighlightAnchor {
+            version: 1,
+            projection: "answer-v1".to_string(),
+            response_revision: "a".repeat(64),
+            start: 0,
+            end: 6,
+            exact: "Answer".to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        };
+        let err = state
+            .create_research_child(&root_id, "Anchored question".to_string(), Some(anchor))
+            .unwrap_err();
+        assert!(
+            err.contains("not available on exported conversations"),
+            "{err}"
+        );
     }
 
     #[test]

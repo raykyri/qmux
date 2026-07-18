@@ -1094,12 +1094,29 @@ async fn fork_research_node(
                 );
             }
             research::ResearchNodeKind::Conversation => {
-                // Unreachable while create_research_child refuses
-                // conversation parents; the serialized-context launch path
-                // replaces this arm when it lands.
-                let err = "follow-ups on exported conversations are not available yet".to_string();
-                let _ = state.fail_research_node(&child.id, err.clone());
-                return Err(err);
+                // An exported conversation is severed from its source session
+                // — there is nothing to fork. Its follow-up launches a fresh
+                // run whose prompt carries the serialized conversation as
+                // context; the child's displayed prompt stays the bare
+                // question (the response boundary still matches it as a
+                // substring of the sent prompt).
+                let launch_prompt =
+                    state.research_conversation_followup_prompt(&parent.id, &question);
+                let launch_prompt = match launch_prompt {
+                    Ok(launch_prompt) => launch_prompt,
+                    Err(err) => {
+                        let _ = state.fail_research_node(&child.id, err.clone());
+                        return Err(err);
+                    }
+                };
+                return launch_fresh_research_run(
+                    &state,
+                    &child.id,
+                    &workspace,
+                    &child.adapter,
+                    child.model.clone(),
+                    launch_prompt,
+                );
             }
             research::ResearchNodeKind::Run => {}
         }
