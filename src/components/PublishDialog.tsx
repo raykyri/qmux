@@ -460,7 +460,7 @@ export default function PublishDialog({
                   ) : (
                     <Globe2 size={14} aria-hidden="true" />
                   )}
-                  {updating ? "Update" : "Publish"}
+                  {updating ? "Update" : "Publish now"}
                 </button>
               </div>
             </footer>
