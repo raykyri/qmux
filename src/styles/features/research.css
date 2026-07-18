@@ -765,7 +765,12 @@
   width: min(100%, 1160px);
   min-width: 0;
   margin: 0 auto;
-  --research-main-content-max-width: 640px;
+  /* The answer-column cap is spelled literally (640px) at every use below
+     rather than routed through a custom property. The Tauri webview (WebKit)
+     has repeatedly dropped var() substitution inside these declarations —
+     most visibly while an answer was still streaming, where every content
+     update re-lays the grid out — and a dropped cap lets the answer column
+     take its content width and push the follow-up rail off the right edge. */
   --research-content-column-gap: clamp(28px, 4vw, 52px);
   --research-answer-font-delta: 0.5px;
   /* Shared scale for secondary document text. The question and answer use the
@@ -777,7 +782,7 @@
 /* Keep the user's prompt visually distinct from the plain-text answer below. */
 .research-prompt {
   width: fit-content;
-  max-width: min(100%, var(--research-main-content-max-width));
+  max-width: min(100%, 640px);
   margin-bottom: 26px;
   padding: 10px 14px;
   border-radius: 10px;
@@ -809,31 +814,25 @@
 
 .research-response-grid {
   display: grid;
-  /* Reference the width variable directly rather than routing the whole
-     template through an intermediate custom property: WebKit (the Tauri
-     webview) fails to substitute a var() nested inside another custom
-     property consumed by grid-template-columns, which dropped the answer's
-     max-width cap and let the response wrap full width, shoving the follow-up
-     composer off screen. A single level of indirection resolves reliably —
-     the same pattern .research-prompt already relies on. */
-  grid-template-columns:
-    minmax(0, var(--research-main-content-max-width)) minmax(220px, 260px);
+  /* Literal 640px, no var(): WebKit failed the substitution here once via an
+     intermediate custom property and again, intermittently, on streaming
+     (WIP) answers even with direct var() — each dropped cap let the response
+     wrap full width and shoved the follow-up composer off screen. A literal
+     length cannot fail to resolve. */
+  grid-template-columns: minmax(0, 640px) minmax(220px, 260px);
   align-items: start;
   gap: var(--research-content-column-gap);
   min-width: 0;
+  max-width: 100%;
 }
 
 .research-response {
   min-width: 0;
-  /* Cap the answer column directly rather than trusting the grid track's max.
-     The Tauri webview (WebKit) does not reliably honor a var()-driven max
-     inside grid-template-columns' minmax(), so the answer could grow to its
-     content width and shove the follow-up column off the right edge. max-width
-     with a custom property resolves reliably (the pattern .research-prompt
-     already relies on); and because a grid item's max-content contribution is
-     clamped by its own max-width, this also keeps the answer track itself from
-     overrunning even where the track's max is dropped. */
-  max-width: var(--research-main-content-max-width);
+  /* Cap the answer column directly rather than trusting the grid track's max:
+     a grid item's max-content contribution is clamped by its own max-width,
+     so this keeps the answer track from overrunning even where the track's
+     max is dropped. Literal for the same WebKit reason as the grid above. */
+  max-width: 640px;
 }
 
 .research-response-content-root {
