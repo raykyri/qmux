@@ -28,6 +28,8 @@ interface ResearchSidebarSectionProps {
   archivedTrees: ResearchTreeSummary[];
   visibilityFilter: ResearchVisibilityFilter;
   activeTreeId: string | null;
+  multiSelectedIds: string[];
+  onMultiSelectChange: (treeIds: string[]) => void;
   onSelect: (treeId: string) => void;
   onRename: (treeId: string, title: string) => Promise<void>;
   onArchive: (treeId: string) => Promise<void>;
@@ -77,6 +79,8 @@ export default function ResearchSidebarSection({
   archivedTrees,
   visibilityFilter,
   activeTreeId,
+  multiSelectedIds,
+  onMultiSelectChange,
   onSelect,
   onRename,
   onArchive,
@@ -94,6 +98,9 @@ export default function ResearchSidebarSection({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
+  // Range-select anchor: the last plainly clicked (or toggled) row, so a
+  // shift-click extends from where the user last acted, like a file list.
+  const multiSelectAnchorRef = useRef<string | null>(null);
   const pointerDragRef = useRef<ResearchPointerDrag | null>(null);
   const dropTargetRef = useRef<ResearchDropTarget | null>(null);
   const suppressClickRef = useRef(false);
@@ -295,6 +302,10 @@ export default function ResearchSidebarSection({
   ) {
     if (
       event.button !== 0 ||
+      // Modified clicks are selection gestures, never the start of a drag.
+      event.shiftKey ||
+      event.metaKey ||
+      event.ctrlKey ||
       (event.target instanceof Element && event.target.closest("[data-research-menu-trigger]"))
     ) {
       return;
@@ -370,12 +381,53 @@ export default function ResearchSidebarSection({
     }
   }
 
+  // Multi-select gestures. Shift extends a contiguous range from the anchor,
+  // meta/ctrl toggles a single row in or out. Both operate on the visible
+  // active list only — archived rows cannot be foldered or bulk-acted upon.
+  function updateMultiSelection(treeId: string, range: boolean) {
+    const ids = visibleTrees.map((tree) => tree.id);
+    if (!ids.includes(treeId)) {
+      return;
+    }
+    if (range) {
+      const anchorCandidate =
+        multiSelectAnchorRef.current && ids.includes(multiSelectAnchorRef.current)
+          ? multiSelectAnchorRef.current
+          : activeTreeId && ids.includes(activeTreeId)
+            ? activeTreeId
+            : treeId;
+      multiSelectAnchorRef.current = anchorCandidate;
+      const from = ids.indexOf(anchorCandidate);
+      const to = ids.indexOf(treeId);
+      const [start, end] = from <= to ? [from, to] : [to, from];
+      onMultiSelectChange(ids.slice(start, end + 1));
+      return;
+    }
+    // A toggle that starts a fresh multi-selection folds the currently active
+    // row in, so ctrl-clicking a second row reads as "these two".
+    const base =
+      multiSelectedIds.length > 0
+        ? multiSelectedIds.filter((id) => ids.includes(id))
+        : activeTreeId && ids.includes(activeTreeId) && activeTreeId !== treeId
+          ? [activeTreeId]
+          : [];
+    const next = base.includes(treeId)
+      ? base.filter((id) => id !== treeId)
+      : [...base, treeId];
+    multiSelectAnchorRef.current = treeId;
+    onMultiSelectChange(next);
+  }
+
   // Row-level click handling, shared by the row and its select button. The row
   // takes pointer capture on pointerdown (for drag reordering), and a captured
   // pointer retargets the gesture's mouseup — and therefore its click — to the
   // capturing row, so a handler on the inner button alone never fires. The
   // terminal pane tabs handle clicks on their row for the same reason.
-  function selectTreeFromClick(event: ReactMouseEvent<HTMLElement>, treeId: string) {
+  function selectTreeFromClick(
+    event: ReactMouseEvent<HTMLElement>,
+    treeId: string,
+    archived = false,
+  ) {
     if (suppressClickRef.current) {
       return;
     }
@@ -392,6 +444,15 @@ export default function ResearchSidebarSection({
     ) {
       return;
     }
+    if (!archived && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      updateMultiSelection(treeId, event.shiftKey);
+      return;
+    }
+    if (multiSelectedIds.length > 0) {
+      onMultiSelectChange([]);
+    }
+    multiSelectAnchorRef.current = archived ? null : treeId;
     onSelect(treeId);
   }
 
@@ -418,6 +479,8 @@ export default function ResearchSidebarSection({
           <div
             key={tree.id}
             className={`research-sidebar-row${activeTreeId === tree.id ? " is-selected" : ""}${
+              multiSelectedIds.includes(tree.id) ? " is-multi-selected" : ""
+            }${
               menu?.treeId === tree.id ? " has-open-menu" : ""
             }${dragClasses(tree.id, false, index, visibleTrees.length)}`}
             data-research-tree-id={tree.id}
@@ -498,7 +561,7 @@ export default function ResearchSidebarSection({
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerCancel}
-                onClick={(event) => selectTreeFromClick(event, tree.id)}
+                onClick={(event) => selectTreeFromClick(event, tree.id, true)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -512,7 +575,7 @@ export default function ResearchSidebarSection({
                   title={tree.title}
                   onClick={(event) => {
                     event.stopPropagation();
-                    selectTreeFromClick(event, tree.id);
+                    selectTreeFromClick(event, tree.id, true);
                   }}
                 >
                   <span className="research-sidebar-copy">

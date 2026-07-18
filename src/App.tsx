@@ -28,6 +28,7 @@ import {
   Globe,
   GitBranch,
   House,
+  Layers,
   LoaderCircle,
   MessageSquareText,
   Minimize2,
@@ -1414,6 +1415,9 @@ function MainApp() {
   activeResearchPaneIdRef.current = activeResearchPaneId;
   const [researchTrees, setResearchTrees] = useState<ResearchTreeSummary[]>([]);
   const [archivedResearchTrees, setArchivedResearchTrees] = useState<ResearchTreeSummary[]>([]);
+  // Sidebar multi-selection (shift/meta click). Pruned against the scoped
+  // active list where it is consumed, so stale ids drop out on their own.
+  const [researchMultiSelectIds, setResearchMultiSelectIds] = useState<string[]>([]);
   const [researchVisibilityFilter, setResearchVisibilityFilter] =
     useState<ResearchVisibilityFilter>(() => {
       const stored = localStorage.getItem(RESEARCH_VISIBILITY_FILTER_KEY);
@@ -2052,6 +2056,15 @@ function MainApp() {
   const scopedArchivedResearchTrees = useMemo(
     () => treesForResearchScope(archivedResearchTrees, researchScope),
     [archivedResearchTrees, researchScope],
+  );
+  // The live multi-selection: only ids that still exist in the scoped active
+  // list count, so deletions and scope changes shrink it automatically.
+  const researchMultiSelection = useMemo(
+    () =>
+      researchMultiSelectIds.filter((id) =>
+        scopedResearchTrees.some((tree) => tree.id === id),
+      ),
+    [researchMultiSelectIds, scopedResearchTrees],
   );
   // Menu badges and the folder-replace dialog both count every tree that keeps
   // a folder alive, so archived trees are included (removal is blocked on them).
@@ -5311,6 +5324,9 @@ function MainApp() {
     researchDetailRequestSeqRef.current = requestSeq;
     setSidebarMode("research");
     setActiveSurface("research");
+    // A single selection always dissolves a sidebar multi-selection; leaving
+    // it standing would keep the placeholder covering the opened document.
+    setResearchMultiSelectIds([]);
     activeResearchPaneIdRef.current = null;
     setActiveResearchPaneId(null);
     localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
@@ -5359,6 +5375,7 @@ function MainApp() {
     researchDetailRequestSeqRef.current += 1;
     setSidebarMode("research");
     setActiveSurface("research");
+    setResearchMultiSelectIds([]);
     activeResearchPaneIdRef.current = null;
     setActiveResearchPaneId(null);
     localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
@@ -9820,6 +9837,7 @@ function MainApp() {
             folderPickerBusy={folderPickerStatus !== null}
             onSelectScope={(scope) => {
               changeResearchFolderScope(scope);
+              setResearchMultiSelectIds([]);
               // Keep the selection inside the new scope: an active document
               // from another folder would otherwise sit with no sidebar row.
               const allTrees = [...researchTrees, ...archivedResearchTrees];
@@ -9903,6 +9921,8 @@ function MainApp() {
               archivedTrees={scopedArchivedResearchTrees}
               visibilityFilter={researchVisibilityFilter}
               activeTreeId={activeResearchTreeId}
+              multiSelectedIds={researchMultiSelection}
+              onMultiSelectChange={setResearchMultiSelectIds}
               onSelect={(treeId) => {
                 if (
                   isResearchTreeSelectionChange(
@@ -11664,7 +11684,15 @@ function MainApp() {
           ref={terminalStageRef}
           className={`terminal-stage${IS_MAC ? " is-native" : ""}${homeActive ? " is-home" : ""}${researchSurfaceActive ? " is-research" : ""}`}
         >
-          {researchSurfaceActive && activeResearchTreeId ? (
+          {researchSurfaceActive && researchMultiSelection.length > 1 ? (
+            <div className="research-multi-select-state" aria-live="polite">
+              <Layers size={48} aria-hidden="true" />
+              <span>{researchMultiSelection.length} research items selected</span>
+            </div>
+          ) : null}
+          {researchSurfaceActive &&
+          researchMultiSelection.length <= 1 &&
+          activeResearchTreeId ? (
             // Keyed by tree: the document's per-tree state (selection, fetched
             // content, follow-up draft) must not survive a tree switch. Without
             // the remount, the new tree's detail landing paints one frame of the
@@ -11709,7 +11737,9 @@ function MainApp() {
               }}
             />
           ) : null}
-          {researchSurfaceActive && !activeResearchTreeId ? (
+          {researchSurfaceActive &&
+          researchMultiSelection.length <= 1 &&
+          !activeResearchTreeId ? (
             <div className="research-empty-state">
               <NewResearchDialog
                 open
