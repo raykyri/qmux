@@ -141,6 +141,12 @@ final class NativeTerminalPane: NSObject,
             builder.withWindowPaddingY(10)
             builder.withCustom("shell-integration", "none")
             builder.withCustom("confirm-close-surface", "false")
+            // Keep Shift as an unconditional escape hatch from application
+            // mouse reporting. The default permits a TUI to request Shift
+            // capture with XTSHIFTESCAPE, which can make Shift-scroll reach
+            // the program instead of Ghostty's scrollback. `never` preserves
+            // Ghostty's native wheel/trackpad scrolling even for those apps.
+            builder.withCustom("mouse-shift-capture", "never")
             // ⌘Q is passed through the native key monitor so the app menu can
             // run qmux's exit confirmation — Ghostty's own quit binding would
             // consume it first via performKeyEquivalent.
