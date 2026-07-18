@@ -793,6 +793,13 @@
   background: #4a3a10;
 }
 
+/* The passage of the hover-linked follow-up (hovering either the card or the
+   passage links the pair). Painted over the base query-anchor tone. */
+::highlight(qmux-research-anchor-link) {
+  color: inherit;
+  background: #6b5417;
+}
+
 .research-highlight-actions {
   position: fixed;
   z-index: var(--z-context-menu);
@@ -975,6 +982,17 @@
   color: #69716d;
   font-size: var(--research-meta-font-size);
   line-height: 1.3;
+}
+
+.research-hidden-highlights-reveal {
+  display: inline;
+  padding: 0;
+  border: 0;
+  color: #7d8782;
+  font: inherit;
+  text-decoration: underline;
+  background: transparent;
+  cursor: pointer;
 }
 
 .research-answer-copy {
@@ -1316,9 +1334,20 @@
 }
 
 .research-followup-card.is-anchored:hover,
-.research-followup-card.is-anchored:focus-visible {
+.research-followup-card.is-anchored:focus-visible,
+.research-followup-card.is-anchored.is-anchor-linked {
   z-index: 4;
   border-color: var(--surface-border-default);
+}
+
+/* Passage-side hover linking mirrors the card's own hover treatment so the
+   pair reads as one unit from either end. */
+.research-followup-card.is-anchor-linked > strong {
+  color: #f2f4f1;
+}
+
+.research-followup-card.is-anchor-linked .research-followup-preview {
+  color: #7d8580;
 }
 
 .research-followup-card:hover > strong {

@@ -183,6 +183,7 @@ interface ResearchHighlightApi {
 
 const RESEARCH_HIGHLIGHT_NAME = "qmux-research-highlights";
 const RESEARCH_QUERY_ANCHOR_NAME = "qmux-research-query-anchors";
+const RESEARCH_ANCHOR_LINK_NAME = "qmux-research-anchor-link";
 const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
 // Clearance between the anchored composer's bottom edge and the first pushed
 // follow-up card.
@@ -256,6 +257,55 @@ function selectionOffsets(root: HTMLElement, range: Range) {
   const start = prefixRange.cloneContents().textContent?.length ?? 0;
   const end = throughSelectionRange.cloneContents().textContent?.length ?? 0;
   return end > start ? { start, end } : null;
+}
+
+/** The flat rendered-text offset of a caret position, or null when the
+ * position sits outside `root`. Text-node positions take the cheap walking
+ * path; element positions (rare — clicks on gaps between blocks) fall back to
+ * the same clone-and-measure approach as `selectionOffsets`. */
+function flatTextOffsetAt(root: HTMLElement, node: Node, offsetInNode: number) {
+  if (!root.contains(node)) {
+    return null;
+  }
+  if (node.nodeType === Node.TEXT_NODE) {
+    let consumed = 0;
+    for (const textNode of textNodesWithin(root)) {
+      if (textNode === node) {
+        return consumed + Math.min(offsetInNode, textNode.data.length);
+      }
+      consumed += textNode.data.length;
+    }
+    return null;
+  }
+  const probe = document.createRange();
+  probe.selectNodeContents(root);
+  try {
+    probe.setEnd(node, offsetInNode);
+  } catch {
+    return null;
+  }
+  return probe.cloneContents().textContent?.length ?? 0;
+}
+
+/** Hit-tests a viewport point against the rendered text: the flat offset the
+ * point falls on, or null off-text. caretRangeFromPoint is the WebKit spelling,
+ * caretPositionFromPoint the standard one. */
+function flatOffsetAtPoint(root: HTMLElement, clientX: number, clientY: number) {
+  const doc = document as Document & {
+    caretPositionFromPoint?: (
+      x: number,
+      y: number,
+    ) => { offsetNode: Node; offset: number } | null;
+  };
+  if (typeof doc.caretRangeFromPoint === "function") {
+    const range = doc.caretRangeFromPoint(clientX, clientY);
+    return range ? flatTextOffsetAt(root, range.startContainer, range.startOffset) : null;
+  }
+  if (typeof doc.caretPositionFromPoint === "function") {
+    const position = doc.caretPositionFromPoint(clientX, clientY);
+    return position ? flatTextOffsetAt(root, position.offsetNode, position.offset) : null;
+  }
+  return null;
 }
 
 function textContextSlice(text: string, start: number, end: number) {
@@ -455,6 +505,14 @@ export default function ResearchDocument({
   const [showFullTrace, setShowFullTrace] = useState(false);
   const [highlightAction, setHighlightAction] = useState<HighlightAction | null>(null);
   const [savingHighlight, setSavingHighlight] = useState(false);
+  // Saved highlights whose anchors no longer locate a passage in the current
+  // rendered projection (collapsed transcript content, an edited document).
+  // They still exist — surfaced in the footer instead of vanishing silently.
+  const [hiddenHighlightCount, setHiddenHighlightCount] = useState(0);
+  // The anchored follow-up currently hover-linked to its passage, from either
+  // side: hovering the card brightens the passage, hovering the passage
+  // raises the card. One state serves both directions.
+  const [linkedAnchorNodeId, setLinkedAnchorNodeId] = useState<string | null>(null);
   // Ask mode: the selection anchor a targeted follow-up is being composed
   // against. While set, the composer sits beside the quoted passage.
   const [askAnchor, setAskAnchor] = useState<ResearchHighlightAnchor | null>(null);
@@ -482,6 +540,11 @@ export default function ResearchDocument({
   const followupMenuRef = useRef<HTMLDivElement | null>(null);
   const responseContentRootRef = useRef<HTMLDivElement | null>(null);
   const resolvedHighlightsRef = useRef<ResolvedHighlight[]>([]);
+  // Flat-offset ranges of the query-anchor passages that resolved, refreshed
+  // by the anchor paint effect. Consulted by pointer hit-testing (passage-side
+  // hover linking) and by the link paint effect.
+  const anchoredRangeOffsetsRef = useRef<{ id: string; start: number; end: number }[]>([]);
+  const anchorHoverFrameRef = useRef<number | null>(null);
   const navigationRef = useRef(researchNavigationStore());
   const navigationPersistTimerRef = useRef<number | null>(null);
   const selectedNodeIdRef = useRef(selectedNodeId);
@@ -528,6 +591,7 @@ export default function ResearchDocument({
   useEffect(() => {
     setHighlightAction(null);
     setAskAnchor(null);
+    setLinkedAnchorNodeId(null);
     window.getSelection()?.removeAllRanges();
   }, [treeId, selectedNodeId, content?.responseRevision, showAllTurns, showFullTrace]);
 
@@ -1297,6 +1361,9 @@ export default function ResearchDocument({
     api?.registry.delete(RESEARCH_HIGHLIGHT_NAME);
     resolvedHighlightsRef.current = [];
     if (!root || !api || !content?.responseRevision) {
+      // Nothing is resolvable here (no content yet, or no Highlight API at
+      // all) — that is not "hidden highlights", so keep the footer quiet.
+      setHiddenHighlightCount(0);
       return;
     }
     const projection = root.textContent ?? "";
@@ -1324,6 +1391,9 @@ export default function ResearchDocument({
       }
       api.registry.set(RESEARCH_HIGHLIGHT_NAME, painted);
     }
+    setHiddenHighlightCount(
+      (content.node.highlights?.length ?? 0) - resolvedHighlightsRef.current.length,
+    );
     return () => {
       api.registry.delete(RESEARCH_HIGHLIGHT_NAME);
     };
@@ -1348,6 +1418,7 @@ export default function ResearchDocument({
     const aside = followupsAsideRef.current;
     const revision = content?.responseRevision;
     const tops: Record<string, number> = {};
+    anchoredRangeOffsetsRef.current = [];
     if (root && api && revision) {
       const projection = root.textContent ?? "";
       const asideTop = aside?.getBoundingClientRect().top ?? 0;
@@ -1372,11 +1443,14 @@ export default function ResearchDocument({
           continue;
         }
         ranges.push(range);
-        if (id !== "__ask__" && aside) {
-          tops[id] = Math.max(
-            0,
-            Math.round(range.getBoundingClientRect().top - asideTop),
-          );
+        if (id !== "__ask__") {
+          anchoredRangeOffsetsRef.current.push({ id, ...offsets! });
+          if (aside) {
+            tops[id] = Math.max(
+              0,
+              Math.round(range.getBoundingClientRect().top - asideTop),
+            );
+          }
         }
       }
       if (ranges.length > 0) {
@@ -1401,6 +1475,31 @@ export default function ResearchDocument({
     showFullTrace,
     timelineItems,
   ]);
+
+  // Brighten the hover-linked follow-up's passage. Depends on anchoredCardTops
+  // (set in the same commit that refreshes the offsets ref) so a re-resolution
+  // repaints the link against current offsets.
+  useLayoutEffect(() => {
+    const api = researchHighlightApi();
+    api?.registry.delete(RESEARCH_ANCHOR_LINK_NAME);
+    const root = responseContentRootRef.current;
+    if (!api || !root || !linkedAnchorNodeId) {
+      return;
+    }
+    const entry = anchoredRangeOffsetsRef.current.find(
+      (candidate) => candidate.id === linkedAnchorNodeId,
+    );
+    const range = entry ? rangeForTextOffsets(root, entry.start, entry.end) : null;
+    if (!range) {
+      return;
+    }
+    const painted = new api.Highlight();
+    painted.add(range);
+    api.registry.set(RESEARCH_ANCHOR_LINK_NAME, painted);
+    return () => {
+      api.registry.delete(RESEARCH_ANCHOR_LINK_NAME);
+    };
+  }, [anchoredCardTops, highlightDomNonce, linkedAnchorNodeId]);
 
   // One-pass collision resolution for anchored cards: place them in
   // desired-top order, each no higher than the previous card's bottom plus a
@@ -1575,6 +1674,80 @@ export default function ResearchDocument({
       top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
     });
   }, [content?.responseRevision]);
+
+  // A plain click on a painted highlight selects the whole annotation, which
+  // reopens the action bar (Remove / Ask) through the ordinary selection flow.
+  // Runs on click, after the mouseup capture has already dismissed the bar for
+  // a collapsed selection; CSS highlights have no DOM nodes, so the click is
+  // hit-tested against the resolved flat-offset ranges.
+  const selectHighlightAtPoint = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const root = responseContentRootRef.current;
+      const selection = window.getSelection();
+      if (!root || !selection || !selection.isCollapsed) {
+        return;
+      }
+      // Links keep their own click behavior; popping the bar under a
+      // navigation would be noise.
+      if (event.target instanceof Element && event.target.closest("a")) {
+        return;
+      }
+      const offset = flatOffsetAtPoint(root, event.clientX, event.clientY);
+      if (offset === null) {
+        return;
+      }
+      const resolved = resolvedHighlightsRef.current.find(
+        ({ start, end }) => offset >= start && offset < end,
+      );
+      if (!resolved) {
+        return;
+      }
+      const range = rangeForTextOffsets(root, resolved.start, resolved.end);
+      if (!range) {
+        return;
+      }
+      selection.removeAllRanges();
+      selection.addRange(range);
+      captureHighlightSelection();
+    },
+    [captureHighlightSelection],
+  );
+
+  // Passage-side hover linking: hit-test the pointer against the resolved
+  // query-anchor ranges (rAF-throttled — the walk is cheap but not free) and
+  // link the follow-up card whose passage the pointer is over.
+  const linkAnchorUnderPointer = useCallback((event: React.MouseEvent) => {
+    const { clientX, clientY } = event;
+    if (anchorHoverFrameRef.current !== null) {
+      return;
+    }
+    anchorHoverFrameRef.current = window.requestAnimationFrame(() => {
+      anchorHoverFrameRef.current = null;
+      const root = responseContentRootRef.current;
+      if (!root) {
+        return;
+      }
+      const offset =
+        anchoredRangeOffsetsRef.current.length > 0
+          ? flatOffsetAtPoint(root, clientX, clientY)
+          : null;
+      const id =
+        offset === null
+          ? null
+          : anchoredRangeOffsetsRef.current.find(
+              ({ start, end }) => offset >= start && offset < end,
+            )?.id ?? null;
+      setLinkedAnchorNodeId((current) => (current === id ? current : id));
+    });
+  }, []);
+
+  const unlinkAnchorPointer = useCallback(() => {
+    if (anchorHoverFrameRef.current !== null) {
+      window.cancelAnimationFrame(anchorHoverFrameRef.current);
+      anchorHoverFrameRef.current = null;
+    }
+    setLinkedAnchorNodeId(null);
+  }, []);
 
   const applyHighlightAction = useCallback(async () => {
     if (!highlightAction || !content || savingHighlight) {
@@ -1957,10 +2130,17 @@ export default function ResearchDocument({
       type="button"
       className={`control-button research-followup-card${
         anchoredTop !== undefined ? " is-anchored" : ""
-      }`}
+      }${linkedAnchorNodeId === child.id ? " is-anchor-linked" : ""}`}
       style={anchoredTop !== undefined ? { top: anchoredTop } : undefined}
       data-node-id={child.id}
       onClick={() => selectNode(child.id)}
+      onMouseEnter={child.queryAnchor ? () => setLinkedAnchorNodeId(child.id) : undefined}
+      onMouseLeave={
+        child.queryAnchor
+          ? () =>
+              setLinkedAnchorNodeId((current) => (current === child.id ? null : current))
+          : undefined
+      }
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -2188,6 +2368,9 @@ export default function ResearchDocument({
                         className="research-response-content-root"
                         onMouseUp={captureHighlightSelection}
                         onKeyUp={captureHighlightSelection}
+                        onClick={selectHighlightAtPoint}
+                        onMouseMove={linkAnchorUnderPointer}
+                        onMouseLeave={unlinkAnchorPointer}
                       >
                         {visibleTimelineItems.map((item) => (
                           <ResearchTimelineItem key={item.key} item={item} />
@@ -2214,6 +2397,28 @@ export default function ResearchDocument({
                         </span>
                       ) : generationActive ? (
                         <span>Waiting to start</span>
+                      ) : null}
+                      {hiddenHighlightCount > 0 ? (
+                        <span
+                          className="research-hidden-highlights"
+                          title="These saved highlights couldn't be located in the current view. Their passages may sit in content that isn't rendered right now."
+                        >
+                          {hiddenHighlightCount}{" "}
+                          {hiddenHighlightCount === 1 ? "highlight" : "highlights"} not
+                          visible in this view
+                          {hasTranscriptActivity && !showFullTrace ? (
+                            <>
+                              {" · "}
+                              <button
+                                type="button"
+                                className="control-button research-hidden-highlights-reveal"
+                                onClick={() => setShowFullTrace(true)}
+                              >
+                                Show full transcript
+                              </button>
+                            </>
+                          ) : null}
+                        </span>
                       ) : null}
                       {displayNode.status === "complete" && rawAnswer ? (
                         <button
