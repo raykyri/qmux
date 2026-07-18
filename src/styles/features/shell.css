@@ -1182,12 +1182,33 @@
   font-family: var(--font-ui);
 }
 
-.sidebar-actions button:hover,
-.terminal-empty-actions button:hover,
-.native-input-submit-actions button:hover:not(:disabled) {
-  border-color: var(--control-border-hover-accent);
-  background: var(--control-bg-hover);
-  color: var(--text-heading);
+/* These action buttons (and the global launcher's) take the same resting/
+   hover/disabled treatment as the pane-header buttons (.turn-pane-header-button)
+   so every chrome-level button reads as one control set — notably in the warm
+   theme, whose --control-border-hover-accent is a blue that clashed here.
+   Menu items nested inside the same containers keep their popover idiom. */
+.sidebar-actions button:not(.menu-item),
+.terminal-empty-actions button:not(.menu-item),
+.native-input-submit-actions button:not(.menu-item),
+.global-task-launcher-actions button:not(.menu-item) {
+  background: var(--chrome-control-bg);
+  color: var(--text-secondary);
+}
+
+.sidebar-actions button:not(.menu-item):hover:not(:disabled),
+.terminal-empty-actions button:not(.menu-item):hover:not(:disabled),
+.native-input-submit-actions button:not(.menu-item):hover:not(:disabled),
+.global-task-launcher-actions button:not(.menu-item):hover:not(:disabled) {
+  background: var(--chrome-control-bg-hover);
+  color: var(--text-strong);
+}
+
+.sidebar-actions button:not(.menu-item):disabled,
+.terminal-empty-actions button:not(.menu-item):disabled,
+.native-input-submit-actions button:not(.menu-item):disabled,
+.global-task-launcher-actions button:not(.menu-item):disabled {
+  background: var(--chrome-control-bg-disabled);
+  color: var(--text-faint);
 }
 
 .sidebar-actions button svg,

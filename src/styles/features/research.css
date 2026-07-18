@@ -807,29 +807,35 @@
   gap: 6px;
 }
 
+/* Highlight/Expand/Ask share the pane-header buttons' state colors
+   (.turn-pane-header-button) so floating actions match the rest of the
+   chrome in both themes; the old hardcoded hover was green-tinted and
+   read wrong in the warm theme. */
 .research-highlight-action {
   gap: 7px;
   width: max-content;
   min-height: 27px;
   padding: 0 8px;
-  border: 1px solid var(--surface-border-default);
+  border: 1px solid var(--control-border);
   border-radius: 5px;
-  color: var(--text-interactive);
+  color: var(--text-secondary);
   font-family: var(--font-ui);
   font-size: calc(13px + var(--turn-font-delta, 0px));
   font-weight: 400;
   line-height: 1;
-  background: var(--research-highlight-action-bg);
+  background: var(--chrome-control-bg);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.38);
   cursor: pointer;
 }
 
-.research-highlight-action:hover {
-  background: #3a403c;
+.research-highlight-action:hover:not(:disabled) {
+  background: var(--chrome-control-bg-hover);
+  color: var(--text-strong);
 }
 
 .research-highlight-action:disabled {
-  color: #929994;
+  background: var(--chrome-control-bg-disabled);
+  color: var(--text-faint);
   cursor: default;
 }
 
