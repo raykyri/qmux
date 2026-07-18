@@ -1685,7 +1685,9 @@ function MainApp() {
     () => lastUserInputSeqRef.current > lastWindowFocusSeqRef.current,
     [],
   );
-  const [settingsTab, setSettingsTab] = useState<"basic" | "advanced">("basic");
+  const [settingsTab, setSettingsTab] = useState<"basic" | "theme" | "mouseCursor">(
+    "basic",
+  );
   const [openRouterKeyVisible, setOpenRouterKeyVisible] = useState(false);
   const [showHideShortcutSetting, setShowHideShortcutSetting] =
     useState<ShowHideShortcutSetting>({
@@ -11398,16 +11400,27 @@ function MainApp() {
               <button
                 type="button"
                 role="tab"
-                aria-selected={settingsTab === "advanced"}
-                className={`control-button${settingsTab === "advanced" ? " is-active" : ""}`}
-                onClick={() => setSettingsTab("advanced")}
+                aria-selected={settingsTab === "theme"}
+                className={`control-button${settingsTab === "theme" ? " is-active" : ""}`}
+                onClick={() => setSettingsTab("theme")}
               >
-                Advanced
+                Theme
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={settingsTab === "mouseCursor"}
+                className={`control-button${settingsTab === "mouseCursor" ? " is-active" : ""}`}
+                onClick={() => setSettingsTab("mouseCursor")}
+              >
+                Mouse &amp; Cursor
               </button>
             </div>
 
-            {settingsTab === "basic" ? (
+            {settingsTab !== "mouseCursor" ? (
               <div className="settings-content" role="tabpanel">
+            {settingsTab === "theme" ? (
+              <>
             <div className="settings-row">
               <label htmlFor="settings-color-theme" className="settings-label">
                 Color theme
@@ -11562,38 +11575,9 @@ function MainApp() {
                 </button>
               </div>
             </div>
-
-            <div className="settings-divider" role="separator" />
-
-            <div className="settings-row">
-              <label htmlFor="settings-worktree-location" className="settings-label">
-                Worktree location
-              </label>
-              <select
-                id="settings-worktree-location"
-                className="settings-select"
-                value={settings.worktreeLocation}
-                onChange={(event) => {
-                  const worktreeLocation =
-                    event.currentTarget.value as AppSettings["worktreeLocation"];
-                  setSettings((current) => ({ ...current, worktreeLocation }));
-                }}
-              >
-                {WORKTREE_LOCATION_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <p className="settings-hint">
-              {settings.worktreeLocation === "localQmux"
-                ? "New worktrees stored in <project>/.qmux/worktrees/<name>."
-                : settings.worktreeLocation === "localClaude"
-                  ? "New worktrees stored in <project>/.claude/worktrees/<name>."
-                  : "New worktrees stored in qmux’s global workspace directory."}
-            </p>
-
+              </>
+            ) : (
+              <>
             <label className="settings-row settings-toggle">
               <span className="settings-label">
                 Code mode (enables worktrees, extra shell UI, etc.)
@@ -11671,6 +11655,38 @@ function MainApp() {
                 }}
               />
             </label>
+
+            <div className="settings-row">
+              <label
+                htmlFor="settings-worktree-location"
+                className="settings-label settings-label-indented"
+              >
+                Worktree location
+              </label>
+              <select
+                id="settings-worktree-location"
+                className="settings-select"
+                value={settings.worktreeLocation}
+                onChange={(event) => {
+                  const worktreeLocation =
+                    event.currentTarget.value as AppSettings["worktreeLocation"];
+                  setSettings((current) => ({ ...current, worktreeLocation }));
+                }}
+              >
+                {WORKTREE_LOCATION_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="settings-hint settings-hint-indented">
+              {settings.worktreeLocation === "localQmux"
+                ? "New worktrees stored in <project>/.qmux/worktrees/<name>."
+                : settings.worktreeLocation === "localClaude"
+                  ? "New worktrees stored in <project>/.claude/worktrees/<name>."
+                  : "New worktrees stored in qmux’s global workspace directory."}
+            </p>
 
             <label className="settings-row settings-toggle">
               <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
@@ -11952,6 +11968,8 @@ function MainApp() {
                 ) : null}
               </div>
             ) : null}
+              </>
+            )}
               </div>
             ) : (
               <div className="settings-content" role="tabpanel">
