@@ -8179,6 +8179,24 @@ function MainApp() {
     };
   }, []);
 
+  // A selected research highlight is a real DOM selection. WebKit does not
+  // reliably emit selectionchange when the research document unmounts during
+  // a surface handoff, which can leave webSelectionActive wedged true and deny
+  // the returning native terminal keyboard ownership. The departed selection
+  // has no visible content to preserve, so clear it as the pane surface lands.
+  // This only runs when the surface changes; selections made in an already
+  // active terminal transcript still retain WebKit keyboard ownership.
+  useLayoutEffect(() => {
+    if (activeSurface !== "pane") {
+      return;
+    }
+    const selection = document.getSelection();
+    if (selection && !selection.isCollapsed) {
+      selection.removeAllRanges();
+    }
+    setWebSelectionActive(false);
+  }, [activeSurface]);
+
   // Backstop for editables that unmount together with a closing pane (the
   // terminal and transcript find inputs live inside pane subtrees): WebKit
   // emits no focusout when a focused element is removed, so without this a
