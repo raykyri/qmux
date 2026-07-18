@@ -1,0 +1,800 @@
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent as ReactFormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import { Check } from "lucide-react";
+import type { AgentStatusTone } from "../lib/appHelpers";
+import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
+import { formatRelativeTime } from "../lib/transcriptSessions";
+import { QueuedTurnCard, waitFooterTitle, type QueuedTurnCardTone } from "./QueuedTurnCard";
+
+export interface HomeRailQueuedTurn {
+  /** Display text (instruction blocks stripped). */
+  text: string;
+  /** The turn's stored text, verbatim — what the queue commands' expectedData
+   * checks compare against. Drags must send this, never the stripped text. */
+  rawText: string;
+  pauseAfter: boolean;
+  waitForAgentId?: string | null;
+  waitForLabel?: string | null;
+  deliveryLabel?: string | null;
+}
+
+export interface HomeRailPastTurn {
+  id: string;
+  text: string;
+  /** Millis when the exchange settled (its last record before the next
+   * prompt); null when the transcript carries no time data. */
+  settledAt: number | null;
+}
+
+export interface HomeRailWorkstream {
+  agentId: string;
+  paneId: string;
+  /** The pane's root terminal-scope sidebar group — the home workspace tab
+   * this workstream files under (nested child groups fold into their root). */
+  rootGroupId: string;
+  title: string;
+  statusTone: AgentStatusTone;
+  statusClass: string;
+  waitingOnPane: boolean;
+  latestUserTurn: string | null;
+  /** When the latest prompt was sent — feeds the current card's elapsed time. */
+  currentStartedAt: number | null;
+  /** When the transcript last moved — the settled receipt for done agents. */
+  currentSettledAt: number | null;
+  pastTurns: HomeRailPastTurn[];
+  queuedTurns: HomeRailQueuedTurn[];
+}
+
+/** A rail's scroll state, kept by the app so it survives Home unmounting.
+ * `stuck` means pinned to the bottom: new cards keep the rail at "now". */
+export interface HomeRailScrollPosition {
+  top: number;
+  stuck: boolean;
+}
+
+interface HomeRailsProps {
+  workstreams: HomeRailWorkstream[];
+  onActivatePane: (paneId: string) => void;
+  onReorderQueuedTurn: (agentId: string, fromIndex: number, toIndex: number, text: string) => void;
+  /** Cross-rail drop; the backend appends to the target agent's queue. */
+  onMoveQueuedTurn: (fromAgentId: string, toAgentId: string, index: number, text: string) => void;
+  onQueueTurn: (agentId: string, text: string) => Promise<boolean>;
+  readRailScroll: (agentId: string) => HomeRailScrollPosition | null;
+  saveRailScroll: (agentId: string, position: HomeRailScrollPosition) => void;
+}
+
+interface LinkPath {
+  key: string;
+  d: string;
+}
+
+type RailPointerDrag = {
+  pointerId: number;
+  agentId: string;
+  from: number;
+  // The grabbed card's stored (raw) text — re-derives the index if the queue
+  // shifts mid-drag and feeds the backend's expectedData check.
+  text: string;
+  startX: number;
+  startY: number;
+  active: boolean;
+};
+
+const RAIL_DRAG_START_THRESHOLD = 4;
+
+const STATUS_TONE_LABELS: Record<AgentStatusTone, string> = {
+  active: "running",
+  pending: "starting",
+  attention: "awaiting input",
+  done: "done",
+  error: "failed",
+  idle: "idle",
+};
+
+function statusDotClass(workstream: HomeRailWorkstream) {
+  return [
+    "pane-tab-dot",
+    `status-${workstream.statusTone}`,
+    workstream.statusClass,
+    workstream.waitingOnPane ? "is-waiting-on-pane" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function statusLabel(workstream: HomeRailWorkstream) {
+  return workstream.waitingOnPane
+    ? "waiting on another pane"
+    : STATUS_TONE_LABELS[workstream.statusTone];
+}
+
+function currentCardTone(tone: AgentStatusTone): QueuedTurnCardTone {
+  switch (tone) {
+    case "attention":
+      return "attention";
+    case "error":
+      return "error";
+    case "done":
+    case "idle":
+      return "done";
+    default:
+      return "active";
+  }
+}
+
+function queuedCardKey(agentId: string, index: number) {
+  return `${agentId}:${index}`;
+}
+
+// Image paste markers render as a muted "[Image]" chip instead of the raw
+// image-cache path, matching the right pane's collapsed tag blocks.
+function renderCardText(text: string): ReactNode {
+  const segments = splitImageMarkers(text);
+  if (segments.length === 1 && segments[0].kind !== "image") {
+    return text;
+  }
+  return segments.map((segment, index) =>
+    segment.kind === "image" ? (
+      <span key={index} className="queued-turn-image-chip">
+        {COLLAPSED_IMAGE_LABEL}
+      </span>
+    ) : (
+      <Fragment key={index}>{segment.text}</Fragment>
+    ),
+  );
+}
+
+function formatElapsedShort(ms: number): string | null {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) {
+    return null;
+  }
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 && hours < 10 ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+// Links route orthogonally along the gutter between rails: a short horizontal
+// exit, a rounded corner, a vertical run hugging the source column's edge, and
+// a horizontal approach ending in the arrowhead at the target card's edge — so
+// a link never crosses its own columns' card content. Coordinates are measured
+// against the scrollable content box (.home-rails-inner), not the scroll
+// viewport, so links stay glued to their cards while panning.
+export function railLinkPath(
+  fromRect: DOMRect,
+  toRect: DOMRect,
+  baseRect: DOMRect,
+  fromSide: "left" | "right",
+  toSide: "left" | "right",
+) {
+  const point = (rect: DOMRect, side: "left" | "right") => ({
+    x: (side === "left" ? rect.left - 2 : rect.right + 2) - baseRect.left,
+    y: rect.top + rect.height / 2 - baseRect.top,
+  });
+  const a = point(fromRect, fromSide);
+  const b = point(toRect, toSide);
+  if (Math.abs(b.y - a.y) < 1) {
+    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+  }
+  const gx =
+    fromSide === toSide ? Math.max(a.x, b.x) + 9 : a.x + (fromSide === "right" ? 5 : -5);
+  const dirY = b.y >= a.y ? 1 : -1;
+  const rMax = Math.abs(b.y - a.y) / 2;
+  const r1 = Math.min(6, rMax, Math.abs(gx - a.x));
+  // Keep the corner radius short of the target edge so the path always ends
+  // with a real horizontal segment — a zero-length ending flips the marker.
+  const r2 = Math.min(6, rMax, Math.abs(b.x - gx) - 2);
+  const hA = gx >= a.x ? 1 : -1;
+  const hB = b.x >= gx ? 1 : -1;
+  return [
+    `M ${a.x} ${a.y}`,
+    `H ${gx - hA * r1}`,
+    `Q ${gx} ${a.y} ${gx} ${a.y + dirY * r1}`,
+    `V ${b.y - dirY * r2}`,
+    `Q ${gx} ${b.y} ${gx + hB * r2} ${b.y}`,
+    `H ${b.x}`,
+  ].join(" ");
+}
+
+export default function HomeRails({
+  workstreams,
+  onActivatePane,
+  onReorderQueuedTurn,
+  onMoveQueuedTurn,
+  onQueueTurn,
+  readRailScroll,
+  saveRailScroll,
+}: HomeRailsProps) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const innerRef = useRef<HTMLDivElement | null>(null);
+  const scrollerRefs = useRef(new Map<string, HTMLDivElement>());
+  const currentCardRefs = useRef(new Map<string, HTMLElement>());
+  const queuedCardRefs = useRef(new Map<string, HTMLElement>());
+  // Rails whose scroll position has been placed (restored or pinned to the
+  // bottom) — done once per rail per mount, before first paint.
+  const placedScrollAgentIds = useRef(new Set<string>());
+  const dragRef = useRef<RailPointerDrag | null>(null);
+  // Swallows the click that follows a completed drag so the drop doesn't also
+  // activate the pane.
+  const suppressClickRef = useRef(false);
+  const [dragging, setDragging] = useState<{ agentId: string; index: number } | null>(null);
+  // Same-rail target gap; cross-rail drops highlight the whole rail instead
+  // (the backend appends to the target queue, so there is no gap to point at).
+  // Both are mirrored in refs: the pointerup handler must read the drop target
+  // set by the very last pointermove, which may not have committed yet.
+  const [dropGap, setDropGapState] = useState<{ agentId: string; index: number } | null>(null);
+  const [dropRailAgentId, setDropRailAgentIdState] = useState<string | null>(null);
+  const dropGapRef = useRef<{ agentId: string; index: number } | null>(null);
+  const dropRailAgentIdRef = useRef<string | null>(null);
+  const setDropGap = (gap: { agentId: string; index: number } | null) => {
+    dropGapRef.current = gap;
+    setDropGapState(gap);
+  };
+  const setDropRailAgentId = (agentId: string | null) => {
+    dropRailAgentIdRef.current = agentId;
+    setDropRailAgentIdState(agentId);
+  };
+  const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>({});
+  const [links, setLinks] = useState<LinkPath[]>([]);
+  const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
+  // Receipts ("2 hr ago") and the working card's elapsed time drift; a coarse
+  // tick keeps them honest without re-rendering on every event.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const setScrollerRef = useCallback((agentId: string, element: HTMLDivElement | null) => {
+    if (element) {
+      scrollerRefs.current.set(agentId, element);
+    } else {
+      scrollerRefs.current.delete(agentId);
+      placedScrollAgentIds.current.delete(agentId);
+    }
+  }, []);
+
+  const setCurrentCardRef = useCallback((agentId: string, element: HTMLDivElement | null) => {
+    if (element) {
+      currentCardRefs.current.set(agentId, element);
+    } else {
+      currentCardRefs.current.delete(agentId);
+    }
+  }, []);
+
+  const setQueuedCardRef = useCallback((key: string, element: HTMLDivElement | null) => {
+    if (element) {
+      queuedCardRefs.current.set(key, element);
+    } else {
+      queuedCardRefs.current.delete(key);
+    }
+  }, []);
+
+  // Place each rail's scroll before paint: restore a saved offset, else pin to
+  // the bottom (the fold is "now"). On later data changes, stuck rails re-pin
+  // so a new card doesn't push the fold out of view.
+  useLayoutEffect(() => {
+    for (const [agentId, scroller] of scrollerRefs.current) {
+      if (!placedScrollAgentIds.current.has(agentId)) {
+        placedScrollAgentIds.current.add(agentId);
+        const saved = readRailScroll(agentId);
+        scroller.scrollTop = saved && !saved.stuck ? saved.top : scroller.scrollHeight;
+        continue;
+      }
+      const saved = readRailScroll(agentId);
+      if (!saved || saved.stuck) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    }
+  }, [readRailScroll, workstreams]);
+
+  const handleRailScroll = (agentId: string, scroller: HTMLDivElement) => {
+    const stuck = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+    saveRailScroll(agentId, { top: scroller.scrollTop, stuck });
+  };
+
+  // Wait-link measurement: rAF-batched, re-run on any scroll/resize that can
+  // move an anchor (the pattern HomeCascades used).
+  useLayoutEffect(() => {
+    const inner = innerRef.current;
+    const wrap = wrapRef.current;
+    if (!inner || !wrap) {
+      setLinks([]);
+      setSvgSize({ width: 0, height: 0 });
+      return;
+    }
+
+    let frame = 0;
+    const measure = () => {
+      const baseRect = inner.getBoundingClientRect();
+      const railIndexByAgentId = new Map(
+        workstreams.map((workstream, index) => [workstream.agentId, index]),
+      );
+      const nextLinks: LinkPath[] = [];
+      for (const workstream of workstreams) {
+        const targetRailIndex = railIndexByAgentId.get(workstream.agentId) ?? 0;
+        workstream.queuedTurns.forEach((turn, index) => {
+          if (!turn.waitForAgentId) {
+            return;
+          }
+          const sourceRailIndex = railIndexByAgentId.get(turn.waitForAgentId);
+          if (sourceRailIndex === undefined) {
+            return;
+          }
+          const from = currentCardRefs.current.get(turn.waitForAgentId);
+          const to = queuedCardRefs.current.get(queuedCardKey(workstream.agentId, index));
+          if (!from || !to) {
+            return;
+          }
+          const rightward = targetRailIndex >= sourceRailIndex;
+          nextLinks.push({
+            key: `${turn.waitForAgentId}:${workstream.agentId}:${index}:wait`,
+            d: railLinkPath(
+              from.getBoundingClientRect(),
+              to.getBoundingClientRect(),
+              baseRect,
+              rightward ? "right" : "left",
+              rightward ? "left" : "right",
+            ),
+          });
+        });
+      }
+      setSvgSize({ width: baseRect.width, height: baseRect.height });
+      setLinks(nextLinks);
+    };
+    const scheduleMeasure = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+    window.addEventListener("resize", scheduleMeasure);
+    wrap.addEventListener("scroll", scheduleMeasure, { passive: true });
+    const observer = new ResizeObserver(scheduleMeasure);
+    observer.observe(wrap);
+    observer.observe(inner);
+    const scrollers = Array.from(scrollerRefs.current.values());
+    for (const scroller of scrollers) {
+      scroller.addEventListener("scroll", scheduleMeasure, { passive: true });
+      observer.observe(scroller);
+    }
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", scheduleMeasure);
+      wrap.removeEventListener("scroll", scheduleMeasure);
+      for (const scroller of scrollers) {
+        scroller.removeEventListener("scroll", scheduleMeasure);
+      }
+      observer.disconnect();
+    };
+  }, [workstreams]);
+
+  function clearDrag() {
+    dragRef.current = null;
+    setDragging(null);
+    setDropGap(null);
+    setDropRailAgentId(null);
+  }
+
+  function queuedGapFromPoint(railAgentId: string, clientY: number) {
+    const workstream = workstreams.find((candidate) => candidate.agentId === railAgentId);
+    if (!workstream) {
+      return 0;
+    }
+    for (let index = 0; index < workstream.queuedTurns.length; index += 1) {
+      const card = queuedCardRefs.current.get(queuedCardKey(railAgentId, index));
+      if (!card) {
+        continue;
+      }
+      const rect = card.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        return index;
+      }
+    }
+    return workstream.queuedTurns.length;
+  }
+
+  function handleCardPointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+    agentId: string,
+    index: number,
+    text: string,
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+    dragRef.current = {
+      pointerId: event.pointerId,
+      agentId,
+      from: index,
+      text,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+    // Capture deferred to the first real move so plain clicks still activate
+    // the pane (and text selection isn't hijacked) — same as the composer.
+  }
+
+  function handleCardPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    if (!drag.active) {
+      if (
+        Math.abs(event.clientX - drag.startX) < RAIL_DRAG_START_THRESHOLD &&
+        Math.abs(event.clientY - drag.startY) < RAIL_DRAG_START_THRESHOLD
+      ) {
+        return;
+      }
+      drag.active = true;
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already have been released.
+      }
+      setDragging({ agentId: drag.agentId, index: drag.from });
+    }
+    event.preventDefault();
+    // The pointer is captured by the source card; hit-test the point to find
+    // the rail under it.
+    const under = document.elementFromPoint(event.clientX, event.clientY);
+    const railAgentId = under
+      ?.closest("[data-rail-agent-id]")
+      ?.getAttribute("data-rail-agent-id");
+    if (!railAgentId) {
+      setDropGap(null);
+      setDropRailAgentId(null);
+      return;
+    }
+    if (railAgentId !== drag.agentId) {
+      setDropGap(null);
+      setDropRailAgentId(railAgentId);
+      return;
+    }
+    setDropRailAgentId(null);
+    setDropGap({ agentId: railAgentId, index: queuedGapFromPoint(railAgentId, event.clientY) });
+  }
+
+  function handleCardPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already have been released by the platform.
+    }
+    if (!drag.active) {
+      dragRef.current = null;
+      return;
+    }
+    event.preventDefault();
+    suppressClickRef.current = true;
+    const crossRailAgentId = dropRailAgentIdRef.current;
+    const gap = dropGapRef.current;
+    clearDrag();
+    // The queue can shift under a drag (the agent draining its top turn), so
+    // resolve the grabbed card's index at drop time by its stored text.
+    const from = currentDragIndex(drag);
+    if (from === null) {
+      return;
+    }
+    if (crossRailAgentId && crossRailAgentId !== drag.agentId) {
+      onMoveQueuedTurn(drag.agentId, crossRailAgentId, from, drag.text);
+      return;
+    }
+    if (!gap || gap.agentId !== drag.agentId) {
+      return;
+    }
+    const to = from < gap.index ? gap.index - 1 : gap.index;
+    if (to !== from) {
+      onReorderQueuedTurn(drag.agentId, from, to, drag.text);
+    }
+  }
+
+  function currentDragIndex(drag: RailPointerDrag): number | null {
+    const workstream = workstreams.find((candidate) => candidate.agentId === drag.agentId);
+    if (!workstream) {
+      return null;
+    }
+    if (workstream.queuedTurns[drag.from]?.rawText === drag.text) {
+      return drag.from;
+    }
+    const index = workstream.queuedTurns.findIndex((turn) => turn.rawText === drag.text);
+    return index === -1 ? null : index;
+  }
+
+  function handleCardPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    clearDrag();
+  }
+
+  function handleCardClick(paneId: string) {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    onActivatePane(paneId);
+  }
+
+  function handleCardKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, paneId: string) {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onActivatePane(paneId);
+    }
+  }
+
+  async function submitRailComposer(event: ReactFormEvent<HTMLFormElement>, agentId: string) {
+    event.preventDefault();
+    const text = (composerDrafts[agentId] ?? "").trim();
+    if (!text) {
+      return;
+    }
+    const queued = await onQueueTurn(agentId, text);
+    if (queued) {
+      setComposerDrafts((current) => ({ ...current, [agentId]: "" }));
+    }
+  }
+
+  if (workstreams.length === 0) {
+    return null;
+  }
+
+  const renderLinkSvg = () => (
+    <svg
+      className="home-rail-links"
+      width={svgSize.width}
+      height={svgSize.height}
+      viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
+      aria-hidden="true"
+    >
+      <defs>
+        <marker
+          id="home-rail-wait-arrow"
+          viewBox="0 0 8 8"
+          refX="7"
+          refY="4"
+          markerWidth="4.5"
+          markerHeight="4.5"
+          orient="auto"
+        >
+          <path d="M0 0 L8 4 L0 8 z" />
+        </marker>
+      </defs>
+      {links.map((link) => (
+        <path
+          key={link.key}
+          className="home-rail-link home-rail-link--wait"
+          d={link.d}
+          markerEnd="url(#home-rail-wait-arrow)"
+        />
+      ))}
+    </svg>
+  );
+
+  const renderPastReceipt = (turn: HomeRailPastTurn) => (
+    <>
+      <Check
+        size={11}
+        strokeWidth={2.5}
+        className="queued-turn-receipt-ok"
+        aria-hidden="true"
+      />
+      {turn.settledAt !== null ? ` ${formatRelativeTime(turn.settledAt)}` : null}
+    </>
+  );
+
+  const renderCurrentReceipt = (workstream: HomeRailWorkstream): ReactNode => {
+    switch (workstream.statusTone) {
+      case "active":
+      case "pending": {
+        const elapsed =
+          workstream.currentStartedAt !== null
+            ? formatElapsedShort(now - workstream.currentStartedAt)
+            : null;
+        return (
+          <>
+            <span className="queued-turn-receipt-live">●</span> working
+            {elapsed ? ` · ${elapsed}` : ""}
+          </>
+        );
+      }
+      case "attention":
+        return (
+          <>
+            <span className="queued-turn-receipt-live">●</span> awaiting input
+          </>
+        );
+      case "error":
+        return (
+          <>
+            <span className="queued-turn-receipt-error">●</span> failed
+          </>
+        );
+      default:
+        return (
+          <>
+            <Check
+              size={11}
+              strokeWidth={2.5}
+              className="queued-turn-receipt-ok"
+              aria-hidden="true"
+            />
+            {workstream.currentSettledAt !== null
+              ? ` ${formatRelativeTime(workstream.currentSettledAt)}`
+              : null}
+          </>
+        );
+    }
+  };
+
+  const renderCurrentCard = (workstream: HomeRailWorkstream) => {
+    if (workstream.latestUserTurn === null) {
+      return (
+        <QueuedTurnCard
+          ref={(element) => setCurrentCardRef(workstream.agentId, element)}
+          variant="current"
+          className="is-empty"
+          text="No turn yet"
+        />
+      );
+    }
+    return (
+      <QueuedTurnCard
+        ref={(element) => setCurrentCardRef(workstream.agentId, element)}
+        variant="current"
+        tone={currentCardTone(workstream.statusTone)}
+        text={renderCardText(workstream.latestUserTurn)}
+        receipt={renderCurrentReceipt(workstream)}
+      />
+    );
+  };
+
+  const renderQueuedCard = (
+    workstream: HomeRailWorkstream,
+    turn: HomeRailQueuedTurn,
+    index: number,
+  ) => {
+    const key = queuedCardKey(workstream.agentId, index);
+    const isDraggingCard =
+      dragging?.agentId === workstream.agentId && dragging.index === index;
+    // Suppress the drop rule at the dragged card's own position.
+    const activeGap =
+      dropGap && dropGap.agentId === workstream.agentId
+        ? dropGap.index === (dragging?.index ?? -1) || dropGap.index === (dragging?.index ?? -1) + 1
+          ? null
+          : dropGap.index
+        : null;
+    const waitLabel = turn.waitForAgentId ? (
+      <>
+        {index === 0 ? "Waiting on" : "Wait on"}{" "}
+        {`"${waitFooterTitle(turn.waitForLabel ?? "selected terminal")}"`}
+      </>
+    ) : null;
+    return (
+      <QueuedTurnCard
+        key={key}
+        ref={(element) => setQueuedCardRef(key, element)}
+        text={renderCardText(turn.text)}
+        pauseAfter={turn.pauseAfter}
+        deliveryLabel={turn.deliveryLabel ?? null}
+        waitLabel={waitLabel}
+        className={[
+          isDraggingCard ? "is-dragging" : "",
+          activeGap === index ? "is-drop-before" : "",
+          activeGap === workstream.queuedTurns.length &&
+          index === workstream.queuedTurns.length - 1
+            ? "is-drop-after"
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        role="button"
+        tabIndex={0}
+        onClick={() => handleCardClick(workstream.paneId)}
+        onKeyDown={(event) => handleCardKeyDown(event, workstream.paneId)}
+        onPointerDown={(event) =>
+          handleCardPointerDown(event, workstream.agentId, index, turn.rawText)
+        }
+        onPointerMove={handleCardPointerMove}
+        onPointerUp={handleCardPointerUp}
+        onPointerCancel={handleCardPointerCancel}
+      />
+    );
+  };
+
+  return (
+    <section className="home-rails-section" aria-label="Agent workstreams">
+      <div className="home-rails" ref={wrapRef}>
+        <div className="home-rails-inner" ref={innerRef}>
+          {renderLinkSvg()}
+          <div className={`home-rails-columns${dragging ? " is-dragging" : ""}`}>
+            {workstreams.map((workstream) => (
+              <div
+                key={workstream.agentId}
+                className={`home-rail${
+                  dropRailAgentId === workstream.agentId ? " is-drop-target" : ""
+                }`}
+                data-rail-agent-id={workstream.agentId}
+              >
+                <button
+                  type="button"
+                  className="home-rail-head"
+                  aria-label={`Open ${workstream.title} — ${statusLabel(workstream)}`}
+                  onClick={() => onActivatePane(workstream.paneId)}
+                >
+                  <span className={statusDotClass(workstream)} aria-hidden="true" />
+                  <span className="home-rail-title">{workstream.title}</span>
+                  {workstream.queuedTurns.length > 0 ? (
+                    <span className="home-rail-count">
+                      {workstream.queuedTurns.length} queued
+                    </span>
+                  ) : null}
+                </button>
+                <div
+                  className="home-rail-scroll"
+                  ref={(element) => setScrollerRef(workstream.agentId, element)}
+                  onScroll={(event) =>
+                    handleRailScroll(workstream.agentId, event.currentTarget)
+                  }
+                >
+                  {workstream.pastTurns.map((turn) => (
+                    <QueuedTurnCard
+                      key={turn.id}
+                      variant="past"
+                      text={renderCardText(turn.text)}
+                      receipt={renderPastReceipt(turn)}
+                    />
+                  ))}
+                  {renderCurrentCard(workstream)}
+                  {workstream.queuedTurns.map((turn, index) =>
+                    renderQueuedCard(workstream, turn, index),
+                  )}
+                </div>
+                <form
+                  className="home-rail-composer"
+                  onSubmit={(event) => void submitRailComposer(event, workstream.agentId)}
+                >
+                  <input
+                    type="text"
+                    value={composerDrafts[workstream.agentId] ?? ""}
+                    placeholder="Queue a follow-up…"
+                    aria-label={`Queue a follow-up for ${workstream.title}`}
+                    onChange={(event) =>
+                      setComposerDrafts((current) => ({
+                        ...current,
+                        [workstream.agentId]: event.target.value,
+                      }))
+                    }
+                  />
+                </form>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

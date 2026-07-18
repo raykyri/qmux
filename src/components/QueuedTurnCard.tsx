@@ -1,7 +1,9 @@
 import type {
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
+  Ref,
 } from "react";
 import type { QueuedTurnDelivery } from "../types";
 
@@ -36,7 +38,7 @@ export type QueuedTurnCardVariant = "queued" | "current" | "past";
 export type QueuedTurnCardTone = "active" | "done" | "attention" | "error";
 
 interface QueuedTurnCardProps {
-  text: string;
+  text: ReactNode;
   variant?: QueuedTurnCardVariant;
   tone?: QueuedTurnCardTone | null;
   pauseAfter?: boolean;
@@ -51,6 +53,11 @@ interface QueuedTurnCardProps {
   actions?: ReactNode;
   /** Owner-managed state classes (drag/drop rules). */
   className?: string;
+  ref?: Ref<HTMLDivElement>;
+  role?: string;
+  tabIndex?: number;
+  onClick?: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerMove?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerUp?: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -69,6 +76,11 @@ export function QueuedTurnCard({
   receipt,
   actions,
   className,
+  ref,
+  role,
+  tabIndex,
+  onClick,
+  onKeyDown,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -87,7 +99,12 @@ export function QueuedTurnCard({
     .join(" ");
   return (
     <div
+      ref={ref}
       className={rootClassName}
+      role={role}
+      tabIndex={tabIndex}
+      onClick={onClick}
+      onKeyDown={onKeyDown}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

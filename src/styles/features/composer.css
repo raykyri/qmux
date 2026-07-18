@@ -18,7 +18,7 @@
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 4px 8px;
   align-items: start;
   min-width: 0;
   border: 1px solid var(--queued-turn-border);
@@ -129,7 +129,9 @@
   grid-column: 1 / -1;
   justify-self: start;
   max-width: 100%;
-  margin-top: 4px;
+  /* Badged pills get a touch more air above than plain receipt rows (3px on
+     top of the card's 4px row gap) — their border adds visual weight. */
+  margin-top: 3px;
   padding: 0 8px;
   border: 1px solid var(--status-info-border);
   border-radius: 999px;
@@ -152,6 +154,77 @@
 
 .queued-turn-delivery-label::before {
   content: "⑂ ";
+}
+
+/* ---- Card variants used by the home rails (inert in the composer queue) ---- */
+
+/* The turn an agent is working on now; border tone mirrors agent status. */
+.queued-turn.is-current {
+  background: var(--home-cascade-current-bg);
+  cursor: default;
+}
+
+.queued-turn.is-current .queued-turn-text {
+  color: var(--control-fg);
+}
+
+.queued-turn.is-current.tone-active {
+  border-color: var(--status-active-border);
+}
+
+.queued-turn.is-current.tone-attention {
+  border-color: rgba(224, 121, 109, 0.5);
+  background: #1e1817;
+}
+
+.queued-turn.is-current.tone-done {
+  border-color: var(--home-cascade-done-border);
+}
+
+.queued-turn.is-current.tone-error {
+  border-color: var(--danger-outline);
+  background: #211814;
+}
+
+.queued-turn.is-current.is-empty {
+  border-color: transparent;
+  background: transparent;
+  color: #6b736f;
+}
+
+/* Already-settled turns recede so live work stands out. */
+.queued-turn.is-past {
+  opacity: 0.55;
+  background: transparent;
+  border-color: var(--home-cascade-card-border);
+  cursor: default;
+}
+
+/* Plain meta row under a card's text: "✓ 2 hr ago", "● working · 4m". */
+.queued-turn-receipt {
+  grid-column: 1 / -1;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  line-height: 1.2;
+}
+
+.queued-turn-receipt-ok {
+  color: var(--accent-strong);
+  vertical-align: -1.5px;
+  margin-right: 2px;
+}
+
+.queued-turn-receipt-live {
+  color: var(--status-active-fg);
+}
+
+.queued-turn-receipt-error {
+  color: var(--danger-fg);
+}
+
+/* Collapsed image paste marker — muted like the collapsed tag blocks. */
+.queued-turn-image-chip {
+  color: var(--text-activity);
 }
 
 /* "Paused" status sits at the far left of the composer's submit row (the

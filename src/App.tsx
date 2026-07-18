@@ -62,8 +62,15 @@ import { LauncherSelect } from "./components/LauncherSelect";
 import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
-import HomeCascades from "./components/HomeCascades";
-import type { HomeCascadePastTurn, HomeCascadeWorkstream } from "./components/HomeCascades";
+import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
+import {
+  latestUserTurnTimestamp,
+  railLatestUserTurn,
+  railPastTurns,
+  railQueuedTurnText,
+} from "./lib/homeRails";
+import HomeRails from "./components/HomeRails";
+import type { HomeRailScrollPosition, HomeRailWorkstream } from "./components/HomeRails";
 import LinkContextMenu from "./components/LinkContextMenu";
 import PublishDialog, { type PublishDialogTarget } from "./components/PublishDialog";
 import SidebarModeToggle from "./components/SidebarModeToggle";
@@ -123,7 +130,7 @@ import {
   firstUserTurnText,
   formatTranscriptCopyJson,
   isEditableTarget,
-  latestUserTurnText,
+  latestTurnTimestamp,
   IS_MAC,
   isTerminalTarget,
   measureTerminalCellSize,
@@ -325,6 +332,7 @@ import {
   getResearchTree,
   markAppWindowReady,
   moveQueuedAgentTurn,
+  reorderQueuedAgentTurn,
   movePaneToGroup,
   openExternalUrl,
   paneActivity,
@@ -1209,64 +1217,6 @@ function latestUserTurnId(turns: Turn[]): string | null {
   return latest;
 }
 
-// Strips prepended/inline tagged instruction blocks (<system-reminder> …) from a turn
-// for the compact cascade cards, using the same filter as the right pane. Queued turns
-// keep the raw text if stripping empties them (a card should never be blank); the latest
-// user turn returns null so its card falls back to the empty-state text.
-function cascadeQueuedTurnText(text: string): string {
-  const stripped = stripTaggedUserInstructionBlocks(text).trim();
-  return stripped.length > 0 ? stripped : text;
-}
-
-function cascadeLatestUserTurn(turns: Turn[]): string | null {
-  const text = latestUserTurnText(turns);
-  if (!text) {
-    return null;
-  }
-  const stripped = stripTaggedUserInstructionBlocks(text).trim();
-  return stripped.length > 0 ? stripped : null;
-}
-
-// Past prompts for a home rail: every non-superseded user turn before the
-// latest one (which renders as the workstream's current card), stripped like
-// the cards above; prompts that strip to nothing (pure tagged instructions)
-// are dropped rather than shown raw. settledAt is the timestamp of the
-// exchange's last record before the next prompt, falling back to the prompt's
-// own. Cached by the turns array's identity — agentTurnInfoById hands back the
-// same array while an agent's turns are unchanged, so an event batch only
-// re-walks agents that actually gained turns.
-const cascadePastTurnsCache = new WeakMap<Turn[], HomeCascadePastTurn[]>();
-
-function cascadePastTurns(turns: Turn[]): HomeCascadePastTurn[] {
-  const cached = cascadePastTurnsCache.get(turns);
-  if (cached) {
-    return cached;
-  }
-  const result: HomeCascadePastTurn[] = [];
-  let pending: HomeCascadePastTurn | null = null;
-  let exchangeLastTimestamp: number | null = null;
-  for (const turn of turns) {
-    const text = firstUserTurnText(turn);
-    if (text) {
-      if (pending) {
-        pending.settledAt = exchangeLastTimestamp ?? pending.settledAt;
-        result.push(pending);
-      }
-      const stripped = stripTaggedUserInstructionBlocks(text).trim();
-      pending =
-        stripped.length > 0
-          ? { id: turn.id, text: stripped, settledAt: turn.timestamp ?? null }
-          : null;
-      exchangeLastTimestamp = null;
-    } else if (turn.status !== "superseded" && typeof turn.timestamp === "number") {
-      exchangeLastTimestamp = turn.timestamp;
-    }
-  }
-  // The dangling pending prompt is the latest user turn — the current card.
-  cascadePastTurnsCache.set(turns, result);
-  return result;
-}
-
 
 function MainApp() {
   const appRef = useRef<HTMLElement | null>(null);
@@ -1571,6 +1521,17 @@ function MainApp() {
   const selectHomeWorkspace = useCallback((groupId: string) => {
     setHomeWorkspaceIdState(groupId);
     localStorage.setItem(HOME_WORKSPACE_KEY, groupId);
+  }, []);
+  // Per-rail scroll positions for the home view, kept here so leaving Home and
+  // coming back restores each column (same shape as the queue/transcript scroll
+  // stores above). Ephemeral by design: dropped on app restart.
+  const homeRailScrollByAgentRef = useRef<Record<string, HomeRailScrollPosition>>({});
+  const readHomeRailScroll = useCallback(
+    (agentId: string) => homeRailScrollByAgentRef.current[agentId] ?? null,
+    [],
+  );
+  const saveHomeRailScroll = useCallback((agentId: string, position: HomeRailScrollPosition) => {
+    homeRailScrollByAgentRef.current[agentId] = position;
   }, []);
   const setActivePaneId = useCallback(
     (next: SetStateAction<string | null>) => {
@@ -3649,8 +3610,8 @@ function MainApp() {
   // each render, so they are intentionally NOT in the dep array. Instead we depend
   // on the state atoms those helpers read — keep this list in sync when a helper
   // starts reading new state, or the memo will serve stale workstreams.
-  const homeCascadeWorkstreams = useMemo<HomeCascadeWorkstream[]>(() => {
-    // Only Home renders the cascades, but this memo's inputs churn with every
+  const homeRailWorkstreams = useMemo<HomeRailWorkstream[]>(() => {
+    // Only Home renders the rails, but this memo's inputs churn with every
     // event batch — recomputing the per-agent latest-turn extraction (a regex
     // pass over each latest user message) for a hidden Home was pure waste.
     if (!homeActive) {
@@ -3687,13 +3648,17 @@ function MainApp() {
           statusTone: paneTabStatusTone(agent),
           statusClass,
           waitingOnPane: paneWaitsOnOtherPane(agent),
-          latestUserTurn: cascadeLatestUserTurn(turnInfo.turns),
-          pastTurns: cascadePastTurns(turnInfo.turns),
+          latestUserTurn: railLatestUserTurn(turnInfo.turns),
+          currentStartedAt: latestUserTurnTimestamp(turnInfo.turns),
+          currentSettledAt: latestTurnTimestamp(turnInfo.turns),
+          pastTurns: railPastTurns(turnInfo.turns),
           queuedTurns: (queuedTurnsByAgent[agent.id] ?? []).map((turn) => ({
-            text: cascadeQueuedTurnText(turn.text),
+            text: railQueuedTurnText(turn.text),
+            rawText: turn.text,
             pauseAfter: turn.pauseAfter,
             waitForAgentId: turn.waitFor?.agentId ?? null,
             waitForLabel: turn.waitFor?.label ?? null,
+            deliveryLabel: turn.delivery ? queuedTurnDeliveryLabel(turn.delivery) : null,
           })),
         },
       ];
@@ -3714,7 +3679,7 @@ function MainApp() {
   // it reads.
   const homeWorkspaces = useMemo(() => {
     const workspaces = new Map<string, { id: string; name: string; agentCount: number }>();
-    for (const workstream of homeCascadeWorkstreams) {
+    for (const workstream of homeRailWorkstreams) {
       const existing = workspaces.get(workstream.rootGroupId);
       if (existing) {
         existing.agentCount += 1;
@@ -3728,7 +3693,7 @@ function MainApp() {
       });
     }
     return Array.from(workspaces.values());
-  }, [groupById, homeCascadeWorkstreams]);
+  }, [groupById, homeRailWorkstreams]);
 
   // Falls back to the first workspace when the stored selection has no agents
   // (or its group is gone) — the stored id is kept so a repopulated workspace
@@ -3740,10 +3705,10 @@ function MainApp() {
 
   const homeVisibleWorkstreams = useMemo(
     () =>
-      homeCascadeWorkstreams.filter(
+      homeRailWorkstreams.filter(
         (workstream) => workstream.rootGroupId === effectiveHomeWorkspaceId,
       ),
-    [effectiveHomeWorkspaceId, homeCascadeWorkstreams],
+    [effectiveHomeWorkspaceId, homeRailWorkstreams],
   );
 
   // Load session lists when a pane's right side is visible so transcript pickers are ready.
@@ -4363,6 +4328,43 @@ function MainApp() {
       setAgentQueuedTurns(targetAgentId, result.targetQueuedTurns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Home-rail card reorder: same shape as the composer's persistQueueReorder,
+  // pulling the backend's truth back if the call fails mid-flight.
+  async function reorderHomeQueuedTurn(
+    agentId: string,
+    fromIndex: number,
+    toIndex: number,
+    turn: string,
+  ) {
+    setError(null);
+    try {
+      const result = await reorderQueuedAgentTurn(agentId, fromIndex, toIndex, turn);
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      try {
+        setAgentQueuedTurns(agentId, await listAgentTurnQueue(agentId));
+      } catch {
+        // Best-effort resync.
+      }
+    }
+  }
+
+  // Home-rail ghost composer: always queue (never steer a running agent from
+  // the overview). Returns whether the turn was accepted so the rail knows to
+  // clear its draft.
+  async function queueHomeTurn(agentId: string, text: string): Promise<boolean> {
+    setError(null);
+    try {
+      const result = await submitAgentTurn(agentId, text, "queue");
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
     }
   }
 
@@ -12393,11 +12395,11 @@ function MainApp() {
           {homeActive ? (
             <div
               className={`terminal-empty-state${
-                homeCascadeWorkstreams.length === 0 ? " is-launcher-only" : ""
+                homeRailWorkstreams.length === 0 ? " is-launcher-only" : ""
               }`}
             >
               <div className="home-launcher">{renderLauncher()}</div>
-              {homeCascadeWorkstreams.length > 0 ? (
+              {homeRailWorkstreams.length > 0 ? (
                 <div className="home-board">
                   <div className="home-workspace-tabs" role="tablist" aria-label="Workspaces">
                     {homeWorkspaces.map((workspace) => (
@@ -12416,9 +12418,18 @@ function MainApp() {
                       </button>
                     ))}
                   </div>
-                  <HomeCascades
+                  <HomeRails
                     workstreams={homeVisibleWorkstreams}
                     onActivatePane={focusPaneTab}
+                    onReorderQueuedTurn={(agentId, fromIndex, toIndex, text) =>
+                      void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text)
+                    }
+                    onMoveQueuedTurn={(fromAgentId, toAgentId, index, text) =>
+                      void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text)
+                    }
+                    onQueueTurn={queueHomeTurn}
+                    readRailScroll={readHomeRailScroll}
+                    saveRailScroll={saveHomeRailScroll}
                   />
                 </div>
               ) : null}
