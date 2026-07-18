@@ -150,6 +150,9 @@ interface HighlightAction {
   highlightIds: string[];
   left: number;
   top: number;
+  /** The selection has scrolled out of the viewport: keep the action alive
+   * but stop drawing a bar over unrelated content. */
+  offscreen: boolean;
 }
 
 interface ResolvedHighlight {
@@ -335,6 +338,16 @@ function textContextSlice(text: string, start: number, end: number) {
  * whitespace is all that quoting requires. */
 function quoteDisplayText(exact: string) {
   return exact.split(/\s+/).join(" ").trim();
+}
+
+/** Where the action bar sits for a selection rect: just under it, clamped to
+ * the viewport with room reserved for the buttons before the right edge. */
+function highlightActionPlacement(rect: DOMRect) {
+  return {
+    left: Math.max(8, Math.min(rect.left, window.innerWidth - 260)),
+    top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
+    offscreen: rect.bottom < 0 || rect.top > window.innerHeight,
+  };
 }
 
 function sameCardTops(a: Record<string, number>, b: Record<string, number>) {
@@ -1669,9 +1682,7 @@ export default function ResearchDocument({
         ),
       },
       highlightIds,
-      // Leave room for both the Highlight and Ask buttons before the right edge.
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - 260)),
-      top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
+      ...highlightActionPlacement(rect),
     });
   }, [content?.responseRevision]);
 
@@ -1817,8 +1828,12 @@ export default function ResearchDocument({
     window.requestAnimationFrame(() => followupTextareaRef.current?.focus());
   }, [archived, followupNode?.status, highlightAction]);
 
+  // Keyed on the bar's existence, not the action object: repositioning below
+  // replaces the object on every scroll frame, and rebinding all of these
+  // listeners each frame would be pure churn.
+  const hasHighlightAction = Boolean(highlightAction);
   useEffect(() => {
-    if (!highlightAction) {
+    if (!hasHighlightAction) {
       return;
     }
     const dismiss = (event: MouseEvent) => {
@@ -1849,18 +1864,48 @@ export default function ResearchDocument({
       event.stopImmediatePropagation();
       void applyHighlightAction();
     };
-    const dismissOnReflow = () => setHighlightAction(null);
+    // The selection stays valid across scrolls and resizes, so follow it
+    // instead of dismissing: recompute the bar's placement from the live
+    // selection rect (rAF-throttled), and drop the bar only if the selection
+    // itself has gone away.
+    let repositionFrame: number | null = null;
+    const reposition = () => {
+      if (repositionFrame !== null) {
+        return;
+      }
+      repositionFrame = window.requestAnimationFrame(() => {
+        repositionFrame = null;
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+          setHighlightAction(null);
+          return;
+        }
+        const rect = selection.getRangeAt(0).getBoundingClientRect();
+        const placement = highlightActionPlacement(rect);
+        setHighlightAction((current) =>
+          current &&
+          (current.left !== placement.left ||
+            current.top !== placement.top ||
+            current.offscreen !== placement.offscreen)
+            ? { ...current, ...placement }
+            : current,
+        );
+      });
+    };
     document.addEventListener("mousedown", dismiss);
     document.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("resize", dismissOnReflow);
-    window.addEventListener("scroll", dismissOnReflow, true);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
     return () => {
       document.removeEventListener("mousedown", dismiss);
       document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("resize", dismissOnReflow);
-      window.removeEventListener("scroll", dismissOnReflow, true);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+      if (repositionFrame !== null) {
+        window.cancelAnimationFrame(repositionFrame);
+      }
     };
-  }, [applyHighlightAction, enterAskMode, highlightAction, savingHighlight]);
+  }, [applyHighlightAction, enterAskMode, hasHighlightAction, savingHighlight]);
 
   // Escape leaves ask mode from anywhere, including inside the composer's
   // textarea, sliding the composer back to its resting position.
@@ -2821,7 +2866,11 @@ export default function ResearchDocument({
           ? createPortal(
               <div
                 className="research-highlight-actions"
-                style={{ left: highlightAction.left, top: highlightAction.top }}
+                style={{
+                  left: highlightAction.left,
+                  top: highlightAction.top,
+                  visibility: highlightAction.offscreen ? "hidden" : undefined,
+                }}
               >
                 <button
                   type="button"
