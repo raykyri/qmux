@@ -154,6 +154,9 @@ interface HighlightAction {
    * selection and every highlight it intersects. Null when there is nothing
    * to expand. */
   expandAnchor: ResearchHighlightAnchor | null;
+  /** Viewport boxes framing the selected annotations, one per rendered line
+   * fragment. Empty when the selection touches no saved highlight. */
+  outlineRects: HighlightOutlineRect[];
   left: number;
   top: number;
   /** The selection has scrolled out of the viewport: keep the action alive
@@ -183,6 +186,7 @@ interface ResearchHighlightRegistry {
 
 interface ResearchNativeHighlight {
   add(range: Range): void;
+  priority: number;
 }
 
 interface ResearchHighlightApi {
@@ -193,6 +197,7 @@ interface ResearchHighlightApi {
 const RESEARCH_HIGHLIGHT_NAME = "qmux-research-highlights";
 const RESEARCH_QUERY_ANCHOR_NAME = "qmux-research-query-anchors";
 const RESEARCH_ANCHOR_LINK_NAME = "qmux-research-anchor-link";
+const RESEARCH_SELECTED_NAME = "qmux-research-selected-highlights";
 const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
 // Clearance between the anchored composer's bottom edge and the first pushed
 // follow-up card.
@@ -344,6 +349,72 @@ function textContextSlice(text: string, start: number, end: number) {
  * whitespace is all that quoting requires. */
 function quoteDisplayText(exact: string) {
   return exact.split(/\s+/).join(" ").trim();
+}
+
+interface HighlightOutlineRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Viewport boxes around the resolved ranges of the given saved highlights.
+ * A wrapped annotation gets one box per rendered line, merging the
+ * per-text-node rects the range reports along that line. */
+function highlightOutlineRects(
+  root: HTMLElement,
+  resolved: ResolvedHighlight[],
+  highlightIds: string[],
+): HighlightOutlineRect[] {
+  const boxes: HighlightOutlineRect[] = [];
+  for (const { highlight, start, end } of resolved) {
+    if (!highlightIds.includes(highlight.id)) {
+      continue;
+    }
+    const range = rangeForTextOffsets(root, start, end);
+    if (!range) {
+      continue;
+    }
+    const lines: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+    for (const rect of Array.from(range.getClientRects())) {
+      if (rect.width <= 0 || rect.height <= 0) {
+        continue;
+      }
+      const line = lines.find(
+        (candidate) => rect.top < candidate.bottom && rect.bottom > candidate.top,
+      );
+      if (line) {
+        line.left = Math.min(line.left, rect.left);
+        line.top = Math.min(line.top, rect.top);
+        line.right = Math.max(line.right, rect.right);
+        line.bottom = Math.max(line.bottom, rect.bottom);
+      } else {
+        lines.push({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom });
+      }
+    }
+    for (const line of lines) {
+      boxes.push({
+        left: line.left,
+        top: line.top,
+        width: line.right - line.left,
+        height: line.bottom - line.top,
+      });
+    }
+  }
+  return boxes;
+}
+
+function sameOutlineRects(a: HighlightOutlineRect[], b: HighlightOutlineRect[]) {
+  return (
+    a.length === b.length &&
+    a.every(
+      (box, index) =>
+        box.left === b[index].left &&
+        box.top === b[index].top &&
+        box.width === b[index].width &&
+        box.height === b[index].height,
+    )
+  );
 }
 
 /** Where the action bar sits for a selection rect: just under it, clamped to
@@ -1539,6 +1610,41 @@ export default function ResearchDocument({
     };
   }, [anchoredCardTops, highlightDomNonce, linkedAnchorNodeId]);
 
+  // A selection that lands on saved highlights repaints those annotations in
+  // the standard selection tone: painted above the saved-highlight layer (via
+  // priority) so the olive annotation tone cannot win over the selection,
+  // keeping a selected highlight the same color as any other selected text.
+  const selectedHighlightKey = (highlightAction?.highlightIds ?? []).join("\n");
+  useLayoutEffect(() => {
+    const api = researchHighlightApi();
+    api?.registry.delete(RESEARCH_SELECTED_NAME);
+    const root = responseContentRootRef.current;
+    if (!api || !root || !selectedHighlightKey) {
+      return;
+    }
+    const selectedIds = selectedHighlightKey.split("\n");
+    const painted = new api.Highlight();
+    painted.priority = 1;
+    let paintedAny = false;
+    for (const { highlight, start, end } of resolvedHighlightsRef.current) {
+      if (!selectedIds.includes(highlight.id)) {
+        continue;
+      }
+      const range = rangeForTextOffsets(root, start, end);
+      if (!range) {
+        continue;
+      }
+      painted.add(range);
+      paintedAny = true;
+    }
+    if (paintedAny) {
+      api.registry.set(RESEARCH_SELECTED_NAME, painted);
+    }
+    return () => {
+      api.registry.delete(RESEARCH_SELECTED_NAME);
+    };
+  }, [selectedHighlightKey, highlightDomNonce]);
+
   // One-pass collision resolution for anchored cards: place them in
   // desired-top order, each no higher than the previous card's bottom plus a
   // gap. Runs as a layout effect in the commit that rendered the cards, so
@@ -1713,6 +1819,7 @@ export default function ResearchDocument({
       anchor: anchorForOffsets(offsets),
       highlightIds,
       expandAnchor: expandOffsets ? anchorForOffsets(expandOffsets) : null,
+      outlineRects: highlightOutlineRects(root, resolvedHighlightsRef.current, highlightIds),
       ...highlightActionPlacement(rect, expandOffsets ? 340 : 260),
     });
   }, [content?.responseRevision]);
@@ -2018,10 +2125,20 @@ export default function ResearchDocument({
             rect,
             current.expandAnchor ? 340 : 260,
           );
+          const root = responseContentRootRef.current;
+          const outlineRects =
+            root && current.highlightIds.length > 0
+              ? highlightOutlineRects(
+                  root,
+                  resolvedHighlightsRef.current,
+                  current.highlightIds,
+                )
+              : [];
           return current.left !== placement.left ||
             current.top !== placement.top ||
-            current.offscreen !== placement.offscreen
-            ? { ...current, ...placement }
+            current.offscreen !== placement.offscreen ||
+            !sameOutlineRects(outlineRects, current.outlineRects)
+            ? { ...current, ...placement, outlineRects }
             : current;
         });
       });
@@ -3005,70 +3122,84 @@ export default function ResearchDocument({
           : null}
         {highlightAction
           ? createPortal(
-              <div
-                className="research-highlight-actions"
-                style={{
-                  left: highlightAction.left,
-                  top: highlightAction.top,
-                  visibility: highlightAction.offscreen ? "hidden" : undefined,
-                }}
-              >
-                <button
-                  type="button"
-                  className="control-button research-highlight-action"
-                  disabled={savingHighlight}
-                  aria-keyshortcuts="H"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => void applyHighlightAction()}
+              <>
+                {highlightAction.outlineRects.map((box, index) => (
+                  <div
+                    key={index}
+                    className="research-highlight-selection-outline"
+                    style={{
+                      left: box.left - 2,
+                      top: box.top - 2,
+                      width: box.width + 4,
+                      height: box.height + 4,
+                    }}
+                  />
+                ))}
+                <div
+                  className="research-highlight-actions"
+                  style={{
+                    left: highlightAction.left,
+                    top: highlightAction.top,
+                    visibility: highlightAction.offscreen ? "hidden" : undefined,
+                  }}
                 >
-                  <span>
-                    {savingHighlight
-                      ? "Saving…"
-                      : highlightAction.highlightIds.length > 1
-                        ? "Remove highlights"
-                        : highlightAction.highlightIds.length === 1
-                          ? "Remove highlight"
-                          : "Highlight"}
-                  </span>
-                  <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
-                    H
-                  </kbd>
-                </button>
-                {highlightAction.expandAnchor ? (
                   <button
                     type="button"
                     className="control-button research-highlight-action"
                     disabled={savingHighlight}
-                    aria-keyshortcuts="E"
+                    aria-keyshortcuts="H"
                     onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => void applyExpandHighlightAction()}
+                    onClick={() => void applyHighlightAction()}
                   >
                     <span>
-                      {highlightAction.highlightIds.length > 1
-                        ? "Merge highlights"
-                        : "Expand highlight"}
+                      {savingHighlight
+                        ? "Saving…"
+                        : highlightAction.highlightIds.length > 1
+                          ? "Remove highlights"
+                          : highlightAction.highlightIds.length === 1
+                            ? "Remove highlight"
+                            : "Highlight"}
                     </span>
                     <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
-                      E
+                      H
                     </kbd>
                   </button>
-                ) : null}
-                {canAskSelection ? (
-                  <button
-                    type="button"
-                    className="control-button research-highlight-action"
-                    disabled={savingHighlight}
-                    aria-keyshortcuts="A"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={enterAskMode}
-                  >
-                    <span>Ask</span>
-                    <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
-                      A
-                    </kbd>
-                  </button>
-                ) : null}
-              </div>,
+                  {highlightAction.expandAnchor ? (
+                    <button
+                      type="button"
+                      className="control-button research-highlight-action"
+                      disabled={savingHighlight}
+                      aria-keyshortcuts="E"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => void applyExpandHighlightAction()}
+                    >
+                      <span>
+                        {highlightAction.highlightIds.length > 1
+                          ? "Merge highlights"
+                          : "Expand highlight"}
+                      </span>
+                      <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
+                        E
+                      </kbd>
+                    </button>
+                  ) : null}
+                  {canAskSelection ? (
+                    <button
+                      type="button"
+                      className="control-button research-highlight-action"
+                      disabled={savingHighlight}
+                      aria-keyshortcuts="A"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={enterAskMode}
+                    >
+                      <span>Ask</span>
+                      <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
+                        A
+                      </kbd>
+                    </button>
+                  ) : null}
+                </div>
+              </>,
               document.body,
             )
           : null}

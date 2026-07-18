@@ -786,11 +786,11 @@
 }
 
 /* Passages that targeted follow-ups were asked about (and the passage an ask
-   is currently being composed against). Warm tone so they read distinctly
-   from saved highlights. */
+   is currently being composed against). Same tone as saved highlights; the
+   hover-link paint below is what singles one out. */
 ::highlight(qmux-research-query-anchors) {
   color: inherit;
-  background: #4a3a10;
+  background: #6a5f36;
 }
 
 /* The passage of the hover-linked follow-up (hovering either the card or the
@@ -798,6 +798,27 @@
 ::highlight(qmux-research-anchor-link) {
   color: inherit;
   background: #6b5417;
+}
+
+/* Saved highlights the current selection landed on. Painted above the saved
+   olive (via Highlight.priority) in the same tone as ::selection, so a
+   selected annotation reads like ordinary selected text; matches
+   --status-info-fg, spelled literally because highlight pseudos resolve
+   custom properties unreliably. */
+::highlight(qmux-research-selected-highlights) {
+  color: inherit;
+  background: #6da7ec;
+}
+
+/* Frames each line fragment of a selected annotation: a 1px line held 1px
+   clear of the text box, marking the annotation's full extent while the
+   selection paint provides the fill. */
+.research-highlight-selection-outline {
+  position: fixed;
+  z-index: var(--z-context-menu);
+  border: 1px solid var(--status-info-fg);
+  border-radius: 3px;
+  pointer-events: none;
 }
 
 .research-highlight-actions {
