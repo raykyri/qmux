@@ -15,12 +15,14 @@ export interface ResearchFolderState {
   folders: ResearchFolder[];
   /** treeId -> folderId */
   membership: Record<string, string>;
+  /** Starred tree and folder ids, in the starred list's display order. */
+  starred: string[];
 }
 
 export const RESEARCH_FOLDERS_STORAGE_KEY = "qmux.research-folders.v1";
 
 export function emptyResearchFolderState(): ResearchFolderState {
-  return { folders: [], membership: {} };
+  return { folders: [], membership: {}, starred: [] };
 }
 
 function generateFolderId(): string {
@@ -59,10 +61,47 @@ export function loadResearchFolderState(): ResearchFolderState {
         }
       }
     }
-    return { folders, membership };
+    const starred = Array.isArray(raw.starred)
+      ? raw.starred.filter((id): id is string => typeof id === "string")
+      : [];
+    return { folders, membership, starred: [...new Set(starred)] };
   } catch {
     return emptyResearchFolderState();
   }
+}
+
+export function isResearchStarred(state: ResearchFolderState, id: string): boolean {
+  return state.starred.includes(id);
+}
+
+/** Adds the id to the end of the starred order, or removes it. */
+export function toggleResearchStar(
+  state: ResearchFolderState,
+  id: string,
+): ResearchFolderState {
+  return {
+    ...state,
+    starred: state.starred.includes(id)
+      ? state.starred.filter((starredId) => starredId !== id)
+      : [...state.starred, id],
+  };
+}
+
+/** Applies a new order for the currently displayed starred entries while
+ * preserving any stored entries that are not on screen (other scopes,
+ * archived trees) in their relative positions after them. */
+export function replaceResearchStarOrder(
+  state: ResearchFolderState,
+  orderedDisplayedIds: string[],
+): ResearchFolderState {
+  const displayed = new Set(orderedDisplayedIds);
+  return {
+    ...state,
+    starred: [
+      ...orderedDisplayedIds,
+      ...state.starred.filter((id) => !displayed.has(id)),
+    ],
+  };
 }
 
 export function saveResearchFolderState(state: ResearchFolderState) {
@@ -85,7 +124,7 @@ export function createResearchFolder(
     membership[treeId] = folder.id;
   }
   return {
-    state: { folders: [...state.folders, folder], membership },
+    state: { ...state, folders: [...state.folders, folder], membership },
     folder,
   };
 }
@@ -136,9 +175,15 @@ export function removeTreesFromResearchFolders(
     return state;
   }
   const liveFolderIds = new Set(Object.values(membership));
+  const removed = new Set(treeIds);
   return {
     folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
     membership,
+    starred: state.starred.filter(
+      (id) =>
+        !removed.has(id) &&
+        (liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id)),
+    ),
   };
 }
 
@@ -157,6 +202,7 @@ export function dissolveResearchFolder(
   return {
     folders: state.folders.filter((folder) => folder.id !== folderId),
     membership,
+    starred: state.starred.filter((id) => id !== folderId),
   };
 }
 
@@ -188,10 +234,16 @@ export function pruneResearchFolderState(
   }
   const liveFolderIds = new Set(Object.values(membership));
   const folders = state.folders.filter((folder) => liveFolderIds.has(folder.id));
-  if (!membershipChanged && folders.length === state.folders.length) {
+  const folderIds = new Set(folders.map((folder) => folder.id));
+  const starred = state.starred.filter((id) => known.has(id) || folderIds.has(id));
+  if (
+    !membershipChanged &&
+    folders.length === state.folders.length &&
+    starred.length === state.starred.length
+  ) {
     return state;
   }
-  return { folders, membership };
+  return { folders, membership, starred };
 }
 
 // The sidebar's display model: the backend's flat tree order regrouped into
@@ -244,13 +296,58 @@ export function flattenResearchSidebarUnits(
   );
 }
 
-/** Moves one unit (tree or whole folder) to a gap in the unit list and returns
- * the resulting flat tree-id order, or null when the move is a no-op. */
+export interface ResearchSidebarLists {
+  /** Units pinned to the top, in the stored starred order. */
+  starred: ResearchSidebarUnit[];
+  /** Everything else, in the backend's flat order. */
+  main: ResearchSidebarUnit[];
+}
+
+/** Splits the display into the starred list and the main list. A starred tree
+ * always shows in the starred list — even out of a folder it belongs to — and
+ * a starred folder brings its remaining members with it. */
+export function buildResearchSidebarLists(
+  trees: ResearchTreeSummary[],
+  state: ResearchFolderState,
+): ResearchSidebarLists {
+  const starredSet = new Set(state.starred);
+  const starredFolderIds = new Set(
+    state.folders.filter((folder) => starredSet.has(folder.id)).map((folder) => folder.id),
+  );
+  const mainTrees = trees.filter((tree) => {
+    if (starredSet.has(tree.id)) {
+      return false;
+    }
+    const folderId = state.membership[tree.id];
+    return !folderId || !starredFolderIds.has(folderId);
+  });
+  const starred: ResearchSidebarUnit[] = [];
+  for (const id of state.starred) {
+    const folder = state.folders.find((candidate) => candidate.id === id);
+    if (folder) {
+      const members = trees.filter(
+        (tree) => state.membership[tree.id] === id && !starredSet.has(tree.id),
+      );
+      if (members.length > 0) {
+        starred.push({ kind: "folder", folder, trees: members });
+      }
+      continue;
+    }
+    const tree = trees.find((candidate) => candidate.id === id);
+    if (tree) {
+      starred.push({ kind: "tree", tree });
+    }
+  }
+  return { starred, main: buildResearchSidebarUnits(mainTrees, state) };
+}
+
+/** Moves one unit (tree or whole folder) to a gap in the unit list. Returns
+ * the reordered unit list, or null when the move is a no-op. */
 export function moveResearchUnitToGap(
   units: ResearchSidebarUnit[],
   unitId: string,
   gapIndex: number,
-): string[] | null {
+): ResearchSidebarUnit[] | null {
   const fromIndex = units.findIndex((unit) => researchSidebarUnitId(unit) === unitId);
   if (fromIndex < 0 || gapIndex < 0 || gapIndex > units.length) {
     return null;
@@ -263,22 +360,21 @@ export function moveResearchUnitToGap(
     0,
     Math.min(gapIndex > fromIndex ? gapIndex - 1 : gapIndex, without.length),
   );
-  const next = [
+  return [
     ...without.slice(0, insertIndex),
     units[fromIndex],
     ...without.slice(insertIndex),
   ];
-  return flattenResearchSidebarUnits(next);
 }
 
-/** Moves one member to a gap inside its folder and returns the resulting flat
- * tree-id order, or null when the move is a no-op. */
+/** Moves one member to a gap inside its folder. Returns the unit list with
+ * that folder's members reordered, or null when the move is a no-op. */
 export function moveResearchFolderMemberToGap(
   units: ResearchSidebarUnit[],
   folderId: string,
   treeId: string,
   gapIndex: number,
-): string[] | null {
+): ResearchSidebarUnit[] | null {
   const unit = units.find(
     (candidate) => candidate.kind === "folder" && candidate.folder.id === folderId,
   );
@@ -303,9 +399,7 @@ export function moveResearchFolderMemberToGap(
     unit.trees[fromIndex],
     ...without.slice(insertIndex),
   ];
-  return flattenResearchSidebarUnits(
-    units.map((candidate) =>
-      candidate === unit ? { ...unit, trees: reordered } : candidate,
-    ),
+  return units.map((candidate) =>
+    candidate === unit ? { ...unit, trees: reordered } : candidate,
   );
 }

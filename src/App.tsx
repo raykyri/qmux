@@ -100,8 +100,10 @@ import {
   loadResearchFolderState,
   removeTreesFromResearchFolders,
   renameResearchFolder,
+  replaceResearchStarOrder,
   researchFolderMemberIds,
   saveResearchFolderState,
+  toggleResearchStar,
   type ResearchFolder,
   type ResearchFolderState,
 } from "./lib/researchFolders";
@@ -6090,6 +6092,20 @@ function MainApp() {
     },
     [commitResearchFolderState],
   );
+  const toggleResearchStarFromSidebar = useCallback(
+    (id: string) => {
+      commitResearchFolderState(toggleResearchStar(researchFolderStateRef.current, id));
+    },
+    [commitResearchFolderState],
+  );
+  const reorderResearchStarsFromSidebar = useCallback(
+    (orderedIds: string[]) => {
+      commitResearchFolderState(
+        replaceResearchStarOrder(researchFolderStateRef.current, orderedIds),
+      );
+    },
+    [commitResearchFolderState],
+  );
   // Live member trees of a client-side folder — membership entries whose tree
   // no longer exists are skipped rather than pruned here.
   const researchFolderLiveMembers = useCallback((folderId: string) => {
@@ -10063,6 +10079,8 @@ function MainApp() {
               onDissolveFolder={dissolveResearchFolderFromSidebar}
               onArchiveFolder={archiveResearchFolderFromSidebar}
               onDeleteFolder={deleteResearchFolderFromSidebar}
+              onToggleStar={toggleResearchStarFromSidebar}
+              onReorderStars={reorderResearchStarsFromSidebar}
               onSelect={(treeId) => {
                 if (
                   isResearchTreeSelectionChange(

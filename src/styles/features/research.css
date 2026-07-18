@@ -293,6 +293,12 @@
   margin-left: 14px;
 }
 
+/* Starred items sit above the rest of the list as their own group; the extra
+   space below is the only divider. */
+.research-sidebar-starred {
+  margin-bottom: 16px;
+}
+
 /* Live research terminal panes for the scoped folder(s). Keep this lower
    region separate from the research list so either collection can scroll
    without moving the other. */
