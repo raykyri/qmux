@@ -12,9 +12,15 @@
 
 .sidebar.is-research-mode .pane-list {
   padding-block: var(--sidebar-stack-gap);
+  overflow-y: hidden;
 }
 
 .research-sidebar-section {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex: 1;
   padding: 7px 7px 5px;
 }
 
@@ -242,14 +248,26 @@
   color: #89918d;
 }
 
-/* Live research terminal panes for the scoped folder(s). Anchored to the
-   bottom of the sidebar like the Folders section it replaced. */
+/* Live research terminal panes for the scoped folder(s). Keep this lower
+   region separate from the research list so either collection can scroll
+   without moving the other. */
 .research-live-terminals {
   display: flex;
+  min-height: 0;
+  max-height: 50%;
+  overflow: hidden;
+  flex: 0 1 auto;
   flex-direction: column;
   gap: 3px;
   margin-top: auto;
   padding: 12px 7px 5px;
+}
+
+.research-live-terminals .pane-list-body {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .research-workspace-total {
