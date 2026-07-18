@@ -345,6 +345,7 @@ import type {
   PaneInfo,
   PaneSplitInfo,
   QueuedTurn,
+  ResearchHighlightAnchor,
   ResearchNode,
   ResearchTreeDetail,
   ResearchTreeSummary,
@@ -5997,11 +5998,13 @@ function MainApp() {
         publicationId: string;
         commentId: number;
       } | null,
+      queryAnchor?: ResearchHighlightAnchor | null,
     ) => {
       const node = await forkResearchNode(
         parentNodeId,
         prompt,
         publicationProposal,
+        queryAnchor,
       );
       void applyGeneratedResearchNodeTitle(node.id, prompt);
       void refreshResearchNavigation().catch(() => undefined);

@@ -2536,6 +2536,7 @@ impl AppState {
             tree_id: tree_id.clone(),
             parent_node_id: None,
             publication_proposal: None,
+            query_anchor: None,
             prompt,
             title: None,
             response_preview: None,
@@ -2634,6 +2635,7 @@ impl AppState {
             tree_id: tree_id.clone(),
             parent_node_id: None,
             publication_proposal: None,
+            query_anchor: None,
             prompt: String::new(),
             title: None,
             response_preview: research::response_preview(&turns, None, ""),
@@ -2899,8 +2901,12 @@ impl AppState {
         &self,
         parent_node_id: &str,
         prompt: String,
+        query_anchor: Option<ResearchHighlightAnchor>,
     ) -> Result<ResearchNode, String> {
-        self.create_research_child_with_proposal(parent_node_id, prompt, None)
+        if let Some(anchor) = &query_anchor {
+            research::validate_highlight_anchor(anchor)?;
+        }
+        self.create_research_child_with_options(parent_node_id, prompt, None, query_anchor)
     }
 
     pub fn create_research_child_for_proposal(
@@ -2918,14 +2924,15 @@ impl AppState {
         {
             return Err("publication proposal reference is invalid".to_string());
         }
-        self.create_research_child_with_proposal(parent_node_id, prompt, Some(proposal))
+        self.create_research_child_with_options(parent_node_id, prompt, Some(proposal), None)
     }
 
-    fn create_research_child_with_proposal(
+    fn create_research_child_with_options(
         &self,
         parent_node_id: &str,
         prompt: String,
         publication_proposal: Option<ResearchPublicationProposal>,
+        query_anchor: Option<ResearchHighlightAnchor>,
     ) -> Result<ResearchNode, String> {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
@@ -2984,6 +2991,7 @@ impl AppState {
                 tree_id: parent.tree_id.clone(),
                 parent_node_id: Some(parent.id),
                 publication_proposal,
+                query_anchor,
                 prompt,
                 title: None,
                 response_preview: None,
@@ -8842,17 +8850,17 @@ mod tests {
         };
         settle(&detail.tree.root_node_id);
         let branch = state
-            .create_research_child(&detail.tree.root_node_id, "Branch".to_string())
+            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None)
             .unwrap();
         settle(&branch.id);
         let descendant = state
-            .create_research_child(&branch.id, "Descendant".to_string())
+            .create_research_child(&branch.id, "Descendant".to_string(), None)
             .unwrap();
         state
             .fail_research_node(&descendant.id, "settled".to_string())
             .unwrap();
         let sibling = state
-            .create_research_child(&detail.tree.root_node_id, "Sibling".to_string())
+            .create_research_child(&detail.tree.root_node_id, "Sibling".to_string(), None)
             .unwrap();
         state
             .fail_research_node(&sibling.id, "settled".to_string())
@@ -8928,7 +8936,7 @@ mod tests {
             root.native_session_id = Some("root-session".to_string());
         }
         let branch = state
-            .create_research_child(&detail.tree.root_node_id, "Branch".to_string())
+            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None)
             .unwrap();
         assert!(
             state
@@ -8995,7 +9003,7 @@ mod tests {
         assert!(state.list_research_trees().unwrap().is_empty());
         assert!(
             state
-                .create_research_child(&detail.tree.root_node_id, "More".to_string())
+                .create_research_child(&detail.tree.root_node_id, "More".to_string(), None)
                 .unwrap_err()
                 .contains("restore archived research")
         );
@@ -9324,7 +9332,7 @@ mod tests {
             .unwrap();
 
         let err = state
-            .create_research_child(&detail.tree.root_node_id, "Too soon".to_string())
+            .create_research_child(&detail.tree.root_node_id, "Too soon".to_string(), None)
             .unwrap_err();
         assert!(err.contains("completed parent"));
         assert_eq!(state.research_tree(&detail.tree.id).unwrap().nodes.len(), 1);
@@ -9799,6 +9807,7 @@ mod tests {
             tree_id: tree_id.to_string(),
             parent_node_id: parent.map(str::to_string),
             publication_proposal: None,
+            query_anchor: None,
             prompt: "Q".to_string(),
             title: None,
             response_preview: None,
@@ -9918,6 +9927,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             publication_proposal: None,
+            query_anchor: None,
             prompt: "Question".to_string(),
             title: None,
             response_preview: None,
@@ -10015,6 +10025,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             publication_proposal: None,
+            query_anchor: None,
             prompt: "Question".to_string(),
             title: None,
             response_preview: None,
@@ -10089,6 +10100,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             publication_proposal: None,
+            query_anchor: None,
             prompt: "Question".to_string(),
             title: None,
             response_preview: Some("Answer".to_string()),
@@ -10172,6 +10184,7 @@ mod tests {
                     tree_id,
                     parent_node_id: None,
                     publication_proposal: None,
+                    query_anchor: None,
                     prompt: "Question".to_string(),
                     title: None,
                     response_preview: None,
@@ -10382,7 +10395,7 @@ mod tests {
             )
             .unwrap();
         let child = state
-            .create_research_child(&node_id, "What changed?".to_string())
+            .create_research_child(&node_id, "What changed?".to_string(), None)
             .unwrap();
         let captured_before_edit = state
             .research_document_followup_prompt(&node_id, &child.prompt)
@@ -10695,7 +10708,7 @@ mod tests {
         // the bind recorded, so a follow-up child can be created from it.)
         state.insert_pane(sample_pane_runtime("pane-8")).unwrap();
         let crash = state
-            .create_research_child(&detail.tree.root_node_id, "Follow-up".to_string())
+            .create_research_child(&detail.tree.root_node_id, "Follow-up".to_string(), None)
             .unwrap();
         let mut crash_agent = sample_agent("crash-agent");
         crash_agent.pane_id = Some("pane-8".to_string());

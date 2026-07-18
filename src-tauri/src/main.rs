@@ -1007,6 +1007,7 @@ async fn fork_research_node(
     parent_node_id: String,
     prompt: String,
     publication_proposal: Option<research::ResearchPublicationProposal>,
+    query_anchor: Option<research::ResearchHighlightAnchor>,
 ) -> Result<ResearchNode, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1022,16 +1023,24 @@ async fn fork_research_node(
                 Some(proposal) => {
                     state.create_research_child_for_proposal(&parent_node_id, prompt, proposal)?
                 }
-                None => state.create_research_child(&parent_node_id, prompt)?,
+                None => state.create_research_child(&parent_node_id, prompt, query_anchor)?,
             };
             (parent, workspace, child)
+        };
+        // A highlight-targeted follow-up sends the quoted passage with the
+        // question. Only the sent prompt carries the quote — the child's
+        // displayed prompt stays the bare question, which boundary matching
+        // still finds as a normalized substring of the sent prompt.
+        let question = match &child.query_anchor {
+            Some(anchor) => research::query_followup_prompt(&anchor.exact, &child.prompt),
+            None => child.prompt.clone(),
         };
         if parent.kind == research::ResearchNodeKind::Document {
             // A document has no session to fork. Its follow-up launches a
             // fresh run whose prompt carries the document as context; the
             // child's displayed prompt stays the bare question (the response
             // boundary still matches it as a substring of the sent prompt).
-            let launch_prompt = state.research_document_followup_prompt(&parent.id, &child.prompt);
+            let launch_prompt = state.research_document_followup_prompt(&parent.id, &question);
             let launch_prompt = match launch_prompt {
                 Ok(launch_prompt) => launch_prompt,
                 Err(err) => {
@@ -1093,7 +1102,7 @@ async fn fork_research_node(
         // and cwd always come from the tree's current durable workspace.
         source.group_id = workspace.id;
         source.worktree_dir = workspace.dir;
-        match fork_agent_source(&state, &source, false, true, Some(&child.prompt)) {
+        match fork_agent_source(&state, &source, false, true, Some(&question)) {
             Ok(pane) => {
                 let association = pane
                     .agent_id
