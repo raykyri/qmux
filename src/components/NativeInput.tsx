@@ -58,6 +58,11 @@ import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
 } from "./ComposerSubmitShortcut";
+import {
+  QueuedTurnCard,
+  queuedTurnDeliveryLabel,
+  waitFooterLabelWithShortcut,
+} from "./QueuedTurnCard";
 
 // Trailing debounce for pushing local composer edits to the app's draft store.
 // Long enough to keep steady typing from re-rendering the app per keystroke,
@@ -65,10 +70,6 @@ import {
 const DRAFT_PUSH_DEBOUNCE_MS = 150;
 
 const QUEUE_DRAG_START_THRESHOLD = 4;
-// Terminal title progress markers tend to be leading glyphs and spacing; strip
-// those only for the queued-turn wait footer so the stored wait target stays raw.
-const WAIT_TITLE_PROGRESS_PREFIX_RE =
-  /^[ \t·•●○◦∙⋅⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✢✣✤✥✦✧✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿\uFE0E\uFE0F]+/u;
 
 type QueuePointerDrag = {
   pointerId: number;
@@ -79,22 +80,6 @@ type QueuePointerDrag = {
   startY: number;
   active: boolean;
 };
-
-function waitFooterTitle(label: string) {
-  return label.replace(WAIT_TITLE_PROGRESS_PREFIX_RE, "").trim() || label.trim();
-}
-
-function queuedTurnDeliveryLabel(delivery: QueuedTurnDelivery) {
-  if (delivery.kind === "newSession") {
-    return "To new session";
-  }
-  return delivery.useWorktree ? "Fork in worktree" : "Fork session";
-}
-
-function waitFooterLabelWithShortcut(label: string, shortcutLabel?: string | null) {
-  const quotedTitle = `"${waitFooterTitle(label)}"`;
-  return shortcutLabel ? `${quotedTitle} (${shortcutLabel})` : quotedTitle;
-}
 
 interface NativeInputProps {
   pane: PaneInfo;
@@ -1129,9 +1114,7 @@ export default function NativeInput({
               dropIndex === null || dropIndex === draggingIndex || dropIndex === (draggingIndex ?? -1) + 1
                 ? null
                 : dropIndex;
-            const className = [
-              "queued-turn",
-              turn.waitFor ? "has-wait" : "",
+            const stateClassName = [
               index === draggingIndex ? "is-dragging" : "",
               activeDrop === index ? "is-drop-before" : "",
               activeDrop === queuedTurns.length && index === queuedTurns.length - 1
@@ -1141,61 +1124,53 @@ export default function NativeInput({
               .filter(Boolean)
               .join(" ");
             return (
-              <div
+              <QueuedTurnCard
                 key={`${index}-${turn.text}`}
-                className={className}
+                text={turn.text}
+                className={stateClassName}
+                pauseAfter={turn.pauseAfter}
+                deliveryLabel={turn.delivery ? queuedTurnDeliveryLabel(turn.delivery) : null}
+                waitLabel={
+                  turn.waitFor ? (
+                    <>
+                      {index === 0 ? "Waiting on" : "Wait on"}{" "}
+                      {waitFooterLabelWithShortcut(
+                        turn.waitFor.label ?? "selected terminal",
+                        shortcutLabelForPane(turn.waitFor.paneId),
+                      )}
+                    </>
+                  ) : null
+                }
+                onWaitHoverChange={(hovering) =>
+                  onWaitTargetHover(hovering ? (turn.waitFor?.agentId ?? null) : null)
+                }
                 onPointerDown={(event) => handleQueuePointerDown(event, index)}
                 onPointerMove={handleQueuePointerMove}
                 onPointerUp={handleQueuePointerUp}
                 onPointerCancel={handleQueuePointerCancel}
-              >
-                <div className="queued-turn-text" onDoubleClick={handleQueuedTurnDoubleClick}>
-                  {turn.text}
-                </div>
-                <div className="queued-turn-actions">
-                  <button
-                    type="button"
-                    className="control-button queued-turn-remove"
-                    disabled={submitting}
-                    aria-label="Remove queued turn"
-                    title="Remove"
-                    onClick={() => void removeQueuedTurn(index, turn.text)}
-                  >
-                    <X size={13} aria-hidden="true" />
-                  </button>
-                  <button className="control-button"
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => void editQueuedTurn(index, turn.text)}
-                  >
-                    Edit
-                  </button>
-                </div>
-                {turn.pauseAfter ? (
-                  <div className="queued-turn-pause-label" aria-hidden="true">
-                    Pause after send
-                  </div>
-                ) : null}
-                {turn.delivery ? (
-                  <div className="queued-turn-delivery-label" aria-hidden="true">
-                    {queuedTurnDeliveryLabel(turn.delivery)}
-                  </div>
-                ) : null}
-                {turn.waitFor ? (
-                  <div
-                    className="queued-turn-wait-label"
-                    aria-hidden="true"
-                    onPointerEnter={() => onWaitTargetHover(turn.waitFor?.agentId ?? null)}
-                    onPointerLeave={() => onWaitTargetHover(null)}
-                  >
-                    {index === 0 ? "Waiting on" : "Wait on"}{" "}
-                    {waitFooterLabelWithShortcut(
-                      turn.waitFor.label ?? "selected terminal",
-                      shortcutLabelForPane(turn.waitFor.paneId),
-                    )}
-                  </div>
-                ) : null}
-              </div>
+                onTextDoubleClick={handleQueuedTurnDoubleClick}
+                actions={
+                  <>
+                    <button
+                      type="button"
+                      className="control-button queued-turn-remove"
+                      disabled={submitting}
+                      aria-label="Remove queued turn"
+                      title="Remove"
+                      onClick={() => void removeQueuedTurn(index, turn.text)}
+                    >
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                    <button className="control-button"
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => void editQueuedTurn(index, turn.text)}
+                    >
+                      Edit
+                    </button>
+                  </>
+                }
+              />
             );
           })}
         </div>
