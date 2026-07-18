@@ -98,6 +98,7 @@ import {
   createResearchFolder,
   dissolveResearchFolder,
   loadResearchFolderState,
+  pruneResearchFolderState,
   removeTreesFromResearchFolders,
   renameResearchFolder,
   replaceResearchStarOrder,
@@ -5208,10 +5209,19 @@ function MainApp() {
       // Navigation restoration state for trees that no longer exist would
       // otherwise accumulate in localStorage forever.
       pruneResearchNavigation(trees.map((tree) => tree.id));
+      // Same for folder memberships and stars: trees deleted elsewhere (a
+      // failed root launch, another client) never pass through the local
+      // delete path that cleans them.
+      commitResearchFolderState(
+        pruneResearchFolderState(
+          researchFolderStateRef.current,
+          trees.map((tree) => tree.id),
+        ),
+      );
     } finally {
       researchNavRefreshInFlightRef.current -= 1;
     }
-  }, []);
+  }, [commitResearchFolderState]);
   const applyResearchTreeOrder = useCallback(
     (archived: boolean, workspaceId: string, orderedTreeIds: string[]) => {
       const current = archived
@@ -6145,15 +6155,63 @@ function MainApp() {
   const deleteResearchFolderFromSidebar = useCallback(
     async (folderId: string) => {
       setError(null);
-      const memberIds = researchFolderLiveMembers(folderId).map((tree) => tree.id);
-      for (const treeId of memberIds) {
-        await removeResearchTreeAndSelectFallback(treeId);
+      const members = researchFolderLiveMembers(folderId);
+      const memberIds = new Set(members.map((tree) => tree.id));
+      // Reconcile the selection up front rather than once per member: the
+      // per-tree fallback would page the document through folder members
+      // that are themselves about to be deleted, fetching each one. Land
+      // directly on the first tree that survives the whole delete.
+      const activeTreeId = activeResearchTreeIdRef.current;
+      if (activeTreeId && memberIds.has(activeTreeId)) {
+        const nextTree =
+          treesForResearchScope(
+            researchTreesRef.current,
+            researchScopeRef.current,
+          ).find((tree) => !memberIds.has(tree.id)) ?? null;
+        if (nextTree) {
+          await selectResearchTree(nextTree.id);
+        } else {
+          activeResearchTreeIdRef.current = null;
+          setActiveResearchTreeId(null);
+          setActiveResearchDetail(null);
+          setActiveResearchDetailError(null);
+          localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+          setSidebarMode("research");
+          setActiveSurface("research");
+        }
       }
-      commitResearchFolderState(
-        dissolveResearchFolder(researchFolderStateRef.current, folderId),
-      );
+      const deleted: string[] = [];
+      try {
+        for (const tree of members) {
+          await removeResearchTree(tree.id);
+          deleted.push(tree.id);
+        }
+        commitResearchFolderState(
+          dissolveResearchFolder(
+            removeTreesFromResearchFolders(researchFolderStateRef.current, deleted),
+            folderId,
+          ),
+        );
+      } catch (err) {
+        // A partial failure keeps the confirmation open with the error, but
+        // the trees already gone must still leave the folder state.
+        if (deleted.length > 0) {
+          commitResearchFolderState(
+            removeTreesFromResearchFolders(researchFolderStateRef.current, deleted),
+          );
+        }
+        throw err;
+      } finally {
+        await refreshResearchNavigation().catch(() => undefined);
+      }
     },
-    [commitResearchFolderState, removeResearchTreeAndSelectFallback, researchFolderLiveMembers],
+    [
+      commitResearchFolderState,
+      refreshResearchNavigation,
+      researchFolderLiveMembers,
+      selectResearchTree,
+      setSidebarMode,
+    ],
   );
   const createResearchFollowup = useCallback(
     async (

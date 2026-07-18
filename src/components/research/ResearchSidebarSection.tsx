@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -268,6 +268,25 @@ export default function ResearchSidebarSection({
       renameInputRef.current?.select();
     }
   }, [renamingFolder, renamingTree]);
+
+  // The height estimate that positioned the menu is only a guess — the tree
+  // and folder menus vary with their optional items. Once the real menu has
+  // rendered, clamp it back inside the viewport so its bottom items (Delete)
+  // stay reachable from triggers near the window's bottom edge.
+  useLayoutEffect(() => {
+    const element = menuRef.current;
+    if (!menu || !element) {
+      return;
+    }
+    const height = element.getBoundingClientRect().height;
+    const top = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(menu.top, window.innerHeight - VIEWPORT_MARGIN - height),
+    );
+    if (top !== menu.top) {
+      element.style.top = `${top}px`;
+    }
+  }, [menu]);
 
   function menuPositionFromTrigger(trigger: HTMLButtonElement) {
     const rect = trigger.getBoundingClientRect();

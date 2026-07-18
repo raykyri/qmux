@@ -157,33 +157,35 @@ export function renameResearchFolder(
   };
 }
 
-/** Drops individual trees out of whatever folder holds them. A folder left
- * with no members disappears from display and is pruned on the next prune. */
+/** Drops individual trees out of whatever folder holds them, and out of the
+ * starred list — a tree passed here is gone, foldered or not. A folder left
+ * with no members disappears along with its own star. */
 export function removeTreesFromResearchFolders(
   state: ResearchFolderState,
   treeIds: string[],
 ): ResearchFolderState {
+  const removed = new Set(treeIds);
   const membership = { ...state.membership };
-  let changed = false;
+  let membershipChanged = false;
   for (const treeId of treeIds) {
     if (treeId in membership) {
       delete membership[treeId];
-      changed = true;
+      membershipChanged = true;
     }
   }
-  if (!changed) {
+  const liveFolderIds = new Set(Object.values(membership));
+  const starred = state.starred.filter(
+    (id) =>
+      !removed.has(id) &&
+      (liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id)),
+  );
+  if (!membershipChanged && starred.length === state.starred.length) {
     return state;
   }
-  const liveFolderIds = new Set(Object.values(membership));
-  const removed = new Set(treeIds);
   return {
     folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
     membership,
-    starred: state.starred.filter(
-      (id) =>
-        !removed.has(id) &&
-        (liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id)),
-    ),
+    starred,
   };
 }
 
