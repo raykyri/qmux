@@ -838,6 +838,7 @@
 }
 
 .research-response-grid {
+  position: relative;
   display: grid;
   /* Literal 640px, no var(): WebKit failed the substitution here once via an
      intermediate custom property and again, intermittently, on streaming
@@ -1507,6 +1508,32 @@
 .research-followup-card .research-followup-quote {
   margin-bottom: 5px;
   -webkit-line-clamp: 2;
+}
+
+/* Dotted elbow drawn while a passage/card pair is hover-linked: out of the
+   answer column's gutter edge at the passage's first line, into the left edge
+   of the card. Geometry is computed in the document component; this only
+   paints it. No viewBox: the svg fills the grid, so path coordinates are
+   grid-relative pixels. */
+.research-anchor-connector {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.research-anchor-connector path {
+  fill: none;
+  stroke: var(--research-anchor-connector);
+  stroke-width: 1.4;
+  stroke-dasharray: 2 5;
+  stroke-linecap: round;
+}
+
+.research-anchor-connector circle {
+  fill: var(--research-anchor-connector);
 }
 
 /* Targeted follow-ups sit beside the passage they were asked about; crowded
