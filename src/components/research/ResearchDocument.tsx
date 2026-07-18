@@ -2006,7 +2006,14 @@ export default function ResearchDocument({
     window.getSelection()?.removeAllRanges();
     // Focus once the composer has begun its slide so typing can start
     // immediately; focusing does not interrupt the transform transition.
-    window.requestAnimationFrame(() => followupTextareaRef.current?.focus());
+    // preventScroll matters: mid-transition the composer still sits at the top
+    // of the rail, and a scrolling focus would yank the page up there and then
+    // watch the composer slide back out of the viewport. The slide ends beside
+    // the quoted passage — right where the user just selected — so keeping the
+    // scroll position keeps the composer in view.
+    window.requestAnimationFrame(() =>
+      followupTextareaRef.current?.focus({ preventScroll: true }),
+    );
   }, [archived, followupNode?.status, highlightAction]);
 
   // Removes the persisted ask for the current node. Called from the explicit
