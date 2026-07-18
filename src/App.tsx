@@ -3596,6 +3596,16 @@ function MainApp() {
   // for the logical owner calculation below. Keeping it single-sourced avoids
   // a modal disabling pointer claims while the owner coordinator still grants
   // keyboard input (or vice versa).
+  // Only a search/confirm overlay on a *visible* pane should revoke native
+  // keyboard ownership. A pane keeps its overlay-open state while hidden (a
+  // find bar left open when the user switched tabs), and its unchanged
+  // searchOpen never re-fires the publish effect — so gating on the raw set
+  // would let an off-screen pane keyboard-deaden the terminal actually on
+  // screen. Intersecting with the visible set matches how the expanded
+  // transcript and browser overlays are already visibility-derived.
+  const visiblePaneOverlayBlocking = [...terminalOverlayBlockedPaneIds].some(
+    (paneId) => visibleTerminalPaneIdSet.has(paneId),
+  );
   const nativeTerminalInputBlocked = Boolean(
     settingsOpen ||
       newResearchOpen ||
@@ -3621,7 +3631,7 @@ function MainApp() {
       // revoke the desired owner until their web interaction completes.
       draggingPaneId !== null ||
       terminalGeometryResizing ||
-      terminalOverlayBlockedPaneIds.size > 0,
+      visiblePaneOverlayBlocking,
   );
   const desiredNativeKeyboardOwner = desiredNativeTerminalKeyboardOwner({
     activePaneId: activePane?.id ?? null,
@@ -5801,9 +5811,14 @@ function MainApp() {
     ],
   );
   const createResearchFromSidebar = useCallback(() => {
+    // Bring the research surface forward alongside the sidebar mode: opening
+    // this from a terminal and cancelling would otherwise strand sidebarMode
+    // "research" with activeSurface "pane" (a terminal pane on the research
+    // stage), the mismatch the boot-restore path treats as unrecoverable.
     setSidebarMode("research");
+    setActiveSurface("research");
     setNewResearchOpen(true);
-  }, [setSidebarMode]);
+  }, [setActiveSurface, setSidebarMode]);
   const createDocumentFromSidebar = useCallback(() => {
     // The composer is a research-surface page, not a modal: opening it also
     // brings the research surface forward so it is actually visible.
@@ -6323,13 +6338,7 @@ function MainApp() {
           if (nextTree) {
             await selectResearchTree(nextTree.id);
           } else {
-            activeResearchTreeIdRef.current = null;
-            setActiveResearchTreeId(null);
-            setActiveResearchDetail(null);
-            setActiveResearchDetailError(null);
-            localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-            setSidebarMode("research");
-            setActiveSurface("research");
+            focusResearchHome();
           }
         }
       } catch (err) {
@@ -6337,7 +6346,7 @@ function MainApp() {
       }
       await refreshResearchNavigation().catch(() => undefined);
     },
-    [refreshResearchNavigation, researchTrees, selectResearchTree, setSidebarMode],
+    [focusResearchHome, refreshResearchNavigation, researchTrees, selectResearchTree],
   );
   const restoreResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
@@ -6372,18 +6381,12 @@ function MainApp() {
         if (nextTree) {
           await selectResearchTree(nextTree.id);
         } else {
-          activeResearchTreeIdRef.current = null;
-          setActiveResearchTreeId(null);
-          setActiveResearchDetail(null);
-          setActiveResearchDetailError(null);
-          localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-          setSidebarMode("research");
-          setActiveSurface("research");
+          focusResearchHome();
         }
       }
       await refreshResearchNavigation().catch(() => undefined);
     },
-    [commitResearchFolderState, refreshResearchNavigation, selectResearchTree, setSidebarMode],
+    [commitResearchFolderState, focusResearchHome, refreshResearchNavigation, selectResearchTree],
   );
   const removeResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
@@ -6497,20 +6500,14 @@ function MainApp() {
           await archiveResearchTree(tree.id);
         }
         if (members.some((tree) => tree.id === activeResearchTreeIdRef.current)) {
-          activeResearchTreeIdRef.current = null;
-          setActiveResearchTreeId(null);
-          setActiveResearchDetail(null);
-          setActiveResearchDetailError(null);
-          localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-          setSidebarMode("research");
-          setActiveSurface("research");
+          focusResearchHome();
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
       await refreshResearchNavigation().catch(() => undefined);
     },
-    [refreshResearchNavigation, researchFolderLiveMembers, setSidebarMode],
+    [focusResearchHome, refreshResearchNavigation, researchFolderLiveMembers],
   );
   const deleteResearchFolderFromSidebar = useCallback(
     async (folderId: string) => {
@@ -6531,13 +6528,7 @@ function MainApp() {
         if (nextTree) {
           await selectResearchTree(nextTree.id);
         } else {
-          activeResearchTreeIdRef.current = null;
-          setActiveResearchTreeId(null);
-          setActiveResearchDetail(null);
-          setActiveResearchDetailError(null);
-          localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-          setSidebarMode("research");
-          setActiveSurface("research");
+          focusResearchHome();
         }
       }
       const deleted: string[] = [];
@@ -6567,10 +6558,10 @@ function MainApp() {
     },
     [
       commitResearchFolderState,
+      focusResearchHome,
       refreshResearchNavigation,
       researchFolderLiveMembers,
       selectResearchTree,
-      setSidebarMode,
     ],
   );
   const createResearchFollowup = useCallback(
@@ -8051,12 +8042,7 @@ function MainApp() {
       if (nextTree) {
         await selectResearchTree(nextTree.id);
       } else {
-        activeResearchTreeIdRef.current = null;
-        setActiveResearchTreeId(null);
-        setActiveResearchDetail(null);
-        setActiveResearchDetailError(null);
-        localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-        setActiveSurface("research");
+        focusResearchHome();
       }
     }
     void refreshResearchNavigation().catch(() => undefined);
@@ -10651,6 +10637,12 @@ function MainApp() {
                   setActiveResearchDetail(null);
                   setActiveResearchDetailError(null);
                   localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+                  // Set both halves of the surface/mode pair explicitly: a
+                  // valid in-scope research pane may still be selected here, so
+                  // this can't defer to focusResearchHome (which would clear
+                  // it). Keeping sidebarMode pinned prevents a surface/mode
+                  // mismatch if this is ever reached outside research mode.
+                  setSidebarMode("research");
                   setActiveSurface("research");
                 }
               }
