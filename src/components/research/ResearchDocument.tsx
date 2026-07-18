@@ -30,8 +30,10 @@ import {
 import { researchBranchInfo } from "../../lib/researchBranches";
 import { countResearchDocumentWords } from "../../lib/researchDocuments";
 import {
+  expandedResearchHighlightOffsets,
   intersectingResearchHighlightIds,
   isResearchAskActionShortcut,
+  isResearchExpandActionShortcut,
   isResearchHighlightActionShortcut,
   resolveResearchHighlightOffset,
 } from "../../lib/researchHighlights";
@@ -148,6 +150,10 @@ interface FollowupMenu {
 interface HighlightAction {
   anchor: ResearchHighlightAnchor;
   highlightIds: string[];
+  /** The merged annotation an Expand action would save — the union of the
+   * selection and every highlight it intersects. Null when there is nothing
+   * to expand. */
+  expandAnchor: ResearchHighlightAnchor | null;
   left: number;
   top: number;
   /** The selection has scrolled out of the viewport: keep the action alive
@@ -341,10 +347,11 @@ function quoteDisplayText(exact: string) {
 }
 
 /** Where the action bar sits for a selection rect: just under it, clamped to
- * the viewport with room reserved for the buttons before the right edge. */
-function highlightActionPlacement(rect: DOMRect) {
+ * the viewport with `reservedWidth` room for the buttons before the right
+ * edge (wider when an Expand button joins Remove and Ask). */
+function highlightActionPlacement(rect: DOMRect, reservedWidth = 260) {
   return {
-    left: Math.max(8, Math.min(rect.left, window.innerWidth - 260)),
+    left: Math.max(8, Math.min(rect.left, window.innerWidth - reservedWidth)),
     top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
     offscreen: rect.bottom < 0 || rect.top > window.innerHeight,
   };
@@ -1647,42 +1654,48 @@ export default function ResearchDocument({
     }
     const projection = root.textContent ?? "";
     const exact = projection.slice(offsets.start, offsets.end);
-    const highlightIds = intersectingResearchHighlightIds(
-      offsets,
-      resolvedHighlightsRef.current.map(({ highlight, start, end }) => ({
+    const resolvedRanges = resolvedHighlightsRef.current.map(
+      ({ highlight, start, end }) => ({
         id: highlight.id,
         start,
         end,
-      })),
+      }),
     );
+    const highlightIds = intersectingResearchHighlightIds(offsets, resolvedRanges);
     // Whitespace cannot form a useful new highlight, but it can still be a
     // selected subset of an existing annotation that the user wants removed.
     if (!exact.trim() && highlightIds.length === 0) {
       setHighlightAction(null);
       return;
     }
+    const anchorForOffsets = (span: {
+      start: number;
+      end: number;
+    }): ResearchHighlightAnchor => ({
+      version: 1,
+      projection: "answer-v1",
+      responseRevision: revision,
+      start: span.start,
+      end: span.end,
+      exact: projection.slice(span.start, span.end),
+      prefix: textContextSlice(
+        projection,
+        Math.max(0, span.start - RESEARCH_HIGHLIGHT_CONTEXT_LENGTH),
+        span.start,
+      ),
+      suffix: textContextSlice(
+        projection,
+        span.end,
+        span.end + RESEARCH_HIGHLIGHT_CONTEXT_LENGTH,
+      ),
+    });
+    const expandOffsets = expandedResearchHighlightOffsets(offsets, resolvedRanges);
     const rect = range.getBoundingClientRect();
     setHighlightAction({
-      anchor: {
-        version: 1,
-        projection: "answer-v1",
-        responseRevision: revision,
-        start: offsets.start,
-        end: offsets.end,
-        exact,
-        prefix: textContextSlice(
-          projection,
-          Math.max(0, offsets.start - RESEARCH_HIGHLIGHT_CONTEXT_LENGTH),
-          offsets.start,
-        ),
-        suffix: textContextSlice(
-          projection,
-          offsets.end,
-          offsets.end + RESEARCH_HIGHLIGHT_CONTEXT_LENGTH,
-        ),
-      },
+      anchor: anchorForOffsets(offsets),
       highlightIds,
-      ...highlightActionPlacement(rect),
+      expandAnchor: expandOffsets ? anchorForOffsets(expandOffsets) : null,
+      ...highlightActionPlacement(rect, expandOffsets ? 340 : 260),
     });
   }, [content?.responseRevision]);
 
@@ -1808,6 +1821,49 @@ export default function ResearchDocument({
     }
   }, [content, highlightAction, onError, savingHighlight]);
 
+  // Expand: save the merged annotation, then retire the highlights it
+  // absorbed. Creation goes first — if removal then fails, the leftover is
+  // overlapping highlights, not a lost annotation.
+  const applyExpandHighlightAction = useCallback(async () => {
+    if (!highlightAction?.expandAnchor || !content || savingHighlight) {
+      return;
+    }
+    setSavingHighlight(true);
+    try {
+      const created = await createResearchHighlight(
+        content.node.id,
+        highlightAction.expandAnchor,
+      );
+      const removed =
+        highlightAction.highlightIds.length > 0
+          ? await removeResearchHighlights(content.node.id, highlightAction.highlightIds)
+          : [];
+      const removedIds = new Set(removed.map(({ id }) => id));
+      setContent((current) =>
+        current?.node.id === content.node.id
+          ? {
+              ...current,
+              node: {
+                ...current.node,
+                highlights: [
+                  ...(current.node.highlights ?? []).filter(
+                    ({ id }) => !removedIds.has(id),
+                  ),
+                  created,
+                ],
+              },
+            }
+          : current,
+      );
+      window.getSelection()?.removeAllRanges();
+      setHighlightAction(null);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingHighlight(false);
+    }
+  }, [content, highlightAction, onError, savingHighlight]);
+
   // The selection can back a targeted follow-up only while the composer can
   // actually submit one: the node finished, and the tree accepts branches.
   const canAskSelection = Boolean(
@@ -1856,6 +1912,13 @@ export default function ResearchDocument({
         enterAskMode();
         return;
       }
+      if (isResearchExpandActionShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        void applyExpandHighlightAction();
+        return;
+      }
       if (!isResearchHighlightActionShortcut(event)) {
         return;
       }
@@ -1881,15 +1944,20 @@ export default function ResearchDocument({
           return;
         }
         const rect = selection.getRangeAt(0).getBoundingClientRect();
-        const placement = highlightActionPlacement(rect);
-        setHighlightAction((current) =>
-          current &&
-          (current.left !== placement.left ||
+        setHighlightAction((current) => {
+          if (!current) {
+            return current;
+          }
+          const placement = highlightActionPlacement(
+            rect,
+            current.expandAnchor ? 340 : 260,
+          );
+          return current.left !== placement.left ||
             current.top !== placement.top ||
-            current.offscreen !== placement.offscreen)
+            current.offscreen !== placement.offscreen
             ? { ...current, ...placement }
-            : current,
-        );
+            : current;
+        });
       });
     };
     document.addEventListener("mousedown", dismiss);
@@ -1905,7 +1973,13 @@ export default function ResearchDocument({
         window.cancelAnimationFrame(repositionFrame);
       }
     };
-  }, [applyHighlightAction, enterAskMode, hasHighlightAction, savingHighlight]);
+  }, [
+    applyExpandHighlightAction,
+    applyHighlightAction,
+    enterAskMode,
+    hasHighlightAction,
+    savingHighlight,
+  ]);
 
   // Escape leaves ask mode from anywhere, including inside the composer's
   // textarea, sliding the composer back to its resting position.
@@ -2893,6 +2967,25 @@ export default function ResearchDocument({
                     H
                   </kbd>
                 </button>
+                {highlightAction.expandAnchor ? (
+                  <button
+                    type="button"
+                    className="control-button research-highlight-action"
+                    disabled={savingHighlight}
+                    aria-keyshortcuts="E"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => void applyExpandHighlightAction()}
+                  >
+                    <span>
+                      {highlightAction.highlightIds.length > 1
+                        ? "Merge highlights"
+                        : "Expand highlight"}
+                    </span>
+                    <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
+                      E
+                    </kbd>
+                  </button>
+                ) : null}
                 {canAskSelection ? (
                   <button
                     type="button"

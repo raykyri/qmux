@@ -55,6 +55,43 @@ export function isResearchAskActionShortcut(
   return isBareShortcutKey(input, "a");
 }
 
+export function isResearchExpandActionShortcut(
+  input: ResearchHighlightShortcutInput,
+) {
+  return isBareShortcutKey(input, "e");
+}
+
+// A selection that overlaps stored highlights can grow them into one
+// annotation: the expansion covers the selection plus every highlight it
+// intersects (the same overlap rule removal uses). Null when there is nothing
+// to expand — no overlap, or a selection already contained in a single
+// highlight, where the union would just recreate it.
+export function expandedResearchHighlightOffsets(
+  selection: ResearchHighlightOffsets,
+  highlights: ResolvedResearchHighlightRange[],
+): ResearchHighlightOffsets | null {
+  const intersecting = highlights.filter(
+    ({ start, end }) => selection.start < end && selection.end > start,
+  );
+  if (intersecting.length === 0) {
+    return null;
+  }
+  let start = selection.start;
+  let end = selection.end;
+  for (const highlight of intersecting) {
+    start = Math.min(start, highlight.start);
+    end = Math.max(end, highlight.end);
+  }
+  if (
+    intersecting.length === 1 &&
+    intersecting[0].start === start &&
+    intersecting[0].end === end
+  ) {
+    return null;
+  }
+  return { start, end };
+}
+
 function contextMatchesAt(
   projection: string,
   start: number,

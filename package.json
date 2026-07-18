@@ -18,6 +18,7 @@
     "test:composer-slash-commands": "node scripts/test-composer-slash-commands.mjs",
     "test:claude-turns": "node scripts/test-claude-turns.mjs",
     "test:pane-splits": "node scripts/test-pane-splits.mjs",
+    "test:research-highlights": "node scripts/test-research-highlights.mjs",
     "test:research-navigation": "node scripts/test-research-navigation.mjs",
     "test:research-history": "node scripts/test-research-history.mjs",
     "test:research-documents": "node scripts/test-research-documents.mjs",
