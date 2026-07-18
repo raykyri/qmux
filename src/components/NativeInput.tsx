@@ -1390,7 +1390,7 @@ export default function NativeInput({
             )
           : null}
         <div className="native-input-submit-actions">
-          {paused ? <span className="composer-paused-label">Paused</span> : null}
+          {paused ? <span className="composer-paused-label">Queue Paused</span> : null}
           <div className="composer-menu" ref={menuRef}>
             <button
               ref={menuTriggerRef}

@@ -227,7 +227,7 @@
   color: var(--text-activity);
 }
 
-/* "Paused" status sits at the far left of the composer's submit row (the
+/* "Queue Paused" status sits at the far left of the composer's submit row (the
    composer-menu's margin-left:auto pushes the controls to the right of it). */
 .composer-paused-label {
   align-self: center;
