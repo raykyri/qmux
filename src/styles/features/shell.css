@@ -1779,6 +1779,11 @@
   padding-left: 18px;
 }
 
+/* A dimmer variant for incidental notes (e.g. the worktree storage path). */
+.settings-hint-weak {
+  color: var(--text-faint);
+}
+
 .settings-title-test {
   display: flex;
   flex-direction: column;
@@ -1850,18 +1855,21 @@
 
 .settings-theme-field {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
   min-width: 0;
 }
 
 /* Swatch strip previewing the selected theme: background, foreground, then
-   the primary ANSI accents. */
+   the primary ANSI accents. Sits under the dropdown and wraps rather than
+   widening the row. */
 .settings-theme-preview {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 3px;
-  flex: none;
 }
 
 .settings-theme-preview > span {

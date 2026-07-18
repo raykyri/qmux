@@ -11447,13 +11447,6 @@ function MainApp() {
                 Terminal theme
               </label>
               <div className="settings-theme-field">
-                {selectedTheme ? (
-                  <span className="settings-theme-preview" aria-hidden="true">
-                    {themePreviewColors(selectedTheme).map((color, index) => (
-                      <span key={index} style={{ background: color }} />
-                    ))}
-                  </span>
-                ) : null}
                 <select
                   id="settings-theme"
                   className="settings-select"
@@ -11490,6 +11483,13 @@ function MainApp() {
                     </optgroup>
                   ) : null}
                 </select>
+                {selectedTheme ? (
+                  <span className="settings-theme-preview" aria-hidden="true">
+                    {themePreviewColors(selectedTheme).map((color, index) => (
+                      <span key={index} style={{ background: color }} />
+                    ))}
+                  </span>
+                ) : null}
               </div>
             </div>
 
@@ -11680,28 +11680,13 @@ function MainApp() {
                 ))}
               </select>
             </div>
-            <p className="settings-hint settings-hint-indented">
+            <p className="settings-hint settings-hint-indented settings-hint-weak">
               {settings.worktreeLocation === "localQmux"
                 ? "New worktrees stored in <project>/.qmux/worktrees/<name>."
                 : settings.worktreeLocation === "localClaude"
                   ? "New worktrees stored in <project>/.claude/worktrees/<name>."
                   : "New worktrees stored in qmux’s global workspace directory."}
             </p>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.preventSleep}
-                onChange={(event) => {
-                  // See the font select above: capture before the updater, which
-                  // runs after currentTarget has been nulled out.
-                  const preventSleep = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, preventSleep }));
-                }}
-              />
-            </label>
 
             <div className="settings-row settings-shortcut-row">
               <label htmlFor="settings-global-task-launcher-hotkey" className="settings-label">
@@ -11759,7 +11744,7 @@ function MainApp() {
                 <label htmlFor="settings-show-hide-shortcut">Show/hide app shortcut</label>
                 {showHideShortcutValue ? (
                   <>
-                    {" ("}
+                    {" "}
                     <button
                       type="button"
                       className="settings-link-button settings-inline-link-button"
@@ -11768,7 +11753,6 @@ function MainApp() {
                     >
                       Clear
                     </button>
-                    )
                   </>
                 ) : null}
               </div>
@@ -11804,6 +11788,21 @@ function MainApp() {
                 {`qmux also uses this shortcut to ${showHideShortcutConflictLabel}; while registered system-wide, it will show/hide the app instead.`}
               </p>
             ) : null}
+
+            <label className="settings-row settings-toggle">
+              <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={settings.preventSleep}
+                onChange={(event) => {
+                  // See the font select above: capture before the updater, which
+                  // runs after currentTarget has been nulled out.
+                  const preventSleep = event.currentTarget.checked;
+                  setSettings((current) => ({ ...current, preventSleep }));
+                }}
+              />
+            </label>
 
             <label className="settings-row settings-toggle">
               <span className="settings-label">Show keyboard shortcut hints</span>
