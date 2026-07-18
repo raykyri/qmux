@@ -615,6 +615,24 @@ export default function ResearchDocument({
     window.getSelection()?.removeAllRanges();
   }, [treeId, selectedNodeId, content?.responseRevision, showAllTurns, showFullTrace]);
 
+  // Restore a persisted in-progress ask once its node's content is on screen.
+  // Declared after the reset above so that when both fire in the same pass
+  // (the revision landing after a remount), the restore wins.
+  useEffect(() => {
+    if (!treeId || !selectedNodeId || !content?.responseRevision) {
+      return;
+    }
+    const saved = navigationRef.current[treeId]?.askByNode?.[selectedNodeId];
+    if (!saved) {
+      return;
+    }
+    setAskAnchor(saved.anchor);
+    // Never clobber text the user managed to type before the content loaded.
+    if (saved.text) {
+      setFollowup((current) => current || saved.text);
+    }
+  }, [treeId, selectedNodeId, content?.responseRevision]);
+
   // Match the right-pane composer: fit the textarea to its contents up to the
   // shared cap, then let it scroll. The node dependency also sizes a newly
   // mounted empty composer after its content finishes loading.
@@ -1884,6 +1902,54 @@ export default function ResearchDocument({
     window.requestAnimationFrame(() => followupTextareaRef.current?.focus());
   }, [archived, followupNode?.status, highlightAction]);
 
+  // Removes the persisted ask for the current node. Called from the explicit
+  // exits (submit, Escape, the quote row's X) — the persist effect below never
+  // deletes, so a lifecycle reset of `askAnchor` cannot wipe an ask the user
+  // still wants back after a remount.
+  const clearSavedAsk = useCallback(() => {
+    const currentTreeId = treeIdRef.current;
+    const nodeId = selectedNodeIdRef.current;
+    if (!currentTreeId || !nodeId) {
+      return;
+    }
+    const askByNode = navigationRef.current[currentTreeId]?.askByNode;
+    if (askByNode?.[nodeId]) {
+      delete askByNode[nodeId];
+      saveResearchNavigation();
+    }
+  }, []);
+
+  const dismissAsk = useCallback(() => {
+    setAskAnchor(null);
+    clearSavedAsk();
+  }, [clearSavedAsk]);
+
+  // Mirror the in-progress ask into the navigation store so tabbing away from
+  // the research surface (which unmounts this document) keeps it. The store
+  // mutation is immediate; the localStorage write shares the scroll debounce,
+  // and the unmount flush picks up anything still pending. The content guard
+  // skips the transient render after a node switch, where the old anchor is
+  // still committed alongside the new node id — persisting there would file
+  // the ask under the wrong node.
+  useEffect(() => {
+    if (!askAnchor || !treeId || !selectedNodeId || contentNodeIdRef.current !== selectedNodeId) {
+      return;
+    }
+    const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+    (navigation.askByNode ??= {})[selectedNodeId] = {
+      anchor: askAnchor,
+      text: followup,
+      updatedAt: Date.now(),
+    };
+    if (navigationPersistTimerRef.current !== null) {
+      window.clearTimeout(navigationPersistTimerRef.current);
+    }
+    navigationPersistTimerRef.current = window.setTimeout(() => {
+      navigationPersistTimerRef.current = null;
+      saveResearchNavigation();
+    }, 250);
+  }, [askAnchor, followup, selectedNodeId, treeId]);
+
   // Keyed on the bar's existence, not the action object: repositioning below
   // replaces the object on every scroll frame, and rebinding all of these
   // listeners each frame would be pure churn.
@@ -1990,12 +2056,12 @@ export default function ResearchDocument({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) {
         event.preventDefault();
-        setAskAnchor(null);
+        dismissAsk();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [askAnchor]);
+  }, [askAnchor, dismissAsk]);
 
   async function submitFollowup() {
     const prompt = followup.trim();
@@ -2024,6 +2090,7 @@ export default function ResearchDocument({
       await onFork(followupNode.id, prompt, null, askAnchor);
       setFollowup("");
       setAskAnchor(null);
+      clearSavedAsk();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2587,7 +2654,7 @@ export default function ResearchDocument({
                           className="control-button research-followup-quote-dismiss"
                           aria-label="Cancel the targeted question"
                           title="Cancel (Esc)"
-                          onClick={() => setAskAnchor(null)}
+                          onClick={dismissAsk}
                         >
                           <X size={12} aria-hidden="true" />
                         </button>
