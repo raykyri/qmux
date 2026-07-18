@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -13,11 +12,15 @@ import { createPortal } from "react-dom";
 import { Check, Ellipsis } from "lucide-react";
 import { placePanePopover, type AgentStatusTone } from "../lib/appHelpers";
 import { growComposerTextarea } from "../lib/composerTextarea";
-import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
 import { formatRelativeTime } from "../lib/transcriptSessions";
 import { useConfirm } from "../hooks/useConfirm";
 import type { GlobalDraft } from "../types";
-import { QueuedTurnCard, waitFooterTitle, type QueuedTurnCardTone } from "./QueuedTurnCard";
+import {
+  QueuedTurnCard,
+  renderQueuedTurnText,
+  waitFooterTitle,
+  type QueuedTurnCardTone,
+} from "./QueuedTurnCard";
 
 export interface HomeRailQueuedTurn {
   /** Display text (instruction blocks stripped). */
@@ -177,24 +180,6 @@ function currentCardTone(tone: AgentStatusTone): QueuedTurnCardTone {
 
 function queuedCardKey(agentId: string, index: number) {
   return `${agentId}:${index}`;
-}
-
-// Image paste markers render as a muted "[Image]" chip instead of the raw
-// image-cache path, matching the right pane's collapsed tag blocks.
-function renderCardText(text: string): ReactNode {
-  const segments = splitImageMarkers(text);
-  if (segments.length === 1 && segments[0].kind !== "image") {
-    return text;
-  }
-  return segments.map((segment, index) =>
-    segment.kind === "image" ? (
-      <span key={index} className="queued-turn-image-chip">
-        {COLLAPSED_IMAGE_LABEL}
-      </span>
-    ) : (
-      <Fragment key={index}>{segment.text}</Fragment>
-    ),
-  );
 }
 
 function formatElapsedShort(ms: number): string | null {
@@ -1065,7 +1050,7 @@ export default function HomeRails({
         ref={(element) => setCurrentCardRef(workstream.agentId, element)}
         variant="current"
         tone={currentCardTone(workstream.statusTone)}
-        text={renderCardText(workstream.latestUserTurn)}
+        text={renderQueuedTurnText(workstream.latestUserTurn)}
         receipt={renderCurrentReceipt(workstream)}
       />
     );
@@ -1096,7 +1081,7 @@ export default function HomeRails({
       <QueuedTurnCard
         key={key}
         ref={(element) => setQueuedCardRef(key, element)}
-        text={renderCardText(turn.text)}
+        text={renderQueuedTurnText(turn.text)}
         pauseAfter={turn.pauseAfter}
         deliveryLabel={turn.deliveryLabel ?? null}
         waitLabel={waitLabel}
@@ -1167,7 +1152,7 @@ export default function HomeRails({
         <QueuedTurnCard
           key={draft.id}
           variant="past"
-          text={renderCardText(draft.text)}
+          text={renderQueuedTurnText(draft.text)}
           receipt={
             <>
               <Check
@@ -1188,7 +1173,7 @@ export default function HomeRails({
     return (
       <QueuedTurnCard
         key={draft.id}
-        text={renderCardText(draft.text)}
+        text={renderQueuedTurnText(draft.text)}
         className={isDraggingCard ? "is-dragging" : ""}
         onPointerDown={(event) =>
           handleCardPointerDown(
@@ -1283,7 +1268,7 @@ export default function HomeRails({
                     <QueuedTurnCard
                       key={turn.id}
                       variant="past"
-                      text={renderCardText(turn.text)}
+                      text={renderQueuedTurnText(turn.text)}
                       receipt={renderPastReceipt(turn)}
                     />
                   ))}

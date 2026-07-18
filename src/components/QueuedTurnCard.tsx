@@ -1,10 +1,12 @@
-import type {
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent as ReactMouseEvent,
-  PointerEvent as ReactPointerEvent,
-  ReactNode,
-  Ref,
+import {
+  Fragment,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  type Ref,
 } from "react";
+import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
 import type { QueuedTurnDelivery } from "../types";
 
 // Terminal title progress markers tend to be leading glyphs and spacing; strip
@@ -26,6 +28,26 @@ export function queuedTurnDeliveryLabel(delivery: QueuedTurnDelivery) {
     return "To new session";
   }
   return delivery.useWorktree ? "Fork in worktree" : "Fork session";
+}
+
+/** Image paste markers render as a muted "[Image]" chip instead of the raw
+ *  image-cache path — shared by the composer queue and the home rails so both
+ *  read the same. Pass the stored text; drags and queue commands must keep
+ *  using the raw text, never this rendering. */
+export function renderQueuedTurnText(text: string): ReactNode {
+  const segments = splitImageMarkers(text);
+  if (segments.length === 1 && segments[0].kind !== "image") {
+    return text;
+  }
+  return segments.map((segment, index) =>
+    segment.kind === "image" ? (
+      <span key={index} className="queued-turn-image-chip">
+        {COLLAPSED_IMAGE_LABEL}
+      </span>
+    ) : (
+      <Fragment key={index}>{segment.text}</Fragment>
+    ),
+  );
 }
 
 /** How the card reads in a queue column:

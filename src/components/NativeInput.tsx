@@ -62,6 +62,7 @@ import {
 import {
   QueuedTurnCard,
   queuedTurnDeliveryLabel,
+  renderQueuedTurnText,
   waitFooterLabelWithShortcut,
 } from "./QueuedTurnCard";
 
@@ -1139,7 +1140,7 @@ export default function NativeInput({
             return (
               <QueuedTurnCard
                 key={`${index}-${turn.text}`}
-                text={turn.text}
+                text={renderQueuedTurnText(turn.text)}
                 className={stateClassName}
                 pauseAfter={turn.pauseAfter}
                 deliveryLabel={turn.delivery ? queuedTurnDeliveryLabel(turn.delivery) : null}
