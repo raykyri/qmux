@@ -1380,6 +1380,34 @@ export default function ResearchDocument({
     return path;
   }, [detail, selectedNodeId]);
 
+  // Deep paths collapse to "root / … / parent / current": the intermediate
+  // crumbs add little wayfinding value at this depth, and rendering them all
+  // squeezes every crumb into unreadable slivers.
+  const breadcrumbDisplay = useMemo(() => {
+    type BreadcrumbEntry =
+      | { kind: "node"; node: ResearchNode; index: number }
+      | { kind: "ellipsis"; count: number };
+    if (breadcrumb.length <= 4) {
+      return breadcrumb.map(
+        (node, index): BreadcrumbEntry => ({ kind: "node", node, index }),
+      );
+    }
+    return [
+      { kind: "node", node: breadcrumb[0], index: 0 },
+      { kind: "ellipsis", count: breadcrumb.length - 3 },
+      {
+        kind: "node",
+        node: breadcrumb[breadcrumb.length - 2],
+        index: breadcrumb.length - 2,
+      },
+      {
+        kind: "node",
+        node: breadcrumb[breadcrumb.length - 1],
+        index: breadcrumb.length - 1,
+      },
+    ] satisfies BreadcrumbEntry[];
+  }, [breadcrumb]);
+
   const followupNode = selectedDetailNode ?? content?.node ?? null;
   // Normalize the complete response before windowing it. The resulting item
   // boundaries keep a call and its result together and preserve text → tools →
@@ -2518,14 +2546,34 @@ export default function ResearchDocument({
               </button>
             </div>
             <div className="research-breadcrumb" aria-label="Research path">
-              {breadcrumb.map((node, index) => (
-                <span key={node.id}>
-                  {index > 0 ? <span className="research-breadcrumb-separator">/</span> : null}
-                  <button className="control-button" type="button" onClick={() => selectNode(node.id)}>
-                    {index === 0 ? detail.tree.title : node.title ?? node.prompt}
-                  </button>
-                </span>
-              ))}
+              {breadcrumbDisplay.map((entry, displayIndex) =>
+                entry.kind === "ellipsis" ? (
+                  <span key="ellipsis">
+                    <span className="research-breadcrumb-separator">/</span>
+                    <span
+                      className="research-breadcrumb-ellipsis"
+                      title={`${entry.count} earlier ${entry.count === 1 ? "step" : "steps"}`}
+                    >
+                      …
+                    </span>
+                  </span>
+                ) : (
+                  <span key={entry.node.id}>
+                    {displayIndex > 0 ? (
+                      <span className="research-breadcrumb-separator">/</span>
+                    ) : null}
+                    <button
+                      className="control-button"
+                      type="button"
+                      onClick={() => selectNode(entry.node.id)}
+                    >
+                      {entry.index === 0
+                        ? detail.tree.title
+                        : entry.node.title ?? entry.node.prompt}
+                    </button>
+                  </span>
+                ),
+              )}
             </div>
             {followupCount > 0 ? (
               <span className="research-document-followup-count">

@@ -684,6 +684,14 @@
   color: #59615d;
 }
 
+/* Stand-in for the collapsed middle of a deep path; its tooltip carries the
+   hidden step count. */
+.research-breadcrumb-ellipsis {
+  padding: 0 3px;
+  color: #78817c;
+  cursor: default;
+}
+
 .research-document-followup-count {
   flex: 0 0 auto;
   color: #78817c;
