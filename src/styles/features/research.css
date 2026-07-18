@@ -1498,10 +1498,22 @@
   color: #707975;
 }
 
-.research-followup-card small.is-running,
 .research-followup-card small.is-starting,
 .research-followup-card small.is-queued {
   color: var(--accent-color);
+}
+
+/* A running follow-up reads as quiet progress, not an accent-colored alert:
+   faint gray label with a small inline spinner. */
+.research-followup-card small.is-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #767e79;
+}
+
+.research-followup-status-spinner {
+  flex: none;
 }
 
 .research-followup-card small.is-failed {

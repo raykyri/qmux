@@ -466,7 +466,7 @@ function statusLabel(status: ResearchNode["status"]) {
     case "starting":
       return "Starting";
     case "running":
-      return "Researching…";
+      return "Working…";
     case "complete":
       return "Complete";
     case "failed":
@@ -2472,7 +2472,16 @@ export default function ResearchDocument({
         />
       ) : null}
       {child.status !== "complete" ? (
-        <small className={`is-${child.status}`}>{statusLabel(child.status)}</small>
+        <small className={`is-${child.status}`}>
+          {child.status === "running" ? (
+            <LoaderCircle
+              className="research-spinner research-followup-status-spinner"
+              size={11}
+              aria-hidden="true"
+            />
+          ) : null}
+          {statusLabel(child.status)}
+        </small>
       ) : null}
     </button>
   );
