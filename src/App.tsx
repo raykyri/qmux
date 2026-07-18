@@ -2264,6 +2264,23 @@ function MainApp() {
       researchVisibilityFilter,
     ],
   );
+  // Shortcut number per research tree id, mirroring the terminal tabs' Cmd-1..9
+  // hints. A tree's number is its position among the cycleable research tabs
+  // (the exact target Cmd-N jumps to via focusResearchTab), so the badge always
+  // names the key that selects that row. Only the first nine get a number.
+  const researchShortcutIndexByTreeId = useMemo(() => {
+    const map = new Map<string, number>();
+    cycleableResearchTabIds.forEach((tabId, index) => {
+      if (index >= 9) {
+        return;
+      }
+      const treeId = researchTreeIdFromTabId(tabId);
+      if (treeId) {
+        map.set(treeId, index);
+      }
+    });
+    return map;
+  }, [cycleableResearchTabIds]);
   const researchAttentionState = useMemo(() => researchAttention(researchTrees), [researchTrees]);
   const runningResearchCount = researchAttentionState.runningCount;
   const unseenResearchCount = researchAttentionState.unseenCount;
@@ -10180,6 +10197,8 @@ function MainApp() {
               activeTreeId={activeResearchTreeId}
               multiSelectedIds={researchMultiSelection}
               folderState={researchFolderState}
+              shortcutHintsShown={shortcutHintsShown}
+              shortcutIndexByTreeId={researchShortcutIndexByTreeId}
               onMultiSelectChange={setResearchMultiSelectIds}
               onCreateFolder={createResearchFolderFromSelection}
               onAddToFolder={addResearchTreesToFolder}

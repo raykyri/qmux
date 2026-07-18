@@ -341,7 +341,8 @@
   user-select: none;
 }
 
-.pane-tab-row.is-selected .pane-tab-shortcut-hint {
+.pane-tab-row.is-selected .pane-tab-shortcut-hint,
+.research-sidebar-row.is-selected .pane-tab-shortcut-hint {
   border-color: #566165;
   color: var(--text-primary);
 }

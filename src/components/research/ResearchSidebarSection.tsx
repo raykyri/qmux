@@ -47,6 +47,10 @@ interface ResearchSidebarSectionProps {
   activeTreeId: string | null;
   multiSelectedIds: string[];
   folderState: ResearchFolderState;
+  /** Whether the Cmd-1..9 jump hints are currently visible (Cmd held). */
+  shortcutHintsShown: boolean;
+  /** Zero-based shortcut position per tree id, for trees that have a Cmd-N jump. */
+  shortcutIndexByTreeId: Map<string, number>;
   onMultiSelectChange: (treeIds: string[]) => void;
   onSelect: (treeId: string) => void;
   onRename: (treeId: string, title: string) => Promise<void>;
@@ -116,6 +120,8 @@ export default function ResearchSidebarSection({
   activeTreeId,
   multiSelectedIds,
   folderState,
+  shortcutHintsShown,
+  shortcutIndexByTreeId,
   onMultiSelectChange,
   onSelect,
   onRename,
@@ -803,6 +809,7 @@ export default function ResearchSidebarSection({
     },
   ) {
     const { archived } = options;
+    const shortcutIndex = archived ? undefined : shortcutIndexByTreeId.get(tree.id);
     return (
       <div
         key={tree.id}
@@ -887,6 +894,11 @@ export default function ResearchSidebarSection({
         >
           <MoreHorizontal size={14} aria-hidden="true" />
         </button>
+        {shortcutHintsShown && shortcutIndex !== undefined ? (
+          <span className="pane-tab-shortcut-hint" aria-hidden="true">
+            ⌘{shortcutIndex + 1}
+          </span>
+        ) : null}
       </div>
     );
   }
