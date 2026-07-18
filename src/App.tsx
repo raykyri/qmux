@@ -8749,13 +8749,30 @@ function MainApp() {
     };
   }, []);
 
-  // A selected research highlight is a real DOM selection. WebKit does not
-  // reliably emit selectionchange when the research document unmounts during
-  // a surface handoff, which can leave webSelectionActive wedged true and deny
-  // the returning native terminal keyboard ownership. The departed selection
-  // has no visible content to preserve, so clear it as the pane surface lands.
-  // This only runs when the surface changes; selections made in an already
-  // active terminal transcript still retain WebKit keyboard ownership.
+  // A departing research surface can wedge two different web keyboard blockers
+  // true, and both deny the returning native terminal focus — the owner
+  // coordinator (desiredNativeTerminalKeyboardOwner) drops to null and
+  // TerminalPane.focus() bails. WebKit emits neither selectionchange nor
+  // focusout when the research document unmounts during the handoff, so
+  // whichever blocker it left set stays stuck until some later real event.
+  //
+  //   1. webSelectionActive — a selected research highlight is a real DOM
+  //      selection. The departed selection has no visible content to preserve,
+  //      so clear the range as the pane surface lands.
+  //   2. webEditableFocused — the document's follow-up composer holds DOM
+  //      focus. Once its subtree is gone, activeElement falls back to <body>,
+  //      so a re-sample reads the truth (false) and re-arms the coordinator.
+  //
+  // A terminal WITH a right pane is already rescued: a turn-pane cell mounts on
+  // the handoff, firing the mountedTurnPaneCellsKey backstop below, which
+  // re-samples webEditableFocused and re-focuses. A terminal WITHOUT a right
+  // pane has no such trigger, so it needs the re-sample here or it lands
+  // keyboard-dead. Keep BOTH blockers reset in lockstep here: dropping either
+  // one reopens this same regression the next time research owns that flag.
+  //
+  // This only runs when the surface changes; a selection or composer focus made
+  // in an already active terminal surface still retains WebKit keyboard
+  // ownership.
   useLayoutEffect(() => {
     if (activeSurface !== "pane") {
       return;
@@ -8765,6 +8782,9 @@ function MainApp() {
       selection.removeAllRanges();
     }
     setWebSelectionActive(false);
+    const editable = document.hasFocus() && isEditableTarget(document.activeElement);
+    webEditableFocusedRef.current = editable;
+    setWebEditableFocused(editable);
   }, [activeSurface]);
 
   // Backstop for editables that unmount together with a closing pane (the
