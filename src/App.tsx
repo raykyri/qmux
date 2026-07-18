@@ -63,7 +63,7 @@ import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import HomeCascades from "./components/HomeCascades";
-import type { HomeCascadeWorkstream } from "./components/HomeCascades";
+import type { HomeCascadePastTurn, HomeCascadeWorkstream } from "./components/HomeCascades";
 import LinkContextMenu from "./components/LinkContextMenu";
 import PublishDialog, { type PublishDialogTarget } from "./components/PublishDialog";
 import SidebarModeToggle from "./components/SidebarModeToggle";
@@ -441,6 +441,7 @@ const RESEARCH_VISIBILITY_FILTER_OPTIONS: ReadonlyArray<{
 ];
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
 const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
+const HOME_WORKSPACE_KEY = "qmux.home-workspace.v1";
 const WARM_QMUX_TERMINAL_THEME_ID = "qmux-warm";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
@@ -1226,6 +1227,46 @@ function cascadeLatestUserTurn(turns: Turn[]): string | null {
   return stripped.length > 0 ? stripped : null;
 }
 
+// Past prompts for a home rail: every non-superseded user turn before the
+// latest one (which renders as the workstream's current card), stripped like
+// the cards above; prompts that strip to nothing (pure tagged instructions)
+// are dropped rather than shown raw. settledAt is the timestamp of the
+// exchange's last record before the next prompt, falling back to the prompt's
+// own. Cached by the turns array's identity — agentTurnInfoById hands back the
+// same array while an agent's turns are unchanged, so an event batch only
+// re-walks agents that actually gained turns.
+const cascadePastTurnsCache = new WeakMap<Turn[], HomeCascadePastTurn[]>();
+
+function cascadePastTurns(turns: Turn[]): HomeCascadePastTurn[] {
+  const cached = cascadePastTurnsCache.get(turns);
+  if (cached) {
+    return cached;
+  }
+  const result: HomeCascadePastTurn[] = [];
+  let pending: HomeCascadePastTurn | null = null;
+  let exchangeLastTimestamp: number | null = null;
+  for (const turn of turns) {
+    const text = firstUserTurnText(turn);
+    if (text) {
+      if (pending) {
+        pending.settledAt = exchangeLastTimestamp ?? pending.settledAt;
+        result.push(pending);
+      }
+      const stripped = stripTaggedUserInstructionBlocks(text).trim();
+      pending =
+        stripped.length > 0
+          ? { id: turn.id, text: stripped, settledAt: turn.timestamp ?? null }
+          : null;
+      exchangeLastTimestamp = null;
+    } else if (turn.status !== "superseded" && typeof turn.timestamp === "number") {
+      exchangeLastTimestamp = turn.timestamp;
+    }
+  }
+  // The dangling pending prompt is the latest user turn — the current card.
+  cascadePastTurnsCache.set(turns, result);
+  return result;
+}
+
 
 function MainApp() {
   const appRef = useRef<HTMLElement | null>(null);
@@ -1521,6 +1562,15 @@ function MainApp() {
     sidebarModeRef.current = mode;
     setSidebarModeState(mode);
     localStorage.setItem(SIDEBAR_MODE_STORAGE_KEY, mode);
+  }, []);
+  // The home view's selected workspace (a root sidebar group id); null until
+  // the user picks one, at which point it persists across restarts.
+  const [homeWorkspaceId, setHomeWorkspaceIdState] = useState<string | null>(() =>
+    localStorage.getItem(HOME_WORKSPACE_KEY),
+  );
+  const selectHomeWorkspace = useCallback((groupId: string) => {
+    setHomeWorkspaceIdState(groupId);
+    localStorage.setItem(HOME_WORKSPACE_KEY, groupId);
   }, []);
   const setActivePaneId = useCallback(
     (next: SetStateAction<string | null>) => {
@@ -3606,6 +3656,21 @@ function MainApp() {
     if (!homeActive) {
       return [];
     }
+    // A pane files under its root sidebar group (nested child groups fold into
+    // their root ancestor) — the unit the home workspace tabs select between.
+    const rootGroupIdOf = (groupId: string): string => {
+      let current = groupById.get(groupId);
+      const seen = new Set<string>();
+      while (current?.parentId && !seen.has(current.id)) {
+        seen.add(current.id);
+        const parent = groupById.get(current.parentId);
+        if (!parent) {
+          break;
+        }
+        current = parent;
+      }
+      return current?.id ?? groupId;
+    };
     return sidebarPanes.flatMap((pane) => {
       const agent = agentByPaneId.get(pane.id);
       if (!agent) {
@@ -3617,11 +3682,13 @@ function MainApp() {
         {
           agentId: agent.id,
           paneId: pane.id,
+          rootGroupId: rootGroupIdOf(pane.groupId),
           title: displayPaneTitle(pane, agent),
           statusTone: paneTabStatusTone(agent),
           statusClass,
           waitingOnPane: paneWaitsOnOtherPane(agent),
           latestUserTurn: cascadeLatestUserTurn(turnInfo.turns),
+          pastTurns: cascadePastTurns(turnInfo.turns),
           queuedTurns: (queuedTurnsByAgent[agent.id] ?? []).map((turn) => ({
             text: cascadeQueuedTurnText(turn.text),
             pauseAfter: turn.pauseAfter,
@@ -3634,11 +3701,50 @@ function MainApp() {
   }, [
     agentByPaneId,
     agentTurnInfoById,
+    groupById,
     homeActive,
     queuedTurnsByAgent,
     sidebarPanes,
     terminalTitleByPane,
   ]);
+
+  // One home tab per root sidebar group that owns at least one agent, in the
+  // sidebar's pane order. Like the workstreams memo above, displayGroupName is
+  // a component-scoped helper kept out of the deps; groupById covers the state
+  // it reads.
+  const homeWorkspaces = useMemo(() => {
+    const workspaces = new Map<string, { id: string; name: string; agentCount: number }>();
+    for (const workstream of homeCascadeWorkstreams) {
+      const existing = workspaces.get(workstream.rootGroupId);
+      if (existing) {
+        existing.agentCount += 1;
+        continue;
+      }
+      const group = groupById.get(workstream.rootGroupId);
+      workspaces.set(workstream.rootGroupId, {
+        id: workstream.rootGroupId,
+        name: group ? displayGroupName(group) : "Workspace",
+        agentCount: 1,
+      });
+    }
+    return Array.from(workspaces.values());
+  }, [groupById, homeCascadeWorkstreams]);
+
+  // Falls back to the first workspace when the stored selection has no agents
+  // (or its group is gone) — the stored id is kept so a repopulated workspace
+  // reclaims its tab.
+  const effectiveHomeWorkspaceId =
+    homeWorkspaceId && homeWorkspaces.some((workspace) => workspace.id === homeWorkspaceId)
+      ? homeWorkspaceId
+      : (homeWorkspaces[0]?.id ?? null);
+
+  const homeVisibleWorkstreams = useMemo(
+    () =>
+      homeCascadeWorkstreams.filter(
+        (workstream) => workstream.rootGroupId === effectiveHomeWorkspaceId,
+      ),
+    [effectiveHomeWorkspaceId, homeCascadeWorkstreams],
+  );
 
   // Load session lists when a pane's right side is visible so transcript pickers are ready.
   useEffect(() => {
@@ -12292,10 +12398,29 @@ function MainApp() {
             >
               <div className="home-launcher">{renderLauncher()}</div>
               {homeCascadeWorkstreams.length > 0 ? (
-                <HomeCascades
-                  workstreams={homeCascadeWorkstreams}
-                  onActivatePane={focusPaneTab}
-                />
+                <div className="home-board">
+                  <div className="home-workspace-tabs" role="tablist" aria-label="Workspaces">
+                    {homeWorkspaces.map((workspace) => (
+                      <button
+                        key={workspace.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={workspace.id === effectiveHomeWorkspaceId}
+                        className={`control-button home-workspace-tab${
+                          workspace.id === effectiveHomeWorkspaceId ? " is-active" : ""
+                        }`}
+                        onClick={() => selectHomeWorkspace(workspace.id)}
+                      >
+                        {workspace.name}
+                        <span className="home-workspace-tab-count">{workspace.agentCount}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <HomeCascades
+                    workstreams={homeVisibleWorkstreams}
+                    onActivatePane={focusPaneTab}
+                  />
+                </div>
               ) : null}
             </div>
           ) : null}

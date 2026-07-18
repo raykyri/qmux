@@ -2524,6 +2524,39 @@
   pointer-events: auto;
 }
 
+/* Home board: the workspace tabs row and the columns below it share a width. */
+.home-board {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(1180px, 100%);
+  min-height: 0;
+  pointer-events: auto;
+}
+
+.home-workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.home-workspace-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.home-workspace-tab.is-active {
+  border-color: var(--control-border-hover-accent);
+  background: var(--control-bg-hover);
+  color: var(--text-heading);
+}
+
+.home-workspace-tab-count {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
 .home-cascades {
   width: min(1180px, 100%);
   pointer-events: auto;

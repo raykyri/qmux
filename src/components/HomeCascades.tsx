@@ -22,14 +22,26 @@ export interface HomeCascadeQueuedTurn {
   waitForLabel?: string | null;
 }
 
+export interface HomeCascadePastTurn {
+  id: string;
+  text: string;
+  /** Millis when the exchange settled (its last record before the next
+   * prompt); null when the transcript carries no time data. */
+  settledAt: number | null;
+}
+
 export interface HomeCascadeWorkstream {
   agentId: string;
   paneId: string;
+  /** The pane's root terminal-scope sidebar group — the home workspace tab
+   * this workstream files under (nested child groups fold into their root). */
+  rootGroupId: string;
   title: string;
   statusTone: AgentStatusTone;
   statusClass: string;
   waitingOnPane: boolean;
   latestUserTurn: string | null;
+  pastTurns: HomeCascadePastTurn[];
   queuedTurns: HomeCascadeQueuedTurn[];
 }
 
