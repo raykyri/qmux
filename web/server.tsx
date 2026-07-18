@@ -1342,6 +1342,7 @@ function transcriptPage(
           revision={revision}
         />
       ),
+      contentClassName: "is-conversation",
       children: (
         <>
           <main className="conversation-column">
@@ -1472,6 +1473,7 @@ function researchPage(
           followupCount={followupCount}
         />
       ),
+      contentClassName: hasRail ? undefined : "is-single-doc",
       children: (
         <>
           {!isDocument ? (
@@ -1633,15 +1635,21 @@ function DocumentChrome({
 function workspaceShell({
   chrome,
   children,
+  contentClassName,
 }: {
   chrome: React.ReactNode;
   children: React.ReactNode;
+  contentClassName?: string;
 }) {
   return (
     <div className="research-workspace">
       {chrome}
       <div className="research-document-scroll">
-        <div className="research-document-content">
+        <div
+          className={`research-document-content${
+            contentClassName ? ` ${contentClassName}` : ""
+          }`}
+        >
           {children}
           <footer className="page-footer">
             Published with <a href="/">qmux</a>
@@ -1810,17 +1818,33 @@ const ANCHOR_SCRIPT = `(() => {
     return range;
   }
 
+  var cardById = {};
+  var anchoredCards = rail
+    ? rail.querySelectorAll("[data-anchor-node-id]")
+    : [];
+  for (var cIndex = 0; cIndex < anchoredCards.length; cIndex += 1) {
+    cardById[anchoredCards[cIndex].getAttribute("data-anchor-node-id")] =
+      anchoredCards[cIndex];
+  }
+
   var resolved = [];
   for (var index = 0; index < anchors.length; index += 1) {
     var offsets = resolveOffsets(anchors[index]);
     if (!offsets) continue;
     var range = rangeFor(offsets);
     if (!range) continue;
-    resolved.push({ nodeId: anchors[index].nodeId, range: range });
+    resolved.push({
+      nodeId: anchors[index].nodeId,
+      range: range,
+      start: offsets.start,
+      end: offsets.end,
+      card: cardById[anchors[index].nodeId] || null,
+    });
   }
   if (resolved.length === 0) return;
 
-  if (typeof Highlight !== "undefined" && CSS.highlights) {
+  var canPaint = typeof Highlight !== "undefined" && CSS.highlights;
+  if (canPaint) {
     var highlight = new Highlight();
     for (var hIndex = 0; hIndex < resolved.length; hIndex += 1) {
       highlight.add(resolved[hIndex].range);
@@ -1828,13 +1852,87 @@ const ANCHOR_SCRIPT = `(() => {
     CSS.highlights.set("qmux-research-query-anchors", highlight);
   }
 
-  if (!rail) return;
-  var cardById = {};
-  var anchoredCards = rail.querySelectorAll("[data-anchor-node-id]");
-  for (var cIndex = 0; cIndex < anchoredCards.length; cIndex += 1) {
-    cardById[anchoredCards[cIndex].getAttribute("data-anchor-node-id")] =
-      anchoredCards[cIndex];
+  // Hover linking, both directions, as in the app: hovering a card repaints
+  // its passage in the darker link tone; hovering the passage lights up its
+  // card, and clicking the passage opens the follow-up.
+  var linkedEntry = null;
+  function setLinkedEntry(entry) {
+    if (entry === linkedEntry) return;
+    if (linkedEntry && linkedEntry.card) {
+      linkedEntry.card.classList.remove("is-anchor-linked");
+    }
+    linkedEntry = entry;
+    if (canPaint) {
+      if (entry) {
+        CSS.highlights.set("qmux-research-anchor-link", new Highlight(entry.range));
+      } else {
+        CSS.highlights.delete("qmux-research-anchor-link");
+      }
+    }
+    if (entry && entry.card) {
+      entry.card.classList.add("is-anchor-linked");
+    }
+    root.classList.toggle("is-highlight-hovered", Boolean(entry));
   }
+
+  function absoluteOffsetAt(clientX, clientY) {
+    var node = null;
+    var offset = 0;
+    if (document.caretRangeFromPoint) {
+      var caret = document.caretRangeFromPoint(clientX, clientY);
+      if (caret) {
+        node = caret.startContainer;
+        offset = caret.startOffset;
+      }
+    } else if (document.caretPositionFromPoint) {
+      var position = document.caretPositionFromPoint(clientX, clientY);
+      if (position) {
+        node = position.offsetNode;
+        offset = position.offset;
+      }
+    }
+    if (!node || node.nodeType !== 3) return -1;
+    var nodeIndex = nodes.indexOf(node);
+    if (nodeIndex < 0) return -1;
+    return starts[nodeIndex] + offset;
+  }
+
+  function entryAtPoint(event) {
+    var offset = absoluteOffsetAt(event.clientX, event.clientY);
+    if (offset < 0) return null;
+    for (var pIndex = 0; pIndex < resolved.length; pIndex += 1) {
+      if (offset >= resolved[pIndex].start && offset < resolved[pIndex].end) {
+        return resolved[pIndex];
+      }
+    }
+    return null;
+  }
+
+  root.addEventListener("mousemove", function (event) {
+    setLinkedEntry(entryAtPoint(event));
+  });
+  root.addEventListener("mouseleave", function () {
+    setLinkedEntry(null);
+  });
+  root.addEventListener("click", function (event) {
+    var entry = entryAtPoint(event);
+    if (entry && entry.card && entry.card.href) {
+      window.location.href = entry.card.href;
+    }
+  });
+  for (var lIndex = 0; lIndex < resolved.length; lIndex += 1) {
+    (function (entry) {
+      if (!entry.card) return;
+      entry.card.addEventListener("mouseenter", function () {
+        setLinkedEntry(entry);
+      });
+      entry.card.addEventListener("mouseleave", function () {
+        setLinkedEntry(null);
+      });
+    })(resolved[lIndex]);
+  }
+
+  if (!rail) return;
 
   function positionCards() {
     // The narrow layout stacks the rail under the answer; anchored absolute
@@ -2365,6 +2463,9 @@ a { color:inherit; text-decoration:none; }
 .research-document-content { width:min(100%,1160px); min-width:0; margin:0 auto; }
 .research-response-grid { display:grid; grid-template-columns:minmax(0,640px) minmax(220px,260px); align-items:start; gap:clamp(28px,4vw,52px); min-width:0; max-width:100%; }
 .research-response-grid.is-single { grid-template-columns:minmax(0,640px); }
+/* Without a rail (published research answers), the whole document narrows to
+   the answer column and centers, like the transcript view. */
+.research-document-content.is-single-doc { max-width:640px; }
 .research-response { min-width:0; max-width:640px; }
 .research-response-content-root { min-width:0; line-height:1.62; overflow-wrap:anywhere; word-break:break-word; }
 
@@ -2379,8 +2480,12 @@ a { color:inherit; text-decoration:none; }
 .research-contribution a:hover { color:var(--text-secondary); }
 .research-response-error { margin:0 0 18px; color:var(--status-failed-fg); line-height:1.5; }
 
-/* Passages that published follow-ups were asked about. */
+/* Passages that published follow-ups were asked about, and the hover-linked
+   passage painted over the base tone (hovering either the card or the passage
+   links the pair, as in the app). */
 ::highlight(qmux-research-query-anchors) { color:inherit; background:#6a5f36; }
+::highlight(qmux-research-anchor-link) { color:inherit; background:#6b5417; }
+.research-response-content-root.is-highlight-hovered { cursor:pointer; }
 
 /* Markdown body, ported from the app's transcript styles. */
 .turn-markdown { min-width:0; color:var(--text-strong); font-size:14.5px; overflow-wrap:anywhere; }
@@ -2425,13 +2530,15 @@ a { color:inherit; text-decoration:none; }
 .research-followup-cards { display:flex; flex-direction:column; gap:20px; }
 .research-followup-card { display:flex; flex-direction:column; align-items:stretch; min-height:0; text-align:left; transition:border-color 120ms ease; }
 .research-followup-card.is-anchored { position:absolute; z-index:1; right:2px; left:0; padding:9px 11px; border:1px solid var(--surface-border-subtle); border-radius:10px; background:var(--content-card-bg); }
-.research-followup-card.is-anchored:hover { z-index:4; border-color:var(--surface-border-default); }
+.research-followup-card.is-anchored:hover, .research-followup-card.is-anchored.is-anchor-linked { z-index:4; border-color:var(--surface-border-default); }
+.research-followup-card.is-anchor-linked > strong { color:#f2f4f1; }
+.research-followup-card.is-anchor-linked .research-followup-preview { color:#7d8580; }
 .research-followup-quote { display:-webkit-box; min-width:0; overflow:hidden; margin-bottom:5px; padding-left:8px; border-left:2px solid var(--accent-color); color:#9aa39e; font-size:13px; font-style:italic; line-height:1.4; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 .research-followup-card > strong { display:-webkit-box; overflow:hidden; color:#e6e9e5; font-size:14px; font-weight:400; line-height:1.42; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:6; transition:color 120ms ease; }
 .research-followup-card:hover > strong { color:#f2f4f1; }
 .research-followup-preview { display:-webkit-box; margin-top:4px; overflow:hidden; color:#767e79; font-size:14px; line-height:1.5; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:2; transition:color 120ms ease; }
 .research-followup-card:hover .research-followup-preview { color:#7d8580; }
-.research-followup-card small { margin-top:8px; color:#707975; font-size:12px; }
+.research-followup-card small { margin-top:8px; color:#707975; font-size:12px; text-transform:capitalize; }
 .research-followup-card small.is-failed { color:var(--status-failed-fg); }
 .research-followup-card small.is-cancelled { color:#9a938b; }
 .research-followup-card small.is-contributed { color:#707975; }
@@ -2475,6 +2582,7 @@ a { color:inherit; text-decoration:none; }
 
 /* Published transcript: the app's exported-conversation reading view. */
 .conversation-column { max-width:640px; margin:0 auto; }
+.research-document-content.is-conversation .page-footer { max-width:640px; margin-left:auto; margin-right:auto; }
 .conversation-prompt { min-width:0; margin:18px 0 9px; padding:8px 12px; border-left:2px solid var(--markdown-blockquote-border); background:rgba(255,255,255,0.03); }
 .conversation-prompt .turn-markdown { font-weight:550; }
 .conversation-prompt:first-child { margin-top:0; }
