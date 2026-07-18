@@ -4902,27 +4902,30 @@ function MainApp() {
     }
   }, [activePaneId, paneSplits, panes]);
 
-  // Switching back from Research can restore the same terminal pane ID, so the
-  // sidebar mode must also trigger this after the terminal rows are rendered.
+  // Switching sidebar modes can restore the same terminal pane or research tree
+  // ID, so the mode must also trigger this after the matching rows are rendered.
   useLayoutEffect(() => {
-    if (!activePaneId) {
-      return;
-    }
     const paneList = paneListRef.current;
     if (!paneList) {
       return;
     }
 
-    const selectedRow = Array.from(paneList.querySelectorAll<HTMLElement>(".pane-tab-row")).find(
-      (row) =>
-        activePaneId === HOME_TAB_ID
-          ? row.dataset.homeTab === "true"
-          : row.dataset.paneId === activePaneId,
-    );
+    const selectedRow =
+      sidebarMode === "research" && activeSurface === "research"
+        ? Array.from(
+            paneList.querySelectorAll<HTMLElement>(".research-sidebar-row"),
+          ).find((row) => row.dataset.researchTreeId === activeResearchTreeId)
+        : Array.from(
+            paneList.querySelectorAll<HTMLElement>(".pane-tab-row"),
+          ).find((row) =>
+            activePaneId === HOME_TAB_ID
+              ? row.dataset.homeTab === "true"
+              : row.dataset.paneId === activePaneId,
+          );
     if (selectedRow) {
       scrollChildIntoViewVertically(paneList, selectedRow);
     }
-  }, [activePaneId, sidebarMode]);
+  }, [activePaneId, activeResearchTreeId, activeSurface, sidebarMode]);
 
   // Report the focused pane to the backend so it can stamp `last_active_at`, which
   // feeds the group's spawn-cwd heuristic (most-recently-active shell pane). One
