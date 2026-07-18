@@ -215,11 +215,6 @@
   text-align: center;
 }
 
-.pane-list-empty {
-  flex: 1;
-  padding: 12px 8px;
-}
-
 .pane-tab-row {
   position: relative;
   min-width: 0;
@@ -1170,11 +1165,10 @@
   padding: 0 6px;
 }
 
-/* The sidebar/empty-state action buttons (New shell/New agent) and the composer
+/* The sidebar action buttons (New shell/New agent) and the composer
    submit buttons (Send/Steer/Queue/Approve/Deny) share one skin so both panes read
    as the same control set — same height, padding, gap, and UI-sans font. */
 .sidebar-actions button,
-.terminal-empty-actions button,
 .native-input-submit-actions button {
   flex-wrap: nowrap;
   gap: 6px;
@@ -1184,15 +1178,13 @@
 }
 
 .sidebar-actions button:hover,
-.terminal-empty-actions button:hover,
 .native-input-submit-actions button:hover:not(:disabled) {
   border-color: var(--control-border-hover-accent);
   background: var(--control-bg-hover);
   color: var(--text-heading);
 }
 
-.sidebar-actions button svg,
-.terminal-empty-actions button svg {
+.sidebar-actions button svg {
   flex: none;
   opacity: 0.8;
 }
@@ -2133,9 +2125,8 @@
 
 /* Custom checkbox so the unchecked box reads as quiet launcher chrome (dark fill,
    hairline border) instead of a bright native control, and the checked state
-   matches the launcher's accent. Shared by the worktree + option toggles. */
+   matches the launcher's accent. Shared by the worktree toggle. */
 .command-launcher-worktree input,
-.command-launcher-option-toggle input,
 .settings-checkbox {
   appearance: none;
   -webkit-appearance: none;
@@ -2150,7 +2141,6 @@
 }
 
 .command-launcher-worktree input:checked,
-.command-launcher-option-toggle input:checked,
 .settings-checkbox:checked {
   border-color: var(--accent-strong);
   background-color: var(--accent-strong);
@@ -2161,7 +2151,6 @@
 }
 
 .command-launcher-worktree input:focus-visible,
-.command-launcher-option-toggle input:focus-visible,
 .settings-checkbox:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-shadow);
@@ -2210,21 +2199,6 @@
 .command-launcher-option select[data-lead="shield"] {
   background-image: var(--select-chevron),
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca6a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z'/></svg>");
-}
-
-.command-launcher-option-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 9px;
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  user-select: none;
-}
-
-.command-launcher-option-toggle:hover {
-  background: var(--surface-fill-subtle);
-  color: var(--text-primary);
 }
 
 .command-launcher-controls {
@@ -2471,7 +2445,7 @@
    falls back to --terminal-pane-bg, allowing application themes to tint it.
    Chrome that sits flush against terminal pixels uses the same resolved color
    so pane gaps and empty states match the native surfaces. */
-.terminal-stage {
+.main-stage {
   position: relative;
   flex: 1;
   min-width: 0;
@@ -2479,7 +2453,7 @@
   background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
-.terminal-stage.is-native {
+.main-stage.is-native {
   background: transparent;
 }
 
@@ -2489,16 +2463,16 @@
    window's vibrancy material. The home screen matches the research home
    backdrop rather than the darker terminal surface; explicitly selected Ghostty
    themes still win via --terminal-bg. */
-.terminal-stage.is-home,
-.terminal-stage.is-native.is-home {
+.main-stage.is-home,
+.main-stage.is-native.is-home {
   background: var(--terminal-bg, var(--research-workspace-bg));
 }
 
-.terminal-stage.is-native .terminal-empty-state {
+.main-stage.is-native .home-stage {
   background: var(--terminal-bg, var(--research-workspace-bg));
 }
 
-.terminal-empty-state {
+.home-stage {
   position: absolute;
   inset: 0;
   padding: 34px 28px 60px;
@@ -2519,7 +2493,7 @@
 }
 
 /* The inline launcher is interactive even though its placeholder wrapper isn't. */
-.terminal-empty-state .command-launcher {
+.home-stage .command-launcher {
   pointer-events: auto;
 }
 
@@ -2758,34 +2732,8 @@
 }
 
 @media (max-width: 820px) {
-  .terminal-empty-state {
+  .home-stage {
     padding: 24px 18px 42px;
   }
 }
 
-.terminal-empty-content {
-  display: grid;
-  justify-items: center;
-  gap: 12px;
-}
-
-.terminal-empty-actions {
-  display: flex;
-  gap: 8px;
-  pointer-events: auto;
-}
-
-/* Sidebar "No tabs" placeholder: the New shell/New agent buttons sit stacked
-   under the label so they fit the narrow column. */
-.pane-list-empty-content {
-  display: grid;
-  justify-items: center;
-  gap: 12px;
-  width: 100%;
-}
-
-.pane-list-empty-content .terminal-empty-actions {
-  flex-direction: column;
-  align-items: stretch;
-  width: 100%;
-}

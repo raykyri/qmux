@@ -65,7 +65,6 @@ interface TerminalPaneProps {
 
 export interface TerminalPaneHandle {
   focus: () => void;
-  preserveViewport: () => void;
   openSearch: () => void;
   requestPaste: (text?: string | null) => void;
   reportUserInput: () => void;
@@ -248,7 +247,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     ref,
     () => ({
       focus,
-      preserveViewport() {},
       openSearch,
       requestPaste,
       reportUserInput,
@@ -451,7 +449,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       style={style}
       onPointerDown={() => onActivateRef.current?.(pane.id)}
     >
-      <div ref={hostRef} className="terminal-host terminal-host-native" />
+      <div ref={hostRef} className="terminal-host" />
       {confirmDialog}
       {searchOpen ? (
         <PaneSearchBar

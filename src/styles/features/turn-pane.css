@@ -12,10 +12,6 @@
   --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
 }
 
-.turn-pane-stack {
-  overflow: hidden;
-}
-
 .turn-pane-split-divider {
   z-index: 7;
   pointer-events: none;
@@ -62,10 +58,6 @@
   box-shadow:
     inset 0 0 0 2px var(--accent-color),
     inset 1px 0 0 var(--surface-divider);
-}
-
-.turn-pane-stack .turn-pane-resizer {
-  z-index: 8;
 }
 
 .turn-pane-split-cell .turn-pane-resizer {

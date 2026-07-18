@@ -1232,7 +1232,7 @@ function latestUserTurnId(turns: Turn[]): string | null {
 function MainApp() {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
-  const terminalStageRef = useRef<HTMLDivElement | null>(null);
+  const mainStageRef = useRef<HTMLDivElement | null>(null);
   const terminalPaneRefs = useRef(new Map<string, TerminalPaneHandle>());
   // Opening/closing the right bar resizes native terminal surfaces. Keep the
   // final focus handoff after that layout commit scoped to the pane whose bar
@@ -2471,7 +2471,7 @@ function MainApp() {
     if (!IS_MAC) {
       return;
     }
-    const stage = terminalStageRef.current;
+    const stage = mainStageRef.current;
     if (!stage) {
       return;
     }
@@ -4233,9 +4233,6 @@ function MainApp() {
     if (!split || split.paneIds.length < 2) {
       return;
     }
-    for (const splitPaneId of split.paneIds) {
-      terminalPaneRefs.current.get(splitPaneId)?.preserveViewport();
-    }
     const nextSplits = detachPaneFromSplitMemberships(paneSplits, pane.id);
     const memberIndex = split.paneIds.indexOf(pane.id);
     const isEdgeMember = memberIndex === 0 || memberIndex === split.paneIds.length - 1;
@@ -4605,7 +4602,7 @@ function MainApp() {
   }
 
   function estimateInitialPaneSize(willShowTurnPane: boolean): InitialPaneSize {
-    const stageRect = terminalStageRef.current?.getBoundingClientRect();
+    const stageRect = mainStageRef.current?.getBoundingClientRect();
     const appWidth = appRef.current?.getBoundingClientRect().width;
     const reservedTurnPaneWidth = willShowTurnPane ? clampTurnPaneWidth(turnPaneWidth) : 0;
     const terminalWidth =
@@ -4759,7 +4756,7 @@ function MainApp() {
   ) {
     event.preventDefault();
     event.stopPropagation();
-    const stageHeight = terminalStageRef.current?.getBoundingClientRect().height ?? 0;
+    const stageHeight = mainStageRef.current?.getBoundingClientRect().height ?? 0;
     if (stageHeight < TERMINAL_SPLIT_MIN_HEIGHT * split.paneIds.length) {
       return;
     }
@@ -7204,7 +7201,7 @@ function MainApp() {
     clientY: number,
     dragId: string,
   ): PaneDropTarget | null {
-    const stage = terminalStageRef.current;
+    const stage = mainStageRef.current;
     if (stage && pointInRect(stage.getBoundingClientRect(), clientX, clientY)) {
       return computeTerminalSplitDropTarget(clientY, dragId);
     }
@@ -7340,7 +7337,7 @@ function MainApp() {
     clientY: number,
     dragId: string,
   ): PaneDropTarget | null {
-    const stageRect = terminalStageRef.current?.getBoundingClientRect();
+    const stageRect = mainStageRef.current?.getBoundingClientRect();
     const dragPane = panes.find((pane) => pane.id === dragId);
     if (!stageRect || !dragPane || visibleTerminalPanes.length === 0) {
       return null;
@@ -7899,18 +7896,6 @@ function MainApp() {
 
   async function closePane(paneToClose: PaneInfo): Promise<boolean> {
     setError(null);
-    // Surviving split members are about to be relaid out (the splits normalizer
-    // drops the closed id and their fractions renormalize), so save their
-    // viewports first — mirroring what removePaneFromSplit does for the detach
-    // path — and let the resize restore from a trusted position.
-    const split = paneSplitForPane(paneSplits, paneToClose.id);
-    if (split) {
-      for (const splitPaneId of split.paneIds) {
-        if (splitPaneId !== paneToClose.id) {
-          terminalPaneRefs.current.get(splitPaneId)?.preserveViewport();
-        }
-      }
-    }
     try {
       await killPane(paneToClose.id);
       forgetClosedPane(paneToClose);
@@ -9810,7 +9795,6 @@ function MainApp() {
   const renderLauncher = () => (
     <form
       className="command-launcher"
-      role="dialog"
       aria-label="New agent"
       onKeyDown={(event) => {
         // Swallow Undo/Redo (⌘Z / ⌘⇧Z, Ctrl on other platforms). The prompt is
@@ -12508,8 +12492,8 @@ function MainApp() {
         ) : null}
 
         <div
-          ref={terminalStageRef}
-          className={`terminal-stage${IS_MAC ? " is-native" : ""}${homeActive ? " is-home" : ""}${researchSurfaceActive ? " is-research" : ""}`}
+          ref={mainStageRef}
+          className={`main-stage${IS_MAC ? " is-native" : ""}${homeActive ? " is-home" : ""}${researchSurfaceActive ? " is-research" : ""}`}
         >
           {newDocumentOpen ? (
             // A research-surface page, not a modal: it replaces the document
@@ -12592,7 +12576,7 @@ function MainApp() {
             </div>
           ) : null}
           {homeActive ? (
-            <div className="terminal-empty-state">
+            <div className="home-stage">
               <div className="home-launcher">{renderLauncher()}</div>
               <div className="home-board">
                 {homeWorkspaces.length > 0 ? (

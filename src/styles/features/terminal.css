@@ -73,7 +73,7 @@
 /* With native terminals the stage is a transparent hole in the webview, so the
    reserved gutter between splits must paint itself or the window vibrancy
    material shows through it. */
-.terminal-stage.is-native .terminal-split-resizer {
+.main-stage.is-native .terminal-split-resizer {
   background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
