@@ -2649,14 +2649,10 @@
   animation: none;
 }
 
-/* The Drafts rail header isn't a button: same layout, no affordance. Its
-   hidden dot keeps the title aligned with the agent rails. */
+/* The Drafts rail header isn't a button: same layout, no affordance. It carries
+   no status dot, so its title sits flush with the column's left edge. */
 .home-rail-head.is-static {
   cursor: default;
-}
-
-.home-rail-head .pane-tab-dot.is-hidden {
-  visibility: hidden;
 }
 
 .home-rail-title {
@@ -2704,15 +2700,20 @@
   -webkit-line-clamp: 3;
 }
 
-/* Per-rail ghost composer — queue a follow-up without leaving Home. */
+/* Per-rail ghost composer — queue a follow-up without leaving Home. The
+   textarea autogrows with its content (script-set height), so a multi-line
+   draft expands the field instead of scrolling sideways. */
 .home-rail-composer {
   flex: none;
   margin-top: 8px;
 }
 
-.home-rail-composer input {
+.home-rail-composer textarea {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
   min-height: 30px;
+  max-height: 200px;
   padding: 5px 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
@@ -2720,13 +2721,21 @@
   color: var(--text-body-soft);
   font: inherit;
   font-size: var(--fs-base);
+  line-height: 1.4;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
-.home-rail-composer input::placeholder {
+.home-rail-composer textarea::-webkit-scrollbar {
+  display: none;
+}
+
+.home-rail-composer textarea::placeholder {
   color: var(--placeholder-color);
 }
 
-.home-rail-composer input:focus-visible {
+.home-rail-composer textarea:focus-visible {
   outline: none;
   border-color: var(--control-border-hover-accent);
 }

@@ -5,13 +5,13 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { Check, X } from "lucide-react";
 import type { AgentStatusTone } from "../lib/appHelpers";
+import { growComposerTextarea } from "../lib/composerTextarea";
 import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
 import { formatRelativeTime } from "../lib/transcriptSessions";
 import type { GlobalDraft } from "../types";
@@ -78,6 +78,10 @@ interface HomeRailsProps {
   onAssignDraft: (draftId: string, agentId: string) => void;
   readRailScroll: (agentId: string) => HomeRailScrollPosition | null;
   saveRailScroll: (agentId: string, position: HomeRailScrollPosition) => void;
+  /** In-progress composer text, keyed by rail id (agentId or DRAFTS_RAIL_ID).
+   * Held by the app so half-typed drafts survive Home unmounting on a tab away. */
+  readComposerDrafts: () => Record<string, string>;
+  saveComposerDrafts: (drafts: Record<string, string>) => void;
 }
 
 interface LinkPath {
@@ -227,6 +231,73 @@ export function railLinkPath(
   ].join(" ");
 }
 
+interface RailComposerProps {
+  railId: string;
+  value: string;
+  placeholder: string;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  registerRef: (railId: string, element: HTMLTextAreaElement | null) => void;
+}
+
+/** Per-rail ghost composer: an autogrowing textarea so a multi-line draft or
+ *  follow-up expands in place (yielding the scroller above it) instead of
+ *  scrolling sideways inside a one-line input. Enter sends; Shift+Enter adds a
+ *  line. */
+function RailComposer({
+  railId,
+  value,
+  placeholder,
+  ariaLabel,
+  onChange,
+  onSubmit,
+  registerRef,
+}: RailComposerProps) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Fit the box to its content on mount (restored text) and whenever the value
+  // changes out from under the field (a send clears it, an edit refills it).
+  useLayoutEffect(() => {
+    if (textareaRef.current) {
+      growComposerTextarea(textareaRef.current);
+    }
+  }, [value]);
+  return (
+    <form
+      className="home-rail-composer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <textarea
+        ref={(element) => {
+          textareaRef.current = element;
+          registerRef(railId, element);
+        }}
+        rows={1}
+        value={value}
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            !event.nativeEvent.isComposing
+          ) {
+            event.preventDefault();
+            onSubmit();
+          }
+        }}
+      />
+    </form>
+  );
+}
+
 export default function HomeRails({
   workstreams,
   drafts,
@@ -239,6 +310,8 @@ export default function HomeRails({
   onAssignDraft,
   readRailScroll,
   saveRailScroll,
+  readComposerDrafts,
+  saveComposerDrafts,
 }: HomeRailsProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const innerRef = useRef<HTMLDivElement | null>(null);
@@ -269,7 +342,30 @@ export default function HomeRails({
     dropRailAgentIdRef.current = agentId;
     setDropRailAgentIdState(agentId);
   };
-  const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>({});
+  // Seed from the app-held store so text typed before a tab away comes back.
+  const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>(() => ({
+    ...readComposerDrafts(),
+  }));
+  // Mirror every keystroke back to the store; Home unmounts on a tab away, so the
+  // store (not this state) is what survives to the next mount.
+  useEffect(() => {
+    saveComposerDrafts(composerDrafts);
+  }, [composerDrafts, saveComposerDrafts]);
+  // Composer textareas by rail id — used to focus the field (⌘D, edit recall).
+  const composerRefs = useRef(new Map<string, HTMLTextAreaElement>());
+  const registerComposerRef = useCallback(
+    (railId: string, element: HTMLTextAreaElement | null) => {
+      if (element) {
+        composerRefs.current.set(railId, element);
+      } else {
+        composerRefs.current.delete(railId);
+      }
+    },
+    [],
+  );
+  const setComposerDraft = useCallback((railId: string, text: string) => {
+    setComposerDrafts((current) => ({ ...current, [railId]: text }));
+  }, []);
   const [links, setLinks] = useState<LinkPath[]>([]);
   const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
   // Receipts ("2 hr ago") and the working card's elapsed time drift; a coarse
@@ -583,27 +679,25 @@ export default function HomeRails({
     }
   }
 
-  async function submitRailComposer(event: ReactFormEvent<HTMLFormElement>, agentId: string) {
-    event.preventDefault();
-    const text = (composerDrafts[agentId] ?? "").trim();
+  async function submitRailComposer(railId: string) {
+    const text = (composerDrafts[railId] ?? "").trim();
     if (!text) {
       return;
     }
     const accepted =
-      agentId === DRAFTS_RAIL_ID ? await onCreateDraft(text) : await onQueueTurn(agentId, text);
+      railId === DRAFTS_RAIL_ID ? await onCreateDraft(text) : await onQueueTurn(railId, text);
     if (accepted) {
-      setComposerDrafts((current) => ({ ...current, [agentId]: "" }));
+      setComposerDraft(railId, "");
     }
   }
 
   // ⌘D jumps to the drafts composer while Home is on screen (the component
   // only mounts there); terminal panes keep their own key handling.
-  const draftComposerRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === "d" && event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
-        draftComposerRef.current?.focus();
+        composerRefs.current.get(DRAFTS_RAIL_ID)?.focus();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -844,7 +938,6 @@ export default function HomeRails({
           <div className={`home-rails-columns${dragging ? " is-dragging" : ""}`}>
             <div className="home-rail" data-rail-agent-id={DRAFTS_RAIL_ID}>
               <div className="home-rail-head is-static">
-                <span className="pane-tab-dot is-hidden" aria-hidden="true" />
                 <span className="home-rail-title">Drafts</span>
                 {openDraftCount > 0 ? (
                   <span className="home-rail-count">{openDraftCount}</span>
@@ -857,24 +950,15 @@ export default function HomeRails({
               >
                 {visibleDrafts.map(renderDraftCard)}
               </div>
-              <form
-                className="home-rail-composer"
-                onSubmit={(event) => void submitRailComposer(event, DRAFTS_RAIL_ID)}
-              >
-                <input
-                  ref={draftComposerRef}
-                  type="text"
-                  value={composerDrafts[DRAFTS_RAIL_ID] ?? ""}
-                  placeholder="New draft…"
-                  aria-label="New draft"
-                  onChange={(event) =>
-                    setComposerDrafts((current) => ({
-                      ...current,
-                      [DRAFTS_RAIL_ID]: event.target.value,
-                    }))
-                  }
-                />
-              </form>
+              <RailComposer
+                railId={DRAFTS_RAIL_ID}
+                value={composerDrafts[DRAFTS_RAIL_ID] ?? ""}
+                placeholder="New draft…"
+                ariaLabel="New draft"
+                onChange={(text) => setComposerDraft(DRAFTS_RAIL_ID, text)}
+                onSubmit={() => void submitRailComposer(DRAFTS_RAIL_ID)}
+                registerRef={registerComposerRef}
+              />
             </div>
             {workstreams.map((workstream) => (
               <div
@@ -918,23 +1002,15 @@ export default function HomeRails({
                     renderQueuedCard(workstream, turn, index),
                   )}
                 </div>
-                <form
-                  className="home-rail-composer"
-                  onSubmit={(event) => void submitRailComposer(event, workstream.agentId)}
-                >
-                  <input
-                    type="text"
-                    value={composerDrafts[workstream.agentId] ?? ""}
-                    placeholder="Queue a follow-up…"
-                    aria-label={`Queue a follow-up for ${workstream.title}`}
-                    onChange={(event) =>
-                      setComposerDrafts((current) => ({
-                        ...current,
-                        [workstream.agentId]: event.target.value,
-                      }))
-                    }
-                  />
-                </form>
+                <RailComposer
+                  railId={workstream.agentId}
+                  value={composerDrafts[workstream.agentId] ?? ""}
+                  placeholder="Queue a follow-up…"
+                  ariaLabel={`Queue a follow-up for ${workstream.title}`}
+                  onChange={(text) => setComposerDraft(workstream.agentId, text)}
+                  onSubmit={() => void submitRailComposer(workstream.agentId)}
+                  registerRef={registerComposerRef}
+                />
               </div>
             ))}
           </div>

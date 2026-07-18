@@ -1547,6 +1547,14 @@ function MainApp() {
   const saveHomeRailScroll = useCallback((agentId: string, position: HomeRailScrollPosition) => {
     homeRailScrollByAgentRef.current[agentId] = position;
   }, []);
+  // Half-typed home-rail composer text, keyed by rail id. Held here (not inside
+  // HomeRails) so a tab away — which unmounts Home — doesn't discard it.
+  // Ephemeral by design: dropped on app restart, like the scroll store above.
+  const homeComposerDraftsRef = useRef<Record<string, string>>({});
+  const readHomeComposerDrafts = useCallback(() => homeComposerDraftsRef.current, []);
+  const saveHomeComposerDrafts = useCallback((drafts: Record<string, string>) => {
+    homeComposerDraftsRef.current = drafts;
+  }, []);
   const setActivePaneId = useCallback(
     (next: SetStateAction<string | null>) => {
       if (typeof next === "function") {
@@ -12634,6 +12642,8 @@ function MainApp() {
                   onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}
                   readRailScroll={readHomeRailScroll}
                   saveRailScroll={saveHomeRailScroll}
+                  readComposerDrafts={readHomeComposerDrafts}
+                  saveComposerDrafts={saveHomeComposerDrafts}
                 />
               </div>
             </div>
