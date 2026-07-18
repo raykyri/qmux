@@ -1818,11 +1818,14 @@
   user-select: none;
 }
 
-/* Dropdown styled to match the launcher's option selects. */
+/* Dropdown styled to match the launcher's option selects. `flex: none` (not a
+   190px basis): the terminal-theme select sits in a flex COLUMN, where a
+   flex-basis would set its height and stretch it into a tall square. Width comes
+   from the explicit `width` below in either axis. */
 .settings-select {
   appearance: none;
   -webkit-appearance: none;
-  flex: 0 0 190px;
+  flex: none;
   min-height: var(--control-h-md);
   width: 190px;
   padding: 0 28px 0 10px;
@@ -2460,16 +2463,16 @@
 /* Home shows web content (launcher, cascades) instead of a native surface, so
    restore an opaque backdrop — it must also cover the case where the launcher
    dialog replaces the inline empty state, which would otherwise expose the
-   window's vibrancy material. The home screen matches the research home
-   backdrop rather than the darker terminal surface; explicitly selected Ghostty
-   themes still win via --terminal-bg. */
+   window's vibrancy material. The home screen is the research home's twin, so it
+   takes the same --research-workspace-bg regardless of the selected terminal
+   theme — a Ghostty theme's --terminal-bg tints panes, not this backdrop. */
 .main-stage.is-home,
 .main-stage.is-native.is-home {
-  background: var(--terminal-bg, var(--research-workspace-bg));
+  background: var(--research-workspace-bg);
 }
 
 .main-stage.is-native .home-stage {
-  background: var(--terminal-bg, var(--research-workspace-bg));
+  background: var(--research-workspace-bg);
 }
 
 .home-stage {
