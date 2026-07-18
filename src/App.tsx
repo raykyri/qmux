@@ -86,7 +86,7 @@ import {
   workspaceIsInResearchScope,
 } from "./lib/researchScope";
 import ResearchDocument from "./components/research/ResearchDocument";
-import NewDocumentDialog from "./components/research/NewDocumentDialog";
+import NewDocumentPane from "./components/research/NewDocumentPane";
 import NewResearchDialog from "./components/research/NewResearchDialog";
 import { isMarkdownDocumentPath } from "./lib/researchDocuments";
 import {
@@ -1560,7 +1560,27 @@ function MainApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newResearchOpen, setNewResearchOpen] = useState(false);
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
+  const newDocumentOpenRef = useRef(newDocumentOpen);
+  newDocumentOpenRef.current = newDocumentOpen;
+  // True while the new-document composer holds an unsaved draft. Sidebar
+  // navigation dismisses a pristine composer like any page switch, but a
+  // draft-holding one stays up (its own Cancel is the deliberate exit) so an
+  // imported or half-written document can't be lost to a stray click.
+  const newDocumentDirtyRef = useRef(false);
   const [newDocumentInitialMarkdown, setNewDocumentInitialMarkdown] = useState("");
+  const closeNewDocumentComposer = useCallback(() => {
+    newDocumentDirtyRef.current = false;
+    setNewDocumentOpen(false);
+    setNewDocumentInitialMarkdown("");
+  }, []);
+  const dismissPristineNewDocumentComposer = useCallback(() => {
+    if (newDocumentOpenRef.current && !newDocumentDirtyRef.current) {
+      closeNewDocumentComposer();
+    }
+  }, [closeNewDocumentComposer]);
+  const handleNewDocumentDirtyChange = useCallback((dirty: boolean) => {
+    newDocumentDirtyRef.current = dirty;
+  }, []);
   const [publicationTarget, setPublicationTarget] = useState<PublishDialogTarget | null>(null);
   const [publicationBindings, setPublicationBindings] = useState<PublicationBinding[]>([]);
   const [markdownDropTargetActive, setMarkdownDropTargetActive] = useState(false);
@@ -3446,7 +3466,9 @@ function MainApp() {
   const nativeTerminalInputBlocked = Boolean(
     settingsOpen ||
       newResearchOpen ||
-      newDocumentOpen ||
+      // The new-document composer is absent here on purpose: it lives in the
+      // research surface rather than stacking over the terminal stage, so an
+      // open (hidden) composer must not eat terminal input.
       publicationTarget ||
       // The palette and expanded/browser overlays must own both the DOM
       // gesture and keyboard while they cover the terminal stage.
@@ -5362,6 +5384,7 @@ function MainApp() {
   const selectResearchTree = useCallback(async (treeId: string) => {
     const requestSeq = researchDetailRequestSeqRef.current + 1;
     researchDetailRequestSeqRef.current = requestSeq;
+    dismissPristineNewDocumentComposer();
     setSidebarMode("research");
     setActiveSurface("research");
     // A single selection always dissolves a sidebar multi-selection; leaving
@@ -5402,7 +5425,12 @@ function MainApp() {
         setActiveResearchDetailError(err instanceof Error ? err.message : String(err));
       }
     }
-  }, [changeResearchFolderScope, markVisibleResearchTreeViewed, setSidebarMode]);
+  }, [
+    changeResearchFolderScope,
+    dismissPristineNewDocumentComposer,
+    markVisibleResearchTreeViewed,
+    setSidebarMode,
+  ]);
   const retryActiveResearchDetail = useCallback(() => {
     const treeId = activeResearchTreeIdRef.current;
     if (treeId) {
@@ -5413,6 +5441,7 @@ function MainApp() {
     // Invalidate a tree request that may still be landing while Home is
     // selected; otherwise its detail can repaint behind the launcher.
     researchDetailRequestSeqRef.current += 1;
+    dismissPristineNewDocumentComposer();
     setSidebarMode("research");
     setActiveSurface("research");
     setResearchMultiSelectIds([]);
@@ -5424,7 +5453,7 @@ function MainApp() {
     setActiveResearchDetail(null);
     setActiveResearchDetailError(null);
     localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
-  }, [setActiveSurface, setSidebarMode]);
+  }, [dismissPristineNewDocumentComposer, setActiveSurface, setSidebarMode]);
   const changeSidebarMode = useCallback(
     (mode: SidebarMode) => {
       setPaneContextMenu(null);
@@ -5491,10 +5520,13 @@ function MainApp() {
     setNewResearchOpen(true);
   }, [setSidebarMode]);
   const createDocumentFromSidebar = useCallback(() => {
+    // The composer is a research-surface page, not a modal: opening it also
+    // brings the research surface forward so it is actually visible.
     setSidebarMode("research");
+    setActiveSurface("research");
     setNewDocumentInitialMarkdown("");
     setNewDocumentOpen(true);
-  }, [setSidebarMode]);
+  }, [setActiveSurface, setSidebarMode]);
 
   // Native drag events bypass DOM modal backdrops. Keep the always-on listener
   // from stacking a document composer over another modal or replacing a draft
@@ -5631,6 +5663,7 @@ function MainApp() {
             }
             setNewDocumentInitialMarkdown(markdown);
             setNewDocumentOpen(true);
+            setActiveSurface("research");
           })
           .catch((err) => {
             if (
@@ -11918,13 +11951,28 @@ function MainApp() {
           ref={terminalStageRef}
           className={`terminal-stage${IS_MAC ? " is-native" : ""}${homeActive ? " is-home" : ""}${researchSurfaceActive ? " is-research" : ""}`}
         >
-          {researchSurfaceActive && researchMultiSelection.length > 1 ? (
+          {newDocumentOpen ? (
+            // A research-surface page, not a modal: it replaces the document
+            // view while open and stays mounted (hidden) across surface
+            // switches so an in-progress draft survives a detour to a
+            // terminal tab.
+            <NewDocumentPane
+              hidden={!researchSurfaceActive}
+              initialMarkdown={newDocumentInitialMarkdown}
+              workspaceId={researchScope}
+              onClose={closeNewDocumentComposer}
+              onCreate={submitNewDocument}
+              onDirtyChange={handleNewDocumentDirtyChange}
+            />
+          ) : null}
+          {researchSurfaceActive && !newDocumentOpen && researchMultiSelection.length > 1 ? (
             <div className="research-multi-select-state" aria-live="polite">
               <Layers size={48} aria-hidden="true" />
               <span>{researchMultiSelection.length} research items selected</span>
             </div>
           ) : null}
           {researchSurfaceActive &&
+          !newDocumentOpen &&
           researchMultiSelection.length <= 1 &&
           activeResearchTreeId ? (
             // Keyed by tree: the document's per-tree state (selection, fetched
@@ -11972,6 +12020,7 @@ function MainApp() {
             />
           ) : null}
           {researchSurfaceActive &&
+          !newDocumentOpen &&
           researchMultiSelection.length <= 1 &&
           !activeResearchTreeId ? (
             <div className="research-empty-state">
@@ -12222,17 +12271,6 @@ function MainApp() {
         workspaceId={researchScope}
         onClose={() => setNewResearchOpen(false)}
         onCreate={submitNewResearch}
-      />
-
-      <NewDocumentDialog
-        open={newDocumentOpen}
-        initialMarkdown={newDocumentInitialMarkdown}
-        workspaceId={researchScope}
-        onClose={() => {
-          setNewDocumentOpen(false);
-          setNewDocumentInitialMarkdown("");
-        }}
-        onCreate={submitNewDocument}
       />
 
       <PublishDialog

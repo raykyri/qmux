@@ -1665,6 +1665,24 @@
   box-shadow: inset 0 1px 0 var(--surface-highlight), var(--dialog-shadow);
 }
 
+/* Page variant: the same composer embedded in the answer column of the
+   research document view. The column and the document scroller supply width
+   and scrolling, so the card chrome and its height cap come off — the
+   autogrowing textarea extends the page instead of scrolling internally. */
+.new-document-composer.is-page {
+  width: 100%;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.new-document-composer.is-page .new-document-markdown {
+  min-height: 220px;
+}
+
 .new-document-composer h2 {
   margin: 0;
   font-size: 15px;

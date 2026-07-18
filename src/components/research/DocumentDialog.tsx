@@ -14,12 +14,18 @@ import {
 interface DocumentDialogProps {
   open: boolean;
   mode: "create" | "edit";
+  /** "dialog" renders the modal card over a backdrop; "page" renders just the
+   * composer form, for embedding in the main research pane. */
+  variant?: "dialog" | "page";
   initialMarkdown?: string;
   initialTitle?: string;
   highlightCount?: number;
   resetKey?: string;
   onClose: () => void;
   onSubmit: (input: { markdown: string; title: string | null }) => Promise<void>;
+  /** Reports edits so the app can tell a pristine composer (safe to dismiss on
+   * navigation) from one holding a draft. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** Shared Markdown composer for new and existing research documents. The edit
@@ -28,12 +34,14 @@ interface DocumentDialogProps {
 export default function DocumentDialog({
   open,
   mode,
+  variant = "dialog",
   initialMarkdown = "",
   initialTitle = "",
   highlightCount = 0,
   resetKey = "",
   onClose,
   onSubmit,
+  onDirtyChange,
 }: DocumentDialogProps) {
   const [markdown, setMarkdown] = useState("");
   const [title, setTitle] = useState("");
@@ -85,14 +93,22 @@ export default function DocumentDialog({
     };
   }, [markdown]);
 
+  const editing = mode === "edit";
+  const changed = markdown !== initialMarkdown || title !== initialTitle;
+  const pristine = editing ? !changed : !markdown.trim() && !title.trim();
+
+  useEffect(() => {
+    onDirtyChange?.(open && !pristine);
+  }, [open, pristine]);
+  // A closing composer is no longer holding a draft, even when it unmounts
+  // without a final open=false render.
+  useEffect(() => () => onDirtyChange?.(false), []);
+
   if (!open) {
     return null;
   }
 
-  const editing = mode === "edit";
   const overByteLimit = byteCount > RESEARCH_DOCUMENT_BYTE_LIMIT;
-  const changed = markdown !== initialMarkdown || title !== initialTitle;
-  const pristine = editing ? !changed : !markdown.trim() && !title.trim();
   const canSubmit =
     Boolean(markdown.trim()) &&
     !overWordLimit &&
@@ -117,20 +133,12 @@ export default function DocumentDialog({
     }
   }
 
-  return (
-    <div
-      className="confirm-dialog-backdrop new-document-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && pristine && !submitting) {
-          onClose();
-        }
-      }}
-    >
+  const dialog = variant === "dialog";
+  const form = (
       <form
-        className="new-document-composer"
-        role="dialog"
-        aria-modal
+        className={`new-document-composer${dialog ? "" : " is-page"}`}
+        role={dialog ? "dialog" : undefined}
+        aria-modal={dialog || undefined}
         aria-label={editing ? "Edit document" : "New document"}
         aria-describedby={warningId}
         onKeyDown={(event) => {
@@ -143,7 +151,7 @@ export default function DocumentDialog({
           void submit();
         }}
       >
-        <h2>{editing ? "Edit document" : "New document"}</h2>
+        {dialog ? <h2>{editing ? "Edit document" : "New document"}</h2> : null}
         <input
           className="new-document-title"
           type="text"
@@ -222,6 +230,22 @@ export default function DocumentDialog({
           </div>
         </footer>
       </form>
+  );
+
+  if (!dialog) {
+    return form;
+  }
+  return (
+    <div
+      className="confirm-dialog-backdrop new-document-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && pristine && !submitting) {
+          onClose();
+        }
+      }}
+    >
+      {form}
     </div>
   );
 }
