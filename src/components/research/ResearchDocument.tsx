@@ -2,12 +2,10 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
-import { CLAUDE_ADAPTER_ID } from "../../adapters/claude";
 import {
   createResearchHighlight,
   getResearchNodeContent,
   getResearchTree,
-  listClaudeSkills,
   listPublicationProposals,
   removeResearchHighlights,
   resolvePublicationProposal,
@@ -109,10 +107,6 @@ interface ResearchDocumentProps {
   onCancel: (nodeId: string) => Promise<void>;
   onOpenPane: (paneId: string) => void;
   linkActions: LinkActions;
-  /** The adapter the backend launches document follow-ups on (documents have
-   * no adapter of their own) — mirrors adapters::default_fork_adapter, so
-   * adapter-specific composer affordances resolve the same way. */
-  defaultForkAdapterId?: string | null;
   onError: (message: string) => void;
   onToast: (message: string, tone?: "normal" | "warning") => void;
   onPublish: (target: PublishDialogTarget) => void;
@@ -411,7 +405,6 @@ export default function ResearchDocument({
   onCancel,
   onOpenPane,
   linkActions,
-  defaultForkAdapterId,
   onError,
   onToast,
   onPublish,
@@ -424,11 +417,6 @@ export default function ResearchDocument({
   const [history, setHistory] = useState(EMPTY_RESEARCH_HISTORY);
   const [content, setContent] = useState<ResearchNodeContent | null>(null);
   const [followup, setFollowup] = useState("");
-  // "ask" sends the follow-up verbatim; "deep" invisibly prefixes the
-  // deep-research slash command at submit time, mirroring the agent launcher's
-  // skill mechanism. The composer text never shows the prefix.
-  const [followupMode, setFollowupMode] = useState<"ask" | "deep">("ask");
-  const [deepResearchSkillCommand, setDeepResearchSkillCommand] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [followupMenu, setFollowupMenu] = useState<FollowupMenu | null>(null);
@@ -512,24 +500,6 @@ export default function ResearchDocument({
     }
   }, [followup, content?.node.id]);
 
-  // Resolve the plugin's namespaced deep-research command (e.g.
-  // `/qmux:deep-research`) so deep follow-ups invoke the same skill the agent
-  // launcher does. A missing plugin just leaves the literal fallback in place.
-  useEffect(() => {
-    let cancelled = false;
-    void listClaudeSkills()
-      .then((skills) => {
-        if (!cancelled) {
-          setDeepResearchSkillCommand(
-            skills.find((skill) => skill.id === "deep-research")?.command ?? null,
-          );
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
   // Event-driven node metadata; fresher than content.node for anything that
   // does not require reparsing the transcript (status, checkpoint, children).
   const selectedDetailNode = useMemo(
@@ -1490,25 +1460,13 @@ export default function ResearchDocument({
       return;
     }
     setSubmitting(true);
-    // Deep research is a submit-time prefix, never shown in the composer: the
-    // plugin's namespaced skill command when the node runs on Claude, a plain
-    // `/deep-research` otherwise. A document follow-up runs on the backend's
-    // default fork adapter rather than the (absent) node adapter.
-    const followupAdapter = followupNodeIsDocument
-      ? defaultForkAdapterId
-      : followupNode.adapter;
-    const deepCommand =
-      followupAdapter === CLAUDE_ADAPTER_ID && deepResearchSkillCommand
-        ? deepResearchSkillCommand
-        : "/deep-research";
-    const finalPrompt = followupMode === "deep" ? `${deepCommand} ${prompt}` : prompt;
     try {
       // The new child lands in the tree detail (refreshed by the fork flow),
       // which is where the follow-up cards render from. Submitting keeps the
       // current node selected rather than following the child to its own page:
       // the reader stays with the answer they asked about, and the new
       // follow-up appears as a card below the composer to open when ready.
-      await onFork(followupNode.id, finalPrompt);
+      await onFork(followupNode.id, prompt);
       setFollowup("");
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1978,6 +1936,11 @@ export default function ResearchDocument({
                       archived || displayNode.status !== "complete" ? " is-disabled" : ""
                     }`}
                   >
+                    {/* Reserved for later use: the follow-up mode toggle that
+                        offered plain "Ask about" vs "Deep research" follow-ups.
+                        Re-enabling it needs the `followupMode` state and the
+                        submit-time deep-research command prefix in
+                        `submitFollowup` (both in git history).
                     <div
                       className="sidebar-mode-toggle research-followup-mode-toggle"
                       role="tablist"
@@ -1987,7 +1950,7 @@ export default function ResearchDocument({
                         type="button"
                         role="tab"
                         aria-selected={followupMode === "ask"}
-                          className={`control-button${followupMode === "ask" ? " is-selected" : ""}`}
+                        className={`control-button${followupMode === "ask" ? " is-selected" : ""}`}
                         disabled={archived || displayNode.status !== "complete"}
                         onClick={() => setFollowupMode("ask")}
                       >
@@ -2004,16 +1967,11 @@ export default function ResearchDocument({
                         <span>Deep research</span>
                       </button>
                     </div>
+                    */}
                     <textarea
                       ref={followupTextareaRef}
                       value={followup}
-                      placeholder={
-                        followupMode === "deep"
-                          ? "Type your research query…"
-                          : isDocument
-                            ? "Ask about this document…"
-                            : "Type your query…"
-                      }
+                      placeholder={isDocument ? "Ask about this document…" : "Type your query…"}
                       aria-label="Follow-up question"
                       disabled={archived || displayNode.status !== "complete"}
                       onChange={(event) => setFollowup(event.currentTarget.value)}
