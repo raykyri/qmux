@@ -187,6 +187,10 @@ const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
 // Clearance between the anchored composer's bottom edge and the first pushed
 // follow-up card.
 const ASK_COMPOSER_CLEARANCE = 20;
+// Minimum vertical gap between anchored cards after collision resolution.
+// Tighter than the stacked rail's 20px so a cascaded cluster stays visually
+// attached to the passage that produced it.
+const ANCHORED_CARD_GAP = 12;
 
 function researchHighlightApi(): ResearchHighlightApi | null {
   const css = (globalThis as unknown as { CSS?: { highlights?: ResearchHighlightRegistry } }).CSS;
@@ -454,9 +458,15 @@ export default function ResearchDocument({
   // Ask mode: the selection anchor a targeted follow-up is being composed
   // against. While set, the composer sits beside the quoted passage.
   const [askAnchor, setAskAnchor] = useState<ResearchHighlightAnchor | null>(null);
-  // Resolved vertical offsets (px, relative to the follow-ups rail) for child
-  // nodes whose query anchor still locates a passage in the rendered response.
+  // Desired vertical offsets (px, relative to the follow-ups rail) for child
+  // nodes whose query anchor still locates a passage in the rendered response:
+  // each card wants its top beside its passage. Membership in this map is what
+  // marks a card as anchored.
   const [anchoredCardTops, setAnchoredCardTops] = useState<Record<string, number>>({});
+  // Collision-resolved placements derived from the desired tops and the
+  // rendered card heights: cards keep their passage alignment when there is
+  // room and cascade downward when anchors crowd together.
+  const [resolvedCardTops, setResolvedCardTops] = useState<Record<string, number>>({});
   const [highlightDomNonce, setHighlightDomNonce] = useState(0);
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
   const [publicationProposals, setPublicationProposals] = useState<PublicationProposal[]>([]);
@@ -1392,6 +1402,39 @@ export default function ResearchDocument({
     timelineItems,
   ]);
 
+  // One-pass collision resolution for anchored cards: place them in
+  // desired-top order, each no higher than the previous card's bottom plus a
+  // gap. Runs as a layout effect in the commit that rendered the cards, so
+  // their heights are measurable and the corrected placements land before
+  // paint. Heights depend only on card content — never on the tops this
+  // effect assigns — so a single pass settles the layout without feedback.
+  useLayoutEffect(() => {
+    const aside = followupsAsideRef.current;
+    const next: Record<string, number> = {};
+    if (aside) {
+      const heights = new Map<string, number>();
+      for (const element of aside.querySelectorAll<HTMLElement>(
+        ".research-followup-card.is-anchored",
+      )) {
+        if (element.dataset.nodeId) {
+          heights.set(element.dataset.nodeId, element.offsetHeight);
+        }
+      }
+      let cursor = Number.NEGATIVE_INFINITY;
+      const placements = Object.entries(anchoredCardTops).sort(
+        // Ties break on node id so equal desired tops keep a stable order.
+        (a, b) => a[1] - b[1] || a[0].localeCompare(b[0]),
+      );
+      for (const [nodeId, desiredTop] of placements) {
+        const top = Math.max(desiredTop, cursor);
+        next[nodeId] = top;
+        cursor = top + (heights.get(nodeId) ?? 0) + ANCHORED_CARD_GAP;
+      }
+    }
+    setResolvedCardTops((current) => (sameCardTops(current, next) ? current : next));
+    // childNodes remeasures when streaming previews change card heights.
+  }, [anchoredCardTops, childNodes]);
+
   // Ask mode's slide: translate the composer down beside the quoted passage
   // and push any cards it would cover out of the way. Transforms keep the
   // rail's flow layout untouched, so clearing them animates everything home.
@@ -1466,6 +1509,7 @@ export default function ResearchDocument({
     content?.responseRevision,
     followup,
     highlightDomNonce,
+    resolvedCardTops,
   ]);
 
   const captureHighlightSelection = useCallback(() => {
@@ -1915,6 +1959,7 @@ export default function ResearchDocument({
         anchoredTop !== undefined ? " is-anchored" : ""
       }`}
       style={anchoredTop !== undefined ? { top: anchoredTop } : undefined}
+      data-node-id={child.id}
       onClick={() => selectNode(child.id)}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -2307,12 +2352,15 @@ export default function ResearchDocument({
                   </div>
                   {childNodes
                     .filter((child) => anchoredCardTops[child.id] !== undefined)
-                    .sort(
-                      (a, b) => anchoredCardTops[a.id] - anchoredCardTops[b.id],
-                    )
-                    .map((child) =>
-                      renderFollowupCard(child, anchoredCardTops[child.id]),
-                    )}
+                    .map((child) => ({
+                      child,
+                      // The measuring pass has not seen a brand-new card yet;
+                      // its desired top stands in until resolution lands
+                      // (within the same pre-paint commit cycle).
+                      top: resolvedCardTops[child.id] ?? anchoredCardTops[child.id],
+                    }))
+                    .sort((a, b) => a.top - b.top)
+                    .map(({ child, top }) => renderFollowupCard(child, top))}
                   {publicationBinding &&
                   (visiblePublicationProposals.length > 0 || proposalError) ? (
                     <section
