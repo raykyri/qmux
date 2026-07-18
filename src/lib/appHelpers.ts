@@ -10,6 +10,7 @@ import { GROK_ADAPTER_ID } from "../adapters/grok";
 import { OPENCODE_ADAPTER_ID } from "../adapters/opencode";
 import type {
   AgentInfo,
+  GlobalDraft,
   PaneInfo,
   PaneSplitInfo,
   QmuxEvent,
@@ -350,6 +351,15 @@ export function isAgentInfo(value: unknown): value is AgentInfo {
     typeof agent.id === "string" &&
     typeof agent.adapter === "string" &&
     typeof agent.status === "string"
+  );
+}
+
+export function isGlobalDraft(value: unknown): value is GlobalDraft {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).id === "string" &&
+    typeof (value as Record<string, unknown>).text === "string"
   );
 }
 

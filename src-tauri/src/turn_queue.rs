@@ -5,7 +5,8 @@ use crate::adapters::{
 use crate::events::QmuxEvent;
 use crate::pty::{PaneWriteOptions, write_pane};
 use crate::state::{
-    AgentSendSource, AgentTurnClaim, AppState, IdleAdvance, QueuedTurn, QueuedTurnDelivery,
+    AgentSendSource, AgentTurnClaim, AppState, GlobalDraft, IdleAdvance, QueuedTurn,
+    QueuedTurnDelivery,
 };
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
@@ -205,6 +206,54 @@ pub fn move_queued_agent_turn(
         sent: !target_result.queued,
         source_queued_turns,
         target_queued_turns: target_result.queued_turns,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignGlobalDraftRequest {
+    pub draft_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignGlobalDraftResult {
+    /// Whether the draft's text was sent to the agent immediately (vs. queued).
+    pub sent: bool,
+    pub drafts: Vec<GlobalDraft>,
+    pub queued_turns: Vec<QueuedTurn>,
+}
+
+/// Hands a global draft to an agent in one atomic backend call, the same shape
+/// as `move_queued_agent_turn`: the draft is claimed (marked consumed) first so
+/// two concurrent assigns can't both deliver it, then the text goes through the
+/// normal send-or-queue path; a failed submit unclaims the draft so the text is
+/// never lost.
+pub fn assign_global_draft(
+    state: &AppState,
+    request: AssignGlobalDraftRequest,
+) -> Result<AssignGlobalDraftResult, String> {
+    let draft = state.claim_global_draft(&request.draft_id, &request.agent_id)?;
+    let submit = submit_agent_turn(
+        state,
+        SubmitAgentTurnRequest {
+            agent_id: request.agent_id.clone(),
+            data: draft.text.clone(),
+            mode: Some(SubmitAgentTurnMode::Auto),
+        },
+    );
+    let result = match submit {
+        Ok(result) => result,
+        Err(err) => {
+            state.unclaim_global_draft(&request.draft_id)?;
+            return Err(err);
+        }
+    };
+    Ok(AssignGlobalDraftResult {
+        sent: !result.queued,
+        drafts: state.global_drafts()?,
+        queued_turns: result.queued_turns,
     })
 }
 

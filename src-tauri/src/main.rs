@@ -66,13 +66,13 @@ use transcript::{
     set_agent_transcript as repoint_agent_transcript,
 };
 use turn_queue::{
-    MoveQueuedAgentTurnRequest, MoveQueuedAgentTurnResult, QueueDeliveryAgentTurnRequest,
-    QueueWaitAgentTurnRequest, RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult,
-    ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult, SendNextQueuedAgentTurnResult,
-    SubmitAgentTurnRequest, SubmitAgentTurnResult, move_queued_agent_turn,
-    queue_delivery_agent_turn, queue_wait_agent_turn, remove_queued_agent_turn,
-    reorder_queued_agent_turn, send_next_queued_agent_turn, set_agent_typing, submit_agent_turn,
-    unpause_agent,
+    AssignGlobalDraftRequest, AssignGlobalDraftResult, MoveQueuedAgentTurnRequest,
+    MoveQueuedAgentTurnResult, QueueDeliveryAgentTurnRequest, QueueWaitAgentTurnRequest,
+    RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest,
+    ReorderQueuedAgentTurnResult, SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest,
+    SubmitAgentTurnResult, move_queued_agent_turn, queue_delivery_agent_turn,
+    queue_wait_agent_turn, remove_queued_agent_turn, reorder_queued_agent_turn,
+    send_next_queued_agent_turn, set_agent_typing, submit_agent_turn, unpause_agent,
 };
 use workspace::{
     AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, ResearchWorkspaceInfo,
@@ -1746,6 +1746,46 @@ fn agent_move_queued_turn(
 }
 
 #[tauri::command(async)]
+fn list_global_drafts(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<state::GlobalDraft>, String> {
+    state.global_drafts()
+}
+
+#[tauri::command(async)]
+fn create_global_draft(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<state::GlobalDraft, String> {
+    state.create_global_draft(text)
+}
+
+#[tauri::command(async)]
+fn update_global_draft(
+    state: tauri::State<'_, AppState>,
+    draft_id: String,
+    text: String,
+) -> Result<state::GlobalDraft, String> {
+    state.update_global_draft(&draft_id, text)
+}
+
+#[tauri::command(async)]
+fn delete_global_draft(
+    state: tauri::State<'_, AppState>,
+    draft_id: String,
+) -> Result<Vec<state::GlobalDraft>, String> {
+    state.delete_global_draft(&draft_id)
+}
+
+#[tauri::command(async)]
+fn assign_global_draft(
+    state: tauri::State<'_, AppState>,
+    request: AssignGlobalDraftRequest,
+) -> Result<AssignGlobalDraftResult, String> {
+    turn_queue::assign_global_draft(&state, request)
+}
+
+#[tauri::command(async)]
 fn agent_send_next_queued_turn(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -2242,6 +2282,11 @@ fn main() {
             agent_remove_queued_turn,
             agent_reorder_queued_turn,
             agent_move_queued_turn,
+            list_global_drafts,
+            create_global_draft,
+            update_global_draft,
+            delete_global_draft,
+            assign_global_draft,
             agent_send_next_queued_turn,
             agent_set_queued_turn_pause,
             agent_unpause,

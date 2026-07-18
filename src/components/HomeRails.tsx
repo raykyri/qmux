@@ -10,10 +10,11 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Check } from "lucide-react";
+import { Check, X } from "lucide-react";
 import type { AgentStatusTone } from "../lib/appHelpers";
 import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
 import { formatRelativeTime } from "../lib/transcriptSessions";
+import type { GlobalDraft } from "../types";
 import { QueuedTurnCard, waitFooterTitle, type QueuedTurnCardTone } from "./QueuedTurnCard";
 
 export interface HomeRailQueuedTurn {
@@ -64,11 +65,17 @@ export interface HomeRailScrollPosition {
 
 interface HomeRailsProps {
   workstreams: HomeRailWorkstream[];
+  /** Application-global drafts; the rail shows on every workspace tab. */
+  drafts: GlobalDraft[];
   onActivatePane: (paneId: string) => void;
   onReorderQueuedTurn: (agentId: string, fromIndex: number, toIndex: number, text: string) => void;
   /** Cross-rail drop; the backend appends to the target agent's queue. */
   onMoveQueuedTurn: (fromAgentId: string, toAgentId: string, index: number, text: string) => void;
   onQueueTurn: (agentId: string, text: string) => Promise<boolean>;
+  onCreateDraft: (text: string) => Promise<boolean>;
+  onDeleteDraft: (draftId: string) => void;
+  /** Drop a draft on an agent's rail: atomic claim + send-or-queue. */
+  onAssignDraft: (draftId: string, agentId: string) => void;
   readRailScroll: (agentId: string) => HomeRailScrollPosition | null;
   saveRailScroll: (agentId: string, position: HomeRailScrollPosition) => void;
 }
@@ -80,10 +87,15 @@ interface LinkPath {
 
 type RailPointerDrag = {
   pointerId: number;
+  // "queued" drags a queued turn between/within agent rails; "draft" drags a
+  // draft out of the Drafts rail onto an agent rail (assign).
+  kind: "queued" | "draft";
+  // Queued: the owning agent. Draft: the DRAFTS_RAIL_ID sentinel.
   agentId: string;
   from: number;
-  // The grabbed card's stored (raw) text — re-derives the index if the queue
-  // shifts mid-drag and feeds the backend's expectedData check.
+  // Queued: the turn's stored (raw) text — re-derives the index if the queue
+  // shifts mid-drag and feeds the backend's expectedData check. Draft: the
+  // draft id.
   text: string;
   startX: number;
   startY: number;
@@ -91,6 +103,12 @@ type RailPointerDrag = {
 };
 
 const RAIL_DRAG_START_THRESHOLD = 4;
+
+/** Sentinel rail id for the Drafts column (also its scroll-store key). */
+const DRAFTS_RAIL_ID = "__drafts__";
+
+/** Consumed drafts linger as grayed history this long, then prune from view. */
+const CONSUMED_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const STATUS_TONE_LABELS: Record<AgentStatusTone, string> = {
   active: "running",
@@ -211,10 +229,14 @@ export function railLinkPath(
 
 export default function HomeRails({
   workstreams,
+  drafts,
   onActivatePane,
   onReorderQueuedTurn,
   onMoveQueuedTurn,
   onQueueTurn,
+  onCreateDraft,
+  onDeleteDraft,
+  onAssignDraft,
   readRailScroll,
   saveRailScroll,
 }: HomeRailsProps) {
@@ -299,7 +321,8 @@ export default function HomeRails({
         scroller.scrollTop = scroller.scrollHeight;
       }
     }
-  }, [readRailScroll, workstreams]);
+    // `drafts` is a dependency so the Drafts rail re-pins when a card is added.
+  }, [drafts, readRailScroll, workstreams]);
 
   const handleRailScroll = (agentId: string, scroller: HTMLDivElement) => {
     const stuck = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
@@ -409,6 +432,7 @@ export default function HomeRails({
 
   function handleCardPointerDown(
     event: ReactPointerEvent<HTMLDivElement>,
+    kind: "queued" | "draft",
     agentId: string,
     index: number,
     text: string,
@@ -416,8 +440,12 @@ export default function HomeRails({
     if (event.button !== 0) {
       return;
     }
+    if (event.target instanceof Element && event.target.closest(".queued-turn-actions")) {
+      return;
+    }
     dragRef.current = {
       pointerId: event.pointerId,
+      kind,
       agentId,
       from: index,
       text,
@@ -456,7 +484,8 @@ export default function HomeRails({
     const railAgentId = under
       ?.closest("[data-rail-agent-id]")
       ?.getAttribute("data-rail-agent-id");
-    if (!railAgentId) {
+    if (!railAgentId || railAgentId === DRAFTS_RAIL_ID) {
+      // Queued turns can't return to Drafts; a draft over its own rail is a no-op.
       setDropGap(null);
       setDropRailAgentId(null);
       return;
@@ -485,10 +514,18 @@ export default function HomeRails({
       return;
     }
     event.preventDefault();
-    suppressClickRef.current = true;
     const crossRailAgentId = dropRailAgentIdRef.current;
     const gap = dropGapRef.current;
     clearDrag();
+    if (drag.kind === "draft") {
+      // No suppression: draft cards carry no click handler, so a set flag
+      // would linger and swallow the next real click on a queued card.
+      if (crossRailAgentId) {
+        onAssignDraft(drag.text, crossRailAgentId);
+      }
+      return;
+    }
+    suppressClickRef.current = true;
     // The queue can shift under a drag (the agent draining its top turn), so
     // resolve the grabbed card's index at drop time by its stored text.
     const from = currentDragIndex(drag);
@@ -552,15 +589,32 @@ export default function HomeRails({
     if (!text) {
       return;
     }
-    const queued = await onQueueTurn(agentId, text);
-    if (queued) {
+    const accepted =
+      agentId === DRAFTS_RAIL_ID ? await onCreateDraft(text) : await onQueueTurn(agentId, text);
+    if (accepted) {
       setComposerDrafts((current) => ({ ...current, [agentId]: "" }));
     }
   }
 
-  if (workstreams.length === 0) {
-    return null;
-  }
+  // ⌘D jumps to the drafts composer while Home is on screen (the component
+  // only mounts there); terminal panes keep their own key handling.
+  const draftComposerRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "d" && event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        draftComposerRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Consumed drafts linger briefly as history, then fall out of the rail.
+  const visibleDrafts = drafts.filter(
+    (draft) => !draft.consumed || now - draft.consumed.at < CONSUMED_DRAFT_TTL_MS,
+  );
+  const openDraftCount = visibleDrafts.filter((draft) => !draft.consumed).length;
 
   const renderLinkSvg = () => (
     <svg
@@ -716,11 +770,67 @@ export default function HomeRails({
         onClick={() => handleCardClick(workstream.paneId)}
         onKeyDown={(event) => handleCardKeyDown(event, workstream.paneId)}
         onPointerDown={(event) =>
-          handleCardPointerDown(event, workstream.agentId, index, turn.rawText)
+          handleCardPointerDown(event, "queued", workstream.agentId, index, turn.rawText)
         }
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
+      />
+    );
+  };
+
+  const renderDraftCard = (draft: GlobalDraft) => {
+    if (draft.consumed) {
+      return (
+        <QueuedTurnCard
+          key={draft.id}
+          variant="past"
+          text={renderCardText(draft.text)}
+          receipt={
+            <>
+              <Check
+                size={11}
+                strokeWidth={2.5}
+                className="queued-turn-receipt-ok"
+                aria-hidden="true"
+              />
+              {` ${formatRelativeTime(draft.consumed.at)}`}
+            </>
+          }
+        />
+      );
+    }
+    const isDraggingCard =
+      dragging?.agentId === DRAFTS_RAIL_ID &&
+      drafts.findIndex((candidate) => candidate.id === draft.id) === dragging.index;
+    return (
+      <QueuedTurnCard
+        key={draft.id}
+        text={renderCardText(draft.text)}
+        className={isDraggingCard ? "is-dragging" : ""}
+        onPointerDown={(event) =>
+          handleCardPointerDown(
+            event,
+            "draft",
+            DRAFTS_RAIL_ID,
+            drafts.findIndex((candidate) => candidate.id === draft.id),
+            draft.id,
+          )
+        }
+        onPointerMove={handleCardPointerMove}
+        onPointerUp={handleCardPointerUp}
+        onPointerCancel={handleCardPointerCancel}
+        actions={
+          <button
+            type="button"
+            className="control-button queued-turn-remove"
+            aria-label="Delete draft"
+            title="Delete"
+            onClick={() => onDeleteDraft(draft.id)}
+          >
+            <X size={13} aria-hidden="true" />
+          </button>
+        }
       />
     );
   };
@@ -731,6 +841,40 @@ export default function HomeRails({
         <div className="home-rails-inner" ref={innerRef}>
           {renderLinkSvg()}
           <div className={`home-rails-columns${dragging ? " is-dragging" : ""}`}>
+            <div className="home-rail" data-rail-agent-id={DRAFTS_RAIL_ID}>
+              <div className="home-rail-head is-static">
+                <span className="pane-tab-dot is-hidden" aria-hidden="true" />
+                <span className="home-rail-title">Drafts</span>
+                {openDraftCount > 0 ? (
+                  <span className="home-rail-count">{openDraftCount}</span>
+                ) : null}
+              </div>
+              <div
+                className="home-rail-scroll"
+                ref={(element) => setScrollerRef(DRAFTS_RAIL_ID, element)}
+                onScroll={(event) => handleRailScroll(DRAFTS_RAIL_ID, event.currentTarget)}
+              >
+                {visibleDrafts.map(renderDraftCard)}
+              </div>
+              <form
+                className="home-rail-composer"
+                onSubmit={(event) => void submitRailComposer(event, DRAFTS_RAIL_ID)}
+              >
+                <input
+                  ref={draftComposerRef}
+                  type="text"
+                  value={composerDrafts[DRAFTS_RAIL_ID] ?? ""}
+                  placeholder="New draft…"
+                  aria-label="New draft"
+                  onChange={(event) =>
+                    setComposerDrafts((current) => ({
+                      ...current,
+                      [DRAFTS_RAIL_ID]: event.target.value,
+                    }))
+                  }
+                />
+              </form>
+            </div>
             {workstreams.map((workstream) => (
               <div
                 key={workstream.agentId}

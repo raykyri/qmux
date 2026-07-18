@@ -323,6 +323,10 @@ import {
   listSavedPrompts,
   listAgentTranscripts,
   listAgentTurnQueue,
+  listGlobalDrafts,
+  createGlobalDraft,
+  deleteGlobalDraft,
+  assignGlobalDraft,
   listThreadGraphs,
   listTurns,
   listPanes,
@@ -373,6 +377,7 @@ import type {
   ClaudeSkill,
   GlobalTaskLauncherHotkey,
   GlobalTaskLauncherSetting,
+  GlobalDraft,
   GroupInfo,
   InitialPaneSize,
   PaneInfo,
@@ -1386,6 +1391,9 @@ function MainApp() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [threadGraphs, setThreadGraphs] = useState<ThreadGraph[]>([]);
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
+  // Application-global prompt drafts (the home Drafts rail). Backend-owned;
+  // hydrated at boot and kept fresh by drafts.changed events.
+  const [globalDrafts, setGlobalDrafts] = useState<GlobalDraft[]>([]);
   // Per-agent hook-event history. It backs only the "copy transcript as JSON"
   // export — nothing renders it — so it lives outside React state: hooks fire on
   // every tool call of a busy agent, and putting each one through setState was a
@@ -4368,6 +4376,42 @@ function MainApp() {
     }
   }
 
+  async function createHomeDraft(text: string): Promise<boolean> {
+    setError(null);
+    try {
+      const draft = await createGlobalDraft(text);
+      // The drafts.changed event carries the full list moments later; append
+      // eagerly so the card appears without waiting on the round-trip.
+      setGlobalDrafts((current) =>
+        current.some((existing) => existing.id === draft.id) ? current : [...current, draft],
+      );
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
+  async function deleteHomeDraft(draftId: string) {
+    setError(null);
+    try {
+      setGlobalDrafts(await deleteGlobalDraft(draftId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function assignHomeDraft(draftId: string, agentId: string) {
+    setError(null);
+    try {
+      const result = await assignGlobalDraft(draftId, agentId);
+      setGlobalDrafts(result.drafts);
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function paneIdsForSplitStatusGroup(paneId: string): string[] {
     const split = paneSplitForPane(paneSplitsRef.current, paneId);
     if (!split) {
@@ -4832,6 +4876,7 @@ function MainApp() {
           storedWorktreeLocation,
           queueEntries,
           draftEntries,
+          storedGlobalDrafts,
         ] =
           await Promise.all([
             getOpenRouterKey().catch(() => ""),
@@ -4857,6 +4902,7 @@ function MainApp() {
                   ] as const,
               ),
             ),
+            listGlobalDrafts().catch((): GlobalDraft[] => []),
           ]);
         if (cancelled) {
           return;
@@ -4898,6 +4944,7 @@ function MainApp() {
           ...Object.fromEntries(queueEntries),
           ...queuedTurnsByAgentRef.current,
         });
+        setGlobalDrafts(storedGlobalDrafts);
         const restoredDrafts = {
           ...Object.fromEntries(
             draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
@@ -6607,6 +6654,7 @@ function MainApp() {
     setTranscriptNoticeByAgent,
     setShellJobByAgent: setShellJobByAgentFromEvent,
     setAgentQueuedTurns,
+    setGlobalDrafts,
     // Reads through agentsRef (not the captured `agents` render value) because
     // useQmuxEvents captures its handlers once on mount. threadIdForAgent
     // mirrors the backend's thread-id fallback so agents without an explicit
@@ -12393,14 +12441,10 @@ function MainApp() {
             </div>
           ) : null}
           {homeActive ? (
-            <div
-              className={`terminal-empty-state${
-                homeRailWorkstreams.length === 0 ? " is-launcher-only" : ""
-              }`}
-            >
+            <div className="terminal-empty-state">
               <div className="home-launcher">{renderLauncher()}</div>
-              {homeRailWorkstreams.length > 0 ? (
-                <div className="home-board">
+              <div className="home-board">
+                {homeWorkspaces.length > 0 ? (
                   <div className="home-workspace-tabs" role="tablist" aria-label="Workspaces">
                     {homeWorkspaces.map((workspace) => (
                       <button
@@ -12418,21 +12462,25 @@ function MainApp() {
                       </button>
                     ))}
                   </div>
-                  <HomeRails
-                    workstreams={homeVisibleWorkstreams}
-                    onActivatePane={focusPaneTab}
-                    onReorderQueuedTurn={(agentId, fromIndex, toIndex, text) =>
-                      void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text)
-                    }
-                    onMoveQueuedTurn={(fromAgentId, toAgentId, index, text) =>
-                      void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text)
-                    }
-                    onQueueTurn={queueHomeTurn}
-                    readRailScroll={readHomeRailScroll}
-                    saveRailScroll={saveHomeRailScroll}
-                  />
-                </div>
-              ) : null}
+                ) : null}
+                <HomeRails
+                  workstreams={homeVisibleWorkstreams}
+                  drafts={globalDrafts}
+                  onActivatePane={focusPaneTab}
+                  onReorderQueuedTurn={(agentId, fromIndex, toIndex, text) =>
+                    void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text)
+                  }
+                  onMoveQueuedTurn={(fromAgentId, toAgentId, index, text) =>
+                    void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text)
+                  }
+                  onQueueTurn={queueHomeTurn}
+                  onCreateDraft={createHomeDraft}
+                  onDeleteDraft={(draftId) => void deleteHomeDraft(draftId)}
+                  onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}
+                  readRailScroll={readHomeRailScroll}
+                  saveRailScroll={saveHomeRailScroll}
+                />
+              </div>
             </div>
           ) : null}
           {panes.map((pane) => (

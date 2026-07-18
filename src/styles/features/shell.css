@@ -2507,11 +2507,6 @@
   overflow: auto;
 }
 
-.terminal-empty-state.is-launcher-only {
-  justify-content: center;
-  padding: 28px;
-}
-
 .home-launcher {
   display: flex;
   align-items: center;
@@ -2674,6 +2669,16 @@
 .home-rail-head .pane-tab-dot {
   flex: none;
   animation: none;
+}
+
+/* The Drafts rail header isn't a button: same layout, no affordance. Its
+   hidden dot keeps the title aligned with the agent rails. */
+.home-rail-head.is-static {
+  cursor: default;
+}
+
+.home-rail-head .pane-tab-dot.is-hidden {
+  visibility: hidden;
 }
 
 .home-rail-title {

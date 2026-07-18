@@ -309,6 +309,16 @@ export interface QueuedTurn {
   delivery?: QueuedTurnDelivery | null;
 }
 
+// A prompt queued application-wide before it has an owner — the home view's
+// Drafts rail. Assigning it to an agent marks it consumed (kept as history)
+// rather than deleting it.
+export interface GlobalDraft {
+  id: string;
+  text: string;
+  createdAt: number;
+  consumed?: { agentId: string; at: number } | null;
+}
+
 export interface QueuedTurnWait {
   agentId: string;
   paneId?: string | null;

@@ -14,6 +14,7 @@ import type {
 import type {
   AgentInfo,
   ClaudeSkill,
+  GlobalDraft,
   GlobalTaskLauncherHotkey,
   GlobalTaskLauncherSetting,
   GroupInfo,
@@ -489,6 +490,36 @@ export function removeResearchBranch(nodeId: string) {
 
 export function listAgentTurnQueue(agentId: string) {
   return invoke<QueuedTurn[]>("list_agent_turn_queue", { agentId });
+}
+
+export function listGlobalDrafts() {
+  return invoke<GlobalDraft[]>("list_global_drafts");
+}
+
+export function createGlobalDraft(text: string) {
+  return invoke<GlobalDraft>("create_global_draft", { text });
+}
+
+export function updateGlobalDraft(draftId: string, text: string) {
+  return invoke<GlobalDraft>("update_global_draft", { draftId, text });
+}
+
+export function deleteGlobalDraft(draftId: string) {
+  return invoke<GlobalDraft[]>("delete_global_draft", { draftId });
+}
+
+export interface AssignGlobalDraftResult {
+  sent: boolean;
+  drafts: GlobalDraft[];
+  queuedTurns: QueuedTurn[];
+}
+
+/** Hands a draft to an agent atomically: claim, then send-or-queue, with the
+ * claim rolled back if the submit fails. */
+export function assignGlobalDraft(draftId: string, agentId: string) {
+  return invoke<AssignGlobalDraftResult>("assign_global_draft", {
+    request: { draftId, agentId },
+  });
 }
 
 /** Toggles the pause-after-send flag on one queued turn. */

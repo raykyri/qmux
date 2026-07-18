@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import {
   isAgentInfo,
+  isGlobalDraft,
   isQueuedTurn,
   isTurn,
   reconcileReplacedTurns,
@@ -23,6 +24,7 @@ import { parseAppShortcutCommand, type AppShortcutCommand } from "../lib/appShor
 import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
 import type {
   AgentInfo,
+  GlobalDraft,
   GroupInfo,
   PaneInfo,
   QmuxEvent,
@@ -88,6 +90,7 @@ export interface UseQmuxEventsHandlers {
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
   setShellJobByAgent: Dispatch<SetStateAction<Record<string, ShellAgentJobInfo>>>;
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
+  setGlobalDrafts: Dispatch<SetStateAction<GlobalDraft[]>>;
   // Resolves an agent id to its thread id (including the backend's synthetic
   // `thread-{agentId}` fallback), or null for an agent the app doesn't know yet.
   // Lets turn events refresh only the affected thread's graph instead of
@@ -152,6 +155,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setTranscriptNoticeByAgent,
     setShellJobByAgent,
     setAgentQueuedTurns,
+    setGlobalDrafts,
     getAgentThreadId,
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
@@ -526,6 +530,12 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           setAgentQueuedTurns(event.agentId, queuedTurns);
         } else {
           void refreshAgentTurnQueue(event.agentId).catch(() => undefined);
+        }
+      }
+      if (event.type === "drafts.changed") {
+        const drafts = event.payload.drafts;
+        if (Array.isArray(drafts) && drafts.every(isGlobalDraft)) {
+          setGlobalDrafts(drafts);
         }
       }
       if (event.type === "turn.appended") {
