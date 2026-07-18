@@ -1000,6 +1000,7 @@ fn send_agent_turn(
         .clone()
         .ok_or_else(|| format!("agent {} does not have an attached pane", agent.id))?;
     let text = data.clone();
+    let is_command = is_tui_command_turn(&text);
     write_pane(
         state,
         PaneWriteOptions {
@@ -1013,7 +1014,7 @@ fn send_agent_turn(
     // between read and write and could clobber a concurrent SessionStart hook's
     // session_id/transcript_path (leaving the session unresumable/unforkable). Only
     // the status changes, so write only the status.
-    if is_tui_command_turn(&text) {
+    if is_command {
         // A built-in TUI command (a `/` slash command or a `!` shell escape) can run
         // hooklessly — no UserPromptSubmit, no Stop/idle — so it never represents a
         // running turn. Marking it Running would stick forever (nothing demotes it).
@@ -1038,7 +1039,107 @@ fn send_agent_turn(
     if let Err(err) = state.record_agent_send(&agent.id, text, source) {
         eprintln!("qmux: failed to record send for agent {}: {err}", agent.id);
     }
+    // A plain-text turn is pasted then submitted with a trailing Return. The paste is
+    // durable (it lands in the composer) but the lone Return can be dropped, leaving
+    // the turn typed-but-unsubmitted. Arm a watchdog to detect and nudge that. Skip
+    // TUI commands: they can run hooklessly, so they never echo the UserPromptSubmit
+    // the watchdog keys on, and a spurious Return after one could misfire.
+    if !is_command {
+        watch_agent_after_queued_send(state, agent, source);
+    }
     Ok(())
+}
+
+/// Grace before checking whether a just-sent turn actually submitted. A real submit
+/// echoes a `UserPromptSubmit` hook (which pops the outstanding send) and writes the
+/// prompt to the transcript within a few hundred ms, so a window this size reliably
+/// separates "submitted and running" from "the Return was dropped and the text is
+/// sitting unsubmitted".
+const SUBMIT_CONFIRM_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// After a queued/direct turn is pasted-and-submitted into an agent's own pane,
+/// verify the submit landed and re-send a bare Return if it did not. The failure this
+/// recovers: the bracketed paste reaches the TUI (visible in the composer) but the
+/// trailing Return is dropped — because it arrives before the composer is re-armed to
+/// submit, or, on the native surface, races the still-in-flight paste — leaving the
+/// turn stranded with the tab stuck at a false "Working…". Only turns that go into the
+/// agent's own pane and echo their prompt promptly are watched: `Steer` targets a busy
+/// agent whose echo legitimately waits for the current turn boundary, so it is excluded
+/// to avoid a spurious mid-turn Return.
+fn watch_agent_after_queued_send(state: &AppState, agent: &AgentInfo, source: AgentSendSource) {
+    if !matches!(
+        source,
+        AgentSendSource::QueuedTurn | AgentSendSource::DirectSend
+    ) {
+        return;
+    }
+    let Some(pane_id) = agent.pane_id.clone() else {
+        return;
+    };
+    // Baseline the activity counter now (after the send's own status write), so any
+    // later bump — a UserPromptSubmit, transcript output, or status hook — proves the
+    // turn is alive and stands the watch down.
+    let Ok(baseline) = state.agent_activity_seq(&agent.id) else {
+        return;
+    };
+    // Dedupe: one watcher per agent. Overlapping sends (a direct send onto a draining
+    // agent) reuse the in-flight watch rather than spawning racers.
+    if !state.begin_agent_submit_watch(&agent.id) {
+        return;
+    }
+    let state = state.clone();
+    let agent_id = agent.id.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(SUBMIT_CONFIRM_GRACE);
+        let nudged = resolve_agent_submit_watch(&state, &agent_id, &pane_id, baseline);
+        state.end_agent_submit_watch(&agent_id);
+        if nudged {
+            eprintln!(
+                "qmux: re-sent Return for agent {agent_id}; a sent turn appeared unsubmitted"
+            );
+        }
+    });
+}
+
+/// The post-grace half of [`watch_agent_after_queued_send`]: re-sends a bare Return
+/// when the sent turn still looks unsubmitted, and returns whether it did so. Stands
+/// down (returns `false`) when anything touched the agent since the send, or the send
+/// already echoed — either proves the turn is alive. The nudge is safe when the turn
+/// did submit: an extra Return into an idle composer is a no-op.
+fn resolve_agent_submit_watch(
+    state: &AppState,
+    agent_id: &str,
+    pane_id: &str,
+    baseline: u64,
+) -> bool {
+    // Any activity since the send (hook, transcript write, status change) means the
+    // turn is progressing — leave it be.
+    if state.agent_activity_seq(agent_id).ok() != Some(baseline) {
+        return false;
+    }
+    // A real submit's UserPromptSubmit echo pops the outstanding send. Still
+    // outstanding → no echo arrived, so the Return was dropped.
+    let still_outstanding = state
+        .agent_has_outstanding_send_source(agent_id, AgentSendSource::QueuedTurn)
+        .unwrap_or(false)
+        || state
+            .agent_has_outstanding_send_source(agent_id, AgentSendSource::DirectSend)
+            .unwrap_or(false);
+    if !still_outstanding {
+        return false;
+    }
+    // Re-send just the Return (no paste — the text is already in the composer).
+    // Best-effort: a failure here leaves the turn where it was, no worse off.
+    write_pane(
+        state,
+        PaneWriteOptions {
+            pane_id: pane_id.to_string(),
+            data: String::new(),
+            paste: false,
+            submit: true,
+        },
+    )
+    .is_ok()
 }
 
 /// Sends a user turn straight to the agent, but only after reserving the drain guard
@@ -1373,6 +1474,83 @@ mod tests {
             "a drained hookless command must not leave the agent stuck at Running: {:?}",
             agent.status
         );
+    }
+
+    #[test]
+    fn submit_watch_resends_return_when_turn_looks_unsubmitted() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+
+        // A queued send that never echoed a UserPromptSubmit and saw no activity since:
+        // the Return looks dropped, so the watch re-sends one.
+        let baseline = state.agent_activity_seq("agent-1").unwrap();
+        state
+            .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
+            .unwrap();
+        assert!(resolve_agent_submit_watch(&state, "agent-1", "pane-1", baseline));
+    }
+
+    #[test]
+    fn submit_watch_stands_down_when_activity_arrives() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+
+        let baseline = state.agent_activity_seq("agent-1").unwrap();
+        state
+            .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
+            .unwrap();
+        // Any agent mutation bumps the activity counter, proving the turn is alive.
+        state
+            .set_agent_status("agent-1", AgentStatus::Running)
+            .unwrap();
+        assert!(!resolve_agent_submit_watch(&state, "agent-1", "pane-1", baseline));
+    }
+
+    #[test]
+    fn submit_watch_stands_down_when_send_already_echoed() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+
+        // No outstanding send (the UserPromptSubmit echo already popped it): nothing to
+        // nudge even though the agent is otherwise quiet.
+        let baseline = state.agent_activity_seq("agent-1").unwrap();
+        assert!(!resolve_agent_submit_watch(&state, "agent-1", "pane-1", baseline));
+    }
+
+    #[test]
+    fn submit_watch_reservation_dedupes_until_resolved() {
+        let state = test_state();
+        assert!(state.begin_agent_submit_watch("agent-1"));
+        assert!(!state.begin_agent_submit_watch("agent-1"));
+        state.end_agent_submit_watch("agent-1");
+        assert!(state.begin_agent_submit_watch("agent-1"));
     }
 
     #[test]

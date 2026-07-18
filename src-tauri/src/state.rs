@@ -301,6 +301,11 @@ struct Model {
     /// spawns one watcher thread, not dozens. Cleared when that thread resolves.
     /// Transient (not persisted).
     agent_escape_watch: HashSet<String>,
+    /// Agents with a submit-confirmation grace watch already in flight. A drained
+    /// queued/direct turn arms `watch_agent_after_queued_send` to re-send a dropped
+    /// Return; this dedupes so overlapping sends spawn one watcher thread. Cleared
+    /// when that thread resolves. Transient (not persisted).
+    agent_submit_watch: HashSet<String>,
     agent_drafts: HashMap<String, String>,
     recent_sessions: HashMap<String, RecentSessionInfo>,
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
@@ -5293,6 +5298,7 @@ impl AppState {
                     .agents_with_reported_background_tasks
                     .remove(&agent_id);
                 model.agent_escape_watch.remove(&agent_id);
+                model.agent_submit_watch.remove(&agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
                 // the has_queue check below keeps the agent for restart recovery).
@@ -5934,6 +5940,26 @@ impl AppState {
     pub fn end_agent_escape_watch(&self, agent_id: &str) {
         if let Ok(mut model) = self.inner.model.lock() {
             model.agent_escape_watch.remove(agent_id);
+        }
+    }
+
+    /// Reserves the submit-confirmation grace watch for an agent, returning `true` when
+    /// the caller should spawn the watcher and `false` when one is already in flight (so
+    /// rapid back-to-back sends spawn a single thread). Best-effort: a poisoned lock
+    /// returns `false`, skipping the watch rather than racing.
+    pub fn begin_agent_submit_watch(&self, agent_id: &str) -> bool {
+        let Ok(mut model) = self.inner.model.lock() else {
+            return false;
+        };
+        model.agent_submit_watch.insert(agent_id.to_string())
+    }
+
+    /// Clears the submit-confirmation grace watch reservation once the watcher thread
+    /// resolves. Best-effort: a poisoned lock just leaves the entry, which only costs
+    /// the next send its watch until the agent is next removed.
+    pub fn end_agent_submit_watch(&self, agent_id: &str) {
+        if let Ok(mut model) = self.inner.model.lock() {
+            model.agent_submit_watch.remove(agent_id);
         }
     }
 
@@ -8415,6 +8441,7 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agent_status_activity.remove(agent_id);
     model.agent_active_subagents.remove(agent_id);
     model.agent_escape_watch.remove(agent_id);
+    model.agent_submit_watch.remove(agent_id);
     clear_recent_session_binding_locked(model, Some(agent_id), None);
 }
 

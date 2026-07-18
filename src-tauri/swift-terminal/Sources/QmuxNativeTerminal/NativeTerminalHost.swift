@@ -460,6 +460,20 @@ final class NativeTerminalHost {
         return pane.pasteApprovedText(text)
     }
 
+    /// Pastes approved text and then submits it, both within this single main-actor
+    /// hop. Paste and key input funnel through the terminal's one ordered input
+    /// channel, so enqueuing the Return here — with no run-loop turn between the paste
+    /// and the submit — keeps the pasted bytes ahead of the Return at the pty. Issued
+    /// as two separate hops (paste, then a Return a fixed delay later) the Return could
+    /// overtake a paste whose delivery had been deferred behind other main-thread work
+    /// (e.g. the re-render right after a turn finishes), submitting an empty line and
+    /// leaving the pasted turn typed-but-unsubmitted. The Return stays a synthesized key
+    /// event (see `submit`) so the agent's active keyboard-protocol encoding is used.
+    func pasteAndSubmit(id: String, text: String) -> Bool {
+        guard pasteApprovedText(id: id, text: text) else { return false }
+        return submit(id: id)
+    }
+
     func performAction(id: String, action: String) -> Bool {
         guard let pane = panes[id] else { return false }
         return pane.view.performBindingAction(action)

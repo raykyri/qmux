@@ -324,6 +324,11 @@ mod imp {
             text: *const u8,
             text_len: usize,
         ) -> i32;
+        fn qmux_native_terminal_paste_and_submit(
+            pane_id: *const c_char,
+            text: *const u8,
+            text_len: usize,
+        ) -> i32;
         fn qmux_native_terminal_action(pane_id: *const c_char, action: *const c_char) -> i32;
         fn qmux_native_terminal_update_settings(
             pane_id: *const c_char,
@@ -641,6 +646,25 @@ mod imp {
         }
     }
 
+    pub fn paste_and_submit(pane_id: &str, text: &str) -> Result<(), String> {
+        let pane_id = cstring(pane_id, "pane id")?;
+        // SAFETY: Swift copies the UTF-8 bytes synchronously, then pastes and submits
+        // in one main-actor hop so the Return can't overtake the paste (see
+        // NativeTerminalHost.pasteAndSubmit).
+        if unsafe {
+            qmux_native_terminal_paste_and_submit(
+                pane_id.as_ptr(),
+                text.as_bytes().as_ptr(),
+                text.len(),
+            )
+        } == 1
+        {
+            Ok(())
+        } else {
+            Err("native terminal pane was not found or rejected the paste".to_string())
+        }
+    }
+
     pub fn action(pane_id: &str, action: &str) -> Result<(), String> {
         let pane_id = cstring(pane_id, "pane id")?;
         let action = cstring(action, "terminal action")?;
@@ -842,6 +866,10 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
+    pub fn paste_and_submit(_pane_id: &str, _text: &str) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
     pub fn action(_pane_id: &str, _action: &str) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
@@ -866,9 +894,9 @@ mod imp {
 #[allow(unused_imports)]
 pub use imp::{
     action, available, create_host_managed, focus, initialize, is_ready_for_replay,
-    paste_approved_text, receive, remove, seed_settings, send_text, set_iframe_shortcut_fallback,
-    set_layout, set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown,
-    submit, update_settings,
+    paste_and_submit, paste_approved_text, receive, remove, seed_settings, send_text,
+    set_iframe_shortcut_fallback, set_layout, set_stage_backstop, set_web_overlay_region,
+    set_web_pointer_claimed, shutdown, submit, update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {

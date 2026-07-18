@@ -244,6 +244,26 @@ public func qmuxNativeTerminalPasteApprovedText(
     }
 }
 
+@_cdecl("qmux_native_terminal_paste_and_submit")
+public func qmuxNativeTerminalPasteAndSubmit(
+    _ paneID: UnsafePointer<CChar>?,
+    _ text: UnsafePointer<UInt8>?,
+    _ textLength: Int
+) -> Int32 {
+    guard let paneID = terminalString(paneID),
+          textLength >= 0,
+          text != nil || textLength == 0
+    else {
+        return 0
+    }
+    let text = text.map {
+        String(decoding: UnsafeBufferPointer(start: $0, count: textLength), as: UTF8.self)
+    } ?? ""
+    return onTerminalMain {
+        NativeTerminalHost.shared.pasteAndSubmit(id: paneID, text: text) ? 1 : 0
+    }
+}
+
 @_cdecl("qmux_native_terminal_update_settings")
 public func qmuxNativeTerminalUpdateSettings(
     _ paneID: UnsafePointer<CChar>?,

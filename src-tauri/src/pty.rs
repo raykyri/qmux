@@ -1215,6 +1215,20 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
 /// Binds the shared native sequencing to the concrete bridge calls for
 /// `options.pane_id`.
 fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> Result<(), String> {
+    // A submit that carries its own paste is delivered atomically: paste and Return in
+    // one main-actor hop (see native_terminal::paste_and_submit) so the Return can't
+    // reach the pty ahead of a still-in-flight paste. This replaces the generic
+    // paste → fixed-delay → Return sequence below, whose cross-hop gap left that
+    // reorder window open. Hold the per-pane send lock across the whole sequence so it
+    // serializes against other submits, exactly as write_pane_sequenced does.
+    if options.paste && options.submit {
+        let send_lock = state.pane_send_lock(&options.pane_id);
+        let _send_guard = send_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let data = strip_bracketed_paste_markers(&options.data);
+        return crate::native_terminal::paste_and_submit(&options.pane_id, &data);
+    }
     write_native_pane_input(
         state,
         options,
