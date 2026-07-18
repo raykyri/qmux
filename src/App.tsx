@@ -12701,13 +12701,11 @@ function MainApp() {
                   }
                   onQueueTurn={queueHomeTurn}
                   onRemoveQueuedTurn={removeHomeQueuedTurn}
-                  onUnpauseAgent={(agentId) => void unpauseHomeAgent(agentId)}
-                  onSetQueuedTurnPause={(agentId, index, pauseAfter, rawText) =>
-                    void setHomeQueuedTurnPause(agentId, index, pauseAfter, rawText)
-                  }
-                  onSendNextQueuedTurn={(agentId) => void sendNextHomeQueuedTurn(agentId)}
+                  onUnpauseAgent={unpauseHomeAgent}
+                  onSetQueuedTurnPause={setHomeQueuedTurnPause}
+                  onSendNextQueuedTurn={sendNextHomeQueuedTurn}
                   onCreateDraft={createHomeDraft}
-                  onDeleteDraft={(draftId) => void deleteHomeDraft(draftId)}
+                  onDeleteDraft={deleteHomeDraft}
                   onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}
                   readRailScroll={readHomeRailScroll}
                   saveRailScroll={saveHomeRailScroll}

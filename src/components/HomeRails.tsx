@@ -4,7 +4,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -84,7 +84,7 @@ interface HomeRailsProps {
    * when the backend dropped it, so an edit only pulls text in on success. */
   onRemoveQueuedTurn: (agentId: string, index: number, rawText: string) => Promise<boolean>;
   /** Clear a paused queue (the right pane's Unpause button, as a card menu item). */
-  onUnpauseAgent: (agentId: string) => void;
+  onUnpauseAgent: (agentId: string) => Promise<void>;
   /** Toggle a queued turn's pause-after-send flag (the composer menu's
    * "Pause after top queued item", available per card here). */
   onSetQueuedTurnPause: (
@@ -92,12 +92,12 @@ interface HomeRailsProps {
     index: number,
     pauseAfter: boolean,
     rawText: string,
-  ) => void;
+  ) => Promise<void>;
   /** Push the agent's top queued turn immediately (the composer menu's
    * "Send top queued item now!"); shown on the first queued card only. */
-  onSendNextQueuedTurn: (agentId: string) => void;
+  onSendNextQueuedTurn: (agentId: string) => Promise<void>;
   onCreateDraft: (text: string) => Promise<boolean>;
-  onDeleteDraft: (draftId: string) => void;
+  onDeleteDraft: (draftId: string) => Promise<void>;
   /** Drop a draft on an agent's rail: atomic claim + send-or-queue. */
   onAssignDraft: (draftId: string, agentId: string) => void;
   readRailScroll: (agentId: string) => HomeRailScrollPosition | null;
@@ -243,6 +243,8 @@ interface RailCardMenuItem {
   label: string;
   action: () => void;
   danger?: boolean;
+  /** Grayed while a queue mutation is in flight (the composer's `submitting`). */
+  disabled?: boolean;
 }
 
 /** The "…" menu on a draft or queued card — the home columns are too narrow for
@@ -359,6 +361,7 @@ function RailCardMenu({ items }: { items: RailCardMenuItem[] }) {
                   type="button"
                   role="menuitem"
                   className={`menu-item${entry.danger ? " is-danger" : ""}`}
+                  disabled={entry.disabled}
                   onClick={(event) => {
                     event.stopPropagation();
                     setOpen(false);
@@ -488,9 +491,23 @@ export default function HomeRails({
   // bottom) — done once per rail per mount, before first paint.
   const placedScrollAgentIds = useRef(new Set<string>());
   const dragRef = useRef<RailPointerDrag | null>(null);
-  // Swallows the click that follows a completed drag so the drop doesn't also
-  // activate the pane.
-  const suppressClickRef = useRef(false);
+  // One queue mutation at a time, like the composer's `submitting`: menu items
+  // gray out and repeat requests are dropped instead of racing the backend.
+  const mutatingRef = useRef(false);
+  const [mutating, setMutating] = useState(false);
+  async function runMutation<T>(action: () => Promise<T>): Promise<T | undefined> {
+    if (mutatingRef.current) {
+      return undefined;
+    }
+    mutatingRef.current = true;
+    setMutating(true);
+    try {
+      return await action();
+    } finally {
+      mutatingRef.current = false;
+      setMutating(false);
+    }
+  }
   const [dragging, setDragging] = useState<{ agentId: string; index: number } | null>(null);
   // Same-rail target gap; cross-rail drops highlight the whole rail instead
   // (the backend appends to the target queue, so there is no gap to point at).
@@ -783,14 +800,11 @@ export default function HomeRails({
     const gap = dropGapRef.current;
     clearDrag();
     if (drag.kind === "draft") {
-      // No suppression: draft cards carry no click handler, so a set flag
-      // would linger and swallow the next real click on a queued card.
       if (crossRailAgentId) {
         onAssignDraft(drag.text, crossRailAgentId);
       }
       return;
     }
-    suppressClickRef.current = true;
     // The queue can shift under a drag (the agent draining its top turn), so
     // resolve the grabbed card's index at drop time by its stored text.
     const from = currentDragIndex(drag);
@@ -830,22 +844,16 @@ export default function HomeRails({
     clearDrag();
   }
 
-  function handleCardClick(paneId: string) {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false;
-      return;
-    }
-    onActivatePane(paneId);
-  }
-
-  function handleCardKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, paneId: string) {
-    if (event.target !== event.currentTarget) {
-      return;
-    }
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onActivatePane(paneId);
-    }
+  // Double-click selects the card's text (the composer queue's behavior); the
+  // card body no longer navigates on click, so selection isn't hijacked.
+  function handleCardTextDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const range = document.createRange();
+    range.selectNodeContents(event.currentTarget);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
   }
 
   async function submitRailComposer(railId: string) {
@@ -892,7 +900,10 @@ export default function HomeRails({
     if (!(await confirmComposerReplace(DRAFTS_RAIL_ID))) {
       return;
     }
-    onDeleteDraft(draft.id);
+    if (mutatingRef.current) {
+      return;
+    }
+    await runMutation(() => onDeleteDraft(draft.id));
     setComposerDraft(DRAFTS_RAIL_ID, draft.text);
     focusComposerAtEnd(DRAFTS_RAIL_ID);
   }
@@ -903,7 +914,7 @@ export default function HomeRails({
     if (!(await confirmComposerReplace(agentId))) {
       return;
     }
-    if (!(await onRemoveQueuedTurn(agentId, index, rawText))) {
+    if ((await runMutation(() => onRemoveQueuedTurn(agentId, index, rawText))) !== true) {
       return;
     }
     setComposerDraft(agentId, rawText);
@@ -1034,6 +1045,13 @@ export default function HomeRails({
     }
   };
 
+  // Every card on a workstream rail opens its pane from the … menu; the card
+  // body itself stays inert so double-click text selection works.
+  const goToPaneItem = (workstream: HomeRailWorkstream): RailCardMenuItem => ({
+    label: "Go to pane",
+    action: () => onActivatePane(workstream.paneId),
+  });
+
   const renderCurrentCard = (workstream: HomeRailWorkstream) => {
     if (workstream.latestUserTurn === null) {
       return (
@@ -1042,6 +1060,7 @@ export default function HomeRails({
           variant="current"
           className="is-empty"
           text="Inactive"
+          actions={<RailCardMenu items={[goToPaneItem(workstream)]} />}
         />
       );
     }
@@ -1052,6 +1071,8 @@ export default function HomeRails({
         tone={currentCardTone(workstream.statusTone)}
         text={renderQueuedTurnText(workstream.latestUserTurn)}
         receipt={renderCurrentReceipt(workstream)}
+        onTextDoubleClick={handleCardTextDoubleClick}
+        actions={<RailCardMenu items={[goToPaneItem(workstream)]} />}
       />
     );
   };
@@ -1061,7 +1082,15 @@ export default function HomeRails({
     turn: HomeRailQueuedTurn,
     index: number,
   ) => {
-    const key = queuedCardKey(workstream.agentId, index);
+    // Anchor refs (wait links) key by index, matching the measure loop; the
+    // React key is text-based so card state survives the queue draining above
+    // it (duplicated text disambiguates by occurrence — visually identical
+    // cards, so an occurrence shift is harmless).
+    const refKey = queuedCardKey(workstream.agentId, index);
+    const occurrence = workstream.queuedTurns
+      .slice(0, index)
+      .filter((candidate) => candidate.rawText === turn.rawText).length;
+    const cardKey = `${workstream.agentId}:${occurrence}:${turn.rawText}`;
     const isDraggingCard =
       dragging?.agentId === workstream.agentId && dragging.index === index;
     // Suppress the drop rule at the dragged card's own position.
@@ -1079,8 +1108,8 @@ export default function HomeRails({
     ) : null;
     return (
       <QueuedTurnCard
-        key={key}
-        ref={(element) => setQueuedCardRef(key, element)}
+        key={cardKey}
+        ref={(element) => setQueuedCardRef(refKey, element)}
         text={renderQueuedTurnText(turn.text)}
         pauseAfter={turn.pauseAfter}
         deliveryLabel={turn.deliveryLabel ?? null}
@@ -1095,49 +1124,62 @@ export default function HomeRails({
         ]
           .filter(Boolean)
           .join(" ")}
-        role="button"
-        tabIndex={0}
-        onClick={() => handleCardClick(workstream.paneId)}
-        onKeyDown={(event) => handleCardKeyDown(event, workstream.paneId)}
         onPointerDown={(event) =>
           handleCardPointerDown(event, "queued", workstream.agentId, index, turn.rawText)
         }
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
+        onTextDoubleClick={handleCardTextDoubleClick}
         actions={
           <RailCardMenu
             items={[
+              goToPaneItem(workstream),
               ...(workstream.paused
-                ? [{ label: "Unpause queue", action: () => onUnpauseAgent(workstream.agentId) }]
+                ? [
+                    {
+                      label: "Unpause queue",
+                      action: () => void runMutation(() => onUnpauseAgent(workstream.agentId)),
+                      disabled: mutating,
+                    },
+                  ]
                 : []),
               ...(index === 0
                 ? [
                     {
                       label: "Send now",
-                      action: () => onSendNextQueuedTurn(workstream.agentId),
+                      action: () =>
+                        void runMutation(() => onSendNextQueuedTurn(workstream.agentId)),
+                      disabled: mutating,
                     },
                   ]
                 : []),
               {
                 label: "Edit",
                 action: () => void editQueuedTurn(workstream.agentId, index, turn.rawText),
+                disabled: mutating,
               },
               {
                 label: turn.pauseAfter ? "Remove pause" : "Pause after send",
                 action: () =>
-                  onSetQueuedTurnPause(
-                    workstream.agentId,
-                    index,
-                    !turn.pauseAfter,
-                    turn.rawText,
+                  void runMutation(() =>
+                    onSetQueuedTurnPause(
+                      workstream.agentId,
+                      index,
+                      !turn.pauseAfter,
+                      turn.rawText,
+                    ),
                   ),
+                disabled: mutating,
               },
               {
                 label: "Remove",
                 action: () =>
-                  void onRemoveQueuedTurn(workstream.agentId, index, turn.rawText),
+                  void runMutation(() =>
+                    onRemoveQueuedTurn(workstream.agentId, index, turn.rawText),
+                  ),
                 danger: true,
+                disabled: mutating,
               },
             ]}
           />
@@ -1153,6 +1195,7 @@ export default function HomeRails({
           key={draft.id}
           variant="past"
           text={renderQueuedTurnText(draft.text)}
+          onTextDoubleClick={handleCardTextDoubleClick}
           receipt={
             <>
               <Check
@@ -1187,11 +1230,17 @@ export default function HomeRails({
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
+        onTextDoubleClick={handleCardTextDoubleClick}
         actions={
           <RailCardMenu
             items={[
-              { label: "Edit", action: () => void editDraft(draft) },
-              { label: "Delete", action: () => onDeleteDraft(draft.id), danger: true },
+              { label: "Edit", action: () => void editDraft(draft), disabled: mutating },
+              {
+                label: "Delete",
+                action: () => void runMutation(() => onDeleteDraft(draft.id)),
+                danger: true,
+                disabled: mutating,
+              },
             ]}
           />
         }
@@ -1270,6 +1319,8 @@ export default function HomeRails({
                       variant="past"
                       text={renderQueuedTurnText(turn.text)}
                       receipt={renderPastReceipt(turn)}
+                      onTextDoubleClick={handleCardTextDoubleClick}
+                      actions={<RailCardMenu items={[goToPaneItem(workstream)]} />}
                     />
                   ))}
                   {renderCurrentCard(workstream)}

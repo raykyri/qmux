@@ -2758,13 +2758,41 @@
   border-color: var(--control-border-hover-accent);
 }
 
-/* The "…" menu on draft and queued home cards. The columns are too narrow for
-   inline Edit/× buttons, so those actions live behind this trigger. */
+/* The "…" menu on home cards. The columns are too narrow for inline Edit/×
+   buttons, so those actions live behind this trigger — a small button floated
+   over the card's top-right corner that only materializes on hover (or while
+   its menu is open / focused), leaving the full card width to the text. */
+.home-rail-scroll .queued-turn-actions {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.home-rail-scroll .queued-turn:hover .queued-turn-actions,
+.home-rail-scroll .queued-turn-actions:focus-within,
+.home-rail-scroll .queued-turn-actions:has(.home-rail-card-menu-trigger.is-open) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .home-rail-card-menu-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--text-faint);
+}
+
+/* Compact square over card content; the card background keeps it legible. */
+.home-rail-scroll .queued-turn-actions > .home-rail-card-menu-trigger {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  background: var(--content-inset-bg);
 }
 
 .home-rail-card-menu-trigger:hover,
