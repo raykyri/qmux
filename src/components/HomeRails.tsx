@@ -82,6 +82,14 @@ interface HomeRailsProps {
   onRemoveQueuedTurn: (agentId: string, index: number, rawText: string) => Promise<boolean>;
   /** Clear a paused queue (the right pane's Unpause button, as a card menu item). */
   onUnpauseAgent: (agentId: string) => void;
+  /** Toggle a queued turn's pause-after-send flag (the composer menu's
+   * "Pause after top queued item", available per card here). */
+  onSetQueuedTurnPause: (
+    agentId: string,
+    index: number,
+    pauseAfter: boolean,
+    rawText: string,
+  ) => void;
   onCreateDraft: (text: string) => Promise<boolean>;
   onDeleteDraft: (draftId: string) => void;
   /** Drop a draft on an agent's rail: atomic claim + send-or-queue. */
@@ -473,6 +481,7 @@ export default function HomeRails({
   onQueueTurn,
   onRemoveQueuedTurn,
   onUnpauseAgent,
+  onSetQueuedTurnPause,
   onCreateDraft,
   onDeleteDraft,
   onAssignDraft,
@@ -1116,6 +1125,16 @@ export default function HomeRails({
               {
                 label: "Edit",
                 action: () => void editQueuedTurn(workstream.agentId, index, turn.rawText),
+              },
+              {
+                label: turn.pauseAfter ? "Remove pause" : "Pause after send",
+                action: () =>
+                  onSetQueuedTurnPause(
+                    workstream.agentId,
+                    index,
+                    !turn.pauseAfter,
+                    turn.rawText,
+                  ),
               },
               {
                 label: "Remove",

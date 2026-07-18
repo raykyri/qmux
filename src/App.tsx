@@ -374,6 +374,7 @@ import {
   setWorktreeLocation,
   spawnAgent,
   spawnShell,
+  setQueuedTurnPause,
   submitAgentTurn,
   unpauseAgent,
   updateMenuBar,
@@ -4434,6 +4435,22 @@ function MainApp() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return false;
+    }
+  }
+
+  // Home-rail card menu: toggle a queued turn's pause-after-send flag, the same
+  // command behind the composer menu's "Pause after top queued item".
+  async function setHomeQueuedTurnPause(
+    agentId: string,
+    index: number,
+    pauseAfter: boolean,
+    rawText: string,
+  ) {
+    setError(null);
+    try {
+      setAgentQueuedTurns(agentId, await setQueuedTurnPause(agentId, index, pauseAfter, rawText));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -12672,6 +12689,9 @@ function MainApp() {
                   onQueueTurn={queueHomeTurn}
                   onRemoveQueuedTurn={removeHomeQueuedTurn}
                   onUnpauseAgent={(agentId) => void unpauseHomeAgent(agentId)}
+                  onSetQueuedTurnPause={(agentId, index, pauseAfter, rawText) =>
+                    void setHomeQueuedTurnPause(agentId, index, pauseAfter, rawText)
+                  }
                   onCreateDraft={createHomeDraft}
                   onDeleteDraft={(draftId) => void deleteHomeDraft(draftId)}
                   onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}
