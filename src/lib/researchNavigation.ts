@@ -4,8 +4,20 @@
 // deleted trees) mutate the same object — pruning localStorage behind a
 // separate in-memory copy would just get resurrected by the next save.
 
+import type { ResearchHighlightAnchor } from "../types";
+
 export interface SavedResearchScrollPosition {
   top: number;
+  updatedAt: number;
+}
+
+/** An in-progress targeted follow-up (ask mode): the passage it is being
+ * composed against and whatever the user has typed so far. Persisted so
+ * leaving the research surface — which unmounts the document — does not
+ * discard the ask; removed only by submit or an explicit dismiss. */
+export interface SavedResearchAsk {
+  anchor: ResearchHighlightAnchor;
+  text: string;
   updatedAt: number;
 }
 
@@ -16,6 +28,8 @@ export interface SavedResearchNavigation {
    * with the scroll offset — an offset captured against the expanded list
    * would land in the wrong place in the collapsed one. */
   expandedByNode?: Record<string, boolean>;
+  /** In-progress asks, keyed by the node they were started on. */
+  askByNode?: Record<string, SavedResearchAsk>;
 }
 
 const RESEARCH_NAVIGATION_KEY = "qmux.research-navigation.v1";
@@ -39,6 +53,23 @@ export function isResearchTreeSelectionChange(
   // tree is fetched again, producing a needless loading blink. The same tree
   // remains selectable when one of its terminal panes is currently visible.
   return !documentVisible || selectedTreeId !== nextTreeId;
+}
+
+function isSavedAnchor(value: unknown): value is ResearchHighlightAnchor {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const anchor = value as Partial<ResearchHighlightAnchor>;
+  return (
+    anchor.version === 1 &&
+    anchor.projection === "answer-v1" &&
+    typeof anchor.responseRevision === "string" &&
+    typeof anchor.start === "number" &&
+    typeof anchor.end === "number" &&
+    typeof anchor.exact === "string" &&
+    typeof anchor.prefix === "string" &&
+    typeof anchor.suffix === "string"
+  );
 }
 
 function load(): Record<string, SavedResearchNavigation> {
@@ -77,11 +108,26 @@ function load(): Record<string, SavedResearchNavigation> {
             (entry): entry is [string, boolean] => entry[1] === true,
           ),
         );
+        const askByNode = Object.fromEntries(
+          Object.entries(candidate.askByNode ?? {}).flatMap(([nodeId, value]) => {
+            if (!value || typeof value !== "object") {
+              return [];
+            }
+            const ask = value as Partial<SavedResearchAsk>;
+            return isSavedAnchor(ask.anchor) &&
+              typeof ask.text === "string" &&
+              typeof ask.updatedAt === "number" &&
+              Number.isFinite(ask.updatedAt)
+              ? [[nodeId, { anchor: ask.anchor, text: ask.text, updatedAt: ask.updatedAt }]]
+              : [];
+          }),
+        );
         return [[treeId, {
           selectedNodeId:
             typeof candidate.selectedNodeId === "string" ? candidate.selectedNodeId : undefined,
           scrollByNode,
           ...(Object.keys(expandedByNode).length > 0 ? { expandedByNode } : {}),
+          ...(Object.keys(askByNode).length > 0 ? { askByNode } : {}),
         } satisfies SavedResearchNavigation]];
       }),
     );
@@ -156,6 +202,12 @@ export function pruneResearchNavigationNodes(treeId: string, validNodeIds: Itera
   for (const nodeId of Object.keys(navigation.expandedByNode ?? {})) {
     if (!valid.has(nodeId)) {
       delete navigation.expandedByNode?.[nodeId];
+      changed = true;
+    }
+  }
+  for (const nodeId of Object.keys(navigation.askByNode ?? {})) {
+    if (!valid.has(nodeId)) {
+      delete navigation.askByNode?.[nodeId];
       changed = true;
     }
   }
