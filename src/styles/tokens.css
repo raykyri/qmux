@@ -281,9 +281,9 @@
     var(--pane-hover-bg) 75%,
     var(--right-pane-bg) 25%
   );
-  --markdown-table-border: #332d27;
-  --markdown-table-frame-border: #39332c;
-  --markdown-table-header-border: #453a30;
+  --markdown-table-border: #302d2a;
+  --markdown-table-frame-border: #36332f;
+  --markdown-table-header-border: #403a35;
   --markdown-blockquote-border: #45484a;
   --transcript-code-bg: #171512;
   --transcript-code-header-bg: #12110f;
