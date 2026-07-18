@@ -145,7 +145,10 @@ import {
   agentTabStatusPill,
   queueWaitsOnOtherAgent,
 } from "./lib/composerActions";
-import { desiredNativeTerminalKeyboardOwner } from "./lib/nativeTerminalKeyboard";
+import {
+  desiredNativeTerminalKeyboardOwner,
+  windowFocusKeyboardOwner,
+} from "./lib/nativeTerminalKeyboard";
 import {
   applicableSpeculativeAcknowledgements,
   terminalAttentionProbeIsDue,
@@ -1649,6 +1652,15 @@ function MainApp() {
   // focus. Native terminal panes must never claim first responder then, or they
   // would steal the keyboard mid-typing.
   const [webEditableFocused, setWebEditableFocused] = useState(false);
+  const webEditableFocusedRef = useRef(webEditableFocused);
+  webEditableFocusedRef.current = webEditableFocused;
+  // The DOM node that owned keyboard input when the native app window last
+  // deactivated. WebKit can temporarily replace activeElement with <body>
+  // during that handoff, so the node itself is needed to restore the composer
+  // rather than misclassifying the return as terminal first-responder churn.
+  const lastFocusedWebEditableRef = useRef<HTMLElement | null>(null);
+  const appBlurWebEditableRef = useRef<HTMLElement | null>(null);
+  const nativeWindowFocusedRef = useRef(true);
   // True while a non-collapsed DOM selection exists. Folded into the
   // keyboard-ownership signal handed to terminal panes so selected web text
   // keeps WebKit as the key target (Cmd+C copies the selection instead of
@@ -8569,11 +8581,22 @@ function MainApp() {
   //    window-focus recovery sample one frame later, after activeElement settles.
   useEffect(() => {
     let frame: number | null = null;
+    let restoreFrame: number | null = null;
+    let restoringRememberedEditable = false;
+    let disposed = false;
+    let unlistenNativeFocus: (() => void) | undefined;
+    const restorableEditable = (target: HTMLElement | null) =>
+      Boolean(
+        target &&
+          target.isConnected &&
+          isEditableTarget(target) &&
+          !target.matches(":disabled"),
+      );
     const sample = () => {
       frame = null;
-      setWebEditableFocused(
-        document.hasFocus() && isEditableTarget(document.activeElement),
-      );
+      const editable = document.hasFocus() && isEditableTarget(document.activeElement);
+      webEditableFocusedRef.current = editable;
+      setWebEditableFocused(editable);
     };
     const schedule = () => {
       if (frame === null) {
@@ -8581,11 +8604,73 @@ function MainApp() {
       }
     };
     const handleFocusIn = (event: FocusEvent) => {
-      setWebEditableFocused(document.hasFocus() && isEditableTarget(event.target));
+      const editable = document.hasFocus() && isEditableTarget(event.target);
+      if (editable && event.target instanceof HTMLElement) {
+        lastFocusedWebEditableRef.current = event.target;
+      }
+      webEditableFocusedRef.current = editable;
+      setWebEditableFocused(editable);
+    };
+    const restoreWindowEditable = (returningToApp: boolean) => {
+      const active =
+        document.activeElement instanceof HTMLElement &&
+        isEditableTarget(document.activeElement)
+          ? document.activeElement
+          : null;
+      const remembered = appBlurWebEditableRef.current;
+      const owner = windowFocusKeyboardOwner({
+        currentWebEditable: active !== null,
+        rememberedWebEditable: restorableEditable(remembered),
+        returningToApp: returningToApp || restoringRememberedEditable,
+      });
+      if (owner === "current-web-editable") {
+        lastFocusedWebEditableRef.current = active;
+        webEditableFocusedRef.current = true;
+        setWebEditableFocused(true);
+        return true;
+      }
+      if (owner !== "remembered-web-editable" || !remembered) {
+        restoringRememberedEditable = false;
+        return false;
+      }
+      // Block native ownership synchronously, then focus both now and on the
+      // next frame: Tauri can announce native activation just before WKWebView
+      // is ready to accept first responder again.
+      restoringRememberedEditable = true;
+      lastFocusedWebEditableRef.current = remembered;
+      webEditableFocusedRef.current = true;
+      setWebEditableFocused(true);
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+      remembered.focus({ preventScroll: true });
+      if (restoreFrame !== null) {
+        cancelAnimationFrame(restoreFrame);
+      }
+      restoreFrame = requestAnimationFrame(() => {
+        restoreFrame = null;
+        if (!restorableEditable(remembered)) {
+          appBlurWebEditableRef.current = null;
+          restoringRememberedEditable = false;
+          sample();
+          return;
+        }
+        if (document.activeElement !== remembered) {
+          remembered.focus({ preventScroll: true });
+        }
+        restoringRememberedEditable = false;
+        sample();
+      });
+      return true;
     };
     const bounceStolenFocus = () => {
+      const returningToApp = !nativeWindowFocusedRef.current;
       lastWindowFocusSeqRef.current = ++focusOrderSeqRef.current;
       schedule();
+      if (restoreWindowEditable(returningToApp)) {
+        return;
+      }
       requestAnimationFrame(() => {
         if (isEditableTarget(document.activeElement)) {
           return;
@@ -8624,8 +8709,32 @@ function MainApp() {
     // wedge on the user's next keystroke or click, whatever overlay caused it.
     window.addEventListener("keydown", noteUserIntent, true);
     window.addEventListener("pointerdown", noteUserIntent, true);
+    const appWindow = getCurrentWindow();
+    void appWindow
+      .onFocusChanged(({ payload: focused }) => {
+        nativeWindowFocusedRef.current = focused;
+        if (!focused) {
+          appBlurWebEditableRef.current = webEditableFocusedRef.current
+            ? lastFocusedWebEditableRef.current
+            : null;
+          return;
+        }
+        lastWindowFocusSeqRef.current = ++focusOrderSeqRef.current;
+        if (!restoreWindowEditable(true)) {
+          schedule();
+        }
+      })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenNativeFocus = unlisten;
+        }
+      })
+      .catch(() => undefined);
     sample();
     return () => {
+      disposed = true;
       window.removeEventListener("focusin", handleFocusIn);
       window.removeEventListener("focusout", schedule);
       window.removeEventListener("blur", schedule);
@@ -8635,6 +8744,10 @@ function MainApp() {
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
+      if (restoreFrame !== null) {
+        cancelAnimationFrame(restoreFrame);
+      }
+      unlistenNativeFocus?.();
     };
   }, []);
 
