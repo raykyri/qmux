@@ -2484,22 +2484,17 @@
 }
 
 /* Home shows web content (launcher, cascades) instead of a native surface, so
-   restore the opaque terminal backdrop — it must also cover the case where the
-   launcher dialog replaces the inline empty state, which would otherwise expose
-   the window's vibrancy material. */
+   restore an opaque backdrop — it must also cover the case where the launcher
+   dialog replaces the inline empty state, which would otherwise expose the
+   window's vibrancy material. The home screen matches the research home
+   backdrop rather than the darker terminal surface; explicitly selected Ghostty
+   themes still win via --terminal-bg. */
+.terminal-stage.is-home,
 .terminal-stage.is-native.is-home {
-  background: var(--terminal-bg, var(--terminal-pane-bg));
+  background: var(--terminal-bg, var(--research-workspace-bg));
 }
 
 .terminal-stage.is-native .terminal-empty-state {
-  background: var(--terminal-bg, var(--terminal-pane-bg));
-}
-
-/* Warm mode's home screen matches the research home backdrop instead of the
-   darker terminal surface; explicitly selected Ghostty themes still win via
-   --terminal-bg. */
-:root[data-color-theme="orange-blob"] .terminal-stage.is-home,
-:root[data-color-theme="orange-blob"] .terminal-stage.is-native .terminal-empty-state {
   background: var(--terminal-bg, var(--research-workspace-bg));
 }
 

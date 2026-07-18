@@ -696,8 +696,9 @@ export default function HomeRails({
               className="queued-turn-receipt-ok"
               aria-hidden="true"
             />
+            {" Done"}
             {workstream.currentSettledAt !== null
-              ? ` ${formatRelativeTime(workstream.currentSettledAt)}`
+              ? ` · ${formatRelativeTime(workstream.currentSettledAt)}`
               : null}
           </>
         );
@@ -711,7 +712,7 @@ export default function HomeRails({
           ref={(element) => setCurrentCardRef(workstream.agentId, element)}
           variant="current"
           className="is-empty"
-          text="No turn yet"
+          text="Inactive"
         />
       );
     }

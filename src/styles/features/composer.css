@@ -177,8 +177,12 @@
   background: #1e1817;
 }
 
+/* A settled turn (the agent is done or inert) recedes to the calm rail
+   background so an inactive terminal never reads as actively working — only
+   tone-active/attention keep the highlighted current-card fill. */
 .queued-turn.is-current.tone-done {
   border-color: var(--home-cascade-done-border);
+  background: transparent;
 }
 
 .queued-turn.is-current.tone-error {
@@ -189,7 +193,8 @@
 .queued-turn.is-current.is-empty {
   border-color: transparent;
   background: transparent;
-  color: #6b736f;
+  color: var(--text-faint);
+  opacity: 0.7;
 }
 
 /* Already-settled turns recede so live work stands out. */
@@ -209,7 +214,7 @@
 }
 
 .queued-turn-receipt-ok {
-  color: var(--accent-strong);
+  color: var(--status-success-fg);
   vertical-align: -1.5px;
   margin-right: 2px;
 }

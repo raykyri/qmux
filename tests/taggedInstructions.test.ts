@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   stripTaggedInstructionBlocks,
+  stripTaggedInstructionBlocksForPreview,
   stripTaggedUserInstructionBlocks,
 } from "../src/lib/taggedInstructions";
 
@@ -71,6 +72,27 @@ test("user-message stripping preserves fenced and indented code", () => {
   assert.equal(copied.includes("Literal indented XML."), true);
   assert.equal(copied.includes("Actually injected instructions."), false);
   assert.equal(copied.includes("What does it do?"), true);
+});
+
+test("preview stripping drops indented slash-command marker blocks", () => {
+  const message = ["<command-message>copy</command-message>", "        <command-args></command-args>"].join(
+    "\n",
+  );
+
+  assert.equal(stripTaggedInstructionBlocksForPreview(message).trim(), "");
+});
+
+test("preview stripping keeps real prose after a marker block", () => {
+  const message = [
+    "<command-name>run</command-name>",
+    "        <command-args>--fast</command-args>",
+    "Deploy the staging build.",
+  ].join("\n");
+
+  assert.equal(
+    stripTaggedInstructionBlocksForPreview(message).trim(),
+    "Deploy the staging build.",
+  );
 });
 
 test("generic tagged-block stripping preserves preceding Markdown headings", () => {

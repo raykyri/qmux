@@ -1,14 +1,15 @@
 import type { HomeRailPastTurn } from "../components/HomeRails";
 import type { Turn } from "../types";
 import { firstUserTurnText } from "./appHelpers";
-import { stripTaggedUserInstructionBlocks } from "./taggedInstructions";
+import { stripTaggedInstructionBlocksForPreview } from "./taggedInstructions";
 
-// Strips prepended/inline tagged instruction blocks (<system-reminder> …) from
-// a turn for the compact home rail cards, using the same filter as the right
-// pane. Queued turns keep the raw text if stripping empties them (a card
-// should never be blank).
+// Strips prepended/inline tagged instruction blocks (<system-reminder>,
+// <command-args>, …) from a turn for the compact home rail cards. Unlike the
+// right pane's copy filter this also drops indented tag blocks, so slash-command
+// markers never leak into a preview. Queued turns keep the raw text if stripping
+// empties them (a card should never be blank).
 export function railQueuedTurnText(text: string): string {
-  const stripped = stripTaggedUserInstructionBlocks(text).trim();
+  const stripped = stripTaggedInstructionBlocksForPreview(text).trim();
   return stripped.length > 0 ? stripped : text;
 }
 
@@ -18,7 +19,7 @@ export function railLatestUserTurn(turns: Turn[]): string | null {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const text = firstUserTurnText(turns[index]);
     if (text) {
-      const stripped = stripTaggedUserInstructionBlocks(text).trim();
+      const stripped = stripTaggedInstructionBlocksForPreview(text).trim();
       return stripped.length > 0 ? stripped : null;
     }
   }
@@ -60,7 +61,7 @@ export function railPastTurns(turns: Turn[]): HomeRailPastTurn[] {
         pending.settledAt = exchangeLastTimestamp ?? pending.settledAt;
         result.push(pending);
       }
-      const stripped = stripTaggedUserInstructionBlocks(text).trim();
+      const stripped = stripTaggedInstructionBlocksForPreview(text).trim();
       pending =
         stripped.length > 0
           ? { id: turn.id, text: stripped, settledAt: turn.timestamp ?? null }

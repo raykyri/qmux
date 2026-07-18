@@ -16,6 +16,16 @@ export function stripTaggedUserInstructionBlocks(text: string): string {
   return leading.removed || stripped.removed ? stripped.text : text;
 }
 
+// Like stripTaggedUserInstructionBlocks, but without protecting fenced/indented
+// code. The home rail cards are compact previews, so any tagged block should be
+// dropped — including a slash command's indented <command-args> block, which the
+// copy-safe filter leaves in place because indentation reads as a code block.
+export function stripTaggedInstructionBlocksForPreview(text: string): string {
+  const leading = stripLeadingTaggedInstructionBlocks(text);
+  const stripped = stripInlineTaggedInstructionBlocks(leading.text);
+  return leading.removed || stripped.removed ? stripped.text : text;
+}
+
 // Remove line-leading tagged blocks without treating a preceding Markdown
 // heading as an injected-label prefix. Assistant answers often use headings as
 // real content, so their copy path must preserve those while cutting out any
