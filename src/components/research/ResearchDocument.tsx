@@ -367,6 +367,7 @@ function highlightOutlineRects(
   highlightIds: string[],
 ): HighlightOutlineRect[] {
   const boxes: HighlightOutlineRect[] = [];
+  const pixelRatio = window.devicePixelRatio || 1;
   for (const { highlight, start, end } of resolved) {
     if (!highlightIds.includes(highlight.id)) {
       continue;
@@ -393,11 +394,18 @@ function highlightOutlineRects(
       }
     }
     for (const line of lines) {
+      // Range geometry can land between device pixels while WebKit rounds the
+      // Custom Highlight paint independently. Expand to the enclosing device
+      // pixels first so the outline's one-pixel clearance cannot round inward.
+      const left = Math.floor(line.left * pixelRatio) / pixelRatio;
+      const top = Math.floor(line.top * pixelRatio) / pixelRatio;
+      const right = Math.ceil(line.right * pixelRatio) / pixelRatio;
+      const bottom = Math.ceil(line.bottom * pixelRatio) / pixelRatio;
       boxes.push({
-        left: line.left,
-        top: line.top,
-        width: line.right - line.left,
-        height: line.bottom - line.top,
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
       });
     }
   }
