@@ -1298,9 +1298,11 @@
   -webkit-line-clamp: 2;
 }
 
-/* Targeted follow-ups sit beside the passage they were asked about. Cards may
-   overlap when anchors crowd together — an opaque surface plus a hover/focus
-   z-index raise keeps each one reachable. */
+/* Targeted follow-ups sit beside the passage they were asked about; crowded
+   anchors cascade downward instead of overlapping (resolved in the document
+   component). Overlap can still occur transiently — the ask-mode composer
+   pushing cards aside, a new card awaiting resolution — so an opaque surface
+   plus a hover/focus z-index raise keeps each card reachable. */
 .research-followup-card.is-anchored {
   position: absolute;
   z-index: 1;
