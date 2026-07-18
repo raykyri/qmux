@@ -2486,6 +2486,14 @@
   background: var(--terminal-bg, var(--terminal-pane-bg));
 }
 
+/* Warm mode's home screen matches the research home backdrop instead of the
+   darker terminal surface; explicitly selected Ghostty themes still win via
+   --terminal-bg. */
+:root[data-color-theme="orange-blob"] .terminal-stage.is-home,
+:root[data-color-theme="orange-blob"] .terminal-stage.is-native .terminal-empty-state {
+  background: var(--terminal-bg, var(--research-workspace-bg));
+}
+
 .terminal-empty-state {
   position: absolute;
   inset: 0;
