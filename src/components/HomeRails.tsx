@@ -9,11 +9,13 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Check, X } from "lucide-react";
-import type { AgentStatusTone } from "../lib/appHelpers";
+import { createPortal } from "react-dom";
+import { Check, Ellipsis } from "lucide-react";
+import { placePanePopover, type AgentStatusTone } from "../lib/appHelpers";
 import { growComposerTextarea } from "../lib/composerTextarea";
 import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
 import { formatRelativeTime } from "../lib/transcriptSessions";
+import { useConfirm } from "../hooks/useConfirm";
 import type { GlobalDraft } from "../types";
 import { QueuedTurnCard, waitFooterTitle, type QueuedTurnCardTone } from "./QueuedTurnCard";
 
@@ -72,6 +74,9 @@ interface HomeRailsProps {
   /** Cross-rail drop; the backend appends to the target agent's queue. */
   onMoveQueuedTurn: (fromAgentId: string, toAgentId: string, index: number, text: string) => void;
   onQueueTurn: (agentId: string, text: string) => Promise<boolean>;
+  /** Remove a queued turn (the … menu's Remove and edit-recall). Resolves true
+   * when the backend dropped it, so an edit only pulls text in on success. */
+  onRemoveQueuedTurn: (agentId: string, index: number, rawText: string) => Promise<boolean>;
   onCreateDraft: (text: string) => Promise<boolean>;
   onDeleteDraft: (draftId: string) => void;
   /** Drop a draft on an agent's rail: atomic claim + send-or-queue. */
@@ -231,6 +236,149 @@ export function railLinkPath(
   ].join(" ");
 }
 
+const RAIL_CARD_MENU_WIDTH = 132;
+
+/** The "…" menu on a draft or queued card — the home columns are too narrow for
+ *  inline Edit/× buttons, so those actions live in a small portaled menu (the
+ *  same shape as the prompt-library row menu). */
+function RailCardMenu({
+  onEdit,
+  onDelete,
+  deleteLabel,
+}: {
+  onEdit: () => void;
+  onDelete: () => void;
+  deleteLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number;
+    maxWidth: number;
+  } | null>(null);
+
+  const position = useCallback(() => {
+    const trigger = triggerRef.current;
+    const popover = popoverRef.current;
+    if (!trigger || !popover) {
+      return;
+    }
+    const { height } = popover.getBoundingClientRect();
+    // No paneRect: the home stage has no right pane, so clamp to the viewport.
+    setPos(
+      placePanePopover({
+        triggerRect: trigger.getBoundingClientRect(),
+        popoverSize: { width: RAIL_CARD_MENU_WIDTH, height },
+        align: "end",
+        prefer: "below",
+      }),
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    position();
+    // The columns pan and scroll under the menu; follow the trigger or close.
+    const onReflow = () => position();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [open, position]);
+
+  const item = (label: string, action: () => void, danger = false) => (
+    <button
+      type="button"
+      role="menuitem"
+      className={`menu-item${danger ? " is-danger" : ""}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        setOpen(false);
+        action();
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`control-button home-rail-card-menu-trigger${open ? " is-open" : ""}`}
+        title="More actions"
+        aria-label="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
+      >
+        <Ellipsis size={14} aria-hidden="true" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="popover-surface popover-surface--context home-rail-card-menu-popover"
+              role="menu"
+              aria-label="Card actions"
+              style={
+                pos
+                  ? {
+                      left: pos.left,
+                      top: pos.top,
+                      maxHeight: pos.maxHeight,
+                      width: Math.min(RAIL_CARD_MENU_WIDTH, pos.maxWidth),
+                      maxWidth: pos.maxWidth,
+                    }
+                  : { left: -9999, top: -9999 }
+              }
+            >
+              {item("Edit", onEdit)}
+              {item(deleteLabel, onDelete, true)}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 interface RailComposerProps {
   railId: string;
   value: string;
@@ -238,6 +386,8 @@ interface RailComposerProps {
   ariaLabel: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  /** Up-arrow on an empty composer recalls the last item to edit, shell-style. */
+  onEditLast: () => void;
   registerRef: (railId: string, element: HTMLTextAreaElement | null) => void;
 }
 
@@ -252,6 +402,7 @@ function RailComposer({
   ariaLabel,
   onChange,
   onSubmit,
+  onEditLast,
   registerRef,
 }: RailComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -291,6 +442,20 @@ function RailComposer({
           ) {
             event.preventDefault();
             onSubmit();
+            return;
+          }
+          // Empty field + Up: pull the last item back in to edit (like recalling
+          // the previous shell line), matching the right pane's queue.
+          if (
+            event.key === "ArrowUp" &&
+            !event.repeat &&
+            value.length === 0 &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey
+          ) {
+            event.preventDefault();
+            onEditLast();
           }
         }}
       />
@@ -305,6 +470,7 @@ export default function HomeRails({
   onReorderQueuedTurn,
   onMoveQueuedTurn,
   onQueueTurn,
+  onRemoveQueuedTurn,
   onCreateDraft,
   onDeleteDraft,
   onAssignDraft,
@@ -366,6 +532,9 @@ export default function HomeRails({
   const setComposerDraft = useCallback((railId: string, text: string) => {
     setComposerDrafts((current) => ({ ...current, [railId]: text }));
   }, []);
+  // Recalling an item into a composer that already holds text would clobber it,
+  // so guard the swap the same way the right pane's edit does.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [links, setLinks] = useState<LinkPath[]>([]);
   const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
   // Receipts ("2 hr ago") and the working card's elapsed time drift; a coarse
@@ -691,6 +860,72 @@ export default function HomeRails({
     }
   }
 
+  // Move focus back to a composer and drop the caret at the end, after the
+  // controlled value has flushed — so an edit recall lands ready to type.
+  function focusComposerAtEnd(railId: string) {
+    requestAnimationFrame(() => {
+      const textarea = composerRefs.current.get(railId);
+      if (!textarea) {
+        return;
+      }
+      textarea.focus();
+      const end = textarea.value.length;
+      textarea.setSelectionRange(end, end);
+    });
+  }
+
+  // A recall replaces whatever is half-typed in the target composer; keep it
+  // only after an explicit confirm (skipped when the field is empty).
+  async function confirmComposerReplace(railId: string) {
+    if ((composerDrafts[railId] ?? "").trim().length === 0) {
+      return true;
+    }
+    return confirm({
+      message: "Replace what you're typing with this item?",
+      confirmLabel: "Replace",
+    });
+  }
+
+  // Pull a draft into the Drafts composer to edit, removing the card — the same
+  // dequeue-to-edit the right pane uses. Re-submitting stores it afresh.
+  async function editDraft(draft: GlobalDraft) {
+    if (!(await confirmComposerReplace(DRAFTS_RAIL_ID))) {
+      return;
+    }
+    onDeleteDraft(draft.id);
+    setComposerDraft(DRAFTS_RAIL_ID, draft.text);
+    focusComposerAtEnd(DRAFTS_RAIL_ID);
+  }
+
+  // Pull a queued turn into its agent's composer to edit; only drop it once the
+  // backend confirms the removal, so a failed call can't lose the text.
+  async function editQueuedTurn(agentId: string, index: number, rawText: string) {
+    if (!(await confirmComposerReplace(agentId))) {
+      return;
+    }
+    if (!(await onRemoveQueuedTurn(agentId, index, rawText))) {
+      return;
+    }
+    setComposerDraft(agentId, rawText);
+    focusComposerAtEnd(agentId);
+  }
+
+  // Up-arrow recall targets the most recent open draft / last queued turn.
+  function editLastDraft() {
+    const open = visibleDrafts.filter((draft) => !draft.consumed);
+    const last = open[open.length - 1];
+    if (last) {
+      void editDraft(last);
+    }
+  }
+
+  function editLastQueuedTurn(workstream: HomeRailWorkstream) {
+    const index = workstream.queuedTurns.length - 1;
+    if (index >= 0) {
+      void editQueuedTurn(workstream.agentId, index, workstream.queuedTurns[index].rawText);
+    }
+  }
+
   // ⌘D jumps to the drafts composer while Home is on screen (the component
   // only mounts there); terminal panes keep their own key handling.
   useEffect(() => {
@@ -870,6 +1105,13 @@ export default function HomeRails({
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
+        actions={
+          <RailCardMenu
+            onEdit={() => void editQueuedTurn(workstream.agentId, index, turn.rawText)}
+            onDelete={() => void onRemoveQueuedTurn(workstream.agentId, index, turn.rawText)}
+            deleteLabel="Remove"
+          />
+        }
       />
     );
   };
@@ -916,15 +1158,11 @@ export default function HomeRails({
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
         actions={
-          <button
-            type="button"
-            className="control-button queued-turn-remove"
-            aria-label="Delete draft"
-            title="Delete"
-            onClick={() => onDeleteDraft(draft.id)}
-          >
-            <X size={13} aria-hidden="true" />
-          </button>
+          <RailCardMenu
+            onEdit={() => void editDraft(draft)}
+            onDelete={() => onDeleteDraft(draft.id)}
+            deleteLabel="Delete"
+          />
         }
       />
     );
@@ -957,6 +1195,7 @@ export default function HomeRails({
                 ariaLabel="New draft"
                 onChange={(text) => setComposerDraft(DRAFTS_RAIL_ID, text)}
                 onSubmit={() => void submitRailComposer(DRAFTS_RAIL_ID)}
+                onEditLast={editLastDraft}
                 registerRef={registerComposerRef}
               />
             </div>
@@ -1009,6 +1248,7 @@ export default function HomeRails({
                   ariaLabel={`Queue a follow-up for ${workstream.title}`}
                   onChange={(text) => setComposerDraft(workstream.agentId, text)}
                   onSubmit={() => void submitRailComposer(workstream.agentId)}
+                  onEditLast={() => editLastQueuedTurn(workstream)}
                   registerRef={registerComposerRef}
                 />
               </div>
@@ -1016,6 +1256,7 @@ export default function HomeRails({
           </div>
         </div>
       </div>
+      {confirmDialog}
     </section>
   );
 }

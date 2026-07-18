@@ -4416,6 +4416,25 @@ function MainApp() {
     }
   }
 
+  // Home-rail … menu: drop a queued turn (Remove, and the edit-recall's removal
+  // step). Returns whether the backend dropped it so an edit only pulls text in
+  // on success.
+  async function removeHomeQueuedTurn(
+    agentId: string,
+    index: number,
+    rawText: string,
+  ): Promise<boolean> {
+    setError(null);
+    try {
+      const result = await removeQueuedAgentTurn(agentId, index, rawText);
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
   async function createHomeDraft(text: string): Promise<boolean> {
     setError(null);
     try {
@@ -12637,6 +12656,7 @@ function MainApp() {
                     void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text)
                   }
                   onQueueTurn={queueHomeTurn}
+                  onRemoveQueuedTurn={removeHomeQueuedTurn}
                   onCreateDraft={createHomeDraft}
                   onDeleteDraft={(draftId) => void deleteHomeDraft(draftId)}
                   onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}

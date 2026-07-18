@@ -2740,6 +2740,41 @@
   border-color: var(--control-border-hover-accent);
 }
 
+/* The "…" menu on draft and queued home cards. The columns are too narrow for
+   inline Edit/× buttons, so those actions live behind this trigger. */
+.home-rail-card-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.home-rail-card-menu-trigger:hover,
+.home-rail-card-menu-trigger.is-open {
+  color: var(--text-heading);
+}
+
+/* Portaled to the body, so it needs its own stacking + padding (the base
+   .popover-surface only positions and frames it). */
+.home-rail-card-menu-popover {
+  z-index: calc(var(--z-popover) + 1);
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.home-rail-card-menu-popover .menu-item {
+  white-space: nowrap;
+}
+
+.home-rail-card-menu-popover .menu-item.is-danger {
+  color: var(--danger-fg-muted);
+}
+
+.home-rail-card-menu-popover .menu-item.is-danger:hover {
+  background: var(--danger-bg-strong);
+}
+
 @media (max-width: 820px) {
   .home-stage {
     padding: 24px 18px 42px;
