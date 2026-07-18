@@ -20,6 +20,19 @@ export interface PublishedTranscriptMessage {
   text: string;
 }
 
+/** The passage of the parent's published answer a targeted follow-up was
+ * asked about. A trimmed copy of the in-app ResearchHighlightAnchor: offsets
+ * plus quote context against the parent's rendered-text projection, included
+ * only when the parent ships in the same publication with a matching response
+ * revision, so the public page can paint the passage and anchor the card. */
+export interface PublishedResearchAnchor {
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
+}
+
 export interface PublishedResearchNode {
   id: string;
   parentId: string | null;
@@ -31,6 +44,7 @@ export interface PublishedResearchNode {
   responseRevision: string | null;
   status: "complete" | "failed" | "cancelled";
   createdAt: number;
+  queryAnchor?: PublishedResearchAnchor | null;
   contribution?: {
     githubLogin: string;
     proposalCommentId: number;
@@ -354,6 +368,10 @@ export function validatePublication(value: unknown): Publication {
             item.contribution,
             `research.nodes[${index}].contribution`,
           );
+    const queryAnchor =
+      item.queryAnchor === null || item.queryAnchor === undefined
+        ? null
+        : publishedAnchor(item.queryAnchor, `research.nodes[${index}].queryAnchor`);
     return {
       id: publicNodeId(item.id, `research.nodes[${index}].id`),
       parentId:
@@ -372,6 +390,7 @@ export function validatePublication(value: unknown): Publication {
       responseRevision,
       status,
       createdAt: finiteNumber(item.createdAt, `research.nodes[${index}].createdAt`),
+      ...(queryAnchor ? { queryAnchor } : {}),
       ...(contribution ? { contribution } : {}),
     };
   });
@@ -398,6 +417,19 @@ export function validatePublication(value: unknown): Publication {
       nodes,
     },
   };
+}
+
+function publishedAnchor(value: unknown, label: string): PublishedResearchAnchor {
+  const item = objectValue(value, label);
+  const start = finiteNumber(item.start, `${label}.start`);
+  const end = finiteNumber(item.end, `${label}.end`);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) {
+    throw new Error(`${label} offsets are invalid`);
+  }
+  const exact = boundedString(item.exact, `${label}.exact`, 10_000);
+  const prefix = boundedStringAllowEmpty(item.prefix, `${label}.prefix`, 500);
+  const suffix = boundedStringAllowEmpty(item.suffix, `${label}.suffix`, 500);
+  return { start, end, exact, prefix, suffix };
 }
 
 function publishedContribution(value: unknown, label: string) {

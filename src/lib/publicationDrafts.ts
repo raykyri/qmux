@@ -183,12 +183,37 @@ export async function createResearchPublicationDraft(
     const contribution = input.contributionsByNodeId?.[node.id] ?? null;
     const fileContent = researchNodeMarkdown(input.detail, node, answer, contribution);
     answerFiles[answerFile] = fileContent;
+    const publishedParentId =
+      input.mode === "tree" && node.parentNodeId
+        ? publicNodeIds[node.parentNodeId] ?? null
+        : null;
+    // A targeted follow-up's anchor only means something on its parent's
+    // published page, and only against the exact response revision the anchor
+    // was captured on — otherwise the public page could paint a stale or
+    // unrelated passage.
+    const parentContent = node.parentNodeId
+      ? contentByNodeId.get(node.parentNodeId)
+      : undefined;
+    const queryAnchor =
+      publishedParentId &&
+      node.queryAnchor &&
+      parentContent?.responseRevision &&
+      node.queryAnchor.responseRevision === parentContent.responseRevision &&
+      node.queryAnchor.exact.length > 0 &&
+      node.queryAnchor.exact.length <= 10_000 &&
+      node.queryAnchor.prefix.length <= 500 &&
+      node.queryAnchor.suffix.length <= 500
+        ? {
+            start: node.queryAnchor.start,
+            end: node.queryAnchor.end,
+            exact: node.queryAnchor.exact,
+            prefix: node.queryAnchor.prefix,
+            suffix: node.queryAnchor.suffix,
+          }
+        : null;
     publicNodes.push({
       id: publicNodeId,
-      parentId:
-        input.mode === "tree" && node.parentNodeId
-          ? publicNodeIds[node.parentNodeId] ?? null
-          : null,
+      parentId: publishedParentId,
       // The guard above refused conversation nodes, so only the published
       // kinds remain.
       kind: node.kind === "document" ? "document" : "run",
@@ -199,6 +224,7 @@ export async function createResearchPublicationDraft(
       responseRevision: content.responseRevision ?? null,
       status: node.status as "complete" | "failed" | "cancelled",
       createdAt: node.createdAt,
+      ...(queryAnchor ? { queryAnchor } : {}),
       ...(contribution ? { contribution } : {}),
     });
   }

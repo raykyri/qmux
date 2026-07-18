@@ -205,7 +205,9 @@ test("the public server renders deep-linked research nodes and verifies their fi
   assert.match(body, /Research render/);
   assert.match(body, /Child result/);
   assert.match(body, /Child answer/);
-  assert.match(body, /Parent/);
+  // The prompt card links back to the parent result, app-style.
+  assert.match(body, /research-parent-link/);
+  assert.match(body, /← Back/);
   assert.equal(body.includes("<script>alert"), false);
 });
 

@@ -556,7 +556,8 @@ test("published research accepts structured follow-up proposals and owner resolu
     page.body.match(/proposal-status is-pending/g)?.length,
     1,
   );
-  assert.match(page.body, /Propose a follow-up as @alice/);
+  assert.match(page.body, /Propose a follow-up…/);
+  assert.match(page.body, /as @alice/);
   const csrfToken = page.body.match(/name="csrfToken" value="([^"]+)"/)?.[1];
   assert.ok(csrfToken);
 
