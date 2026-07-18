@@ -180,12 +180,14 @@ import {
   isLeafPane,
   movePaneAfterSubtree,
   movePanePromotingChildrenAdjacentToPane,
+  movePaneSubtreeAcrossGroups,
   movePaneSubtreeBy,
   moveToGap,
   nestUnder,
   outdentAt,
   type PaneLayoutItem,
   subtreeEnd,
+  subtreeIsShellOnly,
   toLayout,
 } from "./lib/paneTree";
 import {
@@ -320,6 +322,7 @@ import {
   getResearchTree,
   markAppWindowReady,
   moveQueuedAgentTurn,
+  movePaneToGroup,
   openExternalUrl,
   paneActivity,
   pickGroupDirectory,
@@ -7072,49 +7075,64 @@ function MainApp() {
     if (!dragPane) {
       return null;
     }
-    const groupPanes = panes.filter((pane) => pane.groupId === dragPane.groupId);
+    const dragGroupPanes = panes.filter((pane) => pane.groupId === dragPane.groupId);
+    // A shell-only subtree may drop into any other terminal group's rows; a subtree
+    // holding an agent tab stays within its own group (agents are group-bound).
+    const allowCrossGroup = subtreeIsShellOnly(dragGroupPanes, dragId);
     const rows = Array.from(container.querySelectorAll(".pane-tab-row")).filter(
       (child): child is HTMLElement =>
         child instanceof HTMLElement &&
         child.classList.contains("pane-tab-row") &&
-        child.dataset.groupId === dragPane.groupId &&
+        typeof child.dataset.groupId === "string" &&
+        (allowCrossGroup || child.dataset.groupId === dragPane.groupId) &&
         child.dataset.paneDragDisabled !== "true" &&
         // The fixed Home row isn't a reorder/nest target and isn't in `panes`, so
-        // excluding it keeps the row index aligned with the group pane array below.
+        // excluding it keeps row indexes aligned with the group pane arrays below.
         !child.classList.contains("pane-home-row"),
     );
     if (rows.length === 0) {
       return null;
     }
-    const dragIndex = groupPanes.findIndex((pane) => pane.id === dragId);
-    const dragEnd = dragIndex >= 0 ? subtreeEnd(groupPanes, dragIndex) : -1;
-    const inDraggedSubtree = (index: number) =>
-      dragIndex >= 0 && index >= dragIndex && index < dragEnd;
+    const dragIndex = dragGroupPanes.findIndex((pane) => pane.id === dragId);
+    const dragEnd = dragIndex >= 0 ? subtreeEnd(dragGroupPanes, dragIndex) : -1;
+    const inDraggedSubtree = (groupId: string, index: number) =>
+      groupId === dragPane.groupId && dragIndex >= 0 && index >= dragIndex && index < dragEnd;
 
-    const gapTarget = (index: number): PaneDropTarget | null =>
-      dragIndex >= 0 && index >= dragIndex && index <= dragEnd
+    const gapTarget = (groupId: string, index: number): PaneDropTarget | null =>
+      groupId === dragPane.groupId && dragIndex >= 0 && index >= dragIndex && index <= dragEnd
         ? null // dropping into/adjacent to its own block is a no-op
-        : { kind: "gap", groupId: dragPane.groupId, index };
+        : { kind: "gap", groupId, index };
 
-    for (const [index, row] of rows.entries()) {
+    // Rows arrive in DOM order, section by section, so a per-group counter recovers
+    // each row's index within its own group's pane array.
+    const rowCountByGroup = new Map<string, number>();
+    for (const row of rows) {
+      const groupId = row.dataset.groupId as string;
+      const index = rowCountByGroup.get(groupId) ?? 0;
+      rowCountByGroup.set(groupId, index + 1);
       const rect = row.getBoundingClientRect();
       if (clientY >= rect.bottom) {
         continue;
       }
       const fraction = (clientY - rect.top) / rect.height;
       if (fraction < 0.3) {
-        return gapTarget(index);
+        return gapTarget(groupId, index);
       }
       if (fraction > 0.7) {
-        return gapTarget(index + 1);
+        return gapTarget(groupId, index + 1);
       }
+      const groupPanes =
+        groupId === dragPane.groupId
+          ? dragGroupPanes
+          : panes.filter((pane) => pane.groupId === groupId);
       const pane = groupPanes[index];
-      if (!pane || inDraggedSubtree(index)) {
+      if (!pane || inDraggedSubtree(groupId, index)) {
         return null;
       }
-      return { kind: "nest", groupId: dragPane.groupId, paneId: pane.id };
+      return { kind: "nest", groupId, paneId: pane.id };
     }
-    return gapTarget(rows.length);
+    const lastGroupId = rows[rows.length - 1].dataset.groupId as string;
+    return gapTarget(lastGroupId, rowCountByGroup.get(lastGroupId) ?? 0);
   }
 
   function computeTerminalSplitDropTarget(
@@ -7169,12 +7187,62 @@ function MainApp() {
       void splitDraggedPaneIntoTerminal(dragId, target);
       return;
     }
+    const dragPane = panes.find((pane) => pane.id === dragId);
+    if (!dragPane) {
+      return;
+    }
+    if (target.groupId !== dragPane.groupId) {
+      applyCrossGroupDropTarget(dragPane, target);
+      return;
+    }
     const groupPanes = panes.filter((pane) => pane.groupId === target.groupId);
     const next =
       target.kind === "nest"
         ? nestUnder(groupPanes, dragId, target.paneId)
         : moveToGap(groupPanes, dragId, target.index);
     applyPaneLayout(target.groupId, next);
+  }
+
+  // Moves a shell tab (and its subtree) into another terminal group. Optimistically
+  // reorders both groups locally, then persists order, depth, and the group change
+  // as one backend mutation; the backend removes the source group if this emptied it.
+  function applyCrossGroupDropTarget(
+    dragPane: PaneInfo,
+    target: Extract<PaneDropTarget, { kind: "gap" | "nest" }>,
+  ) {
+    const paneSnapshot = panes;
+    const sourceGroupPanes = paneSnapshot.filter((pane) => pane.groupId === dragPane.groupId);
+    const scopeOf = (groupId: string) => groups.find((group) => group.id === groupId)?.scope;
+    if (
+      !subtreeIsShellOnly(sourceGroupPanes, dragPane.id) ||
+      scopeOf(dragPane.groupId) !== "terminal" ||
+      scopeOf(target.groupId) !== "terminal"
+    ) {
+      return;
+    }
+    const targetGroupPanes = paneSnapshot.filter((pane) => pane.groupId === target.groupId);
+    const moved = movePaneSubtreeAcrossGroups(
+      sourceGroupPanes,
+      targetGroupPanes,
+      dragPane.id,
+      target.groupId,
+      target.kind === "nest"
+        ? { kind: "nest", paneId: target.paneId }
+        : { kind: "gap", index: target.index },
+    );
+    if (!moved) {
+      return;
+    }
+    const next = panesWithGroupOrders(
+      new Map([
+        [dragPane.groupId, moved.source],
+        [target.groupId, moved.target],
+      ]),
+      paneSnapshot,
+    );
+    // No sameLayout no-op check here: a cross-group move can keep the flat
+    // order/depth identical while still changing group membership.
+    commitPaneLayout(next, () => movePaneToGroup(dragPane.id, target.groupId, toLayout(next)));
   }
 
   function applyGroupDropTarget(dragGroupId: string, target: GroupDropTarget) {
@@ -7290,10 +7358,17 @@ function MainApp() {
     nextGroupPanes: PaneInfo[],
     paneSnapshot = panes,
   ) {
-    const next = groups.flatMap((group) =>
-      group.id === groupId
-        ? nextGroupPanes
-        : paneSnapshot.filter((pane) => pane.groupId === group.id),
+    return panesWithGroupOrders(new Map([[groupId, nextGroupPanes]]), paneSnapshot);
+  }
+
+  function panesWithGroupOrders(
+    nextByGroupId: Map<string, PaneInfo[]>,
+    paneSnapshot = panes,
+  ) {
+    const next = groups.flatMap(
+      (group) =>
+        nextByGroupId.get(group.id) ??
+        paneSnapshot.filter((pane) => pane.groupId === group.id),
     );
     const groupedIds = new Set(next.map((pane) => pane.id));
     next.push(...paneSnapshot.filter((pane) => !groupedIds.has(pane.id)));
@@ -7313,6 +7388,13 @@ function MainApp() {
     if (sameLayout(nextLayout, toLayout(paneSnapshot))) {
       return; // structural no-op — don't churn a backend round-trip
     }
+    commitPaneLayout(next, () => setPaneLayout(nextLayout));
+  }
+
+  // Shared optimistic-update + persistence chain for tab-layout mutations. The
+  // persist call is chained behind any in-flight layout write, and only the latest
+  // request may apply the backend's response (or resync after a failure).
+  function commitPaneLayout(next: PaneInfo[], persistLayout: () => Promise<PaneInfo[]>) {
     const requestSeq = paneReorderRequestSeqRef.current + 1;
     paneReorderRequestSeqRef.current = requestSeq;
     // Keyboard repeats can arrive before React commits the optimistic state.
@@ -7322,7 +7404,7 @@ function MainApp() {
 
     const persist = paneReorderPersistChainRef.current
       .catch(() => undefined)
-      .then(() => setPaneLayout(nextLayout));
+      .then(persistLayout);
     paneReorderPersistChainRef.current = persist
       .then((orderedPanes) => {
         if (paneReorderRequestSeqRef.current === requestSeq) {

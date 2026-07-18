@@ -139,6 +139,65 @@ export function moveToGap(panes: PaneInfo[], dragId: string, gap: number): PaneI
   return normalizeDepths(placeBlock(rest, block, insertAt, rootDepth));
 }
 
+/** True when the subtree rooted at `paneId` contains only plain shell tabs — the
+ *  precondition for moving it to another group (agent tabs are group-bound). */
+export function subtreeIsShellOnly(panes: PaneInfo[], paneId: string): boolean {
+  const index = panes.findIndex((pane) => pane.id === paneId);
+  if (index < 0) {
+    return false;
+  }
+  return panes
+    .slice(index, subtreeEnd(panes, index))
+    .every((pane) => pane.kind === "shell" && !pane.agentId);
+}
+
+/** Moves the subtree rooted at `dragId` out of `source` and into `target` — at the
+ *  insert-before `gap` index, or nested as `nest` pane's first child — restamping the
+ *  block's groupId to `targetGroupId`. Both arrays are re-leveled to valid trees.
+ *  Returns null when the drag pane or nest target is missing, or nesting would
+ *  exceed the depth cap. */
+export function movePaneSubtreeAcrossGroups(
+  source: PaneInfo[],
+  target: PaneInfo[],
+  dragId: string,
+  targetGroupId: string,
+  drop: { kind: "gap"; index: number } | { kind: "nest"; paneId: string },
+): { source: PaneInfo[]; target: PaneInfo[] } | null {
+  const from = source.findIndex((pane) => pane.id === dragId);
+  if (from < 0) {
+    return null;
+  }
+  const end = subtreeEnd(source, from);
+  const block = source
+    .slice(from, end)
+    .map((pane) => ({ ...pane, groupId: targetGroupId }));
+  const nextSource = normalizeDepths([...source.slice(0, from), ...source.slice(end)]);
+
+  if (drop.kind === "nest") {
+    const targetIndex = target.findIndex((pane) => pane.id === drop.paneId);
+    if (targetIndex < 0) {
+      return null;
+    }
+    const rootDepth = depthOf(target[targetIndex]) + 1;
+    if (rootDepth > MAX_PANE_DEPTH) {
+      return null;
+    }
+    return {
+      source: nextSource,
+      target: normalizeDepths(placeBlock(target, block, targetIndex + 1, rootDepth)),
+    };
+  }
+
+  const insertAt = Math.max(0, Math.min(drop.index, target.length));
+  const below = target[insertAt];
+  const above = target[insertAt - 1];
+  const rootDepth = below ? depthOf(below) : above ? depthOf(above) : 0;
+  return {
+    source: nextSource,
+    target: normalizeDepths(placeBlock(target, block, insertAt, rootDepth)),
+  };
+}
+
 /** Moves a pane and its descendants by one sibling position without changing
  * nesting. At a nesting boundary this is a no-op, so keyboard reordering never
  * reparents a pane or crosses out of its group. */

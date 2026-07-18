@@ -1603,6 +1603,16 @@ fn pane_set_layout(
 }
 
 #[tauri::command]
+fn pane_move_to_group(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    target_group_id: String,
+    items: Vec<PaneLayoutEntry>,
+) -> Result<Vec<PaneInfo>, String> {
+    state.move_pane_to_group(&pane_id, &target_group_id, items)
+}
+
+#[tauri::command]
 fn pane_place_after(
     state: tauri::State<'_, AppState>,
     pane_id: String,
@@ -2146,6 +2156,7 @@ fn main() {
             pane_rename,
             pane_reorder,
             pane_set_layout,
+            pane_move_to_group,
             pane_place_after,
             pane_splits_get,
             pane_splits_set,

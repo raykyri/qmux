@@ -5130,6 +5130,142 @@ impl AppState {
         Ok(panes)
     }
 
+    /// Moves a plain shell tab (and its nested subtree) into another terminal group,
+    /// applying `layout` as the resulting full tab tree (order + depth) in the same
+    /// locked mutation. Agent tabs — or subtrees containing one — are rejected: an
+    /// agent's worktree, branch, and queue bookkeeping are bound to its group, and
+    /// this move deliberately doesn't touch them. When the move empties the source
+    /// group it is removed, mirroring the close-last-pane path.
+    pub fn move_pane_to_group(
+        &self,
+        pane_id: &str,
+        target_group_id: &str,
+        layout: Vec<PaneLayoutEntry>,
+    ) -> Result<Vec<PaneInfo>, String> {
+        let (panes, removed_source_group_id) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let source_group_id = model
+                .panes
+                .get(pane_id)
+                .map(|pane| pane.info.group_id.clone())
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            if source_group_id == target_group_id {
+                return Err(format!(
+                    "pane {pane_id} is already in group {target_group_id}"
+                ));
+            }
+            let source_scope = model.groups.get(&source_group_id).map(|group| group.scope);
+            let target_scope = model
+                .groups
+                .get(target_group_id)
+                .map(|group| group.scope)
+                .ok_or_else(|| format!("group {target_group_id} was not found"))?;
+            if source_scope != Some(WorkspaceScope::Terminal)
+                || target_scope != WorkspaceScope::Terminal
+            {
+                return Err("tabs can only move between terminal groups".to_string());
+            }
+
+            // The moved unit is the pane's whole sidebar subtree: the contiguous run
+            // of following same-group panes nested deeper than it.
+            let group_panes = ordered_panes(&model)
+                .into_iter()
+                .filter(|candidate| candidate.group_id == source_group_id)
+                .collect::<Vec<_>>();
+            let start = group_panes
+                .iter()
+                .position(|candidate| candidate.id == pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            let root_depth = group_panes[start].depth;
+            let moved_ids = std::iter::once(&group_panes[start])
+                .chain(
+                    group_panes[start + 1..]
+                        .iter()
+                        .take_while(|candidate| candidate.depth > root_depth),
+                )
+                .map(|candidate| candidate.id.clone())
+                .collect::<HashSet<_>>();
+            for moved_id in &moved_ids {
+                let moved = model
+                    .panes
+                    .get(moved_id)
+                    .ok_or_else(|| format!("pane {moved_id} was not found"))?;
+                if !matches!(moved.info.kind, PaneKind::Shell) || moved.info.agent_id.is_some() {
+                    return Err("agent tabs can't move to another group".to_string());
+                }
+            }
+
+            // Same validation as `set_pane_layout`, with the moved subtree counted
+            // against its prospective group.
+            if layout.len() != model.panes.len() {
+                return Err("pane layout is stale; refresh before updating".to_string());
+            }
+            let mut seen = HashSet::with_capacity(layout.len());
+            let mut prev_depth_by_group: HashMap<String, u16> = HashMap::new();
+            for entry in &layout {
+                if !seen.insert(entry.pane_id.clone()) {
+                    return Err("pane layout contains a duplicate pane".to_string());
+                }
+                let Some(pane) = model.panes.get(&entry.pane_id) else {
+                    return Err(format!("pane {} was not found", entry.pane_id));
+                };
+                if entry.depth > MAX_PANE_DEPTH {
+                    return Err(format!(
+                        "pane depth {} exceeds the maximum of {MAX_PANE_DEPTH}",
+                        entry.depth
+                    ));
+                }
+                let group_id = if moved_ids.contains(&entry.pane_id) {
+                    target_group_id.to_string()
+                } else {
+                    pane.info.group_id.clone()
+                };
+                let ceiling = prev_depth_by_group
+                    .get(&group_id)
+                    .map_or(0, |prev| prev + 1);
+                if entry.depth > ceiling {
+                    return Err(
+                        "pane layout is not a valid tree (a depth skips a level)".to_string()
+                    );
+                }
+                prev_depth_by_group.insert(group_id, entry.depth);
+            }
+
+            for moved_id in &moved_ids {
+                if let Some(moved) = model.panes.get_mut(moved_id) {
+                    moved.info.group_id = target_group_id.to_string();
+                }
+            }
+            model.pane_order = layout.iter().map(|entry| entry.pane_id.clone()).collect();
+            model.pane_depth = layout
+                .iter()
+                .filter(|entry| entry.depth != 0)
+                .map(|entry| (entry.pane_id.clone(), entry.depth))
+                .collect();
+            // A moved pane's split memberships can't survive the group change; the
+            // normalizer drops it from any split it belonged to.
+            normalize_pane_splits_locked(&mut model);
+            let removed_source_group_id =
+                remove_group_without_open_panes_locked(&mut model, &source_group_id, true)
+                    .then_some(source_group_id);
+            (ordered_panes(&model), removed_source_group_id)
+        };
+        self.persist();
+        if let Some(group_id) = removed_source_group_id {
+            self.emit(QmuxEvent::new(
+                "group.removed",
+                None,
+                None,
+                json!({ "groupId": group_id }),
+            ));
+        }
+        Ok(panes)
+    }
+
     /// Moves `pane_id` to sit immediately after `parent_pane_id` at one level deeper
     /// (its first child), then re-levels the tree. Used when a fork should appear
     /// nested under the session it forked from.
@@ -12659,6 +12795,142 @@ mod tests {
                 .unwrap_err()
                 .contains("stale")
         );
+    }
+
+    #[test]
+    fn move_pane_to_group_moves_shell_subtree_and_removes_emptied_group() {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+
+        {
+            let state = AppState::new(config.clone());
+            assert!(state.restore_session().is_empty());
+            state
+                .insert_group_after(sample_group_with_id("group-1"), None)
+                .unwrap();
+            state
+                .insert_group_after(sample_group_with_id("group-2"), Some("group-1"))
+                .unwrap();
+            state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+            state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+            let mut other = sample_pane_runtime("pane-3");
+            other.info.group_id = "group-2".to_string();
+            state.insert_pane(other).unwrap();
+            state
+                .set_pane_layout(layout(&[("pane-1", 0), ("pane-2", 1), ("pane-3", 0)]))
+                .unwrap();
+
+            // The whole subtree re-homes to the target group with the given layout.
+            let panes = state
+                .move_pane_to_group(
+                    "pane-1",
+                    "group-2",
+                    layout(&[("pane-3", 0), ("pane-1", 0), ("pane-2", 1)]),
+                )
+                .unwrap();
+            assert_eq!(
+                id_depths(&panes),
+                vec![
+                    ("pane-3".to_string(), 0),
+                    ("pane-1".to_string(), 0),
+                    ("pane-2".to_string(), 1),
+                ]
+            );
+            assert!(panes.iter().all(|pane| pane.group_id == "group-2"));
+
+            // The move emptied group-1, so it's removed like closing its last pane.
+            let groups = state.list_groups().unwrap();
+            assert_eq!(
+                groups
+                    .iter()
+                    .map(|group| group.id.clone())
+                    .collect::<Vec<_>>(),
+                vec!["group-2".to_string()]
+            );
+        }
+
+        // The new group membership, order, and group removal all survive a restart.
+        let state = AppState::new(config);
+        let recovered = state.restore_session();
+        assert_eq!(
+            id_depths(&recovered),
+            vec![
+                ("pane-3".to_string(), 0),
+                ("pane-1".to_string(), 0),
+                ("pane-2".to_string(), 1),
+            ]
+        );
+        assert!(recovered.iter().all(|pane| pane.group_id == "group-2"));
+        assert_eq!(state.list_groups().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn move_pane_to_group_rejects_agent_tabs_and_non_terminal_targets() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        state
+            .insert_group_after(sample_group_with_id("group-1"), None)
+            .unwrap();
+        state
+            .insert_group_after(sample_group_with_id("group-2"), Some("group-1"))
+            .unwrap();
+        let mut research = sample_group_with_id("group-research");
+        research.scope = WorkspaceScope::Research;
+        state.insert_group_after(research, Some("group-2")).unwrap();
+
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        let mut agent = sample_pane_runtime("pane-agent");
+        agent.info.kind = PaneKind::Agent;
+        agent.info.agent_id = Some("agent-1".to_string());
+        state.insert_pane(agent).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state
+            .set_pane_layout(layout(&[("pane-1", 0), ("pane-agent", 1), ("pane-2", 0)]))
+            .unwrap();
+        let full = || layout(&[("pane-1", 0), ("pane-agent", 1), ("pane-2", 0)]);
+
+        // An agent tab can't move, and neither can a shell tab whose subtree holds one.
+        assert!(
+            state
+                .move_pane_to_group("pane-agent", "group-2", full())
+                .unwrap_err()
+                .contains("agent tabs")
+        );
+        assert!(
+            state
+                .move_pane_to_group("pane-1", "group-2", full())
+                .unwrap_err()
+                .contains("agent tabs")
+        );
+
+        // Only terminal-to-terminal moves are valid, and both groups must exist.
+        assert!(
+            state
+                .move_pane_to_group("pane-2", "group-research", full())
+                .unwrap_err()
+                .contains("terminal groups")
+        );
+        assert!(
+            state
+                .move_pane_to_group("pane-2", "group-1", full())
+                .unwrap_err()
+                .contains("already in")
+        );
+        assert!(
+            state
+                .move_pane_to_group("pane-2", "group-missing", full())
+                .unwrap_err()
+                .contains("not found")
+        );
+
+        // A plain shell tab does move, and the source group survives while its
+        // other panes remain.
+        let panes = state
+            .move_pane_to_group("pane-2", "group-2", full())
+            .unwrap();
+        let moved = panes.iter().find(|pane| pane.id == "pane-2").unwrap();
+        assert_eq!(moved.group_id, "group-2");
+        assert_eq!(state.list_groups().unwrap().len(), 3);
     }
 
     #[test]

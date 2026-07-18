@@ -4,7 +4,9 @@ import { cycleTabId, selectPaneAfterClose } from "../src/lib/appHelpers";
 import {
   movePaneAfterSubtree,
   movePanePromotingChildrenAdjacentToPane,
+  movePaneSubtreeAcrossGroups,
   movePaneSubtreeBy,
+  subtreeIsShellOnly,
 } from "../src/lib/paneTree";
 import {
   detachPaneFromSplitMemberships,
@@ -587,5 +589,96 @@ test("detaching an edge member leaves the remaining split contiguous without reo
   assert.deepEqual(
     normalized.map((candidate) => candidate.paneIds),
     [["pane-2", "pane-3"]],
+  );
+});
+
+function agentPane(id: string, depth = 0, groupId = "group-1"): PaneInfo {
+  return { ...pane(id, depth, groupId), kind: "agent", agentId: `agent-${id}` };
+}
+
+test("subtreeIsShellOnly accepts shell subtrees and rejects any agent member", () => {
+  const tree = [pane("a"), pane("a-child", 1), pane("b"), agentPane("b-child", 1)];
+
+  assert.equal(subtreeIsShellOnly(tree, "a"), true);
+  // The subtree root is fine, but its nested child is an agent tab.
+  assert.equal(subtreeIsShellOnly(tree, "b"), false);
+  assert.equal(subtreeIsShellOnly(tree, "b-child"), false);
+  assert.equal(subtreeIsShellOnly(tree, "missing"), false);
+});
+
+test("movePaneSubtreeAcrossGroups drops a subtree at a gap in another group", () => {
+  const source = [pane("a"), pane("a-child", 1), pane("b")];
+  const target = [pane("x", 0, "group-2"), pane("y", 0, "group-2")];
+
+  const moved = movePaneSubtreeAcrossGroups(source, target, "a", "group-2", {
+    kind: "gap",
+    index: 1,
+  });
+
+  assert.ok(moved);
+  assert.deepEqual(
+    moved.source.map((candidate) => [candidate.id, candidate.depth]),
+    [["b", 0]],
+  );
+  assert.deepEqual(
+    moved.target.map((candidate) => [candidate.id, candidate.groupId, candidate.depth]),
+    [
+      ["x", "group-2", 0],
+      ["a", "group-2", 0],
+      ["a-child", "group-2", 1],
+      ["y", "group-2", 0],
+    ],
+  );
+});
+
+test("movePaneSubtreeAcrossGroups nests a subtree under another group's tab", () => {
+  const source = [pane("a"), pane("a-child", 1)];
+  const target = [pane("x", 0, "group-2"), pane("x-child", 1, "group-2")];
+
+  const moved = movePaneSubtreeAcrossGroups(source, target, "a", "group-2", {
+    kind: "nest",
+    paneId: "x-child",
+  });
+
+  assert.ok(moved);
+  assert.deepEqual(moved.source, []);
+  assert.deepEqual(
+    moved.target.map((candidate) => [candidate.id, candidate.groupId, candidate.depth]),
+    [
+      ["x", "group-2", 0],
+      ["x-child", "group-2", 1],
+      ["a", "group-2", 2],
+      ["a-child", "group-2", 3],
+    ],
+  );
+});
+
+test("movePaneSubtreeAcrossGroups re-roots into an empty target and refuses over-deep nests", () => {
+  const intoEmpty = movePaneSubtreeAcrossGroups(
+    [pane("a", 0), pane("a-child", 1)],
+    [],
+    "a",
+    "group-2",
+    { kind: "gap", index: 5 },
+  );
+  assert.ok(intoEmpty);
+  assert.deepEqual(
+    intoEmpty.target.map((candidate) => [candidate.id, candidate.groupId, candidate.depth]),
+    [
+      ["a", "group-2", 0],
+      ["a-child", "group-2", 1],
+    ],
+  );
+
+  // Nesting under a tab already at the depth cap is refused outright.
+  const deepTarget = Array.from({ length: 9 }, (_, depth) =>
+    pane(`deep-${depth}`, depth, "group-2"),
+  );
+  assert.equal(
+    movePaneSubtreeAcrossGroups([pane("a")], deepTarget, "a", "group-2", {
+      kind: "nest",
+      paneId: "deep-8",
+    }),
+    null,
   );
 });

@@ -903,6 +903,17 @@ export function setPaneLayout(items: PaneLayoutItem[]) {
   return invoke<PaneInfo[]>("pane_set_layout", { items });
 }
 
+/** Moves `paneId` (with its nested subtree) into `targetGroupId`, applying `items`
+ * as the resulting full tab tree in the same backend mutation. Shell tabs only —
+ * the backend rejects agent tabs, whose worktrees are bound to their group. */
+export function movePaneToGroup(
+  paneId: string,
+  targetGroupId: string,
+  items: PaneLayoutItem[],
+) {
+  return invoke<PaneInfo[]>("pane_move_to_group", { paneId, targetGroupId, items });
+}
+
 /** Moves `paneId` immediately after `siblingPaneId` at the same sidebar depth. */
 export function placePaneAfter(paneId: string, siblingPaneId: string) {
   return invoke<PaneInfo[]>("pane_place_after", { paneId, siblingPaneId });
