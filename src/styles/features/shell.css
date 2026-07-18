@@ -2673,6 +2673,21 @@
   white-space: nowrap;
 }
 
+/* Paused-queue badge — the rail-level twin of the composer's "Queue Paused"
+   label, so a stopped queue never reads as merely stuck. */
+.home-rail-paused {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  color: var(--status-warning-fg);
+  white-space: nowrap;
+}
+
+/* The queued count already pushed right; sit beside it on the flex gap. */
+.home-rail-count + .home-rail-paused {
+  margin-left: 0;
+}
+
 .home-rail-scroll {
   flex: 1 1 auto;
   min-height: 0;

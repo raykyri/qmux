@@ -375,6 +375,7 @@ import {
   spawnAgent,
   spawnShell,
   submitAgentTurn,
+  unpauseAgent,
   updateMenuBar,
   worktreeStatus,
 } from "./lib/api";
@@ -3699,6 +3700,7 @@ function MainApp() {
           statusTone: paneTabStatusTone(agent),
           statusClass,
           waitingOnPane: paneWaitsOnOtherPane(agent),
+          paused: agent.paused ?? false,
           latestUserTurn: railLatestUserTurn(turnInfo.turns),
           currentStartedAt: latestUserTurnTimestamp(turnInfo.turns),
           currentSettledAt: latestTurnTimestamp(turnInfo.turns),
@@ -4432,6 +4434,18 @@ function MainApp() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return false;
+    }
+  }
+
+  // Home-rail card menu: clear a paused queue, mirroring the composer's Unpause
+  // button (the backend drains the next turn if the agent is idle).
+  async function unpauseHomeAgent(agentId: string) {
+    setError(null);
+    try {
+      const result = await unpauseAgent(agentId);
+      setAgentQueuedTurns(agentId, result.queuedTurns);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -12657,6 +12671,7 @@ function MainApp() {
                   }
                   onQueueTurn={queueHomeTurn}
                   onRemoveQueuedTurn={removeHomeQueuedTurn}
+                  onUnpauseAgent={(agentId) => void unpauseHomeAgent(agentId)}
                   onCreateDraft={createHomeDraft}
                   onDeleteDraft={(draftId) => void deleteHomeDraft(draftId)}
                   onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}

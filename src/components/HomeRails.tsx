@@ -49,6 +49,9 @@ export interface HomeRailWorkstream {
   statusTone: AgentStatusTone;
   statusClass: string;
   waitingOnPane: boolean;
+  /** The queue stopped after a pause-after turn; mirrors the composer's
+   * "Queue Paused" state so Home doesn't show a silently stuck queue. */
+  paused: boolean;
   latestUserTurn: string | null;
   /** When the latest prompt was sent — feeds the current card's elapsed time. */
   currentStartedAt: number | null;
@@ -77,6 +80,8 @@ interface HomeRailsProps {
   /** Remove a queued turn (the … menu's Remove and edit-recall). Resolves true
    * when the backend dropped it, so an edit only pulls text in on success. */
   onRemoveQueuedTurn: (agentId: string, index: number, rawText: string) => Promise<boolean>;
+  /** Clear a paused queue (the right pane's Unpause button, as a card menu item). */
+  onUnpauseAgent: (agentId: string) => void;
   onCreateDraft: (text: string) => Promise<boolean>;
   onDeleteDraft: (draftId: string) => void;
   /** Drop a draft on an agent's rail: atomic claim + send-or-queue. */
@@ -238,18 +243,16 @@ export function railLinkPath(
 
 const RAIL_CARD_MENU_WIDTH = 132;
 
+interface RailCardMenuItem {
+  label: string;
+  action: () => void;
+  danger?: boolean;
+}
+
 /** The "…" menu on a draft or queued card — the home columns are too narrow for
  *  inline Edit/× buttons, so those actions live in a small portaled menu (the
  *  same shape as the prompt-library row menu). */
-function RailCardMenu({
-  onEdit,
-  onDelete,
-  deleteLabel,
-}: {
-  onEdit: () => void;
-  onDelete: () => void;
-  deleteLabel: string;
-}) {
+function RailCardMenu({ items }: { items: RailCardMenuItem[] }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -318,21 +321,6 @@ function RailCardMenu({
     };
   }, [open, position]);
 
-  const item = (label: string, action: () => void, danger = false) => (
-    <button
-      type="button"
-      role="menuitem"
-      className={`menu-item${danger ? " is-danger" : ""}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        setOpen(false);
-        action();
-      }}
-    >
-      {label}
-    </button>
-  );
-
   return (
     <>
       <button
@@ -369,8 +357,21 @@ function RailCardMenu({
                   : { left: -9999, top: -9999 }
               }
             >
-              {item("Edit", onEdit)}
-              {item(deleteLabel, onDelete, true)}
+              {items.map((entry) => (
+                <button
+                  key={entry.label}
+                  type="button"
+                  role="menuitem"
+                  className={`menu-item${entry.danger ? " is-danger" : ""}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(false);
+                    entry.action();
+                  }}
+                >
+                  {entry.label}
+                </button>
+              ))}
             </div>,
             document.body,
           )
@@ -471,6 +472,7 @@ export default function HomeRails({
   onMoveQueuedTurn,
   onQueueTurn,
   onRemoveQueuedTurn,
+  onUnpauseAgent,
   onCreateDraft,
   onDeleteDraft,
   onAssignDraft,
@@ -1107,9 +1109,21 @@ export default function HomeRails({
         onPointerCancel={handleCardPointerCancel}
         actions={
           <RailCardMenu
-            onEdit={() => void editQueuedTurn(workstream.agentId, index, turn.rawText)}
-            onDelete={() => void onRemoveQueuedTurn(workstream.agentId, index, turn.rawText)}
-            deleteLabel="Remove"
+            items={[
+              ...(workstream.paused
+                ? [{ label: "Unpause queue", action: () => onUnpauseAgent(workstream.agentId) }]
+                : []),
+              {
+                label: "Edit",
+                action: () => void editQueuedTurn(workstream.agentId, index, turn.rawText),
+              },
+              {
+                label: "Remove",
+                action: () =>
+                  void onRemoveQueuedTurn(workstream.agentId, index, turn.rawText),
+                danger: true,
+              },
+            ]}
           />
         }
       />
@@ -1159,9 +1173,10 @@ export default function HomeRails({
         onPointerCancel={handleCardPointerCancel}
         actions={
           <RailCardMenu
-            onEdit={() => void editDraft(draft)}
-            onDelete={() => onDeleteDraft(draft.id)}
-            deleteLabel="Delete"
+            items={[
+              { label: "Edit", action: () => void editDraft(draft) },
+              { label: "Delete", action: () => onDeleteDraft(draft.id), danger: true },
+            ]}
           />
         }
       />
@@ -1210,7 +1225,9 @@ export default function HomeRails({
                 <button
                   type="button"
                   className="home-rail-head"
-                  aria-label={`Open ${workstream.title} — ${statusLabel(workstream)}`}
+                  aria-label={`Open ${workstream.title} — ${statusLabel(workstream)}${
+                    workstream.paused ? ", queue paused" : ""
+                  }`}
                   onClick={() => onActivatePane(workstream.paneId)}
                 >
                   <span className={statusDotClass(workstream)} aria-hidden="true" />
@@ -1219,6 +1236,9 @@ export default function HomeRails({
                     <span className="home-rail-count">
                       {workstream.queuedTurns.length} queued
                     </span>
+                  ) : null}
+                  {workstream.paused ? (
+                    <span className="home-rail-paused">paused</span>
                   ) : null}
                 </button>
                 <div
