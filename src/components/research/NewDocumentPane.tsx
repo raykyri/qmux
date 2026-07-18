@@ -67,6 +67,7 @@ export default function NewDocumentPane({
                   open
                   mode="create"
                   variant="page"
+                  visible={!hidden}
                   initialMarkdown={initialMarkdown}
                   resetKey={initialMarkdown}
                   onClose={onClose}

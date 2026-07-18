@@ -1568,8 +1568,13 @@ function MainApp() {
   // imported or half-written document can't be lost to a stray click.
   const newDocumentDirtyRef = useRef(false);
   const [newDocumentInitialMarkdown, setNewDocumentInitialMarkdown] = useState("");
+  // The draft's destination folder, captured when the composer opens. Binding
+  // the live sidebar scope instead would silently retarget an open draft when
+  // the user peeks at another folder mid-composition.
+  const [newDocumentWorkspaceId, setNewDocumentWorkspaceId] = useState<string | null>(null);
   const closeNewDocumentComposer = useCallback(() => {
     newDocumentDirtyRef.current = false;
+    newDocumentOpenRef.current = false;
     setNewDocumentOpen(false);
     setNewDocumentInitialMarkdown("");
   }, []);
@@ -1581,6 +1586,18 @@ function MainApp() {
   const handleNewDocumentDirtyChange = useCallback((dirty: boolean) => {
     newDocumentDirtyRef.current = dirty;
   }, []);
+  // Multi-selecting in the sidebar is navigation like a single click: it must
+  // dismiss a pristine composer, or its placeholder stays hidden behind the
+  // composer page and the selection appears to do nothing.
+  const changeResearchMultiSelection = useCallback(
+    (ids: string[]) => {
+      if (ids.length > 0) {
+        dismissPristineNewDocumentComposer();
+      }
+      setResearchMultiSelectIds(ids);
+    },
+    [dismissPristineNewDocumentComposer],
+  );
   const [publicationTarget, setPublicationTarget] = useState<PublishDialogTarget | null>(null);
   const [publicationBindings, setPublicationBindings] = useState<PublicationBinding[]>([]);
   const [markdownDropTargetActive, setMarkdownDropTargetActive] = useState(false);
@@ -5336,12 +5353,17 @@ function MainApp() {
   );
   const markVisibleResearchTreeViewed = useCallback(
     async (treeId: string) => {
-      const documentVisible = researchDocumentIsVisible(
-        treeId,
-        sidebarModeRef.current,
-        activeSurfaceRef.current,
-        activeResearchTreeIdRef.current,
-      );
+      // An open composer page covers the document view, so an unread tree
+      // selected behind a draft-holding composer is not actually seen. The
+      // composer's close path re-marks the active tree.
+      const documentVisible =
+        !newDocumentOpenRef.current &&
+        researchDocumentIsVisible(
+          treeId,
+          sidebarModeRef.current,
+          activeSurfaceRef.current,
+          activeResearchTreeIdRef.current,
+        );
       // Watching the run's own terminal counts as viewing the tree: the user
       // reached that pane from this document and is looking at the same run,
       // so the unseen badge must not survive it.
@@ -5398,6 +5420,17 @@ function MainApp() {
       document.removeEventListener("visibilitychange", markCurrent);
     };
   }, [markVisibleResearchTreeViewed]);
+  // Closing the composer uncovers the document selected behind it, so the
+  // view that was suppressed while the page was up gets recorded now.
+  useEffect(() => {
+    if (newDocumentOpen) {
+      return;
+    }
+    const treeId = activeResearchTreeIdRef.current;
+    if (treeId) {
+      void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
+    }
+  }, [markVisibleResearchTreeViewed, newDocumentOpen]);
   const selectResearchTree = useCallback(async (treeId: string) => {
     const requestSeq = researchDetailRequestSeqRef.current + 1;
     researchDetailRequestSeqRef.current = requestSeq;
@@ -5541,17 +5574,24 @@ function MainApp() {
     // brings the research surface forward so it is actually visible.
     setSidebarMode("research");
     setActiveSurface("research");
+    if (newDocumentOpenRef.current && newDocumentDirtyRef.current) {
+      // Re-invoking "new document" surfaces the existing draft. Resetting
+      // here would change the composer's resetKey and silently erase it.
+      return;
+    }
+    setNewDocumentWorkspaceId(researchScopeRef.current);
     setNewDocumentInitialMarkdown("");
     setNewDocumentOpen(true);
   }, [setActiveSurface, setSidebarMode]);
 
   // Native drag events bypass DOM modal backdrops. Keep the always-on listener
-  // from stacking a document composer over another modal or replacing a draft
-  // that is already being edited.
+  // from stacking a document composer over an open modal. An open composer
+  // page is deliberately absent: a pristine one simply receives the import,
+  // and a draft-holding one is guarded at drop time via newDocumentDirtyRef —
+  // this render-time flag could not track keystrokes in the composer anyway.
   const markdownDropBlocked =
     settingsOpen ||
     newResearchOpen ||
-    newDocumentOpen ||
     Boolean(publicationTarget) ||
     commandPaletteOpen ||
     Boolean(
@@ -5596,10 +5636,15 @@ function MainApp() {
       const y = position.y / scaleFactor;
       return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
     };
+    // A pristine composer page accepts an import (the drop simply prefills
+    // it); one holding a draft refuses, so the drop cannot erase edits.
+    const composerRefusesImport = () =>
+      newDocumentOpenRef.current && newDocumentDirtyRef.current;
     const showDropTarget = (position: { x: number; y: number }) => {
       const active =
         markdownDragEligible &&
         !markdownDropBlockedRef.current &&
+        !composerRefusesImport() &&
         sidebarModeRef.current === "research" &&
         isOverSidebar(position);
       setMarkdownDropTargetActive(active);
@@ -5659,6 +5704,7 @@ function MainApp() {
         const shouldImport =
           Boolean(droppedPath && isMarkdownDocumentPath(droppedPath)) &&
           !markdownDropBlockedRef.current &&
+          !composerRefusesImport() &&
           sidebarModeRef.current === "research" &&
           isOverSidebar(payload.position);
         markdownDragEligible = false;
@@ -5674,10 +5720,14 @@ function MainApp() {
               disposed ||
               requestSeq !== markdownImportRequestSeqRef.current ||
               markdownDropBlockedRef.current ||
+              // The draft check repeats here because typing can begin between
+              // the drop and this read completing.
+              composerRefusesImport() ||
               sidebarModeRef.current !== "research"
             ) {
               return;
             }
+            setNewDocumentWorkspaceId(researchScopeRef.current);
             setNewDocumentInitialMarkdown(markdown);
             setNewDocumentOpen(true);
             setActiveSurface("research");
@@ -5872,6 +5922,11 @@ function MainApp() {
   const adoptCreatedResearchTree = useCallback(
     (detail: ResearchTreeDetail) => {
       researchDetailRequestSeqRef.current += 1;
+      // A new-research submit landing while a pristine composer page is open
+      // must not leave the composer covering the tree it just created. A
+      // document submit's own composer is dirty here, so it is unaffected and
+      // closes itself right after this adopt.
+      dismissPristineNewDocumentComposer();
       setSidebarMode("research");
       setActiveSurface("research");
       activeResearchPaneIdRef.current = null;
@@ -5887,7 +5942,12 @@ function MainApp() {
       }
       void refreshResearchNavigation().catch(() => undefined);
     },
-    [changeResearchFolderScope, refreshResearchNavigation, setSidebarMode],
+    [
+      changeResearchFolderScope,
+      dismissPristineNewDocumentComposer,
+      refreshResearchNavigation,
+      setSidebarMode,
+    ],
   );
   const submitNewResearch = useCallback(
     async (input: {
@@ -8330,7 +8390,6 @@ function MainApp() {
     commandPaletteOpen ||
     settingsOpen ||
     newResearchOpen ||
-    newDocumentOpen ||
     Boolean(publicationTarget) ||
     Boolean(renamePaneId || renameGroupId);
   useEffect(() => {
@@ -8344,6 +8403,22 @@ function MainApp() {
     });
     return () => cancelAnimationFrame(frame);
   }, [modalEditorOpen]);
+  // The document composer gets its own re-sample rather than a slot in
+  // modalEditorOpen: it is a page whose draft can stay open (hidden)
+  // indefinitely, and folding it into the shared flag would hold that flag
+  // true for the life of a parked draft — suppressing the backstop above for
+  // every genuinely transient modal closed in the meantime.
+  useEffect(() => {
+    if (newDocumentOpen) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      setWebEditableFocused(
+        document.hasFocus() && isEditableTarget(document.activeElement),
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [newDocumentOpen]);
 
   // Backstop for the right-pane mount/unmount layout transition: an agent
   // quitting unmounts its turn-pane cell, and starting a terminal over a split
@@ -10199,7 +10274,7 @@ function MainApp() {
               folderState={researchFolderState}
               shortcutHintsShown={shortcutHintsShown}
               shortcutIndexByTreeId={researchShortcutIndexByTreeId}
-              onMultiSelectChange={setResearchMultiSelectIds}
+              onMultiSelectChange={changeResearchMultiSelection}
               onCreateFolder={createResearchFolderFromSelection}
               onAddToFolder={addResearchTreesToFolder}
               onRemoveFromFolder={removeResearchTreesFromFolder}
@@ -10213,7 +10288,11 @@ function MainApp() {
                 if (
                   isResearchTreeSelectionChange(
                     activeResearchTreeId,
-                    researchSurfaceActive,
+                    // An open composer page covers the document, so re-clicking
+                    // the active tree is a real navigation: it must run the
+                    // selection (dismissing a pristine composer) rather than
+                    // being skipped as a redundant re-select.
+                    researchSurfaceActive && !newDocumentOpen,
                     treeId,
                   )
                 ) {
@@ -11978,7 +12057,7 @@ function MainApp() {
             <NewDocumentPane
               hidden={!researchSurfaceActive}
               initialMarkdown={newDocumentInitialMarkdown}
-              workspaceId={researchScope}
+              workspaceId={newDocumentWorkspaceId}
               onClose={closeNewDocumentComposer}
               onCreate={submitNewDocument}
               onDirtyChange={handleNewDocumentDirtyChange}

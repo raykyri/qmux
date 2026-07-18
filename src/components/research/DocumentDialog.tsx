@@ -17,6 +17,9 @@ interface DocumentDialogProps {
   /** "dialog" renders the modal card over a backdrop; "page" renders just the
    * composer form, for embedding in the main research pane. */
   variant?: "dialog" | "page";
+  /** False while the composer is mounted but display:none (a parked page
+   * draft behind another surface); measurement effects wait for it. */
+  visible?: boolean;
   initialMarkdown?: string;
   initialTitle?: string;
   highlightCount?: number;
@@ -35,6 +38,7 @@ export default function DocumentDialog({
   open,
   mode,
   variant = "dialog",
+  visible = true,
   initialMarkdown = "",
   initialTitle = "",
   highlightCount = 0,
@@ -48,6 +52,11 @@ export default function DocumentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const markdownRef = useRef<HTMLTextAreaElement | null>(null);
+  // Dirty reports go through a ref so the effects below (including the
+  // unmount cleanup, which captures its closure once) always reach the
+  // caller's current handler, not the first render's.
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
 
   useEffect(() => {
     if (!open) {
@@ -59,17 +68,27 @@ export default function DocumentDialog({
     setError(null);
   }, [open, resetKey]);
 
-  // Autogrow: the textarea tracks its content height, and the dialog's
-  // max-height caps it — the flex layout shrinks the textarea back down and
-  // its own scrollbar takes over once the cap is hit.
+  // Autogrow: the textarea tracks its content height. In the dialog variant
+  // the card's max-height caps it — the flex layout shrinks the textarea back
+  // down and its own scrollbar takes over once the cap is hit; the page
+  // variant has no cap and extends the document scroller instead. Skipped
+  // while hidden (scrollHeight reads 0 under display:none) and re-run when
+  // the composer becomes visible again or the window resizes, so wrapping
+  // changes that land while a page draft is parked don't leave a stale
+  // height.
   useLayoutEffect(() => {
     const textarea = markdownRef.current;
-    if (!open || !textarea) {
+    if (!open || !visible || !textarea) {
       return;
     }
-    textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight + 2}px`;
-  }, [markdown, open]);
+    const measure = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight + 2}px`;
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [markdown, open, visible]);
 
   // These scan up to the 10 MB document cap. Counting stops immediately after
   // the first word over the limit so a dense import cannot monopolize the UI.
@@ -98,11 +117,11 @@ export default function DocumentDialog({
   const pristine = editing ? !changed : !markdown.trim() && !title.trim();
 
   useEffect(() => {
-    onDirtyChange?.(open && !pristine);
+    onDirtyChangeRef.current?.(open && !pristine);
   }, [open, pristine]);
   // A closing composer is no longer holding a draft, even when it unmounts
   // without a final open=false render.
-  useEffect(() => () => onDirtyChange?.(false), []);
+  useEffect(() => () => onDirtyChangeRef.current?.(false), []);
 
   if (!open) {
     return null;
