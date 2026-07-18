@@ -399,6 +399,17 @@ export function readMarkdownDocumentFile(path: string) {
   return invoke<string>("read_markdown_document_file", { path });
 }
 
+/** Copies a terminal agent pane's conversation into a Research workspace as
+ * a read-only conversation tree. The terminal is untouched — repeating the
+ * export creates another independent tree. */
+export function exportPaneToResearch(request: {
+  paneId: string;
+  workspaceId: string;
+  title?: string | null;
+}) {
+  return invoke<ResearchTreeDetail>("export_pane_to_research", { request });
+}
+
 export function getResearchNodeContent(nodeId: string) {
   return invoke<ResearchNodeContent>("get_research_node_content", { nodeId });
 }

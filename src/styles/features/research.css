@@ -1019,6 +1019,76 @@
   cursor: pointer;
 }
 
+/* Exported-conversation turns: user prompts are first-class content (the
+   run-node "unexpected content" framing does not apply), styled like the
+   document prompt block so exchanges read as question/answer pairs. */
+.research-response-item.is-conversation .research-conversation-prompt {
+  min-width: 0;
+  margin-top: 18px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--markdown-blockquote-border);
+  background: rgba(255, 255, 255, 0.03);
+  font-weight: 550;
+}
+
+.research-response-item.is-conversation:first-child .research-conversation-prompt {
+  margin-top: 0;
+}
+
+/* Collapsed tool activity from the export: the payloads never left the
+   terminal, so all that remains — deliberately — is a quiet count. */
+.research-conversation-activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 6px 0;
+  padding: 2px 8px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 999px;
+  color: var(--text-activity);
+  font-size: 11.5px;
+}
+
+.research-provenance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 999px;
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.export-research-dialog {
+  max-width: 420px;
+}
+
+.export-research-note {
+  margin: 6px 0 10px;
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.export-research-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.export-research-field > span {
+  color: var(--text-subtle);
+}
+
+.export-research-error {
+  margin: 4px 0 8px;
+  color: var(--status-failed-fg);
+  font-size: 12px;
+}
+
 .research-response-empty {
   color: var(--text-subtle);
 }

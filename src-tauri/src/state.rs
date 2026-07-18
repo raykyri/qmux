@@ -2745,16 +2745,25 @@ impl AppState {
             if scope != Some(WorkspaceScope::Terminal) {
                 return Err("only terminal panes can be exported to research".to_string());
             }
-            let agent_id = pane
+            // A pane owns an agent either by launch (pane.info.agent_id, set
+            // when the pane spawned as an agent pane) or by adoption (a
+            // shell pane whose `claude`/`codex` process was recovered — only
+            // agent.pane_id records that binding). The frontend offers the
+            // export for both, so both must resolve here.
+            let agent = pane
                 .info
                 .agent_id
-                .clone()
-                .ok_or_else(|| "only agent panes can be exported to research".to_string())?;
-            model
-                .agents
-                .get(&agent_id)
+                .as_deref()
+                .and_then(|agent_id| model.agents.get(agent_id))
+                .or_else(|| {
+                    model
+                        .agents
+                        .values()
+                        .find(|agent| agent.pane_id.as_deref() == Some(pane_id))
+                })
                 .cloned()
-                .ok_or_else(|| format!("agent {agent_id} was not found"))?
+                .ok_or_else(|| "only agent panes can be exported to research".to_string())?;
+            agent
         };
         // Transcript-preferred source: the file is the complete native
         // record, while the in-memory timeline can be a truncated live view.

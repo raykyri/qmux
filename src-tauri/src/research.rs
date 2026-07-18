@@ -524,6 +524,15 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
                 node.id
             ));
         }
+        // Conversations carry no highlights: the viewer offers no way to
+        // create or remove them there (no answer-v1 projection), so imported
+        // ones would paint as permanently unmanageable annotations.
+        if node.kind == ResearchNodeKind::Conversation && !node.highlights.is_empty() {
+            return Err(format!(
+                "research conversation {} carries highlights, which conversations do not support",
+                node.id
+            ));
+        }
         if let Some(parent_id) = node.parent_node_id.as_deref() {
             let parent = node_by_id
                 .get(parent_id)

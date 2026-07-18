@@ -8,6 +8,7 @@ import {
   Archive,
   ArchiveRestore,
   FileText,
+  MessagesSquare,
   Folder,
   FolderInput,
   FolderMinus,
@@ -107,6 +108,8 @@ function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
     <span className="research-sidebar-title">
       {tree.kind === "document" ? (
         <FileText className="research-sidebar-doc-icon" size={12} aria-hidden="true" />
+      ) : tree.kind === "conversation" ? (
+        <MessagesSquare className="research-sidebar-doc-icon" size={12} aria-hidden="true" />
       ) : null}
       <span className="research-sidebar-title-text">{tree.title}</span>
     </span>

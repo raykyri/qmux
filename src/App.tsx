@@ -89,6 +89,7 @@ import {
   workspaceIsInResearchScope,
 } from "./lib/researchScope";
 import ResearchDocument from "./components/research/ResearchDocument";
+import ExportToResearchDialog from "./components/research/ExportToResearchDialog";
 import NewDocumentPane from "./components/research/NewDocumentPane";
 import NewResearchDialog from "./components/research/NewResearchDialog";
 import { isMarkdownDocumentPath } from "./lib/researchDocuments";
@@ -213,6 +214,7 @@ import {
 } from "./lib/researchNavigation";
 import {
   groupsForScope,
+  paneScope,
   panesForScope,
   researchAttention,
   replaceScopedGroupOrder,
@@ -279,6 +281,7 @@ import {
   createResearchDocument,
   createResearchTree,
   updateResearchDocument,
+  exportPaneToResearch,
   forkResearchNode,
   markResearchTreeViewed,
   renameResearchNode,
@@ -1905,6 +1908,17 @@ function MainApp() {
   const [titleGenerationTest, setTitleGenerationTest] =
     useState<TitleGenerationTestState | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<PaneContextMenuState | null>(null);
+  // The agent pane whose conversation the "Export to Research…" dialog is
+  // offering to copy; null when the dialog is closed.
+  const [exportResearchPane, setExportResearchPane] = useState<PaneInfo | null>(null);
+  useEffect(() => {
+    // The dialog holds a snapshot of the pane; if the pane dies while the
+    // dialog is open, close it rather than let Export target a pane that no
+    // longer exists (or, worse, a recycled id).
+    if (exportResearchPane && !panes.some((pane) => pane.id === exportResearchPane.id)) {
+      setExportResearchPane(null);
+    }
+  }, [exportResearchPane, panes]);
   const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
   paneSplitsRef.current = paneSplits;
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
@@ -11003,6 +11017,25 @@ function MainApp() {
                 </button>
               </>
             ) : null}
+            {contextMenuAgent && paneScope(contextMenuPane, groupById) === "terminal" ? (
+              <>
+                {!canForkContextMenuPane ? (
+                  <div className="context-menu-divider" role="separator" />
+                ) : null}
+                <button
+                  className="control-button"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setPaneContextMenu(null);
+                    setExportResearchPane(contextMenuPane);
+                  }}
+                >
+                  <MessageSquareText size={13} aria-hidden="true" />
+                  <span>Export to Research…</span>
+                </button>
+              </>
+            ) : null}
             <div className="context-menu-divider" role="separator" />
             <button
               type="button"
@@ -12488,6 +12521,29 @@ function MainApp() {
         onClose={() => setNewResearchOpen(false)}
         onCreate={submitNewResearch}
       />
+
+      {exportResearchPane ? (
+        <ExportToResearchDialog
+          paneTitle={displayPaneTitle(
+            exportResearchPane,
+            agents.find((agent) => agent.paneId === exportResearchPane.id),
+          )}
+          folders={researchGroups}
+          defaultFolderId={researchScope}
+          onClose={() => setExportResearchPane(null)}
+          onExport={async ({ workspaceId, title }) => {
+            const workspace = await resolveResearchComposerWorkspace(workspaceId);
+            await exportPaneToResearch({
+              paneId: exportResearchPane.id,
+              workspaceId: workspace.id,
+              title,
+            });
+            // Name the folder: the research sidebar shows one folder at a
+            // time, so an export into another scope is otherwise invisible.
+            showAppToast(`Exported to Research · ${workspace.name}`);
+          }}
+        />
+      ) : null}
 
       <PublishDialog
         target={publicationTarget}

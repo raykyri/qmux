@@ -161,9 +161,13 @@ export type ResearchNodeStatus =
   | "failed"
   | "cancelled";
 
-/** What produced a node's content: an agent run, or user-authored markdown.
- * The backend omits the field for runs, so absence means "run". */
-export type ResearchNodeKind = "run" | "document";
+/** What produced a node's content: an agent run, user-authored markdown, or
+ * a terminal conversation exported as a severed point-in-time snapshot. The
+ * backend omits the field for runs, so absence means "run". */
+export type ResearchNodeKind = "run" | "document" | "conversation";
+
+/** Provenance for content that did not come from a research launch. */
+export type ResearchNodeOrigin = "terminalExport";
 
 export interface ResearchTree {
   id: string;
@@ -204,6 +208,9 @@ export interface ResearchNode {
   /** The run agent's thread-graph record id, kept for backend reaping. */
   threadId?: string | null;
   kind?: ResearchNodeKind;
+  /** Present on nodes whose content did not come from a research launch —
+   * today, conversations exported from a terminal session. */
+  origin?: ResearchNodeOrigin | null;
   status: ResearchNodeStatus;
   error?: string | null;
   /** Set when the durable response snapshot lands — the viewer's signal to

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Terminal, Trash2, Wrench, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import {
   createResearchHighlight,
@@ -28,6 +28,10 @@ import {
   researchSwipeDirection,
 } from "../../lib/researchHistory";
 import { researchBranchInfo } from "../../lib/researchBranches";
+import {
+  conversationActivityToolCalls,
+  conversationToolCallLabel,
+} from "../../lib/researchConversations";
 import { countResearchDocumentWords } from "../../lib/researchDocuments";
 import {
   expandedResearchHighlightOffsets,
@@ -48,6 +52,7 @@ import {
 import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
+  formatPlainTextTranscript,
   timelineItemsAfterLastToolCall,
   timelineItemsContainTranscriptActivity,
 } from "../../lib/turnTimeline";
@@ -507,9 +512,21 @@ function unexpectedRoleLabel(role: string) {
   return `${role || "Unknown"} content`;
 }
 
-function ResearchMessageBlock({ block, role }: { block: MessageBlock; role: string }) {
+function ResearchMessageBlock({
+  block,
+  role,
+  conversation = false,
+}: {
+  block: MessageBlock;
+  role: string;
+  conversation?: boolean;
+}) {
   if (block.type === "text") {
-    if (role === "assistant") {
+    // In a conversation node every turn is first-class content: user
+    // messages render as markdown prompts, not as unexpected-content
+    // callouts (that framing exists for run responses, where a mid-response
+    // user turn signals leakage).
+    if (role === "assistant" || conversation) {
       return (
         <TranscriptMarkdown
           text={block.text}
@@ -534,7 +551,66 @@ function ResearchMessageBlock({ block, role }: { block: MessageBlock; role: stri
 // replacement re-rendered — and re-parsed the markdown of — every visible
 // item. Item identities are stable across detail replacements because they
 // derive from `content`, which only changes when this node's own fetch lands.
-const ResearchTimelineItem = memo(function ResearchTimelineItem({ item }: { item: MessageItem }) {
+const ResearchTimelineItem = memo(function ResearchTimelineItem({
+  item,
+  conversation = false,
+}: {
+  item: MessageItem;
+  conversation?: boolean;
+}) {
+  if (conversation) {
+    return (
+      <section
+        className={`research-response-item role-${item.role} is-conversation`}
+        data-timeline-key={item.key}
+      >
+        {item.blocks.length > 0 ? (
+          <div
+            className={`research-response-message${
+              item.role === "user" ? " research-conversation-prompt" : ""
+            }${timelineStatusClass(item.status)}`}
+          >
+            {item.blocks.map((block, index) => (
+              <ResearchMessageBlock
+                key={`${item.key}-${index}`}
+                block={block}
+                role={item.role}
+                conversation
+              />
+            ))}
+          </div>
+        ) : null}
+        {item.activities.map((activity) => {
+          // Export activity markers (collapsed tool calls) render as quiet
+          // chips; anything else — impossible in a well-formed export, but
+          // archives are only shape-validated — falls back to the ordinary
+          // activity disclosure.
+          const toolCalls = conversationActivityToolCalls(activity);
+          if (toolCalls === null) {
+            return (
+              <TranscriptActivityItem
+                key={activity.key}
+                item={activity}
+                isRootActivity
+                maxPayloadCharacters={ACTIVITY_PAYLOAD_CHAR_LIMIT}
+                deferPayloads
+                showResultCharacterCount={false}
+              />
+            );
+          }
+          // A malformed marker count still renders a chip (labelled without
+          // a number): the marker's whole job is preserving the fact that
+          // tool activity happened.
+          return (
+            <div key={activity.key} className="research-conversation-activity">
+              <Wrench size={12} aria-hidden="true" />
+              <span>{conversationToolCallLabel(toolCalls)}</span>
+            </div>
+          );
+        })}
+      </section>
+    );
+  }
   const hasUnexpectedContent = item.role !== "assistant" && item.blocks.length > 0;
   return (
     <section
@@ -1458,16 +1534,38 @@ export default function ResearchDocument({
     () => timelineItemsAfterLastToolCall(timelineItems),
     [timelineItems],
   );
-  const hasTranscriptActivity = timelineItemsContainTranscriptActivity(timelineItems);
-  const displayedTimelineItems = showFullTrace ? timelineItems : answerTimelineItems;
+  // A conversation node's whole timeline is the document: there is no
+  // "answer" fold to collapse to and no fuller trace to reveal (tool
+  // payloads never survived the export).
+  const isConversationContent = content?.node.kind === "conversation";
+  const hasTranscriptActivity =
+    !isConversationContent && timelineItemsContainTranscriptActivity(timelineItems);
+  const displayedTimelineItems =
+    isConversationContent || showFullTrace ? timelineItems : answerTimelineItems;
+  // A run trace reads bottom-up (the answer is the tail), so its window keeps
+  // the newest items; a conversation reads top-down from its opening
+  // question, so its window keeps the head with the remainder behind the
+  // expander.
   const visibleTimelineItems =
     showAllTurns || displayedTimelineItems.length <= TIMELINE_ITEM_RENDER_WINDOW
       ? displayedTimelineItems
-      : displayedTimelineItems.slice(-TIMELINE_ITEM_RENDER_WINDOW);
+      : isConversationContent
+        ? displayedTimelineItems.slice(0, TIMELINE_ITEM_RENDER_WINDOW)
+        : displayedTimelineItems.slice(-TIMELINE_ITEM_RENDER_WINDOW);
   const hiddenTimelineItemCount = displayedTimelineItems.length - visibleTimelineItems.length;
   const rawAnswer = useMemo(
     () => assistantTextFromTimelineItems(answerTimelineItems),
     [answerTimelineItems],
+  );
+  // The copyable form of a conversation node: the whole exchange with role
+  // labels, not the assistant-only fold (which would mash unrelated answers
+  // together with their questions dropped).
+  const conversationCopyText = useMemo(
+    () =>
+      isConversationContent && content
+        ? formatPlainTextTranscript(content.turns, "Assistant")
+        : null,
+    [content, isConversationContent],
   );
   const editableDocumentMarkdown = useMemo(() => {
     if (content?.node.kind !== "document") {
@@ -1485,7 +1583,10 @@ export default function ResearchDocument({
   // Memoized because this component renders several times a second while a run
   // streams (detail replacements, the duration tick, every composer keystroke),
   // and the word scanner walks the entire answer.
-  const answerWordCount = useMemo(() => countResearchDocumentWords(rawAnswer), [rawAnswer]);
+  const answerWordCount = useMemo(
+    () => countResearchDocumentWords(conversationCopyText ?? rawAnswer),
+    [conversationCopyText, rawAnswer],
+  );
 
   // Diagram rendering and other child-owned Markdown controls can replace text
   // nodes without changing the transcript items. Observe those commits so saved
@@ -1827,6 +1928,13 @@ export default function ResearchDocument({
   ]);
 
   const captureHighlightSelection = useCallback(() => {
+    // Highlights are not offered on conversation nodes: the answer-v1
+    // projection is one flat answer document with no per-turn addressing, so
+    // anchors into a multi-turn timeline would not survive view changes.
+    if (content?.node.kind === "conversation") {
+      setHighlightAction(null);
+      return;
+    }
     const root = responseContentRootRef.current;
     const revision = content?.responseRevision;
     const selection = window.getSelection();
@@ -1893,7 +2001,7 @@ export default function ResearchDocument({
       outlineRects: highlightOutlineRects(root, resolvedHighlightsRef.current, highlightIds),
       ...highlightActionPlacement(rect, expandOffsets ? 340 : 260),
     });
-  }, [content?.responseRevision]);
+  }, [content?.node.kind, content?.responseRevision]);
 
   // A plain click on a painted highlight selects the whole annotation, which
   // reopens the action bar (Remove / Ask) through the ordinary selection flow.
@@ -2268,18 +2376,20 @@ export default function ResearchDocument({
 
   async function submitFollowup() {
     const prompt = followup.trim();
-    const followupNodeIsDocument = followupNode?.kind === "document";
+    // Documents and exported conversations never have a session: their
+    // follow-ups launch fresh runs that carry the content as context.
+    const followupNodeLaunchesFresh =
+      followupNode?.kind === "document" || followupNode?.kind === "conversation";
     // Mirrors the submit button's disabled conditions: Cmd+Enter must not
     // reach the backend (and bounce with an error) from a state the button
     // presents as unavailable — a running node already has a session id.
-    // Documents never have a session: their follow-ups launch fresh runs.
     if (
       archived ||
       !followupNode ||
       !prompt ||
       submitting ||
       followupNode.status !== "complete" ||
-      (!followupNodeIsDocument && !followupNode.nativeSessionId)
+      (!followupNodeLaunchesFresh && !followupNode.nativeSessionId)
     ) {
       return;
     }
@@ -2397,12 +2507,13 @@ export default function ResearchDocument({
   );
 
   async function copyAnswer() {
-    if (!rawAnswer) {
+    const text = conversationCopyText ?? rawAnswer;
+    if (!text) {
       return;
     }
     try {
-      await writeClipboardText(rawAnswer);
-      onToast("Copied research answer");
+      await writeClipboardText(text);
+      onToast(conversationCopyText ? "Copied conversation" : "Copied research answer");
     } catch {
       onToast("Couldn’t copy the research answer", "warning");
     }
@@ -2477,8 +2588,16 @@ export default function ResearchDocument({
   // the snapshot-backed timeline, word count, copy, highlights, the follow-up
   // rail — behaves identically.
   const isDocument = displayNode.kind === "document";
+  // A conversation node is a severed terminal export: its turns are the
+  // document (the first prompt included, so no prompt block above), its
+  // follow-ups launch fresh runs like documents, and highlights are not
+  // offered — the answer-v1 projection has no multi-turn addressing.
+  const isConversation = displayNode.kind === "conversation";
   const awaitingCheckpoint =
-    !isDocument && displayNode.status === "complete" && !displayNode.nativeSessionId;
+    !isDocument &&
+    !isConversation &&
+    displayNode.status === "complete" &&
+    !displayNode.nativeSessionId;
 
   // One renderer for both placements: cards whose query anchor resolved sit
   // absolutely beside their passage; everything else stacks in flow. A card
@@ -2583,6 +2702,15 @@ export default function ResearchDocument({
                 ),
               )}
             </div>
+            {displayNode.origin === "terminalExport" ? (
+              <span
+                className="research-provenance-badge"
+                title="This conversation was exported from a terminal session: a point-in-time copy whose content ran with the terminal's full permissions. Review it before publishing."
+              >
+                <Terminal size={12} aria-hidden="true" />
+                Exported from terminal
+              </span>
+            ) : null}
             {followupCount > 0 ? (
               <span className="research-document-followup-count">
                 {followupCount} {followupCount === 1 ? "follow-up" : "follow-ups"}
@@ -2645,7 +2773,7 @@ export default function ResearchDocument({
             onScroll={recordScroll}
           >
             <div className="research-document-content">
-              {!isDocument ? (
+              {!isDocument && !isConversation ? (
                 <div className="research-prompt">
                   {displayNode.parentNodeId ? (
                     <button
@@ -2728,7 +2856,7 @@ export default function ResearchDocument({
                     </p>
                   ) : (
                     <>
-                      {hiddenTimelineItemCount > 0 ? (
+                      {hiddenTimelineItemCount > 0 && !isConversation ? (
                         <button
                           type="button"
                           className="control-button research-show-earlier"
@@ -2748,9 +2876,26 @@ export default function ResearchDocument({
                         onMouseLeave={unlinkAnchorPointer}
                       >
                         {visibleTimelineItems.map((item) => (
-                          <ResearchTimelineItem key={item.key} item={item} />
+                          <ResearchTimelineItem
+                            key={item.key}
+                            item={item}
+                            conversation={isConversation}
+                          />
                         ))}
                       </div>
+                      {hiddenTimelineItemCount > 0 && isConversation ? (
+                        // Conversations window from the top (they read from
+                        // their opening question), so the expander sits at
+                        // the bottom where the hidden turns continue.
+                        <button
+                          type="button"
+                          className="control-button research-show-earlier"
+                          onClick={expandAllTurns}
+                        >
+                          Show {hiddenTimelineItemCount} more turn
+                          {hiddenTimelineItemCount === 1 ? "" : "s"}
+                        </button>
+                      ) : null}
                     </>
                   )}
                     </>
@@ -2761,7 +2906,10 @@ export default function ResearchDocument({
                         {answerWordCount.toLocaleString()}{" "}
                         {answerWordCount === 1 ? "word" : "words"}
                       </span>
-                      {generationDuration !== null ? (
+                      {isConversation ? // A conversation's timestamps span the source terminal
+                      // session's lifetime, not a generation — a bare
+                      // duration here would read as run time.
+                      null : generationDuration !== null ? (
                         <span>
                           {generationActive ? (
                             <>Generating for{" "}</>
@@ -2795,12 +2943,21 @@ export default function ResearchDocument({
                           ) : null}
                         </span>
                       ) : null}
-                      {displayNode.status === "complete" && rawAnswer ? (
+                      {displayNode.status === "complete" &&
+                      (conversationCopyText ?? rawAnswer) ? (
                         <button
                           type="button"
                           className="control-button research-answer-copy"
-                          title="Copy answer as Markdown"
-                          aria-label="Copy answer as Markdown"
+                          title={
+                            isConversation
+                              ? "Copy conversation as Markdown"
+                              : "Copy answer as Markdown"
+                          }
+                          aria-label={
+                            isConversation
+                              ? "Copy conversation as Markdown"
+                              : "Copy answer as Markdown"
+                          }
                           onClick={() => void copyAnswer()}
                         >
                           <Copy size={14} aria-hidden="true" />
@@ -2889,7 +3046,9 @@ export default function ResearchDocument({
                           ? "Ask about the highlighted text…"
                           : isDocument
                             ? "Ask about this document…"
-                            : "Type your query…"
+                            : isConversation
+                              ? "Ask about this conversation…"
+                              : "Type your query…"
                       }
                       aria-label="Follow-up question"
                       disabled={archived || displayNode.status !== "complete"}
@@ -3070,46 +3229,64 @@ export default function ResearchDocument({
                   onContextMenu={(event) => event.preventDefault()}
                 >
                   <div className="group-context-actions">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="control-button"
-                      disabled={!isTerminalResearchStatus(node.status)}
-                      title={
-                        isTerminalResearchStatus(node.status)
-                          ? undefined
-                          : "This result must finish before it can be published"
-                      }
-                      onClick={() => openResearchPublisher("answer", node)}
-                    >
-                      <Share2 size={13} aria-hidden="true" />
-                      <span>Publish answer</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="control-button"
-                      disabled={
-                        !detail.nodes.some(
-                          (candidate) =>
-                            candidate.id === detail.tree.rootNodeId &&
-                            isTerminalResearchStatus(candidate.status),
-                        )
-                      }
-                      title={
-                        detail.nodes.some(
-                          (candidate) =>
-                            candidate.id === detail.tree.rootNodeId &&
-                            isTerminalResearchStatus(candidate.status),
-                        )
-                          ? undefined
-                          : "The root result must finish before publishing the tree"
-                      }
-                      onClick={() => openResearchPublisher("tree", node)}
-                    >
-                      <Share2 size={13} aria-hidden="true" />
-                      <span>Publish research</span>
-                    </button>
+                    {(() => {
+                      // Publication does not understand conversation nodes
+                      // yet (the draft builder and validators are Q/A-shaped)
+                      // — a purposeful refusal beats their internal errors.
+                      const conversationPublishNote =
+                        "Publishing exported conversations isn't available yet";
+                      const rootIsConversation = detail.nodes.some(
+                        (candidate) =>
+                          candidate.id === detail.tree.rootNodeId &&
+                          candidate.kind === "conversation",
+                      );
+                      const rootReady = detail.nodes.some(
+                        (candidate) =>
+                          candidate.id === detail.tree.rootNodeId &&
+                          isTerminalResearchStatus(candidate.status),
+                      );
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="control-button"
+                            disabled={
+                              !isTerminalResearchStatus(node.status) ||
+                              node.kind === "conversation"
+                            }
+                            title={
+                              node.kind === "conversation"
+                                ? conversationPublishNote
+                                : isTerminalResearchStatus(node.status)
+                                  ? undefined
+                                  : "This result must finish before it can be published"
+                            }
+                            onClick={() => openResearchPublisher("answer", node)}
+                          >
+                            <Share2 size={13} aria-hidden="true" />
+                            <span>Publish answer</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="control-button"
+                            disabled={!rootReady || rootIsConversation}
+                            title={
+                              rootIsConversation
+                                ? conversationPublishNote
+                                : rootReady
+                                  ? undefined
+                                  : "The root result must finish before publishing the tree"
+                            }
+                            onClick={() => openResearchPublisher("tree", node)}
+                          >
+                            <Share2 size={13} aria-hidden="true" />
+                            <span>Publish research</span>
+                          </button>
+                        </>
+                      );
+                    })()}
                     <div className="context-menu-divider" role="separator" />
                     {rootNode && node.kind === "document" ? (
                       <>

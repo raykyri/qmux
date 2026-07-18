@@ -134,6 +134,18 @@ export async function createResearchPublicationDraft(
   if (input.mode === "tree" && !candidates.some((node) => node.id === input.detail.tree.rootNodeId)) {
     throw new Error("The root research result must finish before publishing the tree.");
   }
+  // Publication is Q/A-shaped end to end (draft markdown, index validation
+  // on both sides); a purposeful refusal beats the internal schema error a
+  // "conversation" kind would hit downstream. The publish menu disables its
+  // entries for conversation roots, so this guards direct callers — and
+  // names the tree when the conversation is not the thing being published.
+  if (candidates.some((node) => node.kind === "conversation")) {
+    throw new Error(
+      input.mode === "answer"
+        ? "Publishing exported conversations isn't available yet."
+        : "This research contains an exported conversation, which can't be published yet.",
+    );
+  }
   for (const node of candidates) {
     if (!TERMINAL_RESEARCH_STATUSES.has(node.status)) {
       throw new Error("The selected research result must finish before it can be published.");
@@ -177,7 +189,9 @@ export async function createResearchPublicationDraft(
         input.mode === "tree" && node.parentNodeId
           ? publicNodeIds[node.parentNodeId] ?? null
           : null,
-      kind: node.kind ?? "run",
+      // The guard above refused conversation nodes, so only the published
+      // kinds remain.
+      kind: node.kind === "document" ? "document" : "run",
       title: researchNodeTitle(node, input.detail),
       prompt: node.prompt,
       answerFile,
