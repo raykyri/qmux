@@ -1576,7 +1576,7 @@ function MainApp() {
   const showHideShortcutRequestRef = useRef(0);
   const [globalTaskLauncherSetting, setGlobalTaskLauncherSetting] =
     useState<GlobalTaskLauncherSetting>({
-      hotkey: "doubleOption",
+      hotkey: null,
       registered: false,
       error: null,
     });
@@ -1599,7 +1599,9 @@ function MainApp() {
   );
   const globalTaskLauncherHotkeyMessage =
     globalTaskLauncherSetting.error ??
-    (!globalTaskLauncherSetting.registered ? "Global quick launch hotkey is not active." : null);
+    (globalTaskLauncherSetting.hotkey && !globalTaskLauncherSetting.registered
+      ? "Global quick launch hotkey is not active."
+      : null);
   const bodyFontFamily = bodyFontStackFor(settings.bodyFontId);
   const terminalFontSize = settings.fontSize;
   const terminalFontFamily = fontStackFor(settings.fontId);
@@ -8870,7 +8872,7 @@ function MainApp() {
     }
   }
 
-  async function updateGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey) {
+  async function updateGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey | null) {
     const request = ++globalTaskLauncherHotkeyRequestRef.current;
     setGlobalTaskLauncherHotkeySaving(true);
     setGlobalTaskLauncherSetting((current) => ({ ...current, hotkey, error: null }));
@@ -10853,7 +10855,7 @@ function MainApp() {
               <select
                 id="settings-global-task-launcher-hotkey"
                 className="settings-select"
-                value={globalTaskLauncherSetting.hotkey}
+                value={globalTaskLauncherSetting.hotkey ?? ""}
                 disabled={globalTaskLauncherHotkeySaving}
                 aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
                 aria-describedby={
@@ -10863,10 +10865,13 @@ function MainApp() {
                 }
                 onChange={(event) =>
                   void updateGlobalTaskLauncherHotkey(
-                    event.currentTarget.value as GlobalTaskLauncherHotkey,
+                    event.currentTarget.value
+                      ? (event.currentTarget.value as GlobalTaskLauncherHotkey)
+                      : null,
                   )
                 }
               >
+                <option value="">Disabled</option>
                 {GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS.map((option) => (
                   <option
                     key={option.value}

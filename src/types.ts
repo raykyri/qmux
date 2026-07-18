@@ -148,7 +148,7 @@ export type GlobalTaskLauncherHotkey =
   | "Command+Space";
 
 export interface GlobalTaskLauncherSetting {
-  hotkey: GlobalTaskLauncherHotkey;
+  hotkey: GlobalTaskLauncherHotkey | null;
   registered: boolean;
   error?: string | null;
 }

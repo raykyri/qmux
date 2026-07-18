@@ -13,8 +13,6 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 const WINDOW_LABEL: &str = "global-task-launcher";
-const DEFAULT_HOTKEY: &str = "doubleOption";
-
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 /// Discriminant currently installed in the Swift double-tap monitor's single
 /// slot (0 = none). Installing a hotkey replaces the slot, so releasing one
@@ -90,7 +88,7 @@ struct GlobalTaskLauncherInner {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlobalTaskLauncherSetting {
-    hotkey: String,
+    hotkey: Option<String>,
     registered: bool,
     error: Option<String>,
 }
@@ -99,11 +97,7 @@ impl GlobalTaskLauncherState {
     fn status(&self) -> GlobalTaskLauncherSetting {
         let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         GlobalTaskLauncherSetting {
-            hotkey: inner
-                .configured
-                .unwrap_or(LauncherHotkey::DoubleOption)
-                .value()
-                .to_string(),
+            hotkey: inner.configured.map(|hotkey| hotkey.value().to_string()),
             registered: inner.registered,
             error: inner.error.clone(),
         }
@@ -202,21 +196,34 @@ pub fn init(app: &AppHandle, workspace_root: &Path) {
 
     let configured_value = persistence::load_preferences(workspace_root)
         .ok()
-        .and_then(|preferences| preferences.global_launcher_hotkey)
-        .unwrap_or_else(|| DEFAULT_HOTKEY.to_string());
-    let configured =
-        LauncherHotkey::parse(&configured_value).unwrap_or(LauncherHotkey::DoubleOption);
+        .and_then(|preferences| preferences.global_launcher_hotkey);
     let state = app.state::<GlobalTaskLauncherState>();
-    let result = LauncherHotkeyRegistry { app }
-        .register(configured.value())
-        .map_err(|error| format!("Couldn't register {}: {error}", configured.value()));
     let mut inner = state
         .inner
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    inner.configured = Some(configured);
-    inner.registered = result.is_ok();
-    inner.error = result.err();
+    match configured_value
+        .as_deref()
+        .map(LauncherHotkey::parse)
+        .transpose()
+    {
+        Ok(configured) => {
+            let result = configured
+                .map(|hotkey| {
+                    LauncherHotkeyRegistry { app }
+                        .register(hotkey.value())
+                        .map_err(|error| format!("Couldn't register {}: {error}", hotkey.value()))
+                })
+                .transpose();
+            inner.configured = configured;
+            inner.registered = matches!(result, Ok(Some(())));
+            inner.error = result.err();
+        }
+        Err(error) => {
+            eprintln!("qmux: invalid global launcher hotkey preference: {error}");
+            inner.error = Some(error);
+        }
+    }
 }
 
 pub fn handle_global_shortcut<R: Runtime>(
@@ -292,9 +299,9 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
     app: AppHandle<R>,
     app_state: tauri::State<'_, AppState>,
     state: tauri::State<'_, GlobalTaskLauncherState>,
-    hotkey: String,
+    hotkey: Option<String>,
 ) -> Result<GlobalTaskLauncherSetting, String> {
-    let replacement = LauncherHotkey::parse(&hotkey)?;
+    let replacement = hotkey.as_deref().map(LauncherHotkey::parse).transpose()?;
     let _operation = state
         .operation
         .lock()
@@ -304,23 +311,23 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
             .inner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        (
-            inner.configured.unwrap_or(LauncherHotkey::DoubleOption),
-            inner.registered,
-        )
+        (inner.configured, inner.registered)
     };
-    if previous == replacement && previous_registered {
+    if previous == replacement && (replacement.is_none() || previous_registered) {
         return Ok(state.status());
     }
 
     let registry = LauncherHotkeyRegistry { app: &app };
     let result = replace_active_registration(
         &registry,
-        previous_registered.then(|| previous.value()),
-        Some(replacement.value()),
+        previous
+            .filter(|_| previous_registered)
+            .map(LauncherHotkey::value),
+        replacement.map(LauncherHotkey::value),
         || {
             persistence::update_preferences(&app_state.config().workspace_root, |preferences| {
-                preferences.global_launcher_hotkey = Some(replacement.value().to_string());
+                preferences.global_launcher_hotkey =
+                    replacement.map(|hotkey| hotkey.value().to_string());
             })
         },
     );
@@ -333,14 +340,14 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
     // `operation` lock (held for this whole command, and taken nowhere else)
     // still serializes concurrent hotkey changes.
     let (configured, registered, error) = match result {
-        Ok(()) => (replacement, true, None),
+        Ok(()) => (replacement, replacement.is_some(), None),
         Err(error) => {
             // The transaction restored (or reported) the previous registration;
             // probe the registry rather than trust it so Settings reflects the
             // real state.
             (
                 previous,
-                registry.is_registered(previous.value()),
+                previous.is_some_and(|hotkey| registry.is_registered(hotkey.value())),
                 Some(error),
             )
         }
@@ -350,7 +357,7 @@ pub fn global_task_launcher_hotkey_set<R: Runtime>(
         .inner
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    inner.configured = Some(configured);
+    inner.configured = configured;
     inner.registered = registered;
     inner.error = error;
     drop(inner);
@@ -423,7 +430,15 @@ pub extern "C" fn qmux_global_task_launcher_did_trigger() {
 
 #[cfg(test)]
 mod tests {
-    use super::LauncherHotkey;
+    use super::{GlobalTaskLauncherState, LauncherHotkey};
+
+    #[test]
+    fn global_hotkey_defaults_to_disabled() {
+        let setting = GlobalTaskLauncherState::default().status();
+        assert_eq!(setting.hotkey, None);
+        assert!(!setting.registered);
+        assert_eq!(setting.error, None);
+    }
 
     #[test]
     fn accepts_only_the_six_supported_hotkeys() {

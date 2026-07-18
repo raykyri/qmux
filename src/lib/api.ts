@@ -238,7 +238,7 @@ export function getGlobalTaskLauncherHotkey() {
   return invoke<GlobalTaskLauncherSetting>("global_task_launcher_hotkey_get");
 }
 
-export function setGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey) {
+export function setGlobalTaskLauncherHotkey(hotkey: GlobalTaskLauncherHotkey | null) {
   return invoke<GlobalTaskLauncherSetting>("global_task_launcher_hotkey_set", { hotkey });
 }
 

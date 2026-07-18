@@ -124,6 +124,7 @@
   column-gap: 6px;
   align-items: start;
   min-width: 0;
+  min-height: 0;
   flex: 1;
   padding: 4px 4px 4px 8px;
   border: 0;
