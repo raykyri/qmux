@@ -929,8 +929,10 @@ header + .turn-blocks {
 .tool-block.is-status-interrupted > .tool-payload,
 .thinking-block.is-status-superseded > summary,
 .thinking-block.is-status-superseded > pre,
+.thinking-block.is-status-superseded > .thinking-prose,
 .thinking-block.is-status-interrupted > summary,
 .thinking-block.is-status-interrupted > pre,
+.thinking-block.is-status-interrupted > .thinking-prose,
 .activity-group-block.is-status-superseded > summary,
 .activity-group-block.is-status-interrupted > summary {
   opacity: 0.55;
@@ -1085,6 +1087,37 @@ header + .turn-blocks {
 
 .thinking-block summary {
   color: var(--text-activity);
+}
+
+/* Recognized reasoning renders as prose (Markdown) instead of a JSON <pre>, so
+   it gets the same faint inset box + indent the raw payload used, but with
+   readable line-height and normal wrapping. */
+.thinking-prose {
+  margin: 6px 0 0 14px;
+  padding: 6px 10px;
+  border: 1px solid var(--surface-divider);
+  border-radius: var(--radius-md);
+  background: var(--content-inset-bg);
+  color: var(--text-activity);
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.thinking-prose .turn-markdown > :first-child {
+  margin-top: 0;
+}
+
+.thinking-prose .turn-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+/* Oversized-reasoning fallback: TranscriptMarkdown swaps in a plain <pre>. */
+.thinking-block pre.thinking-plaintext {
+  margin: 6px 0 0 14px;
+  border: 1px solid var(--surface-divider);
+  border-radius: var(--radius-md);
+  background: var(--content-inset-bg);
 }
 
 .thinking-block > summary > span {

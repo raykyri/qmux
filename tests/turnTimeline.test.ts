@@ -7,6 +7,7 @@ import {
   formatPlainTextTranscript,
   messageItemCopyText,
   messageItemText,
+  thinkingProseText,
   timelineItemsAfterLastToolCall,
   timelineItemsContainTranscriptActivity,
 } from "../src/lib/turnTimeline";
@@ -576,6 +577,38 @@ test("assistant raw blocks become thinking while non-assistant raw blocks remain
   assert.equal(items[0].activities[0].type, "thinking");
   assert.equal(items[1].role, "system");
   assert.equal(items[1].blocks[0], systemRaw);
+});
+
+test("thinkingProseText pulls reasoning out of a provider thinking block", () => {
+  // A real reasoning block carries the prose alongside a long opaque signature;
+  // the reader wants the prose, never the signature.
+  const value = {
+    type: "thinking",
+    thinking: "First I check the layout, then republish.",
+    signature: "CAIS/DYKiAEIDxgCKkA9uww".repeat(50),
+  };
+  assert.equal(
+    thinkingProseText(value),
+    "First I check the layout, then republish.",
+  );
+});
+
+test("thinkingProseText accepts plain strings and alternate field names", () => {
+  assert.equal(thinkingProseText("bare reasoning"), "bare reasoning");
+  assert.equal(thinkingProseText({ thought: "inspect" }), "inspect");
+  assert.equal(thinkingProseText({ text: "reason" }), "reason");
+});
+
+test("thinkingProseText returns null for shapes without prose", () => {
+  // Export markers and unfamiliar objects fall back to JSON rendering.
+  assert.equal(
+    thinkingProseText({ type: "qmuxToolActivity", toolCalls: 3 }),
+    null,
+  );
+  assert.equal(thinkingProseText({ thinking: "   " }), null);
+  assert.equal(thinkingProseText(""), null);
+  assert.equal(thinkingProseText(42), null);
+  assert.equal(thinkingProseText(["a"]), null);
 });
 
 test("adding a result preserves the originating tool key", () => {

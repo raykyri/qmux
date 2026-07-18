@@ -46,6 +46,38 @@ export interface ThinkingItem {
   status?: TurnTimelineStatus;
 }
 
+// Assistant "raw" blocks become thinking values. A real provider reasoning
+// block arrives as an object like
+// `{ type: "thinking", thinking: "<prose>", signature: "<long base64 blob>" }`;
+// the signature is an opaque verification token of no use to a reader and, at
+// ~10 KB, drowns the actual reasoning when the whole object is JSON-dumped.
+// This pulls out the human-readable reasoning so the renderer can show it as
+// prose. Order matters: the first field that holds a non-empty string wins.
+const THINKING_TEXT_KEYS = ["thinking", "text", "thought", "reasoning", "content"] as const;
+
+/**
+ * The human-readable reasoning carried by one thinking value, or null when the
+ * value has no recognizable prose field (an export marker, a bare number, an
+ * unfamiliar shape) and should fall back to serialized JSON.
+ */
+export function thinkingProseText(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of THINKING_TEXT_KEYS) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 export interface ActivityGroupItem {
   type: "activityGroup";
   key: string;

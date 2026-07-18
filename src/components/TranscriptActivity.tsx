@@ -1,13 +1,24 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
-import type {
-  ActivityGroupItem,
-  ActivityItem,
-  ActivityLeafItem,
-  ThinkingItem,
-  ToolEntry,
-  TurnTimelineStatus,
+import {
+  thinkingProseText,
+  type ActivityGroupItem,
+  type ActivityItem,
+  type ActivityLeafItem,
+  type ThinkingItem,
+  type ToolEntry,
+  type TurnTimelineStatus,
 } from "../lib/turnTimeline";
+import TranscriptMarkdown, { type OversizedMarkdownPolicy } from "./TranscriptMarkdown";
+
+// Reasoning can run long, and react-markdown re-parses on every render. Past
+// this size, fall back to a plain-text (truncated) view — same guardrail the
+// assistant answer uses.
+const OVERSIZED_THINKING_MARKDOWN: OversizedMarkdownPolicy = {
+  maxCharacters: 100_000,
+  maxDisplayCharacters: 100_000,
+  fallbackClassName: "thinking-plaintext",
+};
 
 const TOOL_SUMMARY_ARGUMENT_KEYS = {
   exec_command: "cmd",
@@ -371,11 +382,27 @@ function ThinkingView({
         <span>Thought for a while</span>
       </summary>
       {!deferPayloads || expanded
-        ? item.values.map((value, index) => (
-            <pre key={`${item.key}-${index}`}>
-              {serializeActivityValue(value, maxPayloadCharacters)}
-            </pre>
-          ))
+        ? item.values.map((value, index) => {
+            const key = `${item.key}-${index}`;
+            const prose = thinkingProseText(value);
+            // Known reasoning shapes render as prose, dropping the opaque
+            // `signature` token that would otherwise dominate a JSON dump.
+            // Anything unrecognized still falls back to serialized JSON so no
+            // content is silently lost.
+            if (prose !== null) {
+              return (
+                <div key={key} className="thinking-prose">
+                  <TranscriptMarkdown
+                    text={prose}
+                    oversizedContent={OVERSIZED_THINKING_MARKDOWN}
+                  />
+                </div>
+              );
+            }
+            return (
+              <pre key={key}>{serializeActivityValue(value, maxPayloadCharacters)}</pre>
+            );
+          })
         : null}
     </details>
   );
