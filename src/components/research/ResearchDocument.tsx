@@ -31,6 +31,7 @@ import { researchBranchInfo } from "../../lib/researchBranches";
 import { countResearchDocumentWords } from "../../lib/researchDocuments";
 import {
   intersectingResearchHighlightIds,
+  isResearchAskActionShortcut,
   isResearchHighlightActionShortcut,
   resolveResearchHighlightOffset,
 } from "../../lib/researchHighlights";
@@ -93,6 +94,7 @@ interface ResearchDocumentProps {
       publicationId: string;
       commentId: number;
     } | null,
+    queryAnchor?: ResearchHighlightAnchor | null,
   ) => Promise<ResearchNode>;
   onRemoveBranch: (nodeId: string) => Promise<ResearchBranchRemoval>;
   onRemoveTree: (treeId: string) => Promise<void>;
@@ -180,7 +182,11 @@ interface ResearchHighlightApi {
 }
 
 const RESEARCH_HIGHLIGHT_NAME = "qmux-research-highlights";
+const RESEARCH_QUERY_ANCHOR_NAME = "qmux-research-query-anchors";
 const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
+// Clearance between the anchored composer's bottom edge and the first pushed
+// follow-up card.
+const ASK_COMPOSER_CLEARANCE = 20;
 
 function researchHighlightApi(): ResearchHighlightApi | null {
   const css = (globalThis as unknown as { CSS?: { highlights?: ResearchHighlightRegistry } }).CSS;
@@ -268,6 +274,21 @@ function textContextSlice(text: string, start: number, end: number) {
     safeEnd += 1;
   }
   return text.slice(safeStart, safeEnd);
+}
+
+/** The quoted selection as a single line: block structure and inline markdown
+ * are already absent from the rendered-text projection, so collapsing
+ * whitespace is all that quoting requires. */
+function quoteDisplayText(exact: string) {
+  return exact.split(/\s+/).join(" ").trim();
+}
+
+function sameCardTops(a: Record<string, number>, b: Record<string, number>) {
+  const aKeys = Object.keys(a);
+  return (
+    aKeys.length === Object.keys(b).length &&
+    aKeys.every((key) => a[key] === b[key])
+  );
 }
 
 function horizontalScrollerConsumesWheel(
@@ -430,6 +451,12 @@ export default function ResearchDocument({
   const [showFullTrace, setShowFullTrace] = useState(false);
   const [highlightAction, setHighlightAction] = useState<HighlightAction | null>(null);
   const [savingHighlight, setSavingHighlight] = useState(false);
+  // Ask mode: the selection anchor a targeted follow-up is being composed
+  // against. While set, the composer sits beside the quoted passage.
+  const [askAnchor, setAskAnchor] = useState<ResearchHighlightAnchor | null>(null);
+  // Resolved vertical offsets (px, relative to the follow-ups rail) for child
+  // nodes whose query anchor still locates a passage in the rendered response.
+  const [anchoredCardTops, setAnchoredCardTops] = useState<Record<string, number>>({});
   const [highlightDomNonce, setHighlightDomNonce] = useState(0);
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
   const [publicationProposals, setPublicationProposals] = useState<PublicationProposal[]>([]);
@@ -439,6 +466,9 @@ export default function ResearchDocument({
   const treeId = detail?.tree.id ?? null;
   const documentScrollRef = useRef<HTMLElement | null>(null);
   const followupTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const followupsAsideRef = useRef<HTMLElement | null>(null);
+  const followupComposerRef = useRef<HTMLDivElement | null>(null);
+  const followupCardsRef = useRef<HTMLDivElement | null>(null);
   const followupMenuRef = useRef<HTMLDivElement | null>(null);
   const responseContentRootRef = useRef<HTMLDivElement | null>(null);
   const resolvedHighlightsRef = useRef<ResolvedHighlight[]>([]);
@@ -487,6 +517,7 @@ export default function ResearchDocument({
   // action from the previous view floating over the next one.
   useEffect(() => {
     setHighlightAction(null);
+    setAskAnchor(null);
     window.getSelection()?.removeAllRanges();
   }, [treeId, selectedNodeId, content?.responseRevision, showAllTurns, showFullTrace]);
 
@@ -538,6 +569,10 @@ export default function ResearchDocument({
         ? detail.nodes.filter((node) => node.parentNodeId === selectedNodeId)
         : [],
     [detail, selectedNodeId],
+  );
+  const anchoredChildren = useMemo(
+    () => childNodes.filter((node) => node.queryAnchor),
+    [childNodes],
   );
   const deletingBranch = useMemo(
     () =>
@@ -1292,6 +1327,147 @@ export default function ResearchDocument({
     timelineItems,
   ]);
 
+  // Paint the passages that targeted follow-ups (and an in-progress ask) were
+  // asked about, and resolve each follow-up's rail offset so its card can sit
+  // beside its passage. Anchors that no longer locate a passage drop out of
+  // the map — their cards fall back to the regular stack.
+  useLayoutEffect(() => {
+    const api = researchHighlightApi();
+    api?.registry.delete(RESEARCH_QUERY_ANCHOR_NAME);
+    const root = responseContentRootRef.current;
+    const aside = followupsAsideRef.current;
+    const revision = content?.responseRevision;
+    const tops: Record<string, number> = {};
+    if (root && api && revision) {
+      const projection = root.textContent ?? "";
+      const asideTop = aside?.getBoundingClientRect().top ?? 0;
+      const entries = anchoredChildren.map((node) => ({
+        id: node.id,
+        anchor: node.queryAnchor!,
+      }));
+      if (askAnchor) {
+        entries.push({ id: "__ask__", anchor: askAnchor });
+      }
+      const ranges: Range[] = [];
+      for (const { id, anchor } of entries) {
+        const offsets = resolveResearchHighlightOffset(projection, revision, {
+          id,
+          anchor,
+          createdAt: 0,
+        });
+        const range = offsets
+          ? rangeForTextOffsets(root, offsets.start, offsets.end)
+          : null;
+        if (!range) {
+          continue;
+        }
+        ranges.push(range);
+        if (id !== "__ask__" && aside) {
+          tops[id] = Math.max(
+            0,
+            Math.round(range.getBoundingClientRect().top - asideTop),
+          );
+        }
+      }
+      if (ranges.length > 0) {
+        const painted = new api.Highlight();
+        for (const range of ranges) {
+          painted.add(range);
+        }
+        api.registry.set(RESEARCH_QUERY_ANCHOR_NAME, painted);
+      }
+    }
+    setAnchoredCardTops((current) => (sameCardTops(current, tops) ? current : tops));
+    return () => {
+      api?.registry.delete(RESEARCH_QUERY_ANCHOR_NAME);
+    };
+  }, [
+    anchoredChildren,
+    askAnchor,
+    content?.node.id,
+    content?.responseRevision,
+    highlightDomNonce,
+    showAllTurns,
+    showFullTrace,
+    timelineItems,
+  ]);
+
+  // Ask mode's slide: translate the composer down beside the quoted passage
+  // and push any cards it would cover out of the way. Transforms keep the
+  // rail's flow layout untouched, so clearing them animates everything home.
+  useLayoutEffect(() => {
+    const composer = followupComposerRef.current;
+    const aside = followupsAsideRef.current;
+    const clear = () => {
+      if (composer) {
+        composer.style.transform = "";
+      }
+      if (aside) {
+        for (const element of aside.querySelectorAll<HTMLElement>(
+          ".research-followup-cards > .research-followup-card, .research-followup-card.is-anchored",
+        )) {
+          element.style.transform = "";
+        }
+      }
+    };
+    const root = responseContentRootRef.current;
+    const revision = content?.responseRevision;
+    if (!askAnchor || !composer || !aside || !root || !revision) {
+      clear();
+      return;
+    }
+    const projection = root.textContent ?? "";
+    const offsets = resolveResearchHighlightOffset(projection, revision, {
+      id: "__ask__",
+      anchor: askAnchor,
+      createdAt: 0,
+    });
+    const range = offsets
+      ? rangeForTextOffsets(root, offsets.start, offsets.end)
+      : null;
+    if (!range) {
+      clear();
+      return;
+    }
+    const asideTop = aside.getBoundingClientRect().top;
+    const targetTop = Math.max(
+      0,
+      Math.round(range.getBoundingClientRect().top - asideTop),
+    );
+    composer.style.transform = `translateY(${Math.max(0, targetTop - composer.offsetTop)}px)`;
+    const clearanceBottom = targetTop + composer.offsetHeight + ASK_COMPOSER_CLEARANCE;
+    const cards = followupCardsRef.current;
+    if (cards) {
+      // The stack keeps its internal spacing: the first card the composer
+      // would cover sets one shared shift for itself and everything after it.
+      let delta = 0;
+      for (const element of Array.from(cards.children) as HTMLElement[]) {
+        if (delta === 0 && element.offsetTop + element.offsetHeight > targetTop) {
+          delta = Math.max(0, clearanceBottom - element.offsetTop);
+        }
+        element.style.transform = delta > 0 ? `translateY(${delta}px)` : "";
+      }
+    }
+    for (const element of aside.querySelectorAll<HTMLElement>(
+      ".research-followup-card.is-anchored",
+    )) {
+      const overlaps =
+        element.offsetTop < clearanceBottom &&
+        element.offsetTop + element.offsetHeight > targetTop;
+      element.style.transform = overlaps
+        ? `translateY(${clearanceBottom - element.offsetTop}px)`
+        : "";
+    }
+    return clear;
+  }, [
+    anchoredCardTops,
+    askAnchor,
+    childNodes,
+    content?.responseRevision,
+    followup,
+    highlightDomNonce,
+  ]);
+
   const captureHighlightSelection = useCallback(() => {
     const root = responseContentRootRef.current;
     const revision = content?.responseRevision;
@@ -1350,7 +1526,8 @@ export default function ResearchDocument({
         ),
       },
       highlightIds,
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - 180)),
+      // Leave room for both the Highlight and Ask buttons before the right edge.
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 260)),
       top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
     });
   }, [content?.responseRevision]);
@@ -1403,12 +1580,32 @@ export default function ResearchDocument({
     }
   }, [content, highlightAction, onError, savingHighlight]);
 
+  // The selection can back a targeted follow-up only while the composer can
+  // actually submit one: the node finished, and the tree accepts branches.
+  const canAskSelection = Boolean(
+    highlightAction?.anchor.exact.trim() &&
+      !archived &&
+      followupNode?.status === "complete",
+  );
+
+  const enterAskMode = useCallback(() => {
+    if (!highlightAction?.anchor.exact.trim() || archived || followupNode?.status !== "complete") {
+      return;
+    }
+    setAskAnchor(highlightAction.anchor);
+    setHighlightAction(null);
+    window.getSelection()?.removeAllRanges();
+    // Focus once the composer has begun its slide so typing can start
+    // immediately; focusing does not interrupt the transform transition.
+    window.requestAnimationFrame(() => followupTextareaRef.current?.focus());
+  }, [archived, followupNode?.status, highlightAction]);
+
   useEffect(() => {
     if (!highlightAction) {
       return;
     }
     const dismiss = (event: MouseEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest(".research-highlight-action")) {
+      if (!(event.target instanceof Element) || !event.target.closest(".research-highlight-actions")) {
         setHighlightAction(null);
       }
     };
@@ -1417,11 +1614,17 @@ export default function ResearchDocument({
         setHighlightAction(null);
         return;
       }
-      if (
-        savingHighlight ||
-        isEditableTarget(event.target) ||
-        !isResearchHighlightActionShortcut(event)
-      ) {
+      if (savingHighlight || isEditableTarget(event.target)) {
+        return;
+      }
+      if (isResearchAskActionShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        enterAskMode();
+        return;
+      }
+      if (!isResearchHighlightActionShortcut(event)) {
         return;
       }
       event.preventDefault();
@@ -1440,7 +1643,23 @@ export default function ResearchDocument({
       window.removeEventListener("resize", dismissOnReflow);
       window.removeEventListener("scroll", dismissOnReflow, true);
     };
-  }, [applyHighlightAction, highlightAction, savingHighlight]);
+  }, [applyHighlightAction, enterAskMode, highlightAction, savingHighlight]);
+
+  // Escape leaves ask mode from anywhere, including inside the composer's
+  // textarea, sliding the composer back to its resting position.
+  useEffect(() => {
+    if (!askAnchor) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault();
+        setAskAnchor(null);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [askAnchor]);
 
   async function submitFollowup() {
     const prompt = followup.trim();
@@ -1466,8 +1685,9 @@ export default function ResearchDocument({
       // current node selected rather than following the child to its own page:
       // the reader stays with the answer they asked about, and the new
       // follow-up appears as a card below the composer to open when ready.
-      await onFork(followupNode.id, prompt);
+      await onFork(followupNode.id, prompt, null, askAnchor);
       setFollowup("");
+      setAskAnchor(null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1683,6 +1903,48 @@ export default function ResearchDocument({
   const awaitingCheckpoint =
     !isDocument && displayNode.status === "complete" && !displayNode.nativeSessionId;
 
+  // One renderer for both placements: cards whose query anchor resolved sit
+  // absolutely beside their passage; everything else stacks in flow. A card
+  // with an anchor that no longer resolves keeps its quote but rejoins the
+  // stack.
+  const renderFollowupCard = (child: ResearchNode, anchoredTop?: number) => (
+    <button
+      key={child.id}
+      type="button"
+      className={`control-button research-followup-card${
+        anchoredTop !== undefined ? " is-anchored" : ""
+      }`}
+      style={anchoredTop !== undefined ? { top: anchoredTop } : undefined}
+      onClick={() => selectNode(child.id)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openFollowupMenu(child.id, event.clientX, event.clientY);
+      }}
+    >
+      {child.queryAnchor ? (
+        <span className="research-followup-quote">
+          {quoteDisplayText(child.queryAnchor.exact)}
+        </span>
+      ) : null}
+      <strong>{child.prompt}</strong>
+      {child.responsePreview ? (
+        <TranscriptMarkdown
+          text={child.responsePreview}
+          className="research-followup-preview"
+          imageBehavior="open"
+          inline
+        />
+      ) : null}
+      {child.status !== "complete" ? (
+        <small className={`is-${child.status}`}>{statusLabel(child.status)}</small>
+      ) : null}
+    </button>
+  );
+  const stackedChildren = childNodes.filter(
+    (child) => anchoredCardTops[child.id] === undefined,
+  );
+
   return (
     <TranscriptLinkActionsProvider actions={linkActions}>
       <>
@@ -1794,6 +2056,11 @@ export default function ResearchDocument({
                       <ArrowLeft size={13} aria-hidden="true" />
                       Back
                     </button>
+                  ) : null}
+                  {displayNode.queryAnchor ? (
+                    <blockquote className="research-prompt-quote">
+                      {quoteDisplayText(displayNode.queryAnchor.exact)}
+                    </blockquote>
                   ) : null}
                   <TranscriptMarkdown text={displayNode.prompt} imageBehavior="open" inline />
                 </div>
@@ -1930,12 +2197,33 @@ export default function ResearchDocument({
                   ) : null}
                 </section>
 
-                <aside className="research-followups" aria-label="Follow-ups">
+                <aside
+                  ref={followupsAsideRef}
+                  className="research-followups"
+                  aria-label="Follow-ups"
+                >
                   <div
+                    ref={followupComposerRef}
                     className={`research-followup-composer${
                       archived || displayNode.status !== "complete" ? " is-disabled" : ""
-                    }`}
+                    }${askAnchor ? " is-anchored" : ""}`}
                   >
+                    {askAnchor ? (
+                      <div className="research-followup-quote-row">
+                        <span className="research-followup-quote">
+                          {quoteDisplayText(askAnchor.exact)}
+                        </span>
+                        <button
+                          type="button"
+                          className="control-button research-followup-quote-dismiss"
+                          aria-label="Cancel the targeted question"
+                          title="Cancel (Esc)"
+                          onClick={() => setAskAnchor(null)}
+                        >
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ) : null}
                     {/* Reserved for later use: the follow-up mode toggle that
                         offered plain "Ask about" vs "Deep research" follow-ups.
                         Re-enabling it needs the `followupMode` state and the
@@ -1971,7 +2259,13 @@ export default function ResearchDocument({
                     <textarea
                       ref={followupTextareaRef}
                       value={followup}
-                      placeholder={isDocument ? "Ask about this document…" : "Type your query…"}
+                      placeholder={
+                        askAnchor
+                          ? "Ask about the highlighted text…"
+                          : isDocument
+                            ? "Ask about this document…"
+                            : "Type your query…"
+                      }
                       aria-label="Follow-up question"
                       disabled={archived || displayNode.status !== "complete"}
                       onChange={(event) => setFollowup(event.currentTarget.value)}
@@ -2008,34 +2302,17 @@ export default function ResearchDocument({
                       <small>Waiting for the native session checkpoint before branching.</small>
                     ) : null}
                   </div>
-                  <div className="research-followup-cards">
-                    {childNodes.map((child) => (
-                      <button
-                        key={child.id}
-                        type="button"
-                        className="control-button research-followup-card"
-                        onClick={() => selectNode(child.id)}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          openFollowupMenu(child.id, event.clientX, event.clientY);
-                        }}
-                      >
-                        <strong>{child.prompt}</strong>
-                        {child.responsePreview ? (
-                          <TranscriptMarkdown
-                            text={child.responsePreview}
-                            className="research-followup-preview"
-                            imageBehavior="open"
-                            inline
-                          />
-                        ) : null}
-                        {child.status !== "complete" ? (
-                          <small className={`is-${child.status}`}>{statusLabel(child.status)}</small>
-                        ) : null}
-                      </button>
-                    ))}
+                  <div ref={followupCardsRef} className="research-followup-cards">
+                    {stackedChildren.map((child) => renderFollowupCard(child))}
                   </div>
+                  {childNodes
+                    .filter((child) => anchoredCardTops[child.id] !== undefined)
+                    .sort(
+                      (a, b) => anchoredCardTops[a.id] - anchoredCardTops[b.id],
+                    )
+                    .map((child) =>
+                      renderFollowupCard(child, anchoredCardTops[child.id]),
+                    )}
                   {publicationBinding &&
                   (visiblePublicationProposals.length > 0 || proposalError) ? (
                     <section
@@ -2289,28 +2566,47 @@ export default function ResearchDocument({
           : null}
         {highlightAction
           ? createPortal(
-              <button
-                type="button"
-                className="control-button research-highlight-action"
+              <div
+                className="research-highlight-actions"
                 style={{ left: highlightAction.left, top: highlightAction.top }}
-                disabled={savingHighlight}
-                aria-keyshortcuts="H"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => void applyHighlightAction()}
               >
-                <span>
-                  {savingHighlight
-                    ? "Saving…"
-                    : highlightAction.highlightIds.length > 1
-                      ? "Remove highlights"
-                      : highlightAction.highlightIds.length === 1
-                        ? "Remove highlight"
-                        : "Highlight"}
-                </span>
-                <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
-                  H
-                </kbd>
-              </button>,
+                <button
+                  type="button"
+                  className="control-button research-highlight-action"
+                  disabled={savingHighlight}
+                  aria-keyshortcuts="H"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void applyHighlightAction()}
+                >
+                  <span>
+                    {savingHighlight
+                      ? "Saving…"
+                      : highlightAction.highlightIds.length > 1
+                        ? "Remove highlights"
+                        : highlightAction.highlightIds.length === 1
+                          ? "Remove highlight"
+                          : "Highlight"}
+                  </span>
+                  <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
+                    H
+                  </kbd>
+                </button>
+                {canAskSelection ? (
+                  <button
+                    type="button"
+                    className="control-button research-highlight-action"
+                    disabled={savingHighlight}
+                    aria-keyshortcuts="A"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={enterAskMode}
+                  >
+                    <span>Ask</span>
+                    <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
+                      A
+                    </kbd>
+                  </button>
+                ) : null}
+              </div>,
               document.body,
             )
           : null}

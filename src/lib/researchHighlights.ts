@@ -32,17 +32,27 @@ interface ResearchHighlightShortcutInput {
   altKey: boolean;
 }
 
-export function isResearchHighlightActionShortcut(
-  input: ResearchHighlightShortcutInput,
-) {
+function isBareShortcutKey(input: ResearchHighlightShortcutInput, key: string) {
   return (
     !input.defaultPrevented &&
     !input.repeat &&
     !input.metaKey &&
     !input.ctrlKey &&
     !input.altKey &&
-    input.key.toLowerCase() === "h"
+    input.key.toLowerCase() === key
   );
+}
+
+export function isResearchHighlightActionShortcut(
+  input: ResearchHighlightShortcutInput,
+) {
+  return isBareShortcutKey(input, "h");
+}
+
+export function isResearchAskActionShortcut(
+  input: ResearchHighlightShortcutInput,
+) {
+  return isBareShortcutKey(input, "a");
 }
 
 function contextMatchesAt(

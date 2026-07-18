@@ -122,6 +122,11 @@ pub struct ResearchNode {
     pub parent_node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication_proposal: Option<ResearchPublicationProposal>,
+    /// The passage of the parent's response this follow-up was asked about.
+    /// Anchors the node's card beside that passage in the parent's document
+    /// view; the quoted text also rides along in the launch prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_anchor: Option<ResearchHighlightAnchor>,
     pub prompt: String,
     /// Short generated title for breadcrumbs and menus. The full prompt stays
     /// the document's displayed user query.
@@ -1368,6 +1373,16 @@ pub fn document_followup_prompt(
     })
 }
 
+/// The launch prompt for a follow-up asked about a highlighted passage. The
+/// quote is the flat rendered text of the selection (block and inline
+/// formatting already absent), collapsed to single spaces; the bare question
+/// stays a normalized substring of the sent prompt so response-boundary
+/// matching keeps working.
+pub fn query_followup_prompt(exact: &str, question: &str) -> String {
+    let quote = normalized_text(exact);
+    format!("The user's question refers to this quoted passage:\n\n> {quote}\n\n{question}")
+}
+
 /// The synthetic turn that carries a document's markdown through the response
 /// snapshot pipeline. One assistant text turn: `get_research_node_content`
 /// returns it unchanged, the viewer's timeline renders it as markdown, and
@@ -1444,6 +1459,7 @@ mod tests {
             tree_id: tree.id.clone(),
             parent_node_id: None,
             publication_proposal: None,
+            query_anchor: None,
             prompt: "Question".to_string(),
             title: None,
             response_preview: Some("Answer".to_string()),
@@ -1801,6 +1817,15 @@ mod tests {
         let error = validate_detached_archive(&archive).unwrap_err();
         assert!(error.contains("not a root node"), "{error}");
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn query_followup_prompts_quote_the_collapsed_passage() {
+        let prompt = query_followup_prompt("Some  spaced\n\npassage", "Why is this true?");
+        assert!(prompt.contains("> Some spaced passage"), "{prompt}");
+        // The bare question must stay a normalized substring of the sent
+        // prompt so response-boundary matching still finds it.
+        assert!(prompt.ends_with("Why is this true?"), "{prompt}");
     }
 
     #[test]

@@ -714,6 +714,18 @@
   max-width: 100%;
 }
 
+/* The quoted passage a targeted follow-up was asked about, shown above the
+   question on the follow-up's own page. */
+.research-prompt-quote {
+  margin: 0 0 8px;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent-color);
+  color: #a6aea9;
+  font-size: calc(13px + var(--research-answer-font-delta));
+  font-style: italic;
+  line-height: 1.45;
+}
+
 .research-prompt .turn-markdown {
   color: #f0f2ef;
   font-size: calc(14px + var(--research-answer-font-delta));
@@ -772,9 +784,22 @@
   background: #162f90;
 }
 
-.research-highlight-action {
+/* Passages that targeted follow-ups were asked about (and the passage an ask
+   is currently being composed against). Warm tone so they read distinctly
+   from saved highlights. */
+::highlight(qmux-research-query-anchors) {
+  color: inherit;
+  background: #4a3a10;
+}
+
+.research-highlight-actions {
   position: fixed;
   z-index: var(--z-context-menu);
+  display: flex;
+  gap: 6px;
+}
+
+.research-highlight-action {
   gap: 7px;
   width: max-content;
   min-height: 27px;
@@ -1012,8 +1037,11 @@
   background: #24282b;
 }
 
-/* Follow-up controls remain in the document flow beside the response. */
+/* Follow-up controls remain in the document flow beside the response. The
+   rail is the positioning context for anchored cards and the ask-mode
+   composer slide. */
 .research-followups {
+  position: relative;
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -1037,6 +1065,50 @@
   --fs-sm: calc(var(--research-meta-font-size) - 1.5px);
   --fs-base: var(--research-meta-font-size);
   --composer-min-height: 96px;
+  transition: transform 0.35s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: transform;
+}
+
+/* Ask mode: the composer floats beside the quoted passage, above whatever
+   cards it slides across, on an opaque surface so overlap stays readable. */
+.research-followup-composer.is-anchored {
+  z-index: 5;
+  padding: 9px 10px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 10px;
+  background: var(--research-highlight-action-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.research-followup-quote-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.research-followup-quote {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 8px;
+  border-left: 2px solid var(--accent-color);
+  color: #9aa39e;
+  font-size: calc(var(--research-meta-font-size) - 1px);
+  font-style: italic;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.research-followup-quote-dismiss {
+  display: inline-flex;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 
 /* Same control as the sidebar's Terminal/Research switch, resized to sit as
@@ -1218,6 +1290,32 @@
   border-radius: 0;
   text-align: left;
   background: transparent;
+  transition: transform 0.35s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.research-followup-card .research-followup-quote {
+  margin-bottom: 5px;
+  -webkit-line-clamp: 2;
+}
+
+/* Targeted follow-ups sit beside the passage they were asked about. Cards may
+   overlap when anchors crowd together — an opaque surface plus a hover/focus
+   z-index raise keeps each one reachable. */
+.research-followup-card.is-anchored {
+  position: absolute;
+  z-index: 1;
+  right: 2px;
+  left: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: 10px;
+  background: var(--content-card-bg);
+}
+
+.research-followup-card.is-anchored:hover,
+.research-followup-card.is-anchored:focus-visible {
+  z-index: 4;
+  border-color: var(--surface-border-default);
 }
 
 .research-followup-card:hover > strong {
