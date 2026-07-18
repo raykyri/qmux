@@ -21,6 +21,11 @@ pub struct Turn {
     pub role: String,
     pub blocks: Vec<TurnBlock>,
     pub source_index: usize,
+    /// Milliseconds since the Unix epoch when the native transcript recorded
+    /// this turn; None for adapters or records without time data (and for
+    /// transcripts persisted before the field existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<TurnStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1417,6 +1422,144 @@ fn tail_should_continue(current: Option<Option<&str>>, bound_path: &str) -> bool
 /// real file the new session's SessionStart pointed us at.
 fn should_recover_missing(err_kind: ErrorKind, have_read_bound_file: bool) -> bool {
     err_kind == ErrorKind::NotFound && have_read_bound_file
+}
+
+/// Parses an RFC3339 timestamp ("2026-07-17T09:30:12.345Z", offset forms
+/// included) to milliseconds since the Unix epoch. Hand-rolled so transcript
+/// parsing stays dependency-free; anything unparseable yields None.
+pub(crate) fn rfc3339_to_epoch_ms(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    let digits = |range: std::ops::Range<usize>| -> Option<i64> {
+        let slice = text.get(range)?;
+        if !slice.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        slice.parse::<i64>().ok()
+    };
+    if bytes.len() < 20
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || !matches!(bytes.get(10), Some(&b'T' | &b't' | &b' '))
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let year = digits(0..4)?;
+    let month = digits(5..7)?;
+    let day = digits(8..10)?;
+    let hour = digits(11..13)?;
+    let minute = digits(14..16)?;
+    let second = digits(17..19)?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        return None;
+    }
+    // Leap seconds ("…:60Z") clamp to the following second rather than failing.
+    let second = second.min(60);
+
+    let mut index = 19;
+    let mut millis = 0i64;
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == start {
+            return None;
+        }
+        // Millisecond precision: pad short fractions, truncate long ones.
+        let fraction = &text[start..index.min(start + 3)];
+        let mut value = fraction.parse::<i64>().ok()?;
+        for _ in fraction.len()..3 {
+            value *= 10;
+        }
+        millis = value;
+    }
+    let offset_minutes = match bytes.get(index) {
+        Some(&b'Z' | &b'z') if index + 1 == bytes.len() => 0,
+        Some(sign @ (&b'+' | &b'-')) => {
+            if bytes.get(index + 3) != Some(&b':') || index + 6 != bytes.len() {
+                return None;
+            }
+            let hours = digits(index + 1..index + 3)?;
+            let minutes = digits(index + 4..index + 6)?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            (if *sign == b'+' { 1 } else { -1 }) * (hours * 60 + minutes)
+        }
+        _ => return None,
+    };
+
+    // Days-from-civil (Howard Hinnant): Gregorian date to days since the epoch.
+    let adjusted_year = if month <= 2 { year - 1 } else { year };
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let month_index = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_minutes * 60;
+    Some(seconds * 1_000 + millis)
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::rfc3339_to_epoch_ms;
+
+    #[test]
+    fn parses_utc_with_and_without_fraction() {
+        assert_eq!(rfc3339_to_epoch_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_to_epoch_ms("1970-01-01T00:00:00.250Z"), Some(250));
+        // 2026-07-17T09:30:12.345Z, cross-checked against `date -d ... +%s`.
+        assert_eq!(
+            rfc3339_to_epoch_ms("2026-07-17T09:30:12.345Z"),
+            Some(1_784_280_612_345)
+        );
+        // Fractions pad and truncate to millisecond precision.
+        assert_eq!(rfc3339_to_epoch_ms("1970-01-01T00:00:00.5Z"), Some(500));
+        assert_eq!(
+            rfc3339_to_epoch_ms("1970-01-01T00:00:00.123456Z"),
+            Some(123)
+        );
+    }
+
+    #[test]
+    fn honors_numeric_offsets() {
+        assert_eq!(
+            rfc3339_to_epoch_ms("1970-01-01T02:00:00+02:00"),
+            Some(0),
+            "positive offsets subtract"
+        );
+        assert_eq!(
+            rfc3339_to_epoch_ms("1969-12-31T19:00:00-05:00"),
+            Some(0),
+            "negative offsets add"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_inputs() {
+        for input in [
+            "",
+            "not a date",
+            "2026-07-17",
+            "2026-07-17T09:30",
+            "2026-07-17T09:30:12",
+            "2026-13-01T00:00:00Z",
+            "2026-07-17T09:30:12.Z",
+            "2026-07-17T09:30:12+0200",
+            "2026-07-17T09:30:12Zextra",
+        ] {
+            assert_eq!(rfc3339_to_epoch_ms(input), None, "input: {input:?}");
+        }
+    }
 }
 
 #[cfg(test)]

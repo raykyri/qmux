@@ -328,6 +328,9 @@ export interface Turn {
   role: string;
   blocks: TurnBlock[];
   sourceIndex: number;
+  /** Milliseconds since the Unix epoch when the native transcript recorded
+   * this turn; absent for adapters or records without time data. */
+  timestamp?: number | null;
   participant?: ThreadParticipant | null;
   status?: "superseded" | "interrupted" | "uncertain" | null;
   statusReason?: "codexRollback" | "interrupted" | "claudePromptBranch" | "unknownBranch" | null;
