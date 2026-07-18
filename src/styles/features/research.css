@@ -110,7 +110,7 @@
    as one control set. */
 .research-sidebar-row:hover {
   color: var(--text-interactive);
-  background: var(--pane-hover-bg);
+  background: var(--research-sidebar-hover-bg);
 }
 
 .research-sidebar-row.is-selected {
@@ -148,7 +148,7 @@
   border: 0;
   border-radius: 5px;
   color: var(--text-subtle);
-  background: var(--pane-hover-bg);
+  background: var(--research-sidebar-hover-bg);
 }
 
 .research-sidebar-row:hover > .research-sidebar-menu-trigger,

@@ -202,6 +202,7 @@
   --chrome-header-bg: #14171a;
   --pane-hover-bg: #1b1f21;
   --pane-tab-hover-bg: var(--pane-hover-bg);
+  --research-sidebar-hover-bg: var(--pane-hover-bg);
   --markdown-table-header-bg: color-mix(
     in srgb,
     var(--pane-hover-bg) 75%,
@@ -274,6 +275,7 @@
   --chrome-header-bg: #171716;
   --pane-hover-bg: #23211f;
   --pane-tab-hover-bg: var(--right-pane-bg);
+  --research-sidebar-hover-bg: #222221;
   --markdown-table-header-bg: color-mix(
     in srgb,
     var(--pane-hover-bg) 75%,
@@ -297,8 +299,8 @@
   --home-cascade-current-bg: #201e1a;
   --prompt-library-item-menu-bg: #393531;
   --recovered-queue-divider: #34312d;
-  --research-highlight-action-bg: #3a3530;
-  --research-highlight-action-bg-hover: #443f39;
+  --research-highlight-action-bg: #363636;
+  --research-highlight-action-bg-hover: #404040;
   --research-followup-composer-bg: #343434;
   --research-drop-overlay-border: rgba(210, 204, 194, 0.72);
   --research-drop-overlay-bg: rgba(22, 21, 19, 0.92);
