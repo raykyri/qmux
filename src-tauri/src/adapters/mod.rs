@@ -362,7 +362,7 @@ fn claude_native_content_has_interruption_marker(content: &Value) -> bool {
     }
 }
 
-fn is_claude_interruption_marker(text: &str) -> bool {
+pub(crate) fn is_claude_interruption_marker(text: &str) -> bool {
     matches!(
         text.trim(),
         "[Request interrupted by user]" | "[Request interrupted by user for tool use]"

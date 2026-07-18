@@ -906,6 +906,36 @@ async fn create_research_document(
 }
 
 #[tauri::command]
+async fn export_pane_to_research(
+    state: tauri::State<'_, AppState>,
+    request: research::ExportPaneToResearchRequest,
+) -> Result<ResearchTreeDetail, String> {
+    let state = state.inner().clone();
+    // Blocking: the export reads the source transcript (twice, for a stable
+    // parse) and fsyncs the conversation snapshot.
+    tauri::async_runtime::spawn_blocking(move || {
+        // The slow work — transcript reads, sanitization, the snapshot write
+        // — runs unguarded, like create_research_tree's spawn: only
+        // admission needs atomicity with workspace mutations, and a failure
+        // after prepare strands at most an orphan snapshot.
+        let prepared = state.prepare_pane_export(&request.pane_id)?;
+        let committed = {
+            let _guard = workspace::lock_research_workspace_mutations()?;
+            validate_launch_workspace(&state, Some(&request.group_id), LaunchOrigin::Research)
+                .and_then(|_| state.commit_pane_export(&prepared, request.group_id, request.title))
+        };
+        if committed.is_err() {
+            // Redundant after a commit-side admission failure (the removal is
+            // idempotent), but validation failures never reach commit.
+            state.discard_pane_export(&prepared);
+        }
+        committed
+    })
+    .await
+    .map_err(|err| format!("export_pane_to_research task failed: {err}"))?
+}
+
+#[tauri::command]
 async fn update_research_document(
     state: tauri::State<'_, AppState>,
     request: UpdateResearchDocumentRequest,
@@ -1035,27 +1065,43 @@ async fn fork_research_node(
             Some(anchor) => research::query_followup_prompt(&anchor.exact, &child.prompt),
             None => child.prompt.clone(),
         };
-        if parent.kind == research::ResearchNodeKind::Document {
-            // A document has no session to fork. Its follow-up launches a
-            // fresh run whose prompt carries the document as context; the
-            // child's displayed prompt stays the bare question (the response
-            // boundary still matches it as a substring of the sent prompt).
-            let launch_prompt = state.research_document_followup_prompt(&parent.id, &question);
-            let launch_prompt = match launch_prompt {
-                Ok(launch_prompt) => launch_prompt,
-                Err(err) => {
-                    let _ = state.fail_research_node(&child.id, err.clone());
-                    return Err(err);
-                }
-            };
-            return launch_fresh_research_run(
-                &state,
-                &child.id,
-                &workspace,
-                &child.adapter,
-                child.model.clone(),
-                launch_prompt,
-            );
+        // Exhaustive on purpose: each kind must pick its launch path
+        // explicitly, so a new kind (or lifting a refusal in
+        // create_research_child) forces a decision here instead of falling
+        // into the session-fork branch without a checkpoint.
+        match parent.kind {
+            research::ResearchNodeKind::Document => {
+                // A document has no session to fork. Its follow-up launches a
+                // fresh run whose prompt carries the document as context; the
+                // child's displayed prompt stays the bare question (the
+                // response boundary still matches it as a substring of the
+                // sent prompt).
+                let launch_prompt = state.research_document_followup_prompt(&parent.id, &question);
+                let launch_prompt = match launch_prompt {
+                    Ok(launch_prompt) => launch_prompt,
+                    Err(err) => {
+                        let _ = state.fail_research_node(&child.id, err.clone());
+                        return Err(err);
+                    }
+                };
+                return launch_fresh_research_run(
+                    &state,
+                    &child.id,
+                    &workspace,
+                    &child.adapter,
+                    child.model.clone(),
+                    launch_prompt,
+                );
+            }
+            research::ResearchNodeKind::Conversation => {
+                // Unreachable while create_research_child refuses
+                // conversation parents; the serialized-context launch path
+                // replaces this arm when it lands.
+                let err = "follow-ups on exported conversations are not available yet".to_string();
+                let _ = state.fail_research_node(&child.id, err.clone());
+                return Err(err);
+            }
+            research::ResearchNodeKind::Run => {}
         }
         let live_source = parent
             .agent_id
@@ -2111,6 +2157,7 @@ fn main() {
             get_research_tree,
             create_research_tree,
             create_research_document,
+            export_pane_to_research,
             update_research_document,
             read_markdown_document_file,
             get_research_node_content,

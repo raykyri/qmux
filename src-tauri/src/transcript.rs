@@ -1086,7 +1086,72 @@ fn truncate_preview(text: &str) -> String {
     format!("{head}…")
 }
 
-fn is_tagged_user_instruction(text: &str) -> bool {
+/// Strips qmux-injected tagged instruction blocks from the front of a user
+/// message, mirroring `stripLeadingTaggedInstructionBlocks` in
+/// src/lib/taggedInstructions.ts: repeated `# `-labelled prefix lines and
+/// line-structured `<tag>…</tag>` blocks (depth-matched) are removed until
+/// real content is reached. Returns `None` when nothing but instruction
+/// blocks remain. Narrower than the frontend on purpose — only whole-line
+/// tags are recognized, so a message merely *containing* markup is kept
+/// rather than over-stripped.
+pub(crate) fn strip_leading_tagged_instruction_blocks(text: &str) -> Option<&str> {
+    let mut current = text;
+    let mut removed = false;
+    loop {
+        let Some(content_start) = tagged_instruction_content_start(current) else {
+            // Only `# ` label lines or blank lines remain. If blocks were
+            // stripped, those labels belonged to them; otherwise the message
+            // was headings all along and stays as it is.
+            return if removed { None } else { Some(current) };
+        };
+        let content = &current[content_start..];
+        let first_line_end = content.find('\n').unwrap_or(content.len());
+        let first_line =
+            trim_horizontal_whitespace(strip_trailing_carriage_return(&content[..first_line_end]));
+        if parse_inline_tag(first_line).is_some() {
+            let cut = content_start + first_line_end;
+            current = current.get(cut + 1..).unwrap_or("");
+            removed = true;
+            continue;
+        }
+        let Some(opening_tag) = parse_opening_tag(first_line) else {
+            // Real content: keep the remainder as-is, including any `# ` lines
+            // before it — headings are content when no block follows them.
+            return Some(current);
+        };
+        let mut depth = 1usize;
+        let mut cursor = content_start + first_line_end;
+        let mut block_end = None;
+        while cursor < current.len() {
+            let line_start = cursor + 1;
+            let line_end = current[line_start..]
+                .find('\n')
+                .map(|index| line_start + index)
+                .unwrap_or(current.len());
+            let line = trim_horizontal_whitespace(strip_trailing_carriage_return(
+                &current[line_start..line_end],
+            ));
+            if parse_opening_tag(line) == Some(opening_tag) {
+                depth += 1;
+            } else if parse_closing_tag(line) == Some(opening_tag) {
+                depth -= 1;
+                if depth == 0 {
+                    block_end = Some(line_end);
+                    break;
+                }
+            }
+            cursor = line_end;
+        }
+        // An unterminated block is content, not an instruction wrapper.
+        let Some(block_end) = block_end else {
+            return Some(current);
+        };
+        current = current.get(block_end + 1..).unwrap_or("");
+        removed = true;
+    }
+}
+
+pub(crate) fn is_tagged_user_instruction(text: &str) -> bool {
     let Some(content_start) = tagged_instruction_content_start(text) else {
         return false;
     };
@@ -2028,6 +2093,57 @@ mod tests {
         assert_eq!(line_count, 3);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn strip_leading_tagged_instruction_blocks_mirrors_the_frontend_semantics() {
+        // Whole-message block: nothing left.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks(
+                "<system-reminder>\ninjected\n</system-reminder>"
+            ),
+            None
+        );
+        // Leading block followed by real content: the block goes, the
+        // content stays.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks(
+                "<system-reminder>\ninjected\n</system-reminder>\n\nReal question"
+            ),
+            Some("\nReal question")
+        );
+        // Repeated blocks with `# ` labels between them all strip together.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks(
+                "# label\n<a-tag>\none\n</a-tag>\n# other\n<b-tag>\ntwo\n</b-tag>\nkept"
+            ),
+            Some("kept")
+        );
+        // Inline single-line tag blocks strip too.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks("<note>inline</note>\nkept"),
+            Some("kept")
+        );
+        // Headings without a following block are content, kept intact.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks("# My heading\ncontent"),
+            Some("# My heading\ncontent")
+        );
+        // An unterminated block is content, not an instruction wrapper.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks("<config>\nkey = value"),
+            Some("<config>\nkey = value")
+        );
+        // A tag line with attributes is not an instruction tag.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks("<ide_context file=\"a.rs\">\nbody"),
+            Some("<ide_context file=\"a.rs\">\nbody")
+        );
+        // Nested same-name blocks are depth-matched like the frontend.
+        assert_eq!(
+            strip_leading_tagged_instruction_blocks("<t>\n<t>\ninner\n</t>\n</t>\nkept"),
+            Some("kept")
+        );
     }
 
     #[test]

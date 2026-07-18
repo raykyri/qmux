@@ -18,9 +18,12 @@ pub const MAX_RESEARCH_DOCUMENT_WORDS: usize = 10_000;
 /// Backstop for word-sparse documents (one giant token counts as one word).
 /// Imports and the composer both advertise this exact limit.
 pub const MAX_RESEARCH_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
-pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 4;
-/// Written for archives that contain no document nodes, so they stay readable
-/// by pre-documents builds (which accept versions 1–3).
+pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 5;
+/// Written for archives whose newest content kind is document nodes, so they
+/// stay readable by pre-conversations builds (which accept versions 1–4).
+const DETACHED_RESEARCH_ARCHIVE_VERSION_DOCUMENTS: u32 = 4;
+/// Written for archives that contain no document or conversation nodes, so
+/// they stay readable by pre-documents builds (which accept versions 1–3).
 const DETACHED_RESEARCH_ARCHIVE_VERSION_RUNS_ONLY: u32 = 3;
 const DETACHED_RESEARCH_DIR: &str = "research-v1";
 const DETACHED_RESEARCH_PENDING_DIR: &str = "research-v1.pending";
@@ -94,15 +97,18 @@ impl ResearchNodeStatus {
 
 /// What produced a node's content. `Run` nodes carry an agent run (adapter,
 /// session, pane bindings); `Document` nodes carry user-authored markdown that
-/// rides the same response-snapshot pipeline as run responses. The default
-/// keeps every pre-documents `state.json` and detached archive loading as
-/// plain runs.
+/// rides the same response-snapshot pipeline as run responses; `Conversation`
+/// nodes carry a terminal agent conversation exported as a point-in-time
+/// snapshot, sanitized and severed from its source session. The default keeps
+/// every pre-documents `state.json` and detached archive loading as plain
+/// runs.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResearchNodeKind {
     #[default]
     Run,
     Document,
+    Conversation,
 }
 
 impl ResearchNodeKind {
@@ -111,6 +117,17 @@ impl ResearchNodeKind {
     pub fn is_run(&self) -> bool {
         matches!(self, Self::Run)
     }
+}
+
+/// Where a node's content came from when it was not produced by a research
+/// launch or the document composer. Exported terminal conversations are
+/// marked so viewers, archives, and publication can surface their provenance:
+/// that content was produced under a terminal agent's full permissions, not a
+/// research run.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResearchNodeOrigin {
+    TerminalExport,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -158,6 +175,11 @@ pub struct ResearchNode {
     pub thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "ResearchNodeKind::is_run")]
     pub kind: ResearchNodeKind,
+    /// Provenance for content that did not come from a research launch.
+    /// Absent on every run and document node, so those serialize
+    /// byte-identically to builds that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ResearchNodeOrigin>,
     pub status: ResearchNodeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -227,6 +249,35 @@ pub struct CreateResearchDocumentRequest {
     /// never a directory.
     #[serde(rename = "workspaceId", alias = "groupId")]
     pub group_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPaneToResearchRequest {
+    pub pane_id: String,
+    /// Same contract as [`CreateResearchTreeRequest::group_id`]: identity only,
+    /// never a directory.
+    #[serde(rename = "workspaceId", alias = "groupId")]
+    pub group_id: String,
+    pub title: Option<String>,
+}
+
+/// Everything a conversation export computes before its records are
+/// admitted: identity for the new tree and node, display fields, and the
+/// already-durable verified snapshot. Produced by `prepare_pane_export`
+/// outside the research workspace-mutation guard (the transcript read and
+/// snapshot write are the slow parts), consumed by `commit_pane_export`
+/// under it; a crash in between strands only an orphan snapshot, which
+/// `prune_response_snapshots` reclaims.
+#[derive(Clone, Debug)]
+pub struct PreparedPaneExport {
+    pub tree_id: String,
+    pub node_id: String,
+    pub prompt: String,
+    pub response_preview: Option<String>,
+    pub adapter: String,
+    pub model: Option<String>,
+    pub agent_created_at: u128,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -442,10 +493,36 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
         if highlight_bytes_total > MAX_RESEARCH_HIGHLIGHT_BYTES_TOTAL {
             return Err("detached research archive contains too much highlight data".to_string());
         }
-        if node.kind == ResearchNodeKind::Document && node.parent_node_id.is_some() {
-            // Documents are root-level items; the create path is the only
-            // writer and never nests them, so a nested one is corruption.
-            return Err(format!("research document {} is not a root node", node.id));
+        // Documents and exported conversations are root-level items; their
+        // create paths are the only writers and never nest them, so a nested
+        // one is corruption.
+        let root_only_label = match node.kind {
+            ResearchNodeKind::Run => None,
+            ResearchNodeKind::Document => Some("document"),
+            ResearchNodeKind::Conversation => Some("conversation"),
+        };
+        if let Some(label) = root_only_label
+            && node.parent_node_id.is_some()
+        {
+            return Err(format!("research {label} {} is not a root node", node.id));
+        }
+        // The export path severs every pointer back to the source session and
+        // settles the node Complete before it becomes durable. An archive
+        // node that claims otherwise was not written by qmux, and importing
+        // it would hand the shared read/bind machinery a conversation with
+        // live-looking bindings.
+        if node.kind == ResearchNodeKind::Conversation
+            && (node.status != ResearchNodeStatus::Complete
+                || node.native_session_id.is_some()
+                || node.transcript_path.is_some()
+                || node.agent_id.is_some()
+                || node.prompt_native_id.is_some()
+                || node.thread_id.is_some())
+        {
+            return Err(format!(
+                "research conversation {} is not severed from its source session",
+                node.id
+            ));
         }
         if let Some(parent_id) = node.parent_node_id.as_deref() {
             let parent = node_by_id
@@ -481,16 +558,22 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
     Ok(())
 }
 
-/// The version to stamp on a new archive: the current version only when the
-/// content actually needs it. Pre-documents builds refuse anything above 3
-/// with an "upgrade this installation" error, so archives without documents
-/// keep the widest compatibility.
+/// The version to stamp on a new archive: the lowest version whose readers
+/// understand every node kind present, so archives keep the widest
+/// compatibility their content allows. Pre-conversations builds refuse
+/// anything above 4 (and pre-documents builds anything above 3) with an
+/// "upgrade this installation" error.
 pub fn detached_archive_version(nodes: &[ResearchNode]) -> u32 {
     if nodes
         .iter()
-        .any(|node| node.kind == ResearchNodeKind::Document)
+        .any(|node| node.kind == ResearchNodeKind::Conversation)
     {
         DETACHED_RESEARCH_ARCHIVE_VERSION
+    } else if nodes
+        .iter()
+        .any(|node| node.kind == ResearchNodeKind::Document)
+    {
+        DETACHED_RESEARCH_ARCHIVE_VERSION_DOCUMENTS
     } else {
         DETACHED_RESEARCH_ARCHIVE_VERSION_RUNS_ONLY
     }
@@ -649,7 +732,23 @@ fn read_detached_research_from_path(
             manifest_path.display()
         ));
     }
-    let mut archive: DetachedResearchArchive = serde_json::from_slice(&raw)
+    // The version gate must run against the raw JSON before the typed parse:
+    // a future archive version can carry node kinds this build's enums do not
+    // know, and failing on those first would misreport "written by a newer
+    // qmux" as manifest corruption (with move-this-directory-aside guidance
+    // that discards a valid archive).
+    let raw_value: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|err| format!("failed to decode {}: {err}", manifest_path.display()))?;
+    let raw_version = raw_value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if !(1..=u64::from(DETACHED_RESEARCH_ARCHIVE_VERSION)).contains(&raw_version) {
+        return Err(format!(
+            "unsupported detached research archive version {raw_version} (it may have been written by a newer qmux; upgrade this installation to restore it)"
+        ));
+    }
+    let mut archive: DetachedResearchArchive = serde_json::from_value(raw_value)
         .map_err(|err| format!("failed to decode {}: {err}", manifest_path.display()))?;
     if archive.version == 1 && archive.archive_id.is_empty() {
         let digest = Sha256::digest(&raw);
@@ -828,6 +927,36 @@ pub fn write_response_snapshot(
     node_id: &str,
     turns: &[crate::transcript::Turn],
 ) -> Result<(), String> {
+    write_response_snapshot_inner(workspace_root, node_id, turns).map(|_| ())
+}
+
+/// [`write_response_snapshot`] plus a byte-level read-back of the committed
+/// file, for callers whose records must never point at a snapshot that did
+/// not round-trip. The comparison is against the encoded bytes, so no second
+/// JSON parse or turn tree is materialized.
+pub fn write_response_snapshot_verified(
+    workspace_root: &Path,
+    node_id: &str,
+    turns: &[crate::transcript::Turn],
+) -> Result<(), String> {
+    let (path, raw) = write_response_snapshot_inner(workspace_root, node_id, turns)?;
+    let written = std::fs::read(&path)
+        .map_err(|err| format!("failed to read back {}: {err}", path.display()))?;
+    if written != raw {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!(
+            "snapshot {} did not round-trip; the write was discarded",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn write_response_snapshot_inner(
+    workspace_root: &Path,
+    node_id: &str,
+    turns: &[crate::transcript::Turn],
+) -> Result<(PathBuf, Vec<u8>), String> {
     let path = response_snapshot_path(workspace_root, node_id)?;
     let parent = path.parent().expect("snapshot path has a parent");
     std::fs::create_dir_all(parent)
@@ -858,7 +987,7 @@ pub fn write_response_snapshot(
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
-    Ok(())
+    Ok((path, raw))
 }
 
 pub fn response_revision(turns: &[crate::transcript::Turn]) -> Result<String, String> {
@@ -1008,14 +1137,16 @@ pub fn remove_response_snapshot(workspace_root: &Path, node_id: &str) -> Result<
     Ok(())
 }
 
-pub fn load_transcript_response(
+/// Reads an adapter transcript into parsed turns, bounded by
+/// [`MAX_RESPONSE_SOURCE_BYTES`]. Shared by research response loading (which
+/// trims to the node's response) and terminal conversation export (which
+/// keeps the whole timeline).
+pub fn load_transcript_turns(
     config: &crate::config::QmuxConfig,
-    node: &ResearchNode,
+    adapter_id: &str,
+    agent_id: &str,
+    path: &str,
 ) -> Result<Vec<crate::transcript::Turn>, String> {
-    let path = node
-        .transcript_path
-        .as_deref()
-        .ok_or_else(|| "research node has no transcript path".to_string())?;
     let file = std::fs::File::open(path)
         .map_err(|err| format!("failed to open research transcript {path}: {err}"))?;
     let transcript_bytes = file
@@ -1032,9 +1163,24 @@ pub fn load_transcript_response(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("failed to read research transcript {path}: {err}"))?;
     let registry = crate::adapters::adapter_registry(config);
-    let adapter = registry.get(&node.adapter)?;
-    let turns =
-        adapter.resolve_transcript_turns(node.agent_id.as_deref().unwrap_or(&node.id), 0, &lines);
+    let adapter = registry.get(adapter_id)?;
+    Ok(adapter.resolve_transcript_turns(agent_id, 0, &lines))
+}
+
+pub fn load_transcript_response(
+    config: &crate::config::QmuxConfig,
+    node: &ResearchNode,
+) -> Result<Vec<crate::transcript::Turn>, String> {
+    let path = node
+        .transcript_path
+        .as_deref()
+        .ok_or_else(|| "research node has no transcript path".to_string())?;
+    let turns = load_transcript_turns(
+        config,
+        &node.adapter,
+        node.agent_id.as_deref().unwrap_or(&node.id),
+        path,
+    )?;
     Ok(response_turns(
         &turns,
         node.prompt_native_id.as_deref(),
@@ -1407,6 +1553,285 @@ pub fn document_turn(node_id: &str, markdown: &str) -> crate::transcript::Turn {
     }
 }
 
+/// Marker block standing in for a collapsed run of tool activity in an
+/// exported conversation. Tool inputs and outputs from a terminal session are
+/// the most likely place for secrets and injected text to hide, so exports
+/// keep only the fact that activity happened — the call count — never the
+/// payloads.
+pub const CONVERSATION_TOOL_ACTIVITY_TYPE: &str = "qmuxToolActivity";
+
+fn conversation_tool_activity_turn(
+    node_id: &str,
+    index: usize,
+    tool_calls: usize,
+) -> crate::transcript::Turn {
+    crate::transcript::Turn {
+        id: format!("{node_id}-{index}"),
+        agent_id: node_id.to_string(),
+        session_id: None,
+        role: "assistant".to_string(),
+        blocks: vec![crate::transcript::TurnBlock::Raw {
+            value: serde_json::json!({
+                "type": CONVERSATION_TOOL_ACTIVITY_TYPE,
+                "toolCalls": tool_calls,
+            }),
+        }],
+        source_index: index,
+        timestamp: None,
+        status: None,
+        status_reason: None,
+        native_id: None,
+        parent_native_id: None,
+        native_message_id: None,
+    }
+}
+
+/// User text a conversation export keeps: the message with any qmux-injected
+/// leading instruction blocks stripped away, mirroring the frontend's
+/// copy/publication sanitizers. `None` for text that is entirely injected
+/// machinery — instruction blocks, adapter interruption markers — or empty
+/// once stripped.
+fn exportable_user_text(text: &str) -> Option<String> {
+    let remainder = crate::transcript::strip_leading_tagged_instruction_blocks(text)?;
+    if remainder.trim().is_empty() || crate::adapters::is_claude_interruption_marker(remainder) {
+        return None;
+    }
+    // Blank lines left behind by a stripped block are not content.
+    Some(remainder.trim_start().to_string())
+}
+
+/// Whether a Raw block carries a user attachment (an image pasted into the
+/// prompt). Attachments must keep their place in the exchange structure even
+/// though their payloads never leave the terminal.
+fn is_user_attachment_block(block: &crate::transcript::TurnBlock) -> bool {
+    matches!(block, crate::transcript::TurnBlock::Raw { value }
+        if value.get("type").and_then(serde_json::Value::as_str) == Some("image"))
+}
+
+/// Whether a Raw block records tool activity that adapters do not surface as
+/// a `ToolUse` block — Claude server-side tools (`server_tool_use`,
+/// `mcp_tool_use`) and the like. Counted so collapsed activity markers do not
+/// silently omit that work happened.
+fn is_raw_tool_call_block(block: &crate::transcript::TurnBlock) -> bool {
+    matches!(block, crate::transcript::TurnBlock::Raw { value }
+        if value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|block_type| block_type.ends_with("tool_use")))
+}
+
+/// Whether a user turn carries a prompt the export would keep: exportable
+/// text (the user's own words) or an attachment. This is the same notion of
+/// "prompt" the sanitizer applies, so the mid-turn boundary and the export
+/// filter can never disagree about where an exchange starts.
+fn turn_has_exportable_prompt(turn: &crate::transcript::Turn) -> bool {
+    turn.role == "user"
+        && turn.blocks.iter().any(|block| {
+            is_user_attachment_block(block)
+                || matches!(block, crate::transcript::TurnBlock::Text { text }
+                    if exportable_user_text(text).is_some())
+        })
+}
+
+/// The index where the exchange currently in flight begins: the last user
+/// turn carrying an exportable prompt. Exporting a busy agent must not
+/// persist a half-streamed answer as delivered content, so everything from
+/// this boundary on is dropped. A mid-turn steering message moves the
+/// boundary to itself, which can retain the delivered part of the steered
+/// exchange — acceptable, since everything kept preceded a message the user
+/// actually sent.
+pub fn completed_exchange_boundary(turns: &[crate::transcript::Turn]) -> Option<usize> {
+    turns.iter().rposition(turn_has_exportable_prompt)
+}
+
+/// The turns before the in-flight exchange; see
+/// [`completed_exchange_boundary`].
+pub fn completed_exchange_turns(turns: &[crate::transcript::Turn]) -> &[crate::transcript::Turn] {
+    match completed_exchange_boundary(turns) {
+        Some(index) => &turns[..index],
+        None => turns,
+    }
+}
+
+/// The marker text standing in for a user image attachment. The payload never
+/// leaves the terminal, but the turn must keep its place or the following
+/// answer reads as a reply to the wrong prompt.
+pub const CONVERSATION_ATTACHMENT_MARKER: &str = "[image attachment]";
+
+/// Sanitizes a terminal agent's timeline into the durable turns of an
+/// exported conversation node. The export is a content copy, never a
+/// capability copy:
+///
+/// - Only user and assistant turns survive; system and other roles are
+///   dropped.
+/// - Tool inputs and outputs are removed entirely; each contiguous run of
+///   tool activity collapses into one [`CONVERSATION_TOOL_ACTIVITY_TYPE`]
+///   marker turn so readers still see that work happened, without its
+///   payloads. Server-side tool calls that adapters record as Raw blocks are
+///   counted into the same markers; other Raw blocks (thinking, protocol
+///   frames) are dropped uncounted.
+/// - User image attachments become [`CONVERSATION_ATTACHMENT_MARKER`] text so
+///   exchange structure survives without the payload.
+/// - qmux-injected tagged-instruction blocks are stripped from user text
+///   (whole-message and leading-block forms); adapter interruption markers
+///   and superseded (rewound) turns are dropped — none of that is
+///   conversation the user held.
+/// - Turn ids are reissued from the node id and native session/message ids
+///   are cleared: the exported node must hold no pointer back to the source
+///   session.
+pub fn conversation_export_turns(
+    node_id: &str,
+    turns: &[crate::transcript::Turn],
+) -> Result<Vec<crate::transcript::Turn>, String> {
+    use crate::transcript::{Turn, TurnBlock};
+    fn flush_tool_activity(node_id: &str, out: &mut Vec<Turn>, pending: &mut usize) {
+        if *pending > 0 {
+            let turn = conversation_tool_activity_turn(node_id, out.len(), *pending);
+            out.push(turn);
+            *pending = 0;
+        }
+    }
+    let mut out: Vec<Turn> = Vec::new();
+    let mut pending_tool_calls = 0usize;
+    let mut has_prompt = false;
+    let mut has_answer = false;
+    for turn in turns {
+        if turn.status == Some(crate::transcript::TurnStatus::Superseded) {
+            continue;
+        }
+        let role = turn.role.as_str();
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let mut texts: Vec<String> = Vec::new();
+        let mut turn_tool_calls = 0usize;
+        let mut attachments = 0usize;
+        for block in &turn.blocks {
+            match block {
+                TurnBlock::Text { text } => {
+                    if role == "user" {
+                        if let Some(text) = exportable_user_text(text) {
+                            texts.push(text);
+                        }
+                    } else if !text.trim().is_empty() {
+                        texts.push(text.clone());
+                    }
+                }
+                TurnBlock::ToolUse { .. } => {
+                    if role == "assistant" {
+                        turn_tool_calls += 1;
+                    }
+                }
+                TurnBlock::Raw { .. } if role == "user" && is_user_attachment_block(block) => {
+                    attachments += 1;
+                }
+                TurnBlock::Raw { .. } if role == "assistant" && is_raw_tool_call_block(block) => {
+                    turn_tool_calls += 1;
+                }
+                // Results answer calls already counted on the assistant side;
+                // remaining Raw blocks are adapter internals with no place in
+                // a durable export.
+                TurnBlock::ToolResult { .. } | TurnBlock::Raw { .. } => {}
+            }
+        }
+        if attachments > 0 {
+            texts.push(CONVERSATION_ATTACHMENT_MARKER.to_string());
+        }
+        if !texts.is_empty() {
+            // Adapters emit an assistant message's text before its tool
+            // calls, so activity pending from earlier turns lands ahead of
+            // this text and this turn's own calls join the next marker.
+            flush_tool_activity(node_id, &mut out, &mut pending_tool_calls);
+            let index = out.len();
+            out.push(Turn {
+                id: format!("{node_id}-{index}"),
+                agent_id: node_id.to_string(),
+                session_id: None,
+                role: role.to_string(),
+                blocks: texts
+                    .into_iter()
+                    .map(|text| TurnBlock::Text { text })
+                    .collect(),
+                source_index: index,
+                timestamp: turn.timestamp,
+                status: turn.status,
+                status_reason: turn.status_reason,
+                native_id: None,
+                parent_native_id: None,
+                native_message_id: None,
+            });
+            if role == "user" {
+                has_prompt = true;
+            } else {
+                has_answer = true;
+            }
+        }
+        pending_tool_calls += turn_tool_calls;
+    }
+    flush_tool_activity(node_id, &mut out, &mut pending_tool_calls);
+    if !has_prompt {
+        return Err("this terminal has no completed user prompt to export".to_string());
+    }
+    if !has_answer {
+        return Err("this terminal has no completed assistant response to export".to_string());
+    }
+    Ok(out)
+}
+
+/// The stored prompt for a conversation node: the first user message's text
+/// blocks joined, normalized, and bounded. Display-only — the full text lives
+/// in the node's snapshot turns, and nothing ever derives a response boundary
+/// from it.
+pub fn conversation_prompt(turns: &[crate::transcript::Turn]) -> String {
+    const MAX_CHARS: usize = 2000;
+    let text = turns
+        .iter()
+        .find(|turn| turn.role == "user")
+        .map(|turn| {
+            turn.blocks
+                .iter()
+                .filter_map(|block| match block {
+                    crate::transcript::TurnBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+        .unwrap_or_default();
+    let (prompt, truncated) = normalized_prefix(&text, MAX_CHARS);
+    if truncated {
+        format!("{}…", prompt.trim_end())
+    } else {
+        prompt
+    }
+}
+
+/// The sidebar preview for a conversation node: the last assistant message
+/// with text, wherever it sits relative to trailing tool activity. Unlike
+/// [`response_preview`], this never goes empty just because the conversation
+/// ended in tool calls or an unanswered prompt — any delivered answer beats
+/// no preview.
+pub fn conversation_preview(turns: &[crate::transcript::Turn]) -> Option<String> {
+    let text = turns
+        .iter()
+        .rev()
+        .filter(|turn| turn.role == "assistant")
+        .find_map(|turn| {
+            turn.blocks.iter().find_map(|block| match block {
+                crate::transcript::TurnBlock::Text { text } if !text.trim().is_empty() => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+        })?;
+    let (preview, truncated) = normalized_prefix(text, 220);
+    Some(if truncated {
+        format!("{}…", preview.trim_end())
+    } else {
+        preview
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1474,6 +1899,7 @@ mod tests {
             pane_id: None,
             thread_id: None,
             kind: ResearchNodeKind::Run,
+            origin: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: Some(2),
@@ -1803,10 +2229,7 @@ mod tests {
         archive.tree_order.push(document_tree.id.clone());
         archive.trees.push(document_tree);
         archive.nodes.push(document);
-        assert_eq!(
-            detached_archive_version(&archive.nodes),
-            DETACHED_RESEARCH_ARCHIVE_VERSION
-        );
+        assert_eq!(detached_archive_version(&archive.nodes), 4);
         validate_detached_archive(&archive).unwrap();
 
         // A nested document is corruption: no writer produces one.
@@ -1817,6 +2240,372 @@ mod tests {
         let error = validate_detached_archive(&archive).unwrap_err();
         assert!(error.contains("not a root node"), "{error}");
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn conversation_nodes_bump_the_archive_version_and_must_be_roots() {
+        let folder = temp_workspace();
+        let mut archive = sample_detached_archive(&folder);
+        let mut conversation = archive.nodes[0].clone();
+        conversation.id = "research-node-2".to_string();
+        conversation.kind = ResearchNodeKind::Conversation;
+        conversation.origin = Some(ResearchNodeOrigin::TerminalExport);
+        conversation.agent_id = None;
+        conversation.native_session_id = None;
+        let mut conversation_tree = archive.trees[0].clone();
+        conversation_tree.id = "research-2".to_string();
+        conversation_tree.root_node_id = conversation.id.clone();
+        conversation.tree_id = conversation_tree.id.clone();
+        archive.tree_order.push(conversation_tree.id.clone());
+        archive.trees.push(conversation_tree);
+        archive.nodes.push(conversation);
+        assert_eq!(
+            detached_archive_version(&archive.nodes),
+            DETACHED_RESEARCH_ARCHIVE_VERSION
+        );
+        validate_detached_archive(&archive).unwrap();
+
+        // A nested conversation is corruption: the export path only writes
+        // roots.
+        archive.nodes[1].tree_id = archive.trees[0].id.clone();
+        archive.nodes[1].parent_node_id = Some(archive.nodes[0].id.clone());
+        archive.trees.pop();
+        archive.tree_order.pop();
+        let error = validate_detached_archive(&archive).unwrap_err();
+        assert!(error.contains("not a root node"), "{error}");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    fn export_turn(
+        id: &str,
+        role: &str,
+        blocks: Vec<crate::transcript::TurnBlock>,
+    ) -> crate::transcript::Turn {
+        crate::transcript::Turn {
+            id: id.to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: Some("session-abc".to_string()),
+            role: role.to_string(),
+            blocks,
+            source_index: 0,
+            timestamp: Some(7),
+            status: None,
+            status_reason: None,
+            native_id: Some(format!("native-{id}")),
+            parent_native_id: Some("native-parent".to_string()),
+            native_message_id: Some(format!("message-{id}")),
+        }
+    }
+
+    fn text_block(text: &str) -> crate::transcript::TurnBlock {
+        crate::transcript::TurnBlock::Text {
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn conversation_export_collapses_tool_activity_and_severs_native_identity() {
+        use crate::transcript::TurnBlock;
+        let turns = vec![
+            export_turn("u1", "user", vec![text_block("First question")]),
+            export_turn(
+                "a1",
+                "assistant",
+                vec![
+                    text_block("Let me check."),
+                    TurnBlock::ToolUse {
+                        id: Some("tool-1".to_string()),
+                        name: "Bash".to_string(),
+                        input: serde_json::json!({ "command": "env" }),
+                    },
+                ],
+            ),
+            export_turn(
+                "r1",
+                "user",
+                vec![TurnBlock::ToolResult {
+                    tool_use_id: Some("tool-1".to_string()),
+                    content: serde_json::json!("SECRET=hunter2"),
+                    is_error: false,
+                }],
+            ),
+            export_turn(
+                "a2",
+                "assistant",
+                vec![TurnBlock::ToolUse {
+                    id: Some("tool-2".to_string()),
+                    name: "Read".to_string(),
+                    input: serde_json::json!({ "path": "/etc/passwd" }),
+                }],
+            ),
+            export_turn("a3", "assistant", vec![text_block("First answer")]),
+            export_turn("u2", "user", vec![text_block("Second question")]),
+            export_turn("a4", "assistant", vec![text_block("Second answer")]),
+        ];
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        let roles = exported
+            .iter()
+            .map(|turn| turn.role.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            vec![
+                "user",
+                "assistant",
+                "assistant",
+                "assistant",
+                "user",
+                "assistant"
+            ]
+        );
+        // The contiguous Bash+Read activity collapses into one marker between
+        // "Let me check." and "First answer".
+        let marker = &exported[2];
+        assert_eq!(
+            marker.blocks,
+            vec![TurnBlock::Raw {
+                value: serde_json::json!({
+                    "type": CONVERSATION_TOOL_ACTIVITY_TYPE,
+                    "toolCalls": 2,
+                }),
+            }]
+        );
+        let encoded = serde_json::to_string(&exported).unwrap();
+        assert!(
+            !encoded.contains("hunter2"),
+            "tool payload leaked: {encoded}"
+        );
+        assert!(
+            !encoded.contains("/etc/passwd"),
+            "tool input leaked: {encoded}"
+        );
+        for (index, turn) in exported.iter().enumerate() {
+            assert_eq!(turn.id, format!("node-1-{index}"));
+            assert_eq!(turn.agent_id, "node-1");
+            assert_eq!(turn.source_index, index);
+            assert!(turn.session_id.is_none());
+            assert!(turn.native_id.is_none());
+            assert!(turn.parent_native_id.is_none());
+            assert!(turn.native_message_id.is_none());
+        }
+        assert_eq!(conversation_prompt(&exported), "First question");
+        assert_eq!(
+            response_preview(&exported, None, "").as_deref(),
+            Some("Second answer")
+        );
+    }
+
+    #[test]
+    fn conversation_export_drops_instructions_supersessions_and_foreign_roles() {
+        let mut superseded = export_turn("a0", "assistant", vec![text_block("Rewound answer")]);
+        superseded.status = Some(crate::transcript::TurnStatus::Superseded);
+        let turns = vec![
+            export_turn(
+                "i1",
+                "user",
+                vec![text_block(
+                    "<system-reminder>\ninjected\n</system-reminder>",
+                )],
+            ),
+            export_turn("u1", "user", vec![text_block("Real question")]),
+            superseded,
+            export_turn("s1", "system", vec![text_block("system chatter")]),
+            export_turn(
+                "t1",
+                "assistant",
+                vec![crate::transcript::TurnBlock::Raw {
+                    value: serde_json::json!({ "type": "thinking", "text": "hidden" }),
+                }],
+            ),
+            export_turn("a1", "assistant", vec![text_block("Real answer")]),
+        ];
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        assert_eq!(exported.len(), 2);
+        assert_eq!(exported[0].role, "user");
+        assert_eq!(exported[1].role, "assistant");
+        let encoded = serde_json::to_string(&exported).unwrap();
+        assert!(!encoded.contains("injected"), "{encoded}");
+        assert!(!encoded.contains("Rewound"), "{encoded}");
+        assert!(!encoded.contains("hidden"), "{encoded}");
+        assert!(!encoded.contains("system chatter"), "{encoded}");
+    }
+
+    #[test]
+    fn conversation_export_requires_a_prompt_and_a_response() {
+        let error = conversation_export_turns(
+            "node-1",
+            &[export_turn("a1", "assistant", vec![text_block("Answer")])],
+        )
+        .unwrap_err();
+        assert!(error.contains("user prompt"), "{error}");
+
+        let error = conversation_export_turns(
+            "node-1",
+            &[export_turn("u1", "user", vec![text_block("Question")])],
+        )
+        .unwrap_err();
+        assert!(error.contains("assistant response"), "{error}");
+    }
+
+    #[test]
+    fn conversation_export_strips_leading_instruction_blocks_from_mixed_messages() {
+        // The common injected shape shares one text block with the real
+        // question; the block must lose the injection, not the question.
+        let turns = vec![
+            export_turn(
+                "u1",
+                "user",
+                vec![text_block(
+                    "<system-reminder>\ninjected hook payload\n</system-reminder>\n\nReal question",
+                )],
+            ),
+            export_turn("a1", "assistant", vec![text_block("Real answer")]),
+        ];
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        assert_eq!(exported.len(), 2);
+        assert_eq!(
+            exported[0].blocks,
+            vec![text_block("Real question")],
+            "leading instruction block must be stripped"
+        );
+        assert_eq!(conversation_prompt(&exported), "Real question");
+    }
+
+    #[test]
+    fn conversation_export_drops_interruption_markers() {
+        let turns = vec![
+            export_turn("u1", "user", vec![text_block("Question")]),
+            export_turn("a1", "assistant", vec![text_block("Partial answer")]),
+            export_turn(
+                "i1",
+                "user",
+                vec![text_block("[Request interrupted by user]")],
+            ),
+        ];
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        assert_eq!(exported.len(), 2);
+        let encoded = serde_json::to_string(&exported).unwrap();
+        assert!(!encoded.contains("interrupted"), "{encoded}");
+        // The marker is not a prompt: the mid-turn boundary must fall on the
+        // real question before it, not on the marker.
+        assert_eq!(completed_exchange_boundary(&turns), Some(0));
+    }
+
+    #[test]
+    fn conversation_export_counts_raw_server_tool_calls_and_keeps_attachments() {
+        use crate::transcript::TurnBlock;
+        let turns = vec![
+            export_turn(
+                "u1",
+                "user",
+                vec![TurnBlock::Raw {
+                    value: serde_json::json!({ "type": "image", "source": { "data": "AAAA" } }),
+                }],
+            ),
+            export_turn(
+                "a1",
+                "assistant",
+                vec![
+                    TurnBlock::Raw {
+                        value: serde_json::json!({ "type": "server_tool_use", "name": "web_search" }),
+                    },
+                    text_block("Looked it up."),
+                ],
+            ),
+        ];
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        // The image-only prompt keeps its place as a marker (no payload), so
+        // the answer is not misattributed to an earlier prompt; the
+        // server-side tool call lands in an activity marker.
+        assert_eq!(exported.len(), 3);
+        assert_eq!(
+            exported[0].blocks,
+            vec![text_block(CONVERSATION_ATTACHMENT_MARKER)]
+        );
+        assert_eq!(exported[0].role, "user");
+        assert_eq!(
+            exported[2].blocks,
+            vec![TurnBlock::Raw {
+                value: serde_json::json!({
+                    "type": CONVERSATION_TOOL_ACTIVITY_TYPE,
+                    "toolCalls": 1,
+                }),
+            }]
+        );
+        let encoded = serde_json::to_string(&exported).unwrap();
+        assert!(!encoded.contains("AAAA"), "image payload leaked: {encoded}");
+        // An image-only prompt also anchors the mid-turn boundary.
+        assert_eq!(completed_exchange_boundary(&turns), Some(0));
+    }
+
+    #[test]
+    fn conversation_preview_survives_trailing_tool_activity() {
+        use crate::transcript::TurnBlock;
+        let turns = vec![
+            export_turn("u1", "user", vec![text_block("Question")]),
+            export_turn("a1", "assistant", vec![text_block("Delivered answer")]),
+            export_turn("u2", "user", vec![text_block("Follow-up")]),
+            export_turn(
+                "a2",
+                "assistant",
+                vec![TurnBlock::ToolUse {
+                    id: Some("tool-1".to_string()),
+                    name: "Bash".to_string(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+        ];
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        // The last exchange produced only tool activity; the preview must
+        // still surface the delivered answer instead of going empty.
+        assert_eq!(
+            conversation_preview(&exported).as_deref(),
+            Some("Delivered answer")
+        );
+    }
+
+    #[test]
+    fn conversation_prompt_joins_the_first_user_turn_text_blocks() {
+        let turns = vec![export_turn(
+            "u1",
+            "user",
+            vec![text_block("Pasted context"), text_block("Actual question")],
+        )];
+        assert_eq!(
+            conversation_prompt(&turns),
+            "Pasted context Actual question"
+        );
+    }
+
+    #[test]
+    fn completed_exchange_turns_drop_the_in_flight_exchange() {
+        let turns = vec![
+            export_turn("u1", "user", vec![text_block("First question")]),
+            export_turn("a1", "assistant", vec![text_block("First answer")]),
+            export_turn("u2", "user", vec![text_block("Second question")]),
+            export_turn("a2", "assistant", vec![text_block("Half-streamed")]),
+        ];
+        let bounded = completed_exchange_turns(&turns);
+        assert_eq!(bounded.len(), 2);
+        assert_eq!(bounded[1].id, "a1");
+
+        // A trailing injected instruction is not the user's prompt; the
+        // boundary must fall on the real question before it.
+        let with_instruction = vec![
+            export_turn("u1", "user", vec![text_block("Only question")]),
+            export_turn(
+                "i1",
+                "user",
+                vec![text_block(
+                    "<system-reminder>\ninjected\n</system-reminder>",
+                )],
+            ),
+        ];
+        assert!(completed_exchange_turns(&with_instruction).is_empty());
+
+        // Nothing prompt-like at all: nothing in flight to drop.
+        let assistant_only = vec![export_turn("a1", "assistant", vec![text_block("Answer")])];
+        assert_eq!(completed_exchange_turns(&assistant_only).len(), 1);
     }
 
     #[test]

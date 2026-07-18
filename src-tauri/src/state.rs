@@ -4,9 +4,9 @@ use crate::persistence::{self, PersistedState, STATE_VERSION};
 use crate::research::{
     self, CreateResearchDocumentRequest, CreateResearchTreeRequest, ResearchBranchRemoval,
     ResearchHighlight, ResearchHighlightAnchor, ResearchNode, ResearchNodeCard,
-    ResearchNodeContent, ResearchNodeKind, ResearchNodeStatus, ResearchPublicationProposal,
-    ResearchTree, ResearchTreeDetail, ResearchTreeSummary, UpdateResearchDocumentRequest,
-    UpdateResearchDocumentResult,
+    ResearchNodeContent, ResearchNodeKind, ResearchNodeOrigin, ResearchNodeStatus,
+    ResearchPublicationProposal, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
 };
 use crate::scrollback::{bounded_undo_scrollback, read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -1857,7 +1857,19 @@ impl AppState {
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
             PersistedState {
-                version: STATE_VERSION,
+                // The lowest version whose readers understand every node kind
+                // present, so sessions without conversation nodes stay
+                // loadable by pre-conversations builds — same tiering as
+                // research::detached_archive_version.
+                version: if model
+                    .research_nodes
+                    .values()
+                    .any(|node| node.kind == ResearchNodeKind::Conversation)
+                {
+                    STATE_VERSION
+                } else {
+                    persistence::STATE_VERSION_PRE_CONVERSATIONS
+                },
                 next_id: self.inner.next_id.load(Ordering::Relaxed),
                 panes: ordered_panes(&model),
                 groups: model.groups.values().cloned().collect(),
@@ -2490,6 +2502,50 @@ impl AppState {
         })
     }
 
+    /// A caller-provided title, trimmed, or the fallback when absent or
+    /// blank. One owner for the idiom every research creator shares.
+    fn resolved_research_title(
+        provided: Option<String>,
+        fallback: impl FnOnce() -> String,
+    ) -> String {
+        provided
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(fallback)
+    }
+
+    /// Admits a new root research tree under the model lock: resolves the run
+    /// directory from the durable workspace record (never from the caller),
+    /// requires Research scope, and inserts the tree at the top of the
+    /// sidebar order. Shared by every root creator — runs, documents, and
+    /// conversation exports — so admission semantics cannot drift between
+    /// them. Persisting and eventing stay with the caller, which may have a
+    /// snapshot to reclaim on failure first.
+    fn admit_research_root(
+        &self,
+        tree: &ResearchTree,
+        node: &mut ResearchNode,
+    ) -> Result<(), String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let workspace = model
+            .groups
+            .get(&node.group_id)
+            .ok_or_else(|| format!("research workspace {} was not found", node.group_id))?;
+        if workspace.scope != WorkspaceScope::Research {
+            return Err("research requires a Research-scoped workspace".to_string());
+        }
+        node.worktree_dir = workspace.dir.clone();
+        model.research_tree_order.retain(|id| id != &tree.id);
+        model.research_tree_order.insert(0, tree.id.clone());
+        model.research_trees.insert(tree.id.clone(), tree.clone());
+        model.research_nodes.insert(node.id.clone(), node.clone());
+        Ok(())
+    }
+
     pub fn create_research_tree(
         &self,
         request: CreateResearchTreeRequest,
@@ -2516,11 +2572,8 @@ impl AppState {
         let tree_id = self.next_id("research");
         let node_id = self.next_id("research-node");
         let now = now_millis();
-        let title = request
-            .title
-            .map(|title| title.trim().to_string())
-            .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| research::default_title(&prompt));
+        let title =
+            Self::resolved_research_title(request.title, || research::default_title(&prompt));
         let tree = ResearchTree {
             id: tree_id.clone(),
             title,
@@ -2551,6 +2604,7 @@ impl AppState {
             pane_id: None,
             thread_id: None,
             kind: ResearchNodeKind::Run,
+            origin: None,
             status: ResearchNodeStatus::Queued,
             error: None,
             response_snapshot_at: None,
@@ -2559,28 +2613,7 @@ impl AppState {
             completed_at: None,
             highlights: Vec::new(),
         };
-        {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            // The run directory comes from the durable group record, resolved
-            // under the same lock that admits the node, so the launch always
-            // runs where the selected workspace actually lives.
-            let workspace = model
-                .groups
-                .get(&node.group_id)
-                .ok_or_else(|| format!("research workspace {} was not found", node.group_id))?;
-            if workspace.scope != WorkspaceScope::Research {
-                return Err("research requires a Research-scoped workspace".to_string());
-            }
-            node.worktree_dir = workspace.dir.clone();
-            model.research_tree_order.retain(|id| id != &tree_id);
-            model.research_tree_order.insert(0, tree_id.clone());
-            model.research_trees.insert(tree_id.clone(), tree.clone());
-            model.research_nodes.insert(node_id, node.clone());
-        }
+        self.admit_research_root(&tree, &mut node)?;
         self.persist();
         self.emit(QmuxEvent::new(
             "research.tree.created",
@@ -2606,11 +2639,9 @@ impl AppState {
         if request.group_id.trim().is_empty() {
             return Err("research workspace cannot be empty".to_string());
         }
-        let title = request
-            .title
-            .map(|title| title.trim().to_string())
-            .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| research::document_default_title(&markdown));
+        let title = Self::resolved_research_title(request.title, || {
+            research::document_default_title(&markdown)
+        });
         let tree_id = self.next_id("research");
         let node_id = self.next_id("research-node");
         let now = now_millis();
@@ -2618,8 +2649,13 @@ impl AppState {
         // Durable content lands before the records that point at it: a crash
         // here strands only an orphan snapshot, which prune_response_snapshots
         // reclaims. The reverse order would commit a document whose body never
-        // existed.
-        research::write_response_snapshot(&self.inner.config.workspace_root, &node_id, &turns)?;
+        // existed. The verified write keeps the records from ever pointing at
+        // a snapshot that did not round-trip.
+        research::write_response_snapshot_verified(
+            &self.inner.config.workspace_root,
+            &node_id,
+            &turns,
+        )?;
         let tree = ResearchTree {
             id: tree_id.clone(),
             title,
@@ -2650,6 +2686,7 @@ impl AppState {
             pane_id: None,
             thread_id: None,
             kind: ResearchNodeKind::Document,
+            origin: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: Some(now),
@@ -2658,29 +2695,7 @@ impl AppState {
             completed_at: Some(now),
             highlights: Vec::new(),
         };
-        // Same admission shape as create_research_tree, in a closure only so
-        // an early return can still reclaim the pre-written snapshot below.
-        let inserted = (|| -> Result<(), String> {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let workspace = model
-                .groups
-                .get(&node.group_id)
-                .ok_or_else(|| format!("research workspace {} was not found", node.group_id))?;
-            if workspace.scope != WorkspaceScope::Research {
-                return Err("research requires a Research-scoped workspace".to_string());
-            }
-            node.worktree_dir = workspace.dir.clone();
-            model.research_tree_order.retain(|id| id != &tree_id);
-            model.research_tree_order.insert(0, tree_id.clone());
-            model.research_trees.insert(tree_id.clone(), tree.clone());
-            model.research_nodes.insert(node_id.clone(), node.clone());
-            Ok(())
-        })();
-        if let Err(err) = inserted {
+        if let Err(err) = self.admit_research_root(&tree, &mut node) {
             // Nothing references the snapshot yet; reclaim it now rather than
             // waiting for the next structural prune.
             let _ = research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
@@ -2694,6 +2709,245 @@ impl AppState {
             json!({ "tree": tree, "node": node }),
         ));
         self.research_tree(&tree_id)
+    }
+
+    /// Stage one of exporting a terminal pane's conversation to research:
+    /// read and sanitize the source and make the verified snapshot durable,
+    /// all without the research workspace-mutation guard — the transcript
+    /// read and snapshot write are the slow parts and need no exclusion
+    /// against folder mutations. The terminal is left untouched; this is a
+    /// copy, not a move, so repeating the export creates another independent
+    /// tree. A prepared export whose commit never happens strands only an
+    /// orphan snapshot, which prune_response_snapshots reclaims.
+    pub fn prepare_pane_export(
+        &self,
+        pane_id: &str,
+    ) -> Result<research::PreparedPaneExport, String> {
+        let agent = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let pane = model
+                .panes
+                .get(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            // Research runs live in Research-scoped groups, and their hidden
+            // panes must not round-trip back into a conversation node. The
+            // scope check runs under the same lock as the pane lookup, so it
+            // also covers the launch-to-bind window in which a research
+            // run's node does not yet name its agent.
+            let scope = model
+                .groups
+                .get(&pane.info.group_id)
+                .map(|group| group.scope);
+            if scope != Some(WorkspaceScope::Terminal) {
+                return Err("only terminal panes can be exported to research".to_string());
+            }
+            let agent_id = pane
+                .info
+                .agent_id
+                .clone()
+                .ok_or_else(|| "only agent panes can be exported to research".to_string())?;
+            model
+                .agents
+                .get(&agent_id)
+                .cloned()
+                .ok_or_else(|| format!("agent {agent_id} was not found"))?
+        };
+        // Transcript-preferred source: the file is the complete native
+        // record, while the in-memory timeline can be a truncated live view.
+        // Only a file that has vanished falls back to that view — read
+        // failures, including the too-large-to-snapshot guard, surface
+        // instead of silently exporting a partial conversation as complete.
+        let (mut source_turns, source_stable) = match agent.transcript_path.as_deref() {
+            Some(path) if std::path::Path::new(path).exists() => {
+                self.transcript_turns_with_stability(&agent, path)?
+            }
+            _ => {
+                let model = self
+                    .inner
+                    .model
+                    .lock()
+                    .map_err(|_| "model lock poisoned".to_string())?;
+                (
+                    model.turns.get(&agent.id).cloned().unwrap_or_default(),
+                    true,
+                )
+            }
+        };
+        // The busy check runs after the (slow) source read so the status is
+        // as fresh as it can be: a stale Running would silently drop a
+        // delivered final exchange, a stale settled status would export a
+        // half-streamed one.
+        let status = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model
+                .agents
+                .get(&agent.id)
+                .map(|agent| agent.status)
+                .ok_or_else(|| "the pane closed while the export was running".to_string())?
+        };
+        if status.is_at_rest() {
+            // An at-rest agent's transcript must parse identically twice —
+            // the adapter may still be flushing its final records (the same
+            // reason snapshot_research_response demands a stable read).
+            if !source_stable {
+                return Err(
+                    "the conversation is still being written; try the export again in a moment"
+                        .to_string(),
+                );
+            }
+        } else {
+            // A busy agent's in-flight exchange is half-streamed and must not
+            // persist as delivered content; instability in the trailing
+            // records is cut away with it.
+            match research::completed_exchange_boundary(&source_turns) {
+                Some(0) => {
+                    return Err(
+                        "the conversation's only exchange is still in progress; wait for the answer to finish before exporting"
+                            .to_string(),
+                    );
+                }
+                Some(boundary) => source_turns.truncate(boundary),
+                None => {}
+            }
+        }
+        let tree_id = self.next_id("research");
+        let node_id = self.next_id("research-node");
+        let turns = research::conversation_export_turns(&node_id, &source_turns)?;
+        drop(source_turns);
+        let prompt = research::conversation_prompt(&turns);
+        let response_preview = research::conversation_preview(&turns);
+        // Durable content lands before the records that point at it, same as
+        // create_research_document; the verified write keeps the records from
+        // ever pointing at a snapshot that did not round-trip.
+        research::write_response_snapshot_verified(
+            &self.inner.config.workspace_root,
+            &node_id,
+            &turns,
+        )?;
+        Ok(research::PreparedPaneExport {
+            tree_id,
+            node_id,
+            prompt,
+            response_preview,
+            adapter: agent.adapter,
+            model: agent.model,
+            agent_created_at: agent.created_at,
+        })
+    }
+
+    /// Reads the transcript until two consecutive parses agree, reporting
+    /// whether they did. Bounded: a source that keeps changing (a streaming
+    /// agent) comes back unstable rather than looping, and the caller
+    /// decides — an at-rest agent must retry, a busy one truncates the
+    /// unstable tail with the in-flight exchange.
+    fn transcript_turns_with_stability(
+        &self,
+        agent: &AgentInfo,
+        path: &str,
+    ) -> Result<(Vec<Turn>, bool), String> {
+        let mut previous =
+            research::load_transcript_turns(&self.inner.config, &agent.adapter, &agent.id, path)?;
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let current = research::load_transcript_turns(
+                &self.inner.config,
+                &agent.adapter,
+                &agent.id,
+                path,
+            )?;
+            if current == previous {
+                return Ok((current, true));
+            }
+            previous = current;
+        }
+        Ok((previous, false))
+    }
+
+    /// Stage two: admits the prepared export as a Complete conversation tree.
+    /// The caller must hold the research workspace-mutation guard, matching
+    /// `create_research_document`. On admission failure the prepared snapshot
+    /// is reclaimed.
+    pub fn commit_pane_export(
+        &self,
+        prepared: &research::PreparedPaneExport,
+        group_id: String,
+        title: Option<String>,
+    ) -> Result<ResearchTreeDetail, String> {
+        if group_id.trim().is_empty() {
+            self.discard_pane_export(prepared);
+            return Err("research workspace cannot be empty".to_string());
+        }
+        let now = now_millis();
+        let title =
+            Self::resolved_research_title(title, || research::default_title(&prepared.prompt));
+        let tree = ResearchTree {
+            id: prepared.tree_id.clone(),
+            title,
+            root_node_id: prepared.node_id.clone(),
+            workspace_id: group_id.clone(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            last_viewed_at: Some(now),
+        };
+        let mut node = ResearchNode {
+            id: prepared.node_id.clone(),
+            tree_id: prepared.tree_id.clone(),
+            parent_node_id: None,
+            publication_proposal: None,
+            query_anchor: None,
+            prompt: prepared.prompt.clone(),
+            title: None,
+            response_preview: prepared.response_preview.clone(),
+            adapter: prepared.adapter.clone(),
+            model: prepared.model.clone(),
+            group_id,
+            worktree_dir: String::new(),
+            native_session_id: None,
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            thread_id: None,
+            kind: ResearchNodeKind::Conversation,
+            origin: Some(ResearchNodeOrigin::TerminalExport),
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: Some(now),
+            created_at: now,
+            started_at: Some(prepared.agent_created_at.min(now)),
+            completed_at: Some(now),
+            highlights: Vec::new(),
+        };
+        if let Err(err) = self.admit_research_root(&tree, &mut node) {
+            self.discard_pane_export(prepared);
+            return Err(err);
+        }
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.created",
+            None,
+            None,
+            json!({ "tree": tree, "node": node }),
+        ));
+        self.research_tree(&tree.id)
+    }
+
+    /// Reclaims a prepared export whose records never committed (validation
+    /// or admission failed after the snapshot landed).
+    pub fn discard_pane_export(&self, prepared: &research::PreparedPaneExport) {
+        let _ = research::remove_response_snapshot(
+            &self.inner.config.workspace_root,
+            &prepared.node_id,
+        );
     }
 
     /// Replaces a root document's durable Markdown in place. Existing child
@@ -2965,20 +3219,27 @@ impl AppState {
             // A document has no session to fork — its follow-ups launch fresh
             // runs on the default adapter, so only run parents need the
             // checkpoint (and only they carry an adapter to inherit).
-            let (adapter, parent_model) = match parent.kind {
-                ResearchNodeKind::Document => (
-                    crate::adapters::default_fork_adapter(&self.inner.config)?,
-                    None,
-                ),
-                ResearchNodeKind::Run => {
-                    if parent.native_session_id.is_none() {
-                        return Err(
-                            "research follow-ups require a recorded parent checkpoint".to_string()
-                        );
+            let (adapter, parent_model) =
+                match parent.kind {
+                    ResearchNodeKind::Document => (
+                        crate::adapters::default_fork_adapter(&self.inner.config)?,
+                        None,
+                    ),
+                    // An exported conversation is severed from its session by
+                    // design; its follow-up launch path (serialized-conversation
+                    // context) lands with the conversation viewer.
+                    ResearchNodeKind::Conversation => {
+                        return Err("follow-ups on exported conversations are not available yet"
+                            .to_string());
                     }
-                    (parent.adapter, parent.model)
-                }
-            };
+                    ResearchNodeKind::Run => {
+                        if parent.native_session_id.is_none() {
+                            return Err("research follow-ups require a recorded parent checkpoint"
+                                .to_string());
+                        }
+                        (parent.adapter, parent.model)
+                    }
+                };
             let workspace = model
                 .groups
                 .get(&tree.workspace_id)
@@ -3006,6 +3267,7 @@ impl AppState {
                 pane_id: None,
                 thread_id: None,
                 kind: ResearchNodeKind::Run,
+                origin: None,
                 status: ResearchNodeStatus::Queued,
                 error: None,
                 response_snapshot_at: None,
@@ -3045,6 +3307,16 @@ impl AppState {
                 .get(node_id)
                 .cloned()
                 .ok_or_else(|| format!("research node {node_id} was not found"))?;
+            // Documents and exported conversations are snapshot-only by
+            // contract — a conversation in particular is severed from its
+            // source session, and binding a live agent here would hand the
+            // shared read paths live-looking pointers the kind promises it
+            // does not have.
+            if node_snapshot.kind != ResearchNodeKind::Run {
+                return Err(format!(
+                    "research node {node_id} is not a run and cannot bind a live agent"
+                ));
+            }
             let tree = model
                 .research_trees
                 .get(&node_snapshot.tree_id)
@@ -9757,6 +10029,264 @@ mod tests {
         );
     }
 
+    fn exportable_terminal_setup(state: &AppState, agent_status: AgentStatus) {
+        let mut terminal_group = sample_group_with_id("term-1");
+        terminal_group.scope = WorkspaceScope::Terminal;
+        state.insert_group_after(terminal_group, None).unwrap();
+        state.insert_group_after(sample_group(), None).unwrap();
+        let mut pane = sample_pane_runtime("pane-1");
+        pane.info.agent_id = Some("term-agent".to_string());
+        pane.info.group_id = "term-1".to_string();
+        state.insert_pane(pane).unwrap();
+        let mut agent = sample_agent("term-agent");
+        agent.group_id = "term-1".to_string();
+        agent.pane_id = Some("pane-1".to_string());
+        agent.transcript_path = None;
+        agent.status = agent_status;
+        state.insert_agent(agent).unwrap();
+    }
+
+    fn append_terminal_exchange(state: &AppState, index: usize, question: &str, answer: &str) {
+        let mut user = sample_user_turn("term-agent", question);
+        user.id = format!("term-agent-{}", index * 2);
+        user.source_index = index * 2;
+        state.append_turn(user).unwrap();
+        let mut assistant = sample_user_turn("term-agent", answer);
+        assistant.id = format!("term-agent-{}", index * 2 + 1);
+        assistant.source_index = index * 2 + 1;
+        assistant.role = "assistant".to_string();
+        state.append_turn(assistant).unwrap();
+    }
+
+    fn export_pane(
+        state: &AppState,
+        pane_id: &str,
+        group_id: &str,
+        title: Option<&str>,
+    ) -> Result<ResearchTreeDetail, String> {
+        let prepared = state.prepare_pane_export(pane_id)?;
+        state.commit_pane_export(&prepared, group_id.to_string(), title.map(str::to_string))
+    }
+
+    #[test]
+    fn export_pane_to_research_creates_a_severed_conversation_tree() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        assert!(state.restore_session().is_empty());
+        exportable_terminal_setup(&state, AgentStatus::Idle);
+        append_terminal_exchange(&state, 0, "Question", "Answer");
+        // No conversation nodes yet: the state file keeps the widest
+        // downgrade compatibility.
+        let version_of = |workspace: &PathBuf| {
+            let raw = std::fs::read(persistence::state_path(workspace)).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&raw).unwrap()["version"]
+                .as_u64()
+                .unwrap()
+        };
+        assert_eq!(version_of(&workspace), 4);
+
+        let detail = export_pane(&state, "pane-1", "group-1", None).unwrap();
+        assert_eq!(detail.tree.workspace_id, "group-1");
+        let node = &detail.nodes[0];
+        assert_eq!(node.kind, ResearchNodeKind::Conversation);
+        assert_eq!(node.origin, Some(ResearchNodeOrigin::TerminalExport));
+        assert_eq!(node.status, ResearchNodeStatus::Complete);
+        assert_eq!(node.prompt, "Question");
+        assert_eq!(node.response_preview.as_deref(), Some("Answer"));
+        assert_eq!(node.adapter, "claude");
+        // Severed: no pointer back to the source session, pane, or thread.
+        assert!(node.native_session_id.is_none());
+        assert!(node.transcript_path.is_none());
+        assert!(node.agent_id.is_none());
+        assert!(node.pane_id.is_none());
+        assert!(node.thread_id.is_none());
+        // The sidebar surfaces the new kind.
+        let summary = &state.list_research_trees().unwrap()[0];
+        assert_eq!(summary.kind, ResearchNodeKind::Conversation);
+
+        // The snapshot is durable, reissued under the node's identity.
+        let turns = research::read_response_snapshot(&state.config().workspace_root, &node.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(turns.len(), 2);
+        assert!(turns.iter().all(|turn| {
+            turn.agent_id == node.id && turn.session_id.is_none() && turn.native_id.is_none()
+        }));
+
+        // The terminal is untouched: this was a copy, not a move.
+        assert!(state.agent("term-agent").unwrap().is_some());
+        assert!(state.pane_exists("pane-1").unwrap());
+
+        // The exported records and snapshot survive a restart unchanged, and
+        // the state file now marks the conversation for older builds.
+        state.finalize_persistence_for_exit();
+        assert_eq!(version_of(&workspace), 5);
+        let restored = AppState::new(test_config(workspace));
+        restored.restore_session();
+        let restored_node = restored.research_node(&node.id).unwrap();
+        assert_eq!(restored_node.kind, ResearchNodeKind::Conversation);
+        assert_eq!(
+            restored_node.origin,
+            Some(ResearchNodeOrigin::TerminalExport)
+        );
+        assert_eq!(restored_node.status, ResearchNodeStatus::Complete);
+    }
+
+    #[test]
+    fn export_pane_to_research_mid_turn_keeps_completed_exchanges_only() {
+        let state = AppState::new(test_config(temp_workspace()));
+        exportable_terminal_setup(&state, AgentStatus::Running);
+        append_terminal_exchange(&state, 0, "First question", "First answer");
+        append_terminal_exchange(&state, 1, "Second question", "Half-streamed answer");
+
+        let detail = export_pane(&state, "pane-1", "group-1", Some("Mid-turn export")).unwrap();
+        assert_eq!(detail.tree.title, "Mid-turn export");
+        let node = &detail.nodes[0];
+        let turns = research::read_response_snapshot(&state.config().workspace_root, &node.id)
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&turns).unwrap();
+        assert_eq!(turns.len(), 2, "{encoded}");
+        assert!(!encoded.contains("Second question"), "{encoded}");
+        assert!(!encoded.contains("Half-streamed"), "{encoded}");
+    }
+
+    #[test]
+    fn export_pane_to_research_awaiting_input_exports_delivered_content() {
+        // AwaitingInput is an at-rest status (adapters assign it after
+        // notifications and interruptions); treating it as busy would
+        // silently drop the final delivered exchange.
+        let state = AppState::new(test_config(temp_workspace()));
+        exportable_terminal_setup(&state, AgentStatus::AwaitingInput);
+        append_terminal_exchange(&state, 0, "First question", "First answer");
+        append_terminal_exchange(&state, 1, "Second question", "Second answer");
+
+        let detail = export_pane(&state, "pane-1", "group-1", None).unwrap();
+        let node = &detail.nodes[0];
+        let turns = research::read_response_snapshot(&state.config().workspace_root, &node.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(turns.len(), 4);
+        assert_eq!(node.response_preview.as_deref(), Some("Second answer"));
+    }
+
+    #[test]
+    fn export_pane_to_research_reports_an_in_flight_only_exchange() {
+        let state = AppState::new(test_config(temp_workspace()));
+        exportable_terminal_setup(&state, AgentStatus::Running);
+        append_terminal_exchange(&state, 0, "Only question", "Streaming answer");
+
+        // The prompt is visibly on screen, so the error must say the answer
+        // is in progress — not that there is no prompt.
+        let err = export_pane(&state, "pane-1", "group-1", None).unwrap_err();
+        assert!(err.contains("still in progress"), "{err}");
+    }
+
+    #[test]
+    fn export_pane_to_research_prefers_the_transcript_file() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        exportable_terminal_setup(&state, AgentStatus::Idle);
+        // The live timeline is a decoy; the file is the complete record.
+        append_terminal_exchange(&state, 0, "Live question", "Live answer");
+        let transcript_path = workspace.join("terminal-transcript.jsonl");
+        let lines = [
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "session-abc",
+                "message": { "role": "user", "content": "File question" },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": "u1",
+                "sessionId": "session-abc",
+                "message": {
+                    "id": "m1",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "File answer" }],
+                },
+            }),
+        ]
+        .map(|line| line.to_string())
+        .join("\n");
+        std::fs::write(&transcript_path, format!("{lines}\n")).unwrap();
+        let mut agent = sample_agent("term-agent");
+        agent.group_id = "term-1".to_string();
+        agent.pane_id = Some("pane-1".to_string());
+        agent.status = AgentStatus::Idle;
+        agent.transcript_path = Some(transcript_path.display().to_string());
+        state.insert_agent(agent).unwrap();
+
+        let detail = export_pane(&state, "pane-1", "group-1", None).unwrap();
+        let node = &detail.nodes[0];
+        assert_eq!(node.prompt, "File question");
+        let turns = research::read_response_snapshot(&state.config().workspace_root, &node.id)
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&turns).unwrap();
+        assert!(encoded.contains("File answer"), "{encoded}");
+        assert!(!encoded.contains("Live answer"), "{encoded}");
+    }
+
+    #[test]
+    fn export_pane_to_research_rejects_shells_research_panes_and_empty_timelines() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let mut terminal_group = sample_group_with_id("term-1");
+        terminal_group.scope = WorkspaceScope::Terminal;
+        state.insert_group_after(terminal_group, None).unwrap();
+
+        // A shell pane in a terminal workspace has no agent to export.
+        let mut shell = sample_pane_runtime("pane-9");
+        shell.info.group_id = "term-1".to_string();
+        state.insert_pane(shell).unwrap();
+        let err = export_pane(&state, "pane-9", "group-1", None).unwrap_err();
+        assert!(err.contains("only agent panes"), "{err}");
+
+        // A research run's hidden pane is rejected by workspace scope — in
+        // production order (pane inserted before the node binds its agent),
+        // both before and after the bind, so the launch-to-bind window is
+        // covered.
+        let mut research_pane = sample_pane_runtime("pane-7");
+        research_pane.info.agent_id = Some("research-agent".to_string());
+        state.insert_pane(research_pane).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let mut research_agent = sample_agent("research-agent");
+        research_agent.transcript_path = None;
+        state.insert_agent(research_agent.clone()).unwrap();
+        let err = export_pane(&state, "pane-7", "group-1", None).unwrap_err();
+        assert!(err.contains("only terminal panes"), "{err}");
+        state
+            .bind_research_node_run(&detail.tree.root_node_id, &research_agent, "pane-7")
+            .unwrap();
+        let err = export_pane(&state, "pane-7", "group-1", None).unwrap_err();
+        assert!(err.contains("only terminal panes"), "{err}");
+
+        // An agent that never produced an exchange has nothing to export.
+        let mut pane = sample_pane_runtime("pane-1");
+        pane.info.agent_id = Some("term-agent".to_string());
+        pane.info.group_id = "term-1".to_string();
+        state.insert_pane(pane).unwrap();
+        let mut agent = sample_agent("term-agent");
+        agent.group_id = "term-1".to_string();
+        agent.pane_id = Some("pane-1".to_string());
+        agent.transcript_path = None;
+        agent.status = AgentStatus::Idle;
+        state.insert_agent(agent).unwrap();
+        let err = export_pane(&state, "pane-1", "group-1", None).unwrap_err();
+        assert!(err.contains("user prompt"), "{err}");
+    }
+
     #[test]
     fn restore_fails_research_nodes_that_never_launched() {
         let workspace = temp_workspace();
@@ -9958,6 +10488,7 @@ mod tests {
             pane_id: None,
             thread_id: None,
             kind: ResearchNodeKind::Run,
+            origin: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -10078,6 +10609,7 @@ mod tests {
             pane_id: Some(research_pane.id.clone()),
             thread_id: None,
             kind: ResearchNodeKind::Run,
+            origin: None,
             status: ResearchNodeStatus::Running,
             error: None,
             response_snapshot_at: None,
@@ -10176,6 +10708,7 @@ mod tests {
             pane_id: None,
             thread_id: None,
             kind: ResearchNodeKind::Run,
+            origin: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -10251,6 +10784,7 @@ mod tests {
             pane_id: None,
             thread_id: None,
             kind: ResearchNodeKind::Run,
+            origin: None,
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
@@ -10335,6 +10869,7 @@ mod tests {
                     pane_id: None,
                     thread_id: None,
                     kind: ResearchNodeKind::Run,
+                    origin: None,
                     status: ResearchNodeStatus::Complete,
                     error: None,
                     response_snapshot_at: None,

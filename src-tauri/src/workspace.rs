@@ -155,6 +155,21 @@ pub enum AgentStatus {
     Failed,
 }
 
+impl AgentStatus {
+    /// Whether the agent is between turns with its delivered content settled.
+    /// `AwaitingInput` counts as at rest: adapters assign it to agents that
+    /// are ready for a prompt (post-notification, post-interruption), and the
+    /// interrupted tail of such a timeline carries its own turn status. It is
+    /// distinct from `AwaitingPermission`, which always sits inside a pending
+    /// tool call. `Failed` is deliberately not at rest — a process that died
+    /// mid-answer leaves a half-streamed tail that must not read as delivered.
+    /// The allowlist runs in this direction so an unhandled future status
+    /// classifies as busy, the conservative side for content capture.
+    pub fn is_at_rest(self) -> bool {
+        matches!(self, Self::Done | Self::Idle | Self::AwaitingInput)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupRequest {
