@@ -257,6 +257,42 @@
   color: #89918d;
 }
 
+/* Client-side folders group their member rows directly beneath the header,
+   inline with the rest of the list. */
+.research-sidebar-folder-row {
+  color: var(--control-fg-muted);
+}
+
+/* Shares .research-sidebar-select's grid; only the tone differs. */
+.research-sidebar-folder-heading {
+  font-weight: 500;
+}
+
+.research-sidebar-folder-icon {
+  flex: none;
+  margin-top: 2px;
+  margin-right: 5px;
+  color: #8f9893;
+  transform: translateY(1px);
+}
+
+.research-sidebar-folder-count {
+  align-self: start;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  background: var(--surface-fill-hover);
+}
+
+.research-sidebar-row.is-folder-member {
+  width: calc(100% - 14px);
+  margin-left: 14px;
+}
+
 /* Live research terminal panes for the scoped folder(s). Keep this lower
    region separate from the research list so either collection can scroll
    without moving the other. */

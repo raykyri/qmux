@@ -93,6 +93,18 @@ import {
   moveResearchTreeIdBy,
   replaceResearchTreeScopeOrder,
 } from "./lib/researchOrder";
+import {
+  addTreesToResearchFolder,
+  createResearchFolder,
+  dissolveResearchFolder,
+  loadResearchFolderState,
+  removeTreesFromResearchFolders,
+  renameResearchFolder,
+  researchFolderMemberIds,
+  saveResearchFolderState,
+  type ResearchFolder,
+  type ResearchFolderState,
+} from "./lib/researchFolders";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
   agentStatusLabel,
@@ -1418,6 +1430,22 @@ function MainApp() {
   // Sidebar multi-selection (shift/meta click). Pruned against the scoped
   // active list where it is consumed, so stale ids drop out on their own.
   const [researchMultiSelectIds, setResearchMultiSelectIds] = useState<string[]>([]);
+  // Client-side folder grouping over the backend's flat research order.
+  // Display building ignores memberships whose trees are absent, so this can
+  // safely lag behind deletions performed elsewhere.
+  const [researchFolderState, setResearchFolderState] = useState<ResearchFolderState>(
+    loadResearchFolderState,
+  );
+  const researchFolderStateRef = useRef(researchFolderState);
+  researchFolderStateRef.current = researchFolderState;
+  const commitResearchFolderState = useCallback((next: ResearchFolderState) => {
+    if (next === researchFolderStateRef.current) {
+      return;
+    }
+    researchFolderStateRef.current = next;
+    setResearchFolderState(next);
+    saveResearchFolderState(next);
+  }, []);
   const [researchVisibilityFilter, setResearchVisibilityFilter] =
     useState<ResearchVisibilityFilter>(() => {
       const stored = localStorage.getItem(RESEARCH_VISIBILITY_FILTER_KEY);
@@ -5973,6 +6001,11 @@ function MainApp() {
     async (treeId: string) => {
       setError(null);
       await removeResearchTree(treeId);
+      // Folder membership must not outlive the tree; dropping the last member
+      // also dissolves its now-empty folder.
+      commitResearchFolderState(
+        removeTreesFromResearchFolders(researchFolderStateRef.current, [treeId]),
+      );
       if (activeResearchTreeIdRef.current === treeId) {
         const nextTree = nextTreeInResearchScope(
           researchTreesRef.current,
@@ -5993,7 +6026,7 @@ function MainApp() {
       }
       await refreshResearchNavigation().catch(() => undefined);
     },
-    [refreshResearchNavigation, selectResearchTree, setSidebarMode],
+    [commitResearchFolderState, refreshResearchNavigation, selectResearchTree, setSidebarMode],
   );
   const removeResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
@@ -6006,6 +6039,105 @@ function MainApp() {
       }
     },
     [removeResearchTreeAndSelectFallback],
+  );
+  const createResearchFolderFromSelection = useCallback(
+    (treeIds: string[]): ResearchFolder | null => {
+      const first = researchTreesRef.current.find((tree) => tree.id === treeIds[0]);
+      if (!first) {
+        return null;
+      }
+      const { state, folder } = createResearchFolder(
+        researchFolderStateRef.current,
+        first.workspaceId,
+        treeIds,
+      );
+      commitResearchFolderState(state);
+      setResearchMultiSelectIds([]);
+      return folder;
+    },
+    [commitResearchFolderState],
+  );
+  const addResearchTreesToFolder = useCallback(
+    (folderId: string, treeIds: string[]) => {
+      commitResearchFolderState(
+        addTreesToResearchFolder(researchFolderStateRef.current, folderId, treeIds),
+      );
+      setResearchMultiSelectIds([]);
+    },
+    [commitResearchFolderState],
+  );
+  const removeResearchTreesFromFolder = useCallback(
+    (treeIds: string[]) => {
+      commitResearchFolderState(
+        removeTreesFromResearchFolders(researchFolderStateRef.current, treeIds),
+      );
+    },
+    [commitResearchFolderState],
+  );
+  const renameResearchFolderFromSidebar = useCallback(
+    (folderId: string, name: string) => {
+      commitResearchFolderState(
+        renameResearchFolder(researchFolderStateRef.current, folderId, name),
+      );
+    },
+    [commitResearchFolderState],
+  );
+  const dissolveResearchFolderFromSidebar = useCallback(
+    (folderId: string) => {
+      commitResearchFolderState(
+        dissolveResearchFolder(researchFolderStateRef.current, folderId),
+      );
+    },
+    [commitResearchFolderState],
+  );
+  // Live member trees of a client-side folder — membership entries whose tree
+  // no longer exists are skipped rather than pruned here.
+  const researchFolderLiveMembers = useCallback((folderId: string) => {
+    const memberIds = new Set(
+      researchFolderMemberIds(researchFolderStateRef.current, folderId),
+    );
+    return [
+      ...researchTreesRef.current,
+      ...archivedResearchTreesRef.current,
+    ].filter((tree) => memberIds.has(tree.id));
+  }, []);
+  const archiveResearchFolderFromSidebar = useCallback(
+    async (folderId: string) => {
+      const members = researchFolderLiveMembers(folderId).filter(
+        (tree) => !tree.archivedAt,
+      );
+      try {
+        for (const tree of members) {
+          await archiveResearchTree(tree.id);
+        }
+        if (members.some((tree) => tree.id === activeResearchTreeIdRef.current)) {
+          activeResearchTreeIdRef.current = null;
+          setActiveResearchTreeId(null);
+          setActiveResearchDetail(null);
+          setActiveResearchDetailError(null);
+          localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+          setSidebarMode("research");
+          setActiveSurface("research");
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      await refreshResearchNavigation().catch(() => undefined);
+    },
+    [refreshResearchNavigation, researchFolderLiveMembers, setSidebarMode],
+  );
+  const deleteResearchFolderFromSidebar = useCallback(
+    async (folderId: string) => {
+      setError(null);
+      const memberIds = researchFolderLiveMembers(folderId).map((tree) => tree.id);
+      for (const treeId of memberIds) {
+        await removeResearchTreeAndSelectFallback(treeId);
+      }
+      commitResearchFolderState(
+        dissolveResearchFolder(researchFolderStateRef.current, folderId),
+      );
+    },
+    [commitResearchFolderState, removeResearchTreeAndSelectFallback, researchFolderLiveMembers],
   );
   const createResearchFollowup = useCallback(
     async (
@@ -9922,7 +10054,15 @@ function MainApp() {
               visibilityFilter={researchVisibilityFilter}
               activeTreeId={activeResearchTreeId}
               multiSelectedIds={researchMultiSelection}
+              folderState={researchFolderState}
               onMultiSelectChange={setResearchMultiSelectIds}
+              onCreateFolder={createResearchFolderFromSelection}
+              onAddToFolder={addResearchTreesToFolder}
+              onRemoveFromFolder={removeResearchTreesFromFolder}
+              onRenameFolder={renameResearchFolderFromSidebar}
+              onDissolveFolder={dissolveResearchFolderFromSidebar}
+              onArchiveFolder={archiveResearchFolderFromSidebar}
+              onDeleteFolder={deleteResearchFolderFromSidebar}
               onSelect={(treeId) => {
                 if (
                   isResearchTreeSelectionChange(

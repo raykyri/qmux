@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -8,6 +8,10 @@ import {
   Archive,
   ArchiveRestore,
   FileText,
+  Folder,
+  FolderInput,
+  FolderMinus,
+  FolderPlus,
   MoreHorizontal,
   Pencil,
   RefreshCw,
@@ -15,6 +19,16 @@ import {
 } from "lucide-react";
 import type { ResearchTreeSummary } from "../../types";
 import { moveResearchTreeIdToGap } from "../../lib/researchOrder";
+import {
+  buildResearchSidebarUnits,
+  flattenResearchSidebarUnits,
+  moveResearchFolderMemberToGap,
+  moveResearchUnitToGap,
+  researchSidebarUnitId,
+  type ResearchFolder,
+  type ResearchFolderState,
+  type ResearchSidebarUnit,
+} from "../../lib/researchFolders";
 
 const RESEARCH_MENU_WIDTH = 190;
 const RESEARCH_MENU_HEIGHT_ESTIMATE = 132;
@@ -29,6 +43,7 @@ interface ResearchSidebarSectionProps {
   visibilityFilter: ResearchVisibilityFilter;
   activeTreeId: string | null;
   multiSelectedIds: string[];
+  folderState: ResearchFolderState;
   onMultiSelectChange: (treeIds: string[]) => void;
   onSelect: (treeId: string) => void;
   onRename: (treeId: string, title: string) => Promise<void>;
@@ -37,26 +52,40 @@ interface ResearchSidebarSectionProps {
   onRestore: (treeId: string) => Promise<void>;
   onRemove: (treeId: string) => Promise<void>;
   onReorder: (archived: boolean, orderedTreeIds: string[]) => void;
+  onCreateFolder: (treeIds: string[]) => ResearchFolder | null;
+  onAddToFolder: (folderId: string, treeIds: string[]) => void;
+  onRemoveFromFolder: (treeIds: string[]) => void;
+  onRenameFolder: (folderId: string, name: string) => void;
+  onDissolveFolder: (folderId: string) => void;
+  onArchiveFolder: (folderId: string) => Promise<void>;
+  onDeleteFolder: (folderId: string) => Promise<void>;
 }
 
-type ResearchMenu = {
-  treeId: string;
-  archived: boolean;
-  left: number;
-  top: number;
-};
+type ResearchMenu =
+  | { kind: "tree"; treeId: string; archived: boolean; left: number; top: number }
+  | { kind: "folder"; folderId: string; left: number; top: number }
+  | { kind: "multi"; left: number; top: number };
+
+// What a drag gesture is allowed to reorder: top-level units of the active
+// list (plain trees and whole folders), members inside one folder, or the
+// flat archived list. Cross-scope drops are not offered.
+type ResearchDragScope =
+  | { kind: "units" }
+  | { kind: "folder"; folderId: string }
+  | { kind: "archived" };
 
 type ResearchPointerDrag = {
   pointerId: number;
-  treeId: string;
-  archived: boolean;
+  /** Tree id, or folder id when dragging a folder header. */
+  id: string;
+  scope: ResearchDragScope;
   startX: number;
   startY: number;
   active: boolean;
 };
 
 type ResearchDropTarget = {
-  archived: boolean;
+  scope: ResearchDragScope;
   index: number;
 };
 
@@ -80,6 +109,7 @@ export default function ResearchSidebarSection({
   visibilityFilter,
   activeTreeId,
   multiSelectedIds,
+  folderState,
   onMultiSelectChange,
   onSelect,
   onRename,
@@ -88,13 +118,25 @@ export default function ResearchSidebarSection({
   onRestore,
   onRemove,
   onReorder,
+  onCreateFolder,
+  onAddToFolder,
+  onRemoveFromFolder,
+  onRenameFolder,
+  onDissolveFolder,
+  onArchiveFolder,
+  onDeleteFolder,
 }: ResearchSidebarSectionProps) {
   const [menu, setMenu] = useState<ResearchMenu | null>(null);
   const [renamingTree, setRenamingTree] = useState<ResearchTreeSummary | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState<ResearchFolder | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deletingTree, setDeletingTree] = useState<ResearchTreeSummary | null>(null);
   const [removingTreeId, setRemovingTreeId] = useState<string | null>(null);
   const [treeRemovalError, setTreeRemovalError] = useState<string | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<ResearchFolder | null>(null);
+  const [folderRemovalBusy, setFolderRemovalBusy] = useState(false);
+  const [folderRemovalError, setFolderRemovalError] = useState<string | null>(null);
+  const [dissolvingFolder, setDissolvingFolder] = useState<ResearchFolder | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
@@ -104,13 +146,42 @@ export default function ResearchSidebarSection({
   const pointerDragRef = useRef<ResearchPointerDrag | null>(null);
   const dropTargetRef = useRef<ResearchDropTarget | null>(null);
   const suppressClickRef = useRef(false);
-  const [draggingTreeId, setDraggingTreeId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<ResearchDropTarget | null>(null);
-  const visibleTrees = visibilityFilter === "archived" ? [] : trees;
+  const activeListVisible = visibilityFilter !== "archived";
   const visibleArchivedTrees = visibilityFilter === "active" ? [] : archivedTrees;
-  const menuTree = menu
-    ? (menu.archived ? archivedTrees : trees).find((tree) => tree.id === menu.treeId) ?? null
-    : null;
+  const units = useMemo(
+    () => buildResearchSidebarUnits(trees, folderState),
+    [folderState, trees],
+  );
+  // Flat display order of the active list — what shift-ranges walk.
+  const displayOrderIds = useMemo(() => flattenResearchSidebarUnits(units), [units]);
+  const menuTree =
+    menu?.kind === "tree"
+      ? (menu.archived ? archivedTrees : trees).find((tree) => tree.id === menu.treeId) ??
+        null
+      : null;
+  const menuFolder =
+    menu?.kind === "folder"
+      ? folderState.folders.find((folder) => folder.id === menu.folderId) ?? null
+      : null;
+  const menuFolderTrees = useMemo(
+    () =>
+      menuFolder
+        ? [...trees, ...archivedTrees].filter(
+            (tree) => folderState.membership[tree.id] === menuFolder.id,
+          )
+        : [],
+    [archivedTrees, folderState.membership, menuFolder, trees],
+  );
+  const menuFolderHasRunning = menuFolderTrees.some((tree) => tree.runningCount > 0);
+  // Folders offered as "Add to" targets for a multi-selection — the ones with
+  // members visible in this scope.
+  const folderChoices = useMemo(
+    () =>
+      units.flatMap((unit) => (unit.kind === "folder" ? [unit.folder] : [])),
+    [units],
+  );
 
   useEffect(() => {
     if (!menu) {
@@ -130,7 +201,13 @@ export default function ResearchSidebarSection({
         setMenu(null);
         return;
       }
-      if (!menuTree || event.metaKey || event.ctrlKey || event.altKey) {
+      if (
+        menu.kind !== "tree" ||
+        !menuTree ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      ) {
         return;
       }
 
@@ -167,17 +244,13 @@ export default function ResearchSidebarSection({
   }, [menu, menuTree, onArchive]);
 
   useEffect(() => {
-    if (renamingTree) {
+    if (renamingTree || renamingFolder) {
       renameInputRef.current?.focus();
       renameInputRef.current?.select();
     }
-  }, [renamingTree]);
+  }, [renamingFolder, renamingTree]);
 
-  function openMenu(trigger: HTMLButtonElement, treeId: string, archived: boolean) {
-    if (menu?.treeId === treeId && menu.archived === archived) {
-      setMenu(null);
-      return;
-    }
+  function menuPositionFromTrigger(trigger: HTMLButtonElement) {
     const rect = trigger.getBoundingClientRect();
     const left = Math.max(
       VIEWPORT_MARGIN,
@@ -194,7 +267,52 @@ export default function ResearchSidebarSection({
             VIEWPORT_MARGIN,
             rect.top - RESEARCH_MENU_HEIGHT_ESTIMATE - RESEARCH_MENU_GAP,
           );
-    setMenu({ treeId, archived, left, top });
+    return { left, top };
+  }
+
+  function menuPositionFromPoint(clientX: number, clientY: number) {
+    return {
+      left: Math.max(
+        VIEWPORT_MARGIN,
+        Math.min(clientX, window.innerWidth - RESEARCH_MENU_WIDTH - VIEWPORT_MARGIN),
+      ),
+      top: Math.max(
+        VIEWPORT_MARGIN,
+        Math.min(
+          clientY,
+          window.innerHeight - RESEARCH_MENU_HEIGHT_ESTIMATE - VIEWPORT_MARGIN,
+        ),
+      ),
+    };
+  }
+
+  function treeMenuForPosition(
+    treeId: string,
+    archived: boolean,
+    position: { left: number; top: number },
+  ): ResearchMenu {
+    // Right-clicking inside an active multi-selection targets the whole
+    // selection; anywhere else the menu is the ordinary per-item one.
+    if (!archived && multiSelectedIds.length > 1 && multiSelectedIds.includes(treeId)) {
+      return { kind: "multi", ...position };
+    }
+    return { kind: "tree", treeId, archived, ...position };
+  }
+
+  function openMenu(trigger: HTMLButtonElement, treeId: string, archived: boolean) {
+    if (menu?.kind === "tree" && menu.treeId === treeId && menu.archived === archived) {
+      setMenu(null);
+      return;
+    }
+    setMenu(treeMenuForPosition(treeId, archived, menuPositionFromTrigger(trigger)));
+  }
+
+  function openFolderMenu(trigger: HTMLButtonElement, folderId: string) {
+    if (menu?.kind === "folder" && menu.folderId === folderId) {
+      setMenu(null);
+      return;
+    }
+    setMenu({ kind: "folder", folderId, ...menuPositionFromTrigger(trigger) });
   }
 
   function openContextMenu(
@@ -203,18 +321,11 @@ export default function ResearchSidebarSection({
     clientX: number,
     clientY: number,
   ) {
-    const left = Math.max(
-      VIEWPORT_MARGIN,
-      Math.min(clientX, window.innerWidth - RESEARCH_MENU_WIDTH - VIEWPORT_MARGIN),
-    );
-    const top = Math.max(
-      VIEWPORT_MARGIN,
-      Math.min(
-        clientY,
-        window.innerHeight - RESEARCH_MENU_HEIGHT_ESTIMATE - VIEWPORT_MARGIN,
-      ),
-    );
-    setMenu({ treeId, archived, left, top });
+    setMenu(treeMenuForPosition(treeId, archived, menuPositionFromPoint(clientX, clientY)));
+  }
+
+  function openFolderContextMenu(folderId: string, clientX: number, clientY: number) {
+    setMenu({ kind: "folder", folderId, ...menuPositionFromPoint(clientX, clientY) });
   }
 
   function openDeleteDialog(tree: ResearchTreeSummary) {
@@ -225,8 +336,22 @@ export default function ResearchSidebarSection({
 
   function openRenameDialog(tree: ResearchTreeSummary) {
     setMenu(null);
+    setRenamingFolder(null);
     setRenameDraft(tree.title);
     setRenamingTree(tree);
+  }
+
+  function openFolderRenameDialog(folder: ResearchFolder) {
+    setMenu(null);
+    setRenamingTree(null);
+    setRenameDraft(folder.name);
+    setRenamingFolder(folder);
+  }
+
+  function folderMemberTrees(folderId: string) {
+    return [...trees, ...archivedTrees].filter(
+      (tree) => folderState.membership[tree.id] === folderId,
+    );
   }
 
   async function confirmTreeRemoval() {
@@ -248,7 +373,32 @@ export default function ResearchSidebarSection({
     }
   }
 
+  async function confirmFolderRemoval() {
+    if (!deletingFolder || folderRemovalBusy) {
+      return;
+    }
+    setFolderRemovalError(null);
+    setFolderRemovalBusy(true);
+    try {
+      await onDeleteFolder(deletingFolder.id);
+      setDeletingFolder(null);
+    } catch (err) {
+      setFolderRemovalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFolderRemovalBusy(false);
+    }
+  }
+
   function submitRename() {
+    if (renamingFolder) {
+      const folder = renamingFolder;
+      const name = renameDraft.trim();
+      setRenamingFolder(null);
+      if (name && name !== folder.name) {
+        onRenameFolder(folder.id, name);
+      }
+      return;
+    }
     if (!renamingTree) {
       return;
     }
@@ -261,131 +411,11 @@ export default function ResearchSidebarSection({
     void onRename(tree.id, title);
   }
 
-  function clearPointerDrag() {
-    pointerDragRef.current = null;
-    dropTargetRef.current = null;
-    setDraggingTreeId(null);
-    setDropTarget(null);
-  }
-
-  function computeDropTarget(
-    clientY: number,
-    treeId: string,
-    archived: boolean,
-  ): ResearchDropTarget | null {
-    const section = sectionRef.current;
-    const sectionTrees = archived ? visibleArchivedTrees : visibleTrees;
-    const dragIndex = sectionTrees.findIndex((tree) => tree.id === treeId);
-    if (!section || dragIndex < 0) {
-      return null;
-    }
-    const rows = Array.from(
-      section.querySelectorAll<HTMLElement>(
-        `.research-sidebar-row[data-research-archived="${archived}"]`,
-      ),
-    );
-    const gapTarget = (index: number): ResearchDropTarget | null =>
-      index === dragIndex || index === dragIndex + 1 ? null : { archived, index };
-    for (const [index, row] of rows.entries()) {
-      const rect = row.getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) {
-        return gapTarget(index);
-      }
-    }
-    return gapTarget(rows.length);
-  }
-
-  function handlePointerDown(
-    event: ReactPointerEvent<HTMLDivElement>,
-    treeId: string,
-    archived: boolean,
-  ) {
-    if (
-      event.button !== 0 ||
-      // Modified clicks are selection gestures, never the start of a drag.
-      event.shiftKey ||
-      event.metaKey ||
-      event.ctrlKey ||
-      (event.target instanceof Element && event.target.closest("[data-research-menu-trigger]"))
-    ) {
-      return;
-    }
-    pointerDragRef.current = {
-      pointerId: event.pointerId,
-      treeId,
-      archived,
-      startX: event.clientX,
-      startY: event.clientY,
-      active: false,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const drag = pointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    if (!drag.active) {
-      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
-      if (distance < RESEARCH_DRAG_START_THRESHOLD) {
-        return;
-      }
-      drag.active = true;
-      setMenu(null);
-      setDraggingTreeId(drag.treeId);
-    }
-    event.preventDefault();
-    const target = computeDropTarget(event.clientY, drag.treeId, drag.archived);
-    dropTargetRef.current = target;
-    setDropTarget(target);
-  }
-
-  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    const drag = pointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    } catch {
-      // The platform may already have released capture.
-    }
-    if (!drag.active) {
-      pointerDragRef.current = null;
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    suppressClickRef.current = true;
-    window.setTimeout(() => {
-      suppressClickRef.current = false;
-    }, RESEARCH_DRAG_CLICK_SUPPRESS_MS);
-    const target =
-      dropTargetRef.current ?? computeDropTarget(event.clientY, drag.treeId, drag.archived);
-    clearPointerDrag();
-    if (!target) {
-      return;
-    }
-    const sectionTrees = drag.archived ? visibleArchivedTrees : visibleTrees;
-    const currentIds = sectionTrees.map((tree) => tree.id);
-    const nextIds = moveResearchTreeIdToGap(currentIds, drag.treeId, target.index);
-    if (nextIds !== currentIds) {
-      onReorder(drag.archived, nextIds);
-    }
-  }
-
-  function handlePointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
-    if (pointerDragRef.current?.pointerId === event.pointerId) {
-      clearPointerDrag();
-    }
-  }
-
   // Multi-select gestures. Shift extends a contiguous range from the anchor,
   // meta/ctrl toggles a single row in or out. Both operate on the visible
   // active list only — archived rows cannot be foldered or bulk-acted upon.
   function updateMultiSelection(treeId: string, range: boolean) {
-    const ids = visibleTrees.map((tree) => tree.id);
+    const ids = displayOrderIds;
     if (!ids.includes(treeId)) {
       return;
     }
@@ -416,6 +446,198 @@ export default function ResearchSidebarSection({
       : [...base, treeId];
     multiSelectAnchorRef.current = treeId;
     onMultiSelectChange(next);
+  }
+
+  function clearPointerDrag() {
+    pointerDragRef.current = null;
+    dropTargetRef.current = null;
+    setDraggingId(null);
+    setDropTarget(null);
+  }
+
+  function computeDropTarget(
+    clientY: number,
+    drag: ResearchPointerDrag,
+  ): ResearchDropTarget | null {
+    const section = sectionRef.current;
+    if (!section) {
+      return null;
+    }
+    const gapTarget = (
+      index: number,
+      dragIndex: number,
+    ): ResearchDropTarget | null =>
+      index === dragIndex || index === dragIndex + 1
+        ? null
+        : { scope: drag.scope, index };
+    if (drag.scope.kind === "archived") {
+      const dragIndex = visibleArchivedTrees.findIndex((tree) => tree.id === drag.id);
+      if (dragIndex < 0) {
+        return null;
+      }
+      const rows = Array.from(
+        section.querySelectorAll<HTMLElement>(
+          '.research-sidebar-row[data-research-archived="true"]',
+        ),
+      );
+      for (const [index, row] of rows.entries()) {
+        const rect = row.getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) {
+          return gapTarget(index, dragIndex);
+        }
+      }
+      return gapTarget(rows.length, dragIndex);
+    }
+    if (drag.scope.kind === "folder") {
+      const folderId = drag.scope.folderId;
+      const unit = units.find(
+        (candidate) => candidate.kind === "folder" && candidate.folder.id === folderId,
+      );
+      if (!unit || unit.kind !== "folder") {
+        return null;
+      }
+      const dragIndex = unit.trees.findIndex((tree) => tree.id === drag.id);
+      if (dragIndex < 0) {
+        return null;
+      }
+      const rows = Array.from(
+        section.querySelectorAll<HTMLElement>(
+          `.research-sidebar-row[data-research-folder-member="${folderId}"]`,
+        ),
+      );
+      for (const [index, row] of rows.entries()) {
+        const rect = row.getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) {
+          return gapTarget(index, dragIndex);
+        }
+      }
+      return gapTarget(rows.length, dragIndex);
+    }
+    // Top-level units: a folder spans several rows, so gaps sit at unit-block
+    // boundaries measured from each unit's first row top to last row bottom.
+    const dragIndex = units.findIndex((unit) => researchSidebarUnitId(unit) === drag.id);
+    if (dragIndex < 0) {
+      return null;
+    }
+    const blocks = new Map<number, { top: number; bottom: number }>();
+    for (const row of section.querySelectorAll<HTMLElement>(
+      ".research-sidebar-row[data-research-unit-index]",
+    )) {
+      const index = Number(row.dataset.researchUnitIndex);
+      if (!Number.isInteger(index)) {
+        continue;
+      }
+      const rect = row.getBoundingClientRect();
+      const block = blocks.get(index);
+      blocks.set(index, {
+        top: block ? Math.min(block.top, rect.top) : rect.top,
+        bottom: block ? Math.max(block.bottom, rect.bottom) : rect.bottom,
+      });
+    }
+    for (let index = 0; index < units.length; index += 1) {
+      const block = blocks.get(index);
+      if (!block) {
+        continue;
+      }
+      if (clientY < (block.top + block.bottom) / 2) {
+        return gapTarget(index, dragIndex);
+      }
+    }
+    return gapTarget(units.length, dragIndex);
+  }
+
+  function handlePointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+    id: string,
+    scope: ResearchDragScope,
+  ) {
+    if (
+      event.button !== 0 ||
+      // Modified clicks are selection gestures, never the start of a drag.
+      event.shiftKey ||
+      event.metaKey ||
+      event.ctrlKey ||
+      (event.target instanceof Element && event.target.closest("[data-research-menu-trigger]"))
+    ) {
+      return;
+    }
+    pointerDragRef.current = {
+      pointerId: event.pointerId,
+      id,
+      scope,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < RESEARCH_DRAG_START_THRESHOLD) {
+        return;
+      }
+      drag.active = true;
+      setMenu(null);
+      setDraggingId(drag.id);
+    }
+    event.preventDefault();
+    const target = computeDropTarget(event.clientY, drag);
+    dropTargetRef.current = target;
+    setDropTarget(target);
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The platform may already have released capture.
+    }
+    if (!drag.active) {
+      pointerDragRef.current = null;
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    suppressClickRef.current = true;
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, RESEARCH_DRAG_CLICK_SUPPRESS_MS);
+    const target = dropTargetRef.current ?? computeDropTarget(event.clientY, drag);
+    clearPointerDrag();
+    if (!target) {
+      return;
+    }
+    if (drag.scope.kind === "archived") {
+      const currentIds = visibleArchivedTrees.map((tree) => tree.id);
+      const nextIds = moveResearchTreeIdToGap(currentIds, drag.id, target.index);
+      if (nextIds !== currentIds) {
+        onReorder(true, nextIds);
+      }
+      return;
+    }
+    const nextIds =
+      drag.scope.kind === "folder"
+        ? moveResearchFolderMemberToGap(units, drag.scope.folderId, drag.id, target.index)
+        : moveResearchUnitToGap(units, drag.id, target.index);
+    if (nextIds) {
+      onReorder(false, nextIds);
+    }
+  }
+
+  function handlePointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    if (pointerDragRef.current?.pointerId === event.pointerId) {
+      clearPointerDrag();
+    }
   }
 
   // Row-level click handling, shared by the row and its select button. The row
@@ -456,149 +678,365 @@ export default function ResearchSidebarSection({
     onSelect(treeId);
   }
 
-  function dragClasses(treeId: string, archived: boolean, index: number, length: number) {
-    return `${draggingTreeId === treeId ? " is-dragging" : ""}${
-      dropTarget?.archived === archived && dropTarget.index === index
-        ? " is-drop-before"
-        : ""
-    }${
-      dropTarget?.archived === archived && dropTarget.index === length && index === length - 1
-        ? " is-drop-after"
-        : ""
+  function unitDropClasses(unitIndex: number, rowRole: "first" | "last" | "only") {
+    if (dropTarget?.scope.kind !== "units") {
+      return "";
+    }
+    const before =
+      dropTarget.index === unitIndex && (rowRole === "first" || rowRole === "only");
+    const after =
+      dropTarget.index === units.length &&
+      unitIndex === units.length - 1 &&
+      (rowRole === "last" || rowRole === "only");
+    return `${before ? " is-drop-before" : ""}${after ? " is-drop-after" : ""}`;
+  }
+
+  function folderMemberDropClasses(folderId: string, index: number, length: number) {
+    if (dropTarget?.scope.kind !== "folder" || dropTarget.scope.folderId !== folderId) {
+      return "";
+    }
+    return `${dropTarget.index === index ? " is-drop-before" : ""}${
+      dropTarget.index === length && index === length - 1 ? " is-drop-after" : ""
     }`;
+  }
+
+  function archivedDropClasses(index: number, length: number) {
+    if (dropTarget?.scope.kind !== "archived") {
+      return "";
+    }
+    return `${dropTarget.index === index ? " is-drop-before" : ""}${
+      dropTarget.index === length && index === length - 1 ? " is-drop-after" : ""
+    }`;
+  }
+
+  function renderTreeRow(
+    tree: ResearchTreeSummary,
+    options: {
+      archived: boolean;
+      dragId: string;
+      dragScope: ResearchDragScope;
+      unitIndex?: number;
+      folderId?: string;
+      extraClasses: string;
+    },
+  ) {
+    const { archived } = options;
+    return (
+      <div
+        key={tree.id}
+        className={`research-sidebar-row${archived ? " is-archived" : ""}${
+          activeTreeId === tree.id ? " is-selected" : ""
+        }${!archived && multiSelectedIds.includes(tree.id) ? " is-multi-selected" : ""}${
+          menu?.kind === "tree" && menu.treeId === tree.id && menu.archived === archived
+            ? " has-open-menu"
+            : ""
+        }${draggingId === tree.id ? " is-dragging" : ""}${options.extraClasses}`}
+        data-research-tree-id={tree.id}
+        data-research-archived={archived ? "true" : "false"}
+        data-research-unit-index={options.unitIndex}
+        data-research-folder-member={options.folderId}
+        onPointerDown={(event) => handlePointerDown(event, options.dragId, options.dragScope)}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onClick={(event) => selectTreeFromClick(event, tree.id, archived)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openContextMenu(tree.id, archived, event.clientX, event.clientY);
+        }}
+        onDoubleClick={archived ? undefined : () => openRenameDialog(tree)}
+      >
+        <button
+          type="button"
+          className="control-button research-sidebar-select"
+          aria-current={activeTreeId === tree.id ? "page" : undefined}
+          title={tree.title}
+          onClick={(event) => {
+            event.stopPropagation();
+            selectTreeFromClick(event, tree.id, archived);
+          }}
+          onDoubleClick={
+            archived
+              ? undefined
+              : (event) => {
+                  event.stopPropagation();
+                  openRenameDialog(tree);
+                }
+          }
+        >
+          <span className="research-sidebar-copy">
+            <ResearchSidebarTitle tree={tree} />
+          </span>
+          {!archived && tree.runningCount > 0 ? (
+            <span className="research-sidebar-count" title={`${tree.runningCount} running`}>
+              {tree.runningCount}
+            </span>
+          ) : !archived && tree.hasUnseenFailure ? (
+            <span
+              className="research-sidebar-failed"
+              title="Failed since last viewed — open to acknowledge"
+            >
+              !
+            </span>
+          ) : !archived && tree.hasUnseenUpdate ? (
+            <span className="research-sidebar-unseen" title="Updated since last viewed">
+              New
+            </span>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          className="control-button research-sidebar-menu-trigger"
+          title="Research actions"
+          aria-label={`Actions for ${tree.title}`}
+          aria-haspopup="menu"
+          aria-expanded={
+            menu?.kind === "tree" && menu.treeId === tree.id && menu.archived === archived
+          }
+          data-research-menu-trigger
+          onClick={(event) => openMenu(event.currentTarget, tree.id, archived)}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <MoreHorizontal size={14} aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
+
+  function renderUnit(unit: ResearchSidebarUnit, unitIndex: number) {
+    if (unit.kind === "tree") {
+      return renderTreeRow(unit.tree, {
+        archived: false,
+        dragId: unit.tree.id,
+        dragScope: { kind: "units" },
+        unitIndex,
+        extraClasses: unitDropClasses(unitIndex, "only"),
+      });
+    }
+    const { folder } = unit;
+    return (
+      <div key={folder.id} className="research-sidebar-folder" role="group" aria-label={folder.name}>
+        <div
+          className={`research-sidebar-row research-sidebar-folder-row${
+            menu?.kind === "folder" && menu.folderId === folder.id ? " has-open-menu" : ""
+          }${draggingId === folder.id ? " is-dragging" : ""}${unitDropClasses(
+            unitIndex,
+            "first",
+          )}`}
+          data-research-unit-index={unitIndex}
+          onPointerDown={(event) =>
+            handlePointerDown(event, folder.id, { kind: "units" })
+          }
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openFolderContextMenu(folder.id, event.clientX, event.clientY);
+          }}
+          onDoubleClick={() => openFolderRenameDialog(folder)}
+        >
+          <span className="research-sidebar-select research-sidebar-folder-heading">
+            <span className="research-sidebar-copy">
+              <span className="research-sidebar-title">
+                <Folder
+                  className="research-sidebar-folder-icon"
+                  size={12}
+                  aria-hidden="true"
+                />
+                <span className="research-sidebar-title-text">{folder.name}</span>
+              </span>
+            </span>
+            <span className="research-sidebar-folder-count">{unit.trees.length}</span>
+          </span>
+          <button
+            type="button"
+            className="control-button research-sidebar-menu-trigger"
+            title="Folder actions"
+            aria-label={`Actions for ${folder.name}`}
+            aria-haspopup="menu"
+            aria-expanded={menu?.kind === "folder" && menu.folderId === folder.id}
+            data-research-menu-trigger
+            onClick={(event) => openFolderMenu(event.currentTarget, folder.id)}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <MoreHorizontal size={14} aria-hidden="true" />
+          </button>
+        </div>
+        {unit.trees.map((tree, memberIndex) =>
+          renderTreeRow(tree, {
+            archived: false,
+            dragId: tree.id,
+            dragScope: { kind: "folder", folderId: folder.id },
+            unitIndex,
+            folderId: folder.id,
+            extraClasses: ` is-folder-member${folderMemberDropClasses(
+              folder.id,
+              memberIndex,
+              unit.trees.length,
+            )}${
+              memberIndex === unit.trees.length - 1
+                ? unitDropClasses(unitIndex, "last")
+                : ""
+            }`,
+          }),
+        )}
+      </div>
+    );
   }
 
   return (
     <>
       <section
         ref={sectionRef}
-        className={`research-sidebar-section${draggingTreeId ? " is-dragging" : ""}`}
+        className={`research-sidebar-section${draggingId ? " is-dragging" : ""}`}
         aria-label="Research"
       >
-        {visibleTrees.map((tree, index) => (
-          <div
-            key={tree.id}
-            className={`research-sidebar-row${activeTreeId === tree.id ? " is-selected" : ""}${
-              multiSelectedIds.includes(tree.id) ? " is-multi-selected" : ""
-            }${
-              menu?.treeId === tree.id ? " has-open-menu" : ""
-            }${dragClasses(tree.id, false, index, visibleTrees.length)}`}
-            data-research-tree-id={tree.id}
-            data-research-archived="false"
-            onPointerDown={(event) => handlePointerDown(event, tree.id, false)}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerCancel}
-            onClick={(event) => selectTreeFromClick(event, tree.id)}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              openContextMenu(tree.id, false, event.clientX, event.clientY);
-            }}
-            onDoubleClick={() => openRenameDialog(tree)}
-          >
-            <button
-              type="button"
-              className="control-button research-sidebar-select"
-              aria-current={activeTreeId === tree.id ? "page" : undefined}
-              title={tree.title}
-              onClick={(event) => {
-                event.stopPropagation();
-                selectTreeFromClick(event, tree.id);
-              }}
-              onDoubleClick={(event) => {
-                event.stopPropagation();
-                openRenameDialog(tree);
-              }}
-            >
-              <span className="research-sidebar-copy">
-                <ResearchSidebarTitle tree={tree} />
-              </span>
-              {tree.runningCount > 0 ? (
-                <span className="research-sidebar-count" title={`${tree.runningCount} running`}>
-                  {tree.runningCount}
-                </span>
-              ) : tree.hasUnseenFailure ? (
-                <span
-                  className="research-sidebar-failed"
-                  title="Failed since last viewed — open to acknowledge"
-                >
-                  !
-                </span>
-              ) : tree.hasUnseenUpdate ? (
-                <span className="research-sidebar-unseen" title="Updated since last viewed">
-                  New
-                </span>
-              ) : null}
-            </button>
-            <button
-              type="button"
-              className="control-button research-sidebar-menu-trigger"
-              title="Research actions"
-              aria-label={`Actions for ${tree.title}`}
-              aria-haspopup="menu"
-              aria-expanded={menu?.treeId === tree.id}
-              data-research-menu-trigger
-              onClick={(event) => openMenu(event.currentTarget, tree.id, false)}
-              onDoubleClick={(event) => event.stopPropagation()}
-            >
-              <MoreHorizontal size={14} aria-hidden="true" />
-            </button>
-          </div>
-        ))}
+        {activeListVisible ? units.map(renderUnit) : null}
         {visibilityFilter !== "active"
-          ? visibleArchivedTrees.map((tree, index) => (
-              <div
-                key={tree.id}
-                className={`research-sidebar-row is-archived${
-                  activeTreeId === tree.id ? " is-selected" : ""
-                }${
-                  menu?.archived && menu.treeId === tree.id ? " has-open-menu" : ""
-                }${dragClasses(tree.id, true, index, visibleArchivedTrees.length)}`}
-                data-research-tree-id={tree.id}
-                data-research-archived="true"
-                onPointerDown={(event) => handlePointerDown(event, tree.id, true)}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                onPointerCancel={handlePointerCancel}
-                onClick={(event) => selectTreeFromClick(event, tree.id, true)}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  openContextMenu(tree.id, true, event.clientX, event.clientY);
-                }}
-              >
-                <button
-                  type="button"
-                  className="control-button research-sidebar-select"
-                  aria-current={activeTreeId === tree.id ? "page" : undefined}
-                  title={tree.title}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    selectTreeFromClick(event, tree.id, true);
-                  }}
-                >
-                  <span className="research-sidebar-copy">
-                    <ResearchSidebarTitle tree={tree} />
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="control-button research-sidebar-menu-trigger"
-                  title="Research actions"
-                  aria-label={`Actions for ${tree.title}`}
-                  aria-haspopup="menu"
-                  aria-expanded={menu?.archived && menu.treeId === tree.id}
-                  data-research-menu-trigger
-                  onClick={(event) => openMenu(event.currentTarget, tree.id, true)}
-                >
-                  <MoreHorizontal size={14} aria-hidden="true" />
-                </button>
-              </div>
-            ))
+          ? visibleArchivedTrees.map((tree, index) =>
+              renderTreeRow(tree, {
+                archived: true,
+                dragId: tree.id,
+                dragScope: { kind: "archived" },
+                extraClasses: archivedDropClasses(index, visibleArchivedTrees.length),
+              }),
+            )
           : null}
       </section>
-      {menu && menuTree
+      {menu?.kind === "multi"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="popover-surface popover-surface--context pane-context-menu research-sidebar-menu"
+              role="menu"
+              aria-label={`Actions for ${multiSelectedIds.length} selected items`}
+              style={{ left: menu.left, top: menu.top }}
+              onMouseDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <div className="group-context-actions">
+                <button
+                  className="control-button"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(null);
+                    const folder = onCreateFolder(multiSelectedIds);
+                    if (folder) {
+                      openFolderRenameDialog(folder);
+                    }
+                  }}
+                >
+                  <FolderPlus size={13} aria-hidden="true" />
+                  <span>New folder with {multiSelectedIds.length} items</span>
+                </button>
+                {folderChoices.length > 0 ? (
+                  <div className="context-menu-divider" role="separator" />
+                ) : null}
+                {folderChoices.map((folder) => (
+                  <button
+                    key={folder.id}
+                    className="control-button"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(null);
+                      onAddToFolder(folder.id, multiSelectedIds);
+                    }}
+                  >
+                    <FolderInput size={13} aria-hidden="true" />
+                    <span>Add to “{folder.name}”</span>
+                  </button>
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {menu?.kind === "folder" && menuFolder
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="popover-surface popover-surface--context pane-context-menu research-sidebar-menu"
+              role="menu"
+              aria-label={`Actions for ${menuFolder.name}`}
+              style={{ left: menu.left, top: menu.top }}
+              onMouseDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <div className="group-context-actions">
+                <button
+                  className="control-button"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => openFolderRenameDialog(menuFolder)}
+                >
+                  <Pencil size={13} aria-hidden="true" />
+                  <span>Rename</span>
+                </button>
+                <div className="context-menu-divider" role="separator" />
+                <button
+                  className="control-button"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(null);
+                    setDissolvingFolder(menuFolder);
+                  }}
+                >
+                  <FolderMinus size={13} aria-hidden="true" />
+                  <span>
+                    Remove {menuFolderTrees.length}{" "}
+                    {menuFolderTrees.length === 1 ? "item" : "items"}…
+                  </span>
+                </button>
+                <div className="context-menu-divider" role="separator" />
+                <button
+                  className="control-button"
+                  type="button"
+                  role="menuitem"
+                  disabled={menuFolderHasRunning}
+                  title={
+                    menuFolderHasRunning
+                      ? "Folders with active runs cannot be archived"
+                      : undefined
+                  }
+                  onClick={() => {
+                    setMenu(null);
+                    void onArchiveFolder(menuFolder.id);
+                  }}
+                >
+                  <Archive size={13} aria-hidden="true" />
+                  <span>Archive</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="control-button context-menu-danger"
+                  disabled={menuFolderHasRunning}
+                  title={
+                    menuFolderHasRunning
+                      ? "Folders with active runs cannot be deleted"
+                      : undefined
+                  }
+                  onClick={() => {
+                    setMenu(null);
+                    setFolderRemovalError(null);
+                    setDeletingFolder(menuFolder);
+                  }}
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                  <span>Delete</span>
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {menu?.kind === "tree" && menuTree
         ? createPortal(
             <div
               ref={menuRef}
@@ -645,6 +1083,20 @@ export default function ResearchSidebarSection({
                       >
                         <RefreshCw size={13} aria-hidden="true" />
                         <span>Regenerate title</span>
+                      </button>
+                    ) : null}
+                    {folderState.membership[menuTree.id] ? (
+                      <button
+                        className="control-button"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu(null);
+                          onRemoveFromFolder([menuTree.id]);
+                        }}
+                      >
+                        <FolderMinus size={13} aria-hidden="true" />
+                        <span>Remove from folder</span>
                       </button>
                     ) : null}
                   </>
@@ -751,7 +1203,127 @@ export default function ResearchSidebarSection({
             document.body,
           )
         : null}
-      {renamingTree
+      {deletingFolder
+        ? createPortal(
+            <div
+              className="confirm-dialog-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !folderRemovalBusy) {
+                  setDeletingFolder(null);
+                }
+              }}
+            >
+              <div
+                className="confirm-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="delete-research-folder-dialog-title"
+                aria-busy={folderRemovalBusy}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !folderRemovalBusy) {
+                    event.preventDefault();
+                    setDeletingFolder(null);
+                  }
+                }}
+              >
+                <h2 id="delete-research-folder-dialog-title">
+                  Delete “{deletingFolder.name}”?
+                </h2>
+                <p>
+                  This permanently deletes the folder and all{" "}
+                  {folderMemberTrees(deletingFolder.id).length} research items inside it,
+                  including their completed work and follow-up history. This can’t be
+                  undone.
+                </p>
+                {folderRemovalError ? (
+                  <p className="confirm-dialog-error" role="alert">
+                    {folderRemovalError}
+                  </p>
+                ) : null}
+                <div className="confirm-dialog-actions">
+                  <button
+                    className="control-button"
+                    type="button"
+                    disabled={folderRemovalBusy}
+                    onClick={() => setDeletingFolder(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="control-button danger"
+                    autoFocus
+                    disabled={folderRemovalBusy}
+                    onClick={() => void confirmFolderRemoval()}
+                  >
+                    {folderRemovalBusy ? "Deleting…" : "Delete folder and items"}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {dissolvingFolder
+        ? createPortal(
+            <div
+              className="confirm-dialog-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                  setDissolvingFolder(null);
+                }
+              }}
+            >
+              <div
+                className="confirm-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="dissolve-research-folder-dialog-title"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setDissolvingFolder(null);
+                  }
+                }}
+              >
+                <h2 id="dissolve-research-folder-dialog-title">
+                  Remove {folderMemberTrees(dissolvingFolder.id).length}{" "}
+                  {folderMemberTrees(dissolvingFolder.id).length === 1 ? "item" : "items"}{" "}
+                  from “{dissolvingFolder.name}”?
+                </h2>
+                <p>
+                  The items return to the research list and the folder is removed. No
+                  research is deleted.
+                </p>
+                <div className="confirm-dialog-actions">
+                  <button
+                    className="control-button"
+                    type="button"
+                    onClick={() => setDissolvingFolder(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="control-button"
+                    autoFocus
+                    onClick={() => {
+                      const folder = dissolvingFolder;
+                      setDissolvingFolder(null);
+                      onDissolveFolder(folder.id);
+                    }}
+                  >
+                    Remove items
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {renamingTree || renamingFolder
         ? createPortal(
             <div
               className="confirm-dialog-backdrop"
@@ -759,6 +1331,7 @@ export default function ResearchSidebarSection({
               onMouseDown={(event) => {
                 if (event.target === event.currentTarget) {
                   setRenamingTree(null);
+                  setRenamingFolder(null);
                 }
               }}
             >
@@ -772,22 +1345,32 @@ export default function ResearchSidebarSection({
                   submitRename();
                 }}
               >
-                <h2 id="rename-research-dialog-title">Rename research</h2>
+                <h2 id="rename-research-dialog-title">
+                  {renamingFolder ? "Rename folder" : "Rename research"}
+                </h2>
                 <input
                   ref={renameInputRef}
                   className="rename-dialog-input"
                   value={renameDraft}
-                  aria-label="Research title"
+                  aria-label={renamingFolder ? "Folder name" : "Research title"}
                   onChange={(event) => setRenameDraft(event.currentTarget.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Escape") {
                       event.preventDefault();
                       setRenamingTree(null);
+                      setRenamingFolder(null);
                     }
                   }}
                 />
                 <div className="confirm-dialog-actions">
-                  <button className="control-button" type="button" onClick={() => setRenamingTree(null)}>
+                  <button
+                    className="control-button"
+                    type="button"
+                    onClick={() => {
+                      setRenamingTree(null);
+                      setRenamingFolder(null);
+                    }}
+                  >
                     Cancel
                   </button>
                   <button className="control-button" type="submit">Rename</button>
