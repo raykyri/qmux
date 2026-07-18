@@ -118,12 +118,11 @@
   background: var(--control-bg-hover);
 }
 
-/* Shift/meta multi-selection reads like the single selection, one shade
-   softer, so the active row still stands out inside the selected range. */
+/* Shift/meta multi-selection uses the same fill as an ordinary selection so
+   every selected research item carries the same visual weight. */
 .research-sidebar-row.is-multi-selected {
-  color: var(--text-interactive);
-  background: var(--pane-hover-bg);
-  border-color: var(--control-border);
+  color: #ffffff;
+  background: var(--control-bg-hover);
 }
 
 .research-sidebar-select {
@@ -263,8 +262,38 @@
   color: var(--control-fg-muted);
 }
 
+.research-sidebar-folder-row.is-folder-drop-target {
+  color: var(--text-interactive);
+  background: var(--research-sidebar-hover-bg);
+  border-color: var(--accent-color);
+}
+
+.research-sidebar-folder-collapse {
+  display: grid;
+  width: 20px;
+  height: 22px;
+  min-height: 0;
+  flex: none;
+  place-items: center;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  color: var(--text-subtle);
+  background: transparent;
+}
+
+.research-sidebar-folder-collapse svg {
+  transition: transform var(--transition-fast);
+  transform: rotate(90deg);
+}
+
+.research-sidebar-folder.is-collapsed .research-sidebar-folder-collapse svg {
+  transform: rotate(0deg);
+}
+
 /* Shares .research-sidebar-select's grid; only the tone differs. */
 .research-sidebar-folder-heading {
+  padding-left: 2px;
   font-weight: 500;
 }
 
@@ -274,18 +303,6 @@
   margin-right: 5px;
   color: #8f9893;
   transform: translateY(1px);
-}
-
-.research-sidebar-folder-count {
-  align-self: start;
-  min-width: 18px;
-  padding: 1px 5px;
-  border-radius: 999px;
-  color: var(--text-subtle);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  background: var(--surface-fill-hover);
 }
 
 .research-sidebar-row.is-folder-member {

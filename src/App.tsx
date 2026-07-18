@@ -110,12 +110,15 @@ import {
   dissolveResearchFolder,
   loadResearchFolderState,
   pruneResearchFolderState,
+  removeTreesFromResearchFolderMembership,
   removeTreesFromResearchFolders,
   renameResearchFolder,
   replaceResearchStarOrder,
   researchFolderMemberIds,
   saveResearchFolderState,
+  setResearchFolderCollapsed,
   toggleResearchStar,
+  visibleResearchTreeIds,
   type ResearchFolder,
   type ResearchFolderState,
 } from "./lib/researchFolders";
@@ -2320,25 +2323,33 @@ function MainApp() {
     () => researchPanes.filter((pane) => pane.groupId === researchScope),
     [researchPanes, researchScope],
   );
+  const cycleableResearchTrees = useMemo(() => {
+    if (researchVisibilityFilter === "archived") {
+      return archivedResearchTrees;
+    }
+    const activeById = new Map(researchTrees.map((tree) => [tree.id, tree]));
+    const visibleActive = visibleResearchTreeIds(researchTrees, researchFolderState).flatMap(
+      (id) => {
+        const tree = activeById.get(id);
+        return tree ? [tree] : [];
+      },
+    );
+    return researchVisibilityFilter === "active"
+      ? visibleActive
+      : [...visibleActive, ...archivedResearchTrees];
+  }, [
+    archivedResearchTrees,
+    researchFolderState,
+    researchTrees,
+    researchVisibilityFilter,
+  ]);
   const cycleableResearchTabIds = useMemo(
-    () =>
-      researchCycleTabIds(
-        panes,
-        groups,
-        researchVisibilityFilter === "active"
-          ? researchTrees
-          : researchVisibilityFilter === "archived"
-            ? archivedResearchTrees
-            : [...researchTrees, ...archivedResearchTrees],
-        researchScope,
-      ),
+    () => researchCycleTabIds(panes, groups, cycleableResearchTrees, researchScope),
     [
-      archivedResearchTrees,
+      cycleableResearchTrees,
       groups,
       panes,
       researchScope,
-      researchTrees,
-      researchVisibilityFilter,
     ],
   );
   // Shortcut number per research tree id, mirroring the terminal tabs' Cmd-1..9
@@ -6401,7 +6412,22 @@ function MainApp() {
   const removeResearchTreesFromFolder = useCallback(
     (treeIds: string[]) => {
       commitResearchFolderState(
-        removeTreesFromResearchFolders(researchFolderStateRef.current, treeIds),
+        removeTreesFromResearchFolderMembership(
+          researchFolderStateRef.current,
+          treeIds,
+        ),
+      );
+    },
+    [commitResearchFolderState],
+  );
+  const setResearchFolderCollapsedFromSidebar = useCallback(
+    (folderId: string, collapsed: boolean) => {
+      commitResearchFolderState(
+        setResearchFolderCollapsed(
+          researchFolderStateRef.current,
+          folderId,
+          collapsed,
+        ),
       );
     },
     [commitResearchFolderState],
@@ -10570,6 +10596,7 @@ function MainApp() {
               onCreateFolder={createResearchFolderFromSelection}
               onAddToFolder={addResearchTreesToFolder}
               onRemoveFromFolder={removeResearchTreesFromFolder}
+              onFolderCollapsedChange={setResearchFolderCollapsedFromSidebar}
               onRenameFolder={renameResearchFolderFromSidebar}
               onDissolveFolder={dissolveResearchFolderFromSidebar}
               onArchiveFolder={archiveResearchFolderFromSidebar}

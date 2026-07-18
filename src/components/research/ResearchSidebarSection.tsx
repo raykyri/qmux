@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import {
   Archive,
   ArchiveRestore,
+  ChevronRight,
   FileText,
   MessagesSquare,
   Folder,
@@ -23,12 +24,17 @@ import {
 import type { ResearchTreeSummary } from "../../types";
 import { moveResearchTreeIdToGap } from "../../lib/researchOrder";
 import {
+  addTreesToResearchFolder,
   buildResearchSidebarLists,
   flattenResearchSidebarUnits,
+  flattenVisibleResearchSidebarUnits,
   isResearchStarred,
   moveResearchFolderMemberToGap,
   moveResearchUnitToGap,
+  removeTreesFromResearchFolderMembership,
   researchSidebarUnitId,
+  toggleResearchStar,
+  translateResearchGapAfterInsertion,
   type ResearchFolder,
   type ResearchFolderState,
   type ResearchSidebarUnit,
@@ -63,6 +69,7 @@ interface ResearchSidebarSectionProps {
   onCreateFolder: (treeIds: string[]) => ResearchFolder | null;
   onAddToFolder: (folderId: string, treeIds: string[]) => void;
   onRemoveFromFolder: (treeIds: string[]) => void;
+  onFolderCollapsedChange: (folderId: string, collapsed: boolean) => void;
   onRenameFolder: (folderId: string, name: string) => void;
   onDissolveFolder: (folderId: string) => void;
   onArchiveFolder: (folderId: string) => Promise<void>;
@@ -76,9 +83,9 @@ type ResearchMenu =
   | { kind: "folder"; folderId: string; left: number; top: number }
   | { kind: "multi"; left: number; top: number };
 
-// What a drag gesture is allowed to reorder: top-level units of the starred
-// or main list (plain trees and whole folders), members inside one folder, or
-// the flat archived list. Cross-scope drops are not offered.
+// Where a drag starts: top-level units of the starred or main list (plain
+// trees and whole folders), members inside one folder, or the flat archived
+// list. Active tree items may cross these scopes to enter or leave folders.
 type ResearchDragScope =
   | { kind: "units" }
   | { kind: "starred" }
@@ -95,10 +102,9 @@ type ResearchPointerDrag = {
   active: boolean;
 };
 
-type ResearchDropTarget = {
-  scope: ResearchDragScope;
-  index: number;
-};
+type ResearchDropTarget =
+  | { kind: "gap"; scope: ResearchDragScope; index: number }
+  | { kind: "folder"; folderId: string; index: number; onHeader: boolean };
 
 const RESEARCH_DRAG_START_THRESHOLD = 4;
 const RESEARCH_DRAG_CLICK_SUPPRESS_MS = 100;
@@ -136,6 +142,7 @@ export default function ResearchSidebarSection({
   onCreateFolder,
   onAddToFolder,
   onRemoveFromFolder,
+  onFolderCollapsedChange,
   onRenameFolder,
   onDissolveFolder,
   onArchiveFolder,
@@ -173,14 +180,18 @@ export default function ResearchSidebarSection({
   );
   const starredUnits = lists.starred;
   const mainUnits = lists.main;
+  const collapsedFolderIds = useMemo(
+    () => new Set(folderState.collapsed),
+    [folderState.collapsed],
+  );
   // Flat display order of the active list (starred first) — what shift-ranges
   // walk, and the full-order basis every unit reorder maps back onto.
   const displayOrderIds = useMemo(
     () => [
-      ...flattenResearchSidebarUnits(lists.starred),
-      ...flattenResearchSidebarUnits(lists.main),
+      ...flattenVisibleResearchSidebarUnits(lists.starred, folderState),
+      ...flattenVisibleResearchSidebarUnits(lists.main, folderState),
     ],
-    [lists],
+    [folderState, lists],
   );
   const menuTree =
     menu?.kind === "tree"
@@ -210,6 +221,14 @@ export default function ResearchSidebarSection({
       ),
     [mainUnits, starredUnits],
   );
+
+  useEffect(() => {
+    const visible = new Set(displayOrderIds);
+    const next = multiSelectedIds.filter((id) => visible.has(id));
+    if (next.length !== multiSelectedIds.length) {
+      onMultiSelectChange(next);
+    }
+  }, [displayOrderIds, multiSelectedIds, onMultiSelectChange]);
 
   useEffect(() => {
     if (!menu) {
@@ -503,6 +522,7 @@ export default function ResearchSidebarSection({
   }
 
   function computeDropTarget(
+    clientX: number,
     clientY: number,
     drag: ResearchPointerDrag,
   ): ResearchDropTarget | null {
@@ -510,13 +530,6 @@ export default function ResearchSidebarSection({
     if (!section) {
       return null;
     }
-    const gapTarget = (
-      index: number,
-      dragIndex: number,
-    ): ResearchDropTarget | null =>
-      index === dragIndex || index === dragIndex + 1
-        ? null
-        : { scope: drag.scope, index };
     if (drag.scope.kind === "archived") {
       const dragIndex = visibleArchivedTrees.findIndex((tree) => tree.id === drag.id);
       if (dragIndex < 0) {
@@ -530,76 +543,144 @@ export default function ResearchSidebarSection({
       for (const [index, row] of rows.entries()) {
         const rect = row.getBoundingClientRect();
         if (clientY < rect.top + rect.height / 2) {
-          return gapTarget(index, dragIndex);
+          return index === dragIndex || index === dragIndex + 1
+            ? null
+            : { kind: "gap", scope: drag.scope, index };
         }
       }
-      return gapTarget(rows.length, dragIndex);
+      return rows.length === dragIndex || rows.length === dragIndex + 1
+        ? null
+        : { kind: "gap", scope: drag.scope, index: rows.length };
     }
-    if (drag.scope.kind === "folder") {
-      const folderId = drag.scope.folderId;
-      const unit = [...starredUnits, ...mainUnits].find(
-        (candidate) => candidate.kind === "folder" && candidate.folder.id === folderId,
+
+    const draggedTree = trees.find((tree) => tree.id === drag.id) ?? null;
+    const unitGap = (
+      list: "units" | "starred",
+      index: number,
+    ): ResearchDropTarget | null => {
+      const units = list === "starred" ? starredUnits : mainUnits;
+      const dragIndex = units.findIndex(
+        (unit) => researchSidebarUnitId(unit) === drag.id,
       );
-      if (!unit || unit.kind !== "folder") {
+      if (
+        drag.scope.kind === list &&
+        (index === dragIndex || index === dragIndex + 1)
+      ) {
         return null;
       }
-      const dragIndex = unit.trees.findIndex((tree) => tree.id === drag.id);
-      if (dragIndex < 0) {
-        return null;
-      }
-      const rows = Array.from(
-        section.querySelectorAll<HTMLElement>(
-          `.research-sidebar-row[data-research-folder-member="${folderId}"]`,
-        ),
-      );
-      for (const [index, row] of rows.entries()) {
+      return { kind: "gap", scope: { kind: list }, index };
+    };
+    const unitGapAtY = (list: "units" | "starred") => {
+      const units = list === "starred" ? starredUnits : mainUnits;
+      const attribute =
+        list === "starred" ? "data-research-star-index" : "data-research-unit-index";
+      const blocks = new Map<number, { top: number; bottom: number }>();
+      for (const row of section.querySelectorAll<HTMLElement>(
+        `.research-sidebar-row[${attribute}]`,
+      )) {
+        const index = Number(row.getAttribute(attribute));
+        if (!Number.isInteger(index)) {
+          continue;
+        }
         const rect = row.getBoundingClientRect();
-        if (clientY < rect.top + rect.height / 2) {
-          return gapTarget(index, dragIndex);
+        const block = blocks.get(index);
+        blocks.set(index, {
+          top: block ? Math.min(block.top, rect.top) : rect.top,
+          bottom: block ? Math.max(block.bottom, rect.bottom) : rect.bottom,
+        });
+      }
+      for (let index = 0; index < units.length; index += 1) {
+        const block = blocks.get(index);
+        if (block && clientY < (block.top + block.bottom) / 2) {
+          return unitGap(list, index);
         }
       }
-      return gapTarget(rows.length, dragIndex);
-    }
-    // Top-level units: a folder spans several rows, so gaps sit at unit-block
-    // boundaries measured from each unit's first row top to last row bottom.
-    // The starred list and the main list are independent drop scopes with the
-    // same geometry, distinguished by their row data attribute.
-    const scopeUnits = drag.scope.kind === "starred" ? starredUnits : mainUnits;
-    const attribute =
-      drag.scope.kind === "starred"
-        ? "data-research-star-index"
-        : "data-research-unit-index";
-    const dragIndex = scopeUnits.findIndex(
-      (unit) => researchSidebarUnitId(unit) === drag.id,
-    );
-    if (dragIndex < 0) {
-      return null;
-    }
-    const blocks = new Map<number, { top: number; bottom: number }>();
-    for (const row of section.querySelectorAll<HTMLElement>(
-      `.research-sidebar-row[${attribute}]`,
-    )) {
-      const index = Number(row.getAttribute(attribute));
-      if (!Number.isInteger(index)) {
-        continue;
-      }
-      const rect = row.getBoundingClientRect();
-      const block = blocks.get(index);
-      blocks.set(index, {
-        top: block ? Math.min(block.top, rect.top) : rect.top,
-        bottom: block ? Math.max(block.bottom, rect.bottom) : rect.bottom,
-      });
-    }
-    for (let index = 0; index < scopeUnits.length; index += 1) {
-      const block = blocks.get(index);
-      if (!block) {
-        continue;
-      }
-      if (clientY < (block.top + block.bottom) / 2) {
-        return gapTarget(index, dragIndex);
+      return unitGap(list, units.length);
+    };
+
+    const hit = document.elementFromPoint(clientX, clientY);
+    const row = hit?.closest<HTMLElement>(".research-sidebar-row") ?? null;
+    const hitRow = row && section.contains(row) ? row : null;
+    const memberFolderId = hitRow?.dataset.researchFolderMember;
+    if (draggedTree && memberFolderId) {
+      const unit = [...starredUnits, ...mainUnits].find(
+        (candidate) =>
+          candidate.kind === "folder" && candidate.folder.id === memberFolderId,
+      );
+      if (unit?.kind === "folder") {
+        const memberIndex = unit.trees.findIndex(
+          (tree) => tree.id === hitRow.dataset.researchTreeId,
+        );
+        const rect = hitRow.getBoundingClientRect();
+        const index = memberIndex + (clientY >= rect.top + rect.height / 2 ? 1 : 0);
+        const dragIndex = unit.trees.findIndex((tree) => tree.id === drag.id);
+        if (
+          drag.scope.kind === "folder" &&
+          memberFolderId === drag.scope.folderId &&
+          (index === dragIndex || index === dragIndex + 1)
+        ) {
+          return null;
+        }
+        return {
+          kind: "folder",
+          folderId: memberFolderId,
+          index,
+          onHeader: false,
+        };
       }
     }
-    return gapTarget(scopeUnits.length, dragIndex);
+
+    const headerFolderId = hitRow?.dataset.researchFolderId;
+    if (headerFolderId) {
+      const list = hitRow.dataset.researchStarIndex === undefined ? "units" : "starred";
+      const unitIndex = Number(
+        list === "starred"
+          ? hitRow.dataset.researchStarIndex
+          : hitRow.dataset.researchUnitIndex,
+      );
+      const rect = hitRow.getBoundingClientRect();
+      const edge = Math.min(6, rect.height * 0.25);
+      if (!draggedTree) {
+        return unitGap(
+          list,
+          unitIndex + (clientY >= rect.top + rect.height / 2 ? 1 : 0),
+        );
+      }
+      if (clientY < rect.top + edge || clientY > rect.bottom - edge) {
+        return unitGap(
+          list,
+          unitIndex + (clientY > rect.bottom - edge ? 1 : 0),
+        );
+      }
+      const target = [...starredUnits, ...mainUnits].find(
+        (unit) => unit.kind === "folder" && unit.folder.id === headerFolderId,
+      );
+      if (target?.kind === "folder") {
+        return {
+          kind: "folder",
+          folderId: headerFolderId,
+          index: target.trees.length,
+          onHeader: true,
+        };
+      }
+    }
+
+    if (hitRow && !memberFolderId) {
+      const list =
+        hitRow.dataset.researchStarIndex !== undefined ? "starred" : "units";
+      if (draggedTree && list === "starred" && drag.scope.kind !== "starred") {
+        return null;
+      }
+      const index = Number(
+        list === "starred"
+          ? hitRow.dataset.researchStarIndex
+          : hitRow.dataset.researchUnitIndex,
+      );
+      const rect = hitRow.getBoundingClientRect();
+      return unitGap(list, index + (clientY >= rect.top + rect.height / 2 ? 1 : 0));
+    }
+
+    return unitGapAtY(drag.scope.kind === "starred" ? "starred" : "units");
   }
 
   function handlePointerDown(
@@ -643,7 +724,7 @@ export default function ResearchSidebarSection({
       setDraggingId(drag.id);
     }
     event.preventDefault();
-    const target = computeDropTarget(event.clientY, drag);
+    const target = computeDropTarget(event.clientX, event.clientY, drag);
     dropTargetRef.current = target;
     setDropTarget(target);
   }
@@ -668,12 +749,13 @@ export default function ResearchSidebarSection({
     window.setTimeout(() => {
       suppressClickRef.current = false;
     }, RESEARCH_DRAG_CLICK_SUPPRESS_MS);
-    const target = dropTargetRef.current ?? computeDropTarget(event.clientY, drag);
+    const target =
+      dropTargetRef.current ?? computeDropTarget(event.clientX, event.clientY, drag);
     clearPointerDrag();
     if (!target) {
       return;
     }
-    if (drag.scope.kind === "archived") {
+    if (drag.scope.kind === "archived" && target.kind === "gap") {
       const currentIds = visibleArchivedTrees.map((tree) => tree.id);
       const nextIds = moveResearchTreeIdToGap(currentIds, drag.id, target.index);
       if (nextIds !== currentIds) {
@@ -681,7 +763,68 @@ export default function ResearchSidebarSection({
       }
       return;
     }
-    if (drag.scope.kind === "starred") {
+    const draggedTree = trees.find((tree) => tree.id === drag.id) ?? null;
+    if (target.kind === "folder" && draggedTree) {
+      let proposedState = addTreesToResearchFolder(
+        folderState,
+        target.folderId,
+        [drag.id],
+      );
+      const wasStarred = isResearchStarred(proposedState, drag.id);
+      if (wasStarred) {
+        proposedState = toggleResearchStar(proposedState, drag.id);
+      }
+      const proposedLists = buildResearchSidebarLists(trees, proposedState);
+      const targetIsStarred = proposedLists.starred.some(
+        (unit) => unit.kind === "folder" && unit.folder.id === target.folderId,
+      );
+      const currentTarget = [...starredUnits, ...mainUnits].find(
+        (unit) => unit.kind === "folder" && unit.folder.id === target.folderId,
+      );
+      const proposedTarget = [
+        ...proposedLists.starred,
+        ...proposedLists.main,
+      ].find(
+        (unit) => unit.kind === "folder" && unit.folder.id === target.folderId,
+      );
+      const insertedIntoTargetProjection =
+        currentTarget?.kind === "folder" &&
+        !currentTarget.trees.some((tree) => tree.id === drag.id);
+      const proposedMemberIndex =
+        proposedTarget?.kind === "folder"
+          ? proposedTarget.trees.findIndex((tree) => tree.id === drag.id)
+          : -1;
+      const targetIndex = insertedIntoTargetProjection
+        ? translateResearchGapAfterInsertion(target.index, proposedMemberIndex)
+        : target.index;
+      const moved = moveResearchFolderMemberToGap(
+        targetIsStarred ? proposedLists.starred : proposedLists.main,
+        target.folderId,
+        drag.id,
+        targetIndex,
+      );
+      if (wasStarred) {
+        onToggleStar(drag.id);
+      }
+      if (folderState.membership[drag.id] !== target.folderId) {
+        onAddToFolder(target.folderId, [drag.id]);
+      }
+      if (moved) {
+        onReorder(false, [
+          ...flattenResearchSidebarUnits(
+            targetIsStarred ? moved : proposedLists.starred,
+          ),
+          ...flattenResearchSidebarUnits(
+            targetIsStarred ? proposedLists.main : moved,
+          ),
+        ]);
+      }
+      return;
+    }
+    if (target.kind !== "gap") {
+      return;
+    }
+    if (drag.scope.kind === "starred" && target.scope.kind === "starred") {
       // The starred list orders itself client-side; reuse the same gap-move
       // mechanic the backend list order uses.
       const currentIds = starredUnits.map(researchSidebarUnitId);
@@ -691,29 +834,41 @@ export default function ResearchSidebarSection({
       }
       return;
     }
-    if (drag.scope.kind === "folder") {
-      const folderId = drag.scope.folderId;
-      const starredFolder = starredUnits.some(
-        (unit) => unit.kind === "folder" && unit.folder.id === folderId,
-      );
-      const moved = moveResearchFolderMemberToGap(
-        starredFolder ? starredUnits : mainUnits,
-        folderId,
-        drag.id,
-        target.index,
-      );
-      if (moved) {
-        onReorder(false, [
-          ...flattenResearchSidebarUnits(starredFolder ? moved : starredUnits),
-          ...flattenResearchSidebarUnits(starredFolder ? mainUnits : moved),
-        ]);
-      }
+    if (target.scope.kind !== "units") {
       return;
     }
-    const moved = moveResearchUnitToGap(mainUnits, drag.id, target.index);
+    const proposedState = draggedTree
+      ? removeTreesFromResearchFolderMembership(folderState, [drag.id])
+      : folderState;
+    const proposedLists = buildResearchSidebarLists(trees, proposedState);
+    const sourceFolderId =
+      drag.scope.kind === "folder" ? drag.scope.folderId : null;
+    const sourceFolder =
+      sourceFolderId
+        ? [...starredUnits, ...mainUnits].find(
+            (unit) =>
+              unit.kind === "folder" && unit.folder.id === sourceFolderId,
+          )
+        : null;
+    const extractionAddsMainUnit =
+      sourceFolder?.kind === "folder" &&
+      (sourceFolder.trees.length > 1 || !mainUnits.includes(sourceFolder));
+    const proposedDragIndex = proposedLists.main.findIndex(
+      (unit) => researchSidebarUnitId(unit) === drag.id,
+    );
+    // Extracting a member adds a new top-level unit without removing its
+    // still-populated source folder. Translate the pre-extraction gap into the
+    // expanded unit list before applying the ordinary gap move.
+    const targetIndex = extractionAddsMainUnit
+      ? translateResearchGapAfterInsertion(target.index, proposedDragIndex)
+      : target.index;
+    const moved = moveResearchUnitToGap(proposedLists.main, drag.id, targetIndex);
+    if (draggedTree && folderState.membership[drag.id]) {
+      onRemoveFromFolder([drag.id]);
+    }
     if (moved) {
       onReorder(false, [
-        ...flattenResearchSidebarUnits(starredUnits),
+        ...flattenResearchSidebarUnits(proposedLists.starred),
         ...flattenResearchSidebarUnits(moved),
       ]);
     }
@@ -769,7 +924,7 @@ export default function ResearchSidebarSection({
     length: number,
     rowRole: "first" | "last" | "only",
   ) {
-    if (dropTarget?.scope.kind !== list) {
+    if (dropTarget?.kind !== "gap" || dropTarget.scope.kind !== list) {
       return "";
     }
     const before =
@@ -782,7 +937,11 @@ export default function ResearchSidebarSection({
   }
 
   function folderMemberDropClasses(folderId: string, index: number, length: number) {
-    if (dropTarget?.scope.kind !== "folder" || dropTarget.scope.folderId !== folderId) {
+    if (
+      dropTarget?.kind !== "folder" ||
+      dropTarget.folderId !== folderId ||
+      dropTarget.onHeader
+    ) {
       return "";
     }
     return `${dropTarget.index === index ? " is-drop-before" : ""}${
@@ -791,7 +950,7 @@ export default function ResearchSidebarSection({
   }
 
   function archivedDropClasses(index: number, length: number) {
-    if (dropTarget?.scope.kind !== "archived") {
+    if (dropTarget?.kind !== "gap" || dropTarget.scope.kind !== "archived") {
       return "";
     }
     return `${dropTarget.index === index ? " is-drop-before" : ""}${
@@ -924,19 +1083,32 @@ export default function ResearchSidebarSection({
       });
     }
     const { folder } = unit;
+    const collapsed = collapsedFolderIds.has(folder.id);
     return (
-      <div key={folder.id} className="research-sidebar-folder" role="group" aria-label={folder.name}>
+      <div
+        key={folder.id}
+        className={`research-sidebar-folder${collapsed ? " is-collapsed" : ""}`}
+        role="group"
+        aria-label={folder.name}
+      >
         <div
           className={`research-sidebar-row research-sidebar-folder-row${
             menu?.kind === "folder" && menu.folderId === folder.id ? " has-open-menu" : ""
+          }${
+            dropTarget?.kind === "folder" &&
+            dropTarget.folderId === folder.id &&
+            dropTarget.onHeader
+              ? " is-folder-drop-target"
+              : ""
           }${draggingId === folder.id ? " is-dragging" : ""}${unitDropClasses(
             list,
             unitIndex,
             listUnits.length,
-            "first",
+            collapsed ? "only" : "first",
           )}`}
           data-research-unit-index={list === "units" ? unitIndex : undefined}
           data-research-star-index={list === "starred" ? unitIndex : undefined}
+          data-research-folder-id={folder.id}
           onPointerDown={(event) => handlePointerDown(event, folder.id, listScope)}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -946,8 +1118,30 @@ export default function ResearchSidebarSection({
             event.stopPropagation();
             openFolderContextMenu(folder.id, event.clientX, event.clientY);
           }}
-          onDoubleClick={() => openFolderRenameDialog(folder)}
+          onClick={(event) => {
+            if (
+              suppressClickRef.current ||
+              (event.target instanceof Element &&
+                event.target.closest("[data-research-menu-trigger]"))
+            ) {
+              return;
+            }
+            onFolderCollapsedChange(folder.id, !collapsed);
+          }}
         >
+          <button
+            type="button"
+            className="control-button research-sidebar-folder-collapse"
+            aria-label={`${collapsed ? "Expand" : "Collapse"} ${folder.name}`}
+            aria-expanded={!collapsed}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFolderCollapsedChange(folder.id, !collapsed);
+            }}
+          >
+            <ChevronRight size={12} aria-hidden="true" />
+          </button>
           <span className="research-sidebar-select research-sidebar-folder-heading">
             <span className="research-sidebar-copy">
               <span className="research-sidebar-title">
@@ -959,7 +1153,6 @@ export default function ResearchSidebarSection({
                 <span className="research-sidebar-title-text">{folder.name}</span>
               </span>
             </span>
-            <span className="research-sidebar-folder-count">{unit.trees.length}</span>
           </span>
           <button
             type="button"
@@ -975,25 +1168,27 @@ export default function ResearchSidebarSection({
             <MoreHorizontal size={14} aria-hidden="true" />
           </button>
         </div>
-        {unit.trees.map((tree, memberIndex) =>
-          renderTreeRow(tree, {
-            archived: false,
-            dragId: tree.id,
-            dragScope: { kind: "folder", folderId: folder.id },
-            unitIndex,
-            unitList: list,
-            folderId: folder.id,
-            extraClasses: ` is-folder-member${folderMemberDropClasses(
-              folder.id,
-              memberIndex,
-              unit.trees.length,
-            )}${
-              memberIndex === unit.trees.length - 1
-                ? unitDropClasses(list, unitIndex, listUnits.length, "last")
-                : ""
-            }`,
-          }),
-        )}
+        {collapsed
+          ? null
+          : unit.trees.map((tree, memberIndex) =>
+              renderTreeRow(tree, {
+                archived: false,
+                dragId: tree.id,
+                dragScope: { kind: "folder", folderId: folder.id },
+                unitIndex,
+                unitList: list,
+                folderId: folder.id,
+                extraClasses: ` is-folder-member${folderMemberDropClasses(
+                  folder.id,
+                  memberIndex,
+                  unit.trees.length,
+                )}${
+                  memberIndex === unit.trees.length - 1
+                    ? unitDropClasses(list, unitIndex, listUnits.length, "last")
+                    : ""
+                }`,
+              }),
+            )}
       </div>
     );
   }
@@ -1252,7 +1447,23 @@ export default function ResearchSidebarSection({
                         <FolderMinus size={13} aria-hidden="true" />
                         <span>Remove from folder</span>
                       </button>
-                    ) : null}
+                    ) : (
+                      <button
+                        className="control-button"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu(null);
+                          const folder = onCreateFolder([menuTree.id]);
+                          if (folder) {
+                            openFolderRenameDialog(folder);
+                          }
+                        }}
+                      >
+                        <FolderPlus size={13} aria-hidden="true" />
+                        <span>New folder with item</span>
+                      </button>
+                    )}
                   </>
                 )}
                 {!menu.archived ? (

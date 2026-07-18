@@ -22,6 +22,7 @@
     "test:research-highlights": "node scripts/test-research-highlights.mjs",
     "test:research-navigation": "node scripts/test-research-navigation.mjs",
     "test:research-history": "node scripts/test-research-history.mjs",
+    "test:research-folders": "node scripts/test-research-folders.mjs",
     "test:research-documents": "node scripts/test-research-documents.mjs",
     "test:research-conversations": "node scripts/test-research-conversations.mjs",
     "test:image-markers": "node scripts/test-image-markers.mjs",

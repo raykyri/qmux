@@ -17,12 +17,14 @@ export interface ResearchFolderState {
   membership: Record<string, string>;
   /** Starred tree and folder ids, in the starred list's display order. */
   starred: string[];
+  /** Folder ids whose member rows are hidden in the sidebar. */
+  collapsed: string[];
 }
 
 export const RESEARCH_FOLDERS_STORAGE_KEY = "qmux.research-folders.v1";
 
 export function emptyResearchFolderState(): ResearchFolderState {
-  return { folders: [], membership: {}, starred: [] };
+  return { folders: [], membership: {}, starred: [], collapsed: [] };
 }
 
 function generateFolderId(): string {
@@ -64,7 +66,17 @@ export function loadResearchFolderState(): ResearchFolderState {
     const starred = Array.isArray(raw.starred)
       ? raw.starred.filter((id): id is string => typeof id === "string")
       : [];
-    return { folders, membership, starred: [...new Set(starred)] };
+    const collapsed = Array.isArray(raw.collapsed)
+      ? raw.collapsed.filter(
+          (id): id is string => typeof id === "string" && folderIds.has(id),
+        )
+      : [];
+    return {
+      folders,
+      membership,
+      starred: [...new Set(starred)],
+      collapsed: [...new Set(collapsed)],
+    };
   } catch {
     return emptyResearchFolderState();
   }
@@ -141,7 +153,37 @@ export function addTreesToResearchFolder(
   for (const treeId of treeIds) {
     membership[treeId] = folderId;
   }
-  return { ...state, membership };
+  const liveFolderIds = new Set(Object.values(membership));
+  return {
+    ...state,
+    folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
+    membership,
+    starred: state.starred.filter(
+      (id) =>
+        liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id),
+    ),
+    collapsed: state.collapsed.filter((id) => liveFolderIds.has(id)),
+  };
+}
+
+export function setResearchFolderCollapsed(
+  state: ResearchFolderState,
+  folderId: string,
+  collapsed: boolean,
+): ResearchFolderState {
+  if (!state.folders.some((folder) => folder.id === folderId)) {
+    return state;
+  }
+  const alreadyCollapsed = state.collapsed.includes(folderId);
+  if (alreadyCollapsed === collapsed) {
+    return state;
+  }
+  return {
+    ...state,
+    collapsed: collapsed
+      ? [...state.collapsed, folderId]
+      : state.collapsed.filter((id) => id !== folderId),
+  };
 }
 
 export function renameResearchFolder(
@@ -186,6 +228,36 @@ export function removeTreesFromResearchFolders(
     folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
     membership,
     starred,
+    collapsed: state.collapsed.filter((id) => liveFolderIds.has(id)),
+  };
+}
+
+/** Removes only the organizational membership for the supplied trees. Stars
+ * on the trees are preserved; empty folders and their own UI state are pruned. */
+export function removeTreesFromResearchFolderMembership(
+  state: ResearchFolderState,
+  treeIds: string[],
+): ResearchFolderState {
+  const membership = { ...state.membership };
+  let changed = false;
+  for (const treeId of treeIds) {
+    if (treeId in membership) {
+      delete membership[treeId];
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return state;
+  }
+  const liveFolderIds = new Set(Object.values(membership));
+  return {
+    folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
+    membership,
+    starred: state.starred.filter(
+      (id) =>
+        liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id),
+    ),
+    collapsed: state.collapsed.filter((id) => liveFolderIds.has(id)),
   };
 }
 
@@ -205,6 +277,7 @@ export function dissolveResearchFolder(
     folders: state.folders.filter((folder) => folder.id !== folderId),
     membership,
     starred: state.starred.filter((id) => id !== folderId),
+    collapsed: state.collapsed.filter((id) => id !== folderId),
   };
 }
 
@@ -238,14 +311,16 @@ export function pruneResearchFolderState(
   const folders = state.folders.filter((folder) => liveFolderIds.has(folder.id));
   const folderIds = new Set(folders.map((folder) => folder.id));
   const starred = state.starred.filter((id) => known.has(id) || folderIds.has(id));
+  const collapsed = state.collapsed.filter((id) => folderIds.has(id));
   if (
     !membershipChanged &&
     folders.length === state.folders.length &&
-    starred.length === state.starred.length
+    starred.length === state.starred.length &&
+    collapsed.length === state.collapsed.length
   ) {
     return state;
   }
-  return { folders, membership, starred };
+  return { folders, membership, starred, collapsed };
 }
 
 // The sidebar's display model: the backend's flat tree order regrouped into
@@ -296,6 +371,31 @@ export function flattenResearchSidebarUnits(
   return units.flatMap((unit) =>
     unit.kind === "tree" ? [unit.tree.id] : unit.trees.map((tree) => tree.id),
   );
+}
+
+export function flattenVisibleResearchSidebarUnits(
+  units: ResearchSidebarUnit[],
+  state: ResearchFolderState,
+): string[] {
+  const collapsed = new Set(state.collapsed);
+  return units.flatMap((unit) =>
+    unit.kind === "tree" || !collapsed.has(unit.folder.id)
+      ? unit.kind === "tree"
+        ? [unit.tree.id]
+        : unit.trees.map((tree) => tree.id)
+      : [],
+  );
+}
+
+export function visibleResearchTreeIds(
+  trees: ResearchTreeSummary[],
+  state: ResearchFolderState,
+): string[] {
+  const lists = buildResearchSidebarLists(trees, state);
+  return [
+    ...flattenVisibleResearchSidebarUnits(lists.starred, state),
+    ...flattenVisibleResearchSidebarUnits(lists.main, state),
+  ];
 }
 
 export interface ResearchSidebarLists {
@@ -404,4 +504,13 @@ export function moveResearchFolderMemberToGap(
   return units.map((candidate) =>
     candidate === unit ? { ...unit, trees: reordered } : candidate,
   );
+}
+
+/** A drop gap measured before an item joined a list needs to move one slot
+ * right when the newly inserted item landed before that gap. */
+export function translateResearchGapAfterInsertion(
+  gapIndex: number,
+  insertedIndex: number,
+): number {
+  return insertedIndex >= 0 && insertedIndex < gapIndex ? gapIndex + 1 : gapIndex;
 }
