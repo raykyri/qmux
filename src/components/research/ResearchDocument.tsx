@@ -617,6 +617,7 @@ export default function ResearchDocument({
   // room and cascade downward when anchors crowd together.
   const [resolvedCardTops, setResolvedCardTops] = useState<Record<string, number>>({});
   const [highlightDomNonce, setHighlightDomNonce] = useState(0);
+  const [pointerOverHighlight, setPointerOverHighlight] = useState(false);
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
   const [publicationProposals, setPublicationProposals] = useState<PublicationProposal[]>([]);
   const [proposalError, setProposalError] = useState<string | null>(null);
@@ -1890,9 +1891,10 @@ export default function ResearchDocument({
     [captureHighlightSelection],
   );
 
-  // Passage-side hover linking: hit-test the pointer against the resolved
-  // query-anchor ranges (rAF-throttled — the walk is cheap but not free) and
-  // link the follow-up card whose passage the pointer is over.
+  // Passage-side hover behavior: hit-test the pointer against the resolved
+  // saved-highlight and query-anchor ranges (rAF-throttled — the walk is cheap
+  // but not free). Saved highlights get a pointer cursor to advertise their
+  // click behavior; query anchors link to the follow-up card they produced.
   const linkAnchorUnderPointer = useCallback((event: React.MouseEvent) => {
     const { clientX, clientY } = event;
     if (anchorHoverFrameRef.current !== null) {
@@ -1905,15 +1907,21 @@ export default function ResearchDocument({
         return;
       }
       const offset =
-        anchoredRangeOffsetsRef.current.length > 0
+        anchoredRangeOffsetsRef.current.length > 0 || resolvedHighlightsRef.current.length > 0
           ? flatOffsetAtPoint(root, clientX, clientY)
           : null;
+      const overHighlight =
+        offset !== null &&
+        resolvedHighlightsRef.current.some(({ start, end }) => offset >= start && offset < end);
       const id =
         offset === null
           ? null
           : anchoredRangeOffsetsRef.current.find(
               ({ start, end }) => offset >= start && offset < end,
             )?.id ?? null;
+      setPointerOverHighlight((current) =>
+        current === overHighlight ? current : overHighlight,
+      );
       setLinkedAnchorNodeId((current) => (current === id ? current : id));
     });
   }, []);
@@ -1923,6 +1931,7 @@ export default function ResearchDocument({
       window.cancelAnimationFrame(anchorHoverFrameRef.current);
       anchorHoverFrameRef.current = null;
     }
+    setPointerOverHighlight(false);
     setLinkedAnchorNodeId(null);
   }, []);
 
@@ -2732,7 +2741,7 @@ export default function ResearchDocument({
                       ) : null}
                       <div
                         ref={responseContentRootRef}
-                        className="research-response-content-root"
+                        className={`research-response-content-root${pointerOverHighlight ? " is-highlight-hovered" : ""}`}
                         onMouseUp={captureHighlightSelection}
                         onKeyUp={captureHighlightSelection}
                         onClick={selectHighlightAtPoint}

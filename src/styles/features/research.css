@@ -860,6 +860,10 @@
   word-break: break-word;
 }
 
+.research-response-content-root.is-highlight-hovered {
+  cursor: pointer;
+}
+
 ::highlight(qmux-research-highlights) {
   color: inherit;
   background: #6a5f36;
