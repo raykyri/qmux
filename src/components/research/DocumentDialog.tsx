@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   RESEARCH_DOCUMENT_BYTE_LIMIT,
   RESEARCH_DOCUMENT_WORD_LIMIT,
@@ -39,6 +39,7 @@ export default function DocumentDialog({
   const [title, setTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const markdownRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -49,6 +50,18 @@ export default function DocumentDialog({
     setSubmitting(false);
     setError(null);
   }, [open, resetKey]);
+
+  // Autogrow: the textarea tracks its content height, and the dialog's
+  // max-height caps it — the flex layout shrinks the textarea back down and
+  // its own scrollbar takes over once the cap is hit.
+  useLayoutEffect(() => {
+    const textarea = markdownRef.current;
+    if (!open || !textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight + 2}px`;
+  }, [markdown, open]);
 
   // These scan up to the 10 MB document cap. Counting stops immediately after
   // the first word over the limit so a dense import cannot monopolize the UI.
@@ -148,6 +161,7 @@ export default function DocumentDialog({
         />
         <textarea
           autoFocus
+          ref={markdownRef}
           className="new-document-markdown"
           value={markdown}
           placeholder="Paste or write Markdown…"

@@ -1626,14 +1626,15 @@
   line-height: 1.5;
 }
 
-/* Document composer: a tall centered card — the pasted markdown is the main
-   surface, so the textarea takes all height between the title and footer. */
+/* Document composer: a centered card that grows with its markdown — the
+   textarea autosizes to its content (script-set height) until the dialog's
+   cap, where the textarea scrolls instead. */
 .new-document-composer {
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: min(720px, 100%);
-  height: min(78vh, 900px);
+  max-height: min(78vh, 900px);
   padding: 16px;
   border: 1px solid var(--control-border);
   border-radius: 14px;
@@ -1658,8 +1659,9 @@
 }
 
 .new-document-markdown {
-  flex: 1;
-  min-height: 0;
+  flex: 0 1 auto;
+  min-height: 132px;
+  overflow-y: auto;
   padding: 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
