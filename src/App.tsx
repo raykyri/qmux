@@ -11739,37 +11739,39 @@ function MainApp() {
             ) : null}
 
             <div className="settings-row settings-shortcut-row">
-              <label htmlFor="settings-show-hide-shortcut" className="settings-label">
-                Show/hide app shortcut
-              </label>
-              <div className="settings-shortcut-control">
-                <input
-                  id="settings-show-hide-shortcut"
-                  className="form-field settings-input settings-shortcut-input"
-                  data-shortcut-capture="show-hide"
-                  value={showHideShortcutValue}
-                  placeholder="e.g. Option+Space"
-                  readOnly
-                  aria-invalid={showHideShortcutMessage ? true : undefined}
-                  aria-describedby={
-                    showHideShortcutMessage ? "settings-show-hide-shortcut-message" : undefined
-                  }
-                  onPointerDown={() => setShowHideShortcutCapturing(true)}
-                  onFocus={() => setShowHideShortcutCapturing(true)}
-                  onBlur={() => setShowHideShortcutCapturing(false)}
-                  onKeyDown={captureShowHideShortcut}
-                />
+              <div className="settings-label">
+                <label htmlFor="settings-show-hide-shortcut">Show/hide app shortcut</label>
                 {showHideShortcutValue ? (
-                  <button
-                    type="button"
-                    className="settings-link-button"
-                    disabled={showHideShortcutSaving}
-                    onClick={clearShowHideShortcut}
-                  >
-                    Clear
-                  </button>
+                  <>
+                    {" ("}
+                    <button
+                      type="button"
+                      className="settings-link-button settings-inline-link-button"
+                      disabled={showHideShortcutSaving}
+                      onClick={clearShowHideShortcut}
+                    >
+                      Clear
+                    </button>
+                    )
+                  </>
                 ) : null}
               </div>
+              <input
+                id="settings-show-hide-shortcut"
+                className="form-field settings-input settings-shortcut-input"
+                data-shortcut-capture="show-hide"
+                value={showHideShortcutValue}
+                placeholder="e.g. Option+Space"
+                readOnly
+                aria-invalid={showHideShortcutMessage ? true : undefined}
+                aria-describedby={
+                  showHideShortcutMessage ? "settings-show-hide-shortcut-message" : undefined
+                }
+                onPointerDown={() => setShowHideShortcutCapturing(true)}
+                onFocus={() => setShowHideShortcutCapturing(true)}
+                onBlur={() => setShowHideShortcutCapturing(false)}
+                onKeyDown={captureShowHideShortcut}
+              />
             </div>
             {showHideShortcutMessage || showHideShortcutSaving ? (
               <p

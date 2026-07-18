@@ -1708,6 +1708,7 @@
 
 .settings-tabs {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--control-border);
@@ -1820,8 +1821,9 @@
 .settings-select {
   appearance: none;
   -webkit-appearance: none;
+  flex: 0 0 190px;
   min-height: var(--control-h-md);
-  min-width: 160px;
+  width: 190px;
   padding: 0 28px 0 10px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
@@ -1866,7 +1868,8 @@
 }
 
 .settings-input {
-  flex: 0 1 190px;
+  flex: 0 0 190px;
+  width: 190px;
   min-width: 0;
   min-height: var(--control-h-md);
   padding: 0 10px;
@@ -1896,17 +1899,7 @@
   align-items: flex-start;
 }
 
-.settings-shortcut-control {
-  display: flex;
-  flex: 0 1 260px;
-  align-items: center;
-  justify-content: flex-end;
-  min-width: 0;
-  gap: 10px;
-}
-
 .settings-shortcut-input {
-  flex: 1 1 180px;
   cursor: default;
 }
 
@@ -1931,6 +1924,10 @@
 .settings-link-button:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.settings-inline-link-button {
+  font-size: inherit;
 }
 
 .settings-shortcut-message {
