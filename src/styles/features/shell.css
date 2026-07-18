@@ -845,7 +845,7 @@
 }
 
 .pane-context-status-row.status-active dd::before {
-  background: #5fb89f;
+  background: var(--pane-status-active-dot);
 }
 
 .pane-context-status-row.status-pending dd::before {
@@ -2631,7 +2631,7 @@
 }
 
 .home-cascade-card--current.tone-done {
-  border-color: rgba(108, 174, 157, 0.45);
+  border-color: var(--home-cascade-done-border);
 }
 
 .home-cascade-card--current.tone-error {

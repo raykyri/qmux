@@ -227,6 +227,15 @@
   --prompt-library-item-menu-bg: #2f383b;
   --recovered-queue-divider: #2c3336;
   --research-highlight-action-bg: #303532;
+  --research-highlight-action-bg-hover: #3a403c;
+  --research-followup-composer-bg: #303233;
+  --research-drop-overlay-border: rgba(111, 211, 190, 0.82);
+  --research-drop-overlay-bg: rgba(15, 25, 25, 0.92);
+  --research-drop-overlay-glow: rgba(215, 255, 246, 0.06);
+  --research-drop-overlay-fg: #dff8f1;
+  --research-drop-overlay-icon: #80d9c6;
+  --pane-status-active-dot: #5fb89f;
+  --home-cascade-done-border: rgba(108, 174, 157, 0.45);
   --folder-picker-status-border: #364245;
   --queued-turn-border: #384246;
 
@@ -289,6 +298,15 @@
   --prompt-library-item-menu-bg: #393531;
   --recovered-queue-divider: #34312d;
   --research-highlight-action-bg: #3a3530;
+  --research-highlight-action-bg-hover: #443f39;
+  --research-followup-composer-bg: #343434;
+  --research-drop-overlay-border: rgba(210, 204, 194, 0.72);
+  --research-drop-overlay-bg: rgba(22, 21, 19, 0.92);
+  --research-drop-overlay-glow: rgba(255, 249, 240, 0.06);
+  --research-drop-overlay-fg: #eeece7;
+  --research-drop-overlay-icon: #c7c1b7;
+  --pane-status-active-dot: #b3ada3;
+  --home-cascade-done-border: rgba(255, 255, 255, 0.2);
   --folder-picker-status-border: #49423a;
   --queued-turn-border: #48413a;
 
@@ -303,6 +321,6 @@
   --control-bg-hover: #313130;
   --control-border: #3d3d3c;
   --control-border-hover: #4a4946;
-  --control-border-hover-accent: #4d6173;
+  --control-border-hover-accent: #57544f;
   --focus-ring: #33adff;
 }
