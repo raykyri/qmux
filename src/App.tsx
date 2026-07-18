@@ -69,7 +69,10 @@ import PublishDialog, { type PublishDialogTarget } from "./components/PublishDia
 import SidebarModeToggle from "./components/SidebarModeToggle";
 import TerminalPane from "./components/TerminalPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
-import TurnOverlay, { formatTurnsTranscript } from "./components/TurnOverlay";
+import TurnOverlay, {
+  formatTurnsTranscript,
+  type TranscriptScrollPosition,
+} from "./components/TurnOverlay";
 import TurnPaneHeader from "./components/TurnPaneHeader";
 import type { LinkActions } from "./components/TranscriptMarkdown";
 import RecoveredQueuePanel from "./components/RecoveredQueuePanel";
@@ -1243,6 +1246,12 @@ function MainApp() {
   // which unmounts the composer) restores where each queue was left. Ephemeral: a ref
   // so scroll updates never re-render, and the whole thing is dropped on app restart.
   const queueScrollByAgentRef = useRef<Record<string, number>>({});
+  // Per-agent transcript scroll positions, so switching tabs — or away to Home /
+  // Research (which unmounts the docked right pane) and back — restores where each
+  // transcript was left instead of snapping to the latest turn. Same ephemeral
+  // shape as the queue scroll above; the `stuck` flag re-pins a transcript that
+  // grew while hidden to its new bottom.
+  const transcriptScrollByAgentRef = useRef<Record<string, TranscriptScrollPosition>>({});
   const launcherInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Keep active-tab actions reachable from the global keydown listener without
   // re-registering it on every state change.
@@ -2934,6 +2943,9 @@ function MainApp() {
     for (const id of Object.keys(queueScrollByAgentRef.current)) {
       if (!ids.has(id)) delete queueScrollByAgentRef.current[id];
     }
+    for (const id of Object.keys(transcriptScrollByAgentRef.current)) {
+      if (!ids.has(id)) delete transcriptScrollByAgentRef.current[id];
+    }
     for (const agentId of pendingFirstTitleByAgentRef.current.keys()) {
       if (!ids.has(agentId)) {
         pendingFirstTitleByAgentRef.current.delete(agentId);
@@ -3294,6 +3306,17 @@ function MainApp() {
   const saveQueueScroll = useCallback((agentId: string, scrollTop: number) => {
     queueScrollByAgentRef.current[agentId] = scrollTop;
   }, []);
+
+  const getTranscriptScroll = useCallback(
+    (agentId: string) => transcriptScrollByAgentRef.current[agentId],
+    [],
+  );
+  const saveTranscriptScroll = useCallback(
+    (agentId: string, position: TranscriptScrollPosition) => {
+      transcriptScrollByAgentRef.current[agentId] = position;
+    },
+    [],
+  );
 
   // Navigate the overlay to a typed address. A bare host (no scheme) gets http://
   // so `localhost:5173` works; file paths still go through `qmux open`.
@@ -9946,6 +9969,8 @@ function MainApp() {
         showActivityDetail={settings.showToolCalls}
         stickyUserMessages={settings.stickyUserMessages}
         agentId={agent?.id ?? surface.pane.id}
+        getTranscriptScroll={getTranscriptScroll}
+        saveTranscriptScroll={saveTranscriptScroll}
         // The save request is a window event handled only by the prompt
         // library menu inside TurnPaneHeader. Headerless surfaces (split
         // cells, split right-pane mode) mount no listener, so offering the

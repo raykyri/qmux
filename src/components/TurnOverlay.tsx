@@ -50,6 +50,14 @@ import {
 
 export type { LinkActions } from "./TranscriptMarkdown";
 
+// A remembered transcript scroll position. `stuck` records that the view was
+// pinned to the bottom when it was saved, so a transcript that grew while
+// hidden re-pins to its new latest turn instead of freezing at a stale offset.
+export interface TranscriptScrollPosition {
+  scrollTop: number;
+  stuck: boolean;
+}
+
 interface TurnOverlayProps {
   turns: Turn[];
   assistantLabel: string;
@@ -57,8 +65,14 @@ interface TurnOverlayProps {
   header?: ReactNode;
   input?: ReactNode;
   // Identifies the agent whose transcript is shown; a change means a different
-  // transcript loaded, which is when we jump the view to the latest turn.
+  // transcript loaded, which is when we restore that agent's remembered scroll
+  // position (or, absent one, jump the view to the latest turn).
   agentId?: string;
+  // Persist/restore the transcript scroll position across agent switches and
+  // right-pane unmounts (Home/Research and back). Backed by an App-level store
+  // so a remembered position survives the docked pane unmounting entirely.
+  getTranscriptScroll?: (agentId: string) => TranscriptScrollPosition | undefined;
+  saveTranscriptScroll?: (agentId: string, position: TranscriptScrollPosition) => void;
   // Identifies the prompt-library listener that can handle "save message as
   // prompt" requests. Unlike agentId, this is absent for detached transcripts.
   savePromptAgentId?: string | null;
@@ -140,6 +154,8 @@ export default function TurnOverlay({
   header,
   input,
   agentId,
+  getTranscriptScroll,
+  saveTranscriptScroll,
   savePromptAgentId,
   notice,
   transcriptOptions = [],
@@ -207,7 +223,15 @@ export default function TurnOverlay({
     // on the very next commit); the sticky-message geometry can wait for the
     // next frame — see scheduleStickyUserStuckUpdate.
     const distanceFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
-    stickToBottomRef.current = distanceFromBottom <= STICK_TO_BOTTOM_THRESHOLD;
+    const stuck = distanceFromBottom <= STICK_TO_BOTTOM_THRESHOLD;
+    stickToBottomRef.current = stuck;
+    // Remember where this transcript is parked so switching tabs (or away to
+    // Home/Research) and back restores it. This fires for programmatic scrolls
+    // too (auto-pin to bottom, restore), so the stored value stays current
+    // without a separate save-on-unmount path.
+    if (agentId) {
+      saveTranscriptScroll?.(agentId, { scrollTop: timeline.scrollTop, stuck });
+    }
     scheduleStickyUserStuckUpdate();
   };
 
@@ -284,15 +308,34 @@ export default function TurnOverlay({
     onQueueSplitHeightChange?.(clampQueueSplitHeight(effectiveQueueSplitHeight + delta));
   };
 
-  // When a different transcript loads, start at the bottom so the latest turn is
-  // in view. useLayoutEffect runs before paint, so the pane never flashes at the
-  // top first; the rAF re-assert catches the composer's reserved-space reflow.
+  // When a different transcript loads (or this pane remounts after switching
+  // away to Home/Research), restore that agent's remembered scroll position.
+  // Absent one — or if the view was pinned to the bottom when it was saved —
+  // start at the latest turn. A scrolled-up offset is restored verbatim: new
+  // turns only append below, so the same offset still lands on the same
+  // content. useLayoutEffect runs before paint, so the pane never flashes at
+  // the wrong spot first; the rAF re-assert catches the composer's
+  // reserved-space reflow (its padding-bottom grows scrollHeight a frame late,
+  // most visibly on a fresh remount where the composer measures from zero).
   useLayoutEffect(() => {
+    const saved = agentId ? getTranscriptScroll?.(agentId) : undefined;
+    if (saved && !saved.stuck) {
+      stickToBottomRef.current = false;
+      const restore = () => {
+        const timeline = timelineRef.current;
+        if (timeline) {
+          timeline.scrollTop = saved.scrollTop;
+        }
+      };
+      restore();
+      const frame = requestAnimationFrame(restore);
+      return () => cancelAnimationFrame(frame);
+    }
     stickToBottomRef.current = true;
     scrollToBottom();
     const frame = requestAnimationFrame(scrollToBottom);
     return () => cancelAnimationFrame(frame);
-  }, [agentId]);
+  }, [agentId, getTranscriptScroll]);
 
   // Keep pinned to the bottom when new turns arrive or the composer grows (e.g. a
   // queued message), but only while the user is already near the bottom — instant,
