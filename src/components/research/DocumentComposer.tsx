@@ -11,8 +11,7 @@ import {
   isComposerSubmitShortcut,
 } from "../ComposerSubmitShortcut";
 
-interface DocumentDialogProps {
-  open: boolean;
+interface DocumentComposerProps {
   mode: "create" | "edit";
   /** "dialog" renders the modal card over a backdrop; "page" renders just the
    * composer form, for embedding in the main research pane. */
@@ -32,10 +31,10 @@ interface DocumentDialogProps {
 }
 
 /** Shared Markdown composer for new and existing research documents. The edit
- * variant treats the loaded values as pristine, while the create variant keeps
- * an imported/drop-prefilled body protected from stray backdrop clicks. */
-export default function DocumentDialog({
-  open,
+ * variant is a modal dialog over the document (its backdrop and Escape only
+ * dismiss while the fields are pristine); the create variant renders as a
+ * main-pane page. Visibility is mount-controlled: render it to show it. */
+export default function DocumentComposer({
   mode,
   variant = "dialog",
   visible = true,
@@ -46,7 +45,7 @@ export default function DocumentDialog({
   onClose,
   onSubmit,
   onDirtyChange,
-}: DocumentDialogProps) {
+}: DocumentComposerProps) {
   const [markdown, setMarkdown] = useState("");
   const [title, setTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -59,14 +58,11 @@ export default function DocumentDialog({
   onDirtyChangeRef.current = onDirtyChange;
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
     setMarkdown(initialMarkdown);
     setTitle(initialTitle);
     setSubmitting(false);
     setError(null);
-  }, [open, resetKey]);
+  }, [resetKey]);
 
   // Autogrow: the textarea tracks its content height. In the dialog variant
   // the card's max-height caps it — the flex layout shrinks the textarea back
@@ -78,7 +74,7 @@ export default function DocumentDialog({
   // height.
   useLayoutEffect(() => {
     const textarea = markdownRef.current;
-    if (!open || !visible || !textarea) {
+    if (!visible || !textarea) {
       return;
     }
     const measure = () => {
@@ -88,7 +84,7 @@ export default function DocumentDialog({
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [markdown, open, visible]);
+  }, [markdown, visible]);
 
   // These scan up to the 10 MB document cap. Counting stops immediately after
   // the first word over the limit so a dense import cannot monopolize the UI.
@@ -117,15 +113,10 @@ export default function DocumentDialog({
   const pristine = editing ? !changed : !markdown.trim() && !title.trim();
 
   useEffect(() => {
-    onDirtyChangeRef.current?.(open && !pristine);
-  }, [open, pristine]);
-  // A closing composer is no longer holding a draft, even when it unmounts
-  // without a final open=false render.
+    onDirtyChangeRef.current?.(!pristine);
+  }, [pristine]);
+  // A closing composer is no longer holding a draft.
   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
-
-  if (!open) {
-    return null;
-  }
 
   const overByteLimit = byteCount > RESEARCH_DOCUMENT_BYTE_LIMIT;
   const canSubmit =

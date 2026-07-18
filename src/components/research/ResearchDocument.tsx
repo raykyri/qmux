@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Trash2, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import {
   createResearchHighlight,
@@ -77,7 +77,8 @@ import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
   type LinkActions,
 } from "../TranscriptMarkdown";
-import DocumentDialog from "./DocumentDialog";
+import DocumentComposer from "./DocumentComposer";
+import { ResearchDocumentFrame, ResearchHistoryNav } from "./ResearchDocumentChrome";
 
 interface ResearchDocumentProps {
   detail: ResearchTreeDetail | null;
@@ -2446,53 +2447,24 @@ export default function ResearchDocument({
       : onRetryDetail;
     const headerTitle = detail?.tree.title ?? treeTitle ?? "Loading research…";
     return (
-      <div className="research-workspace">
-        <main className="research-document">
-          <header className="research-document-header">
-            <div className="research-history-nav" aria-label="Research history">
-              <button
-                type="button"
-                className="control-button research-history-button"
-                disabled
-                aria-label="Back"
-              >
-                <ArrowLeft size={16} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="control-button research-history-button"
-                disabled
-                aria-label="Forward"
-              >
-                <ArrowRight size={16} aria-hidden="true" />
-              </button>
-            </div>
-            <div className="research-breadcrumb" aria-label="Research path">
-              <span>
-                <button className="control-button" type="button" disabled>
-                  {headerTitle}
+      <ResearchDocumentFrame title={headerTitle}>
+        <div className="research-placeholder">
+          {placeholderError ? null : (
+            <LoaderCircle className="research-spinner" size={24} aria-hidden="true" />
+          )}
+          <h1>{placeholderError ? "Research unavailable" : "Loading research…"}</h1>
+          {placeholderError ? (
+            <>
+              <p role="alert">{placeholderError}</p>
+              {retry ? (
+                <button className="control-button" type="button" onClick={retry}>
+                  Retry
                 </button>
-              </span>
-            </div>
-          </header>
-          <div className="research-placeholder">
-            {placeholderError ? null : (
-              <LoaderCircle className="research-spinner" size={24} aria-hidden="true" />
-            )}
-            <h1>{placeholderError ? "Research unavailable" : "Loading research…"}</h1>
-            {placeholderError ? (
-              <>
-                <p role="alert">{placeholderError}</p>
-                {retry ? (
-                  <button className="control-button" type="button" onClick={retry}>
-                    Retry
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-        </main>
-      </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </ResearchDocumentFrame>
     );
   }
 
@@ -2573,28 +2545,14 @@ export default function ResearchDocument({
         <div className="research-workspace">
         <main className="research-document">
           <header className="research-document-header">
-            <div className="research-history-nav" aria-label="Research history">
-              <button
-                type="button"
-                className="control-button research-history-button"
-                disabled={!canGoBack}
-                title={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
-                aria-label="Back"
-                onClick={goBack}
-              >
-                <ArrowLeft size={16} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="control-button research-history-button"
-                disabled={!canGoForward}
-                title={`Forward (${IS_MAC ? "⌘]" : "Ctrl+]"})`}
-                aria-label="Forward"
-                onClick={goForward}
-              >
-                <ArrowRight size={16} aria-hidden="true" />
-              </button>
-            </div>
+            <ResearchHistoryNav
+              canGoBack={canGoBack}
+              canGoForward={canGoForward}
+              backTitle={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
+              forwardTitle={`Forward (${IS_MAC ? "⌘]" : "Ctrl+]"})`}
+              onBack={goBack}
+              onForward={goForward}
+            />
             <div className="research-breadcrumb" aria-label="Research path">
               {breadcrumbDisplay.map((entry, displayIndex) =>
                 entry.kind === "ellipsis" ? (
@@ -3221,8 +3179,7 @@ export default function ResearchDocument({
           : null}
         {documentEditSession
           ? createPortal(
-              <DocumentDialog
-                open
+              <DocumentComposer
                 mode="edit"
                 initialMarkdown={documentEditSession.markdown}
                 initialTitle={documentEditSession.title}

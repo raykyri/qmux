@@ -1,5 +1,5 @@
-import { ArrowLeft, ArrowRight } from "lucide-react";
-import DocumentDialog from "./DocumentDialog";
+import DocumentComposer from "./DocumentComposer";
+import { ResearchDocumentFrame } from "./ResearchDocumentChrome";
 
 interface NewDocumentPaneProps {
   /** Kept mounted while hidden so a draft survives surface switches. */
@@ -17,10 +17,10 @@ interface NewDocumentPaneProps {
 
 /** Full-pane composer for adding a pasted or imported Markdown document as a
  * root-level research item. Renders in the research surface with the standard
- * document header — history controls disabled, "New document" as the path —
- * and the composer form in the answer column of the response grid, leaving
- * the follow-up column empty. Workspace resolution remains this wrapper's
- * job; field behavior and validation are shared with document editing. */
+ * document chrome and the composer form in the answer column of the response
+ * grid, leaving the follow-up column empty. Workspace resolution remains this
+ * wrapper's job; field behavior and validation are shared with document
+ * editing. */
 export default function NewDocumentPane({
   hidden = false,
   initialMarkdown = "",
@@ -30,57 +30,27 @@ export default function NewDocumentPane({
   onDirtyChange,
 }: NewDocumentPaneProps) {
   return (
-    <div className="research-workspace" hidden={hidden}>
-      <main className="research-document">
-        <header className="research-document-header">
-          <div className="research-history-nav" aria-label="Research history">
-            <button
-              type="button"
-              className="control-button research-history-button"
-              disabled
-              aria-label="Back"
-            >
-              <ArrowLeft size={16} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="control-button research-history-button"
-              disabled
-              aria-label="Forward"
-            >
-              <ArrowRight size={16} aria-hidden="true" />
-            </button>
+    <ResearchDocumentFrame title="New document" hidden={hidden}>
+      <article className="research-document-scroll">
+        <div className="research-document-content">
+          <div className="research-response-grid">
+            <section className="research-response" aria-label="New document">
+              <DocumentComposer
+                mode="create"
+                variant="page"
+                visible={!hidden}
+                initialMarkdown={initialMarkdown}
+                resetKey={initialMarkdown}
+                onClose={onClose}
+                onDirtyChange={onDirtyChange}
+                onSubmit={({ markdown, title }) =>
+                  onCreate({ markdown, title, workspaceId })
+                }
+              />
+            </section>
           </div>
-          <div className="research-breadcrumb" aria-label="Research path">
-            <span>
-              <button className="control-button" type="button" disabled>
-                New document
-              </button>
-            </span>
-          </div>
-        </header>
-        <article className="research-document-scroll">
-          <div className="research-document-content">
-            <div className="research-response-grid">
-              <section className="research-response" aria-label="New document">
-                <DocumentDialog
-                  open
-                  mode="create"
-                  variant="page"
-                  visible={!hidden}
-                  initialMarkdown={initialMarkdown}
-                  resetKey={initialMarkdown}
-                  onClose={onClose}
-                  onDirtyChange={onDirtyChange}
-                  onSubmit={({ markdown, title }) =>
-                    onCreate({ markdown, title, workspaceId })
-                  }
-                />
-              </section>
-            </div>
-          </div>
-        </article>
-      </main>
-    </div>
+        </div>
+      </article>
+    </ResearchDocumentFrame>
   );
 }

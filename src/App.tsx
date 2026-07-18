@@ -2134,6 +2134,21 @@ function MainApp() {
       ),
     [researchMultiSelectIds, scopedResearchTrees],
   );
+  // The single source of truth for what the research surface shows. Every
+  // stage branch keys off this one value, so precedence (composer page over
+  // multi-select over document over home) lives here instead of being
+  // re-derived — and kept consistent — inside each render condition. The
+  // composer additionally renders while this is null (another surface is
+  // forward) as a hidden keep-alive for its draft.
+  const researchStageView = !researchSurfaceActive
+    ? null
+    : newDocumentOpen
+      ? ("composer" as const)
+      : researchMultiSelection.length > 1
+        ? ("multi-select" as const)
+        : activeResearchTreeId
+          ? ("document" as const)
+          : ("home" as const);
   // Menu badges and the folder-replace dialog both count every tree that keeps
   // a folder alive, so archived trees are included (removal is blocked on them).
   const researchFolderTreeCounts = useMemo(() => {
@@ -12055,7 +12070,7 @@ function MainApp() {
             // switches so an in-progress draft survives a detour to a
             // terminal tab.
             <NewDocumentPane
-              hidden={!researchSurfaceActive}
+              hidden={researchStageView !== "composer"}
               initialMarkdown={newDocumentInitialMarkdown}
               workspaceId={newDocumentWorkspaceId}
               onClose={closeNewDocumentComposer}
@@ -12063,16 +12078,15 @@ function MainApp() {
               onDirtyChange={handleNewDocumentDirtyChange}
             />
           ) : null}
-          {researchSurfaceActive && !newDocumentOpen && researchMultiSelection.length > 1 ? (
+          {researchStageView === "multi-select" ? (
             <div className="research-multi-select-state" aria-live="polite">
               <Layers size={48} aria-hidden="true" />
               <span>{researchMultiSelection.length} research items selected</span>
             </div>
           ) : null}
-          {researchSurfaceActive &&
-          !newDocumentOpen &&
-          researchMultiSelection.length <= 1 &&
-          activeResearchTreeId ? (
+          {/* The tree-id term repeats the selector's own condition solely to
+              narrow the id to non-null for the props below. */}
+          {researchStageView === "document" && activeResearchTreeId ? (
             // Keyed by tree: the document's per-tree state (selection, fetched
             // content, follow-up draft) must not survive a tree switch. Without
             // the remount, the new tree's detail landing paints one frame of the
@@ -12117,10 +12131,7 @@ function MainApp() {
               }}
             />
           ) : null}
-          {researchSurfaceActive &&
-          !newDocumentOpen &&
-          researchMultiSelection.length <= 1 &&
-          !activeResearchTreeId ? (
+          {researchStageView === "home" ? (
             <div className="research-empty-state">
               <NewResearchDialog
                 open
