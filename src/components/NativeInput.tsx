@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, EllipsisVertical, X } from "lucide-react";
+import { ChevronDown, EllipsisVertical, FolderGit2, GitFork, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   queueDeliveryAgentTurn,
@@ -31,6 +31,7 @@ import {
   matchingComposerSlashCommands,
   parseComposerSlashCommand,
   type ComposerSlashCommand,
+  type ComposerSlashCommandName,
 } from "../lib/composerSlashCommands";
 import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
@@ -70,6 +71,18 @@ import {
 const DRAFT_PUSH_DEBOUNCE_MS = 150;
 
 const QUEUE_DRAG_START_THRESHOLD = 4;
+
+/** Presentation for the qMux slash typeahead: an icon anchor and a tight,
+ * single-line summary per command. The verbose "…and send the following
+ * message" is factored out of every row into one shared footer caption so the
+ * list reads as a menu instead of two near-identical sentences. */
+const SLASH_COMMAND_PRESENTATION: Record<
+  ComposerSlashCommandName,
+  { Icon: typeof GitFork; summary: string }
+> = {
+  fork: { Icon: GitFork, summary: "Fork this session" },
+  worktree: { Icon: FolderGit2, summary: "Fork into a new worktree" },
+};
 
 type QueuePointerDrag = {
   pointerId: number;
@@ -1322,10 +1335,7 @@ export default function NativeInput({
           ? createPortal(
               <div
                 ref={slashPopoverRef}
-                id={slashListId}
                 className="popover-surface composer-slash-popover"
-                role="listbox"
-                aria-label="qMux slash commands"
                 style={
                   slashPos
                     ? {
@@ -1337,28 +1347,44 @@ export default function NativeInput({
                     : { left: -9999, top: -9999 }
                 }
               >
-                {slashMatches.map((command, index) => (
-                  <button
-                    key={command.name}
-                    id={`${slashListId}-option-${index}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeSlashIndex}
-                    className={`composer-slash-option${
-                      index === activeSlashIndex ? " is-selected" : ""
-                    }`}
-                    disabled={!canQueueFork}
-                    title={!canQueueFork ? FORK_REQUIREMENT_TITLE : command.description}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseMove={() => setSlashSelectedIndex(index)}
-                    onClick={() => completeSlashCommand(command)}
-                  >
-                    <span className="composer-slash-token">{command.token}</span>
-                    <span className="composer-slash-description">
-                      {!canQueueFork ? FORK_REQUIREMENT_TITLE : command.description}
-                    </span>
-                  </button>
-                ))}
+                <div
+                  id={slashListId}
+                  className="composer-slash-list"
+                  role="listbox"
+                  aria-label="qMux slash commands"
+                >
+                  {slashMatches.map((command, index) => {
+                    const { Icon, summary } = SLASH_COMMAND_PRESENTATION[command.name];
+                    return (
+                      <button
+                        key={command.name}
+                        id={`${slashListId}-option-${index}`}
+                        type="button"
+                        role="option"
+                        aria-selected={index === activeSlashIndex}
+                        className={`composer-slash-option${
+                          index === activeSlashIndex ? " is-selected" : ""
+                        }`}
+                        disabled={!canQueueFork}
+                        title={!canQueueFork ? FORK_REQUIREMENT_TITLE : command.description}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onMouseMove={() => setSlashSelectedIndex(index)}
+                        onClick={() => completeSlashCommand(command)}
+                      >
+                        <span className="composer-slash-icon" aria-hidden="true">
+                          <Icon size={15} strokeWidth={1.75} />
+                        </span>
+                        <span className="composer-slash-token">{command.token}</span>
+                        <span className="composer-slash-summary">{summary}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="composer-slash-hint">
+                  {canQueueFork
+                    ? "Type a message after the command — it's sent to the fork."
+                    : FORK_REQUIREMENT_TITLE}
+                </p>
               </div>,
               document.body,
             )

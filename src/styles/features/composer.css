@@ -323,19 +323,28 @@
 /* qMux command completion is anchored to the textarea's top edge and portaled so
    it can grow upward over the transcript without being clipped by the input rail. */
 .composer-slash-popover {
-  width: min(360px, calc(100vw - 24px));
-  gap: 2px;
+  width: min(340px, calc(100vw - 24px));
+  gap: 0;
   box-sizing: border-box;
   padding: 4px;
+  overflow: hidden;
+}
+
+/* The options scroll; the shared footer caption stays pinned below them. */
+.composer-slash-list {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
   overflow-y: auto;
 }
 
 .composer-slash-option {
   appearance: none;
   display: grid;
-  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  grid-template-columns: 20px minmax(64px, auto) minmax(0, 1fr);
   gap: 10px;
-  align-items: baseline;
+  align-items: center;
   width: 100%;
   min-width: 0;
   padding: 7px 9px;
@@ -346,6 +355,9 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .composer-slash-option.is-selected:not(:disabled),
@@ -360,22 +372,48 @@
   cursor: not-allowed;
 }
 
+.composer-slash-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  transition: color var(--transition-fast);
+}
+
+.composer-slash-option.is-selected:not(:disabled) .composer-slash-icon,
+.composer-slash-option:hover:not(:disabled) .composer-slash-icon {
+  color: var(--accent-color);
+}
+
 .composer-slash-token {
   color: var(--accent-color);
   font-family: var(--font-mono);
+  font-size: var(--fs-input);
   font-weight: 650;
   white-space: nowrap;
 }
 
+.composer-slash-option:disabled .composer-slash-icon,
 .composer-slash-option:disabled .composer-slash-token {
   color: inherit;
 }
 
-.composer-slash-description {
+.composer-slash-summary {
   min-width: 0;
+  overflow: hidden;
   color: var(--control-fg-muted);
   font-size: var(--fs-sm);
   line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.composer-slash-hint {
+  margin: 0;
+  padding: 8px 10px 5px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  border-top: 1px solid var(--surface-border-faint);
 }
 
 .composer-menu-label {
