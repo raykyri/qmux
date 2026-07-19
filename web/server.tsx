@@ -1829,7 +1829,7 @@ const PAGE_SCRIPT = `(() => {
     CSS.highlights.set("qmux-research-query-anchors", highlight);
 
     // Regions where two or more anchors stack, repainted near the text color
-    // (all anchors share one squiggle-and-wash paint, so stacked coverage
+    // (all anchors share one wash, so stacked coverage
     // would otherwise be invisible). Mirrors the app's overlap layer.
     var events = [];
     for (var oIndex = 0; oIndex < resolved.length; oIndex += 1) {
@@ -1862,9 +1862,10 @@ const PAGE_SCRIPT = `(() => {
     }
   }
 
-  // Hover linking, both directions, as in the app: hovering a card repaints
-  // its passage in the darker link tone; hovering the passage lights up its
-  // card, and clicking the passage opens the follow-up.
+  // Hover linking, both directions, as in the app: hovering the passage links
+  // its card, and clicking the passage opens the follow-up. The passage keeps
+  // its stable base paint throughout hover to avoid asynchronous highlight
+  // registry repaint artifacts.
   var linkedEntry = null;
   function setLinkedEntry(entry) {
     if (entry === linkedEntry) return;
@@ -1872,17 +1873,6 @@ const PAGE_SCRIPT = `(() => {
       linkedEntry.card.classList.remove("is-anchor-linked");
     }
     linkedEntry = entry;
-    if (canPaint) {
-      if (entry) {
-        var linkHighlight = new Highlight(entry.range);
-        // Above the overlap layer so the hovered pair reads as linked even
-        // where its passage crosses another anchor.
-        linkHighlight.priority = 2;
-        CSS.highlights.set("qmux-research-anchor-link", linkHighlight);
-      } else {
-        CSS.highlights.delete("qmux-research-anchor-link");
-      }
-    }
     if (entry && entry.card) {
       entry.card.classList.add("is-anchor-linked");
     }
@@ -1944,8 +1934,8 @@ const PAGE_SCRIPT = `(() => {
         entry.card.addEventListener("mouseleave", function () {
           setLinkedEntry(null);
         });
-        // Keyboard parity for the hover link: tabbing onto a card lights up
-        // its passage, scrolling it into view when it sits off screen.
+        // Keyboard parity for the hover link: tabbing onto a card links the
+        // pair, scrolling its passage into view when it sits off screen.
         // Guarded to focus-visible so mouse clicks don't jerk the page
         // before navigating.
         entry.card.addEventListener("focus", function () {
@@ -2029,7 +2019,25 @@ const PAGE_SCRIPT = `(() => {
 
   if (resolved.length > 0) {
     positionCards();
-    window.addEventListener("resize", positionCards);
+    var positionCardsTimer = null;
+    function schedulePositionCards() {
+      if (positionCardsTimer !== null) window.clearTimeout(positionCardsTimer);
+      positionCardsTimer = window.setTimeout(function () {
+        positionCardsTimer = null;
+        positionCards();
+      }, 140);
+    }
+    window.addEventListener("resize", schedulePositionCards);
+    if (typeof ResizeObserver !== "undefined") {
+      var observedLayoutWidth = root.getBoundingClientRect().width;
+      var layoutResizeObserver = new ResizeObserver(function (entries) {
+        var nextWidth = entries[0] ? entries[0].contentRect.width : observedLayoutWidth;
+        if (Math.abs(nextWidth - observedLayoutWidth) < 0.5) return;
+        observedLayoutWidth = nextWidth;
+        schedulePositionCards();
+      });
+      layoutResizeObserver.observe(root);
+    }
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(positionCards);
     }
@@ -2565,7 +2573,7 @@ a { color:inherit; text-decoration:none; }
 .research-response-content-root { min-width:0; line-height:1.62; overflow-wrap:anywhere; word-break:break-word; }
 
 /* The user's prompt, visually distinct from the answer below it. */
-.research-prompt { width:fit-content; max-width:min(100%,640px); margin-bottom:26px; padding:10px 14px; border-radius:10px; background:var(--content-card-bg); }
+.research-prompt { width:fit-content; max-width:min(100%,640px); margin:0 0 26px -14px; padding:10px 14px; border-radius:10px; background:var(--content-card-bg); }
 .research-prompt > * { max-width:100%; }
 .research-prompt .turn-markdown { color:#f0f2ef; font-size:14.5px; font-weight:400; line-height:1.5; }
 .research-prompt-quote { margin:0 0 8px; padding-left:10px; border-left:3px solid var(--accent-color); color:#a6aea9; font-size:13.5px; font-style:italic; line-height:1.45; }
@@ -2575,12 +2583,10 @@ a { color:inherit; text-decoration:none; }
 .research-contribution a:hover { color:var(--text-secondary); }
 .research-response-error { margin:0 0 18px; color:var(--status-failed-fg); line-height:1.5; }
 
-/* Passages that published follow-ups were asked about, and the hover-linked
-   passage painted over the base tone (hovering either the card or the passage
-   links the pair, as in the app). */
-::highlight(qmux-research-query-anchors) { color:inherit; background:rgba(201,181,115,0.14); text-decoration:underline wavy rgba(201,181,115,0.5) 1px; text-underline-offset:3px; }
-::highlight(qmux-research-highlight-overlaps) { color:inherit; background:rgba(211,216,212,0.16); text-decoration:underline wavy rgba(211,216,212,0.6) 1px; text-underline-offset:3px; }
-::highlight(qmux-research-anchor-link) { color:inherit; background:rgba(226,180,80,0.32); text-decoration:underline wavy #d9c47e 1px; text-underline-offset:3px; }
+/* Passages that published follow-ups were asked about keep one stable faint
+   wash while hover links them to their associated card. */
+::highlight(qmux-research-query-anchors) { color:inherit; background:rgba(216,196,95,0.14); }
+::highlight(qmux-research-highlight-overlaps) { color:inherit; background:rgba(211,216,212,0.16); }
 .research-response-content-root.is-highlight-hovered { cursor:pointer; }
 
 /* Markdown body, ported from the app's transcript styles. */
@@ -2628,13 +2634,14 @@ a { color:inherit; text-decoration:none; }
 .research-followup-cards { display:flex; flex-direction:column; gap:20px; }
 .research-followup-card { display:flex; flex-direction:column; align-items:stretch; min-height:0; text-align:left; transition:border-color 120ms ease; }
 .research-followup-card.is-anchored { position:absolute; z-index:1; right:2px; left:0; padding:9px 11px; border:1px solid var(--surface-border-subtle); border-radius:10px; background:var(--content-card-bg); }
-.research-followup-card.is-anchored:hover, .research-followup-card.is-anchored.is-anchor-linked { z-index:4; border-color:var(--surface-border-default); }
+.research-followup-card.is-anchored:hover { z-index:4; border-color:rgba(255,255,255,0.1); }
+.research-followup-card.is-anchored.is-anchor-linked { z-index:4; border-color:rgba(255,255,255,0.1); }
 .research-followup-card.is-anchor-linked > strong { color:#f2f4f1; }
 .research-followup-card.is-anchor-linked .research-followup-preview { color:#7d8580; }
 .research-followup-quote { display:-webkit-box; min-width:0; overflow:hidden; margin-bottom:5px; padding-left:8px; border-left:2px solid var(--accent-color); color:#9aa39e; font-size:13px; font-style:italic; line-height:1.4; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 .research-followup-card > strong { display:-webkit-box; overflow:hidden; color:#e6e9e5; font-size:14px; font-weight:400; line-height:1.42; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:6; transition:color 120ms ease; }
 .research-followup-card:hover > strong { color:#f2f4f1; }
-.research-followup-preview { display:-webkit-box; margin-top:4px; overflow:hidden; color:#767e79; font-size:14px; line-height:1.5; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:2; transition:color 120ms ease; }
+.research-followup-preview { display:-webkit-box; margin-top:4px; overflow:hidden; color:#767e79; font-size:14px; line-height:1.42; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:2; transition:color 120ms ease; }
 .research-followup-card:hover .research-followup-preview { color:#7d8580; }
 .research-followup-card small { margin-top:8px; color:#707975; font-size:12px; text-transform:capitalize; }
 .research-followup-card small.is-failed { color:var(--status-failed-fg); }
@@ -2768,9 +2775,8 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
   .turn-markdown td { border-color:#dddddd; }
   .turn-markdown-table-wrap { border-color:#cccccc; }
   .research-answer-meta { color:#666666; }
-  ::highlight(qmux-research-query-anchors) { background:rgba(178,142,29,0.15); text-decoration:underline wavy rgba(140,110,20,0.6) 1px; text-underline-offset:3px; }
-  ::highlight(qmux-research-highlight-overlaps) { background:rgba(26,26,26,0.1); text-decoration:underline wavy rgba(26,26,26,0.5) 1px; text-underline-offset:3px; }
-  ::highlight(qmux-research-anchor-link) { background:rgba(178,142,29,0.15); text-decoration:underline wavy rgba(140,110,20,0.6) 1px; text-underline-offset:3px; }
+  ::highlight(qmux-research-query-anchors) { background:rgba(178,142,29,0.15); }
+  ::highlight(qmux-research-highlight-overlaps) { background:rgba(26,26,26,0.1); }
 }
 `;
 

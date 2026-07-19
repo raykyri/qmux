@@ -1469,7 +1469,7 @@ export default function NativeInput({
                         onClick={() => completeSlashCommand(command)}
                       >
                         <span className="composer-slash-icon" aria-hidden="true">
-                          <Icon size={14} strokeWidth={1.75} />
+                          <Icon size={12} strokeWidth={1.75} />
                         </span>
                         <span className="composer-slash-token">{command.token}</span>
                         <span className="composer-slash-summary">{summary}</span>

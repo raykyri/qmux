@@ -530,7 +530,7 @@ fn is_markdown(path: &Path) -> bool {
 const MARKDOWN_PAGE_CSS: &str = "\
 __QMUX_FONT_FACE__\
 :root { color-scheme: light dark; }\
-body { margin: 0; font-family: __QMUX_BODY_FONT__; line-height: 1.6; background: #ffffff; color: #1f2328; }\
+body { margin: 0; font-family: __QMUX_BODY_FONT__; font-variant-ligatures: no-common-ligatures; line-height: 1.6; background: #ffffff; color: #1f2328; }\
 @media (prefers-color-scheme: dark) { body { background: #1e2227; color: #e2e6ea; } }\
 main { max-width: 48rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }\
 h1, h2 { border-bottom: 1px solid rgba(127, 127, 127, 0.3); padding-bottom: 0.3em; }\
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn rendered_markdown_uses_only_known_body_font_stacks() {
+    fn rendered_markdown_uses_safe_prose_typography_and_known_body_font_stacks() {
         let path = Path::new("doc.md");
         let source = "# Hello";
         assert_eq!(
@@ -847,6 +847,7 @@ mod tests {
 
         let default_page = render_markdown_page(path, source, None);
         assert!(default_page.contains("font-family: ui-sans-serif, system-ui"));
+        assert!(default_page.contains("font-variant-ligatures: no-common-ligatures"));
 
         let selected_page = render_markdown_page(path, source, Some("anthropic-sans-text"));
         assert!(selected_page.contains("font-family: 'Anthropic Sans Text', ui-sans-serif"));

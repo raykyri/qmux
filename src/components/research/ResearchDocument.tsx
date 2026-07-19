@@ -150,7 +150,7 @@ const OVERSIZED_MARKDOWN_POLICY = {
 } as const;
 
 const RESEARCH_SWIPE_IDLE_MS = 180;
-const FOLLOWUP_MENU_WIDTH = 190;
+const FOLLOWUP_MENU_WIDTH = 230;
 const FOLLOWUP_MENU_HEIGHT = 154;
 const DOCUMENT_MENU_HEIGHT = 196;
 const FOLLOWUP_MENU_MARGIN = 8;
@@ -170,9 +170,6 @@ interface HighlightAction {
    * selection and every highlight it intersects. Null when there is nothing
    * to expand. */
   expandAnchor: ResearchHighlightAnchor | null;
-  /** Viewport boxes framing the selected annotations, one per rendered line
-   * fragment. Empty when the selection touches no saved highlight. */
-  outlineRects: HighlightOutlineRect[];
   left: number;
   top: number;
   /** The selection has scrolled out of the viewport: keep the action alive
@@ -202,6 +199,7 @@ interface ResearchHighlightRegistry {
 
 interface ResearchNativeHighlight {
   add(range: Range): void;
+  clear(): void;
   priority: number;
 }
 
@@ -212,15 +210,13 @@ interface ResearchHighlightApi {
 
 const RESEARCH_HIGHLIGHT_NAME = "qmux-research-highlights";
 const RESEARCH_QUERY_ANCHOR_NAME = "qmux-research-query-anchors";
-const RESEARCH_ANCHOR_LINK_NAME = "qmux-research-anchor-link";
 const RESEARCH_OVERLAP_NAME = "qmux-research-highlight-overlaps";
 const RESEARCH_SELECTED_NAME = "qmux-research-selected-highlights";
 // Stacking order for the highlight layers that repaint over the shared base
-// tone: overlap regions above the base paint, the hover-linked passage above
-// those, and the selection tone above everything.
+// tone: overlap regions above the base paint and the selection tone above
+// everything.
 const RESEARCH_OVERLAP_PRIORITY = 1;
-const RESEARCH_ANCHOR_LINK_PRIORITY = 2;
-const RESEARCH_SELECTED_PRIORITY = 3;
+const RESEARCH_SELECTED_PRIORITY = 2;
 const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
 // Clearance between the anchored composer's bottom edge and the first pushed
 // follow-up card.
@@ -236,6 +232,10 @@ const CONNECTOR_STAGGER_FRACTION = 0.25;
 // Pixel separation between adjacent lanes of overlapping vertical runs. Capped
 // per-connector by CONNECTOR_STAGGER_FRACTION.
 const CONNECTOR_STAGGER_STEP = 14;
+// Wait for window/split-pane resizing to settle before remeasuring passage,
+// card, and connector geometry. A trailing debounce avoids forced layout on
+// every drag frame while still repairing the final arrangement promptly.
+const ANCHOR_LAYOUT_DEBOUNCE_MS = 140;
 
 function researchHighlightApi(): ResearchHighlightApi | null {
   const css = (globalThis as unknown as { CSS?: { highlights?: ResearchHighlightRegistry } }).CSS;
@@ -421,80 +421,6 @@ function textContextSlice(text: string, start: number, end: number) {
  * whitespace is all that quoting requires. */
 function quoteDisplayText(exact: string) {
   return exact.split(/\s+/).join(" ").trim();
-}
-
-interface HighlightOutlineRect {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/** Viewport boxes around the resolved ranges of the given saved highlights.
- * A wrapped annotation gets one box per rendered line, merging the
- * per-text-node rects the range reports along that line. */
-function highlightOutlineRects(
-  root: HTMLElement,
-  resolved: ResolvedHighlight[],
-  highlightIds: string[],
-): HighlightOutlineRect[] {
-  const boxes: HighlightOutlineRect[] = [];
-  const pixelRatio = window.devicePixelRatio || 1;
-  for (const { highlight, start, end } of resolved) {
-    if (!highlightIds.includes(highlight.id)) {
-      continue;
-    }
-    const range = rangeForTextOffsets(root, start, end);
-    if (!range) {
-      continue;
-    }
-    const lines: Array<{ left: number; top: number; right: number; bottom: number }> = [];
-    for (const rect of Array.from(range.getClientRects())) {
-      if (rect.width <= 0 || rect.height <= 0) {
-        continue;
-      }
-      const line = lines.find(
-        (candidate) => rect.top < candidate.bottom && rect.bottom > candidate.top,
-      );
-      if (line) {
-        line.left = Math.min(line.left, rect.left);
-        line.top = Math.min(line.top, rect.top);
-        line.right = Math.max(line.right, rect.right);
-        line.bottom = Math.max(line.bottom, rect.bottom);
-      } else {
-        lines.push({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom });
-      }
-    }
-    for (const line of lines) {
-      // Range geometry can land between device pixels while WebKit rounds the
-      // Custom Highlight paint independently. Expand to the enclosing device
-      // pixels first so the outline's one-pixel clearance cannot round inward.
-      const left = Math.floor(line.left * pixelRatio) / pixelRatio;
-      const top = Math.floor(line.top * pixelRatio) / pixelRatio;
-      const right = Math.ceil(line.right * pixelRatio) / pixelRatio;
-      const bottom = Math.ceil(line.bottom * pixelRatio) / pixelRatio;
-      boxes.push({
-        left,
-        top,
-        width: right - left,
-        height: bottom - top,
-      });
-    }
-  }
-  return boxes;
-}
-
-function sameOutlineRects(a: HighlightOutlineRect[], b: HighlightOutlineRect[]) {
-  return (
-    a.length === b.length &&
-    a.every(
-      (box, index) =>
-        box.left === b[index].left &&
-        box.top === b[index].top &&
-        box.width === b[index].width &&
-        box.height === b[index].height,
-    )
-  );
 }
 
 /** Where the action bar sits for a selection rect: just under it, clamped to
@@ -707,7 +633,7 @@ const ResearchTimelineItem = memo(function ResearchTimelineItem({
         {item.blocks.length > 0 ? (
           <div
             className={`research-response-message${
-              item.role === "user" ? " research-conversation-prompt" : ""
+              item.role === "user" ? " research-conversation-prompt research-prompt" : ""
             }${timelineStatusClass(item.status)}`}
           >
             {item.blocks.map((block, index) => (
@@ -851,6 +777,7 @@ interface ThreadSegmentProps {
   onOpenPane: (paneId: string) => void;
   onCancelNode: (nodeId: string) => void;
   onCardHover: (childId: string, entering: boolean) => void;
+  onRootMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
   onRootMouseUp: () => void;
   onRootKeyUp: () => void;
   onRootClick: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -938,6 +865,7 @@ const ThreadSegment = memo(function ThreadSegment({
   onOpenPane,
   onCancelNode,
   onCardHover,
+  onRootMouseDown,
   onRootMouseUp,
   onRootKeyUp,
   onRootClick,
@@ -1015,12 +943,6 @@ const ThreadSegment = memo(function ThreadSegment({
       className={`research-thread-segment${isSelected ? " is-selected" : ""}`}
       data-segment-anchor={node.id}
     >
-      {index > 0 ? (
-        <div className="research-thread-link" role="presentation">
-          <span className="research-thread-link-stem" />
-          <span className="research-thread-link-label">Follow-up</span>
-        </div>
-      ) : null}
       {!view.isDocument && !view.isConversation ? (
         <div className="research-prompt">
           {index === 0 && node.parentNodeId ? (
@@ -1129,6 +1051,7 @@ const ThreadSegment = memo(function ThreadSegment({
                     className={`research-response-content-root${
                       pointerOverHighlight ? " is-highlight-hovered" : ""
                     }`}
+                    onMouseDown={onRootMouseDown}
                     onMouseUp={onRootMouseUp}
                     onKeyUp={onRootKeyUp}
                     onClick={onRootClick}
@@ -1164,31 +1087,6 @@ const ThreadSegment = memo(function ThreadSegment({
                   {view.answerWordCount === 1 ? "word" : "words"}
                 </span>
                 {durationText ? <span>{durationText}</span> : null}
-                {showRunControls ? (
-                  <>
-                    {node.paneId ? (
-                      <button
-                        type="button"
-                        className="control-button research-segment-action"
-                        onClick={() => onOpenPane(node.paneId!)}
-                      >
-                        Open terminal
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="control-button research-segment-action"
-                      disabled={cancelling}
-                      onClick={() => onCancelNode(node.id)}
-                    >
-                      {cancelling
-                        ? "Cancelling…"
-                        : node.status === "cancelled"
-                          ? "Retry cancel"
-                          : "Cancel"}
-                    </button>
-                  </>
-                ) : null}
                 {hiddenHighlightCount > 0 ? (
                   <span
                     className="research-hidden-highlights"
@@ -1243,6 +1141,31 @@ const ThreadSegment = memo(function ThreadSegment({
                 >
                   <MoreHorizontal size={15} aria-hidden="true" />
                 </button>
+                {showRunControls ? (
+                  <div className="research-segment-actions">
+                    {node.paneId ? (
+                      <button
+                        type="button"
+                        className="control-button research-segment-action"
+                        onClick={() => onOpenPane(node.paneId!)}
+                      >
+                        Open terminal
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="control-button research-segment-action"
+                      disabled={cancelling}
+                      onClick={() => onCancelNode(node.id)}
+                    >
+                      {cancelling
+                        ? "Cancelling…"
+                        : node.status === "cancelled"
+                          ? "Retry cancel"
+                          : "Cancel"}
+                    </button>
+                  </div>
+                ) : null}
               </footer>
             </>
           )}
@@ -1321,8 +1244,8 @@ export default function ResearchDocument({
   // of vanishing silently.
   const [hiddenHighlightsByNode, setHiddenHighlightsByNode] = useState<Record<string, number>>({});
   // The anchored follow-up currently hover-linked to its passage, from either
-  // side: hovering the card brightens the passage, hovering the passage
-  // raises the card. One state serves both directions.
+  // side. This raises the associated card and connector without repainting
+  // the passage's stable highlight treatment.
   const [linkedAnchorNodeId, setLinkedAnchorNodeId] = useState<string | null>(null);
   // Dotted elbows between anchored passages and their follow-up cards, in
   // each segment's response-grid pixel coordinates.
@@ -1349,6 +1272,7 @@ export default function ResearchDocument({
   // crowd together.
   const [resolvedCardTops, setResolvedCardTops] = useState<Record<string, number>>({});
   const [highlightDomNonce, setHighlightDomNonce] = useState(0);
+  const [anchorLayoutNonce, setAnchorLayoutNonce] = useState(0);
   const [pointerHighlightNodeId, setPointerHighlightNodeId] = useState<string | null>(null);
   const [metadataNow, setMetadataNow] = useState(() => Date.now());
   const [publicationProposals, setPublicationProposals] = useState<PublicationProposal[]>([]);
@@ -1365,12 +1289,25 @@ export default function ResearchDocument({
   const resolvedHighlightsRef = useRef(new Map<string, ResolvedHighlight[]>());
   // Flat-offset ranges of the query-anchor passages that resolved, tagged
   // with their owning segment, refreshed by the anchor paint effect.
-  // Consulted by pointer hit-testing (passage-side hover linking) and by the
-  // link paint effect.
+  // Consulted by passage-side pointer hit-testing and connector measurement.
   const anchoredRangeOffsetsRef = useRef<
     { segmentId: string; id: string; start: number; end: number }[]
   >([]);
+  const activeAskRangeOffsetsRef = useRef<{
+    segmentId: string;
+    start: number;
+    end: number;
+  } | null>(null);
+  const savedHighlightPaintRef = useRef<ResearchNativeHighlight | null>(null);
+  const selectedHighlightPaintRef = useRef<ResearchNativeHighlight | null>(null);
+  const selectionDragNodeIdRef = useRef<string | null>(null);
   const anchorHoverFrameRef = useRef<number | null>(null);
+  const anchorHoverPointerRef = useRef<{
+    root: HTMLDivElement;
+    nodeId: string | null;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const navigationRef = useRef(researchNavigationStore());
   const navigationPersistTimerRef = useRef<number | null>(null);
   const selectedNodeIdRef = useRef(selectedNodeId);
@@ -1427,6 +1364,50 @@ export default function ResearchDocument({
   const chainNodeIdsRef = useRef(chainNodeIds);
   chainNodeIdsRef.current = chainNodeIds;
   const chainKey = chainNodeIds.join("\n");
+
+  // Reflow can come from the window itself or from an internal pane resize
+  // that changes the research column without firing window.resize. Observe
+  // the rendered content width as well, then issue one trailing invalidation
+  // that all passage/card/connector layout effects share.
+  useEffect(() => {
+    const target = contentContainerRef.current;
+    let debounceTimer: number | null = null;
+    let observedWidth = target?.getBoundingClientRect().width ?? null;
+    const scheduleRelayout = () => {
+      if (debounceTimer !== null) {
+        window.clearTimeout(debounceTimer);
+      }
+      debounceTimer = window.setTimeout(() => {
+        debounceTimer = null;
+        setAnchorLayoutNonce((value) => value + 1);
+      }, ANCHOR_LAYOUT_DEBOUNCE_MS);
+    };
+    const observer =
+      target && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver((entries) => {
+            const nextWidth = entries[0]?.contentRect.width;
+            if (nextWidth === undefined || observedWidth === null) {
+              return;
+            }
+            if (Math.abs(nextWidth - observedWidth) < 0.5) {
+              return;
+            }
+            observedWidth = nextWidth;
+            scheduleRelayout();
+          })
+        : null;
+    if (target && observer) {
+      observer.observe(target);
+    }
+    window.addEventListener("resize", scheduleRelayout);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleRelayout);
+      if (debounceTimer !== null) {
+        window.clearTimeout(debounceTimer);
+      }
+    };
+  }, [chainKey]);
   const chainNodes = useMemo(
     () =>
       detail
@@ -2639,6 +2620,32 @@ export default function ResearchDocument({
     // but a root remount (content refetch after an edit) needs the rebind.
   }, [annotatedSegmentsKey, revisionsKey, expandedKey, fullTraceKey, segmentRoot]);
 
+  // Keep the two saved-highlight paint objects registered for this document's
+  // lifetime. Mutating their range sets avoids WebKit leaving deleted registry
+  // paint on screen until an unrelated selection or pointer event invalidates
+  // the text layer.
+  useLayoutEffect(() => {
+    const api = researchHighlightApi();
+    api?.registry.delete(RESEARCH_HIGHLIGHT_NAME);
+    api?.registry.delete(RESEARCH_SELECTED_NAME);
+    if (!api) {
+      return;
+    }
+    const saved = new api.Highlight();
+    const selected = new api.Highlight();
+    selected.priority = RESEARCH_SELECTED_PRIORITY;
+    savedHighlightPaintRef.current = saved;
+    selectedHighlightPaintRef.current = selected;
+    api.registry.set(RESEARCH_HIGHLIGHT_NAME, saved);
+    api.registry.set(RESEARCH_SELECTED_NAME, selected);
+    return () => {
+      savedHighlightPaintRef.current = null;
+      selectedHighlightPaintRef.current = null;
+      api.registry.delete(RESEARCH_HIGHLIGHT_NAME);
+      api.registry.delete(RESEARCH_SELECTED_NAME);
+    };
+  }, []);
+
   // Paint saved ranges without rewriting the markdown DOM, across every
   // rendered segment. The CSS Custom Highlight registry is name-global, so
   // all segments' ranges aggregate into one Highlight object per layer.
@@ -2646,13 +2653,11 @@ export default function ResearchDocument({
   // relocated when transcript visibility changes shift the flat
   // rendered-text offsets.
   useLayoutEffect(() => {
-    const api = researchHighlightApi();
-    api?.registry.delete(RESEARCH_HIGHLIGHT_NAME);
+    const painted = savedHighlightPaintRef.current;
+    painted?.clear();
     resolvedHighlightsRef.current = new Map();
     const hidden: Record<string, number> = {};
-    if (api) {
-      const painted = new api.Highlight();
-      let paintedAny = false;
+    if (painted) {
       for (const nodeId of chainNodeIds) {
         const root = segmentRoot(nodeId);
         const segmentContent = contentByNode[nodeId];
@@ -2675,7 +2680,6 @@ export default function ResearchDocument({
             continue;
           }
           painted.add(range);
-          paintedAny = true;
           resolved.push({ highlight, ...offsets });
         }
         resolvedHighlightsRef.current.set(nodeId, resolved);
@@ -2684,16 +2688,10 @@ export default function ResearchDocument({
           hidden[nodeId] = missing;
         }
       }
-      if (paintedAny) {
-        api.registry.set(RESEARCH_HIGHLIGHT_NAME, painted);
-      }
     }
     // Nothing resolvable (no content yet, or no Highlight API at all) is not
     // "hidden highlights" — segments without entries keep a quiet footer.
     setHiddenHighlightsByNode((current) => (sameCardTops(current, hidden) ? current : hidden));
-    return () => {
-      api?.registry.delete(RESEARCH_HIGHLIGHT_NAME);
-    };
     // Keyed on the revisions and highlight-id lists rather than contentByNode
     // identity: a streaming segment's 1s poll replaces the map every second,
     // and repainting would re-walk every settled segment's text nodes each
@@ -2721,6 +2719,7 @@ export default function ResearchDocument({
     const tops: Record<string, number> = {};
     let askTop: number | null = null;
     anchoredRangeOffsetsRef.current = [];
+    activeAskRangeOffsetsRef.current = null;
     if (api) {
       const painted = new api.Highlight();
       let paintedAny = false;
@@ -2758,6 +2757,7 @@ export default function ResearchDocument({
             : null;
           if (id === "__ask__") {
             askTop = top;
+            activeAskRangeOffsetsRef.current = { segmentId: nodeId, ...offsets! };
           } else {
             anchoredRangeOffsetsRef.current.push({ segmentId: nodeId, id, ...offsets! });
             if (top !== null) {
@@ -2780,6 +2780,7 @@ export default function ResearchDocument({
     // only against revision-bearing content, so a streaming sibling's polls
     // must not force whole-thread re-resolution every second.
   }, [
+    anchorLayoutNonce,
     anchoredEntries,
     ask,
     chainKey,
@@ -2794,8 +2795,8 @@ export default function ResearchDocument({
 
   // Repaint regions where annotations stack — saved highlights over each
   // other, or a follow-up's query anchor over a saved highlight — in the
-  // near-text overlap tone. All base layers share one squiggle-and-wash
-  // paint, so without this pass stacked coverage would be invisible. Runs
+  // near-text overlap tone. All base layers share one wash, so without this
+  // pass stacked coverage would be invisible. Runs
   // after both base-paint effects in the same commit and re-runs on the
   // union of their dependencies, so the offset refs it reads are current.
   useLayoutEffect(() => {
@@ -2846,32 +2847,6 @@ export default function ResearchDocument({
     segmentAside,
     segmentRoot,
   ]);
-
-  // Brighten the hover-linked follow-up's passage. Depends on anchoredCardTops
-  // (set in the same commit that refreshes the offsets ref) so a re-resolution
-  // repaints the link against current offsets.
-  useLayoutEffect(() => {
-    const api = researchHighlightApi();
-    api?.registry.delete(RESEARCH_ANCHOR_LINK_NAME);
-    if (!api || !linkedAnchorNodeId) {
-      return;
-    }
-    const entry = anchoredRangeOffsetsRef.current.find(
-      (candidate) => candidate.id === linkedAnchorNodeId,
-    );
-    const root = entry ? segmentRoot(entry.segmentId) : null;
-    const range = entry && root ? rangeForTextOffsets(root, entry.start, entry.end) : null;
-    if (!range) {
-      return;
-    }
-    const painted = new api.Highlight();
-    painted.priority = RESEARCH_ANCHOR_LINK_PRIORITY;
-    painted.add(range);
-    api.registry.set(RESEARCH_ANCHOR_LINK_NAME, painted);
-    return () => {
-      api.registry.delete(RESEARCH_ANCHOR_LINK_NAME);
-    };
-  }, [anchoredCardTops, highlightDomNonce, linkedAnchorNodeId, segmentRoot]);
 
   // Measure every resolved anchor's connector: from its segment's answer
   // column at the passage's first line to the left edge of its follow-up
@@ -2941,25 +2916,22 @@ export default function ResearchDocument({
       }
     }
     setAnchorConnectors(next);
-  }, [anchoredCardTops, chainNodeIds, highlightDomNonce, resolvedCardTops, segmentAside, segmentGrid, segmentRoot]);
+  }, [anchorLayoutNonce, anchoredCardTops, chainNodeIds, highlightDomNonce, resolvedCardTops, segmentAside, segmentGrid, segmentRoot]);
 
   // A selection that lands on saved highlights repaints those annotations in
   // the standard selection tone: painted above the saved-highlight layer (via
-  // priority) so the olive annotation tone cannot win over the selection,
+  // priority) so the gold annotation tone cannot win over the selection,
   // keeping a selected highlight the same color as any other selected text.
   const selectedHighlightKey = (highlightAction?.highlightIds ?? []).join("\n");
   const highlightActionNodeId = highlightAction?.nodeId ?? null;
   useLayoutEffect(() => {
-    const api = researchHighlightApi();
-    api?.registry.delete(RESEARCH_SELECTED_NAME);
+    const painted = selectedHighlightPaintRef.current;
+    painted?.clear();
     const root = highlightActionNodeId ? segmentRoot(highlightActionNodeId) : null;
-    if (!api || !root || !selectedHighlightKey || !highlightActionNodeId) {
+    if (!painted || !root || !selectedHighlightKey || !highlightActionNodeId) {
       return;
     }
     const selectedIds = selectedHighlightKey.split("\n");
-    const painted = new api.Highlight();
-    painted.priority = RESEARCH_SELECTED_PRIORITY;
-    let paintedAny = false;
     for (const { highlight, start, end } of resolvedHighlightsRef.current.get(
       highlightActionNodeId,
     ) ?? []) {
@@ -2971,14 +2943,7 @@ export default function ResearchDocument({
         continue;
       }
       painted.add(range);
-      paintedAny = true;
     }
-    if (paintedAny) {
-      api.registry.set(RESEARCH_SELECTED_NAME, painted);
-    }
-    return () => {
-      api.registry.delete(RESEARCH_SELECTED_NAME);
-    };
   }, [highlightActionNodeId, highlightDomNonce, segmentRoot, selectedHighlightKey]);
 
   // One-pass collision resolution for anchored cards, per segment rail:
@@ -3035,7 +3000,7 @@ export default function ResearchDocument({
     // cardsMeasureKey remeasures when streaming previews change card
     // heights, without re-running (and force-laying-out every rail) on the
     // 4×/s detail replacements that change nothing height-relevant.
-  }, [anchoredCardTops, anchoredEntries, cardsMeasureKey, segmentAside]);
+  }, [anchorLayoutNonce, anchoredCardTops, anchoredEntries, cardsMeasureKey, segmentAside]);
 
   // Ask mode: push any cards the docked composer would cover out of the way.
   // The composer itself sits absolutely at askComposerTop inside the ask
@@ -3083,6 +3048,7 @@ export default function ResearchDocument({
     }
     return () => clearTransforms(aside);
   }, [
+    anchorLayoutNonce,
     anchoredCardTops,
     ask,
     askComposerTop,
@@ -3183,21 +3149,49 @@ export default function ResearchDocument({
       anchor: anchorForOffsets(offsets),
       highlightIds,
       expandAnchor: expandOffsets ? anchorForOffsets(expandOffsets) : null,
-      outlineRects: highlightOutlineRects(
-        root,
-        resolvedHighlightsRef.current.get(nodeId) ?? [],
-        highlightIds,
-      ),
       ...highlightActionPlacement(rect, expandOffsets ? 340 : 260),
     });
   }, []);
 
-  // A plain click on a painted highlight selects the whole annotation, which
-  // reopens the action bar (Remove / Ask) through the ordinary selection flow.
+  // A mouse selection can begin in the answer and end over the rail or other
+  // document chrome, where the response root's mouseup never fires. Remember
+  // answer-originated drags and finish them from a document-level fallback;
+  // the root handler clears the ref first on ordinary in-column releases so
+  // capture still runs exactly once.
+  const beginHighlightSelectionDrag = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      selectionDragNodeIdRef.current = event.currentTarget.dataset.nodeId ?? null;
+    },
+    [],
+  );
+  const finishHighlightSelectionDrag = useCallback(() => {
+    if (!selectionDragNodeIdRef.current) {
+      return;
+    }
+    selectionDragNodeIdRef.current = null;
+    captureHighlightSelection();
+  }, [captureHighlightSelection]);
+  useEffect(() => {
+    const cancelDrag = () => {
+      selectionDragNodeIdRef.current = null;
+    };
+    document.addEventListener("mouseup", finishHighlightSelectionDrag);
+    window.addEventListener("blur", cancelDrag);
+    return () => {
+      document.removeEventListener("mouseup", finishHighlightSelectionDrag);
+      window.removeEventListener("blur", cancelDrag);
+    };
+  }, [finishHighlightSelectionDrag]);
+
+  // A plain click on a painted highlight or ask passage selects the whole
+  // annotation, which opens the action bar through the ordinary selection flow.
   // Runs on click, after the mouseup capture has already dismissed the bar for
   // a collapsed selection; CSS highlights have no DOM nodes, so the click is
   // hit-tested against the owning segment's resolved flat-offset ranges.
-  const selectHighlightAtPoint = useCallback(
+  const selectAnnotationAtPoint = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       const root = event.currentTarget;
       const nodeId = root.dataset.nodeId;
@@ -3214,7 +3208,12 @@ export default function ResearchDocument({
       if (offset === null) {
         return;
       }
-      const resolved = (resolvedHighlightsRef.current.get(nodeId) ?? []).find(
+      const activeAsk = activeAskRangeOffsetsRef.current;
+      const resolved = [
+        ...anchoredRangeOffsetsRef.current.filter((entry) => entry.segmentId === nodeId),
+        ...(activeAsk?.segmentId === nodeId ? [activeAsk] : []),
+        ...(resolvedHighlightsRef.current.get(nodeId) ?? []),
+      ].find(
         ({ start, end }) => offset >= start && offset < end,
       );
       if (!resolved) {
@@ -3237,15 +3236,26 @@ export default function ResearchDocument({
   // advertise their click behavior; query anchors link to the follow-up card
   // they produced.
   const linkAnchorUnderPointer = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    // Read before the rAF: React nulls currentTarget once the handler returns.
-    const root = event.currentTarget;
-    const nodeId = root.dataset.nodeId ?? null;
-    const { clientX, clientY } = event;
+    // Keep replacing the queued sample while a frame is pending so the hit
+    // test observes the latest pointer position instead of lagging one frame
+    // behind at highlight boundaries.
+    anchorHoverPointerRef.current = {
+      root: event.currentTarget,
+      nodeId: event.currentTarget.dataset.nodeId ?? null,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
     if (anchorHoverFrameRef.current !== null) {
       return;
     }
     anchorHoverFrameRef.current = window.requestAnimationFrame(() => {
       anchorHoverFrameRef.current = null;
+      const sample = anchorHoverPointerRef.current;
+      anchorHoverPointerRef.current = null;
+      if (!sample) {
+        return;
+      }
+      const { root, nodeId, clientX, clientY } = sample;
       if (!nodeId || !root.isConnected) {
         return;
       }
@@ -3278,6 +3288,7 @@ export default function ResearchDocument({
       window.cancelAnimationFrame(anchorHoverFrameRef.current);
       anchorHoverFrameRef.current = null;
     }
+    anchorHoverPointerRef.current = null;
     setPointerHighlightNodeId(null);
     setLinkedAnchorNodeId(null);
   }, []);
@@ -3332,6 +3343,7 @@ export default function ResearchDocument({
         const created = await createResearchHighlight(targetNodeId, highlightAction.anchor);
         patchNodeHighlights(targetNodeId, (highlights) => [...highlights, created]);
       }
+      selectedHighlightPaintRef.current?.clear();
       window.getSelection()?.removeAllRanges();
       setHighlightAction(null);
     } catch (err) {
@@ -3367,6 +3379,7 @@ export default function ResearchDocument({
         ...highlights.filter(({ id }) => !removedIds.has(id)),
         created,
       ]);
+      selectedHighlightPaintRef.current?.clear();
       window.getSelection()?.removeAllRanges();
       setHighlightAction(null);
     } catch (err) {
@@ -3526,20 +3539,10 @@ export default function ResearchDocument({
             rect,
             current.expandAnchor ? 340 : 260,
           );
-          const root = segmentRoot(current.nodeId);
-          const outlineRects =
-            root && current.highlightIds.length > 0
-              ? highlightOutlineRects(
-                  root,
-                  resolvedHighlightsRef.current.get(current.nodeId) ?? [],
-                  current.highlightIds,
-                )
-              : [];
           return current.left !== placement.left ||
             current.top !== placement.top ||
-            current.offscreen !== placement.offscreen ||
-            !sameOutlineRects(outlineRects, current.outlineRects)
-            ? { ...current, ...placement, outlineRects }
+            current.offscreen !== placement.offscreen
+            ? { ...current, ...placement }
             : current;
         });
       });
@@ -4117,43 +4120,46 @@ export default function ResearchDocument({
         }}
         rows={2}
       />
-      <div className="native-input-submit-actions">
-        <button className="control-button"
-          type="button"
-          disabled={!canSubmitFollowup}
-          onClick={() => void submitFollowup()}
-        >
-          <span>{submitting ? "Sending…" : "Send"}</span>
-          {!submitting ? (
-            <ComposerSubmitShortcutGlyph
-              requireCmdEnter
-              className="shortcut-hint"
-            />
-          ) : null}
-        </button>
-      </div>
-      {composerHint ? (
-        <div className="research-followup-hint-row">
-          <small>{composerHint}</small>
-          {!dockedAsk && followupMode === "thread" && canRetryTail ? (
-            <button
-              type="button"
-              className="control-button research-followup-retry"
-              disabled={retryingTail || submitting}
-              onClick={() => void retryInlineTail()}
-            >
-              {retryingTail ? (
-                <>
-                  <LoaderCircle className="research-spinner" size={12} aria-hidden="true" />
-                  <span>Retrying…</span>
-                </>
-              ) : (
-                <span>Retry follow-up</span>
-              )}
-            </button>
-          ) : null}
+      <div className="research-followup-footer">
+        {composerHint ? (
+          <div className="research-followup-hint-row">
+            <small>{composerHint}</small>
+            {!dockedAsk && followupMode === "thread" && canRetryTail ? (
+              <button
+                type="button"
+                className="control-button research-followup-retry"
+                disabled={retryingTail || submitting}
+                onClick={() => void retryInlineTail()}
+              >
+                {retryingTail ? (
+                  <>
+                    <LoaderCircle className="research-spinner" size={12} aria-hidden="true" />
+                    <span>Retrying…</span>
+                  </>
+                ) : (
+                  <span>Retry follow-up</span>
+                )}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="native-input-submit-actions">
+          <button
+            className="control-button"
+            type="button"
+            disabled={!canSubmitFollowup}
+            onClick={() => void submitFollowup()}
+          >
+            <span>{submitting ? "Sending…" : "Send"}</span>
+            {!submitting ? (
+              <ComposerSubmitShortcutGlyph
+                requireCmdEnter
+                className="shortcut-hint"
+              />
+            ) : null}
+          </button>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 
@@ -4327,9 +4333,10 @@ export default function ResearchDocument({
         onOpenPane={handleOpenPane}
         onCancelNode={handleCancelNode}
         onCardHover={handleCardHover}
-        onRootMouseUp={captureHighlightSelection}
+        onRootMouseDown={beginHighlightSelectionDrag}
+        onRootMouseUp={finishHighlightSelectionDrag}
         onRootKeyUp={captureHighlightSelection}
-        onRootClick={selectHighlightAtPoint}
+        onRootClick={selectAnnotationAtPoint}
         onRootMouseMove={linkAnchorUnderPointer}
         onRootMouseLeave={unlinkAnchorPointer}
       />
@@ -4663,27 +4670,14 @@ export default function ResearchDocument({
           : null}
         {highlightAction
           ? createPortal(
-              <>
-                {highlightAction.outlineRects.map((box, index) => (
-                  <div
-                    key={index}
-                    className="research-highlight-selection-outline"
-                    style={{
-                      left: box.left - 2,
-                      top: box.top - 2,
-                      width: box.width + 4,
-                      height: box.height + 4,
-                    }}
-                  />
-                ))}
-                <div
-                  className="research-highlight-actions"
-                  style={{
-                    left: highlightAction.left,
-                    top: highlightAction.top,
-                    visibility: highlightAction.offscreen ? "hidden" : undefined,
-                  }}
-                >
+              <div
+                className="research-highlight-actions"
+                style={{
+                  left: highlightAction.left,
+                  top: highlightAction.top,
+                  visibility: highlightAction.offscreen ? "hidden" : undefined,
+                }}
+              >
                   <button
                     type="button"
                     className="control-button research-highlight-action"
@@ -4746,8 +4740,7 @@ export default function ResearchDocument({
                       </kbd>
                     </button>
                   ) : null}
-                </div>
-              </>,
+              </div>,
               document.body,
             )
           : null}

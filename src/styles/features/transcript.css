@@ -435,6 +435,9 @@ header + .turn-blocks {
   min-width: 0;
   color: var(--text-strong);
   font-size: calc(14px + var(--transcript-font-delta, 0px));
+  /* Valley Sans' standard ligatures include `(c)` -> `©`. Transcript prose
+     should display the source text literally, especially for enumerated lists. */
+  font-variant-ligatures: no-common-ligatures;
   overflow-wrap: anywhere;
 }
 

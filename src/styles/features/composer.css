@@ -420,7 +420,7 @@
 .composer-slash-token {
   color: var(--accent-color);
   font-family: var(--font-mono);
-  font-size: var(--fs-base);
+  font-size: calc(var(--fs-base) - 1px);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -434,7 +434,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--control-fg-muted);
-  font-size: var(--fs-base);
+  font-size: calc(var(--fs-base) - 1px);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
