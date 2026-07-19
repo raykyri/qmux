@@ -807,6 +807,7 @@ export default function ResearchDocument({
   // ask is always a branch.
   const [followupMode, setFollowupMode] = useState<"thread" | "branch">("thread");
   const [submitting, setSubmitting] = useState(false);
+  const [retryingTail, setRetryingTail] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [followupMenu, setFollowupMenu] = useState<FollowupMenu | null>(null);
   const [deletingBranchId, setDeletingBranchId] = useState<string | null>(null);
@@ -3081,6 +3082,46 @@ export default function ResearchDocument({
     }
   }
 
+  // One-click recovery for a failed (or cancelled) inline tail: free the
+  // slot by deleting the settled leaf, then relaunch the same question
+  // inline from the same parent. A failed tail is always a leaf (children
+  // require a completed parent), so the removal is exactly one node. If the
+  // relaunch fails after the removal succeeded, the thread is simply back to
+  // its pre-submit state — parent as tail, slot free — with the error
+  // surfaced.
+  async function retryInlineTail() {
+    const tail = tailNode;
+    if (
+      !detail ||
+      !tail ||
+      !tail.inline ||
+      !tail.parentNodeId ||
+      tail.paneId ||
+      retryingTail ||
+      submitting ||
+      archived ||
+      (tail.status !== "failed" && tail.status !== "cancelled")
+    ) {
+      return;
+    }
+    setRetryingTail(true);
+    try {
+      await onRemoveBranch(tail.id);
+      const child = await onFork(
+        tail.parentNodeId,
+        tail.prompt,
+        null,
+        tail.queryAnchor ?? null,
+        true,
+      );
+      pendingScrollNodeIdRef.current = child.id;
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetryingTail(false);
+    }
+  }
+
   async function resolveProposal(
     proposal: PublicationProposal,
     status: "accepted" | "declined",
@@ -3314,6 +3355,17 @@ export default function ResearchDocument({
   const tailUnusable = Boolean(
     tailNode && (tailNode.status === "failed" || tailNode.status === "cancelled"),
   );
+  // A settled inline tail can be retried in place: it is a deletable leaf
+  // (no pane lingering — an unfinished cancel keeps its own Retry-cancel
+  // controls) whose parent takes the relaunched question.
+  const canRetryTail = Boolean(
+    tailNode &&
+      tailNode.inline &&
+      tailNode.parentNodeId &&
+      !tailNode.paneId &&
+      !archived &&
+      (tailNode.status === "failed" || tailNode.status === "cancelled"),
+  );
   const composerHint = archived
     ? null
     : composerAwaitingCheckpoint
@@ -3321,7 +3373,11 @@ export default function ResearchDocument({
       : !ask && followupMode === "thread" && tailActive
         ? "Waiting for the answer above to finish."
         : !ask && followupMode === "thread" && tailUnusable
-          ? `The last follow-up ${tailNode?.status === "failed" ? "failed" : "was cancelled"} — delete it to continue the thread, or branch instead.`
+          ? `The last follow-up ${tailNode?.status === "failed" ? "failed" : "was cancelled"} — ${
+              canRetryTail
+                ? "retry it, delete it, or branch instead."
+                : "delete it to continue the thread, or branch instead."
+            }`
           : !ask &&
               followupMode === "branch" &&
               composerTarget &&
@@ -3427,7 +3483,28 @@ export default function ResearchDocument({
           ) : null}
         </button>
       </div>
-      {composerHint ? <small>{composerHint}</small> : null}
+      {composerHint ? (
+        <div className="research-followup-hint-row">
+          <small>{composerHint}</small>
+          {!anchored && followupMode === "thread" && canRetryTail ? (
+            <button
+              type="button"
+              className="control-button research-followup-retry"
+              disabled={retryingTail || submitting}
+              onClick={() => void retryInlineTail()}
+            >
+              {retryingTail ? (
+                <>
+                  <LoaderCircle className="research-spinner" size={12} aria-hidden="true" />
+                  <span>Retrying…</span>
+                </>
+              ) : (
+                <span>Retry follow-up</span>
+              )}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 

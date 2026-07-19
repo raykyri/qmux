@@ -1439,6 +1439,21 @@
   line-height: 1.35;
 }
 
+/* Hint line under the composer, with the inline-tail retry action beside it
+   when the last follow-up settled without an answer. */
+.research-followup-hint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.research-followup-retry {
+  flex-shrink: 0;
+  padding: 1px 9px;
+  font-size: calc(var(--research-meta-font-size) - 1px);
+}
+
 .research-followup-composer.is-disabled .research-followup-mode-toggle,
 .research-followup-composer.is-disabled textarea,
 .research-followup-composer.is-disabled .native-input-submit-actions {
