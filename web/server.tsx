@@ -48,7 +48,6 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
 const GITHUB_API_VERSION = "2026-03-10";
 const LATEST_CACHE_MS = 60_000;
-const REVISION_CACHE_MS = 365 * 24 * 60 * 60 * 1000;
 const COMMENTS_CACHE_MS = 30_000;
 // A deterministic upstream verdict (missing/invalid gist) is cached briefly so a
 // flood of repeat requests for the same bad id can't each spend a GitHub call.
@@ -350,6 +349,17 @@ async function routeRequest(
     sendHtml(response, 404, errorPage("Not found", "This page does not exist."));
     return;
   }
+  // Pinned-revision URLs no longer render; old links land on the living view.
+  if (route.revision) {
+    response.writeHead(301, {
+      Location: route.nodeId
+        ? `/p/${encodeURIComponent(route.gistId)}/n/${encodeURIComponent(route.nodeId)}`
+        : `/p/${encodeURIComponent(route.gistId)}`,
+      "Cache-Control": "public, max-age=86400",
+    });
+    response.end();
+    return;
+  }
   enforcePublicationRateLimit(request, context);
   if (context.activePublicationLoads >= MAX_CONCURRENT_PUBLICATION_LOADS) {
     throw new PublicationHttpError(
@@ -359,11 +369,11 @@ async function routeRequest(
   }
   context.activePublicationLoads += 1;
   try {
-    const loaded = await loadPublication(route.gistId, route.revision, context);
+    const loaded = await loadPublication(route.gistId, context);
     const viewer = viewerSessionFromRequest(request, context.webAuth);
     let comments: PublicationComment[] = [];
     let commentsError: string | null = null;
-    if (!route.revision && (context.webAuth || context.githubToken)) {
+    if (context.webAuth || context.githubToken) {
       try {
         comments = await loadPublicationComments(route.gistId, context);
       } catch (error) {
@@ -376,7 +386,6 @@ async function routeRequest(
         ? transcriptPage(
             loaded.gist,
             loaded.publication,
-            route.revision,
             comments,
             commentsError,
             viewer,
@@ -385,7 +394,6 @@ async function routeRequest(
         : researchPage(
             loaded.gist,
             loaded.publication,
-            route.revision,
             route.nodeId,
             comments,
             commentsError,
@@ -394,8 +402,6 @@ async function routeRequest(
           );
     const cacheControl = viewer
       ? "private, no-store"
-      : route.revision
-      ? "public, max-age=31536000, immutable"
       : "public, max-age=30, stale-while-revalidate=120";
     sendHtml(response, 200, page, cacheControl, request.method);
   } finally {
@@ -506,7 +512,7 @@ async function handleCreateComment(
   if (form.get("csrfToken") !== session.csrfToken) {
     throw new PublicationHttpError(403, "The comment request could not be verified.");
   }
-  const loaded = await loadPublication(route.gistId, null, context);
+  const loaded = await loadPublication(route.gistId, context);
   const nodeId = resolvedCommentNodeId(loaded.publication, route.nodeId);
   const body = (form.get("body") ?? "").trim();
   if (!body || body.length > MAX_COMMENT_BODY_CHARACTERS) {
@@ -575,7 +581,7 @@ async function handleCreateProposal(
   if (form.get("csrfToken") !== session.csrfToken) {
     throw new PublicationHttpError(403, "The proposal request could not be verified.");
   }
-  const loaded = await loadPublication(route.gistId, null, context);
+  const loaded = await loadPublication(route.gistId, context);
   if (
     loaded.publication.kind !== "research-tree" ||
     !loaded.publication.research.nodes.some((node) => node.id === route.nodeId)
@@ -930,10 +936,9 @@ function githubApiErrorMessage(raw: string, fallback: string) {
 
 async function loadPublication(
   gistId: string,
-  revision: string | null,
   context: RouteContext,
 ): Promise<CachedPublication> {
-  const key = `${gistId}@${revision ?? "latest"}`;
+  const key = `${gistId}@latest`;
   const cached = context.cache.entries.get(key);
   if (cached && cached.expiresAt > context.now()) {
     touchCacheEntry(context.cache, key, cached);
@@ -950,9 +955,7 @@ async function loadPublication(
       "The publication server is briefly rate-limited. Try again shortly.",
     );
   }
-  const endpoint = revision
-    ? `https://api.github.com/gists/${encodeURIComponent(gistId)}/${encodeURIComponent(revision)}`
-    : `https://api.github.com/gists/${encodeURIComponent(gistId)}`;
+  const endpoint = `https://api.github.com/gists/${encodeURIComponent(gistId)}`;
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "User-Agent": "qmux-publisher",
@@ -970,7 +973,7 @@ async function loadPublication(
     signal: AbortSignal.timeout(10_000),
   });
   if (upstream.status === 304 && cached) {
-    cached.expiresAt = context.now() + (revision ? REVISION_CACHE_MS : LATEST_CACHE_MS);
+    cached.expiresAt = context.now() + LATEST_CACHE_MS;
     touchCacheEntry(context.cache, key, cached);
     return cached;
   }
@@ -1049,7 +1052,7 @@ async function loadPublication(
     gist,
     publication,
     etag: upstream.headers.get("etag"),
-    expiresAt: context.now() + (revision ? REVISION_CACHE_MS : LATEST_CACHE_MS),
+    expiresAt: context.now() + LATEST_CACHE_MS,
     weightBytes,
   };
   cachePublication(context.cache, key, loaded);
@@ -1319,7 +1322,6 @@ function throwNegativePublication(
 function transcriptPage(
   gist: GitHubGist,
   publication: TranscriptPublication,
-  revision: string | null,
   comments: PublicationComment[],
   commentsError: string | null,
   viewer: ViewerSession | null,
@@ -1342,7 +1344,6 @@ function transcriptPage(
           gist={gist}
           breadcrumb={[{ label: publication.title, href: null }]}
           kindLabel="Published transcript"
-          revision={revision}
         />
       ),
       contentClassName: "is-conversation",
@@ -1368,7 +1369,6 @@ function transcriptPage(
               </span>
               <span>{formatDate(publication.updatedAt)}</span>
               <a href={gist.owner?.html_url ?? gist.html_url}>@{author}</a>
-              {revision ? <span>Revision {revision.slice(0, 8)}</span> : null}
               <button
                 type="button"
                 className="research-answer-copy"
@@ -1390,17 +1390,15 @@ function transcriptPage(
                 ).replace(/</g, "\\u003c"),
               }}
             />
-            {!revision ? (
-              <PublicationComments
-                gist={gist}
-                publication={publication}
-                nodeId={null}
-                comments={comments}
-                error={commentsError}
-                viewer={viewer}
-                webAuth={webAuth}
-              />
-            ) : null}
+            <PublicationComments
+              gist={gist}
+              publication={publication}
+              nodeId={null}
+              comments={comments}
+              error={commentsError}
+              viewer={viewer}
+              webAuth={webAuth}
+            />
           </main>
         </>
       ),
@@ -1414,7 +1412,6 @@ function transcriptPage(
 function researchPage(
   gist: GitHubGist,
   publication: ResearchPublication,
-  revision: string | null,
   requestedNodeId: string | null,
   comments: PublicationComment[],
   commentsError: string | null,
@@ -1457,8 +1454,8 @@ function researchPage(
     nodeId: child.id,
     ...child.queryAnchor!,
   }));
-  const hasRail = children.length > 0 || (!revision && publication.kind === "research-tree");
-  const breadcrumb = breadcrumbEntries(gist.id, publication, revision, selected);
+  const hasRail = children.length > 0 || publication.kind === "research-tree";
+  const breadcrumb = breadcrumbEntries(gist.id, publication, selected);
   const renderFollowupCard = (child: PublishedResearchNode) => {
     const preview = followupPreviewText(
       answerBodyMarkdown(gist.files[child.answerFile]?.content ?? "", child),
@@ -1467,7 +1464,7 @@ function researchPage(
       <a
         key={child.id}
         className="research-followup-card"
-        href={publicationNodePath(gist.id, revision, child.id)}
+        href={publicationNodePath(gist.id, child.id)}
         data-anchor-node-id={child.queryAnchor ? child.id : undefined}
       >
         {child.queryAnchor ? (
@@ -1499,7 +1496,6 @@ function researchPage(
               ? "Published research answer"
               : "Published research"
           }
-          revision={revision}
           followupCount={followupCount}
         />
       ),
@@ -1511,7 +1507,7 @@ function researchPage(
               {parent ? (
                 <a
                   className="research-parent-link"
-                  href={publicationNodePath(gist.id, revision, parent.id)}
+                  href={publicationNodePath(gist.id, parent.id)}
                 >
                   ← Back
                 </a>
@@ -1565,7 +1561,6 @@ function researchPage(
                     {selected.status}
                   </span>
                 ) : null}
-                {revision ? <span>Revision {revision.slice(0, 8)}</span> : null}
                 {answerBody ? (
                   <button
                     type="button"
@@ -1578,21 +1573,19 @@ function researchPage(
                   </button>
                 ) : null}
               </footer>
-              {!revision ? (
-                <PublicationComments
-                  gist={gist}
-                  publication={publication}
-                  nodeId={selected.id}
-                  comments={comments}
-                  error={commentsError}
-                  viewer={viewer}
-                  webAuth={webAuth}
-                />
-              ) : null}
+              <PublicationComments
+                gist={gist}
+                publication={publication}
+                nodeId={selected.id}
+                comments={comments}
+                error={commentsError}
+                viewer={viewer}
+                webAuth={webAuth}
+              />
             </section>
             {hasRail ? (
               <aside className="research-followups" aria-label="Follow-ups">
-                {!revision && publication.kind === "research-tree" ? (
+                {publication.kind === "research-tree" ? (
                   <ProposalComposer
                     gist={gist}
                     nodeId={selected.id}
@@ -1603,7 +1596,7 @@ function researchPage(
                 <div className="research-followup-cards">
                   {children.map((child) => renderFollowupCard(child))}
                 </div>
-                {!revision && publication.kind === "research-tree" ? (
+                {publication.kind === "research-tree" ? (
                   <PublicationProposals
                     gist={gist}
                     publication={publication}
@@ -1644,13 +1637,11 @@ function DocumentChrome({
   gist,
   breadcrumb,
   kindLabel,
-  revision,
   followupCount,
 }: {
   gist: GitHubGist;
   breadcrumb: { label: string; href: string | null }[];
   kindLabel: string;
-  revision: string | null;
   followupCount?: number;
 }) {
   return (
@@ -1675,9 +1666,7 @@ function DocumentChrome({
           {followupCount} {followupCount === 1 ? "follow-up" : "follow-ups"}
         </span>
       ) : null}
-      <span className="doc-kind" title={revision ? `Pinned revision ${revision}` : undefined}>
-        {kindLabel}
-      </span>
+      <span className="doc-kind">{kindLabel}</span>
       <a className="doc-header-action" href={gist.html_url}>
         View Gist
       </a>
@@ -1717,7 +1706,6 @@ function workspaceShell({
 function breadcrumbEntries(
   gistId: string,
   publication: ResearchPublication,
-  revision: string | null,
   selected: PublishedResearchNode,
 ) {
   const byId = new Map(publication.research.nodes.map((node) => [node.id, node]));
@@ -1733,7 +1721,7 @@ function breadcrumbEntries(
         ? publication.title
         : node.title,
     href:
-      node.id === selected.id ? null : publicationNodePath(gistId, revision, node.id),
+      node.id === selected.id ? null : publicationNodePath(gistId, node.id),
   }));
   // Deep paths collapse their middle like the app's breadcrumb: first step,
   // an ellipsis, then the parent and current steps.
@@ -2232,7 +2220,7 @@ function PublicationProposals({
             {resolution?.publicNodeId ? (
               <a
                 className="proposal-result-link"
-                href={publicationNodePath(gist.id, null, resolution.publicNodeId)}
+                href={publicationNodePath(gist.id, resolution.publicNodeId)}
               >
                 Open published result
               </a>
@@ -2348,11 +2336,8 @@ function PublicationComments({
   );
 }
 
-function publicationNodePath(gistId: string, revision: string | null, nodeId: string) {
-  const base = revision
-    ? `/p/${encodeURIComponent(gistId)}/r/${encodeURIComponent(revision)}`
-    : `/p/${encodeURIComponent(gistId)}`;
-  return `${base}/n/${encodeURIComponent(nodeId)}`;
+function publicationNodePath(gistId: string, nodeId: string) {
+  return `/p/${encodeURIComponent(gistId)}/n/${encodeURIComponent(nodeId)}`;
 }
 
 function SafeMarkdown({ children }: { children: string }) {

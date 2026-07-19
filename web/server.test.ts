@@ -211,6 +211,37 @@ test("the public server renders deep-linked research nodes and verifies their fi
   assert.equal(body.includes("<script>alert"), false);
 });
 
+test("the public server redirects pinned-revision URLs to the latest view", async (t) => {
+  const fetchImpl: typeof fetch = async () => {
+    throw new Error("pinned-revision redirects must not call GitHub");
+  };
+  const server = createQmuxWebServer({ fetchImpl });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const revision = "a".repeat(40);
+  const nodeRedirect = await fetch(
+    `http://127.0.0.1:${address.port}/p/abcde12345/r/${revision}/n/node_abcdefgh`,
+    { redirect: "manual" },
+  );
+  assert.equal(nodeRedirect.status, 301);
+  assert.equal(
+    nodeRedirect.headers.get("location"),
+    "/p/abcde12345/n/node_abcdefgh",
+  );
+  await nodeRedirect.arrayBuffer();
+  const rootRedirect = await fetch(
+    `http://127.0.0.1:${address.port}/p/abcde12345/r/${revision}`,
+    { redirect: "manual" },
+  );
+  assert.equal(rootRedirect.status, 301);
+  assert.equal(rootRedirect.headers.get("location"), "/p/abcde12345");
+  await rootRedirect.arrayBuffer();
+});
+
 test("the public server rejects a research file that does not match publication.json", async (t) => {
   const answerFile = "node_abcdefgh.md";
   const index = JSON.stringify({
