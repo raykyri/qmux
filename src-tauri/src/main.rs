@@ -48,9 +48,9 @@ use pty::{
 };
 use research::{
     CreateResearchDocumentRequest, CreateResearchTreeRequest, ResearchBranchRemoval,
-    ResearchHighlight, ResearchHighlightAnchor, ResearchNode, ResearchNodeContent, ResearchTree,
-    ResearchTreeDetail, ResearchTreeSummary, UpdateResearchDocumentRequest,
-    UpdateResearchDocumentResult,
+    ResearchFolderState, ResearchHighlight, ResearchHighlightAnchor, ResearchNode,
+    ResearchNodeContent, ResearchTree, ResearchTreeDetail, ResearchTreeSummary,
+    UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
 };
 use show_hide_shortcut::{
     show_hide_shortcut_capture_set, show_hide_shortcut_get, show_hide_shortcut_set,
@@ -740,6 +740,19 @@ fn reorder_research_trees(
     tree_ids: Vec<String>,
 ) -> Result<(), String> {
     state.reorder_research_trees(&workspace_id, archived, tree_ids)
+}
+
+#[tauri::command]
+fn list_research_folders(state: tauri::State<'_, AppState>) -> Result<ResearchFolderState, String> {
+    state.research_folders()
+}
+
+#[tauri::command]
+fn set_research_folders(
+    state: tauri::State<'_, AppState>,
+    folders: ResearchFolderState,
+) -> Result<ResearchFolderState, String> {
+    state.set_research_folders(folders)
 }
 
 #[tauri::command]
@@ -2251,6 +2264,8 @@ fn main() {
             get_thread_graph,
             list_research_trees,
             reorder_research_trees,
+            list_research_folders,
+            set_research_folders,
             list_research_activity,
             get_research_tree,
             create_research_tree,

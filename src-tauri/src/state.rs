@@ -261,6 +261,11 @@ struct Model {
     research_trees: HashMap<String, ResearchTree>,
     research_tree_order: Vec<String>,
     research_nodes: HashMap<String, ResearchNode>,
+    /// Client-authored grouping of research trees into folders (plus stars and
+    /// collapsed flags). Persisted with the trees it references so the two can
+    /// never drift; reconciled against the live tree set at load and scrubbed
+    /// when a tree is removed.
+    research_folders: research::ResearchFolderState,
     /// Pane ids with a backend retirement worker in flight. Transient and deduplicated.
     research_retiring_panes: HashSet<String>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
@@ -1676,6 +1681,18 @@ impl AppState {
                 model.research_tree_order = normalized_research_order;
             }
             model.research_nodes = persisted.research_nodes;
+            // Reconcile the grouping against the authoritative tree set now, under
+            // the model lock with every recovered tree present — the one place a
+            // prune is safe. Membership/stars for trees that vanished while the app
+            // was off (deleted elsewhere) drop here instead of on every refresh
+            // against a possibly-incomplete navigation snapshot.
+            model.research_folders = persisted.research_folders;
+            let known_research_tree_ids =
+                model.research_trees.keys().cloned().collect::<HashSet<_>>();
+            research::reconcile_research_folder_state(
+                &mut model.research_folders,
+                &known_research_tree_ids,
+            );
             for mut agent in persisted.agents {
                 ensure_agent_thread_metadata(self, &mut model, &mut agent);
                 if let Some(pane_id) = agent
@@ -1921,6 +1938,7 @@ impl AppState {
                 research_trees: model.research_trees.clone(),
                 research_tree_order: ordered_research_tree_ids(&model),
                 research_nodes: model.research_nodes.clone(),
+                research_folders: model.research_folders.clone(),
             }
         };
         persistence::save(&self.inner.config.workspace_root, &snapshot)
@@ -2439,6 +2457,42 @@ impl AppState {
         }
         self.persist();
         Ok(())
+    }
+
+    pub fn research_folders(&self) -> Result<research::ResearchFolderState, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model.research_folders.clone())
+    }
+
+    /// Replaces the stored grouping with a client-supplied one. Structural
+    /// normalization only (dedupe, drop membership/collapsed that point at
+    /// folders not in the payload) — it deliberately does NOT prune by tree
+    /// existence. Tree-existence reconciliation belongs at load and at actual
+    /// tree removal, under the authoritative tree set; pruning here against a
+    /// caller that momentarily sees fewer trees is exactly the loss this work
+    /// removes. Returns the normalized state the frontend should adopt.
+    pub fn set_research_folders(
+        &self,
+        mut folders: research::ResearchFolderState,
+    ) -> Result<research::ResearchFolderState, String> {
+        research::normalize_research_folder_state(&mut folders);
+        {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model.research_folders == folders {
+                return Ok(folders);
+            }
+            model.research_folders = folders.clone();
+        }
+        self.persist();
+        Ok(folders)
     }
 
     pub fn list_research_activity(&self) -> Result<Vec<ResearchNode>, String> {
@@ -4163,6 +4217,13 @@ impl AppState {
             let mut reaped_records = Vec::new();
             if removed {
                 model.research_tree_order.retain(|id| id != tree_id);
+                // The grouping must not outlive the tree: drop its membership and
+                // star, and prune a folder left with no members. Doing it here
+                // keeps the persisted grouping clean without the per-refresh prune.
+                research::remove_trees_from_research_folders(
+                    &mut model.research_folders,
+                    &HashSet::from([tree_id.to_string()]),
+                );
                 model
                     .research_nodes
                     .retain(|_, node| node.tree_id != tree_id);
@@ -4413,12 +4474,43 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         nodes.sort_by_key(|node| (node.created_at, node.id.clone()));
+        // Carry the grouping for this workspace's trees so an import restores the
+        // folders too. Scope to this workspace's folders and to membership whose
+        // tree actually travels in the archive; stars/collapsed are per-install
+        // view state and stay behind.
+        let mut folders = model
+            .research_folders
+            .folders
+            .iter()
+            .filter(|folder| folder.workspace_id == workspace_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        folders.sort_by(|left, right| left.id.cmp(&right.id));
+        let folder_ids = folders
+            .iter()
+            .map(|folder| folder.id.as_str())
+            .collect::<HashSet<_>>();
+        let membership = model
+            .research_folders
+            .membership
+            .iter()
+            .filter(|(tree_id, folder_id)| {
+                tree_ids.contains(tree_id.as_str()) && folder_ids.contains(folder_id.as_str())
+            })
+            .map(|(tree_id, folder_id)| (tree_id.clone(), folder_id.clone()))
+            .collect::<HashMap<_, _>>();
+        // A folder with no member travelling in this archive would import as an
+        // empty ghost the display never shows; drop it and its dangling members.
+        let kept_folder_ids = membership.values().cloned().collect::<HashSet<_>>();
+        folders.retain(|folder| kept_folder_ids.contains(&folder.id));
         Ok(research::DetachedResearchArchive {
             version: research::detached_archive_version(&nodes),
             archive_id: research::new_detached_research_archive_id()?,
             workspace,
             trees,
             tree_order,
+            folders,
+            membership,
             nodes,
             exported_at: now_millis(),
         })
@@ -4444,6 +4536,7 @@ impl AppState {
             nodes,
             group_order,
             research_tree_order,
+            research_folders,
             recent_sessions,
             reaped_thread_records,
         ) = {
@@ -4532,6 +4625,12 @@ impl AppState {
             model
                 .research_tree_order
                 .retain(|tree_id| !tree_ids.contains(tree_id));
+            // The workspace's folders leave with it: scrub its trees' membership
+            // and stars, then drop any of its folders that remain (an empty one
+            // had no member to carry it out). Snapshot first for the rollback.
+            let research_folders = model.research_folders.clone();
+            research::remove_trees_from_research_folders(&mut model.research_folders, &tree_ids);
+            research::remove_research_workspace_folders(&mut model.research_folders, workspace_id);
             let node_ids = model
                 .research_nodes
                 .values()
@@ -4606,6 +4705,7 @@ impl AppState {
                 nodes,
                 group_order,
                 research_tree_order,
+                research_folders,
                 recent_sessions,
                 reaped_thread_records,
             )
@@ -4621,6 +4721,7 @@ impl AppState {
                 model.groups.insert(workspace.id.clone(), workspace);
                 model.group_order = group_order;
                 model.research_tree_order = research_tree_order;
+                model.research_folders = research_folders;
                 for (id, tree) in trees {
                     model.research_trees.insert(id, tree);
                 }
@@ -4670,6 +4771,8 @@ impl AppState {
         workspace: GroupInfo,
         tree_order: Vec<String>,
         mut trees: Vec<ResearchTree>,
+        folders: Vec<research::ResearchFolder>,
+        membership: HashMap<String, String>,
         mut nodes: Vec<ResearchNode>,
         responses: HashMap<String, Vec<Turn>>,
     ) -> Result<GroupInfo, String> {
@@ -4695,7 +4798,7 @@ impl AppState {
             .fold(0usize, |total, highlight| {
                 total.saturating_add(research::highlight_storage_bytes(highlight))
             });
-        let (tree_ids_in_use, mut node_ids_in_use) = {
+        let (tree_ids_in_use, mut node_ids_in_use, folder_ids_in_use) = {
             let model = self
                 .inner
                 .model
@@ -4718,6 +4821,12 @@ impl AppState {
             (
                 model.research_trees.keys().cloned().collect::<HashSet<_>>(),
                 model.research_nodes.keys().cloned().collect::<HashSet<_>>(),
+                model
+                    .research_folders
+                    .folders
+                    .iter()
+                    .map(|folder| folder.id.clone())
+                    .collect::<HashSet<_>>(),
             )
         };
         for node in &nodes {
@@ -4761,6 +4870,41 @@ impl AppState {
         let imported_tree_order = source_tree_order
             .iter()
             .filter_map(|tree_id| tree_map.get(tree_id).cloned())
+            .collect::<Vec<_>>();
+        // Remap folder ids the same way trees are: keep the archive's id unless
+        // it collides with a local folder, then mint a fresh one. Folders are
+        // re-homed onto the imported workspace, and membership is retargeted
+        // through both id maps. Membership whose tree or folder didn't survive
+        // the archive is dropped rather than dangling.
+        let mut folder_map = HashMap::new();
+        let mut reserved_folder_ids = folder_ids_in_use;
+        let mut imported_folders = Vec::with_capacity(folders.len());
+        for folder in folders {
+            let id = if reserved_folder_ids.insert(folder.id.clone()) {
+                folder.id.clone()
+            } else {
+                loop {
+                    let candidate = self.next_id("research-folder");
+                    if reserved_folder_ids.insert(candidate.clone()) {
+                        break candidate;
+                    }
+                }
+            };
+            folder_map.insert(folder.id.clone(), id.clone());
+            imported_folders.push(research::ResearchFolder {
+                id,
+                name: folder.name,
+                workspace_id: workspace.id.clone(),
+            });
+        }
+        let imported_membership = membership
+            .into_iter()
+            .filter_map(|(tree_id, folder_id)| {
+                Some((
+                    tree_map.get(&tree_id)?.clone(),
+                    folder_map.get(&folder_id)?.clone(),
+                ))
+            })
             .collect::<Vec<_>>();
         let mut node_map = HashMap::new();
         let mut reserved_node_ids = node_ids_in_use;
@@ -4869,6 +5013,16 @@ impl AppState {
             for node in &nodes {
                 model.research_nodes.insert(node.id.clone(), node.clone());
             }
+            model
+                .research_folders
+                .folders
+                .extend(imported_folders.iter().cloned());
+            for (tree_id, folder_id) in &imported_membership {
+                model
+                    .research_folders
+                    .membership
+                    .insert(tree_id.clone(), folder_id.clone());
+            }
             Ok(())
         })();
         if let Err(err) = insert_result {
@@ -4890,6 +5044,17 @@ impl AppState {
                 model
                     .research_tree_order
                     .retain(|id| !imported_tree_order.contains(id));
+                let imported_folder_ids = imported_folders
+                    .iter()
+                    .map(|folder| folder.id.as_str())
+                    .collect::<HashSet<_>>();
+                model
+                    .research_folders
+                    .folders
+                    .retain(|folder| !imported_folder_ids.contains(folder.id.as_str()));
+                for (tree_id, _) in &imported_membership {
+                    model.research_folders.membership.remove(tree_id);
+                }
                 for tree in &trees {
                     model.research_trees.remove(&tree.id);
                 }
@@ -9291,6 +9456,8 @@ mod tests {
                 imported_group.clone(),
                 Vec::new(),
                 vec![imported_tree],
+                Vec::new(),
+                HashMap::new(),
                 vec![imported_node],
                 HashMap::new(),
             )

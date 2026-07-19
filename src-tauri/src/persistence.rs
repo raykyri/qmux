@@ -1,4 +1,4 @@
-use crate::research::{ResearchNode, ResearchTree};
+use crate::research::{ResearchFolderState, ResearchNode, ResearchTree};
 use crate::state::{GlobalDraft, PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use crate::thread_graph::ThreadRecord;
 use crate::workspace::{AgentInfo, GroupInfo};
@@ -111,6 +111,11 @@ pub struct PersistedState {
     pub research_tree_order: Vec<String>,
     #[serde(default)]
     pub research_nodes: HashMap<String, ResearchNode>,
+    /// Client-authored organizational grouping of research trees (folders,
+    /// membership, stars, collapsed). Optional and dropped-if-empty so state
+    /// files from builds that predate folders round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "ResearchFolderState::is_empty")]
+    pub research_folders: ResearchFolderState,
 }
 
 impl Default for PersistedState {
@@ -134,6 +139,7 @@ impl Default for PersistedState {
             research_trees: HashMap::new(),
             research_tree_order: Vec::new(),
             research_nodes: HashMap::new(),
+            research_folders: ResearchFolderState::default(),
         }
     }
 }
@@ -682,6 +688,20 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.research_trees = take_typed_map(&mut map, "researchTrees", "research tree", &mut dropped);
     state.research_tree_order = take_string_vec(&mut map, "researchTreeOrder");
     state.research_nodes = take_typed_map(&mut map, "researchNodes", "research node", &mut dropped);
+    // The grouping is one small self-consistent blob, not a collection of
+    // independently-recoverable records, so a malformed one drops the whole
+    // grouping (the trees it references are recovered above regardless) rather
+    // than the session — matching the frontend's parse-or-empty behavior.
+    state.research_folders = match map.remove("researchFolders") {
+        Some(value) => match serde_json::from_value(value) {
+            Ok(folders) => folders,
+            Err(err) => {
+                dropped.push(format!("research folders: {err}"));
+                ResearchFolderState::default()
+            }
+        },
+        None => ResearchFolderState::default(),
+    };
     state.active_tab_id = map
         .get("activeTabId")
         .and_then(Value::as_str)

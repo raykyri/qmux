@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { PaneLayoutItem } from "./paneTree";
+import type { ResearchFolderState } from "./researchFolders";
 import type { WorktreeLocation } from "./settings";
 import type {
   PublicationBinding,
@@ -354,6 +355,15 @@ export function reorderResearchTrees(
   treeIds: string[],
 ) {
   return invoke<void>("reorder_research_trees", { workspaceId, archived, treeIds });
+}
+
+export function listResearchFolders() {
+  return invoke<ResearchFolderState>("list_research_folders");
+}
+
+/** Persists the grouping and returns the backend-normalized state. */
+export function setResearchFolders(folders: ResearchFolderState) {
+  return invoke<ResearchFolderState>("set_research_folders", { folders });
 }
 
 export function listResearchActivity() {

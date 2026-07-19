@@ -37,6 +37,158 @@ const DETACHED_RESEARCH_PENDING_DIR: &str = "research-v1.pending";
 const DETACHED_RESEARCH_MANIFEST: &str = "manifest.json";
 const MAX_DETACHED_RESEARCH_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
 
+/// A client-authored organizational grouping of research trees, layered over
+/// the backend's flat per-workspace order. The backend stays the source of
+/// truth for which trees exist and their relative order; a folder only records
+/// its own identity and workspace.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchFolder {
+    pub id: String,
+    pub name: String,
+    pub workspace_id: String,
+}
+
+/// The whole grouping layer for research trees. Persisted in `state.json`
+/// alongside the trees it references — durably and atomically — rather than in
+/// webview localStorage, where a hard-abort mid-write or a transient empty tree
+/// list could silently erase it. Membership/stars/collapsed reference tree and
+/// folder ids; entries for ids that no longer exist are reconciled away at load
+/// and when a tree is actually removed, never against a possibly-incomplete
+/// snapshot on every refresh.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchFolderState {
+    #[serde(default)]
+    pub folders: Vec<ResearchFolder>,
+    /// treeId -> folderId
+    #[serde(default)]
+    pub membership: HashMap<String, String>,
+    /// Starred tree and folder ids, in the starred list's display order.
+    #[serde(default)]
+    pub starred: Vec<String>,
+    /// Folder ids whose member rows are hidden in the sidebar.
+    #[serde(default)]
+    pub collapsed: Vec<String>,
+}
+
+impl ResearchFolderState {
+    /// serde skip guard: an untouched grouping serializes to nothing, so state
+    /// files from builds that predate folders round-trip byte-identically.
+    pub fn is_empty(&self) -> bool {
+        self.folders.is_empty()
+            && self.membership.is_empty()
+            && self.starred.is_empty()
+            && self.collapsed.is_empty()
+    }
+}
+
+/// Structural normalization independent of which trees exist: dedupe folder
+/// ids, drop membership pointing at folders that are not present, and drop
+/// collapsed entries for absent folders. Stars are only deduped — they may
+/// reference trees this function has no view of. Mirrors the frontend's
+/// `loadResearchFolderState` so a value accepted there is accepted here.
+pub fn normalize_research_folder_state(state: &mut ResearchFolderState) {
+    let mut seen = HashSet::new();
+    state
+        .folders
+        .retain(|folder| seen.insert(folder.id.clone()));
+    let folder_ids = state
+        .folders
+        .iter()
+        .map(|folder| folder.id.clone())
+        .collect::<HashSet<_>>();
+    state
+        .membership
+        .retain(|_, folder_id| folder_ids.contains(folder_id));
+    let mut seen_star = HashSet::new();
+    state.starred.retain(|id| seen_star.insert(id.clone()));
+    let mut seen_collapsed = HashSet::new();
+    state
+        .collapsed
+        .retain(|id| folder_ids.contains(id) && seen_collapsed.insert(id.clone()));
+}
+
+/// Drops every part of the grouping that references a tree or folder that no
+/// longer exists: memberships for absent trees, folders left with no members,
+/// stars for absent trees and pruned folders, collapsed for pruned folders.
+/// Runs only where the tree set is authoritative (load, under the model lock),
+/// never against the per-refresh navigation snapshot that could be transiently
+/// empty — that unconditional prune is the data-loss bug this replaces.
+pub fn reconcile_research_folder_state(
+    state: &mut ResearchFolderState,
+    known_tree_ids: &HashSet<String>,
+) {
+    state
+        .membership
+        .retain(|tree_id, _| known_tree_ids.contains(tree_id));
+    let live_folder_ids = state.membership.values().cloned().collect::<HashSet<_>>();
+    state
+        .folders
+        .retain(|folder| live_folder_ids.contains(&folder.id));
+    let folder_ids = state
+        .folders
+        .iter()
+        .map(|folder| folder.id.clone())
+        .collect::<HashSet<_>>();
+    state
+        .starred
+        .retain(|id| known_tree_ids.contains(id) || folder_ids.contains(id));
+    state.collapsed.retain(|id| folder_ids.contains(id));
+}
+
+/// Drops the supplied trees out of whatever folder holds them and out of the
+/// starred list, then prunes folders left empty (and their stars/collapsed).
+/// Mirrors the frontend `removeTreesFromResearchFolders`; used when a tree is
+/// actually removed so the persisted grouping stays clean between loads.
+pub fn remove_trees_from_research_folders(
+    state: &mut ResearchFolderState,
+    tree_ids: &HashSet<String>,
+) {
+    // Every id that names a folder before pruning, so the star filter can tell a
+    // just-emptied folder's star (drop it) from a plain tree star (keep it).
+    let all_folder_ids = state
+        .folders
+        .iter()
+        .map(|folder| folder.id.clone())
+        .collect::<HashSet<_>>();
+    state
+        .membership
+        .retain(|tree_id, _| !tree_ids.contains(tree_id));
+    let live_folder_ids = state.membership.values().cloned().collect::<HashSet<_>>();
+    state
+        .folders
+        .retain(|folder| live_folder_ids.contains(&folder.id));
+    state.starred.retain(|id| {
+        !tree_ids.contains(id) && (live_folder_ids.contains(id) || !all_folder_ids.contains(id))
+    });
+    state.collapsed.retain(|id| live_folder_ids.contains(id));
+}
+
+/// Removes every folder belonging to a workspace along with the memberships,
+/// stars, and collapsed flags that reference them. Used when a whole research
+/// workspace is detached; the workspace's trees are scrubbed separately via
+/// [`remove_trees_from_research_folders`].
+pub fn remove_research_workspace_folders(state: &mut ResearchFolderState, workspace_id: &str) {
+    let removed = state
+        .folders
+        .iter()
+        .filter(|folder| folder.workspace_id == workspace_id)
+        .map(|folder| folder.id.clone())
+        .collect::<HashSet<_>>();
+    if removed.is_empty() {
+        return;
+    }
+    state
+        .folders
+        .retain(|folder| folder.workspace_id != workspace_id);
+    state
+        .membership
+        .retain(|_, folder_id| !removed.contains(folder_id));
+    state.starred.retain(|id| !removed.contains(id));
+    state.collapsed.retain(|id| !removed.contains(id));
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetachedResearchArchive {
@@ -49,6 +201,15 @@ pub struct DetachedResearchArchive {
     /// before custom ordering remain importable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tree_order: Vec<String>,
+    /// The grouping folders that hold this archive's trees, and which tree sits
+    /// in which. Optional and dropped-if-empty so archives written before
+    /// folders — and older readers reading a folder-bearing archive — round-trip
+    /// unchanged; a reader that ignores them still imports every tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<ResearchFolder>,
+    /// treeId -> folderId for the archive's trees. Same optionality as `folders`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub membership: HashMap<String, String>,
     pub nodes: Vec<ResearchNode>,
     pub exported_at: u128,
 }
@@ -463,6 +624,34 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
                 .any(|tree_id| !tree_by_id.contains_key(tree_id.as_str()))
         {
             return Err("detached research archive has an invalid tree order".to_string());
+        }
+    }
+    let folder_by_id = archive
+        .folders
+        .iter()
+        .map(|folder| (folder.id.as_str(), folder))
+        .collect::<HashMap<_, _>>();
+    if folder_by_id.len() != archive.folders.len() {
+        return Err("detached research archive contains duplicate folder ids".to_string());
+    }
+    for folder in &archive.folders {
+        if folder.workspace_id != archive.workspace.id {
+            return Err(format!(
+                "research folder {} belongs to a different workspace",
+                folder.id
+            ));
+        }
+    }
+    for (tree_id, folder_id) in &archive.membership {
+        if !tree_by_id.contains_key(tree_id.as_str()) {
+            return Err(format!(
+                "research folder membership references unknown tree {tree_id}"
+            ));
+        }
+        if !folder_by_id.contains_key(folder_id.as_str()) {
+            return Err(format!(
+                "research folder membership references unknown folder {folder_id}"
+            ));
         }
     }
     let node_by_id = archive
@@ -2075,6 +2264,123 @@ pub fn conversation_preview(turns: &[crate::transcript::Turn]) -> Option<String>
 mod tests {
     use super::*;
 
+    fn folder(id: &str, workspace: &str) -> ResearchFolder {
+        ResearchFolder {
+            id: id.to_string(),
+            name: id.to_string(),
+            workspace_id: workspace.to_string(),
+        }
+    }
+
+    fn folder_state(
+        folders: &[(&str, &str)],
+        membership: &[(&str, &str)],
+        starred: &[&str],
+        collapsed: &[&str],
+    ) -> ResearchFolderState {
+        ResearchFolderState {
+            folders: folders.iter().map(|(id, ws)| folder(id, ws)).collect(),
+            membership: membership
+                .iter()
+                .map(|(tree, folder)| (tree.to_string(), folder.to_string()))
+                .collect(),
+            starred: starred.iter().map(|id| id.to_string()).collect(),
+            collapsed: collapsed.iter().map(|id| id.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn reconcile_drops_absent_trees_and_empties_but_keeps_live_grouping() {
+        let mut state = folder_state(
+            &[("f1", "ws"), ("f2", "ws")],
+            &[("t1", "f1"), ("gone", "f2")],
+            &["t1", "f2", "starred-gone-tree"],
+            &["f1", "f2"],
+        );
+        let known = HashSet::from(["t1".to_string()]);
+        reconcile_research_folder_state(&mut state, &known);
+        // f1 keeps its live member; f2 loses its only (absent) member and is pruned.
+        assert_eq!(state.folders.len(), 1);
+        assert_eq!(state.folders[0].id, "f1");
+        assert_eq!(
+            state.membership,
+            HashMap::from([("t1".to_string(), "f1".to_string())])
+        );
+        // A star survives only for a live tree or a surviving folder.
+        assert_eq!(state.starred, vec!["t1".to_string()]);
+        assert_eq!(state.collapsed, vec!["f1".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_against_empty_tree_set_is_total_but_that_path_is_never_hit_on_refresh() {
+        // Documents the behavior the refresh path must avoid: reconciling the
+        // grouping against an empty known-tree set erases everything. The fix is
+        // that this only runs at load, under the authoritative tree set.
+        let mut state = folder_state(&[("f1", "ws")], &[("t1", "f1")], &["t1"], &["f1"]);
+        reconcile_research_folder_state(&mut state, &HashSet::new());
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn removing_a_tree_drops_its_star_and_prunes_the_emptied_folder() {
+        let mut state = folder_state(
+            &[("f1", "ws")],
+            &[("t1", "f1"), ("t2", "f1")],
+            &["t1", "f1", "t2"],
+            &["f1"],
+        );
+        remove_trees_from_research_folders(&mut state, &HashSet::from(["t1".to_string()]));
+        // f1 still has t2, so it and its star/collapsed survive; t1's star is gone.
+        assert_eq!(state.folders.len(), 1);
+        assert_eq!(state.starred, vec!["f1".to_string(), "t2".to_string()]);
+        assert_eq!(state.collapsed, vec!["f1".to_string()]);
+        // Removing the last member prunes the folder and its folder-star.
+        remove_trees_from_research_folders(&mut state, &HashSet::from(["t2".to_string()]));
+        assert!(state.folders.is_empty());
+        assert!(state.membership.is_empty());
+        assert!(state.starred.is_empty());
+        assert!(state.collapsed.is_empty());
+    }
+
+    #[test]
+    fn removing_a_workspace_takes_only_its_folders() {
+        let mut state = folder_state(
+            &[("f1", "ws-a"), ("f2", "ws-b")],
+            &[("t1", "f1"), ("t2", "f2")],
+            &["f1", "f2"],
+            &["f1", "f2"],
+        );
+        remove_research_workspace_folders(&mut state, "ws-a");
+        assert_eq!(state.folders.len(), 1);
+        assert_eq!(state.folders[0].id, "f2");
+        assert_eq!(
+            state.membership,
+            HashMap::from([("t2".to_string(), "f2".to_string())])
+        );
+        assert_eq!(state.starred, vec!["f2".to_string()]);
+        assert_eq!(state.collapsed, vec!["f2".to_string()]);
+    }
+
+    #[test]
+    fn normalize_drops_membership_and_collapsed_for_unknown_folders() {
+        let mut state = folder_state(
+            &[("f1", "ws"), ("f1", "ws")],
+            &[("t1", "f1"), ("t2", "ghost")],
+            &["t1", "t1"],
+            &["f1", "ghost", "f1"],
+        );
+        normalize_research_folder_state(&mut state);
+        // Duplicate folder id collapses to one; membership/collapsed for the
+        // absent folder are dropped; stars are deduped.
+        assert_eq!(state.folders.len(), 1);
+        assert_eq!(
+            state.membership,
+            HashMap::from([("t1".to_string(), "f1".to_string())])
+        );
+        assert_eq!(state.starred, vec!["t1".to_string()]);
+        assert_eq!(state.collapsed, vec!["f1".to_string()]);
+    }
+
     fn temp_workspace() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2168,6 +2474,12 @@ mod tests {
             },
             trees: vec![tree],
             tree_order: vec!["research-1".to_string()],
+            folders: vec![ResearchFolder {
+                id: "rf-1".to_string(),
+                name: "Folder".to_string(),
+                workspace_id: "group-1".to_string(),
+            }],
+            membership: HashMap::from([("research-1".to_string(), "rf-1".to_string())]),
             nodes: vec![node],
             exported_at: 3,
         }

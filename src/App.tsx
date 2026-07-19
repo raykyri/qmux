@@ -135,14 +135,15 @@ import {
   addTreesToResearchFolder,
   createResearchFolder,
   dissolveResearchFolder,
+  emptyResearchFolderState,
+  isEmptyResearchFolderState,
   loadResearchFolderState,
-  pruneResearchFolderState,
   removeTreesFromResearchFolderMembership,
   removeTreesFromResearchFolders,
   renameResearchFolder,
   replaceResearchStarOrder,
   researchFolderMemberIds,
-  saveResearchFolderState,
+  RESEARCH_FOLDERS_STORAGE_KEY,
   setResearchFolderCollapsed,
   toggleResearchStar,
   visibleResearchTreeIds,
@@ -368,7 +369,9 @@ import {
   listPanes,
   listPublications,
   listResearchActivity,
+  listResearchFolders,
   listResearchTrees,
+  setResearchFolders,
   getResearchTree,
   markAppWindowReady,
   moveQueuedAgentTurn,
@@ -1571,20 +1574,33 @@ function MainApp() {
   // active list where it is consumed, so stale ids drop out on their own.
   const [researchMultiSelectIds, setResearchMultiSelectIds] = useState<string[]>([]);
   // Client-side folder grouping over the backend's flat research order.
+  // The grouping is owned by the backend (state.json), hydrated in boot(). It
+  // starts empty rather than reading localStorage: a stale localStorage copy is
+  // only consulted once, for the one-time migration in boot().
   // Display building ignores memberships whose trees are absent, so this can
   // safely lag behind deletions performed elsewhere.
-  const [researchFolderState, setResearchFolderState] = useState<ResearchFolderState>(
-    loadResearchFolderState,
-  );
+  const [researchFolderState, setResearchFolderState] =
+    useState<ResearchFolderState>(emptyResearchFolderState);
   const researchFolderStateRef = useRef(researchFolderState);
   researchFolderStateRef.current = researchFolderState;
+  // Serializes backend persists so a burst of edits lands in order and the last
+  // write wins, mirroring how tree reordering chains its persistence.
+  const researchFolderPersistChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const commitResearchFolderState = useCallback((next: ResearchFolderState) => {
     if (next === researchFolderStateRef.current) {
       return;
     }
     researchFolderStateRef.current = next;
     setResearchFolderState(next);
-    saveResearchFolderState(next);
+    // Optimistic locally; the durable copy lives in state.json now. A failed
+    // persist keeps the in-memory grouping (the next successful edit rewrites
+    // it) rather than reverting the user's action under them.
+    researchFolderPersistChainRef.current = researchFolderPersistChainRef.current
+      .catch(() => undefined)
+      .then(() => setResearchFolders(next))
+      .catch((err) => {
+        console.error("failed to persist research folders", err);
+      });
   }, []);
   const [researchVisibilityFilter, setResearchVisibilityFilter] =
     useState<ResearchVisibilityFilter>(() => {
@@ -5306,6 +5322,7 @@ function MainApp() {
           existingAgents,
           existingResearchTrees,
           existingResearchActivity,
+          existingResearchFolders,
           existingPublications,
         ] = await Promise.all([
           getRuntimeConfig(),
@@ -5317,6 +5334,7 @@ function MainApp() {
           listAgents(),
           listResearchTrees(true).catch((): ResearchTreeSummary[] => []),
           listResearchActivity().catch((): ResearchNode[] => []),
+          listResearchFolders().catch(emptyResearchFolderState),
           listPublications().catch((): PublicationBinding[] => []),
         ]);
         if (cancelled) {
@@ -5337,6 +5355,32 @@ function MainApp() {
         setResearchTrees(partitionedResearchTrees.active);
         setArchivedResearchTrees(partitionedResearchTrees.archived);
         setResearchActivity(existingResearchActivity);
+        // Adopt the backend-owned grouping. One-time migration: earlier builds
+        // kept folders in localStorage. If the backend has none yet but a
+        // localStorage copy survives, push it up once and clear the local key so
+        // the backend becomes the sole owner; otherwise adopt the backend copy
+        // and drop any now-obsolete local key.
+        const legacyResearchFolders = loadResearchFolderState();
+        if (
+          isEmptyResearchFolderState(existingResearchFolders) &&
+          !isEmptyResearchFolderState(legacyResearchFolders)
+        ) {
+          researchFolderStateRef.current = legacyResearchFolders;
+          setResearchFolderState(legacyResearchFolders);
+          researchFolderPersistChainRef.current = researchFolderPersistChainRef.current
+            .catch(() => undefined)
+            .then(() => setResearchFolders(legacyResearchFolders))
+            .then(() => localStorage.removeItem(RESEARCH_FOLDERS_STORAGE_KEY))
+            .catch((err) => {
+              console.error("failed to migrate research folders", err);
+            });
+        } else {
+          researchFolderStateRef.current = existingResearchFolders;
+          setResearchFolderState(existingResearchFolders);
+          if (!isEmptyResearchFolderState(legacyResearchFolders)) {
+            localStorage.removeItem(RESEARCH_FOLDERS_STORAGE_KEY);
+          }
+        }
         setPublicationBindings(existingPublications);
         void hydrateSecondaryFast(existingAgents);
         void hydrateSecondaryHeavy();
@@ -5800,20 +5844,19 @@ function MainApp() {
       // Navigation restoration state for trees that no longer exist would
       // otherwise accumulate in localStorage forever.
       pruneResearchNavigation(trees.map((tree) => tree.id));
-      // Same for folder memberships and stars: trees deleted elsewhere (a
-      // failed root launch, another client) never pass through the local
-      // delete path that cleans them.
-      commitResearchFolderState(
-        pruneResearchFolderState(
-          researchFolderStateRef.current,
-          trees.map((tree) => tree.id),
-        ),
-      );
+      // Folder membership is deliberately NOT pruned here. This list can be
+      // transiently empty or partial (a racing refresh, or a backend that
+      // recovered from a corrupt/partial state.json), and pruning against it —
+      // then persisting — is exactly how folders were being lost across
+      // refreshes and hard aborts. The backend now owns the grouping: it
+      // reconciles against the authoritative tree set at load and scrubs a
+      // tree's membership when the tree is actually removed. The sidebar already
+      // ignores memberships whose tree is absent, so nothing stale is shown.
       return trees;
     } finally {
       researchNavRefreshInFlightRef.current -= 1;
     }
-  }, [commitResearchFolderState]);
+  }, []);
   const applyResearchTreeOrder = useCallback(
     (archived: boolean, workspaceId: string, orderedTreeIds: string[]) => {
       const current = archived

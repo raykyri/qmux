@@ -27,6 +27,16 @@ export function emptyResearchFolderState(): ResearchFolderState {
   return { folders: [], membership: {}, starred: [], collapsed: [] };
 }
 
+/** No folders, memberships, stars, or collapsed flags — nothing to persist. */
+export function isEmptyResearchFolderState(state: ResearchFolderState): boolean {
+  return (
+    state.folders.length === 0 &&
+    Object.keys(state.membership).length === 0 &&
+    state.starred.length === 0 &&
+    state.collapsed.length === 0
+  );
+}
+
 function generateFolderId(): string {
   const uuid =
     typeof globalThis.crypto?.randomUUID === "function"
@@ -114,14 +124,6 @@ export function replaceResearchStarOrder(
       ...state.starred.filter((id) => !displayed.has(id)),
     ],
   };
-}
-
-export function saveResearchFolderState(state: ResearchFolderState) {
-  try {
-    localStorage.setItem(RESEARCH_FOLDERS_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Quota or privacy-mode failures only cost the grouping, not the data.
-  }
 }
 
 export function createResearchFolder(
@@ -288,39 +290,6 @@ export function researchFolderMemberIds(
   return Object.entries(state.membership)
     .filter(([, memberFolderId]) => memberFolderId === folderId)
     .map(([treeId]) => treeId);
-}
-
-/** Removes memberships for trees that no longer exist anywhere, then folders
- * left with no members at all. Display building already ignores both, so this
- * only keeps localStorage from accumulating forever. */
-export function pruneResearchFolderState(
-  state: ResearchFolderState,
-  knownTreeIds: Iterable<string>,
-): ResearchFolderState {
-  const known = new Set(knownTreeIds);
-  const membership: Record<string, string> = {};
-  let membershipChanged = false;
-  for (const [treeId, folderId] of Object.entries(state.membership)) {
-    if (known.has(treeId)) {
-      membership[treeId] = folderId;
-    } else {
-      membershipChanged = true;
-    }
-  }
-  const liveFolderIds = new Set(Object.values(membership));
-  const folders = state.folders.filter((folder) => liveFolderIds.has(folder.id));
-  const folderIds = new Set(folders.map((folder) => folder.id));
-  const starred = state.starred.filter((id) => known.has(id) || folderIds.has(id));
-  const collapsed = state.collapsed.filter((id) => folderIds.has(id));
-  if (
-    !membershipChanged &&
-    folders.length === state.folders.length &&
-    starred.length === state.starred.length &&
-    collapsed.length === state.collapsed.length
-  ) {
-    return state;
-  }
-  return { folders, membership, starred, collapsed };
 }
 
 // The sidebar's display model: the backend's flat tree order regrouped into
