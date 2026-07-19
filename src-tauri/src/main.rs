@@ -686,18 +686,31 @@ fn list_turns(
 }
 
 #[tauri::command]
-fn list_thread_graphs(
+async fn list_thread_graphs(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<thread_graph::ThreadGraph>, String> {
-    state.list_thread_graphs()
+    // Blocking: reads every thread's graph snapshot (disk on a cache miss) and
+    // graphs retain full transcript nodes, so the response serializes the
+    // workspace's whole fork history. As a sync command this ran on the main
+    // thread and each full refresh stalled the UI for the duration.
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.list_thread_graphs())
+        .await
+        .map_err(|err| format!("list_thread_graphs task failed: {err}"))?
 }
 
 #[tauri::command]
-fn get_thread_graph(
+async fn get_thread_graph(
     state: tauri::State<'_, AppState>,
     thread_id: String,
 ) -> Result<Option<thread_graph::ThreadGraph>, String> {
-    state.thread_graph(&thread_id)
+    // Blocking for the same reason as list_thread_graphs, scoped to one
+    // thread: a long-running session's graph is still a large disk read and
+    // serialization, and this refetch fires on every streaming turn burst.
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.thread_graph(&thread_id))
+        .await
+        .map_err(|err| format!("get_thread_graph task failed: {err}"))?
 }
 
 #[tauri::command]
