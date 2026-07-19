@@ -20,6 +20,10 @@
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* Reserve the scrollbar's width whether or not it's needed, so expanding or
+     collapsing a folder never shifts the list's content (and its icons)
+     sideways when that toggle crosses the scroll threshold. */
+  scrollbar-gutter: stable;
   flex: 1;
   padding: 7px 7px 5px;
 }
@@ -308,9 +312,14 @@
   transform: translateY(1px);
 }
 
+/* Members indent past the folder header's own icon (reached at ~24px: the
+   20px collapse toggle plus its 2px margin and the heading's 2px padding),
+   so a member's icon lands clearly right of it instead of nearly underneath
+   it — matching the collapse toggle's reserved width keeps the step
+   consistent with the header's own layout. */
 .research-sidebar-row.is-folder-member {
-  width: calc(100% - 14px);
-  margin-left: 14px;
+  width: calc(100% - 22px);
+  margin-left: 22px;
 }
 
 /* Starred items sit above the rest of the list as their own group; the extra
