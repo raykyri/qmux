@@ -97,6 +97,13 @@ export interface UseQmuxEventsHandlers {
   // refetching every graph in the workspace; an unresolvable agent falls back
   // to the full refetch.
   getAgentThreadId?: (agentId: string) => string | null;
+  // True for agents that belong to research runs. The backend deliberately
+  // writes no thread graph for them (research follow-ups branch through the
+  // research tree, not the fork-lineage graph), so a graph refresh for one can
+  // only miss — and a miss escalates to the full every-graph refetch, an
+  // O(workspace history) fetch that fires on every research turn burst. Their
+  // turn events must skip graph refreshes entirely.
+  isResearchAgent?: (agentId: string) => boolean;
   refreshAgentTurnQueue: (agentId: string) => Promise<void>;
   refreshTranscriptOptions: (agentId: string) => Promise<void>;
   // Binds a browser-overlay URL to a pane (the backend emits the fully-formed URL).
@@ -157,6 +164,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setAgentQueuedTurns,
     setGlobalDrafts,
     getAgentThreadId,
+    isResearchAgent,
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
     openBrowserOverlay,
@@ -227,6 +235,16 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         .catch(() => undefined);
     };
     const refreshThreadGraphs = (agentId?: string | null) => {
+      if (agentId && isResearchAgent?.(agentId)) {
+        // A research run's turn events (its start burst — the initial
+        // transcript reset — and its settle flush are the densest) must not
+        // schedule graph work: no graph will ever exist for it, and the miss
+        // path's full refetch was a main-thread beachball at exactly those
+        // moments. This also covers a settled run's trailing turn events,
+        // which arrive after remove_pane dropped the agent and would
+        // otherwise resolve no thread id and force the full refetch.
+        return;
+      }
       if (agentId) {
         dirtyGraphAgentIds.add(agentId);
       } else {

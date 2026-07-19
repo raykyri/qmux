@@ -2431,6 +2431,27 @@ function MainApp() {
   // handlers and window listeners).
   const researchNodeByPaneIdRef = useRef(researchNodeByPaneId);
   researchNodeByPaneIdRef.current = researchNodeByPaneId;
+  // Every agent id ever bound to a research run. Grow-only on purpose: the
+  // event hook consults it to suppress thread-graph refreshes (research runs
+  // have no graphs), and a settled run's trailing turn events arrive after the
+  // agent and its node bindings are gone — pruning the set would let exactly
+  // those events fall back to the full every-graph refetch this exists to
+  // prevent. Bounded by the number of research launches in one app session.
+  const researchAgentIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const node of researchActivity) {
+      if (node.agentId) {
+        researchAgentIdsRef.current.add(node.agentId);
+      }
+    }
+  }, [researchActivity]);
+  useEffect(() => {
+    for (const node of activeResearchDetail?.nodes ?? []) {
+      if (node.agentId) {
+        researchAgentIdsRef.current.add(node.agentId);
+      }
+    }
+  }, [activeResearchDetail]);
   const researchPanes = useMemo(
     () => panesForScope(panes, groups, "research"),
     [groups, panes],
@@ -3021,6 +3042,16 @@ function MainApp() {
       agent.id,
       createPendingFirstMessageTitle(resolvedPaneId),
     );
+  }
+
+  function handleAgentSpawned(agent: AgentInfo, paneId: string | null, source: string | null) {
+    // Recorded synchronously in the event batch, so the run's first turn
+    // events — flushed in the same coalesce window as agent.spawned — already
+    // see the id when deciding whether to skip thread-graph refreshes.
+    if (source === "research") {
+      researchAgentIdsRef.current.add(agent.id);
+    }
+    registerShellCodexFirstMessageTitle(agent, paneId, source);
   }
 
   function handleAgentPromptSubmitted(agentId: string, prompt: string) {
@@ -6907,12 +6938,13 @@ function MainApp() {
       const agent = agentsRef.current.find((candidate) => candidate.id === agentId);
       return agent ? threadIdForAgent(agent) : null;
     },
+    isResearchAgent: (agentId: string) => researchAgentIdsRef.current.has(agentId),
     refreshAgentTurnQueue,
     refreshTranscriptOptions,
     openBrowserOverlay,
     selectPaneAfterClose: selectPaneAfterCloseWithContext,
     onEventsReady: handleEventsReady,
-    onAgentSpawned: registerShellCodexFirstMessageTitle,
+    onAgentSpawned: handleAgentSpawned,
     onAgentPromptSubmitted: handleAgentPromptSubmitted,
     onTerminalSearchRequested: openNativeTerminalSearch,
     onTerminalPasteRequested: requestNativeTerminalPaste,
