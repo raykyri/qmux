@@ -69,6 +69,8 @@ import {
   railPastTurns,
   railQueuedTurnText,
 } from "./lib/homeRails";
+import HomeGroupSelector from "./components/HomeGroupSelector";
+import type { HomeGroup } from "./components/HomeGroupSelector";
 import HomeRails from "./components/HomeRails";
 import type { HomeRailScrollPosition, HomeRailWorkstream } from "./components/HomeRails";
 import LinkContextMenu from "./components/LinkContextMenu";
@@ -463,7 +465,10 @@ const RESEARCH_VISIBILITY_FILTER_OPTIONS: ReadonlyArray<{
 ];
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
 const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
-const HOME_WORKSPACE_KEY = "qmux.home-workspace.v1";
+// Agent ids whose Home rail the user has hidden via the group selector. Persisted
+// as a JSON array; a terminal's absence means it's shown (new terminals default
+// visible).
+const HOME_HIDDEN_TERMINALS_KEY = "qmux.home-hidden-terminals.v1";
 const WARM_QMUX_TERMINAL_THEME_ID = "qmux-warm";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
@@ -1530,15 +1535,58 @@ function MainApp() {
     setSidebarModeState(mode);
     localStorage.setItem(SIDEBAR_MODE_STORAGE_KEY, mode);
   }, []);
-  // The home view's selected workspace (a root sidebar group id); null until
-  // the user picks one, at which point it persists across restarts.
-  const [homeWorkspaceId, setHomeWorkspaceIdState] = useState<string | null>(() =>
-    localStorage.getItem(HOME_WORKSPACE_KEY),
-  );
-  const selectHomeWorkspace = useCallback((groupId: string) => {
-    setHomeWorkspaceIdState(groupId);
-    localStorage.setItem(HOME_WORKSPACE_KEY, groupId);
+  // The Home rails' visibility filter: agent ids the user has hidden via the
+  // group selector's checkboxes. Everything not in the set is shown, so new
+  // terminals appear by default. Persists across restarts.
+  const [hiddenHomeTerminalIds, setHiddenHomeTerminalIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(HOME_HIDDEN_TERMINALS_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+      return Array.isArray(parsed)
+        ? new Set(parsed.filter((id): id is string => typeof id === "string"))
+        : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const persistHiddenHomeTerminalIds = useCallback((next: Set<string>) => {
+    localStorage.setItem(HOME_HIDDEN_TERMINALS_KEY, JSON.stringify(Array.from(next)));
   }, []);
+  // Show/hide a batch of terminals in one write (a group checkbox toggling all
+  // its terminals at once).
+  const setHomeTerminalsHidden = useCallback(
+    (agentIds: string[], hidden: boolean) => {
+      setHiddenHomeTerminalIds((current) => {
+        const next = new Set(current);
+        for (const id of agentIds) {
+          if (hidden) {
+            next.add(id);
+          } else {
+            next.delete(id);
+          }
+        }
+        persistHiddenHomeTerminalIds(next);
+        return next;
+      });
+    },
+    [persistHiddenHomeTerminalIds],
+  );
+  // Flip one terminal's visibility (a dropdown row in the group menu).
+  const toggleHomeTerminal = useCallback(
+    (agentId: string) => {
+      setHiddenHomeTerminalIds((current) => {
+        const next = new Set(current);
+        if (next.has(agentId)) {
+          next.delete(agentId);
+        } else {
+          next.add(agentId);
+        }
+        persistHiddenHomeTerminalIds(next);
+        return next;
+      });
+    },
+    [persistHiddenHomeTerminalIds],
+  );
   // Per-rail scroll positions for the home view, kept here so leaving Home and
   // coming back restores each column (same shape as the queue/transcript scroll
   // stores above). Ephemeral by design: dropped on app restart.
@@ -3728,42 +3776,36 @@ function MainApp() {
     terminalTitleByPane,
   ]);
 
-  // One home tab per root sidebar group that owns at least one agent, in the
-  // sidebar's pane order. Like the workstreams memo above, displayGroupName is
-  // a component-scoped helper kept out of the deps; groupById covers the state
-  // it reads.
-  const homeWorkspaces = useMemo(() => {
-    const workspaces = new Map<string, { id: string; name: string; agentCount: number }>();
+  // One selector group per root sidebar group that owns at least one agent, in
+  // the sidebar's pane order, each carrying its terminals for the per-terminal
+  // dropdown. Like the workstreams memo above, displayGroupName is a
+  // component-scoped helper kept out of the deps; groupById covers the state it
+  // reads.
+  const homeGroups = useMemo<HomeGroup[]>(() => {
+    const groups = new Map<string, HomeGroup>();
     for (const workstream of homeRailWorkstreams) {
-      const existing = workspaces.get(workstream.rootGroupId);
-      if (existing) {
-        existing.agentCount += 1;
-        continue;
+      let group = groups.get(workstream.rootGroupId);
+      if (!group) {
+        const info = groupById.get(workstream.rootGroupId);
+        group = {
+          id: workstream.rootGroupId,
+          name: info ? displayGroupName(info) : "Workspace",
+          terminals: [],
+        };
+        groups.set(workstream.rootGroupId, group);
       }
-      const group = groupById.get(workstream.rootGroupId);
-      workspaces.set(workstream.rootGroupId, {
-        id: workstream.rootGroupId,
-        name: group ? displayGroupName(group) : "Workspace",
-        agentCount: 1,
-      });
+      group.terminals.push({ agentId: workstream.agentId, title: workstream.title });
     }
-    return Array.from(workspaces.values());
+    return Array.from(groups.values());
   }, [groupById, homeRailWorkstreams]);
 
-  // Falls back to the first workspace when the stored selection has no agents
-  // (or its group is gone) — the stored id is kept so a repopulated workspace
-  // reclaims its tab.
-  const effectiveHomeWorkspaceId =
-    homeWorkspaceId && homeWorkspaces.some((workspace) => workspace.id === homeWorkspaceId)
-      ? homeWorkspaceId
-      : (homeWorkspaces[0]?.id ?? null);
-
+  // The rails show every workstream the user hasn't hidden, across all groups.
   const homeVisibleWorkstreams = useMemo(
     () =>
       homeRailWorkstreams.filter(
-        (workstream) => workstream.rootGroupId === effectiveHomeWorkspaceId,
+        (workstream) => !hiddenHomeTerminalIds.has(workstream.agentId),
       ),
-    [effectiveHomeWorkspaceId, homeRailWorkstreams],
+    [hiddenHomeTerminalIds, homeRailWorkstreams],
   );
 
   // Load session lists when a pane's right side is visible so transcript pickers are ready.
@@ -12670,25 +12712,12 @@ function MainApp() {
             <div className="home-stage">
               <div className="home-launcher">{renderLauncher()}</div>
               <div className="home-board">
-                {homeWorkspaces.length > 0 ? (
-                  <div className="home-workspace-tabs" role="tablist" aria-label="Workspaces">
-                    {homeWorkspaces.map((workspace) => (
-                      <button
-                        key={workspace.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={workspace.id === effectiveHomeWorkspaceId}
-                        className={`control-button home-workspace-tab${
-                          workspace.id === effectiveHomeWorkspaceId ? " is-active" : ""
-                        }`}
-                        onClick={() => selectHomeWorkspace(workspace.id)}
-                      >
-                        {workspace.name}
-                        <span className="home-workspace-tab-count">{workspace.agentCount}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+                <HomeGroupSelector
+                  groups={homeGroups}
+                  hiddenTerminalIds={hiddenHomeTerminalIds}
+                  onSetTerminalsHidden={setHomeTerminalsHidden}
+                  onToggleTerminal={toggleHomeTerminal}
+                />
                 <HomeRails
                   workstreams={homeVisibleWorkstreams}
                   drafts={globalDrafts}

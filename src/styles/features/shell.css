@@ -2513,27 +2513,123 @@
   pointer-events: auto;
 }
 
-.home-workspace-tabs {
+.home-group-selector {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.home-workspace-tab {
+.home-group-chip {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--control-border-hover-accent);
+  border-radius: var(--radius-md);
+  background: var(--control-bg-hover);
+  overflow: hidden;
+}
+
+/* A fully hidden group reads as a muted, off chip. */
+.home-group-chip.is-off {
+  border-color: var(--surface-border-default);
+  background: transparent;
+}
+
+.home-group-toggle,
+.home-group-caret {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.home-group-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.home-workspace-tab.is-active {
-  border-color: var(--control-border-hover-accent);
-  background: var(--control-bg-hover);
   color: var(--text-heading);
 }
 
-.home-workspace-tab-count {
+.home-group-chip.is-off .home-group-toggle {
+  color: var(--text-secondary);
+}
+
+.home-group-toggle:hover,
+.home-group-caret:hover {
+  background: var(--control-bg-hover);
+}
+
+/* The checkbox glyph box — shared by the chip toggle and the dropdown rows.
+ * Filled with the accent when checked; the off/mixed/hidden variants below
+ * hollow it back out. */
+.home-group-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border: 1px solid var(--accent-strong);
+  border-radius: 4px;
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+/* A partially-selected group shows a dash on a hollow box. */
+.home-group-chip.is-mixed .home-group-checkbox {
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.home-group-chip.is-off .home-group-checkbox {
+  border-color: var(--surface-border-default);
+  background: transparent;
+}
+
+.home-group-name {
+  white-space: nowrap;
+}
+
+.home-group-count {
   color: var(--text-faint);
   font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-group-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 6px;
+  color: var(--text-secondary);
+  border-left: 1px solid var(--surface-border-default);
+}
+
+.home-group-caret.is-open {
+  color: var(--text-heading);
+  background: var(--control-bg-hover);
+}
+
+.home-group-menu {
+  z-index: calc(var(--z-popover) + 1);
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.home-group-menu-item {
+  gap: 8px;
+}
+
+.home-group-menu-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unchecked rows dim the checkbox so the "shown" set reads at a glance. */
+.home-group-menu-item:not(.is-shown) .home-group-checkbox {
+  border-color: var(--surface-border-default);
+  background: transparent;
 }
 
 .home-rails-section {
