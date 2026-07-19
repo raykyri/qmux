@@ -535,13 +535,20 @@ fn list_claude_skills(state: tauri::State<'_, AppState>) -> Vec<adapters::claude
     adapters::claude::list_skills(state.config())
 }
 
+// The list/refetch commands below are async on purpose, not because their
+// reads are slow (each is a short clone under the model lock) but because sync
+// commands run on the macOS main thread: the frontend calls them in bursts on
+// every pane/agent/research event, exactly while backend threads (spawn
+// binding, research settle/retirement, the persist snapshot) hold the model
+// lock — so as sync commands they parked the main thread on that mutex and
+// extended every research start/stop into a visible stall.
 #[tauri::command]
-fn list_panes(state: tauri::State<'_, AppState>) -> Result<Vec<PaneInfo>, String> {
+async fn list_panes(state: tauri::State<'_, AppState>) -> Result<Vec<PaneInfo>, String> {
     state.list_panes()
 }
 
 #[tauri::command]
-fn list_groups(state: tauri::State<'_, AppState>) -> Result<Vec<GroupInfo>, String> {
+async fn list_groups(state: tauri::State<'_, AppState>) -> Result<Vec<GroupInfo>, String> {
     state.list_groups()
 }
 
@@ -644,7 +651,7 @@ fn research_workspace_reveal(
 }
 
 #[tauri::command]
-fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
+async fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<AgentInfo>, String> {
     state.list_agents()
 }
 
@@ -714,7 +721,7 @@ async fn get_thread_graph(
 }
 
 #[tauri::command]
-fn list_research_trees(
+async fn list_research_trees(
     state: tauri::State<'_, AppState>,
     include_archived: Option<bool>,
 ) -> Result<Vec<ResearchTreeSummary>, String> {
@@ -736,12 +743,14 @@ fn reorder_research_trees(
 }
 
 #[tauri::command]
-fn list_research_activity(state: tauri::State<'_, AppState>) -> Result<Vec<ResearchNode>, String> {
+async fn list_research_activity(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ResearchNode>, String> {
     state.list_research_activity()
 }
 
 #[tauri::command]
-fn get_research_tree(
+async fn get_research_tree(
     state: tauri::State<'_, AppState>,
     tree_id: String,
 ) -> Result<ResearchTreeDetail, String> {
@@ -1287,7 +1296,7 @@ async fn remove_research_highlights(
 }
 
 #[tauri::command]
-fn mark_research_tree_viewed(
+async fn mark_research_tree_viewed(
     state: tauri::State<'_, AppState>,
     tree_id: String,
 ) -> Result<ResearchTree, String> {
