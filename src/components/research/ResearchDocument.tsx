@@ -710,13 +710,14 @@ export default function ResearchDocument({
   // side: hovering the card brightens the passage, hovering the passage
   // raises the card. One state serves both directions.
   const [linkedAnchorNodeId, setLinkedAnchorNodeId] = useState<string | null>(null);
-  // The dotted elbow drawn between the hover-linked pair: an SVG path in
-  // response-grid pixel coordinates, plus the dot marking its passage end.
-  const [anchorConnector, setAnchorConnector] = useState<{
+  // Dotted elbows between anchored passages and their follow-up cards: SVG
+  // paths in response-grid pixel coordinates, plus their passage-end dots.
+  const [anchorConnectors, setAnchorConnectors] = useState<{
+    id: string;
     d: string;
     x: number;
     y: number;
-  } | null>(null);
+  }[]>([]);
   // Ask mode: the selection anchor a targeted follow-up is being composed
   // against. While set, the composer sits beside the quoted passage.
   const [askAnchor, setAskAnchor] = useState<ResearchHighlightAnchor | null>(null);
@@ -1811,41 +1812,39 @@ export default function ResearchDocument({
     };
   }, [anchoredCardTops, highlightDomNonce, linkedAnchorNodeId]);
 
-  // Measure the hover-linked pair's connector: from the answer column's gutter
-  // edge at the passage's first line — the line that reaches furthest right,
-  // whatever shape the highlight wraps into — to the left edge of the linked
-  // card. Depends on resolvedCardTops so the elbow lands on the card's settled
+  // Measure every resolved anchor's connector: from the answer column's gutter
+  // edge at the passage's first line to the left edge of its follow-up card.
+  // Depends on resolvedCardTops so each elbow lands on the card's settled
   // (collision-resolved) placement.
   useLayoutEffect(() => {
-    setAnchorConnector(null);
     const root = responseContentRootRef.current;
     const grid = responseGridRef.current;
     const aside = followupsAsideRef.current;
-    if (!root || !grid || !aside || !linkedAnchorNodeId) {
-      return;
-    }
-    const entry = anchoredRangeOffsetsRef.current.find(
-      (candidate) => candidate.id === linkedAnchorNodeId,
-    );
-    const range = entry ? rangeForTextOffsets(root, entry.start, entry.end) : null;
-    const card = aside.querySelector<HTMLElement>(
-      `.research-followup-card.is-anchored[data-node-id="${CSS.escape(linkedAnchorNodeId)}"]`,
-    );
-    if (!range || !card) {
-      return;
-    }
-    const firstLine = Array.from(range.getClientRects()).find((rect) => rect.width > 0);
-    if (!firstLine) {
+    if (!root || !grid || !aside) {
+      setAnchorConnectors([]);
       return;
     }
     const gridRect = grid.getBoundingClientRect();
-    const cardRect = card.getBoundingClientRect();
     const sx = Math.round(root.getBoundingClientRect().right - gridRect.left) + 8;
-    const sy = Math.round(firstLine.top + firstLine.height / 2 - gridRect.top);
-    const ex = Math.round(cardRect.left - gridRect.left) - 6;
-    const ey = Math.round(cardRect.top - gridRect.top) + 17;
-    setAnchorConnector({ d: connectorElbowPath(sx, sy, ex, ey), x: sx, y: sy });
-  }, [highlightDomNonce, linkedAnchorNodeId, resolvedCardTops]);
+    const next = anchoredRangeOffsetsRef.current.flatMap((entry) => {
+      const range = rangeForTextOffsets(root, entry.start, entry.end);
+      const card = aside.querySelector<HTMLElement>(
+        `.research-followup-card.is-anchored[data-node-id="${CSS.escape(entry.id)}"]`,
+      );
+      const firstLine = Array.from(range?.getClientRects() ?? []).find(
+        (rect) => rect.width > 0,
+      );
+      if (!card || !firstLine) {
+        return [];
+      }
+      const cardRect = card.getBoundingClientRect();
+      const sy = Math.round(firstLine.top + firstLine.height / 2 - gridRect.top);
+      const ex = Math.round(cardRect.left - gridRect.left) - 6;
+      const ey = Math.round(cardRect.top - gridRect.top) + 17;
+      return [{ id: entry.id, d: connectorElbowPath(sx, sy, ex, ey), x: sx, y: sy }];
+    });
+    setAnchorConnectors(next);
+  }, [anchoredCardTops, highlightDomNonce, resolvedCardTops]);
 
   // A selection that lands on saved highlights repaints those annotations in
   // the standard selection tone: painted above the saved-highlight layer (via
@@ -2859,10 +2858,19 @@ export default function ResearchDocument({
                 </div>
               ) : null}
               <div ref={responseGridRef} className="research-response-grid">
-                {anchorConnector ? (
+                {anchorConnectors.length > 0 ? (
                   <svg className="research-anchor-connector" aria-hidden="true">
-                    <path d={anchorConnector.d} />
-                    <circle cx={anchorConnector.x} cy={anchorConnector.y} r={2} />
+                    {anchorConnectors.map((connector) => (
+                      <g
+                        key={connector.id}
+                        className={`research-anchor-connector-pair${
+                          linkedAnchorNodeId === connector.id ? " is-anchor-linked" : ""
+                        }`}
+                      >
+                        <path d={connector.d} />
+                        <circle cx={connector.x} cy={connector.y} r={2} />
+                      </g>
+                    ))}
                   </svg>
                 ) : null}
                 <section className="research-response" aria-label="Research response">

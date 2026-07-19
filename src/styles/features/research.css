@@ -1510,11 +1510,9 @@
   -webkit-line-clamp: 2;
 }
 
-/* Dotted elbow drawn while a passage/card pair is hover-linked: out of the
-   answer column's gutter edge at the passage's first line, into the left edge
-   of the card. Geometry is computed in the document component; this only
-   paints it. No viewBox: the svg fills the grid, so path coordinates are
-   grid-relative pixels. */
+/* Dotted elbows from anchored passages into their follow-up cards. Geometry is
+   computed in the document component; this only paints it. No viewBox: the svg
+   fills the grid, so path coordinates are grid-relative pixels. */
 .research-anchor-connector {
   position: absolute;
   inset: 0;
@@ -1522,6 +1520,15 @@
   height: 100%;
   overflow: visible;
   pointer-events: none;
+}
+
+.research-anchor-connector-pair {
+  opacity: 0.7;
+  transition: opacity 120ms ease;
+}
+
+.research-anchor-connector-pair.is-anchor-linked {
+  opacity: 1;
 }
 
 .research-anchor-connector path {
