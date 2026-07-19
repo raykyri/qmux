@@ -2410,6 +2410,7 @@
   flex: 1;
   min-width: 0;
   line-height: 1.4;
+  text-align: center;
 }
 
 .error-banner-dismiss {

@@ -4447,13 +4447,14 @@ function MainApp() {
     }
   }
 
-  // Home-rail ghost composer: always queue (never steer a running agent from
+  // Home-rail ghost composer: send straight through when the agent is ready
+  // for input, otherwise queue behind it (never steer a running agent from
   // the overview). Returns whether the turn was accepted so the rail knows to
   // clear its draft.
   async function queueHomeTurn(agentId: string, text: string): Promise<boolean> {
     setError(null);
     try {
-      const result = await submitAgentTurn(agentId, text, "queue");
+      const result = await submitAgentTurn(agentId, text, "auto");
       setAgentQueuedTurns(agentId, result.queuedTurns);
       return true;
     } catch (err) {
