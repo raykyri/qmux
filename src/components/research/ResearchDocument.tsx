@@ -3902,6 +3902,24 @@ export default function ResearchDocument({
     }
   }
 
+  // Keep every hook above the loading return below. The initial detail render
+  // has no selected display node; selection is restored by an effect, so a
+  // hook below that return would appear only on the next render and violate
+  // React's hook ordering. Grouping here also preserves connector-list
+  // identities across unrelated parent renders for the memoized segments.
+  const connectorsBySegment = useMemo(() => {
+    const map = new Map<string, SegmentAnchorConnector[]>();
+    for (const connector of anchorConnectors) {
+      const list = map.get(connector.segmentId);
+      if (list) {
+        list.push(connector);
+      } else {
+        map.set(connector.segmentId, [connector]);
+      }
+    }
+    return map;
+  }, [anchorConnectors]);
+
   if (!detail || !displayNode) {
     // A failed *tree* fetch retries through the app shell — without detail
     // there is no node to load, so no in-document retry can recover.
@@ -4138,21 +4156,6 @@ export default function ResearchDocument({
       ) : null}
     </div>
   );
-
-  // Connectors grouped per segment with stable identities, so a hover or an
-  // unrelated segment's re-render cannot churn every segment's SVG.
-  const connectorsBySegment = useMemo(() => {
-    const map = new Map<string, SegmentAnchorConnector[]>();
-    for (const connector of anchorConnectors) {
-      const list = map.get(connector.segmentId);
-      if (list) {
-        list.push(connector);
-      } else {
-        map.set(connector.segmentId, [connector]);
-      }
-    }
-    return map;
-  }, [anchorConnectors]);
 
   const proposalsSection =
     publicationBinding && (visiblePublicationProposals.length > 0 || proposalError) ? (
