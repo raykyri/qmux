@@ -23,6 +23,41 @@ export function intersectingResearchHighlightIds(
     .map(({ id }) => id);
 }
 
+// Regions covered by two or more painted ranges (saved highlights and
+// follow-up query anchors share one paint, so stacked coverage is invisible
+// unless repainted). Edge contact is not overlap; regions where the covering
+// set changes but depth stays at two or more merge into one.
+export function overlappingResearchHighlightRegions(
+  ranges: ResearchHighlightOffsets[],
+): ResearchHighlightOffsets[] {
+  const events: Array<{ at: number; delta: number }> = [];
+  for (const { start, end } of ranges) {
+    if (end <= start) {
+      continue;
+    }
+    events.push({ at: start, delta: 1 }, { at: end, delta: -1 });
+  }
+  events.sort((a, b) => a.at - b.at || a.delta - b.delta);
+  const regions: ResearchHighlightOffsets[] = [];
+  let depth = 0;
+  let regionStart: number | null = null;
+  for (const { at, delta } of events) {
+    depth += delta;
+    if (depth >= 2 && regionStart === null) {
+      regionStart = at;
+    } else if (depth < 2 && regionStart !== null) {
+      const last = regions[regions.length - 1];
+      if (last && last.end === regionStart) {
+        last.end = at;
+      } else if (at > regionStart) {
+        regions.push({ start: regionStart, end: at });
+      }
+      regionStart = null;
+    }
+  }
+  return regions;
+}
+
 interface ResearchHighlightShortcutInput {
   key: string;
   defaultPrevented: boolean;

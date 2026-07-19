@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, Copy, ExternalLink, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Terminal, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Check, Copy, ExternalLink, Highlighter, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Terminal, Trash2, Wrench, X } from "lucide-react";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import {
   createResearchHighlight,
@@ -45,6 +45,7 @@ import {
   isResearchAskActionShortcut,
   isResearchExpandActionShortcut,
   isResearchHighlightActionShortcut,
+  overlappingResearchHighlightRegions,
   resolveResearchHighlightOffset,
 } from "../../lib/researchHighlights";
 import {
@@ -212,7 +213,14 @@ interface ResearchHighlightApi {
 const RESEARCH_HIGHLIGHT_NAME = "qmux-research-highlights";
 const RESEARCH_QUERY_ANCHOR_NAME = "qmux-research-query-anchors";
 const RESEARCH_ANCHOR_LINK_NAME = "qmux-research-anchor-link";
+const RESEARCH_OVERLAP_NAME = "qmux-research-highlight-overlaps";
 const RESEARCH_SELECTED_NAME = "qmux-research-selected-highlights";
+// Stacking order for the highlight layers that repaint over the shared base
+// tone: overlap regions above the base paint, the hover-linked passage above
+// those, and the selection tone above everything.
+const RESEARCH_OVERLAP_PRIORITY = 1;
+const RESEARCH_ANCHOR_LINK_PRIORITY = 2;
+const RESEARCH_SELECTED_PRIORITY = 3;
 const RESEARCH_HIGHLIGHT_CONTEXT_LENGTH = 128;
 // Clearance between the anchored composer's bottom edge and the first pushed
 // follow-up card.
@@ -495,7 +503,7 @@ function sameOutlineRects(a: HighlightOutlineRect[], b: HighlightOutlineRect[]) 
 function highlightActionPlacement(rect: DOMRect, reservedWidth = 260) {
   return {
     left: Math.max(8, Math.min(rect.left, window.innerWidth - reservedWidth)),
-    top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 35)),
+    top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 35)),
     offscreen: rect.bottom < 0 || rect.top > window.innerHeight,
   };
 }
@@ -2784,6 +2792,61 @@ export default function ResearchDocument({
     segmentRoot,
   ]);
 
+  // Repaint regions where annotations stack — saved highlights over each
+  // other, or a follow-up's query anchor over a saved highlight — in the
+  // near-text overlap tone. All base layers share one squiggle-and-wash
+  // paint, so without this pass stacked coverage would be invisible. Runs
+  // after both base-paint effects in the same commit and re-runs on the
+  // union of their dependencies, so the offset refs it reads are current.
+  useLayoutEffect(() => {
+    const api = researchHighlightApi();
+    api?.registry.delete(RESEARCH_OVERLAP_NAME);
+    if (!api) {
+      return;
+    }
+    const painted = new api.Highlight();
+    painted.priority = RESEARCH_OVERLAP_PRIORITY;
+    let paintedAny = false;
+    for (const nodeId of chainNodeIds) {
+      const root = segmentRoot(nodeId);
+      if (!root) {
+        continue;
+      }
+      const ranges = [
+        ...(resolvedHighlightsRef.current.get(nodeId) ?? []),
+        ...anchoredRangeOffsetsRef.current.filter(
+          (entry) => entry.segmentId === nodeId,
+        ),
+      ].map(({ start, end }) => ({ start, end }));
+      for (const region of overlappingResearchHighlightRegions(ranges)) {
+        const range = rangeForTextOffsets(root, region.start, region.end);
+        if (!range) {
+          continue;
+        }
+        painted.add(range);
+        paintedAny = true;
+      }
+    }
+    if (paintedAny) {
+      api.registry.set(RESEARCH_OVERLAP_NAME, painted);
+    }
+    return () => {
+      api.registry.delete(RESEARCH_OVERLAP_NAME);
+    };
+  }, [
+    anchoredEntries,
+    ask,
+    chainKey,
+    chainNodeIds,
+    highlightsKey,
+    revisionsKey,
+    expandedKey,
+    fullTraceKey,
+    highlightDomNonce,
+    segmentAside,
+    segmentRoot,
+  ]);
+
   // Brighten the hover-linked follow-up's passage. Depends on anchoredCardTops
   // (set in the same commit that refreshes the offsets ref) so a re-resolution
   // repaints the link against current offsets.
@@ -2802,6 +2865,7 @@ export default function ResearchDocument({
       return;
     }
     const painted = new api.Highlight();
+    painted.priority = RESEARCH_ANCHOR_LINK_PRIORITY;
     painted.add(range);
     api.registry.set(RESEARCH_ANCHOR_LINK_NAME, painted);
     return () => {
@@ -2894,7 +2958,7 @@ export default function ResearchDocument({
     }
     const selectedIds = selectedHighlightKey.split("\n");
     const painted = new api.Highlight();
-    painted.priority = 1;
+    painted.priority = RESEARCH_SELECTED_PRIORITY;
     let paintedAny = false;
     for (const { highlight, start, end } of resolvedHighlightsRef.current.get(
       highlightActionNodeId,
@@ -4622,18 +4686,25 @@ export default function ResearchDocument({
                     className="control-button research-highlight-action"
                     disabled={savingHighlight}
                     aria-keyshortcuts="H"
+                    aria-label={
+                      !savingHighlight && highlightAction.highlightIds.length === 0
+                        ? "Highlight"
+                        : undefined
+                    }
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => void applyHighlightAction()}
                   >
-                    <span>
-                      {savingHighlight
-                        ? "Saving…"
-                        : highlightAction.highlightIds.length > 1
+                    {savingHighlight ? (
+                      <span>Saving…</span>
+                    ) : highlightAction.highlightIds.length > 0 ? (
+                      <span>
+                        {highlightAction.highlightIds.length > 1
                           ? "Remove highlights"
-                          : highlightAction.highlightIds.length === 1
-                            ? "Remove highlight"
-                            : "Highlight"}
-                    </span>
+                          : "Remove highlight"}
+                      </span>
+                    ) : (
+                      <Highlighter size={13} aria-hidden="true" />
+                    )}
                     <kbd className="context-menu-shortcut is-keycap" aria-hidden="true">
                       H
                     </kbd>

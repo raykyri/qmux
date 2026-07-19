@@ -1827,6 +1827,39 @@ const PAGE_SCRIPT = `(() => {
       highlight.add(resolved[hIndex].range);
     }
     CSS.highlights.set("qmux-research-query-anchors", highlight);
+
+    // Regions where two or more anchors stack, repainted near the text color
+    // (all anchors share one squiggle-and-wash paint, so stacked coverage
+    // would otherwise be invisible). Mirrors the app's overlap layer.
+    var events = [];
+    for (var oIndex = 0; oIndex < resolved.length; oIndex += 1) {
+      events.push({ at: resolved[oIndex].start, delta: 1 });
+      events.push({ at: resolved[oIndex].end, delta: -1 });
+    }
+    events.sort(function (a, b) { return a.at - b.at || a.delta - b.delta; });
+    var overlaps = new Highlight();
+    overlaps.priority = 1;
+    var paintedOverlap = false;
+    var depth = 0;
+    var regionStart = null;
+    for (var eIndex = 0; eIndex < events.length; eIndex += 1) {
+      depth += events[eIndex].delta;
+      if (depth >= 2 && regionStart === null) {
+        regionStart = events[eIndex].at;
+      } else if (depth < 2 && regionStart !== null) {
+        if (events[eIndex].at > regionStart) {
+          var overlapRange = rangeFor({ start: regionStart, end: events[eIndex].at });
+          if (overlapRange) {
+            overlaps.add(overlapRange);
+            paintedOverlap = true;
+          }
+        }
+        regionStart = null;
+      }
+    }
+    if (paintedOverlap) {
+      CSS.highlights.set("qmux-research-highlight-overlaps", overlaps);
+    }
   }
 
   // Hover linking, both directions, as in the app: hovering a card repaints
@@ -1841,7 +1874,11 @@ const PAGE_SCRIPT = `(() => {
     linkedEntry = entry;
     if (canPaint) {
       if (entry) {
-        CSS.highlights.set("qmux-research-anchor-link", new Highlight(entry.range));
+        var linkHighlight = new Highlight(entry.range);
+        // Above the overlap layer so the hovered pair reads as linked even
+        // where its passage crosses another anchor.
+        linkHighlight.priority = 2;
+        CSS.highlights.set("qmux-research-anchor-link", linkHighlight);
       } else {
         CSS.highlights.delete("qmux-research-anchor-link");
       }
@@ -2541,8 +2578,9 @@ a { color:inherit; text-decoration:none; }
 /* Passages that published follow-ups were asked about, and the hover-linked
    passage painted over the base tone (hovering either the card or the passage
    links the pair, as in the app). */
-::highlight(qmux-research-query-anchors) { color:inherit; background:#6a5f36; }
-::highlight(qmux-research-anchor-link) { color:inherit; background:#6b5417; }
+::highlight(qmux-research-query-anchors) { color:inherit; background:rgba(201,181,115,0.14); text-decoration:underline wavy rgba(201,181,115,0.5) 1px; text-underline-offset:3px; }
+::highlight(qmux-research-highlight-overlaps) { color:inherit; background:rgba(211,216,212,0.16); text-decoration:underline wavy rgba(211,216,212,0.6) 1px; text-underline-offset:3px; }
+::highlight(qmux-research-anchor-link) { color:inherit; background:rgba(226,180,80,0.32); text-decoration:underline wavy #d9c47e 1px; text-underline-offset:3px; }
 .research-response-content-root.is-highlight-hovered { cursor:pointer; }
 
 /* Markdown body, ported from the app's transcript styles. */
@@ -2730,8 +2768,9 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
   .turn-markdown td { border-color:#dddddd; }
   .turn-markdown-table-wrap { border-color:#cccccc; }
   .research-answer-meta { color:#666666; }
-  ::highlight(qmux-research-query-anchors) { background:#f3e9c0; }
-  ::highlight(qmux-research-anchor-link) { background:#f3e9c0; }
+  ::highlight(qmux-research-query-anchors) { background:rgba(178,142,29,0.15); text-decoration:underline wavy rgba(140,110,20,0.6) 1px; text-underline-offset:3px; }
+  ::highlight(qmux-research-highlight-overlaps) { background:rgba(26,26,26,0.1); text-decoration:underline wavy rgba(26,26,26,0.5) 1px; text-underline-offset:3px; }
+  ::highlight(qmux-research-anchor-link) { background:rgba(178,142,29,0.15); text-decoration:underline wavy rgba(140,110,20,0.6) 1px; text-underline-offset:3px; }
 }
 `;
 

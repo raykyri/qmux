@@ -894,9 +894,14 @@
   cursor: pointer;
 }
 
+/* Saved highlights: a faint gold wash under a wavy rule, quiet enough that
+   annotated passages read at body tone. Colors are spelled literally because
+   highlight pseudos resolve custom properties unreliably. */
 ::highlight(qmux-research-highlights) {
   color: inherit;
-  background: #6a5f36;
+  background: rgba(201, 181, 115, 0.14);
+  text-decoration: underline wavy rgba(201, 181, 115, 0.5) 1px;
+  text-underline-offset: 3px;
 }
 
 /* Passages that targeted follow-ups were asked about (and the passage an ask
@@ -904,18 +909,33 @@
    hover-link paint below is what singles one out. */
 ::highlight(qmux-research-query-anchors) {
   color: inherit;
-  background: #6a5f36;
+  background: rgba(201, 181, 115, 0.14);
+  text-decoration: underline wavy rgba(201, 181, 115, 0.5) 1px;
+  text-underline-offset: 3px;
+}
+
+/* Regions where annotations stack (highlight over highlight, or a follow-up
+   anchor over a saved highlight): repainted near the text color so depth is
+   visible without deepening the gold. Above the base layers via priority. */
+::highlight(qmux-research-highlight-overlaps) {
+  color: inherit;
+  background: rgba(211, 216, 212, 0.16);
+  text-decoration: underline wavy rgba(211, 216, 212, 0.6) 1px;
+  text-underline-offset: 3px;
 }
 
 /* The passage of the hover-linked follow-up (hovering either the card or the
-   passage links the pair). Painted over the base query-anchor tone. */
+   passage links the pair). A stronger, warmer wash with a brightened rule,
+   painted over the base and overlap tones. */
 ::highlight(qmux-research-anchor-link) {
   color: inherit;
-  background: #6b5417;
+  background: rgba(226, 180, 80, 0.32);
+  text-decoration: underline wavy #d9c47e 1px;
+  text-underline-offset: 3px;
 }
 
 /* Saved highlights the current selection landed on. Painted above the saved
-   olive (via Highlight.priority) in the same tone as ::selection, so a
+   gold wash (via Highlight.priority) in the same tone as ::selection, so a
    selected annotation reads like ordinary selected text; matches
    --status-info-fg, spelled literally because highlight pseudos resolve
    custom properties unreliably. */
@@ -939,7 +959,7 @@
   position: fixed;
   z-index: var(--z-context-menu);
   display: flex;
-  gap: 6px;
+  gap: 3px;
 }
 
 .research-highlight-action {
