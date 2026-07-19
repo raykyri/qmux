@@ -1593,11 +1593,6 @@
   transition: transform 0.35s cubic-bezier(0.33, 1, 0.68, 1);
 }
 
-.research-followup-card .research-followup-quote {
-  margin-bottom: 5px;
-  -webkit-line-clamp: 2;
-}
-
 /* A follow-up whose answer settled while the reader was away, still unopened.
    A small accent dot in the top-right corner, cleared once the card is
    opened. Kept out of the flex flow so it never reshapes the card. */

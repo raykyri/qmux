@@ -1180,6 +1180,9 @@ const ResearchFollowupRail = memo(function ResearchFollowupRail({
     }))
     .sort((a, b) => a.top - b.top);
 
+  // Cards keep their queryAnchor for placement and hover-linking, but the
+  // quoted passage appears only after the follow-up is opened, above its
+  // question in the main content column.
   const renderFollowupCard = (child: ResearchNode, anchoredTop?: number) => {
     const isUnread = unreadCardIds?.has(child.id) ?? false;
     return (
@@ -1204,9 +1207,6 @@ const ResearchFollowupRail = memo(function ResearchFollowupRail({
       >
         {isUnread ? (
           <span className="research-followup-unread" aria-label="New answer, not opened yet" />
-        ) : null}
-        {child.queryAnchor ? (
-          <span className="research-followup-quote">{quoteDisplayText(child.queryAnchor.exact)}</span>
         ) : null}
         <strong>{child.prompt}</strong>
         {child.responsePreview ? (
