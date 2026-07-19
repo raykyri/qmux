@@ -902,11 +902,12 @@
 }
 
 /* Passages that targeted follow-ups were asked about (and the passage an ask
-   is currently being composed against). They keep the same stable tone as
-   saved highlights while passage/card hover linking changes adjacent UI. */
+   is currently being composed against). Painted ~20% stronger than a plain
+   saved highlight so a passage that owns a margin card reads as distinct from
+   an ordinary highlight, while staying the same gold family. */
 ::highlight(qmux-research-query-anchors) {
   color: inherit;
-  background: rgba(216, 196, 95, 0.14);
+  background: rgba(216, 196, 95, 0.17);
 }
 
 /* Regions where annotations stack (highlight over highlight, or a follow-up
@@ -1579,6 +1580,7 @@
 /* Rendered as plain link blocks rather than cards: no border, background, or
    other card affordances. */
 .research-followup-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -1596,6 +1598,25 @@
   -webkit-line-clamp: 2;
 }
 
+/* A follow-up whose answer settled while the reader was away, still unopened.
+   A small accent dot in the top-right corner, cleared once the card is
+   opened. Kept out of the flex flow so it never reshapes the card. */
+.research-followup-unread {
+  position: absolute;
+  top: 3px;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-color);
+  pointer-events: none;
+}
+
+.research-followup-card.is-anchored .research-followup-unread {
+  top: 11px;
+  right: 11px;
+}
+
 /* Dotted elbows from anchored passages into their follow-up cards. Geometry is
    computed in the document component; this only paints it. No viewBox: the svg
    fills the grid, so path coordinates are grid-relative pixels. */
@@ -1609,7 +1630,7 @@
 }
 
 .research-anchor-connector-pair {
-  opacity: 0.7;
+  opacity: 0.56;
   transition: opacity 120ms ease;
 }
 
@@ -1996,5 +2017,23 @@
     padding: 28px 0 0;
     border-top: 1px solid var(--surface-border-subtle);
     border-left: 0;
+  }
+
+  /* The rail no longer sits beside the answer, so rail-relative anchoring has
+     nothing to point at. Drop the leader connectors and return the anchored
+     cards and the docked ask composer to the rail's normal flow; their inline
+     tops are inert on static elements, and the ask-displacement transforms are
+     neutralized so nothing is nudged toward a passage that is now above it. */
+  .research-anchor-connector {
+    display: none;
+  }
+
+  .research-followup-card.is-anchored,
+  .research-followup-composer.is-anchored.is-docked {
+    position: static;
+  }
+
+  .research-followup-card {
+    transform: none !important;
   }
 }

@@ -194,9 +194,38 @@ test("research highlights relocate only with matching quote context", () => {
   );
 });
 
-test("research highlights do not cross snapshot revisions", () => {
+test("research highlights survive edits by relocating across revisions", () => {
+  // A document edit bumps the revision; the highlight follows its quote as
+  // long as the surrounding context still agrees.
+  assert.deepEqual(
+    resolveResearchHighlightOffset(
+      "edited opening. before target after",
+      "b".repeat(64),
+      highlight(),
+    ),
+    { start: 23, end: 29 },
+  );
+  // The quote is gone from the new revision: orphan it rather than guess.
   assert.equal(
-    resolveResearchHighlightOffset("before target after", "b".repeat(64), highlight()),
+    resolveResearchHighlightOffset("nothing to match here", "b".repeat(64), highlight()),
+    null,
+  );
+});
+
+test("research highlights relocate to a single one-sided match when context is edited", () => {
+  // An edit rewrote the suffix, so both sides no longer agree; a lone
+  // occurrence keeping the prefix is still safe to follow.
+  assert.deepEqual(
+    resolveResearchHighlightOffset("before target rewritten", "b".repeat(64), highlight()),
+    { start: 7, end: 13 },
+  );
+  // Two occurrences each keep only one side: too ambiguous, so orphan it.
+  assert.equal(
+    resolveResearchHighlightOffset(
+      "before target here and target after",
+      "b".repeat(64),
+      highlight(),
+    ),
     null,
   );
 });

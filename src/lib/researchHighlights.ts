@@ -127,13 +127,13 @@ export function expandedResearchHighlightOffsets(
   return { start, end };
 }
 
-function contextMatchesAt(
+function contextSidesAt(
   projection: string,
   start: number,
   exactLength: number,
   prefix: string,
   suffix: string,
-) {
+): { prefix: boolean; suffix: boolean; both: boolean } {
   const end = start + exactLength;
   const prefixMatches = prefix
     ? projection.slice(Math.max(0, start - prefix.length), start) === prefix
@@ -141,59 +141,90 @@ function contextMatchesAt(
   const suffixMatches = suffix
     ? projection.slice(end, end + suffix.length) === suffix
     : end === projection.length;
-  return prefixMatches && suffixMatches;
+  return {
+    prefix: prefixMatches,
+    suffix: suffixMatches,
+    both: prefixMatches && suffixMatches,
+  };
 }
 
-// Relocate only when both sides of the quote still agree. A visibility change
-// can remove the selected source while leaving the same short phrase elsewhere;
-// accepting an exact-only match would silently paint the unrelated occurrence.
+// Locate a highlight's passage in the current rendered-text projection.
+//
+// Two things move the stored offset. A visibility toggle keeps the same
+// snapshot revision but shifts the flat text as tool/thinking rows appear.
+// An edit to the document produces a new revision with genuinely different
+// text. Both are handled the same way — re-locate from the saved quote and
+// its surrounding context instead of trusting the raw offset — so a highlight
+// survives an edit elsewhere in the document rather than being orphaned the
+// moment the revision changes.
+//
+//   1. Same revision: the stored offset addresses the exact text, so accept it
+//      in place once its context still checks out (the fast path).
+//   2. Otherwise scan every occurrence of the quote and keep the nearest one
+//      whose prefix and suffix both still agree.
+//   3. If no occurrence keeps both sides — an edit reached the quote's own
+//      neighbourhood — relocate only to a single occurrence that keeps one
+//      side, so an identical short phrase surviving elsewhere can never be
+//      mistaken for it.
+//
+// Returns null when the quote is gone or too ambiguous to place safely; the
+// caller then treats the highlight as orphaned rather than painting a guess.
 export function resolveResearchHighlightOffset(
   projection: string,
   responseRevision: string,
   highlight: ResearchHighlight,
 ): ResearchHighlightOffsets | null {
   const { anchor } = highlight;
-  if (anchor.responseRevision !== responseRevision || !anchor.exact) {
+  if (!anchor.exact) {
     return null;
   }
 
   if (
+    anchor.responseRevision === responseRevision &&
     anchor.start >= 0 &&
     anchor.end <= projection.length &&
     projection.slice(anchor.start, anchor.end) === anchor.exact &&
-    contextMatchesAt(
+    contextSidesAt(
       projection,
       anchor.start,
       anchor.exact.length,
       anchor.prefix,
       anchor.suffix,
-    )
+    ).both
   ) {
     return { start: anchor.start, end: anchor.end };
   }
 
   let bestStart = -1;
   let bestDistance = Number.POSITIVE_INFINITY;
+  let looseStart = -1;
+  let looseCount = 0;
   let candidate = projection.indexOf(anchor.exact);
   while (candidate >= 0) {
-    if (
-      contextMatchesAt(
-        projection,
-        candidate,
-        anchor.exact.length,
-        anchor.prefix,
-        anchor.suffix,
-      )
-    ) {
+    const sides = contextSidesAt(
+      projection,
+      candidate,
+      anchor.exact.length,
+      anchor.prefix,
+      anchor.suffix,
+    );
+    if (sides.both) {
       const distance = Math.abs(candidate - anchor.start);
       if (distance < bestDistance) {
         bestStart = candidate;
         bestDistance = distance;
       }
+    } else if (sides.prefix || sides.suffix) {
+      looseStart = candidate;
+      looseCount += 1;
     }
     candidate = projection.indexOf(anchor.exact, candidate + 1);
   }
-  return bestStart >= 0
-    ? { start: bestStart, end: bestStart + anchor.exact.length }
-    : null;
+  if (bestStart >= 0) {
+    return { start: bestStart, end: bestStart + anchor.exact.length };
+  }
+  if (looseCount === 1) {
+    return { start: looseStart, end: looseStart + anchor.exact.length };
+  }
+  return null;
 }

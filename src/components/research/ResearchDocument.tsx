@@ -747,6 +747,9 @@ interface ThreadSegmentProps {
    * text actually changes. */
   durationText: string | null;
   hiddenHighlightCount: number;
+  /** Sorted, comma-joined ids of this segment's follow-up cards that finished
+   * while open and remain unopened; each gets an unread dot. */
+  unreadCardKey: string;
   pointerOverHighlight: boolean;
   /** The hover-linked anchored follow-up, narrowed to this segment's cards
    * so hovering one rail does not re-render every segment. */
@@ -845,6 +848,7 @@ const ThreadSegment = memo(function ThreadSegment({
   cancelling,
   durationText,
   hiddenHighlightCount,
+  unreadCardKey,
   pointerOverHighlight,
   linkedAnchorId,
   connectors,
@@ -872,6 +876,7 @@ const ThreadSegment = memo(function ThreadSegment({
   onRootMouseMove,
   onRootMouseLeave,
 }: ThreadSegmentProps) {
+  const unreadCardIds = unreadCardKey ? new Set(unreadCardKey.split(",")) : null;
   const stackedChildren = segmentChildren.filter(
     (child) => anchoredCardTops[child.id] === undefined,
   );
@@ -890,13 +895,17 @@ const ThreadSegment = memo(function ThreadSegment({
   // absolutely beside their passage; everything else stacks in flow. A card
   // with an anchor that no longer resolves keeps its quote but rejoins the
   // stack.
-  const renderFollowupCard = (child: ResearchNode, anchoredTop?: number) => (
+  const renderFollowupCard = (child: ResearchNode, anchoredTop?: number) => {
+    const isUnread = unreadCardIds?.has(child.id) ?? false;
+    return (
     <button
       key={child.id}
       type="button"
       className={`control-button research-followup-card${
         anchoredTop !== undefined ? " is-anchored" : ""
-      }${linkedAnchorId === child.id ? " is-anchor-linked" : ""}`}
+      }${linkedAnchorId === child.id ? " is-anchor-linked" : ""}${
+        isUnread ? " has-unread" : ""
+      }`}
       style={anchoredTop !== undefined ? { top: anchoredTop } : undefined}
       data-node-id={child.id}
       onClick={() => onSelectNode(child.id)}
@@ -908,6 +917,9 @@ const ThreadSegment = memo(function ThreadSegment({
         onOpenFollowupMenu(child.id, event.clientX, event.clientY);
       }}
     >
+      {isUnread ? (
+        <span className="research-followup-unread" aria-label="New answer, not opened yet" />
+      ) : null}
       {child.queryAnchor ? (
         <span className="research-followup-quote">
           {quoteDisplayText(child.queryAnchor.exact)}
@@ -935,7 +947,8 @@ const ThreadSegment = memo(function ThreadSegment({
         </small>
       ) : null}
     </button>
-  );
+    );
+  };
 
   return (
     <div
@@ -1243,6 +1256,16 @@ function ResearchDocument({
   // document). They still exist — surfaced in that segment's footer instead
   // of vanishing silently.
   const [hiddenHighlightsByNode, setHiddenHighlightsByNode] = useState<Record<string, number>>({});
+  // Follow-up cards whose answer settled while this document was open and that
+  // the reader has not opened yet carry an unread dot. `firstSeenComplete`
+  // records each card's status the first time it is observed, so a card that
+  // was already complete when the chain loaded is treated as read; only cards
+  // seen finishing under the reader's eyes light up. Opening a card (selecting
+  // it) clears its dot.
+  const firstSeenCompleteRef = useRef<Map<string, boolean>>(new Map());
+  const [openedFollowupIds, setOpenedFollowupIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   // The anchored follow-up currently hover-linked to its passage, from either
   // side. This raises the associated card and connector without repainting
   // the passage's stable highlight treatment.
@@ -1639,6 +1662,20 @@ function ResearchDocument({
     }
     return map;
   }, [detail, chainNodeIds]);
+  // Remember each follow-up's status the first time it is seen, so the unread
+  // dot can distinguish a card that finished while the reader watched from one
+  // that was already complete when the chain loaded. Recorded after commit so
+  // an aborted render never marks a card seen.
+  useEffect(() => {
+    const seen = firstSeenCompleteRef.current;
+    for (const children of childrenBySegment.values()) {
+      for (const child of children) {
+        if (!seen.has(child.id)) {
+          seen.set(child.id, child.status === "complete");
+        }
+      }
+    }
+  }, [childrenBySegment]);
   // Consumed only by the anchor paint effects, which read each child's id
   // and immutable queryAnchor — so keep the previous identity while the
   // (segment, id) list is unchanged, for the same event-churn reason as the
@@ -3803,7 +3840,12 @@ function ResearchDocument({
   onToastRef.current = onToast;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
-  const handleSelectNode = useCallback((nodeId: string) => selectNodeRef.current(nodeId), []);
+  const handleSelectNode = useCallback((nodeId: string) => {
+    setOpenedFollowupIds((prev) =>
+      prev.has(nodeId) ? prev : new Set(prev).add(nodeId),
+    );
+    selectNodeRef.current(nodeId);
+  }, []);
   const handleOpenPane = useCallback((paneId: string) => onOpenPaneRef.current(paneId), []);
   const handleCancelNode = useCallback((nodeId: string) => {
     setCancelling(true);
@@ -4270,6 +4312,24 @@ function ResearchDocument({
       </section>
     ) : null;
 
+  // Sorted, comma-joined unread card ids per segment. A stable string keeps
+  // the segment memo intact while the unread set is unchanged, unlike a fresh
+  // Set identity every render.
+  const unreadKeyBySegment = new Map<string, string>();
+  for (const [segmentId, children] of childrenBySegment) {
+    const ids = children
+      .filter(
+        (child) =>
+          child.status === "complete" &&
+          firstSeenCompleteRef.current.get(child.id) === false &&
+          !openedFollowupIds.has(child.id),
+      )
+      .map((child) => child.id);
+    if (ids.length > 0) {
+      unreadKeyBySegment.set(segmentId, ids.sort().join(","));
+    }
+  }
+
   const renderedSegments = chainNodes.map((node, index) => {
     const view = segmentViews[index];
     if (!view) {
@@ -4313,6 +4373,7 @@ function ResearchDocument({
         cancelling={cancelling}
         durationText={durationText}
         hiddenHighlightCount={hiddenHighlightsByNode[node.id] ?? 0}
+        unreadCardKey={unreadKeyBySegment.get(node.id) ?? ""}
         pointerOverHighlight={pointerHighlightNodeId === node.id}
         linkedAnchorId={linkedForSegment}
         connectors={connectorsBySegment.get(node.id) ?? EMPTY_SEGMENT_CONNECTORS}
