@@ -119,6 +119,11 @@ impl ResearchNodeKind {
     }
 }
 
+/// serde skip guard for defaulted booleans (see `ResearchNode::inline`).
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Where a node's content came from when it was not produced by a research
 /// launch or the document composer. Exported terminal conversations are
 /// marked so viewers, archives, and publication can surface their provenance:
@@ -144,6 +149,14 @@ pub struct ResearchNode {
     /// view; the quoted text also rides along in the launch prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_anchor: Option<ResearchHighlightAnchor>,
+    /// True when this follow-up continues its parent's answer inside the same
+    /// document (the thread spine) instead of branching into a rail card. A
+    /// node has at most one existing inline child — any status holds the
+    /// slot, and removing the child reopens it. Absent when false, so trees
+    /// without inline follow-ups serialize byte-identically to builds that
+    /// predate the field.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inline: bool,
     pub prompt: String,
     /// Short generated title for breadcrumbs and menus. The full prompt stays
     /// the document's displayed user query.
@@ -2066,6 +2079,7 @@ mod tests {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: "Question".to_string(),
             title: None,
             response_preview: Some("Answer".to_string()),

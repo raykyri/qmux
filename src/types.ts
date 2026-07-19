@@ -191,6 +191,10 @@ export interface ResearchNode {
   /** The passage of the parent's response this follow-up was asked about.
    * Anchors the node's card beside that passage in the parent's view. */
   queryAnchor?: ResearchHighlightAnchor | null;
+  /** True when this follow-up continues its parent's answer inside the same
+   * document (the thread spine) instead of branching into a rail card. At
+   * most one existing inline child per node; absent means false. */
+  inline?: boolean;
   prompt: string;
   /** Short generated title for breadcrumbs and menus; the document body still
    * shows the full prompt. */

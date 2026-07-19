@@ -1038,9 +1038,14 @@ async fn fork_research_node(
     prompt: String,
     publication_proposal: Option<research::ResearchPublicationProposal>,
     query_anchor: Option<research::ResearchHighlightAnchor>,
+    inline: Option<bool>,
 ) -> Result<ResearchNode, String> {
     let state = state.inner().clone();
+    let inline = inline.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
+        if inline && publication_proposal.is_some() {
+            return Err("community proposals become branches, not inline follow-ups".to_string());
+        }
         // Same admission guard as create_research_tree: the Queued child must
         // be admitted atomically with the workspace checks, or a concurrent
         // folder removal could invalidate its workspace before the fork.
@@ -1053,7 +1058,9 @@ async fn fork_research_node(
                 Some(proposal) => {
                     state.create_research_child_for_proposal(&parent_node_id, prompt, proposal)?
                 }
-                None => state.create_research_child(&parent_node_id, prompt, query_anchor)?,
+                None => {
+                    state.create_research_child(&parent_node_id, prompt, query_anchor, inline)?
+                }
             };
             (parent, workspace, child)
         };

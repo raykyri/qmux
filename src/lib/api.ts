@@ -423,12 +423,14 @@ export function forkResearchNode(
     commentId: number;
   } | null,
   queryAnchor?: ResearchHighlightAnchor | null,
+  inline = false,
 ) {
   return invoke<ResearchNode>("fork_research_node", {
     parentNodeId,
     prompt,
     publicationProposal: publicationProposal ?? null,
     queryAnchor: queryAnchor ?? null,
+    inline,
   });
 }
 

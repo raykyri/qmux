@@ -6689,12 +6689,14 @@ function MainApp() {
         commentId: number;
       } | null,
       queryAnchor?: ResearchHighlightAnchor | null,
+      inline?: boolean,
     ) => {
       const node = await forkResearchNode(
         parentNodeId,
         prompt,
         publicationProposal,
         queryAnchor,
+        inline ?? false,
       );
       void applyGeneratedResearchNodeTitle(node.id, prompt);
       void refreshResearchNavigation().catch(() => undefined);

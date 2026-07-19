@@ -1311,15 +1311,67 @@
   will-change: transform;
 }
 
-/* Ask mode: the composer floats beside the quoted passage, above whatever
-   cards it slides across, on an opaque surface so overlap stays readable. */
+/* Ask mode: the composer docks beside the quoted passage inside that
+   segment's rail, above whatever cards it displaces, on an opaque surface so
+   overlap stays readable. */
 .research-followup-composer.is-anchored {
+  position: absolute;
   z-index: 5;
+  right: 2px;
+  left: 0;
   padding: 9px 10px;
   border: 1px solid var(--surface-border-default);
   border-radius: 10px;
   background: var(--research-followup-composer-bg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* The thread composer: the conversation's next turn, so it sits at the end
+   of the thread in the answer column on a card surface. */
+.research-thread-composer-row {
+  margin-top: 30px;
+}
+
+.research-thread-composer-cell {
+  min-width: 0;
+  max-width: 640px;
+}
+
+.research-followup-composer.is-thread {
+  padding: 10px 12px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 10px;
+  background: var(--research-followup-composer-bg);
+}
+
+/* The dotted stem connecting an answer to the inline follow-up that
+   continues it: the visible spine of the thread. */
+.research-thread-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin: 6px 0 14px 18px;
+}
+
+.research-thread-link-stem {
+  width: 0;
+  height: 100%;
+  border-left: 2px dotted rgba(255, 255, 255, 0.16);
+}
+
+.research-thread-link-label {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* Terminal/cancel controls carried by a run streaming in a non-selected
+   segment (the header's pair follows the selection). */
+.research-answer-meta .research-segment-action {
+  padding: 1px 8px;
+  font-size: calc(var(--research-meta-font-size) - 1px);
 }
 
 .research-followup-quote-row {

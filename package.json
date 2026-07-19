@@ -26,6 +26,7 @@
     "test:research-folders": "node scripts/test-research-folders.mjs",
     "test:research-documents": "node scripts/test-research-documents.mjs",
     "test:research-conversations": "node scripts/test-research-conversations.mjs",
+    "test:research-threads": "node scripts/test-research-threads.mjs",
     "test:image-markers": "node scripts/test-image-markers.mjs",
     "test:tagged-instructions": "node scripts/test-tagged-instructions.mjs",
     "test:thread-graph-overlay": "node scripts/test-thread-graph-overlay.mjs",

@@ -2620,6 +2620,7 @@ impl AppState {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt,
             title: None,
             response_preview: None,
@@ -2702,6 +2703,7 @@ impl AppState {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: String::new(),
             title: None,
             response_preview: research::response_preview(&turns, None, ""),
@@ -2943,6 +2945,7 @@ impl AppState {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: prepared.prompt.clone(),
             title: None,
             response_preview: prepared.response_preview.clone(),
@@ -3230,11 +3233,12 @@ impl AppState {
         parent_node_id: &str,
         prompt: String,
         query_anchor: Option<ResearchHighlightAnchor>,
+        inline: bool,
     ) -> Result<ResearchNode, String> {
         if let Some(anchor) = &query_anchor {
             research::validate_highlight_anchor(anchor)?;
         }
-        self.create_research_child_with_options(parent_node_id, prompt, None, query_anchor)
+        self.create_research_child_with_options(parent_node_id, prompt, None, query_anchor, inline)
     }
 
     pub fn create_research_child_for_proposal(
@@ -3252,7 +3256,9 @@ impl AppState {
         {
             return Err("publication proposal reference is invalid".to_string());
         }
-        self.create_research_child_with_options(parent_node_id, prompt, Some(proposal), None)
+        // Accepted community proposals are always branches: an inline slot is
+        // the owner's conversation to continue, not a contribution target.
+        self.create_research_child_with_options(parent_node_id, prompt, Some(proposal), None, false)
     }
 
     fn create_research_child_with_options(
@@ -3261,6 +3267,7 @@ impl AppState {
         prompt: String,
         publication_proposal: Option<ResearchPublicationProposal>,
         query_anchor: Option<ResearchHighlightAnchor>,
+        inline: bool,
     ) -> Result<ResearchNode, String> {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
@@ -3289,6 +3296,17 @@ impl AppState {
             }
             if parent.status != ResearchNodeStatus::Complete {
                 return Err("research follow-ups require a completed parent response".to_string());
+            }
+            // One inline follow-up per answer, whatever its status — a failed
+            // or cancelled continuation stays visible in the thread until it
+            // is deliberately removed, which reopens the slot. Checked inside
+            // the model lock so two concurrent submissions cannot both pass.
+            if inline
+                && model.research_nodes.values().any(|node| {
+                    node.parent_node_id.as_deref() == Some(parent_node_id) && node.inline
+                })
+            {
+                return Err("this answer already has an inline follow-up".to_string());
             }
             // A document has no session to fork — its follow-ups launch fresh
             // runs on the default adapter, so only run parents need the
@@ -3346,6 +3364,7 @@ impl AppState {
                 parent_node_id: Some(parent.id),
                 publication_proposal,
                 query_anchor,
+                inline,
                 prompt,
                 title: None,
                 response_preview: None,
@@ -9566,17 +9585,22 @@ mod tests {
         };
         settle(&detail.tree.root_node_id);
         let branch = state
-            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None)
+            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None, false)
             .unwrap();
         settle(&branch.id);
         let descendant = state
-            .create_research_child(&branch.id, "Descendant".to_string(), None)
+            .create_research_child(&branch.id, "Descendant".to_string(), None, false)
             .unwrap();
         state
             .fail_research_node(&descendant.id, "settled".to_string())
             .unwrap();
         let sibling = state
-            .create_research_child(&detail.tree.root_node_id, "Sibling".to_string(), None)
+            .create_research_child(
+                &detail.tree.root_node_id,
+                "Sibling".to_string(),
+                None,
+                false,
+            )
             .unwrap();
         state
             .fail_research_node(&sibling.id, "settled".to_string())
@@ -9624,6 +9648,108 @@ mod tests {
     }
 
     #[test]
+    fn inline_follow_up_slot_is_exclusive_until_removed() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Root".to_string(),
+                title: None,
+                adapter: "claude".to_string(),
+                model: None,
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let root_id = detail.tree.root_node_id.clone();
+        let settle = |node_id: &str| {
+            let mut model = state.inner.model.lock().unwrap();
+            let node = model.research_nodes.get_mut(node_id).unwrap();
+            node.status = ResearchNodeStatus::Complete;
+            node.native_session_id = Some(format!("session-{node_id}"));
+            node.completed_at = Some(now_millis());
+        };
+        settle(&root_id);
+
+        let inline_child = state
+            .create_research_child(&root_id, "Continue".to_string(), None, true)
+            .unwrap();
+        assert!(inline_child.inline);
+        // The flag serializes only when set, so pre-existing trees keep their
+        // byte-identical encoding.
+        let inline_json = serde_json::to_value(&inline_child).unwrap();
+        assert_eq!(inline_json["inline"], serde_json::json!(true));
+
+        // A queued (not yet settled) inline child already holds the slot.
+        assert!(
+            state
+                .create_research_child(&root_id, "Again".to_string(), None, true)
+                .unwrap_err()
+                .contains("already has an inline follow-up")
+        );
+        // Branches are unaffected by the occupied slot and never hold it.
+        let branch = state
+            .create_research_child(&root_id, "Aside".to_string(), None, false)
+            .unwrap();
+        assert!(!branch.inline);
+        assert!(
+            !serde_json::to_value(&branch)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("inline")
+        );
+
+        // A settled inline child still holds the slot, and chains: its own
+        // answer takes an inline follow-up of its own.
+        settle(&inline_child.id);
+        assert!(
+            state
+                .create_research_child(&root_id, "Again".to_string(), None, true)
+                .is_err()
+        );
+        let grandchild = state
+            .create_research_child(&inline_child.id, "Deeper".to_string(), None, true)
+            .unwrap();
+        assert!(grandchild.inline);
+        assert_eq!(
+            grandchild.parent_node_id.as_deref(),
+            Some(inline_child.id.as_str())
+        );
+
+        // A failed inline child keeps holding the slot until it is removed;
+        // removal reopens it.
+        state
+            .fail_research_node(&grandchild.id, "settled".to_string())
+            .unwrap();
+        assert!(
+            state
+                .create_research_child(&inline_child.id, "Retry".to_string(), None, true)
+                .unwrap_err()
+                .contains("already has an inline follow-up")
+        );
+        state.remove_research_branch(&grandchild.id).unwrap();
+        let retry = state
+            .create_research_child(&inline_child.id, "Retry".to_string(), None, true)
+            .unwrap();
+        assert!(retry.inline);
+
+        // Accepted community proposals are always branches.
+        let proposal_child = state
+            .create_research_child_for_proposal(
+                &root_id,
+                "Contributed".to_string(),
+                ResearchPublicationProposal {
+                    publication_id: "publication-1".to_string(),
+                    comment_id: 7,
+                },
+            )
+            .unwrap();
+        assert!(!proposal_child.inline);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
     fn remove_research_branch_rejects_roots_and_active_descendants_atomically() {
         let state = AppState::new(test_config(temp_workspace()));
         state.insert_group_after(sample_group(), None).unwrap();
@@ -9652,7 +9778,7 @@ mod tests {
             root.native_session_id = Some("root-session".to_string());
         }
         let branch = state
-            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None)
+            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None, false)
             .unwrap();
         assert!(
             state
@@ -9719,7 +9845,7 @@ mod tests {
         assert!(state.list_research_trees().unwrap().is_empty());
         assert!(
             state
-                .create_research_child(&detail.tree.root_node_id, "More".to_string(), None)
+                .create_research_child(&detail.tree.root_node_id, "More".to_string(), None, false)
                 .unwrap_err()
                 .contains("restore archived research")
         );
@@ -10048,7 +10174,12 @@ mod tests {
             .unwrap();
 
         let err = state
-            .create_research_child(&detail.tree.root_node_id, "Too soon".to_string(), None)
+            .create_research_child(
+                &detail.tree.root_node_id,
+                "Too soon".to_string(),
+                None,
+                false,
+            )
             .unwrap_err();
         assert!(err.contains("completed parent"));
         assert_eq!(state.research_tree(&detail.tree.id).unwrap().nodes.len(), 1);
@@ -10604,7 +10735,7 @@ mod tests {
         let root_id = detail.tree.root_node_id.clone();
 
         let child = state
-            .create_research_child(&root_id, "Follow-up question".to_string(), None)
+            .create_research_child(&root_id, "Follow-up question".to_string(), None, false)
             .unwrap();
         assert_eq!(child.kind, ResearchNodeKind::Run);
         assert_eq!(child.parent_node_id.as_deref(), Some(root_id.as_str()));
@@ -10643,7 +10774,12 @@ mod tests {
             suffix: String::new(),
         };
         let err = state
-            .create_research_child(&root_id, "Anchored question".to_string(), Some(anchor))
+            .create_research_child(
+                &root_id,
+                "Anchored question".to_string(),
+                Some(anchor),
+                false,
+            )
             .unwrap_err();
         assert!(
             err.contains("not available on exported conversations"),
@@ -10838,6 +10974,7 @@ mod tests {
             parent_node_id: parent.map(str::to_string),
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: "Q".to_string(),
             title: None,
             response_preview: None,
@@ -10959,6 +11096,7 @@ mod tests {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: "Question".to_string(),
             title: None,
             response_preview: None,
@@ -11058,6 +11196,7 @@ mod tests {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: "Question".to_string(),
             title: None,
             response_preview: None,
@@ -11134,6 +11273,7 @@ mod tests {
             parent_node_id: None,
             publication_proposal: None,
             query_anchor: None,
+            inline: false,
             prompt: "Question".to_string(),
             title: None,
             response_preview: Some("Answer".to_string()),
@@ -11219,6 +11359,7 @@ mod tests {
                     parent_node_id: None,
                     publication_proposal: None,
                     query_anchor: None,
+                    inline: false,
                     prompt: "Question".to_string(),
                     title: None,
                     response_preview: None,
@@ -11430,7 +11571,7 @@ mod tests {
             )
             .unwrap();
         let child = state
-            .create_research_child(&node_id, "What changed?".to_string(), None)
+            .create_research_child(&node_id, "What changed?".to_string(), None, false)
             .unwrap();
         let captured_before_edit = state
             .research_document_followup_prompt(&node_id, &child.prompt)
@@ -11743,7 +11884,12 @@ mod tests {
         // the bind recorded, so a follow-up child can be created from it.)
         state.insert_pane(sample_pane_runtime("pane-8")).unwrap();
         let crash = state
-            .create_research_child(&detail.tree.root_node_id, "Follow-up".to_string(), None)
+            .create_research_child(
+                &detail.tree.root_node_id,
+                "Follow-up".to_string(),
+                None,
+                false,
+            )
             .unwrap();
         let mut crash_agent = sample_agent("crash-agent");
         crash_agent.pane_id = Some("pane-8".to_string());
