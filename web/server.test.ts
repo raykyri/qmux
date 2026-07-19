@@ -13,6 +13,7 @@ import type {
   Turn,
 } from "../src/types";
 import { createQmuxWebServer } from "./server";
+import { getAgentUiAdapter } from "../src/adapters";
 
 const pane: PaneInfo = {
   id: "pane-1",
@@ -209,6 +210,109 @@ test("the public server renders deep-linked research nodes and verifies their fi
   assert.match(body, /research-parent-link/);
   assert.match(body, /← Back/);
   assert.equal(body.includes("<script>alert"), false);
+});
+
+test("the public server renders a published conversation as labelled turn bubbles", async (t) => {
+  const root: ResearchNode = {
+    id: "private-conv-root",
+    treeId: "private-tree",
+    prompt: "Explain the build pipeline",
+    title: "Build pipeline chat",
+    adapter: "codex",
+    kind: "conversation",
+    origin: "terminalExport",
+    groupId: "private-group",
+    worktreeDir: "/private/research",
+    status: "complete",
+    createdAt: 1,
+    highlights: [],
+  };
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "private-tree",
+      title: "Build pipeline chat",
+      rootNodeId: root.id,
+      workspaceId: "private-workspace",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    nodes: [root],
+  };
+  const conversationContent = {
+    node: root,
+    turns: [
+      {
+        id: `${root.id}-u1`,
+        agentId: "private-agent",
+        role: "user" as const,
+        blocks: [{ type: "text" as const, text: "Explain the build pipeline" }],
+        sourceIndex: 0,
+      },
+      {
+        id: `${root.id}-a1`,
+        agentId: "private-agent",
+        role: "assistant" as const,
+        blocks: [{ type: "text" as const, text: "The build runs scripts/build.sh." }],
+        sourceIndex: 1,
+      },
+    ],
+    children: [],
+    responseRevision: "e".repeat(64),
+  };
+  const draft = await createResearchPublicationDraft({
+    title: detail.tree.title,
+    detail,
+    selectedNodeId: root.id,
+    mode: "tree",
+    publicationId: "pub_convrender1",
+    createdAt: "2026-07-19T12:00:00.000Z",
+    contents: [conversationContent],
+  });
+  const gistFiles = Object.fromEntries(
+    Object.entries(draft.files).map(([filename, fileContent]) => [
+      filename,
+      {
+        filename,
+        size: Buffer.byteLength(fileContent),
+        content: fileContent,
+        truncated: false,
+      },
+    ]),
+  );
+  const fetchImpl: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        id: "convrender123",
+        html_url: "https://gist.github.com/octocat/convrender123",
+        public: true,
+        created_at: "2026-07-19T12:00:00Z",
+        updated_at: "2026-07-19T12:00:00Z",
+        files: gistFiles,
+        owner: { login: "octocat", html_url: "https://github.com/octocat" },
+      }),
+      { status: 200, headers: { ETag: '"conv-v1"' } },
+    );
+  const server = createQmuxWebServer({ fetchImpl });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/p/convrender123`);
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  // Rendered as per-turn bubbles inside the anchorable answer root, not a
+  // single prompt card + answer.
+  assert.match(body, /research-conversation/);
+  assert.match(body, /conversation-turn is-user/);
+  assert.match(body, /conversation-turn is-assistant/);
+  // Assistant turns are labelled with the adapter's display name.
+  assert.match(body, new RegExp(getAgentUiAdapter("codex").label));
+  assert.match(body, /Explain the build pipeline/);
+  assert.match(body, /scripts\/build\.sh/);
+  // A conversation tree still exposes the reader comment composer.
+  assert.match(body, /proposal-composer/);
 });
 
 test("the public server redirects pinned-revision URLs to the latest view", async (t) => {

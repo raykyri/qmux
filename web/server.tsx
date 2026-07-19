@@ -1425,9 +1425,25 @@ function researchPage(
                 </p>
               ) : null}
               <div className="research-response-content-root" id="qmux-answer-root">
-                <div className="turn-markdown">
-                  <SafeMarkdown>{answerBody}</SafeMarkdown>
-                </div>
+                {isConversation && selected.conversation ? (
+                  <div className="research-conversation">
+                    {selected.conversation.map((turn, index) => (
+                      <div
+                        className={`conversation-turn is-${turn.role}`}
+                        key={index}
+                      >
+                        <div className="conversation-turn-label">{turn.label}</div>
+                        <div className="conversation-turn-body turn-markdown">
+                          <SafeMarkdown>{turn.text}</SafeMarkdown>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="turn-markdown">
+                    <SafeMarkdown>{answerBody}</SafeMarkdown>
+                  </div>
+                )}
               </div>
               <footer className="research-answer-meta">
                 <span>
@@ -2644,6 +2660,16 @@ a { color:inherit; text-decoration:none; }
 .conversation-prompt:first-child { margin-top:0; }
 .conversation-answer { margin:0 0 9px; line-height:1.62; }
 
+/* Published research conversation: labelled per-turn bubbles inside the
+   anchorable answer root, so a reader can quote any turn in a comment. */
+.research-conversation { display:flex; flex-direction:column; gap:16px; }
+.conversation-turn { min-width:0; display:flex; flex-direction:column; gap:5px; }
+.conversation-turn-label { font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-faint); }
+.conversation-turn-body { min-width:0; line-height:1.62; overflow-wrap:anywhere; }
+.conversation-turn.is-user { padding:10px 14px; border-radius:10px; border:1px solid var(--surface-border-faint); background:rgba(255,255,255,0.03); }
+.conversation-turn.is-user .conversation-turn-body { font-weight:550; }
+.conversation-turn.is-assistant { padding:0 2px; }
+
 /* Proposal load failures surface quietly in the rail. */
 .proposals-error { margin:0; color:var(--status-failed-fg); font-size:13px; line-height:1.4; }
 .sign-out-form { display:flex; align-items:center; gap:10px; color:var(--text-subtle); font-size:12px; }
@@ -2693,6 +2719,9 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
   .research-prompt .turn-markdown { color:#1a1a1a; }
   .research-prompt-quote { color:#555555; }
   .conversation-prompt { background:#f6f6f4; border-left-color:#bbbbbb; }
+  .conversation-turn-body { color:#1a1a1a; }
+  .conversation-turn-label { color:#666666; }
+  .conversation-turn.is-user { background:#f6f6f4; border-color:#dddddd; }
   .turn-markdown code { background:#f4f4f2; border-color:#dddddd; color:#1a1a1a; }
   .turn-markdown pre { background:#f8f8f6; border-color:#dddddd; }
   .turn-markdown blockquote { color:#444444; border-left-color:#bbbbbb; }

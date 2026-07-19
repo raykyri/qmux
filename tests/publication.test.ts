@@ -13,6 +13,7 @@ import {
   createResearchPublicationDraft,
   createTranscriptPublicationDraft,
 } from "../src/lib/publicationDrafts";
+import { getAgentUiAdapter } from "../src/adapters";
 import type {
   AgentInfo,
   PaneInfo,
@@ -389,6 +390,20 @@ test("conversation nodes publish as a whole transcript, not a Q/A pair", async (
   // No Q/A scaffolding is imposed over a conversation body.
   assert.equal(answerFile.includes("## Question"), false);
   assert.equal(answerFile.includes("## Answer"), false);
+  // Structured per-turn transcript rides on the node for bubble rendering,
+  // with assistant turns labelled by the adapter's display name.
+  assert.ok(publishedRoot.conversation);
+  assert.equal(publishedRoot.conversation.length, 4);
+  assert.deepEqual(
+    publishedRoot.conversation.map((turn) => turn.role),
+    ["user", "assistant", "user", "assistant"],
+  );
+  const adapterLabel = getAgentUiAdapter("codex").label;
+  assert.deepEqual(
+    publishedRoot.conversation.map((turn) => turn.label),
+    ["User", adapterLabel, "User", adapterLabel],
+  );
+  assert.equal(publishedRoot.conversation[1].text, "The build runs scripts/build.sh.");
   // The index revalidates end to end, and matches the JSON on disk.
   validatePublication(draft.publication);
   assert.deepEqual(

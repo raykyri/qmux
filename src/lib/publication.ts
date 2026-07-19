@@ -33,6 +33,16 @@ export interface PublishedResearchAnchor {
   suffix: string;
 }
 
+/** One speaker turn of a published conversation node, so the public page can
+ * render the transcript as labelled per-turn bubbles instead of one flat
+ * markdown blob. Present only on `kind: "conversation"` nodes; the answer file
+ * still carries the same turns as markdown for hashing, copy, and word count. */
+export interface PublishedConversationTurn {
+  role: "user" | "assistant";
+  label: string;
+  text: string;
+}
+
 export interface PublishedResearchNode {
   id: string;
   parentId: string | null;
@@ -40,6 +50,8 @@ export interface PublishedResearchNode {
   title: string;
   prompt: string;
   answerFile: string;
+  /** Per-turn transcript for conversation nodes; absent for runs/documents. */
+  conversation?: PublishedConversationTurn[] | null;
   contentHash: string;
   responseRevision: string | null;
   status: "complete" | "failed" | "cancelled";
@@ -385,6 +397,14 @@ export function validatePublication(value: unknown): Publication {
       item.queryAnchor === null || item.queryAnchor === undefined
         ? null
         : publishedAnchor(item.queryAnchor, `research.nodes[${index}].queryAnchor`);
+    const conversation =
+      item.conversation === null || item.conversation === undefined
+        ? null
+        : publishedConversation(
+            item.conversation,
+            nodeKind,
+            `research.nodes[${index}].conversation`,
+          );
     return {
       id: publicNodeId(item.id, `research.nodes[${index}].id`),
       parentId:
@@ -416,6 +436,7 @@ export function validatePublication(value: unknown): Publication {
           }),
       ...(queryAnchor ? { queryAnchor } : {}),
       ...(contribution ? { contribution } : {}),
+      ...(conversation ? { conversation } : {}),
     };
   });
   const ids = new Set(nodes.map((node) => node.id));
@@ -454,6 +475,31 @@ function publishedAnchor(value: unknown, label: string): PublishedResearchAnchor
   const prefix = boundedStringAllowEmpty(item.prefix, `${label}.prefix`, 500);
   const suffix = boundedStringAllowEmpty(item.suffix, `${label}.suffix`, 500);
   return { start, end, exact, prefix, suffix };
+}
+
+function publishedConversation(
+  value: unknown,
+  nodeKind: unknown,
+  label: string,
+): PublishedConversationTurn[] {
+  if (nodeKind !== "conversation") {
+    throw new Error(`${label} is only allowed on conversation nodes`);
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} must be a non-empty array`);
+  }
+  return value.map((turn, index) => {
+    const item = objectValue(turn, `${label}[${index}]`);
+    const role = item.role;
+    if (role !== "user" && role !== "assistant") {
+      throw new Error(`${label}[${index}].role is invalid`);
+    }
+    return {
+      role,
+      label: boundedString(item.label, `${label}[${index}].label`, 240),
+      text: boundedString(item.text, `${label}[${index}].text`, MAX_PUBLICATION_FILE_BYTES),
+    };
+  });
 }
 
 function publishedContribution(value: unknown, label: string) {

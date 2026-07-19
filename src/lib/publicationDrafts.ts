@@ -18,6 +18,7 @@ import {
   validatePublication,
   withPublicationContentHash,
   type PublicationDraft,
+  type PublishedConversationTurn,
   type PublishedResearchNode,
   type ResearchPublication,
   type TranscriptPublication,
@@ -29,6 +30,7 @@ import {
   plainTextTranscriptMessages,
   timelineItemsAfterLastToolCall,
 } from "./turnTimeline";
+import { getAgentUiAdapter } from "../adapters";
 
 interface TranscriptPublicationInput {
   title: string;
@@ -164,12 +166,18 @@ export async function createResearchPublicationDraft(
     const content = contentByNodeId.get(node.id)!;
     const publicNodeId = publicNodeIds[node.id];
     // A conversation node (a terminal export) has no single answer — its whole
-    // multi-turn transcript is the body. Runs and documents keep their Q/A
-    // shape: just the assistant's answer after the last tool call.
-    const answer =
+    // multi-turn transcript is the body. Its turns are captured structured so
+    // the public page can render labelled per-turn bubbles; the markdown form
+    // (below) still backs the answer file for hashing, copy, and word count.
+    // Runs and documents keep their Q/A shape: just the assistant's answer
+    // after the last tool call.
+    const conversationTurns =
       (node.kind ?? "run") === "conversation"
-        ? conversationBodyMarkdown(content)
-        : researchAnswerMarkdown(content);
+        ? publishedConversationTurns(content, node.adapter)
+        : null;
+    const answer = conversationTurns
+      ? conversationTurnsMarkdown(conversationTurns)
+      : researchAnswerMarkdown(content);
     if (node.status === "complete" && !answer.trim()) {
       throw new Error(`The response for "${researchNodeTitle(node, input.detail)}" is empty.`);
     }
@@ -228,6 +236,7 @@ export async function createResearchPublicationDraft(
       ...(typeof node.completedAt === "number" ? { completedAt: node.completedAt } : {}),
       ...(queryAnchor ? { queryAnchor } : {}),
       ...(contribution ? { contribution } : {}),
+      ...(conversationTurns ? { conversation: conversationTurns } : {}),
     });
   }
 
@@ -346,16 +355,31 @@ function researchNodeMarkdown(
   return `# ${markdownHeading(title)}\n\n${credit}${prompt}## Answer\n\n${response}\n`;
 }
 
-// The published body for a conversation node: every user/assistant turn in
-// order, each under a bold speaker label, matching the app's exported-
-// conversation reading view. Tool activity and empty turns are dropped, the
-// same projection plainTextTranscriptMessages produces for transcript
-// publications — so published query anchors resolve against identical text.
-const CONVERSATION_ASSISTANT_LABEL = "Assistant";
+// The published turns for a conversation node: every user/assistant turn in
+// order, each carrying its speaker label. A named participant keeps its label;
+// an unlabelled assistant turn falls back to the adapter's display name (e.g.
+// "Claude", "Codex") rather than a generic "Assistant". Tool activity and
+// empty turns are dropped, the same projection plainTextTranscriptMessages
+// produces for transcript publications — so query anchors resolve against
+// identical text.
+function publishedConversationTurns(
+  content: ResearchNodeContent,
+  adapter: string,
+): PublishedConversationTurn[] {
+  const assistantLabel = getAgentUiAdapter(adapter).label;
+  return plainTextTranscriptMessages(content.turns, assistantLabel).map((message) => ({
+    role: message.role,
+    label: message.label,
+    text: message.text.trim(),
+  }));
+}
 
-function conversationBodyMarkdown(content: ResearchNodeContent) {
-  return plainTextTranscriptMessages(content.turns, CONVERSATION_ASSISTANT_LABEL)
-    .map((message) => `**${markdownHeading(message.label)}**\n\n${message.text.trim()}`)
+// The markdown backing a conversation node's answer file: the same labelled
+// turns, joined under bold speaker headers. Only used for hashing, copy, word
+// count, and the public page's fallback — display renders the structured turns.
+function conversationTurnsMarkdown(turns: PublishedConversationTurn[]) {
+  return turns
+    .map((turn) => `**${markdownHeading(turn.label)}**\n\n${turn.text}`)
     .join("\n\n")
     .trim();
 }
