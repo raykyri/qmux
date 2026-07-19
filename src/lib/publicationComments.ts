@@ -1,5 +1,4 @@
 const PUBLIC_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
-const COMMENT_MARKER_PREFIX = "<!-- qmux-comment:v1 ";
 const COMMENT_MARKER_SUFFIX = " -->";
 const PROPOSAL_MARKER_PREFIX = "<!-- qmux-proposal:v1 ";
 const PROPOSAL_RESOLUTION_MARKER_PREFIX = "<!-- qmux-proposal-resolution:v1 ";
@@ -7,16 +6,6 @@ export const MAX_RESEARCH_PROPOSAL_PROMPT_CHARACTERS = 10_000;
 export const MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS = 40_000;
 export const MAX_RESEARCH_PROPOSAL_QUOTE_CHARACTERS = 2_000;
 const MAX_RESEARCH_PROPOSAL_CONTEXT_CHARACTERS = 500;
-
-export interface PublicationCommentAnchor {
-  publicationId: string;
-  nodeId?: string | null;
-}
-
-export interface ParsedPublicationComment {
-  anchor: PublicationCommentAnchor | null;
-  body: string;
-}
 
 /** The passage of the parent's published answer an anchored proposal was
  * asked about: offsets into the page's rendered-text projection plus the
@@ -43,39 +32,6 @@ export interface ProposalResolutionPayload {
   proposalDigest: string;
   status: "accepted" | "declined";
   publicNodeId?: string | null;
-}
-
-export function encodePublicationComment(
-  anchor: PublicationCommentAnchor,
-  body: string,
-) {
-  const normalized = validatePublicationCommentAnchor(anchor);
-  const text = body.trim();
-  if (!text) {
-    throw new Error("comment body cannot be empty");
-  }
-  return `${COMMENT_MARKER_PREFIX}${JSON.stringify(normalized)}${COMMENT_MARKER_SUFFIX}\n\n${text}`;
-}
-
-export function parsePublicationComment(raw: string): ParsedPublicationComment {
-  if (!raw.startsWith(COMMENT_MARKER_PREFIX)) {
-    return { anchor: null, body: raw.trim() };
-  }
-  const markerEnd = raw.indexOf(COMMENT_MARKER_SUFFIX);
-  if (markerEnd < COMMENT_MARKER_PREFIX.length) {
-    return { anchor: null, body: raw.trim() };
-  }
-  const encoded = raw.slice(COMMENT_MARKER_PREFIX.length, markerEnd);
-  try {
-    const value = JSON.parse(encoded) as unknown;
-    const anchor = validatePublicationCommentAnchor(value);
-    return {
-      anchor,
-      body: raw.slice(markerEnd + COMMENT_MARKER_SUFFIX.length).trim(),
-    };
-  } catch {
-    return { anchor: null, body: raw.trim() };
-  }
 }
 
 export function encodeResearchProposal(payload: ResearchProposalPayload) {
@@ -131,28 +87,6 @@ export function parseProposalResolution(raw: string): ProposalResolutionPayload 
     PROPOSAL_RESOLUTION_MARKER_PREFIX,
     validateProposalResolution,
   );
-}
-
-function validatePublicationCommentAnchor(value: unknown): PublicationCommentAnchor {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("comment anchor must be an object");
-  }
-  const item = value as Record<string, unknown>;
-  if (typeof item.publicationId !== "string" || !PUBLIC_ID_PATTERN.test(item.publicationId)) {
-    throw new Error("comment publicationId is invalid");
-  }
-  const nodeId = item.nodeId;
-  if (
-    nodeId !== undefined &&
-    nodeId !== null &&
-    (typeof nodeId !== "string" || !PUBLIC_ID_PATTERN.test(nodeId))
-  ) {
-    throw new Error("comment nodeId is invalid");
-  }
-  return {
-    publicationId: item.publicationId,
-    ...(nodeId ? { nodeId } : {}),
-  };
 }
 
 function validateResearchProposal(value: unknown): ResearchProposalPayload {

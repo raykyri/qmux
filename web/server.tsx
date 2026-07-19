@@ -13,13 +13,10 @@ import {
   MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS,
   MAX_RESEARCH_PROPOSAL_PROMPT_CHARACTERS,
   encodeResearchProposal,
-  encodePublicationComment,
   parseProposalResolution,
-  parsePublicationComment,
   parseResearchProposal,
   researchProposalDigestInput,
   validateResearchProposalAnchor,
-  type PublicationCommentAnchor,
   type ProposalResolutionPayload,
   type ResearchProposalPayload,
 } from "../src/lib/publicationComments";
@@ -71,8 +68,7 @@ const MAX_PUBLICATION_CACHE_ENTRIES = 128;
 const MAX_COMMENTS_CACHE_BYTES = 32_000_000;
 const MAX_COMMENTS_CACHE_ENTRIES = 128;
 const MAX_CONCURRENT_PUBLICATION_LOADS = 8;
-const MAX_COMMENT_BODY_CHARACTERS = 60_000;
-const MAX_COMMENT_FORM_BYTES = 128_000;
+const MAX_PROPOSAL_FORM_BYTES = 128_000;
 const MAX_GIST_COMMENTS = 300;
 const SITE_FONT_FILES = new Set([
   "ValleySans-Variable.woff2",
@@ -121,15 +117,14 @@ interface GitHubGistComment {
   author_association?: string;
 }
 
+// A gist comment that carries qmux data: a follow-up proposal or an owner
+// resolution. Plain human comments live on the Gist itself and are not
+// surfaced here — the page links to the Gist for discussion.
 interface PublicationComment {
   id: number;
-  body: string;
-  anchor: PublicationCommentAnchor | null;
   proposal: ResearchProposalPayload | null;
   resolution: ProposalResolutionPayload | null;
   createdAt: string;
-  updatedAt: string;
-  authorAssociation?: string | null;
   user: {
     login: string;
     htmlUrl: string;
@@ -304,11 +299,6 @@ async function routeRequest(
     await handleCreateProposal(request, response, context, proposalRoute);
     return;
   }
-  const commentRoute = publicationCommentRoute(url.pathname);
-  if (request.method === "POST" && commentRoute) {
-    await handleCreateComment(request, response, context, commentRoute);
-    return;
-  }
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.writeHead(405, { Allow: "GET, HEAD, POST" });
     response.end();
@@ -374,24 +364,20 @@ async function routeRequest(
     const viewer = viewerSessionFromRequest(request, context.webAuth);
     let comments: PublicationComment[] = [];
     let commentsError: string | null = null;
-    if (context.webAuth || context.githubToken) {
+    if (
+      loaded.publication.kind === "research-tree" &&
+      (context.webAuth || context.githubToken)
+    ) {
       try {
         comments = await loadPublicationComments(route.gistId, context);
       } catch (error) {
         commentsError =
-          error instanceof Error ? error.message : "Comments could not be loaded.";
+          error instanceof Error ? error.message : "Proposals could not be loaded.";
       }
     }
     const page =
       loaded.publication.kind === "transcript"
-        ? transcriptPage(
-            loaded.gist,
-            loaded.publication,
-            comments,
-            commentsError,
-            viewer,
-            context.webAuth,
-          )
+        ? transcriptPage(loaded.gist, loaded.publication)
         : researchPage(
             loaded.gist,
             loaded.publication,
@@ -447,22 +433,6 @@ function publicationRoute(pathname: string) {
   return null;
 }
 
-function publicationCommentRoute(pathname: string) {
-  const node = pathname.match(/^\/p\/([^/]+)\/n\/([^/]+)\/comments\/?$/);
-  if (
-    node &&
-    GIST_ID_PATTERN.test(node[1]) &&
-    /^[A-Za-z0-9_-]{8,128}$/.test(node[2])
-  ) {
-    return { gistId: node[1], nodeId: node[2] };
-  }
-  const publication = pathname.match(/^\/p\/([^/]+)\/comments\/?$/);
-  if (publication && GIST_ID_PATTERN.test(publication[1])) {
-    return { gistId: publication[1], nodeId: null };
-  }
-  return null;
-}
-
 function publicationProposalRoute(pathname: string) {
   const node = pathname.match(/^\/p\/([^/]+)\/n\/([^/]+)\/proposals\/?$/);
   if (
@@ -494,75 +464,6 @@ async function handleLogout(
     context.webAuth,
     form.get("returnTo") ?? url.searchParams.get("returnTo") ?? "/",
   );
-}
-
-async function handleCreateComment(
-  request: IncomingMessage,
-  response: ServerResponse,
-  context: RouteContext,
-  route: { gistId: string; nodeId: string | null },
-) {
-  if (!context.webAuth) {
-    throw new PublicationHttpError(503, "GitHub comments are not configured.");
-  }
-  const session = viewerSessionFromRequest(request, context.webAuth);
-  if (!session) {
-    throw new PublicationHttpError(401, "Sign in with GitHub before commenting.");
-  }
-  const form = await readUrlEncodedForm(request);
-  if (form.get("csrfToken") !== session.csrfToken) {
-    throw new PublicationHttpError(403, "The comment request could not be verified.");
-  }
-  const loaded = await loadPublication(route.gistId, context);
-  const nodeId = resolvedCommentNodeId(loaded.publication, route.nodeId);
-  const body = (form.get("body") ?? "").trim();
-  if (!body || body.length > MAX_COMMENT_BODY_CHARACTERS) {
-    throw new PublicationHttpError(
-      422,
-      `Comments must contain between 1 and ${MAX_COMMENT_BODY_CHARACTERS.toLocaleString()} characters.`,
-    );
-  }
-  const encoded = encodePublicationComment(
-    {
-      publicationId: loaded.publication.publicationId,
-      ...(nodeId ? { nodeId } : {}),
-    },
-    body,
-  );
-  const upstream = await context.fetchImpl(
-    `https://api.github.com/gists/${encodeURIComponent(route.gistId)}/comments`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${session.accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": "qmux-publisher",
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
-      },
-      body: JSON.stringify({ body: encoded }),
-      redirect: "error",
-      signal: AbortSignal.timeout(10_000),
-    },
-  );
-  const responseBody = await readResponseTextLimited(
-    upstream,
-    MAX_GITHUB_COMMENTS_RESPONSE_BYTES,
-    "GitHub comment response",
-  );
-  if (!upstream.ok) {
-    throw new PublicationHttpError(
-      upstream.status,
-      githubApiErrorMessage(responseBody, "GitHub could not create this comment."),
-    );
-  }
-  deleteCommentsCacheEntry(context.commentsCache, route.gistId);
-  const returnTo = commentReturnPath(route.gistId, nodeId);
-  response.writeHead(303, {
-    Location: `${returnTo}#comments`,
-    "Cache-Control": "no-store",
-  });
-  response.end();
 }
 
 async function handleCreateProposal(
@@ -664,26 +565,6 @@ async function handleCreateProposal(
   response.end();
 }
 
-function resolvedCommentNodeId(
-  publication: Publication,
-  requestedNodeId: string | null,
-) {
-  if (publication.kind === "transcript") {
-    if (requestedNodeId) {
-      throw new PublicationHttpError(404, "That transcript comment target was not found.");
-    }
-    return null;
-  }
-  const nodeId =
-    requestedNodeId ??
-    publication.research.selectedNodeId ??
-    publication.research.rootNodeId;
-  if (!publication.research.nodes.some((node) => node.id === nodeId)) {
-    throw new PublicationHttpError(404, "That research comment target was not found.");
-  }
-  return nodeId;
-}
-
 function commentReturnPath(gistId: string, nodeId: string | null) {
   return nodeId
     ? `/p/${encodeURIComponent(gistId)}/n/${encodeURIComponent(nodeId)}`
@@ -700,7 +581,7 @@ async function readUrlEncodedForm(request: IncomingMessage) {
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     totalBytes += bytes.byteLength;
-    if (totalBytes > MAX_COMMENT_FORM_BYTES) {
+    if (totalBytes > MAX_PROPOSAL_FORM_BYTES) {
       throw new PublicationHttpError(413, "This form submission is too large.");
     }
     chunks.push(bytes);
@@ -835,7 +716,8 @@ function commentsCacheWeight(comments: PublicationComment[]) {
   return comments.reduce(
     (total, comment) =>
       total +
-      Buffer.byteLength(comment.body) * 2 +
+      Buffer.byteLength(JSON.stringify(comment.proposal ?? "")) * 2 +
+      Buffer.byteLength(JSON.stringify(comment.resolution ?? "")) +
       Buffer.byteLength(comment.user.login) +
       Buffer.byteLength(comment.user.htmlUrl) +
       512,
@@ -895,20 +777,17 @@ function normalizeGitHubComment(comment: GitHubGistComment): PublicationComment 
   ) {
     return null;
   }
-  const parsed = parsePublicationComment(comment.body);
   const proposal = parseResearchProposal(comment.body);
   const resolution = parseProposalResolution(comment.body);
+  // Only qmux payloads matter here; ordinary discussion stays on the Gist.
+  if (!proposal && !resolution) {
+    return null;
+  }
   return {
     id: comment.id,
-    body: parsed.body,
-    anchor: parsed.anchor,
     proposal,
     resolution,
     createdAt: comment.created_at,
-    updatedAt: Number.isNaN(Date.parse(comment.updated_at))
-      ? comment.created_at
-      : comment.updated_at,
-    authorAssociation: comment.author_association ?? null,
     user: {
       login: comment.user.login,
       htmlUrl: githubProfileUrl(comment.user.html_url, comment.user.login),
@@ -1336,14 +1215,7 @@ function throwNegativePublication(
 // Mirrors the app's exported-conversation reading view: user prompts render as
 // quiet framed blocks and assistant turns as plain document text, in a single
 // answer-width column under the document chrome header.
-function transcriptPage(
-  gist: GitHubGist,
-  publication: TranscriptPublication,
-  comments: PublicationComment[],
-  commentsError: string | null,
-  viewer: ViewerSession | null,
-  webAuth: GitHubWebAuthConfig | null,
-) {
+function transcriptPage(gist: GitHubGist, publication: TranscriptPublication) {
   const author = gist.owner?.login ?? "GitHub user";
   const preview = followupPreviewText(
     publication.transcript.messages.map((message) => message.text).join(" "),
@@ -1406,15 +1278,6 @@ function transcriptPage(
                     .join("\n\n"),
                 ).replace(/</g, "\\u003c"),
               }}
-            />
-            <PublicationComments
-              gist={gist}
-              publication={publication}
-              nodeId={null}
-              comments={comments}
-              error={commentsError}
-              viewer={viewer}
-              webAuth={webAuth}
             />
           </main>
         </>
@@ -1590,15 +1453,6 @@ function researchPage(
                   </button>
                 ) : null}
               </footer>
-              <PublicationComments
-                gist={gist}
-                publication={publication}
-                nodeId={selected.id}
-                comments={comments}
-                error={commentsError}
-                viewer={viewer}
-                webAuth={webAuth}
-              />
             </section>
             {hasRail ? (
               <aside className="research-followups" aria-label="Follow-ups">
@@ -1613,12 +1467,23 @@ function researchPage(
                 <div className="research-followup-cards">
                   {children.map((child) => renderFollowupCard(child))}
                 </div>
+                {commentsError ? (
+                  <p className="proposals-error" role="status">
+                    {commentsError}
+                  </p>
+                ) : null}
                 {publication.kind === "research-tree" ? (
                   <PublicationProposals
                     gist={gist}
                     publication={publication}
                     nodeId={selected.id}
                     comments={comments}
+                  />
+                ) : null}
+                {viewer && publication.kind === "research-tree" ? (
+                  <ComposerSignOut
+                    viewer={viewer}
+                    returnTo={commentReturnPath(gist.id, selected.id)}
                   />
                 ) : null}
               </aside>
@@ -2304,6 +2169,25 @@ function ProposalComposer({
   );
 }
 
+function ComposerSignOut({
+  viewer,
+  returnTo,
+}: {
+  viewer: ViewerSession;
+  returnTo: string;
+}) {
+  return (
+    <form className="sign-out-form" method="post" action="/auth/logout">
+      <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
+      <input type="hidden" name="returnTo" value={returnTo} />
+      <span>Signed in as @{viewer.login}</span>
+      <button className="btn-link" type="submit">
+        Sign out
+      </button>
+    </form>
+  );
+}
+
 function PublicationProposals({
   gist,
   publication,
@@ -2370,7 +2254,7 @@ function PublicationProposals({
             {proposal.answerMarkdown ? (
               <details>
                 <summary>Proposed answer</summary>
-                <div className="comment-body turn-markdown">
+                <div className="proposal-answer-body turn-markdown">
                   <SafeMarkdown>{proposal.answerMarkdown}</SafeMarkdown>
                 </div>
               </details>
@@ -2386,110 +2270,6 @@ function PublicationProposals({
           </article>
         );
       })}
-    </section>
-  );
-}
-
-function PublicationComments({
-  gist,
-  publication,
-  nodeId,
-  comments,
-  error,
-  viewer,
-  webAuth,
-}: {
-  gist: GitHubGist;
-  publication: Publication;
-  nodeId: string | null;
-  comments: PublicationComment[];
-  error: string | null;
-  viewer: ViewerSession | null;
-  webAuth: GitHubWebAuthConfig | null;
-}) {
-  const visibleComments = comments.filter((comment) => {
-    if (comment.proposal || comment.resolution) {
-      return false;
-    }
-    if (!comment.anchor) {
-      return true;
-    }
-    if (comment.anchor.publicationId !== publication.publicationId) {
-      return false;
-    }
-    return (comment.anchor.nodeId ?? null) === nodeId;
-  });
-  const returnTo = commentReturnPath(gist.id, nodeId);
-  const commentAction = `${returnTo}/comments`;
-  return (
-    <section className="publication-comments" id="comments" aria-labelledby="comments-title">
-      <div className="section-heading">
-        <h2 id="comments-title">
-          {visibleComments.length} {visibleComments.length === 1 ? "comment" : "comments"}
-        </h2>
-        <a className="section-heading-link" href={`${gist.html_url}#comments`}>
-          View on GitHub
-        </a>
-      </div>
-      {error ? (
-        <p className="comments-error" role="status">
-          {error}
-        </p>
-      ) : null}
-      {visibleComments.length > 0 ? (
-        <div className="comments-list">
-          {visibleComments.map((comment) => (
-            <article className="publication-comment" key={comment.id}>
-              <header>
-                <a href={comment.user.htmlUrl}>@{comment.user.login}</a>
-                {comment.authorAssociation === "OWNER" ? (
-                  <span className="comment-author-badge">Author</span>
-                ) : null}
-                <time dateTime={comment.createdAt}>{formatDate(comment.createdAt)}</time>
-              </header>
-              <div className="comment-body turn-markdown">
-                <SafeMarkdown>{comment.body}</SafeMarkdown>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : error ? null : (
-        <p className="comments-empty">No comments yet.</p>
-      )}
-      {viewer ? (
-        <div className="comment-composer">
-          <form method="post" action={commentAction}>
-            <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
-            <label htmlFor="comment-body">Comment as @{viewer.login}</label>
-            <textarea
-              className="textarea"
-              id="comment-body"
-              name="body"
-              required
-              maxLength={MAX_COMMENT_BODY_CHARACTERS}
-              rows={4}
-            />
-            <button className="control-button" type="submit">
-              Post comment
-            </button>
-          </form>
-          <form className="sign-out-form" method="post" action="/auth/logout">
-            <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
-            <input type="hidden" name="returnTo" value={`${returnTo}#comments`} />
-            <span>Signed in as @{viewer.login}</span>
-            <button className="btn-link" type="submit">
-              Sign out
-            </button>
-          </form>
-        </div>
-      ) : webAuth ? (
-        <a
-          className="control-button github-sign-in"
-          href={`/auth/github?returnTo=${encodeURIComponent(`${returnTo}#comments`)}`}
-        >
-          Sign in with GitHub to comment
-        </a>
-      ) : null}
     </section>
   );
 }
@@ -2847,7 +2627,7 @@ a { color:inherit; text-decoration:none; }
 .publication-proposal .turn-markdown { color:#edf0ec; font-size:14px; line-height:1.45; }
 .publication-proposal details { color:var(--text-faint); font-size:13px; }
 .publication-proposal details summary { cursor:pointer; }
-.publication-proposal details .comment-body { margin-top:8px; }
+.publication-proposal details .proposal-answer-body { margin-top:8px; }
 .proposal-result-link { align-self:flex-start; font-size:13px; color:var(--accent-color); }
 .proposal-result-link:hover { text-decoration:underline; }
 
@@ -2859,29 +2639,9 @@ a { color:inherit; text-decoration:none; }
 .conversation-prompt:first-child { margin-top:0; }
 .conversation-answer { margin:0 0 9px; line-height:1.62; }
 
-/* Comments under the answer column. */
-.publication-comments { margin-top:40px; padding-top:22px; border-top:1px solid var(--surface-border-subtle); }
-.section-heading { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:6px; }
-.section-heading h2 { margin:0; color:var(--text-subtle); font-size:14px; font-weight:650; letter-spacing:0; }
-.section-heading-link { color:var(--text-faint); font-size:12.5px; white-space:nowrap; }
-.section-heading-link:hover { color:var(--text-secondary); }
-.comments-list { display:grid; }
-.publication-comment { padding:14px 0; border-top:1px solid var(--surface-border-faint); }
-.publication-comment:first-child { border-top:0; }
-.publication-comment header { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-bottom:7px; font-size:13px; }
-.publication-comment header > a { color:var(--text-secondary); font-weight:600; }
-.publication-comment header > a:hover { color:var(--text-strong); }
-.comment-author-badge { display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--surface-border-default); border-radius:999px; color:var(--text-subtle); font-size:10.5px; }
-.publication-comment header time { margin-left:auto; color:var(--text-faint); font-size:12px; }
-.comment-body { font-size:14px; color:var(--text-body-soft); }
-.comments-empty, .comments-error { margin:8px 0 0; color:var(--text-subtle); font-size:13.5px; }
-.comments-error { color:var(--status-failed-fg); }
-.comment-composer { margin-top:18px; padding-top:16px; border-top:1px solid var(--surface-border-faint); }
-.comment-composer form:first-child { display:grid; justify-items:start; gap:9px; }
-.comment-composer label { color:var(--text-subtle); font-size:13px; font-weight:500; }
-.comment-composer .textarea { justify-self:stretch; width:100%; resize:vertical; padding:8px 10px; border:1px solid var(--control-border); border-radius:8px; background:var(--field-bg); color:var(--text-strong); font:inherit; font-size:13.5px; line-height:1.5; }
-.comment-composer .textarea:focus { outline:none; border-color:var(--control-border-hover); }
-.sign-out-form { display:flex; align-items:center; gap:10px; margin-top:12px; color:var(--text-subtle); font-size:12px; }
+/* Proposal load failures surface quietly in the rail. */
+.proposals-error { margin:0; color:var(--status-failed-fg); font-size:13px; line-height:1.4; }
+.sign-out-form { display:flex; align-items:center; gap:10px; color:var(--text-subtle); font-size:12px; }
 
 /* Quiet page footer. */
 .page-footer { margin-top:56px; padding-top:14px; border-top:1px solid var(--surface-border-faint); color:var(--text-faint); font-size:12.5px; }
@@ -2908,7 +2668,6 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
   .doc-kind { display:none; }
   .research-document-scroll { padding:24px 18px 32px; }
   .turn-markdown h1 { font-size:19px; }
-  .publication-comment header time { width:100%; margin-left:0; }
 }
 
 /* Print/reader fallback: the dark theme becomes ink on paper, and everything
@@ -2916,13 +2675,13 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
 @media print {
   :root { color-scheme:light; }
   body { background:#ffffff; color:#1a1a1a; }
-  .doc-header, .research-followups, .proposal-composer, .comment-composer,
-  .github-sign-in, .sign-out-form, .page-footer, .research-answer-copy,
-  .section-heading-link, .research-highlight-action { display:none !important; }
+  .doc-header, .research-followups, .proposal-composer, .github-sign-in,
+  .sign-out-form, .page-footer, .research-answer-copy,
+  .research-highlight-action { display:none !important; }
   .research-response-grid { display:block; }
   .research-document-scroll { padding:0; }
   .turn-markdown, .research-response-content-root, .conversation-answer,
-  .comment-body, .publication-proposal .turn-markdown { color:#1a1a1a; }
+  .publication-proposal .turn-markdown { color:#1a1a1a; }
   .turn-markdown h1, .turn-markdown h2, .turn-markdown h3, .turn-markdown h4,
   .turn-markdown h5, .turn-markdown h6 { color:#000000; }
   .research-prompt { background:#f2f2f0; }
@@ -2936,10 +2695,7 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
   .turn-markdown th { background:#f0f0ee; color:#1a1a1a; border-color:#cccccc; }
   .turn-markdown td { border-color:#dddddd; }
   .turn-markdown-table-wrap { border-color:#cccccc; }
-  .research-answer-meta, .comments-empty { color:#666666; }
-  .publication-comment header > a { color:#333333; }
-  .publication-comment header time { color:#777777; }
-  .publication-comments, .publication-comment { border-color:#dddddd; }
+  .research-answer-meta { color:#666666; }
   ::highlight(qmux-research-query-anchors) { background:#f3e9c0; }
   ::highlight(qmux-research-anchor-link) { background:#f3e9c0; }
 }

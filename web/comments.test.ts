@@ -4,10 +4,8 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  encodePublicationComment,
   encodeProposalResolution,
   encodeResearchProposal,
-  parsePublicationComment,
   parseResearchProposal,
   researchProposalDigestInput,
 } from "../src/lib/publicationComments";
@@ -57,7 +55,7 @@ function turn(text: string): Turn {
   };
 }
 
-test("hosted publications authenticate, render, create, and sign out of Gist comments", async () => {
+test("transcripts render without the comment bridge", async () => {
   const draft = await createTranscriptPublicationDraft({
     title: "Commented transcript",
     pane,
@@ -67,21 +65,10 @@ test("hosted publications authenticate, render, create, and sign out of Gist com
     createdAt: "2026-07-16T12:00:00.000Z",
     turns: [turn("Published answer")],
   });
-  let createdComment = "";
-  const fetchImpl: typeof fetch = async (input, init) => {
+  const fetchImpl: typeof fetch = async (input) => {
     const url = String(input);
-    if (url === "https://github.com/login/oauth/access_token") {
-      return Response.json({
-        access_token: "gho_commenter",
-        scope: "gist",
-      });
-    }
-    if (url === "https://api.github.com/user") {
-      assert.equal(
-        new Headers(init?.headers).get("authorization"),
-        "Bearer gho_commenter",
-      );
-      return Response.json({ login: "alice" });
+    if (url.includes("/comments")) {
+      throw new Error("transcript pages must not fetch gist comments");
     }
     if (url.endsWith("/gists/comment12345")) {
       return Response.json({
@@ -107,36 +94,7 @@ test("hosted publications authenticate, render, create, and sign out of Gist com
         },
       });
     }
-    if (url.includes("/gists/comment12345/comments?")) {
-      return Response.json([
-        {
-          id: 7,
-          body: encodePublicationComment(
-            { publicationId: draft.publication.publicationId },
-            "Existing **comment** <script>alert('no')</script>",
-          ),
-          created_at: "2026-07-16T12:30:00Z",
-          updated_at: "2026-07-16T12:30:00Z",
-          author_association: "OWNER",
-          user: {
-            login: "octocat",
-            html_url: "javascript:alert(1)",
-          },
-        },
-      ]);
-    }
-    if (
-      url.endsWith("/gists/comment12345/comments") &&
-      init?.method === "POST"
-    ) {
-      assert.equal(
-        new Headers(init.headers).get("authorization"),
-        "Bearer gho_commenter",
-      );
-      createdComment = JSON.parse(String(init.body)).body;
-      return Response.json({ id: 8 }, { status: 201 });
-    }
-    throw new Error(`unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    throw new Error(`unexpected fetch ${url}`);
   };
   const handler = createQmuxRequestHandler({
     fetchImpl,
@@ -148,97 +106,84 @@ test("hosted publications authenticate, render, create, and sign out of Gist com
     secureCookies: false,
   });
 
-  const begin = await dispatch(
-    handler,
-    request("GET", "/auth/github?returnTo=%2Fp%2Fcomment12345%23comments"),
-  );
-  assert.equal(begin.statusCode, 302);
-  const authorizationUrl = new URL(begin.header("location"));
-  const state = authorizationUrl.searchParams.get("state");
-  assert.ok(state);
-  const stateCookie = cookiePair(begin.setCookies(), "qmux_oauth_state");
-
-  const callback = await dispatch(
-    handler,
-    request(
-      "GET",
-      `/auth/github/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
-      "",
-      { cookie: stateCookie },
-    ),
-  );
-  assert.equal(callback.statusCode, 303);
-  assert.equal(callback.header("location"), "/p/comment12345#comments");
-  const sessionCookie = cookiePair(callback.setCookies(), "qmux_session");
-
-  const page = await dispatch(
-    handler,
-    request("GET", "/p/comment12345", "", { cookie: sessionCookie }),
-  );
+  const page = await dispatch(handler, request("GET", "/p/comment12345"));
   assert.equal(page.statusCode, 200);
-  assert.match(page.body, /Existing <strong>comment<\/strong>/);
-  assert.match(page.body, /Comment as @alice/);
-  assert.equal(page.body.includes("<script>alert"), false);
-  assert.equal(page.body.includes("javascript:alert"), false);
-  assert.match(page.body, /href="https:\/\/github.com\/octocat"/);
-  const csrfToken = page.body.match(/name="csrfToken" value="([^"]+)"/)?.[1];
-  assert.ok(csrfToken);
+  assert.match(page.body, /Published answer/);
+  assert.equal(page.body.includes("publication-comments"), false);
+  assert.equal(page.body.includes("Comment as"), false);
 
+  // The comment POST route is gone; only proposals accept POSTs.
   const create = await dispatch(
     handler,
     request(
       "POST",
       "/p/comment12345/comments",
-      new URLSearchParams({
-        csrfToken,
-        body: "A new comment from Alice.",
-      }).toString(),
-      {
-        cookie: sessionCookie,
-        "content-type": "application/x-www-form-urlencoded",
-      },
+      new URLSearchParams({ body: "hello" }).toString(),
+      { "content-type": "application/x-www-form-urlencoded" },
     ),
   );
-  assert.equal(create.statusCode, 303);
-  assert.equal(create.header("location"), "/p/comment12345#comments");
-  assert.deepEqual(parsePublicationComment(createdComment), {
-    anchor: { publicationId: draft.publication.publicationId },
-    body: "A new comment from Alice.",
-  });
-
-  const logout = await dispatch(
-    handler,
-    request(
-      "POST",
-      "/auth/logout",
-      new URLSearchParams({
-        csrfToken,
-        returnTo: "/p/comment12345#comments",
-      }).toString(),
-      {
-        cookie: sessionCookie,
-        "content-type": "application/x-www-form-urlencoded",
-      },
-    ),
-  );
-  assert.equal(logout.statusCode, 303);
-  assert.equal(logout.header("location"), "/p/comment12345#comments");
-  assert.match(
-    logout.setCookies().find((value) => value.startsWith("qmux_session=")) ?? "",
-    /Max-Age=0/,
-  );
+  assert.equal(create.statusCode, 405);
 });
 
-test("comment pagination is capped even when every upstream comment is invalid", async () => {
-  const draft = await createTranscriptPublicationDraft({
-    title: "Bounded comments",
-    pane,
-    agent,
-    assistantLabel: "Codex",
-    publicationId: "pub_bounded123",
+
+// Comment fetching now only serves research-tree proposals, so pagination
+// behavior is exercised against a minimal published tree.
+async function researchFixture(publicationId: string, title: string) {
+  const root: ResearchNode = {
+    id: `${publicationId}-root`,
+    treeId: `${publicationId}-tree`,
+    prompt: "Root question",
+    title: "Root result",
+    adapter: "codex",
+    groupId: "private-group",
+    worktreeDir: "/private/research",
+    status: "complete",
+    createdAt: 1,
+    highlights: [],
+  };
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: root.treeId,
+      title,
+      rootNodeId: root.id,
+      workspaceId: "private-workspace",
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    nodes: [root],
+  };
+  const draft = await createResearchPublicationDraft({
+    title,
+    detail,
+    selectedNodeId: root.id,
+    mode: "tree",
+    publicationId,
     createdAt: "2026-07-16T12:00:00.000Z",
-    turns: [turn("Bounded")],
+    contents: [
+      {
+        node: root,
+        turns: [
+          {
+            id: `${publicationId}-turn`,
+            agentId: "private-agent",
+            role: "assistant",
+            blocks: [{ type: "text" as const, text: "Root answer." }],
+            sourceIndex: 1,
+          },
+        ],
+        children: [],
+        responseRevision: "a".repeat(64),
+      },
+    ],
   });
+  if (draft.publication.kind !== "research-tree") {
+    throw new Error("expected research tree");
+  }
+  return { draft, publicRootId: draft.publication.research.rootNodeId };
+}
+
+test("comment pagination is capped even when every upstream comment is invalid", async () => {
+  const { draft } = await researchFixture("pub_bounded123", "Bounded comments");
   let commentPages = 0;
   const fetchImpl: typeof fetch = async (input) => {
     const url = String(input);
@@ -285,15 +230,10 @@ test("comment pagination is capped even when every upstream comment is invalid",
 });
 
 test("comment pagination keeps the newest bounded page window", async () => {
-  const draft = await createTranscriptPublicationDraft({
-    title: "Newest comments",
-    pane,
-    agent,
-    assistantLabel: "Codex",
-    publicationId: "pub_newest123",
-    createdAt: "2026-07-16T12:00:00.000Z",
-    turns: [turn("Newest")],
-  });
+  const { draft, publicRootId } = await researchFixture(
+    "pub_newest123",
+    "Newest proposals",
+  );
   const requestedPages: number[] = [];
   const fetchImpl: typeof fetch = async (input) => {
     const url = new URL(String(input));
@@ -320,7 +260,11 @@ test("comment pagination keeps the newest bounded page window", async () => {
           ? [
               {
                 id: 601,
-                body: "Newest visible comment",
+                body: encodeResearchProposal({
+                  publicationId: draft.publication.publicationId,
+                  parentNodeId: publicRootId,
+                  prompt: "Newest visible proposal",
+                }),
                 created_at: "2026-07-16T13:00:00Z",
                 updated_at: "2026-07-16T13:00:00Z",
                 user: { login: "alice" },
@@ -355,7 +299,7 @@ test("comment pagination keeps the newest bounded page window", async () => {
   );
   assert.equal(page.statusCode, 200);
   assert.deepEqual(requestedPages, [1, 4, 5, 6]);
-  assert.match(page.body, /Newest visible comment/);
+  assert.match(page.body, /Newest visible proposal/);
   assert.equal(page.body.includes("Old comment 0"), false);
 });
 
@@ -584,6 +528,29 @@ test("published research accepts structured follow-up proposals and owner resolu
     prompt: "A second follow-up?",
     answerMarkdown: "Optional answer.",
   });
+
+  // The sign-out affordance now lives beside the proposal composer.
+  assert.match(page.body, /Signed in as @alice/);
+  const logout = await dispatch(
+    handler,
+    request(
+      "POST",
+      "/auth/logout",
+      new URLSearchParams({
+        csrfToken,
+        returnTo: `/p/proposal12345/n/${publicRootId}`,
+      }).toString(),
+      {
+        cookie: sessionCookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+    ),
+  );
+  assert.equal(logout.statusCode, 303);
+  assert.match(
+    logout.setCookies().find((value) => value.startsWith("qmux_session=")) ?? "",
+    /Max-Age=0/,
+  );
 });
 
 test("OAuth return paths reject response-header control characters", () => {
