@@ -44,6 +44,10 @@ export interface PublishedResearchNode {
   responseRevision: string | null;
   status: "complete" | "failed" | "cancelled";
   createdAt: number;
+  /** Run timing, when the source node recorded it; lets the public page show
+   * the app's "ran for" duration in the answer meta line. */
+  startedAt?: number | null;
+  completedAt?: number | null;
   queryAnchor?: PublishedResearchAnchor | null;
   contribution?: {
     githubLogin: string;
@@ -390,6 +394,17 @@ export function validatePublication(value: unknown): Publication {
       responseRevision,
       status,
       createdAt: finiteNumber(item.createdAt, `research.nodes[${index}].createdAt`),
+      ...(item.startedAt === null || item.startedAt === undefined
+        ? {}
+        : { startedAt: finiteNumber(item.startedAt, `research.nodes[${index}].startedAt`) }),
+      ...(item.completedAt === null || item.completedAt === undefined
+        ? {}
+        : {
+            completedAt: finiteNumber(
+              item.completedAt,
+              `research.nodes[${index}].completedAt`,
+            ),
+          }),
       ...(queryAnchor ? { queryAnchor } : {}),
       ...(contribution ? { contribution } : {}),
     };

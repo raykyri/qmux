@@ -1326,7 +1326,10 @@ function transcriptPage(
   webAuth: GitHubWebAuthConfig | null,
 ) {
   const author = gist.owner?.login ?? "GitHub user";
-  const description = `A published qmux transcript by ${author}.`;
+  const preview = followupPreviewText(
+    publication.transcript.messages.map((message) => message.text).join(" "),
+  ).slice(0, 180);
+  const description = preview || `A published qmux transcript by ${author}.`;
   const wordCount = countWords(
     publication.transcript.messages.map((message) => message.text).join(" "),
   );
@@ -1366,7 +1369,27 @@ function transcriptPage(
               <span>{formatDate(publication.updatedAt)}</span>
               <a href={gist.owner?.html_url ?? gist.html_url}>@{author}</a>
               {revision ? <span>Revision {revision.slice(0, 8)}</span> : null}
+              <button
+                type="button"
+                className="research-answer-copy"
+                data-qmux-copy="qmux-answer-markdown"
+                title="Copy conversation as Markdown"
+                hidden
+              >
+                Copy
+              </button>
             </footer>
+            <script
+              type="application/json"
+              id="qmux-answer-markdown"
+              dangerouslySetInnerHTML={{
+                __html: JSON.stringify(
+                  publication.transcript.messages
+                    .map((message) => `## ${message.label}\n\n${message.text.trim()}`)
+                    .join("\n\n"),
+                ).replace(/</g, "\\u003c"),
+              }}
+            />
             {!revision ? (
               <PublicationComments
                 gist={gist}
@@ -1407,12 +1430,13 @@ function researchPage(
     throw new PublicationHttpError(404, "That published research result was not found.");
   }
   const author = gist.owner?.login ?? "GitHub user";
-  const description =
-    publication.kind === "research-answer"
-      ? `A published qmux research answer by ${author}.`
-      : `Published qmux research by ${author}.`;
   const file = gist.files[selected.answerFile];
   const answerBody = answerBodyMarkdown(file.content ?? "", selected);
+  const description =
+    followupPreviewText(answerBody).slice(0, 180) ||
+    (publication.kind === "research-answer"
+      ? `A published qmux research answer by ${author}.`
+      : `Published qmux research by ${author}.`);
   const children = publication.research.nodes
     .filter((node) => node.parentId === selected.id)
     .sort((left, right) => left.createdAt - right.createdAt);
@@ -1421,6 +1445,12 @@ function researchPage(
     : null;
   const followupCount = Math.max(0, publication.research.nodes.length - 1);
   const wordCount = countWords(answerBody);
+  const runDuration =
+    typeof selected.startedAt === "number" &&
+    typeof selected.completedAt === "number" &&
+    selected.completedAt > selected.startedAt
+      ? selected.completedAt - selected.startedAt
+      : null;
   const isDocument = selected.kind === "document";
   const anchoredChildren = children.filter((child) => child.queryAnchor);
   const anchorData = anchoredChildren.map((child) => ({
@@ -1522,6 +1552,12 @@ function researchPage(
                 <span>
                   {wordCount.toLocaleString()} {wordCount === 1 ? "word" : "words"}
                 </span>
+                {runDuration !== null ? (
+                  <span>
+                    {selected.status !== "complete" ? "Ran for " : null}
+                    {formatDuration(runDuration)}
+                  </span>
+                ) : null}
                 <span>{formatDate(publication.updatedAt)}</span>
                 <a href={gist.owner?.html_url ?? gist.html_url}>@{author}</a>
                 {selected.status !== "complete" ? (
@@ -1530,6 +1566,17 @@ function researchPage(
                   </span>
                 ) : null}
                 {revision ? <span>Revision {revision.slice(0, 8)}</span> : null}
+                {answerBody ? (
+                  <button
+                    type="button"
+                    className="research-answer-copy"
+                    data-qmux-copy="qmux-answer-markdown"
+                    title="Copy answer as Markdown"
+                    hidden
+                  >
+                    Copy
+                  </button>
+                ) : null}
               </footer>
               {!revision ? (
                 <PublicationComments
@@ -1568,16 +1615,22 @@ function researchPage(
             ) : null}
           </div>
           {anchorData.length > 0 ? (
-            <>
-              <script
-                type="application/json"
-                id="qmux-anchor-data"
-                dangerouslySetInnerHTML={{
-                  __html: JSON.stringify(anchorData).replace(/</g, "\\u003c"),
-                }}
-              />
-              <script dangerouslySetInnerHTML={{ __html: ANCHOR_SCRIPT }} />
-            </>
+            <script
+              type="application/json"
+              id="qmux-anchor-data"
+              dangerouslySetInnerHTML={{
+                __html: JSON.stringify(anchorData).replace(/</g, "\\u003c"),
+              }}
+            />
+          ) : null}
+          {answerBody ? (
+            <script
+              type="application/json"
+              id="qmux-answer-markdown"
+              dangerouslySetInnerHTML={{
+                __html: JSON.stringify(answerBody).replace(/</g, "\\u003c"),
+              }}
+            />
           ) : null}
         </>
       ),
@@ -1654,6 +1707,7 @@ function workspaceShell({
           <footer className="page-footer">
             Published with <a href="/">qmux</a>
           </footer>
+          <script dangerouslySetInnerHTML={{ __html: PAGE_SCRIPT }} />
         </div>
       </div>
     </div>
@@ -1740,7 +1794,33 @@ function followupPreviewText(markdown: string) {
 // passage. Static markup stays complete without it: cards simply remain
 // stacked in the rail with their quotes. Served inline and allowed by a CSP
 // hash; keep it dependency-free and free of backticks.
-const ANCHOR_SCRIPT = `(() => {
+const PAGE_SCRIPT = `(() => {
+  // Copy-as-Markdown buttons: hidden in the static markup, revealed only when
+  // a clipboard is actually available, sourcing the raw markdown from an
+  // adjacent JSON data tag.
+  var copyButtons = document.querySelectorAll("[data-qmux-copy]");
+  for (var bIndex = 0; bIndex < copyButtons.length; bIndex += 1) {
+    (function (button) {
+      var source = document.getElementById(button.getAttribute("data-qmux-copy"));
+      if (!source || !navigator.clipboard) return;
+      var markdown;
+      try { markdown = JSON.parse(source.textContent || '""'); } catch (err) { return; }
+      if (!markdown) return;
+      button.hidden = false;
+      var label = button.textContent;
+      var restoreTimer = null;
+      button.addEventListener("click", function () {
+        navigator.clipboard.writeText(markdown).then(function () {
+          button.textContent = "Copied";
+          if (restoreTimer) clearTimeout(restoreTimer);
+          restoreTimer = setTimeout(function () {
+            button.textContent = label;
+          }, 1600);
+        });
+      });
+    })(copyButtons[bIndex]);
+  }
+
   var dataEl = document.getElementById("qmux-anchor-data");
   var root = document.getElementById("qmux-answer-root");
   var rail = document.querySelector(".research-followups");
@@ -1929,6 +2009,21 @@ const ANCHOR_SCRIPT = `(() => {
       entry.card.addEventListener("mouseleave", function () {
         setLinkedEntry(null);
       });
+      // Keyboard parity for the hover link: tabbing onto a card lights up its
+      // passage, scrolling it into view when it sits off screen. Guarded to
+      // focus-visible so mouse clicks don't jerk the page before navigating.
+      entry.card.addEventListener("focus", function () {
+        if (!entry.card.matches(":focus-visible")) return;
+        setLinkedEntry(entry);
+        var passage = entry.range.getBoundingClientRect();
+        if (passage.top < 0 || passage.bottom > window.innerHeight) {
+          var target = entry.range.startContainer.parentElement;
+          if (target) target.scrollIntoView({ block: "center" });
+        }
+      });
+      entry.card.addEventListener("blur", function () {
+        setLinkedEntry(null);
+      });
     })(resolved[lIndex]);
   }
 
@@ -2003,8 +2098,8 @@ const ANCHOR_SCRIPT = `(() => {
   }
 })();`;
 
-const ANCHOR_SCRIPT_CSP_HASH = `'sha256-${createHash("sha256")
-  .update(ANCHOR_SCRIPT)
+const PAGE_SCRIPT_CSP_HASH = `'sha256-${createHash("sha256")
+  .update(PAGE_SCRIPT)
   .digest("base64")}'`;
 
 // The follow-up rail's composer analogue on the public page: signed-in
@@ -2306,11 +2401,14 @@ function documentPage(input: { title: string; description: string; body: React.R
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="theme-color" content="#14171a" />
+        <link rel="icon" type="image/png" href="/logo.png" />
         <meta name="description" content={input.description} />
         <meta property="og:type" content="article" />
         <meta property="og:site_name" content="qmux" />
         <meta property="og:title" content={input.title} />
         <meta property="og:description" content={input.description} />
+        <meta property="og:image" content="/qmux.png" />
         <meta name="twitter:card" content="summary" />
         <title>{`${input.title} · qmux`}</title>
         <style>{PAGE_CSS}</style>
@@ -2375,12 +2473,25 @@ function sendHtml(
     // Scripts stay locked to the single static anchor-positioning script via
     // its hash; nothing dynamic or attacker-influenced is ever executable.
     "Content-Security-Policy":
-      `default-src 'none'; style-src 'unsafe-inline'; script-src ${ANCHOR_SCRIPT_CSP_HASH}; img-src data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'`,
+      `default-src 'none'; style-src 'unsafe-inline'; script-src ${PAGE_SCRIPT_CSP_HASH}; img-src data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'`,
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     ...extraHeaders,
   });
   response.end(method === "HEAD" ? undefined : body);
+}
+
+// The app's duration style: seconds under a minute, then m/s, then h/m.
+function formatDuration(milliseconds: number) {
+  const totalSeconds = Math.max(1, Math.round(milliseconds / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m ${totalSeconds % 60}s`;
+  }
+  return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
 }
 
 function formatDate(value: string) {
@@ -2524,6 +2635,8 @@ a { color:inherit; text-decoration:none; }
 .research-answer-meta a:hover { color:#c2cac5; }
 .research-meta-status.is-failed { color:var(--status-failed-fg); }
 .research-meta-status.is-cancelled { color:#9a938b; }
+.research-answer-copy { display:inline-flex; align-items:center; padding:2px 0; border:0; color:#7d8782; font:inherit; background:transparent; cursor:pointer; }
+.research-answer-copy:hover { color:#c2cac5; }
 
 /* Follow-up rail: quiet link cards; anchored ones sit beside their passage. */
 .research-followups { position:relative; display:flex; min-width:0; flex-direction:column; gap:16px; margin-top:2px; padding-right:2px; }
@@ -2617,6 +2730,11 @@ a { color:inherit; text-decoration:none; }
 .page-footer a { color:var(--text-subtle); }
 .page-footer a:hover { color:var(--text-secondary); text-decoration:underline; }
 
+/* Keyboard focus, in the app's accent. */
+a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-visible { outline:2px solid var(--accent-color); outline-offset:2px; border-radius:4px; }
+.research-followup-card:focus-visible { outline:2px solid var(--accent-color); outline-offset:3px; border-radius:10px; }
+.textarea:focus-visible { outline-offset:0; }
+
 .error-page { max-width:640px; margin:0 auto; padding:56px 24px 64px; }
 .error-page .brand { font-size:15px; }
 .error-page h1 { margin:36px 0 10px; color:var(--text-heading); font-size:22px; line-height:1.25; font-weight:600; letter-spacing:-0.02em; }
@@ -2633,6 +2751,39 @@ a { color:inherit; text-decoration:none; }
   .research-document-scroll { padding:24px 18px 32px; }
   .turn-markdown h1 { font-size:19px; }
   .publication-comment header time { width:100%; margin-left:0; }
+}
+
+/* Print/reader fallback: the dark theme becomes ink on paper, and everything
+   interactive (chrome, rail, composers, forms) drops away. */
+@media print {
+  :root { color-scheme:light; }
+  body { background:#ffffff; color:#1a1a1a; }
+  .doc-header, .research-followups, .proposal-composer, .comment-composer,
+  .github-sign-in, .sign-out-form, .page-footer, .research-answer-copy,
+  .section-heading-link { display:none !important; }
+  .research-response-grid { display:block; }
+  .research-document-scroll { padding:0; }
+  .turn-markdown, .research-response-content-root, .conversation-answer,
+  .comment-body, .publication-proposal .turn-markdown { color:#1a1a1a; }
+  .turn-markdown h1, .turn-markdown h2, .turn-markdown h3, .turn-markdown h4,
+  .turn-markdown h5, .turn-markdown h6 { color:#000000; }
+  .research-prompt { background:#f2f2f0; }
+  .research-prompt .turn-markdown { color:#1a1a1a; }
+  .research-prompt-quote { color:#555555; }
+  .conversation-prompt { background:#f6f6f4; border-left-color:#bbbbbb; }
+  .turn-markdown code { background:#f4f4f2; border-color:#dddddd; color:#1a1a1a; }
+  .turn-markdown pre { background:#f8f8f6; border-color:#dddddd; }
+  .turn-markdown blockquote { color:#444444; border-left-color:#bbbbbb; }
+  .turn-markdown a { color:#1a1a1a; text-decoration:underline; }
+  .turn-markdown th { background:#f0f0ee; color:#1a1a1a; border-color:#cccccc; }
+  .turn-markdown td { border-color:#dddddd; }
+  .turn-markdown-table-wrap { border-color:#cccccc; }
+  .research-answer-meta, .comments-empty { color:#666666; }
+  .publication-comment header > a { color:#333333; }
+  .publication-comment header time { color:#777777; }
+  .publication-comments, .publication-comment { border-color:#dddddd; }
+  ::highlight(qmux-research-query-anchors) { background:#f3e9c0; }
+  ::highlight(qmux-research-anchor-link) { background:#f3e9c0; }
 }
 `;
 

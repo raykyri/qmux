@@ -224,6 +224,8 @@ export async function createResearchPublicationDraft(
       responseRevision: content.responseRevision ?? null,
       status: node.status as "complete" | "failed" | "cancelled",
       createdAt: node.createdAt,
+      ...(typeof node.startedAt === "number" ? { startedAt: node.startedAt } : {}),
+      ...(typeof node.completedAt === "number" ? { completedAt: node.completedAt } : {}),
       ...(queryAnchor ? { queryAnchor } : {}),
       ...(contribution ? { contribution } : {}),
     });
