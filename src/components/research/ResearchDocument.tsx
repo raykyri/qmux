@@ -271,6 +271,27 @@ function rangeForTextOffsets(root: HTMLElement, start: number, end: number) {
   return range;
 }
 
+// Rows whose text is transcript machinery rather than the assistant's prose:
+// tool calls and their payloads, the "Raw" disclosure (also a `.tool-block`,
+// and it can nest inside a message), collapsed thinking, and grouped activity.
+// Selections that touch any of these carry no meaning worth anchoring, so
+// highlight/ask is not offered on them.
+const NON_TEXT_ROW_SELECTOR =
+  ".tool-block, .thinking-block, .activity-group-block, .research-conversation-activity";
+
+/** True when the range starts, ends, or spans across any non-text row. Because
+ * `.tool-block` disclosures can sit inside a `.research-response-message`, this
+ * intersection test — not a positive "is inside a message" check — is what
+ * keeps highlights confined to prose. */
+function selectionTouchesNonTextRow(root: HTMLElement, range: Range) {
+  for (const row of root.querySelectorAll(NON_TEXT_ROW_SELECTOR)) {
+    if (range.intersectsNode(row)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function selectionOffsets(root: HTMLElement, range: Range) {
   if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
     return null;
@@ -333,6 +354,27 @@ function flatOffsetAtPoint(root: HTMLElement, clientX: number, clientY: number) 
     return position ? flatTextOffsetAt(root, position.offsetNode, position.offset) : null;
   }
   return null;
+}
+
+/** Flat-offset span of the `.research-response-message` that encloses the
+ * whole selection, or null when the selection is not confined to a single
+ * message. A message renders the same text in every transcript view, but the
+ * rows around it do not, so anchoring context taken near a message edge is
+ * clamped to this span — otherwise a prefix/suffix that reached into an
+ * adjacent tool or thinking row would only resolve in the view it was taken
+ * in, and the highlight would vanish on toggle. */
+function enclosingMessageFlatBounds(root: HTMLElement, range: Range) {
+  const messageOf = (node: Node) =>
+    (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(
+      ".research-response-message",
+    ) ?? null;
+  const message = messageOf(range.startContainer);
+  if (!message || message !== messageOf(range.endContainer)) {
+    return null;
+  }
+  const start = flatTextOffsetAt(root, message, 0);
+  const end = flatTextOffsetAt(root, message, message.childNodes.length);
+  return start !== null && end !== null ? { start, end } : null;
 }
 
 function textContextSlice(text: string, start: number, end: number) {
@@ -804,15 +846,24 @@ export default function ResearchDocument({
     void refreshPublicationProposals();
   }, [refreshPublicationProposals, publicationBinding?.updatedAt]);
 
-  // A selection anchor belongs to one rendered projection. Navigation or a
-  // transcript-visibility change invalidates its offsets, so never leave an
-  // action from the previous view floating over the next one.
+  // The floating action bar caches pixel geometry and a live selection from
+  // one rendered projection, so a transcript-visibility change (or navigation)
+  // leaves it pointing at content that has moved: drop it whenever the view
+  // changes.
   useEffect(() => {
     setHighlightAction(null);
-    setAskAnchor(null);
-    setLinkedAnchorNodeId(null);
     window.getSelection()?.removeAllRanges();
   }, [treeId, selectedNodeId, content?.responseRevision, showAllTurns, showFullTrace]);
+
+  // The in-progress ask and the hover-linked pair, unlike the action bar, hold
+  // no cached geometry: both re-resolve their passage against whatever
+  // projection is on screen, so a mere transcript toggle must not drop them —
+  // only a node or revision change invalidates the anchor. Declared before the
+  // restore below so that when both fire in the same pass, the restore wins.
+  useEffect(() => {
+    setAskAnchor(null);
+    setLinkedAnchorNodeId(null);
+  }, [treeId, selectedNodeId, content?.responseRevision]);
 
   // Restore a persisted in-progress ask once its node's content is on screen.
   // Declared after the reset above so that when both fire in the same pass
@@ -1165,6 +1216,10 @@ export default function ResearchDocument({
     setShowAllTurns(
       Boolean(treeId && selected && navigationRef.current[treeId]?.expandedByNode?.[selected]),
     );
+    // Full-trace is a per-node reading choice, not a sticky session mode: each
+    // node opens on its answer so revealing one node's transcript never flips
+    // the default view for the next.
+    setShowFullTrace(false);
   }, [treeId, detail?.tree.rootNodeId]);
 
   // Switches the displayed node without touching visit history: records the
@@ -1193,6 +1248,9 @@ export default function ResearchDocument({
       setContent(null);
       setContentError(null);
       setShowAllTurns(Boolean(navigation.expandedByNode?.[nodeId]));
+      // A node's transcript-view choice does not carry to the next node it is
+      // reset with the selection, matching the answer-first default.
+      setShowFullTrace(false);
       setSelectedNodeId(nodeId);
     },
     [selectedNodeId, treeId],
@@ -2057,6 +2115,13 @@ export default function ResearchDocument({
       return;
     }
     const range = selection.getRangeAt(0);
+    // Tool calls, thinking, and other non-text rows are transcript machinery,
+    // not answer prose: never offer highlight/ask when the selection touches
+    // one, whether it sits inside such a row or drags across it.
+    if (selectionTouchesNonTextRow(root, range)) {
+      setHighlightAction(null);
+      return;
+    }
     const offsets = selectionOffsets(root, range);
     if (!offsets) {
       setHighlightAction(null);
@@ -2078,6 +2143,12 @@ export default function ResearchDocument({
       setHighlightAction(null);
       return;
     }
+    // Keep the quote's surrounding context inside the message it belongs to so
+    // the anchor resolves the same in either transcript view (see
+    // enclosingMessageFlatBounds).
+    const messageBounds = enclosingMessageFlatBounds(root, range);
+    const contextFloor = messageBounds?.start ?? 0;
+    const contextCeil = messageBounds?.end ?? projection.length;
     const anchorForOffsets = (span: {
       start: number;
       end: number;
@@ -2090,13 +2161,13 @@ export default function ResearchDocument({
       exact: projection.slice(span.start, span.end),
       prefix: textContextSlice(
         projection,
-        Math.max(0, span.start - RESEARCH_HIGHLIGHT_CONTEXT_LENGTH),
+        Math.max(contextFloor, span.start - RESEARCH_HIGHLIGHT_CONTEXT_LENGTH),
         span.start,
       ),
       suffix: textContextSlice(
         projection,
         span.end,
-        span.end + RESEARCH_HIGHLIGHT_CONTEXT_LENGTH,
+        Math.min(contextCeil, span.end + RESEARCH_HIGHLIGHT_CONTEXT_LENGTH),
       ),
     });
     const expandOffsets = expandedResearchHighlightOffsets(offsets, resolvedRanges);
