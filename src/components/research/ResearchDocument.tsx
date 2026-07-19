@@ -814,13 +814,39 @@ function sameSegmentChildren(a: ResearchNode[], b: ResearchNode[]) {
   );
 }
 
-/** Everything compares by identity except the two props rebuilt on every
- * research event, which compare by the fields the segment actually renders.
+function sameSegmentConnectors(
+  previous: SegmentAnchorConnector[],
+  next: SegmentAnchorConnector[],
+) {
+  return (
+    previous.length === next.length &&
+    previous.every((connector, index) => {
+      const candidate = next[index];
+      return (
+        connector.id === candidate.id &&
+        connector.segmentId === candidate.segmentId &&
+        connector.d === candidate.d &&
+        connector.x === candidate.x &&
+        connector.y === candidate.y
+      );
+    })
+  );
+}
+
+/** Everything compares by identity except the node, card, placement, and
+ * connector props rebuilt on research/layout events; those compare only the
+ * fields and child ids this segment actually renders.
  * The generic loop keeps future props safe by default: a new prop falls back
  * to identity comparison, which can only cost memo hits, never stale UI. */
 function threadSegmentPropsEqual(prev: ThreadSegmentProps, next: ThreadSegmentProps) {
   for (const key of Object.keys(next) as (keyof ThreadSegmentProps)[]) {
-    if (key === "node" || key === "segmentChildren") {
+    if (
+      key === "node" ||
+      key === "segmentChildren" ||
+      key === "connectors" ||
+      key === "anchoredCardTops" ||
+      key === "resolvedCardTops"
+    ) {
       continue;
     }
     if (!Object.is(prev[key], next[key])) {
@@ -829,14 +855,471 @@ function threadSegmentPropsEqual(prev: ThreadSegmentProps, next: ThreadSegmentPr
   }
   return (
     sameSegmentNode(prev.node, next.node) &&
-    sameSegmentChildren(prev.segmentChildren, next.segmentChildren)
+    sameSegmentChildren(prev.segmentChildren, next.segmentChildren) &&
+    sameSegmentConnectors(prev.connectors, next.connectors) &&
+    sameRailCardTops(
+      next.segmentChildren,
+      prev.anchoredCardTops,
+      next.anchoredCardTops,
+    ) &&
+    sameRailCardTops(
+      next.segmentChildren,
+      prev.resolvedCardTops,
+      next.resolvedCardTops,
+    )
   );
 }
 
-/** One thread segment: prompt, response, meta footer, and its rail of branch
- * cards. Memoized with a field-level comparator so the 4×/s detail
- * replacements during streaming only re-render segments whose rendered state
- * actually changed. */
+interface ResearchAnswerPaneProps {
+  view: SegmentView;
+  node: ResearchNode;
+  contentError: string | null;
+  segmentActive: boolean;
+  showRunControls: boolean;
+  cancelling: boolean;
+  durationText: string | null;
+  hiddenHighlightCount: number;
+  pointerOverHighlight: boolean;
+  menuOpen: boolean;
+  registerSegmentElement: ThreadSegmentProps["registerSegmentElement"];
+  onExpandTurns: ThreadSegmentProps["onExpandTurns"];
+  onRetryContentLoad: ThreadSegmentProps["onRetryContentLoad"];
+  onShowFullTrace: ThreadSegmentProps["onShowFullTrace"];
+  onCopyAnswer: ThreadSegmentProps["onCopyAnswer"];
+  onOpenAnswerMenu: ThreadSegmentProps["onOpenAnswerMenu"];
+  onOpenPane: ThreadSegmentProps["onOpenPane"];
+  onCancelNode: ThreadSegmentProps["onCancelNode"];
+  onRootMouseDown: ThreadSegmentProps["onRootMouseDown"];
+  onRootMouseUp: ThreadSegmentProps["onRootMouseUp"];
+  onRootKeyUp: ThreadSegmentProps["onRootKeyUp"];
+  onRootClick: ThreadSegmentProps["onRootClick"];
+  onRootMouseMove: ThreadSegmentProps["onRootMouseMove"];
+  onRootMouseLeave: ThreadSegmentProps["onRootMouseLeave"];
+}
+
+function answerPanePropsEqual(prev: ResearchAnswerPaneProps, next: ResearchAnswerPaneProps) {
+  for (const key of Object.keys(next) as (keyof ResearchAnswerPaneProps)[]) {
+    if (key === "node") {
+      continue;
+    }
+    if (!Object.is(prev[key], next[key])) {
+      return false;
+    }
+  }
+  return sameSegmentNode(prev.node, next.node);
+}
+
+/** The expensive answer subtree is isolated from its segment's live card
+ * previews. A follow-up can now stream in the rail without rebuilding the
+ * answer's timeline element tree or walking its Markdown renderers. */
+const ResearchAnswerPane = memo(function ResearchAnswerPane({
+  view,
+  node,
+  contentError,
+  segmentActive,
+  showRunControls,
+  cancelling,
+  durationText,
+  hiddenHighlightCount,
+  pointerOverHighlight,
+  menuOpen,
+  registerSegmentElement,
+  onExpandTurns,
+  onRetryContentLoad,
+  onShowFullTrace,
+  onCopyAnswer,
+  onOpenAnswerMenu,
+  onOpenPane,
+  onCancelNode,
+  onRootMouseDown,
+  onRootMouseUp,
+  onRootKeyUp,
+  onRootClick,
+  onRootMouseMove,
+  onRootMouseLeave,
+}: ResearchAnswerPaneProps) {
+  return (
+    <section className="research-response" aria-label="Research response">
+      {!view.content ? (
+        <div className="research-response-loading">
+          {contentError ? (
+            <>
+              <p role="alert">{contentError}</p>
+              <button className="control-button" type="button" onClick={onRetryContentLoad}>
+                Retry
+              </button>
+            </>
+          ) : (
+            <LoaderCircle className="research-spinner" size={18} aria-hidden="true" />
+          )}
+        </div>
+      ) : (
+        <>
+          {contentError ? (
+            <div className="research-response-stale" role="alert">
+              <p>Refreshing this response failed: {contentError}</p>
+              <button className="control-button" type="button" onClick={onRetryContentLoad}>
+                Retry
+              </button>
+            </div>
+          ) : null}
+          {node.status === "failed" && view.content.turns.length > 0 ? (
+            <p className="research-response-error" role="alert">
+              {node.error ?? "The research run failed."}
+            </p>
+          ) : null}
+          {view.displayedTimelineItems.length === 0 ? (
+            <p className="research-response-empty">
+              {node.status === "failed"
+                ? node.error ?? "The research run failed."
+                : node.status === "cancelled"
+                  ? "Research was cancelled."
+                  : view.content.sourceError
+                    ? `The response is no longer available: ${view.content.sourceError}`
+                    : node.status === "complete"
+                      ? "Research completed, but its response is unavailable. Open the original session transcript if it still exists."
+                      : segmentActive
+                        ? view.timelineItems.length > 0
+                          ? "Waiting for the final response…"
+                          : "Working…"
+                        : "No response is available."}
+            </p>
+          ) : (
+            <>
+              {view.hiddenTimelineItemCount > 0 && !view.isConversation ? (
+                <button
+                  type="button"
+                  className="control-button research-show-earlier"
+                  onClick={() => onExpandTurns(node.id)}
+                >
+                  Show {view.hiddenTimelineItemCount} earlier response item
+                  {view.hiddenTimelineItemCount === 1 ? "" : "s"}
+                </button>
+              ) : null}
+              <div
+                ref={(element) => registerSegmentElement(node.id, "root", element)}
+                data-node-id={node.id}
+                className={`research-response-content-root${
+                  pointerOverHighlight ? " is-highlight-hovered" : ""
+                }`}
+                onMouseDown={onRootMouseDown}
+                onMouseUp={onRootMouseUp}
+                onKeyUp={onRootKeyUp}
+                onClick={onRootClick}
+                onMouseMove={onRootMouseMove}
+                onMouseLeave={onRootMouseLeave}
+              >
+                {view.visibleTimelineItems.map((item) => (
+                  <ResearchTimelineItem
+                    key={item.key}
+                    item={item}
+                    conversation={view.isConversation}
+                  />
+                ))}
+              </div>
+              {view.hiddenTimelineItemCount > 0 && view.isConversation ? (
+                <button
+                  type="button"
+                  className="control-button research-show-earlier"
+                  onClick={() => onExpandTurns(node.id)}
+                >
+                  Show {view.hiddenTimelineItemCount} more turn
+                  {view.hiddenTimelineItemCount === 1 ? "" : "s"}
+                </button>
+              ) : null}
+            </>
+          )}
+          <footer className="research-answer-meta">
+            <span>
+              {view.answerWordCount.toLocaleString()} {view.answerWordCount === 1 ? "word" : "words"}
+            </span>
+            {durationText ? <span>{durationText}</span> : null}
+            {hiddenHighlightCount > 0 ? (
+              <span
+                className="research-hidden-highlights"
+                title="These saved highlights couldn't be located in the current view. Their passages may sit in content that isn't rendered right now."
+              >
+                {hiddenHighlightCount} {hiddenHighlightCount === 1 ? "highlight" : "highlights"} not
+                visible in this view
+                {view.hasTranscriptActivity && !view.showFullTrace ? (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      className="control-button research-hidden-highlights-reveal"
+                      onClick={() => onShowFullTrace(node.id)}
+                    >
+                      Show full transcript
+                    </button>
+                  </>
+                ) : null}
+              </span>
+            ) : null}
+            {node.status === "complete" && (view.conversationCopyText ?? view.rawAnswer) ? (
+              <button
+                type="button"
+                className="control-button research-answer-copy"
+                title={view.isConversation ? "Copy conversation as Markdown" : "Copy answer as Markdown"}
+                aria-label={
+                  view.isConversation ? "Copy conversation as Markdown" : "Copy answer as Markdown"
+                }
+                onClick={() => onCopyAnswer(view)}
+              >
+                <Copy size={14} aria-hidden="true" />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="control-button research-answer-menu-trigger"
+              title="Answer actions"
+              aria-label="Answer actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              data-research-answer-menu-trigger
+              onClick={(event) => onOpenAnswerMenu(event.currentTarget, node.id)}
+            >
+              <MoreHorizontal size={15} aria-hidden="true" />
+            </button>
+            {showRunControls ? (
+              <div className="research-segment-actions">
+                {node.paneId ? (
+                  <button
+                    type="button"
+                    className="control-button research-segment-action"
+                    onClick={() => onOpenPane(node.paneId!)}
+                  >
+                    Open terminal
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="control-button research-segment-action"
+                  disabled={cancelling}
+                  onClick={() => onCancelNode(node.id)}
+                >
+                  {cancelling
+                    ? "Cancelling…"
+                    : node.status === "cancelled"
+                      ? "Retry cancel"
+                      : "Cancel"}
+                </button>
+              </div>
+            ) : null}
+          </footer>
+        </>
+      )}
+    </section>
+  );
+}, answerPanePropsEqual);
+
+interface ResearchFollowupRailProps {
+  nodeId: string;
+  unreadCardKey: string;
+  linkedAnchorId: string | null;
+  segmentChildren: ResearchNode[];
+  anchoredCardTops: Record<string, number>;
+  resolvedCardTops: Record<string, number>;
+  askComposer: React.ReactNode;
+  proposalsSection: React.ReactNode;
+  registerSegmentElement: ThreadSegmentProps["registerSegmentElement"];
+  onSelectNode: ThreadSegmentProps["onSelectNode"];
+  onOpenFollowupMenu: ThreadSegmentProps["onOpenFollowupMenu"];
+  onCardHover: ThreadSegmentProps["onCardHover"];
+}
+
+function sameRailCardTops(
+  children: ResearchNode[],
+  previous: Record<string, number>,
+  next: Record<string, number>,
+) {
+  return children.every((child) => previous[child.id] === next[child.id]);
+}
+
+function followupRailPropsEqual(prev: ResearchFollowupRailProps, next: ResearchFollowupRailProps) {
+  for (const key of Object.keys(next) as (keyof ResearchFollowupRailProps)[]) {
+    if (key === "segmentChildren" || key === "anchoredCardTops" || key === "resolvedCardTops") {
+      continue;
+    }
+    if (!Object.is(prev[key], next[key])) {
+      return false;
+    }
+  }
+  return (
+    sameSegmentChildren(prev.segmentChildren, next.segmentChildren) &&
+    sameRailCardTops(next.segmentChildren, prev.anchoredCardTops, next.anchoredCardTops) &&
+    sameRailCardTops(next.segmentChildren, prev.resolvedCardTops, next.resolvedCardTops)
+  );
+}
+
+/** The rail owns card previews and anchored placement. Its comparator ignores
+ * placement changes belonging to other segments, so one moving card no longer
+ * invalidates every rail in the rendered thread. */
+const ResearchFollowupRail = memo(function ResearchFollowupRail({
+  nodeId,
+  unreadCardKey,
+  linkedAnchorId,
+  segmentChildren,
+  anchoredCardTops,
+  resolvedCardTops,
+  askComposer,
+  proposalsSection,
+  registerSegmentElement,
+  onSelectNode,
+  onOpenFollowupMenu,
+  onCardHover,
+}: ResearchFollowupRailProps) {
+  const unreadCardIds = unreadCardKey ? new Set(unreadCardKey.split(",")) : null;
+  const stackedChildren = segmentChildren.filter(
+    (child) => anchoredCardTops[child.id] === undefined,
+  );
+  const anchoredChildren = segmentChildren
+    .filter((child) => anchoredCardTops[child.id] !== undefined)
+    .map((child) => ({
+      child,
+      top: resolvedCardTops[child.id] ?? anchoredCardTops[child.id],
+    }))
+    .sort((a, b) => a.top - b.top);
+
+  const renderFollowupCard = (child: ResearchNode, anchoredTop?: number) => {
+    const isUnread = unreadCardIds?.has(child.id) ?? false;
+    return (
+      <button
+        key={child.id}
+        type="button"
+        className={`control-button research-followup-card${
+          anchoredTop !== undefined ? " is-anchored" : ""
+        }${linkedAnchorId === child.id ? " is-anchor-linked" : ""}${
+          isUnread ? " has-unread" : ""
+        }`}
+        style={anchoredTop !== undefined ? { top: anchoredTop } : undefined}
+        data-node-id={child.id}
+        onClick={() => onSelectNode(child.id)}
+        onMouseEnter={child.queryAnchor ? () => onCardHover(child.id, true) : undefined}
+        onMouseLeave={child.queryAnchor ? () => onCardHover(child.id, false) : undefined}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenFollowupMenu(child.id, event.clientX, event.clientY);
+        }}
+      >
+        {isUnread ? (
+          <span className="research-followup-unread" aria-label="New answer, not opened yet" />
+        ) : null}
+        {child.queryAnchor ? (
+          <span className="research-followup-quote">{quoteDisplayText(child.queryAnchor.exact)}</span>
+        ) : null}
+        <strong>{child.prompt}</strong>
+        {child.responsePreview ? (
+          <TranscriptMarkdown
+            text={child.responsePreview}
+            className="research-followup-preview"
+            imageBehavior="open"
+            inline
+          />
+        ) : null}
+        {child.status !== "complete" ? (
+          <small className={`is-${child.status}`}>
+            {child.status === "running" ? (
+              <LoaderCircle
+                className="research-spinner research-followup-status-spinner"
+                size={11}
+                aria-hidden="true"
+              />
+            ) : null}
+            {statusLabel(child.status)}
+          </small>
+        ) : null}
+      </button>
+    );
+  };
+
+  return (
+    <aside
+      ref={(element) => registerSegmentElement(nodeId, "aside", element)}
+      className="research-followups"
+      data-node-id={nodeId}
+      aria-label="Follow-ups"
+    >
+      {askComposer}
+      <div className="research-followup-cards" data-node-id={nodeId}>
+        {stackedChildren.map((child) => renderFollowupCard(child))}
+      </div>
+      {anchoredChildren.map(({ child, top }) => renderFollowupCard(child, top))}
+      {proposalsSection}
+    </aside>
+  );
+}, followupRailPropsEqual);
+
+const ResearchConnectorOverlay = memo(function ResearchConnectorOverlay({
+  connectors,
+  linkedAnchorId,
+}: {
+  connectors: SegmentAnchorConnector[];
+  linkedAnchorId: string | null;
+}) {
+  if (connectors.length === 0) {
+    return null;
+  }
+  return (
+    <svg className="research-anchor-connector" aria-hidden="true">
+      {connectors.map((connector) => (
+        <g
+          key={connector.id}
+          className={`research-anchor-connector-pair${
+            linkedAnchorId === connector.id ? " is-anchor-linked" : ""
+          }`}
+        >
+          <path d={connector.d} />
+          <circle cx={connector.x} cy={connector.y} r={2} />
+        </g>
+      ))}
+    </svg>
+  );
+}, (previous, next) =>
+  previous.linkedAnchorId === next.linkedAnchorId &&
+  sameSegmentConnectors(previous.connectors, next.connectors));
+
+const ResearchSegmentPrompt = memo(function ResearchSegmentPrompt({
+  visible,
+  index,
+  parentNodeId,
+  queryQuote,
+  prompt,
+  onSelectNode,
+}: {
+  visible: boolean;
+  index: number;
+  parentNodeId: string | null;
+  queryQuote: string | null;
+  prompt: string;
+  onSelectNode: (nodeId: string) => void;
+}) {
+  if (!visible) {
+    return null;
+  }
+  return (
+    <div className="research-prompt">
+      {index === 0 && parentNodeId ? (
+        <button
+          type="button"
+          className="control-button research-parent-link"
+          onClick={() => onSelectNode(parentNodeId)}
+        >
+          <ArrowLeft size={13} aria-hidden="true" />
+          Back
+        </button>
+      ) : null}
+      {queryQuote ? (
+        <blockquote className="research-prompt-quote">{quoteDisplayText(queryQuote)}</blockquote>
+      ) : null}
+      <TranscriptMarkdown text={prompt} imageBehavior="open" inline />
+    </div>
+  );
+});
+
+/** Structural shell for one thread segment. It retains the shared grid and DOM
+ * registration points needed by cross-column geometry, while the prompt,
+ * answer, connector, and rail subtrees own independent memo boundaries. */
 const ThreadSegment = memo(function ThreadSegment({
   view,
   node,
@@ -876,327 +1359,69 @@ const ThreadSegment = memo(function ThreadSegment({
   onRootMouseMove,
   onRootMouseLeave,
 }: ThreadSegmentProps) {
-  const unreadCardIds = unreadCardKey ? new Set(unreadCardKey.split(",")) : null;
-  const stackedChildren = segmentChildren.filter(
-    (child) => anchoredCardTops[child.id] === undefined,
-  );
-  const anchoredChildren = segmentChildren
-    .filter((child) => anchoredCardTops[child.id] !== undefined)
-    .map((child) => ({
-      child,
-      // The measuring pass has not seen a brand-new card yet; its desired
-      // top stands in until resolution lands (within the same pre-paint
-      // commit cycle).
-      top: resolvedCardTops[child.id] ?? anchoredCardTops[child.id],
-    }))
-    .sort((a, b) => a.top - b.top);
-
-  // One renderer for both placements: cards whose query anchor resolved sit
-  // absolutely beside their passage; everything else stacks in flow. A card
-  // with an anchor that no longer resolves keeps its quote but rejoins the
-  // stack.
-  const renderFollowupCard = (child: ResearchNode, anchoredTop?: number) => {
-    const isUnread = unreadCardIds?.has(child.id) ?? false;
-    return (
-    <button
-      key={child.id}
-      type="button"
-      className={`control-button research-followup-card${
-        anchoredTop !== undefined ? " is-anchored" : ""
-      }${linkedAnchorId === child.id ? " is-anchor-linked" : ""}${
-        isUnread ? " has-unread" : ""
-      }`}
-      style={anchoredTop !== undefined ? { top: anchoredTop } : undefined}
-      data-node-id={child.id}
-      onClick={() => onSelectNode(child.id)}
-      onMouseEnter={child.queryAnchor ? () => onCardHover(child.id, true) : undefined}
-      onMouseLeave={child.queryAnchor ? () => onCardHover(child.id, false) : undefined}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        onOpenFollowupMenu(child.id, event.clientX, event.clientY);
-      }}
-    >
-      {isUnread ? (
-        <span className="research-followup-unread" aria-label="New answer, not opened yet" />
-      ) : null}
-      {child.queryAnchor ? (
-        <span className="research-followup-quote">
-          {quoteDisplayText(child.queryAnchor.exact)}
-        </span>
-      ) : null}
-      <strong>{child.prompt}</strong>
-      {child.responsePreview ? (
-        <TranscriptMarkdown
-          text={child.responsePreview}
-          className="research-followup-preview"
-          imageBehavior="open"
-          inline
-        />
-      ) : null}
-      {child.status !== "complete" ? (
-        <small className={`is-${child.status}`}>
-          {child.status === "running" ? (
-            <LoaderCircle
-              className="research-spinner research-followup-status-spinner"
-              size={11}
-              aria-hidden="true"
-            />
-          ) : null}
-          {statusLabel(child.status)}
-        </small>
-      ) : null}
-    </button>
-    );
-  };
-
   return (
     <div
       ref={(element) => registerSegmentElement(node.id, "anchor", element)}
       className={`research-thread-segment${isSelected ? " is-selected" : ""}`}
       data-segment-anchor={node.id}
     >
-      {!view.isDocument && !view.isConversation ? (
-        <div className="research-prompt">
-          {index === 0 && node.parentNodeId ? (
-            <button
-              type="button"
-              className="control-button research-parent-link"
-              onClick={() => onSelectNode(node.parentNodeId!)}
-            >
-              <ArrowLeft size={13} aria-hidden="true" />
-              Back
-            </button>
-          ) : null}
-          {node.queryAnchor ? (
-            <blockquote className="research-prompt-quote">
-              {quoteDisplayText(node.queryAnchor.exact)}
-            </blockquote>
-          ) : null}
-          <TranscriptMarkdown text={node.prompt} imageBehavior="open" inline />
-        </div>
-      ) : null}
+      <ResearchSegmentPrompt
+        visible={!view.isDocument && !view.isConversation}
+        index={index}
+        parentNodeId={node.parentNodeId ?? null}
+        queryQuote={node.queryAnchor?.exact ?? null}
+        prompt={node.prompt}
+        onSelectNode={onSelectNode}
+      />
       <div
         ref={(element) => registerSegmentElement(node.id, "grid", element)}
         className="research-response-grid"
         data-node-id={node.id}
       >
-        {connectors.length > 0 ? (
-          <svg className="research-anchor-connector" aria-hidden="true">
-            {connectors.map((connector) => (
-              <g
-                key={connector.id}
-                className={`research-anchor-connector-pair${
-                  linkedAnchorId === connector.id ? " is-anchor-linked" : ""
-                }`}
-              >
-                <path d={connector.d} />
-                <circle cx={connector.x} cy={connector.y} r={2} />
-              </g>
-            ))}
-          </svg>
-        ) : null}
-        <section className="research-response" aria-label="Research response">
-          {!view.content ? (
-            <div className="research-response-loading">
-              {contentError ? (
-                <>
-                  <p role="alert">{contentError}</p>
-                  <button className="control-button" type="button" onClick={onRetryContentLoad}>
-                    Retry
-                  </button>
-                </>
-              ) : (
-                <LoaderCircle className="research-spinner" size={18} aria-hidden="true" />
-              )}
-            </div>
-          ) : (
-            <>
-              {contentError ? (
-                // A refetch failure with stale content on screen (the final
-                // post-completion fetch, a mid-run poll) would otherwise be
-                // invisible: the loading-branch error above only renders
-                // while nothing is loaded, silently passing off the last
-                // loaded response as current.
-                <div className="research-response-stale" role="alert">
-                  <p>Refreshing this response failed: {contentError}</p>
-                  <button className="control-button" type="button" onClick={onRetryContentLoad}>
-                    Retry
-                  </button>
-                </div>
-              ) : null}
-              {node.status === "failed" && view.content.turns.length > 0 ? (
-                <p className="research-response-error" role="alert">
-                  {node.error ?? "The research run failed."}
-                </p>
-              ) : null}
-              {view.displayedTimelineItems.length === 0 ? (
-                <p className="research-response-empty">
-                  {node.status === "failed"
-                    ? node.error ?? "The research run failed."
-                    : node.status === "cancelled"
-                      ? "Research was cancelled."
-                      : view.content.sourceError
-                        ? `The response is no longer available: ${view.content.sourceError}`
-                        : node.status === "complete"
-                          ? "Research completed, but its response is unavailable. Open the original session transcript if it still exists."
-                          : segmentActive
-                            ? view.timelineItems.length > 0
-                              ? "Waiting for the final response…"
-                              : "Working…"
-                            : "No response is available."}
-                </p>
-              ) : (
-                <>
-                  {view.hiddenTimelineItemCount > 0 && !view.isConversation ? (
-                    <button
-                      type="button"
-                      className="control-button research-show-earlier"
-                      onClick={() => onExpandTurns(node.id)}
-                    >
-                      Show {view.hiddenTimelineItemCount} earlier response item
-                      {view.hiddenTimelineItemCount === 1 ? "" : "s"}
-                    </button>
-                  ) : null}
-                  <div
-                    ref={(element) => registerSegmentElement(node.id, "root", element)}
-                    data-node-id={node.id}
-                    className={`research-response-content-root${
-                      pointerOverHighlight ? " is-highlight-hovered" : ""
-                    }`}
-                    onMouseDown={onRootMouseDown}
-                    onMouseUp={onRootMouseUp}
-                    onKeyUp={onRootKeyUp}
-                    onClick={onRootClick}
-                    onMouseMove={onRootMouseMove}
-                    onMouseLeave={onRootMouseLeave}
-                  >
-                    {view.visibleTimelineItems.map((item) => (
-                      <ResearchTimelineItem
-                        key={item.key}
-                        item={item}
-                        conversation={view.isConversation}
-                      />
-                    ))}
-                  </div>
-                  {view.hiddenTimelineItemCount > 0 && view.isConversation ? (
-                    // Conversations window from the top (they read from
-                    // their opening question), so the expander sits at the
-                    // bottom where the hidden turns continue.
-                    <button
-                      type="button"
-                      className="control-button research-show-earlier"
-                      onClick={() => onExpandTurns(node.id)}
-                    >
-                      Show {view.hiddenTimelineItemCount} more turn
-                      {view.hiddenTimelineItemCount === 1 ? "" : "s"}
-                    </button>
-                  ) : null}
-                </>
-              )}
-              <footer className="research-answer-meta">
-                <span>
-                  {view.answerWordCount.toLocaleString()}{" "}
-                  {view.answerWordCount === 1 ? "word" : "words"}
-                </span>
-                {durationText ? <span>{durationText}</span> : null}
-                {hiddenHighlightCount > 0 ? (
-                  <span
-                    className="research-hidden-highlights"
-                    title="These saved highlights couldn't be located in the current view. Their passages may sit in content that isn't rendered right now."
-                  >
-                    {hiddenHighlightCount}{" "}
-                    {hiddenHighlightCount === 1 ? "highlight" : "highlights"} not
-                    visible in this view
-                    {view.hasTranscriptActivity && !view.showFullTrace ? (
-                      <>
-                        {" · "}
-                        <button
-                          type="button"
-                          className="control-button research-hidden-highlights-reveal"
-                          onClick={() => onShowFullTrace(node.id)}
-                        >
-                          Show full transcript
-                        </button>
-                      </>
-                    ) : null}
-                  </span>
-                ) : null}
-                {node.status === "complete" &&
-                (view.conversationCopyText ?? view.rawAnswer) ? (
-                  <button
-                    type="button"
-                    className="control-button research-answer-copy"
-                    title={
-                      view.isConversation
-                        ? "Copy conversation as Markdown"
-                        : "Copy answer as Markdown"
-                    }
-                    aria-label={
-                      view.isConversation
-                        ? "Copy conversation as Markdown"
-                        : "Copy answer as Markdown"
-                    }
-                    onClick={() => onCopyAnswer(view)}
-                  >
-                    <Copy size={14} aria-hidden="true" />
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="control-button research-answer-menu-trigger"
-                  title="Answer actions"
-                  aria-label="Answer actions"
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen}
-                  data-research-answer-menu-trigger
-                  onClick={(event) => onOpenAnswerMenu(event.currentTarget, node.id)}
-                >
-                  <MoreHorizontal size={15} aria-hidden="true" />
-                </button>
-                {showRunControls ? (
-                  <div className="research-segment-actions">
-                    {node.paneId ? (
-                      <button
-                        type="button"
-                        className="control-button research-segment-action"
-                        onClick={() => onOpenPane(node.paneId!)}
-                      >
-                        Open terminal
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="control-button research-segment-action"
-                      disabled={cancelling}
-                      onClick={() => onCancelNode(node.id)}
-                    >
-                      {cancelling
-                        ? "Cancelling…"
-                        : node.status === "cancelled"
-                          ? "Retry cancel"
-                          : "Cancel"}
-                    </button>
-                  </div>
-                ) : null}
-              </footer>
-            </>
-          )}
-        </section>
-
-        <aside
-          ref={(element) => registerSegmentElement(node.id, "aside", element)}
-          className="research-followups"
-          data-node-id={node.id}
-          aria-label="Follow-ups"
-        >
-          {askComposer}
-          <div className="research-followup-cards" data-node-id={node.id}>
-            {stackedChildren.map((child) => renderFollowupCard(child))}
-          </div>
-          {anchoredChildren.map(({ child, top }) => renderFollowupCard(child, top))}
-          {proposalsSection}
-        </aside>
+        <ResearchConnectorOverlay
+          connectors={connectors}
+          linkedAnchorId={linkedAnchorId}
+        />
+        <ResearchAnswerPane
+          view={view}
+          node={node}
+          contentError={contentError}
+          segmentActive={segmentActive}
+          showRunControls={showRunControls}
+          cancelling={cancelling}
+          durationText={durationText}
+          hiddenHighlightCount={hiddenHighlightCount}
+          pointerOverHighlight={pointerOverHighlight}
+          menuOpen={menuOpen}
+          registerSegmentElement={registerSegmentElement}
+          onExpandTurns={onExpandTurns}
+          onRetryContentLoad={onRetryContentLoad}
+          onShowFullTrace={onShowFullTrace}
+          onCopyAnswer={onCopyAnswer}
+          onOpenAnswerMenu={onOpenAnswerMenu}
+          onOpenPane={onOpenPane}
+          onCancelNode={onCancelNode}
+          onRootMouseDown={onRootMouseDown}
+          onRootMouseUp={onRootMouseUp}
+          onRootKeyUp={onRootKeyUp}
+          onRootClick={onRootClick}
+          onRootMouseMove={onRootMouseMove}
+          onRootMouseLeave={onRootMouseLeave}
+        />
+        <ResearchFollowupRail
+          nodeId={node.id}
+          unreadCardKey={unreadCardKey}
+          linkedAnchorId={linkedAnchorId}
+          segmentChildren={segmentChildren}
+          anchoredCardTops={anchoredCardTops}
+          resolvedCardTops={resolvedCardTops}
+          askComposer={askComposer}
+          proposalsSection={proposalsSection}
+          registerSegmentElement={registerSegmentElement}
+          onSelectNode={onSelectNode}
+          onOpenFollowupMenu={onOpenFollowupMenu}
+          onCardHover={onCardHover}
+        />
       </div>
     </div>
   );
