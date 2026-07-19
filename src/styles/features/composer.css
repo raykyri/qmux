@@ -328,7 +328,7 @@
 /* qMux command completion is anchored to the textarea's top edge and portaled so
    it can grow upward over the transcript without being clipped by the input rail. */
 .composer-slash-popover {
-  width: min(340px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
   gap: 0;
   box-sizing: border-box;
   padding: 4px;
@@ -340,35 +340,38 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   overflow-y: auto;
 }
 
+/* A row reads like a regular app menu item: uniform --control-h-md height, the
+   same hover fill, and a single --fs-base type size shared by the command token
+   and its summary — the token only distinguished by the mono face and accent
+   color, never a larger size. */
 .composer-slash-option {
   appearance: none;
   display: grid;
-  grid-template-columns: 20px minmax(64px, auto) minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: auto minmax(52px, auto) minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   width: 100%;
   min-width: 0;
-  padding: 7px 9px;
+  min-height: var(--control-h-md);
+  padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-primary);
-  font: inherit;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
   text-align: left;
   cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast);
+  transition: background var(--transition-fast);
 }
 
 .composer-slash-option.is-selected:not(:disabled),
 .composer-slash-option:hover:not(:disabled) {
-  border-color: var(--control-border-hover-accent);
-  background: var(--control-bg-hover);
+  background: var(--popover-item-hover-bg);
 }
 
 .composer-slash-option:disabled {
@@ -392,8 +395,8 @@
 .composer-slash-token {
   color: var(--accent-color);
   font-family: var(--font-mono);
-  font-size: var(--fs-input);
-  font-weight: 650;
+  font-size: var(--fs-base);
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -406,15 +409,14 @@
   min-width: 0;
   overflow: hidden;
   color: var(--control-fg-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.35;
+  font-size: var(--fs-base);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .composer-slash-hint {
   margin: 0;
-  padding: 8px 10px 5px;
+  padding: 6px 8px 4px;
   color: var(--text-muted);
   font-size: var(--fs-xs);
   line-height: 1.4;

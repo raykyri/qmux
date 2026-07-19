@@ -1373,7 +1373,7 @@ export default function NativeInput({
                         onClick={() => completeSlashCommand(command)}
                       >
                         <span className="composer-slash-icon" aria-hidden="true">
-                          <Icon size={15} strokeWidth={1.75} />
+                          <Icon size={14} strokeWidth={1.75} />
                         </span>
                         <span className="composer-slash-token">{command.token}</span>
                         <span className="composer-slash-summary">{summary}</span>
@@ -1383,7 +1383,7 @@ export default function NativeInput({
                 </div>
                 <p className="composer-slash-hint">
                   {canQueueFork
-                    ? "Type a message after the command — it's sent to the fork."
+                    ? "Type a message after the command"
                     : FORK_REQUIREMENT_TITLE}
                 </p>
               </div>,
