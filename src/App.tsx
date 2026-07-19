@@ -113,6 +113,25 @@ import {
   reconcileResearchTreeSummaries,
 } from "./lib/researchSnapshots";
 import {
+  addResearchNodeHighlight,
+  parseResearchEvent,
+  patchResearchDetailHighlightCreated,
+  patchResearchDetailHighlightsRemoved,
+  patchResearchDetailNode,
+  patchResearchDetailTree,
+  patchResearchSummaryForCreatedNode,
+  patchResearchSummaryForNode,
+  patchResearchSummaryForRemovedNodes,
+  patchResearchSummaryTree,
+  removeResearchDetailNodes,
+  removeResearchNodeHighlights,
+  removeResearchNodes,
+  researchNodeIsActivity,
+  researchSummaryFromDetail,
+  upsertResearchActivity,
+  type ParsedResearchEvent,
+} from "./lib/researchEvents";
+import {
   addTreesToResearchFolder,
   createResearchFolder,
   dissolveResearchFolder,
@@ -233,6 +252,7 @@ import { canRenderInInternalBrowser, isFileServerUrl } from "./lib/links";
 import {
   isResearchTreeSelectionChange,
   pruneResearchNavigation,
+  pruneResearchNavigationNodes,
 } from "./lib/researchNavigation";
 import { isActiveResearchStatus } from "./lib/researchThreads";
 import {
@@ -402,6 +422,7 @@ import type {
   InitialPaneSize,
   PaneInfo,
   PaneSplitInfo,
+  QmuxEvent,
   QueuedTurn,
   ResearchHighlightAnchor,
   ResearchNode,
@@ -508,6 +529,57 @@ function partitionResearchTrees(trees: ResearchTreeSummary[]) {
     active: trees.filter((tree) => !tree.archivedAt),
     archived: trees.filter((tree) => Boolean(tree.archivedAt)),
   };
+}
+
+function upsertResearchTreeSummary(
+  trees: ResearchTreeSummary[],
+  summary: ResearchTreeSummary,
+  prepend = false,
+): ResearchTreeSummary[] {
+  const index = trees.findIndex((tree) => tree.id === summary.id);
+  if (index === -1) {
+    return prepend ? [summary, ...trees] : [...trees, summary];
+  }
+  if (trees[index] === summary) {
+    return trees;
+  }
+  const next = [...trees];
+  next[index] = summary;
+  return next;
+}
+
+function removeResearchTreeSummary(
+  trees: ResearchTreeSummary[],
+  treeId: string,
+): ResearchTreeSummary[] {
+  return trees.some((tree) => tree.id === treeId)
+    ? trees.filter((tree) => tree.id !== treeId)
+    : trees;
+}
+
+function patchResearchTreeSummaries(
+  trees: ResearchTreeSummary[],
+  patch: (tree: ResearchTreeSummary) => ResearchTreeSummary,
+): ResearchTreeSummary[] {
+  let changed = false;
+  const next = trees.map((tree) => {
+    const patched = patch(tree);
+    changed ||= patched !== tree;
+    return patched;
+  });
+  return changed ? next : trees;
+}
+
+function replaceResearchActivityForTree(
+  activity: ResearchNode[],
+  detail: ResearchTreeDetail,
+): ResearchNode[] {
+  const otherTrees = activity.filter((node) => node.treeId !== detail.tree.id);
+  const treeActivity = detail.nodes.filter(researchNodeIsActivity);
+  const next = [...otherTrees, ...treeActivity].sort(
+    (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  );
+  return reconcileResearchActivity(activity, next);
 }
 
 function researchDocumentIsVisible(
@@ -1550,6 +1622,19 @@ function MainApp() {
   }, []);
   const [researchActivity, setResearchActivity] = useState<ResearchNode[]>([]);
   const [activeResearchDetail, setActiveResearchDetail] = useState<ResearchTreeDetail | null>(null);
+  const activeResearchDetailRef = useRef(activeResearchDetail);
+  activeResearchDetailRef.current = activeResearchDetail;
+  // Full-node events are authoritative and arrive more often than React
+  // commits. Keep a synchronous cache so several events in one 16 ms batch
+  // can compute lifecycle deltas in arrival order rather than all reading the
+  // same pre-batch state snapshot.
+  const researchNodeEventCacheRef = useRef(new Map<string, ResearchNode>());
+  for (const node of researchActivity) {
+    researchNodeEventCacheRef.current.set(node.id, node);
+  }
+  for (const node of activeResearchDetail?.nodes ?? []) {
+    researchNodeEventCacheRef.current.set(node.id, node);
+  }
   // Why activeResearchDetail is null after a failed tree fetch. Without it the
   // document shows an unexplained spinner forever: the content effect can't
   // run (no detail-derived node id), so no in-document retry can recover.
@@ -5645,12 +5730,19 @@ function MainApp() {
     terminalPaneRefs.current.get(paneId)?.reportUserInput();
   }, []);
   const activateTerminalPane = useCallback((paneId: string) => {
+    const treeId = researchNodeByPaneIdRef.current.get(paneId)?.treeId;
+    const researchExposureChanged = Boolean(
+      treeId &&
+        (sidebarModeRef.current !== "research" ||
+          activeSurfaceRef.current !== "pane" ||
+          activePaneIdRef.current !== paneId ||
+          activeResearchTreeIdRef.current !== treeId),
+    );
     setActivePaneId(paneId);
     acknowledgePaneIfDone(paneId, true);
-    const treeId = researchNodeByPaneIdRef.current.get(paneId)?.treeId;
     if (treeId) {
       void markVisibleResearchTreeViewedRef.current(treeId, {
-        force: true,
+        force: researchExposureChanged,
         exposureConfirmed: true,
       }).catch(() => undefined);
     }
@@ -6277,15 +6369,26 @@ function MainApp() {
       setFolderPickerStatus(null);
     }
   }, []);
-  // A streaming run emits research events several times a second, and each
-  // refresh is two IPC round-trips (navigation collections + active tree).
-  // Coalesce bursts onto one trailing refresh instead of one per event.
+  // Full navigation + active-detail recovery is deliberately reserved for an
+  // unknown/malformed event or a rare collection-order transition. Ordinary
+  // research events carry enough state to patch locally below.
   const researchRefreshTimerRef = useRef<number | null>(null);
+  const researchNavigationRecoveryTimerRef = useRef<number | null>(null);
+  const researchTreeRecoveryTimersRef = useRef(new Map<string, number>());
+  const researchTreeEventVersionRef = useRef(new Map<string, number>());
+  const removedResearchTreeIdsRef = useRef(new Set<string>());
   useEffect(
     () => () => {
       if (researchRefreshTimerRef.current !== null) {
         window.clearTimeout(researchRefreshTimerRef.current);
       }
+      if (researchNavigationRecoveryTimerRef.current !== null) {
+        window.clearTimeout(researchNavigationRecoveryTimerRef.current);
+      }
+      for (const timer of researchTreeRecoveryTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      researchTreeRecoveryTimersRef.current.clear();
     },
     [],
   );
@@ -6326,6 +6429,379 @@ function MainApp() {
       }
     }, 250);
   }, [markVisibleResearchTreeViewed, refreshResearchNavigation]);
+  const scheduleResearchNavigationRecovery = useCallback(() => {
+    if (researchNavigationRecoveryTimerRef.current !== null) {
+      window.clearTimeout(researchNavigationRecoveryTimerRef.current);
+    }
+    researchNavigationRecoveryTimerRef.current = window.setTimeout(() => {
+      researchNavigationRecoveryTimerRef.current = null;
+      void refreshResearchNavigation()
+        .then((trees) => {
+          const treeId = activeResearchTreeIdRef.current;
+          const tree = treeId ? trees?.find((candidate) => candidate.id === treeId) : null;
+          if (treeId && tree && (tree.hasUnseenUpdate || tree.hasUnseenFailure)) {
+            void markVisibleResearchTreeViewedRef.current(treeId, {
+              knownUnseen: true,
+            }).catch(() => undefined);
+          }
+        })
+        .catch(() => undefined);
+    }, 300);
+  }, [refreshResearchNavigation]);
+  const scheduleResearchTreeRecovery = useCallback(
+    (treeId: string) => {
+      if (removedResearchTreeIdsRef.current.has(treeId)) {
+        return;
+      }
+      const existingTimer = researchTreeRecoveryTimersRef.current.get(treeId);
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+      }
+      const timer = window.setTimeout(() => {
+        researchTreeRecoveryTimersRef.current.delete(treeId);
+        const eventVersion = researchTreeEventVersionRef.current.get(treeId) ?? 0;
+        const detailRequestSeq =
+          activeResearchTreeIdRef.current === treeId
+            ? researchDetailRequestSeqRef.current + 1
+            : null;
+        if (detailRequestSeq !== null) {
+          researchDetailRequestSeqRef.current = detailRequestSeq;
+        }
+        void getResearchTree(treeId)
+          .then((detail) => {
+            if ((researchTreeEventVersionRef.current.get(treeId) ?? 0) !== eventVersion) {
+              scheduleResearchTreeRecovery(treeId);
+              return;
+            }
+
+            const summary = researchSummaryFromDetail(detail);
+            if (summary.archivedAt != null) {
+              setResearchTrees((current) => removeResearchTreeSummary(current, treeId));
+              setArchivedResearchTrees((current) =>
+                upsertResearchTreeSummary(current, summary),
+              );
+            } else {
+              setArchivedResearchTrees((current) =>
+                removeResearchTreeSummary(current, treeId),
+              );
+              setResearchTrees((current) => upsertResearchTreeSummary(current, summary));
+            }
+            setResearchActivity((current) => replaceResearchActivityForTree(current, detail));
+
+            for (const [nodeId, node] of researchNodeEventCacheRef.current) {
+              if (node.treeId === treeId) {
+                researchNodeEventCacheRef.current.delete(nodeId);
+              }
+            }
+            for (const node of detail.nodes) {
+              researchNodeEventCacheRef.current.set(node.id, node);
+            }
+            pruneResearchNavigationNodes(
+              treeId,
+              detail.nodes.map((node) => node.id),
+            );
+
+            if (
+              detailRequestSeq !== null &&
+              researchDetailRequestSeqRef.current === detailRequestSeq &&
+              activeResearchTreeIdRef.current === treeId
+            ) {
+              setActiveResearchDetail((current) =>
+                reconcileResearchTreeDetail(current, detail),
+              );
+              setActiveResearchDetailError(null);
+            }
+            if (summary.hasUnseenUpdate || summary.hasUnseenFailure) {
+              void markVisibleResearchTreeViewedRef.current(treeId, {
+                knownUnseen: true,
+              }).catch(() => undefined);
+            }
+          })
+          .catch(() => {
+            if (removedResearchTreeIdsRef.current.has(treeId)) {
+              return;
+            }
+            // The tree may have disappeared or a future backend mutation may
+            // have invalidated the targeted read. Recover collection order and
+            // selection with the authoritative, but much more expensive, path.
+            scheduleResearchRefresh();
+          });
+      }, 200);
+      researchTreeRecoveryTimersRef.current.set(treeId, timer);
+    },
+    [scheduleResearchRefresh],
+  );
+  const handleResearchEvent = useCallback(
+    (rawEvent: QmuxEvent) => {
+      const parsed = parseResearchEvent(rawEvent);
+      if (parsed.kind !== "event") {
+        if (parsed.kind !== "notResearch") {
+          scheduleResearchRefresh();
+        }
+        return;
+      }
+
+      const event: ParsedResearchEvent = parsed.event;
+      const eventTreeId =
+        "tree" in event
+          ? event.tree.id
+          : "treeId" in event
+            ? event.treeId
+            : "node" in event
+              ? event.node.treeId
+              : researchNodeEventCacheRef.current.get(event.nodeId)?.treeId ?? null;
+      if (eventTreeId) {
+        if (event.type !== "research.tree.removed") {
+          removedResearchTreeIdsRef.current.delete(eventTreeId);
+        }
+        researchTreeEventVersionRef.current.set(
+          eventTreeId,
+          (researchTreeEventVersionRef.current.get(eventTreeId) ?? 0) + 1,
+        );
+      }
+
+      const invalidateNavigationSnapshot = () => {
+        const needsRecovery =
+          researchNavRefreshInFlightRef.current > 0 ||
+          researchNavigationRecoveryTimerRef.current !== null;
+        researchNavRefreshSeqRef.current += 1;
+        if (needsRecovery) {
+          // An event invalidated a pre-event collection snapshot. Retry once
+          // after the event stream goes quiet; resetting this timer prevents a
+          // streaming run from turning recovery into repeated list IPC.
+          scheduleResearchNavigationRecovery();
+        }
+      };
+      const invalidateVisibleDetailSnapshot = (treeId: string) => {
+        if (
+          activeResearchTreeIdRef.current === treeId &&
+          activeResearchDetailRef.current?.tree.id === treeId
+        ) {
+          researchDetailRequestSeqRef.current += 1;
+        }
+      };
+      const patchSummaryState = (
+        treeId: string,
+        patch: (summary: ResearchTreeSummary) => ResearchTreeSummary,
+      ) => {
+        if (archivedResearchTreesRef.current.some((tree) => tree.id === treeId)) {
+          setArchivedResearchTrees((current) =>
+            patchResearchTreeSummaries(current, patch),
+          );
+        } else {
+          setResearchTrees((current) => patchResearchTreeSummaries(current, patch));
+        }
+      };
+      const patchNode = (
+        node: ResearchNode,
+        timestamp: number,
+        navigationChanged = true,
+      ) => {
+        const previous = researchNodeEventCacheRef.current.get(node.id);
+        researchNodeEventCacheRef.current.set(node.id, node);
+        if (navigationChanged) {
+          invalidateNavigationSnapshot();
+        }
+        invalidateVisibleDetailSnapshot(node.treeId);
+        setActiveResearchDetail((current) => patchResearchDetailNode(current, node));
+        setResearchActivity((current) => upsertResearchActivity(current, node));
+        if (previous) {
+          const patchSummary = (summary: ResearchTreeSummary) =>
+            patchResearchSummaryForNode(summary, previous, node, timestamp);
+          patchSummaryState(node.treeId, patchSummary);
+        }
+        return previous;
+      };
+      switch (event.type) {
+        case "research.tree.created": {
+          invalidateNavigationSnapshot();
+          const summary = researchSummaryFromDetail({ tree: event.tree, nodes: [event.node] });
+          researchNodeEventCacheRef.current.set(event.node.id, event.node);
+          if (summary.archivedAt != null) {
+            setArchivedResearchTrees((current) =>
+              upsertResearchTreeSummary(current, summary, true),
+            );
+          } else {
+            setResearchTrees((current) =>
+              upsertResearchTreeSummary(current, summary, true),
+            );
+          }
+          setResearchActivity((current) => upsertResearchActivity(current, event.node));
+          break;
+        }
+        case "research.document.updated": {
+          patchNode(event.node, event.timestamp);
+          setActiveResearchDetail((current) => patchResearchDetailTree(current, event.tree));
+          const patchSummary = (summary: ResearchTreeSummary) =>
+            patchResearchSummaryTree(summary, event.tree);
+          patchSummaryState(event.tree.id, patchSummary);
+          break;
+        }
+        case "research.node.created": {
+          const previous = patchNode(event.node, event.timestamp);
+          if (!previous) {
+            patchSummaryState(event.node.treeId, (summary) =>
+              patchResearchSummaryForCreatedNode(summary, event.node, event.timestamp),
+            );
+          }
+          scheduleResearchTreeRecovery(event.node.treeId);
+          break;
+        }
+        case "research.node.updated": {
+          const cached = researchNodeEventCacheRef.current.get(event.node.id);
+          const lifecycleChanged =
+            !cached ||
+            cached.status !== event.node.status ||
+            cached.completedAt !== event.node.completedAt ||
+            cached.parentNodeId !== event.node.parentNodeId;
+          const activityBindingChanged =
+            !cached ||
+            cached.paneId !== event.node.paneId ||
+            cached.agentId !== event.node.agentId;
+          const previous = patchNode(
+            event.node,
+            event.timestamp,
+            lifecycleChanged || activityBindingChanged,
+          );
+          if (lifecycleChanged || activeResearchDetailRef.current === null) {
+            scheduleResearchTreeRecovery(event.node.treeId);
+          }
+          if (
+            previous &&
+            previous.completedAt !== event.node.completedAt &&
+            event.node.completedAt != null
+          ) {
+            void markVisibleResearchTreeViewedRef.current(event.node.treeId, {
+              knownUnseen: true,
+            }).catch(() => undefined);
+          }
+          break;
+        }
+        case "research.tree.updated": {
+          invalidateNavigationSnapshot();
+          invalidateVisibleDetailSnapshot(event.tree.id);
+          setActiveResearchDetail((current) => patchResearchDetailTree(current, event.tree));
+          const patchSummary = (summary: ResearchTreeSummary) =>
+            patchResearchSummaryTree(summary, event.tree);
+          patchSummaryState(event.tree.id, patchSummary);
+          break;
+        }
+        case "research.tree.archived":
+        case "research.tree.restored": {
+          invalidateNavigationSnapshot();
+          invalidateVisibleDetailSnapshot(event.tree.id);
+          setActiveResearchDetail((current) => patchResearchDetailTree(current, event.tree));
+          // The event carries tree metadata, but not its stable position in the
+          // opposite collection. This user-scale transition takes the rare full
+          // path so custom sidebar ordering remains exact.
+          scheduleResearchRefresh();
+          break;
+        }
+        case "research.highlight.created": {
+          const cachedNode = researchNodeEventCacheRef.current.get(event.nodeId);
+          if (cachedNode) {
+            const node = addResearchNodeHighlight(cachedNode, event.highlight);
+            researchNodeEventCacheRef.current.set(event.nodeId, node);
+            invalidateVisibleDetailSnapshot(node.treeId);
+          } else if (activeResearchDetailRef.current === null) {
+            scheduleResearchRefresh();
+          }
+          setActiveResearchDetail((current) =>
+            patchResearchDetailHighlightCreated(current, event.nodeId, event.highlight),
+          );
+          break;
+        }
+        case "research.highlight.removed":
+        case "research.highlights.removed": {
+          const highlightIds =
+            event.type === "research.highlight.removed"
+              ? [event.highlightId]
+              : event.highlightIds;
+          const cachedNode = researchNodeEventCacheRef.current.get(event.nodeId);
+          if (cachedNode) {
+            const node = removeResearchNodeHighlights(cachedNode, highlightIds);
+            researchNodeEventCacheRef.current.set(event.nodeId, node);
+            invalidateVisibleDetailSnapshot(node.treeId);
+          } else if (activeResearchDetailRef.current === null) {
+            scheduleResearchRefresh();
+          }
+          setActiveResearchDetail((current) =>
+            patchResearchDetailHighlightsRemoved(current, event.nodeId, highlightIds),
+          );
+          break;
+        }
+        case "research.node.removed": {
+          invalidateNavigationSnapshot();
+          invalidateVisibleDetailSnapshot(event.treeId);
+          const removedIds = new Set(event.removedNodeIds);
+          const removedNodes = event.removedNodeIds.flatMap((nodeId) => {
+            const node = researchNodeEventCacheRef.current.get(nodeId);
+            return node ? [node] : [];
+          });
+          for (const nodeId of removedIds) {
+            researchNodeEventCacheRef.current.delete(nodeId);
+          }
+          setActiveResearchDetail((current) =>
+            removeResearchDetailNodes(current, event.treeId, removedIds),
+          );
+          setResearchActivity((current) => removeResearchNodes(current, removedIds));
+          patchSummaryState(event.treeId, (summary) =>
+            patchResearchSummaryForRemovedNodes(
+              summary,
+              event.treeId,
+              removedNodes,
+              event.timestamp,
+            ),
+          );
+          scheduleResearchTreeRecovery(event.treeId);
+          break;
+        }
+        case "research.tree.removed": {
+          invalidateNavigationSnapshot();
+          removedResearchTreeIdsRef.current.add(event.treeId);
+          const pendingTimer = researchTreeRecoveryTimersRef.current.get(event.treeId);
+          if (pendingTimer !== undefined) {
+            window.clearTimeout(pendingTimer);
+            researchTreeRecoveryTimersRef.current.delete(event.treeId);
+          }
+          setResearchTrees((current) => removeResearchTreeSummary(current, event.treeId));
+          setArchivedResearchTrees((current) =>
+            removeResearchTreeSummary(current, event.treeId),
+          );
+          setResearchActivity((current) => {
+            const removedIds = current
+              .filter((node) => node.treeId === event.treeId)
+              .map((node) => node.id);
+            return removeResearchNodes(current, removedIds);
+          });
+          for (const [nodeId, node] of researchNodeEventCacheRef.current) {
+            if (node.treeId === event.treeId) {
+              researchNodeEventCacheRef.current.delete(nodeId);
+            }
+          }
+          commitResearchFolderState(
+            removeTreesFromResearchFolders(researchFolderStateRef.current, [event.treeId]),
+          );
+          pruneResearchNavigation(
+            [...researchTreesRef.current, ...archivedResearchTreesRef.current]
+              .filter((tree) => tree.id !== event.treeId)
+              .map((tree) => tree.id),
+          );
+          if (activeResearchTreeIdRef.current === event.treeId) {
+            focusResearchHome();
+          }
+          break;
+        }
+      }
+    },
+    [
+      commitResearchFolderState,
+      focusResearchHome,
+      scheduleResearchRefresh,
+      scheduleResearchNavigationRecovery,
+      scheduleResearchTreeRecovery,
+    ],
+  );
   // Research titles reuse the terminal tab-title pipeline: same provider
   // config, source-message stripping, and sanitization. Returns null when
   // generation is disabled, unavailable, or fails — the prompt-derived
@@ -6365,9 +6841,8 @@ function MainApp() {
       } catch {
         return;
       }
-      scheduleResearchRefresh();
     },
-    [generateResearchTitle, scheduleResearchRefresh],
+    [generateResearchTitle],
   );
   const applyGeneratedResearchNodeTitle = useCallback(
     async (nodeId: string, prompt: string) => {
@@ -6380,9 +6855,8 @@ function MainApp() {
       } catch {
         return;
       }
-      scheduleResearchRefresh();
     },
-    [generateResearchTitle, scheduleResearchRefresh],
+    [generateResearchTitle],
   );
   // Shared by the research and document composers: the folder the item lands
   // in — the picked one, or the default folder (created on first use).
@@ -6428,12 +6902,10 @@ function MainApp() {
       if (researchScopeRef.current !== detail.tree.workspaceId) {
         changeResearchFolderScope(detail.tree.workspaceId);
       }
-      void refreshResearchNavigation().catch(() => undefined);
     },
     [
       changeResearchFolderScope,
       dismissPristineNewDocumentComposer,
-      refreshResearchNavigation,
       setSidebarMode,
     ],
   );
@@ -6520,17 +6992,15 @@ function MainApp() {
             : current,
         );
       }
-      void refreshResearchNavigation().catch(() => undefined);
       return result;
     },
-    [refreshResearchNavigation],
+    [],
   );
   const cancelResearchRun = useCallback(
     async (nodeId: string) => {
       await cancelResearchNode(nodeId);
-      scheduleResearchRefresh();
     },
-    [scheduleResearchRefresh],
+    [],
   );
   const renameResearchTreeTitle = useCallback(
     async (treeId: string, title: string) => {
@@ -6539,9 +7009,8 @@ function MainApp() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
-      scheduleResearchRefresh();
     },
-    [scheduleResearchRefresh],
+    [],
   );
   const regenerateResearchTreeTitle = useCallback(
     async (treeId: string) => {
@@ -6559,9 +7028,8 @@ function MainApp() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
-      scheduleResearchRefresh();
     },
-    [generateResearchTitle, scheduleResearchRefresh],
+    [generateResearchTitle],
   );
   const archiveResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
@@ -6582,21 +7050,19 @@ function MainApp() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
-      await refreshResearchNavigation().catch(() => undefined);
     },
-    [focusResearchHome, refreshResearchNavigation, researchTrees, selectResearchTree],
+    [focusResearchHome, researchTrees, selectResearchTree],
   );
   const restoreResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
       try {
         await restoreResearchTree(treeId);
-        await refreshResearchNavigation();
         await selectResearchTree(treeId);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [refreshResearchNavigation, selectResearchTree],
+    [selectResearchTree],
   );
   // Both delete entry points must reconcile the active document identically.
   // Keeping this in one path prevents the document menu from falling to an
@@ -6622,9 +7088,8 @@ function MainApp() {
           focusResearchHome();
         }
       }
-      await refreshResearchNavigation().catch(() => undefined);
     },
-    [commitResearchFolderState, focusResearchHome, refreshResearchNavigation, selectResearchTree],
+    [commitResearchFolderState, focusResearchHome, selectResearchTree],
   );
   const removeResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
@@ -6743,9 +7208,8 @@ function MainApp() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
-      await refreshResearchNavigation().catch(() => undefined);
     },
-    [focusResearchHome, refreshResearchNavigation, researchFolderLiveMembers],
+    [focusResearchHome, researchFolderLiveMembers],
   );
   const deleteResearchFolderFromSidebar = useCallback(
     async (folderId: string) => {
@@ -6790,14 +7254,11 @@ function MainApp() {
           );
         }
         throw err;
-      } finally {
-        await refreshResearchNavigation().catch(() => undefined);
       }
     },
     [
       commitResearchFolderState,
       focusResearchHome,
-      refreshResearchNavigation,
       researchFolderLiveMembers,
       selectResearchTree,
     ],
@@ -6821,27 +7282,9 @@ function MainApp() {
         inline ?? false,
       );
       void applyGeneratedResearchNodeTitle(node.id, prompt);
-      void refreshResearchNavigation().catch(() => undefined);
-      const treeId = activeResearchTreeIdRef.current;
-      if (treeId) {
-        const requestSeq = researchDetailRequestSeqRef.current + 1;
-        researchDetailRequestSeqRef.current = requestSeq;
-        void getResearchTree(treeId)
-          .then((detail) => {
-            if (
-              researchDetailRequestSeqRef.current === requestSeq &&
-              activeResearchTreeIdRef.current === treeId
-            ) {
-              setActiveResearchDetail((current) =>
-                reconcileResearchTreeDetail(current, detail),
-              );
-            }
-          })
-          .catch(() => undefined);
-      }
       return node;
     },
-    [applyGeneratedResearchNodeTitle, refreshResearchNavigation],
+    [applyGeneratedResearchNodeTitle],
   );
   const removeResearchBranchFromDocument = useCallback(
     async (nodeId: string) => {
@@ -6849,9 +7292,9 @@ function MainApp() {
       const removal = await removeResearchBranch(nodeId);
       const treeId = activeResearchTreeIdRef.current;
       if (treeId === removal.treeId) {
-        // The delete already committed. Prune the live detail immediately so a
-        // failed follow-up refetch cannot leave clickable, already-deleted
-        // cards on screen until the next unrelated research event.
+        // The delete already committed. Prune the live detail immediately;
+        // the structural event follows with a targeted authoritative tree
+        // reconciliation for counts and activity.
         const removedNodeIds = new Set(removal.removedNodeIds);
         setActiveResearchDetail((current) =>
           current?.tree.id === removal.treeId
@@ -6861,27 +7304,10 @@ function MainApp() {
               }
             : current,
         );
-        const requestSeq = researchDetailRequestSeqRef.current + 1;
-        researchDetailRequestSeqRef.current = requestSeq;
-        try {
-          const detail = await getResearchTree(treeId);
-          if (
-            researchDetailRequestSeqRef.current === requestSeq &&
-            activeResearchTreeIdRef.current === treeId
-          ) {
-            setActiveResearchDetail((current) =>
-              reconcileResearchTreeDetail(current, detail),
-            );
-            setActiveResearchDetailError(null);
-          }
-        } catch (err) {
-          setError(`The branch was deleted, but Research could not refresh: ${unknownErrorMessage(err)}`);
-        }
       }
-      void refreshResearchNavigation().catch(() => undefined);
       return removal;
     },
-    [refreshResearchNavigation],
+    [],
   );
   const nativeTerminalShortcutHandlerRef = useRef<
     (paneId: string, command: AppShortcutCommand, repeat: boolean) => void
@@ -6955,7 +7381,7 @@ function MainApp() {
     onTerminalCommandModifier: handleNativeTerminalCommandModifier,
     onTerminalOpenUrl: openPaneLink,
     onTerminalTitleChanged: handleTerminalTitleChange,
-    onResearchChanged: scheduleResearchRefresh,
+    onResearchChanged: handleResearchEvent,
   });
 
   async function addShellPane() {
@@ -7014,8 +7440,22 @@ function MainApp() {
   }
 
   function focusPaneTab(paneId: string) {
+    const treeId = researchNodeByPaneIdRef.current.get(paneId)?.treeId;
+    const researchExposureChanged = Boolean(
+      treeId &&
+        (sidebarModeRef.current !== "research" ||
+          activeSurfaceRef.current !== "pane" ||
+          activePaneIdRef.current !== paneId ||
+          activeResearchTreeIdRef.current !== treeId),
+    );
     setActivePaneId(paneId);
     acknowledgePaneIfDone(paneId, true);
+    if (treeId) {
+      void markVisibleResearchTreeViewedRef.current(treeId, {
+        force: researchExposureChanged,
+        exposureConfirmed: true,
+      }).catch(() => undefined);
+    }
     requestAnimationFrame(() => {
       terminalPaneRefs.current.get(paneId)?.focus();
     });

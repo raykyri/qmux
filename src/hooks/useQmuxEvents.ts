@@ -131,7 +131,7 @@ export interface UseQmuxEventsHandlers {
   onTerminalCommandModifier?: (paneId: string, active: boolean) => void;
   onTerminalOpenUrl?: (paneId: string, url: string) => void;
   onTerminalTitleChanged?: (paneId: string, title: string) => void;
-  onResearchChanged?: () => void;
+  onResearchChanged?: (event: QmuxEvent) => void;
 }
 
 function stringField(value: unknown, field: string): string | null {
@@ -317,7 +317,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
 
     const handleEvent = (event: QmuxEvent) => {
       if (event.type.startsWith("research.")) {
-        onResearchChanged?.();
+        onResearchChanged?.(event);
       }
       const hookEvent = transcriptHookEvent(event);
       if (hookEvent) {
