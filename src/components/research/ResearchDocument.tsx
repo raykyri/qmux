@@ -2501,6 +2501,15 @@ export default function ResearchDocument({
           proposalRetryNodeIds[proposal.commentId] ??
           null;
         if (!localNodeId) {
+          // An anchored proposal carries the passage it was asked about;
+          // rebind it to the parent's current response revision so the new
+          // node's card sits beside that passage. Offsets came from the
+          // public page's rendered text, so the exact/prefix/suffix
+          // relocation does the real work here.
+          const parentRevision =
+            proposal.parentNodeId === displayNode?.id
+              ? content?.responseRevision ?? null
+              : null;
           const child = await onFork(
             proposal.parentNodeId!,
             proposal.prompt,
@@ -2508,6 +2517,18 @@ export default function ResearchDocument({
               publicationId: binding.publicationId,
               commentId: proposal.commentId,
             },
+            proposal.anchor && parentRevision
+              ? {
+                  version: 1,
+                  projection: "answer-v1",
+                  responseRevision: parentRevision,
+                  start: proposal.anchor.start,
+                  end: proposal.anchor.end,
+                  exact: proposal.anchor.exact,
+                  prefix: proposal.anchor.prefix,
+                  suffix: proposal.anchor.suffix,
+                }
+              : null,
           );
           localNodeId = child.id;
           setProposalRetryNodeIds((current) => ({
@@ -3216,6 +3237,11 @@ export default function ResearchDocument({
                               {proposal.status}
                             </span>
                           </header>
+                          {proposal.anchor ? (
+                            <span className="research-followup-quote">
+                              {quoteDisplayText(proposal.anchor.exact)}
+                            </span>
+                          ) : null}
                           <TranscriptMarkdown
                             text={proposal.prompt}
                             imageBehavior="open"

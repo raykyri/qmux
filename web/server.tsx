@@ -18,6 +18,7 @@ import {
   parsePublicationComment,
   parseResearchProposal,
   researchProposalDigestInput,
+  validateResearchProposalAnchor,
   type PublicationCommentAnchor,
   type ProposalResolutionPayload,
   type ResearchProposalPayload,
@@ -605,11 +606,27 @@ async function handleCreateProposal(
       `Proposed answers cannot exceed ${MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS.toLocaleString()} characters.`,
     );
   }
+  // An anchored proposal quotes the passage it was asked about; the anchor
+  // travels in the proposal payload so the owner's app (and this page) can
+  // pair the question with its passage.
+  const anchorRaw = (form.get("anchor") ?? "").trim();
+  let anchor = null;
+  if (anchorRaw) {
+    try {
+      anchor = validateResearchProposalAnchor(JSON.parse(anchorRaw));
+    } catch (error) {
+      throw new PublicationHttpError(
+        422,
+        error instanceof Error ? error.message : "The quoted passage is invalid.",
+      );
+    }
+  }
   const body = encodeResearchProposal({
     publicationId: loaded.publication.publicationId,
     parentNodeId: route.nodeId,
     prompt,
     ...(answerMarkdown ? { answerMarkdown } : {}),
+    ...(anchor ? { anchor } : {}),
   });
   const upstream = await context.fetchImpl(
     `https://api.github.com/gists/${encodeURIComponent(route.gistId)}/comments`,
@@ -1809,14 +1826,11 @@ const PAGE_SCRIPT = `(() => {
     })(copyButtons[bIndex]);
   }
 
-  var dataEl = document.getElementById("qmux-anchor-data");
   var root = document.getElementById("qmux-answer-root");
+  if (!root) return;
   var rail = document.querySelector(".research-followups");
-  if (!dataEl || !root) return;
-  var anchors;
-  try { anchors = JSON.parse(dataEl.textContent || "[]"); } catch (err) { return; }
-  if (!Array.isArray(anchors) || anchors.length === 0) return;
 
+  // The rendered-text projection: what anchor offsets and quotes refer to.
   var nodes = [];
   var starts = [];
   var text = "";
@@ -1886,6 +1900,17 @@ const PAGE_SCRIPT = `(() => {
     return range;
   }
 
+  var canPaint = typeof Highlight !== "undefined" && CSS.highlights;
+
+  // ------------------------------------------------------------------
+  // Published query anchors: paint passages and anchor cards beside them.
+  var dataEl = document.getElementById("qmux-anchor-data");
+  var anchors = [];
+  if (dataEl) {
+    try { anchors = JSON.parse(dataEl.textContent || "[]"); } catch (err) { anchors = []; }
+    if (!Array.isArray(anchors)) anchors = [];
+  }
+
   var cardById = {};
   var anchoredCards = rail
     ? rail.querySelectorAll("[data-anchor-node-id]")
@@ -1909,10 +1934,8 @@ const PAGE_SCRIPT = `(() => {
       card: cardById[anchors[index].nodeId] || null,
     });
   }
-  if (resolved.length === 0) return;
 
-  var canPaint = typeof Highlight !== "undefined" && CSS.highlights;
-  if (canPaint) {
+  if (resolved.length > 0 && canPaint) {
     var highlight = new Highlight();
     for (var hIndex = 0; hIndex < resolved.length; hIndex += 1) {
       highlight.add(resolved[hIndex].range);
@@ -1976,48 +1999,50 @@ const PAGE_SCRIPT = `(() => {
     return null;
   }
 
-  root.addEventListener("mousemove", function (event) {
-    setLinkedEntry(entryAtPoint(event));
-  });
-  root.addEventListener("mouseleave", function () {
-    setLinkedEntry(null);
-  });
-  root.addEventListener("click", function (event) {
-    var entry = entryAtPoint(event);
-    if (entry && entry.card && entry.card.href) {
-      window.location.href = entry.card.href;
+  if (resolved.length > 0) {
+    root.addEventListener("mousemove", function (event) {
+      setLinkedEntry(entryAtPoint(event));
+    });
+    root.addEventListener("mouseleave", function () {
+      setLinkedEntry(null);
+    });
+    root.addEventListener("click", function (event) {
+      var entry = entryAtPoint(event);
+      if (entry && entry.card && entry.card.href) {
+        window.location.href = entry.card.href;
+      }
+    });
+    for (var lIndex = 0; lIndex < resolved.length; lIndex += 1) {
+      (function (entry) {
+        if (!entry.card) return;
+        entry.card.addEventListener("mouseenter", function () {
+          setLinkedEntry(entry);
+        });
+        entry.card.addEventListener("mouseleave", function () {
+          setLinkedEntry(null);
+        });
+        // Keyboard parity for the hover link: tabbing onto a card lights up
+        // its passage, scrolling it into view when it sits off screen.
+        // Guarded to focus-visible so mouse clicks don't jerk the page
+        // before navigating.
+        entry.card.addEventListener("focus", function () {
+          if (!entry.card.matches(":focus-visible")) return;
+          setLinkedEntry(entry);
+          var passage = entry.range.getBoundingClientRect();
+          if (passage.top < 0 || passage.bottom > window.innerHeight) {
+            var target = entry.range.startContainer.parentElement;
+            if (target) target.scrollIntoView({ block: "center" });
+          }
+        });
+        entry.card.addEventListener("blur", function () {
+          setLinkedEntry(null);
+        });
+      })(resolved[lIndex]);
     }
-  });
-  for (var lIndex = 0; lIndex < resolved.length; lIndex += 1) {
-    (function (entry) {
-      if (!entry.card) return;
-      entry.card.addEventListener("mouseenter", function () {
-        setLinkedEntry(entry);
-      });
-      entry.card.addEventListener("mouseleave", function () {
-        setLinkedEntry(null);
-      });
-      // Keyboard parity for the hover link: tabbing onto a card lights up its
-      // passage, scrolling it into view when it sits off screen. Guarded to
-      // focus-visible so mouse clicks don't jerk the page before navigating.
-      entry.card.addEventListener("focus", function () {
-        if (!entry.card.matches(":focus-visible")) return;
-        setLinkedEntry(entry);
-        var passage = entry.range.getBoundingClientRect();
-        if (passage.top < 0 || passage.bottom > window.innerHeight) {
-          var target = entry.range.startContainer.parentElement;
-          if (target) target.scrollIntoView({ block: "center" });
-        }
-      });
-      entry.card.addEventListener("blur", function () {
-        setLinkedEntry(null);
-      });
-    })(resolved[lIndex]);
   }
 
-  if (!rail) return;
-
   function positionCards() {
+    if (!rail) return;
     // The narrow layout stacks the rail under the answer; anchored absolute
     // positioning has no passage-adjacent meaning there, so restore the flow.
     var cardsContainer = rail.querySelector(".research-followup-cards");
@@ -2034,7 +2059,7 @@ const PAGE_SCRIPT = `(() => {
     var railRect = rail.getBoundingClientRect();
     var entries = [];
     for (var rIndex = 0; rIndex < resolved.length; rIndex += 1) {
-      var card = cardById[resolved[rIndex].nodeId];
+      var card = resolved[rIndex].card;
       if (!card) continue;
       var passage = resolved[rIndex].range.getBoundingClientRect();
       entries.push({ card: card, top: passage.top - railRect.top });
@@ -2079,10 +2104,126 @@ const PAGE_SCRIPT = `(() => {
     }
   }
 
-  positionCards();
-  window.addEventListener("resize", positionCards);
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(positionCards);
+  if (resolved.length > 0) {
+    positionCards();
+    window.addEventListener("resize", positionCards);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(positionCards);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Anchored proposals: selecting answer text offers "Ask about this",
+  // which quotes the passage into the rail's proposal composer.
+  var proposalForm = document.querySelector("form.proposal-composer");
+  var anchorInput = proposalForm
+    ? proposalForm.querySelector('input[name="anchor"]')
+    : null;
+  var quoteRow = proposalForm
+    ? proposalForm.querySelector("[data-qmux-proposal-quote]")
+    : null;
+  if (!proposalForm || !anchorInput || !quoteRow) return;
+  var quoteText = quoteRow.querySelector(".research-followup-quote");
+  var quoteDismiss = quoteRow.querySelector(".research-followup-quote-dismiss");
+
+  var askButton = document.createElement("button");
+  askButton.type = "button";
+  askButton.className = "research-highlight-action";
+  askButton.textContent = "Ask about this";
+  askButton.hidden = true;
+  document.body.appendChild(askButton);
+  // Keep the selection alive through the click.
+  askButton.addEventListener("mousedown", function (event) {
+    event.preventDefault();
+  });
+
+  var pendingSelection = null;
+
+  function selectionOffsets() {
+    var selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+    var range = selection.getRangeAt(0);
+    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+      return null;
+    }
+    var probe = document.createRange();
+    probe.selectNodeContents(root);
+    probe.setEnd(range.startContainer, range.startOffset);
+    var start = (probe.cloneContents().textContent || "").length;
+    probe.setEnd(range.endContainer, range.endOffset);
+    var end = (probe.cloneContents().textContent || "").length;
+    var slice = text.slice(start, end);
+    var trimmedLeading = slice.length - slice.replace(/^\\s+/, "").length;
+    var trimmedTrailing = slice.length - slice.replace(/\\s+$/, "").length;
+    start += trimmedLeading;
+    end -= trimmedTrailing;
+    if (end <= start || end - start > 2000) return null;
+    return { start: start, end: end, rect: range.getBoundingClientRect() };
+  }
+
+  function updateAskAction() {
+    pendingSelection = selectionOffsets();
+    if (!pendingSelection) {
+      askButton.hidden = true;
+      return;
+    }
+    askButton.hidden = false;
+    var left = Math.min(
+      Math.max(8, pendingSelection.rect.left),
+      window.innerWidth - askButton.offsetWidth - 8,
+    );
+    var top = Math.min(
+      pendingSelection.rect.bottom + 8,
+      window.innerHeight - askButton.offsetHeight - 8,
+    );
+    askButton.style.left = left + "px";
+    askButton.style.top = top + "px";
+  }
+
+  document.addEventListener("mouseup", function () {
+    setTimeout(updateAskAction, 0);
+  });
+  document.addEventListener("keyup", function () {
+    setTimeout(updateAskAction, 0);
+  });
+  window.addEventListener("scroll", function () {
+    askButton.hidden = true;
+  }, { passive: true });
+
+  askButton.addEventListener("click", function () {
+    if (!pendingSelection) return;
+    var start = pendingSelection.start;
+    var end = pendingSelection.end;
+    var exact = text.slice(start, end);
+    if (!exact.trim()) return;
+    anchorInput.value = JSON.stringify({
+      start: start,
+      end: end,
+      exact: exact,
+      prefix: text.slice(Math.max(0, start - 32), start),
+      suffix: text.slice(end, end + 32),
+    });
+    if (quoteText) {
+      quoteText.textContent = exact.split(/\\s+/).join(" ").trim();
+    }
+    quoteRow.hidden = false;
+    proposalForm.classList.add("is-anchored");
+    askButton.hidden = true;
+    var selection = window.getSelection();
+    if (selection) selection.removeAllRanges();
+    var promptField = proposalForm.querySelector("textarea");
+    if (promptField) {
+      promptField.focus();
+      promptField.scrollIntoView({ block: "nearest" });
+    }
+  });
+
+  if (quoteDismiss) {
+    quoteDismiss.addEventListener("click", function () {
+      anchorInput.value = "";
+      quoteRow.hidden = true;
+      proposalForm.classList.remove("is-anchored");
+    });
   }
 })();`;
 
@@ -2119,6 +2260,18 @@ function ProposalComposer({
   return (
     <form className="proposal-composer" method="post" action={`${returnTo}/proposals`}>
       <input type="hidden" name="csrfToken" value={viewer.csrfToken} />
+      <input type="hidden" name="anchor" defaultValue="" />
+      <div className="research-followup-quote-row" data-qmux-proposal-quote hidden>
+        <span className="research-followup-quote" />
+        <button
+          type="button"
+          className="research-followup-quote-dismiss"
+          aria-label="Remove the quoted passage"
+          title="Remove quote"
+        >
+          ×
+        </button>
+      </div>
       <textarea
         className="textarea"
         id="proposal-prompt"
@@ -2206,6 +2359,11 @@ function PublicationProposals({
                 {resolution?.status ?? "pending"}
               </span>
             </header>
+            {proposal.anchor ? (
+              <span className="research-followup-quote">
+                {quoteDisplayText(proposal.anchor.exact)}
+              </span>
+            ) : null}
             <div className="proposal-question turn-markdown">
               <SafeMarkdown>{proposal.prompt}</SafeMarkdown>
             </div>
@@ -2535,6 +2693,9 @@ const PAGE_CSS = `
   --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
 }
 * { box-sizing:border-box; }
+/* Author display values on controls would otherwise override the UA's
+   [hidden] rule; script-revealed elements rely on hidden actually hiding. */
+[hidden] { display:none !important; }
 html, body { height:100%; }
 body { margin:0; background:var(--workspace-bg); color:#dfe3df; font:14px/1.5 var(--font-ui); font-synthesis:none; text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; }
 a { color:inherit; text-decoration:none; }
@@ -2653,6 +2814,18 @@ a { color:inherit; text-decoration:none; }
 .proposal-composer-actions small { color:#737c77; }
 .proposal-composer.is-signed-out { margin:0 0 8px; }
 
+/* Ask-about-passage: the floating selection action and the anchored state of
+   the composer, both in the app's highlight-action styling. */
+.research-highlight-action { position:fixed; z-index:1000; display:inline-flex; align-items:center; gap:7px; width:max-content; min-height:27px; padding:0 9px; border:1px solid var(--surface-border-default); border-radius:5px; color:#edf0ec; font-family:var(--font-ui); font-size:13px; font-weight:400; line-height:1; background:#303532; box-shadow:0 4px 14px rgba(0,0,0,0.38); cursor:pointer; }
+.research-highlight-action:hover { background:#3a403c; }
+.proposal-composer.is-anchored { z-index:5; padding:9px 10px; border:1px solid var(--surface-border-default); border-radius:10px; background:#303233; box-shadow:0 8px 24px rgba(0,0,0,0.35); }
+.research-followup-quote-row { display:flex; align-items:flex-start; justify-content:space-between; gap:6px; }
+.research-followup-quote-row[hidden] { display:none; }
+.research-followup-quote-row .research-followup-quote { -webkit-line-clamp:3; margin-bottom:0; }
+.research-followup-quote-dismiss { display:inline-flex; width:20px; min-width:20px; height:20px; align-items:center; justify-content:center; padding:0; border:0; border-radius:5px; color:var(--text-subtle); background:transparent; font:inherit; font-size:14px; line-height:1; cursor:pointer; }
+.research-followup-quote-dismiss:hover { color:var(--text-strong); background:var(--surface-fill-hover); }
+.publication-proposal .research-followup-quote { margin-bottom:0; }
+
 /* Shared control style, ported from the app's control buttons. */
 .control-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:28px; padding:3px 10px; border:1px solid var(--control-border); border-radius:6px; color:var(--text-primary); background:var(--control-bg); font:inherit; font-size:12.5px; line-height:1.4; cursor:pointer; white-space:nowrap; }
 .control-button:hover { background:var(--control-bg-hover); border-color:var(--control-border-hover); }
@@ -2745,7 +2918,7 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
   body { background:#ffffff; color:#1a1a1a; }
   .doc-header, .research-followups, .proposal-composer, .comment-composer,
   .github-sign-in, .sign-out-form, .page-footer, .research-answer-copy,
-  .section-heading-link { display:none !important; }
+  .section-heading-link, .research-highlight-action { display:none !important; }
   .research-response-grid { display:block; }
   .research-document-scroll { padding:0; }
   .turn-markdown, .research-response-content-root, .conversation-answer,

@@ -149,6 +149,15 @@ export interface PublicationProposal {
   parentNodeId?: string | null;
   prompt: string;
   answerMarkdown?: string | null;
+  /** The quoted passage an anchored proposal was asked about, in the shared
+   * proposal-anchor shape from publicationComments. */
+  anchor?: {
+    start: number;
+    end: number;
+    exact: string;
+    prefix: string;
+    suffix: string;
+  } | null;
   createdAt: string;
   status: "pending" | "accepted" | "declined";
   localNodeId?: string | null;

@@ -5,6 +5,8 @@ const PROPOSAL_MARKER_PREFIX = "<!-- qmux-proposal:v1 ";
 const PROPOSAL_RESOLUTION_MARKER_PREFIX = "<!-- qmux-proposal-resolution:v1 ";
 export const MAX_RESEARCH_PROPOSAL_PROMPT_CHARACTERS = 10_000;
 export const MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS = 40_000;
+export const MAX_RESEARCH_PROPOSAL_QUOTE_CHARACTERS = 2_000;
+const MAX_RESEARCH_PROPOSAL_CONTEXT_CHARACTERS = 500;
 
 export interface PublicationCommentAnchor {
   publicationId: string;
@@ -16,11 +18,23 @@ export interface ParsedPublicationComment {
   body: string;
 }
 
+/** The passage of the parent's published answer an anchored proposal was
+ * asked about: offsets into the page's rendered-text projection plus the
+ * quote and nearby context, the same shape published query anchors use. */
+export interface ResearchProposalAnchor {
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
+}
+
 export interface ResearchProposalPayload {
   publicationId: string;
   parentNodeId: string;
   prompt: string;
   answerMarkdown?: string | null;
+  anchor?: ResearchProposalAnchor | null;
 }
 
 export interface ProposalResolutionPayload {
@@ -83,11 +97,22 @@ export function parseResearchProposal(raw: string): ResearchProposalPayload | nu
 
 export function researchProposalDigestInput(payload: ResearchProposalPayload) {
   const normalized = validateResearchProposal(payload);
+  // Anchor-free proposals keep the original four-element input so digests in
+  // existing resolution comments stay valid; an anchor extends the array.
   return JSON.stringify([
     normalized.publicationId,
     normalized.parentNodeId,
     normalized.prompt,
     normalized.answerMarkdown ?? null,
+    ...(normalized.anchor
+      ? [
+          normalized.anchor.start,
+          normalized.anchor.end,
+          normalized.anchor.exact,
+          normalized.anchor.prefix,
+          normalized.anchor.suffix,
+        ]
+      : []),
   ]);
 }
 
@@ -150,12 +175,52 @@ function validateResearchProposal(value: unknown): ResearchProposalPayload {
           "proposal answerMarkdown",
           MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS,
         ).trim() || null;
+  const anchor =
+    item.anchor === undefined || item.anchor === null
+      ? null
+      : validateResearchProposalAnchor(item.anchor);
   return {
     publicationId,
     parentNodeId,
     prompt,
     ...(answerMarkdown ? { answerMarkdown } : {}),
+    ...(anchor ? { anchor } : {}),
   };
+}
+
+export function validateResearchProposalAnchor(value: unknown): ResearchProposalAnchor {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("proposal anchor must be an object");
+  }
+  const item = value as Record<string, unknown>;
+  const start = item.start;
+  const end = item.end;
+  if (
+    typeof start !== "number" ||
+    typeof end !== "number" ||
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end <= start
+  ) {
+    throw new Error("proposal anchor offsets are invalid");
+  }
+  const exact = boundedText(
+    item.exact,
+    "proposal anchor exact",
+    MAX_RESEARCH_PROPOSAL_QUOTE_CHARACTERS,
+  );
+  const prefix = boundedTextAllowEmpty(
+    item.prefix,
+    "proposal anchor prefix",
+    MAX_RESEARCH_PROPOSAL_CONTEXT_CHARACTERS,
+  );
+  const suffix = boundedTextAllowEmpty(
+    item.suffix,
+    "proposal anchor suffix",
+    MAX_RESEARCH_PROPOSAL_CONTEXT_CHARACTERS,
+  );
+  return { start, end, exact, prefix, suffix };
 }
 
 function validateProposalResolution(value: unknown): ProposalResolutionPayload {

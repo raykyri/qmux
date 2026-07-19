@@ -37,6 +37,8 @@ const GIST_COMMENTS_PER_PAGE: usize = 25;
 const MAX_GITHUB_COMMENTS_RESPONSE_BYTES: usize = 16_000_000;
 const MAX_PROPOSAL_PROMPT_CHARACTERS: usize = 10_000;
 const MAX_PROPOSAL_ANSWER_CHARACTERS: usize = 40_000;
+const MAX_PROPOSAL_QUOTE_CHARACTERS: usize = 2_000;
+const MAX_PROPOSAL_CONTEXT_CHARACTERS: usize = 500;
 const PROPOSAL_MARKER_PREFIX: &str = "<!-- qmux-proposal:v1 ";
 const PROPOSAL_RESOLUTION_MARKER_PREFIX: &str = "<!-- qmux-proposal-resolution:v1 ";
 const COMMENT_MARKER_SUFFIX: &str = " -->";
@@ -143,6 +145,10 @@ pub struct PublicationProposalState {
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     answer_markdown: Option<String>,
+    /// The proposal's quoted-passage anchor, kept verbatim: the resolution
+    /// digest recomputed at republish time must match the original comment's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor: Option<ResearchProposalAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     local_node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +169,8 @@ pub struct PublicationProposal {
     prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     answer_markdown: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor: Option<ResearchProposalAnchor>,
     created_at: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,6 +278,20 @@ struct ResearchProposalPayload {
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     answer_markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor: Option<ResearchProposalAnchor>,
+}
+
+/// The quoted passage an anchored proposal was asked about, mirroring the
+/// web/TS `ResearchProposalAnchor` shape (and its digest contribution).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchProposalAnchor {
+    start: u64,
+    end: u64,
+    exact: String,
+    prefix: String,
+    suffix: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -913,6 +935,7 @@ pub async fn publishing_resolve_proposal(
         parent_public_node_id: proposal.parent_node_id,
         prompt: proposal.prompt,
         answer_markdown: proposal.answer_markdown,
+        anchor: proposal.anchor,
         local_node_id,
         resolution_comment_id: existing_resolution_comment_id,
         published_public_node_id: saved_state.and_then(|saved| {
@@ -1367,6 +1390,7 @@ async fn sync_published_proposal_links(
             parent_node_id: state.parent_public_node_id.clone(),
             prompt: state.prompt.clone(),
             answer_markdown: state.answer_markdown.clone(),
+            anchor: state.anchor.clone(),
         };
         if !proposal_state_matches(
             state,
@@ -1473,6 +1497,7 @@ fn collect_publication_proposals(
                     .map(|value| (*value).to_string()),
                 prompt: payload.prompt,
                 answer_markdown: payload.answer_markdown,
+                anchor: payload.anchor,
                 created_at: comment.created_at.clone(),
                 status,
                 local_node_id,
@@ -1501,6 +1526,7 @@ fn proposal_state_matches(
         && valid_public_identifier(&state.parent_public_node_id)
         && state.prompt == proposal.prompt
         && state.answer_markdown == proposal.answer_markdown
+        && state.anchor == proposal.anchor
         && state
             .resolution_comment_id
             .is_none_or(|comment_id| comment_id > 0)
@@ -1661,6 +1687,7 @@ fn reconcile_proposal_node_states(
                     parent_public_node_id: proposal.parent_node_id,
                     prompt: proposal.prompt,
                     answer_markdown: proposal.answer_markdown,
+                    anchor: proposal.anchor,
                     local_node_id: Some(local_node.id.clone()),
                     resolution_comment_id,
                     published_public_node_id: None,
@@ -1730,6 +1757,16 @@ fn parse_research_proposal(body: &str) -> Option<ResearchProposalPayload> {
     {
         return None;
     }
+    if let Some(anchor) = &payload.anchor {
+        if anchor.end <= anchor.start
+            || anchor.exact.trim().is_empty()
+            || anchor.exact.chars().count() > MAX_PROPOSAL_QUOTE_CHARACTERS
+            || anchor.prefix.chars().count() > MAX_PROPOSAL_CONTEXT_CHARACTERS
+            || anchor.suffix.chars().count() > MAX_PROPOSAL_CONTEXT_CHARACTERS
+        {
+            return None;
+        }
+    }
     Some(ResearchProposalPayload {
         publication_id: payload.publication_id,
         parent_node_id: payload.parent_node_id,
@@ -1738,17 +1775,32 @@ fn parse_research_proposal(body: &str) -> Option<ResearchProposalPayload> {
             .answer_markdown
             .map(|answer| answer.trim().to_string())
             .filter(|answer| !answer.is_empty()),
+        anchor: payload.anchor,
     })
 }
 
 fn research_proposal_digest(payload: &ResearchProposalPayload) -> Result<String, String> {
-    let input = serde_json::to_vec(&(
-        &payload.publication_id,
-        &payload.parent_node_id,
-        &payload.prompt,
-        &payload.answer_markdown,
-    ))
-    .map_err(|error| format!("failed to encode proposal digest input: {error}"))?;
+    // Mirrors the TS digest input: anchor-free proposals keep the original
+    // four-element array; an anchor appends its five fields.
+    let mut input = vec![
+        serde_json::Value::from(payload.publication_id.clone()),
+        serde_json::Value::from(payload.parent_node_id.clone()),
+        serde_json::Value::from(payload.prompt.clone()),
+        payload
+            .answer_markdown
+            .clone()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    ];
+    if let Some(anchor) = &payload.anchor {
+        input.push(serde_json::Value::from(anchor.start));
+        input.push(serde_json::Value::from(anchor.end));
+        input.push(serde_json::Value::from(anchor.exact.clone()));
+        input.push(serde_json::Value::from(anchor.prefix.clone()));
+        input.push(serde_json::Value::from(anchor.suffix.clone()));
+    }
+    let input = serde_json::to_vec(&input)
+        .map_err(|error| format!("failed to encode proposal digest input: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(input)))
 }
 
@@ -2763,6 +2815,7 @@ mod tests {
             parent_public_node_id: "node_parent12".to_string(),
             prompt: "Question".to_string(),
             answer_markdown: None,
+            anchor: None,
             local_node_id: node.map(str::to_string),
             resolution_comment_id: None,
             published_public_node_id: None,
@@ -3135,6 +3188,7 @@ mod tests {
             parent_node_id: "node_root1234".to_string(),
             prompt: "Which evidence would change the answer?".to_string(),
             answer_markdown: Some("A proposed answer.".to_string()),
+            anchor: None,
         };
         let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&proposal).unwrap());
         let body =

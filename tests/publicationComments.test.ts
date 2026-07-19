@@ -79,3 +79,65 @@ test("research proposal and owner resolution envelopes preserve Markdown payload
     publicNodeId: "node_published123",
   });
 });
+
+test("anchored proposals round-trip their passage and extend the digest", () => {
+  const anchor = {
+    start: 120,
+    end: 168,
+    exact: "the first failure cancels the siblings",
+    prefix: "a task group, ",
+    suffix: ", which turns",
+  };
+  const encoded = encodeResearchProposal({
+    publicationId: "pub_comments123",
+    parentNodeId: "node_comments123",
+    prompt: "Does this hold for Rust async?",
+    anchor,
+  });
+  const parsed = parseResearchProposal(encoded);
+  assert.deepEqual(parsed?.anchor, anchor);
+
+  const base = {
+    publicationId: "pub_comments123",
+    parentNodeId: "node_comments123",
+    prompt: "Does this hold for Rust async?",
+  };
+  // Anchor-free digests keep the original input so existing resolutions stay
+  // valid; an anchor must change the digest.
+  assert.equal(
+    researchProposalDigestInput(base),
+    JSON.stringify([
+      "pub_comments123",
+      "node_comments123",
+      "Does this hold for Rust async?",
+      null,
+    ]),
+  );
+  assert.notEqual(
+    researchProposalDigestInput({ ...base, anchor }),
+    researchProposalDigestInput(base),
+  );
+
+  // Oversized or inverted anchors invalidate the whole proposal.
+  assert.equal(
+    parseResearchProposal(
+      encoded.replace(
+        encoded.slice(
+          "<!-- qmux-proposal:v1 ".length,
+          encoded.indexOf(" -->"),
+        ),
+        Buffer.from(
+          JSON.stringify({
+            ...base,
+            anchor: { ...anchor, end: anchor.start },
+          }),
+        )
+          .toString("base64")
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/g, ""),
+      ),
+    ),
+    null,
+  );
+});
