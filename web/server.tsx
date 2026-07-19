@@ -1329,6 +1329,11 @@ function researchPage(
       ? selected.completedAt - selected.startedAt
       : null;
   const isDocument = selected.kind === "document";
+  // A conversation node's published body is the transcript itself (opening
+  // turn included), so it renders whole like a document rather than a prompt
+  // card above an answer.
+  const isConversation = selected.kind === "conversation";
+  const showPromptCard = !isDocument && !isConversation;
   const anchoredChildren = children.filter((child) => child.queryAnchor);
   const anchorData = anchoredChildren.map((child) => ({
     nodeId: child.id,
@@ -1382,7 +1387,7 @@ function researchPage(
       contentClassName: hasRail ? undefined : "is-single-doc",
       children: (
         <>
-          {!isDocument ? (
+          {showPromptCard ? (
             <div className="research-prompt">
               {parent ? (
                 <a

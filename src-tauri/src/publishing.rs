@@ -2429,7 +2429,7 @@ fn validate_research_index(
         parent_by_id.insert(id.to_string(), parent_id);
         if !matches!(
             item.get("kind").and_then(Value::as_str),
-            Some("run" | "document")
+            Some("run" | "document" | "conversation")
         ) {
             return Err(format!(
                 "{PUBLICATION_INDEX_FILE} research node {id} has an invalid kind."

@@ -134,18 +134,6 @@ export async function createResearchPublicationDraft(
   if (input.mode === "tree" && !candidates.some((node) => node.id === input.detail.tree.rootNodeId)) {
     throw new Error("The root research result must finish before publishing the tree.");
   }
-  // Publication is Q/A-shaped end to end (draft markdown, index validation
-  // on both sides); a purposeful refusal beats the internal schema error a
-  // "conversation" kind would hit downstream. The publish menu disables its
-  // entries for conversation roots, so this guards direct callers — and
-  // names the tree when the conversation is not the thing being published.
-  if (candidates.some((node) => node.kind === "conversation")) {
-    throw new Error(
-      input.mode === "answer"
-        ? "Publishing exported conversations isn't available yet."
-        : "This research contains an exported conversation, which can't be published yet.",
-    );
-  }
   for (const node of candidates) {
     if (!TERMINAL_RESEARCH_STATUSES.has(node.status)) {
       throw new Error("The selected research result must finish before it can be published.");
@@ -175,7 +163,13 @@ export async function createResearchPublicationDraft(
   for (const node of candidates) {
     const content = contentByNodeId.get(node.id)!;
     const publicNodeId = publicNodeIds[node.id];
-    const answer = researchAnswerMarkdown(content);
+    // A conversation node (a terminal export) has no single answer — its whole
+    // multi-turn transcript is the body. Runs and documents keep their Q/A
+    // shape: just the assistant's answer after the last tool call.
+    const answer =
+      (node.kind ?? "run") === "conversation"
+        ? conversationBodyMarkdown(content)
+        : researchAnswerMarkdown(content);
     if (node.status === "complete" && !answer.trim()) {
       throw new Error(`The response for "${researchNodeTitle(node, input.detail)}" is empty.`);
     }
@@ -214,11 +208,17 @@ export async function createResearchPublicationDraft(
     publicNodes.push({
       id: publicNodeId,
       parentId: publishedParentId,
-      // The guard above refused conversation nodes, so only the published
-      // kinds remain.
-      kind: node.kind === "document" ? "document" : "run",
+      kind:
+        node.kind === "document"
+          ? "document"
+          : node.kind === "conversation"
+            ? "conversation"
+            : "run",
       title: researchNodeTitle(node, input.detail),
-      prompt: node.prompt,
+      // A conversation's opening turn already leads its published body, so it
+      // carries no separate prompt — the public page renders the transcript
+      // whole rather than a prompt card above an answer.
+      prompt: (node.kind ?? "run") === "conversation" ? "" : node.prompt,
       answerFile,
       contentHash: await sha256Hex(fileContent),
       responseRevision: content.responseRevision ?? null,
@@ -324,6 +324,14 @@ function researchNodeMarkdown(
   const credit = contribution
     ? `> Proposed by [@${contribution.githubLogin}](https://github.com/${contribution.githubLogin}) in Gist comment ${contribution.proposalCommentId}.\n\n`
     : "";
+  // A conversation is published as the transcript itself: the body already
+  // carries the interleaved turns, so there is no Question/Answer split to
+  // impose over it. The public page reads everything after the title line
+  // (answerBodyMarkdown's fallback), so no "## Answer" header is emitted.
+  if ((node.kind ?? "run") === "conversation") {
+    const body = answer.trim() || "This conversation has no readable messages.";
+    return `# ${markdownHeading(title)}\n\n${credit}${body}\n`;
+  }
   const prompt =
     (node.kind ?? "run") === "document" || !node.prompt.trim()
       ? ""
@@ -336,6 +344,20 @@ function researchNodeMarkdown(
         ? "This research run was cancelled without a response."
         : "No response is available.");
   return `# ${markdownHeading(title)}\n\n${credit}${prompt}## Answer\n\n${response}\n`;
+}
+
+// The published body for a conversation node: every user/assistant turn in
+// order, each under a bold speaker label, matching the app's exported-
+// conversation reading view. Tool activity and empty turns are dropped, the
+// same projection plainTextTranscriptMessages produces for transcript
+// publications — so published query anchors resolve against identical text.
+const CONVERSATION_ASSISTANT_LABEL = "Assistant";
+
+function conversationBodyMarkdown(content: ResearchNodeContent) {
+  return plainTextTranscriptMessages(content.turns, CONVERSATION_ASSISTANT_LABEL)
+    .map((message) => `**${markdownHeading(message.label)}**\n\n${message.text.trim()}`)
+    .join("\n\n")
+    .trim();
 }
 
 function researchReadme(

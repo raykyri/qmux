@@ -36,7 +36,7 @@ export interface PublishedResearchAnchor {
 export interface PublishedResearchNode {
   id: string;
   parentId: string | null;
-  kind: "run" | "document";
+  kind: "run" | "document" | "conversation";
   title: string;
   prompt: string;
   answerFile: string;
@@ -347,7 +347,7 @@ export function validatePublication(value: unknown): Publication {
   const nodes: PublishedResearchNode[] = research.nodes.map((node, index) => {
     const item = objectValue(node, `research.nodes[${index}]`);
     const nodeKind = item.kind;
-    if (nodeKind !== "run" && nodeKind !== "document") {
+    if (nodeKind !== "run" && nodeKind !== "document" && nodeKind !== "conversation") {
       throw new Error(`research.nodes[${index}].kind is invalid`);
     }
     const status = item.status;

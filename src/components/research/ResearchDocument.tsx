@@ -4165,16 +4165,6 @@ export default function ResearchDocument({
                 >
                   <div className="group-context-actions">
                     {(() => {
-                      // Publication does not understand conversation nodes
-                      // yet (the draft builder and validators are Q/A-shaped)
-                      // — a purposeful refusal beats their internal errors.
-                      const conversationPublishNote =
-                        "Publishing exported conversations isn't available yet";
-                      const rootIsConversation = detail.nodes.some(
-                        (candidate) =>
-                          candidate.id === detail.tree.rootNodeId &&
-                          candidate.kind === "conversation",
-                      );
                       const rootReady = detail.nodes.some(
                         (candidate) =>
                           candidate.id === detail.tree.rootNodeId &&
@@ -4186,16 +4176,11 @@ export default function ResearchDocument({
                             type="button"
                             role="menuitem"
                             className="control-button"
-                            disabled={
-                              !isTerminalResearchStatus(node.status) ||
-                              node.kind === "conversation"
-                            }
+                            disabled={!isTerminalResearchStatus(node.status)}
                             title={
-                              node.kind === "conversation"
-                                ? conversationPublishNote
-                                : isTerminalResearchStatus(node.status)
-                                  ? undefined
-                                  : "This result must finish before it can be published"
+                              isTerminalResearchStatus(node.status)
+                                ? undefined
+                                : "This result must finish before it can be published"
                             }
                             onClick={() => openResearchPublisher("answer", node)}
                           >
@@ -4206,13 +4191,11 @@ export default function ResearchDocument({
                             type="button"
                             role="menuitem"
                             className="control-button"
-                            disabled={!rootReady || rootIsConversation}
+                            disabled={!rootReady}
                             title={
-                              rootIsConversation
-                                ? conversationPublishNote
-                                : rootReady
-                                  ? undefined
-                                  : "The root result must finish before publishing the tree"
+                              rootReady
+                                ? undefined
+                                : "The root result must finish before publishing the tree"
                             }
                             onClick={() => openResearchPublisher("tree", node)}
                           >

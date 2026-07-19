@@ -302,6 +302,101 @@ test("research tree publications expose only public topology and readable node f
   );
 });
 
+test("conversation nodes publish as a whole transcript, not a Q/A pair", async () => {
+  const root = researchNode(
+    "private-conversation-node",
+    null,
+    "Explain the build pipeline",
+    "Build pipeline chat",
+  );
+  root.kind = "conversation";
+  root.origin = "terminalExport";
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "private-tree-id",
+      title: "Build pipeline chat",
+      rootNodeId: root.id,
+      workspaceId: "private-workspace",
+      createdAt: 1,
+      updatedAt: 3,
+    },
+    nodes: [root],
+  };
+  const conversationContent: ResearchNodeContent = {
+    node: root,
+    turns: [
+      {
+        id: `${root.id}-u1`,
+        agentId: root.agentId!,
+        sessionId: root.nativeSessionId,
+        role: "user",
+        blocks: [{ type: "text", text: "Explain the build pipeline" }],
+        sourceIndex: 0,
+      },
+      {
+        id: `${root.id}-a1`,
+        agentId: root.agentId!,
+        sessionId: root.nativeSessionId,
+        role: "assistant",
+        blocks: [{ type: "text", text: "The build runs scripts/build.sh." }],
+        sourceIndex: 1,
+      },
+      {
+        id: `${root.id}-u2`,
+        agentId: root.agentId!,
+        sessionId: root.nativeSessionId,
+        role: "user",
+        blocks: [{ type: "text", text: "Does it typecheck first?" }],
+        sourceIndex: 2,
+      },
+      {
+        id: `${root.id}-a2`,
+        agentId: root.agentId!,
+        sessionId: root.nativeSessionId,
+        role: "assistant",
+        blocks: [{ type: "text", text: "Yes, tsc runs before vite build." }],
+        sourceIndex: 3,
+      },
+    ],
+    children: [],
+    responseRevision: "e".repeat(64),
+  };
+
+  const draft = await createResearchPublicationDraft({
+    title: "Build pipeline chat",
+    detail,
+    selectedNodeId: root.id,
+    mode: "answer",
+    publicationId: "pub_conversation1",
+    createdAt: "2026-07-19T12:00:00.000Z",
+    contents: [conversationContent],
+  });
+
+  assert.equal(draft.publication.kind, "research-answer");
+  if (draft.publication.kind === "transcript") {
+    assert.fail("expected research publication");
+  }
+  const publishedRoot = draft.publication.research.nodes[0];
+  assert.equal(publishedRoot.kind, "conversation");
+  // The opening turn leads the body, so the node carries no separate prompt.
+  assert.equal(publishedRoot.prompt, "");
+  const answerFile = draft.files[publishedRoot.answerFile];
+  // Every turn is serialized in order, not just the final assistant answer.
+  assert.match(answerFile, /Explain the build pipeline/);
+  assert.match(answerFile, /scripts\/build\.sh/);
+  assert.match(answerFile, /Does it typecheck first\?/);
+  assert.match(answerFile, /tsc runs before vite build/);
+  // No Q/A scaffolding is imposed over a conversation body.
+  assert.equal(answerFile.includes("## Question"), false);
+  assert.equal(answerFile.includes("## Answer"), false);
+  // The index revalidates end to end, and matches the JSON on disk.
+  validatePublication(draft.publication);
+  assert.deepEqual(
+    parsePublicationJson(draft.files[PUBLICATION_INDEX_FILE]),
+    draft.publication,
+  );
+});
+
 test("research sync preserves publication and node identities while adding results", async () => {
   const root = researchNode("private-sync-root", null, "Root question?", "Root result");
   const child = researchNode(
