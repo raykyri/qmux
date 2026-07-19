@@ -1189,7 +1189,7 @@ const ThreadSegment = memo(function ThreadSegment({
   );
 }, threadSegmentPropsEqual);
 
-export default function ResearchDocument({
+function ResearchDocument({
   detail,
   treeTitle,
   archived,
@@ -4835,6 +4835,8 @@ export default function ResearchDocument({
     </TranscriptLinkActionsProvider>
   );
 }
+
+export default memo(ResearchDocument);
 
 function isTerminalResearchStatus(status: ResearchNode["status"]) {
   return status === "complete" || status === "failed" || status === "cancelled";

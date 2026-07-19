@@ -19,10 +19,17 @@ import {
   isResearchHighlightActionShortcut,
   resolveResearchHighlightOffset,
 } from "../src/lib/researchHighlights";
+import {
+  clearResearchTreeAttention,
+  reconcileResearchActivity,
+  reconcileResearchTreeDetail,
+  reconcileResearchTreeSummaries,
+} from "../src/lib/researchSnapshots";
 import type {
   ResearchHighlight,
   ResearchNode,
   ResearchNodeStatus,
+  ResearchTreeDetail,
   ResearchTreeSummary,
 } from "../src/types";
 
@@ -242,4 +249,111 @@ test("H confirms a research highlight action without modifiers or repeat", () =>
   assert.equal(isResearchHighlightActionShortcut({ ...input, ctrlKey: true }), false);
   assert.equal(isResearchHighlightActionShortcut({ ...input, altKey: true }), false);
   assert.equal(isResearchHighlightActionShortcut({ ...input, defaultPrevented: true }), false);
+});
+
+test("research snapshot reconciliation retains identical collection identities", () => {
+  const summaries = [tree("first", "workspace"), tree("second", "workspace")];
+  const nextSummaries = summaries.map((summary) => ({ ...summary }));
+  assert.equal(reconcileResearchTreeSummaries(summaries, nextSummaries), summaries);
+
+  const activity = [node("running", null, "running")];
+  const nextActivity = activity.map((entry) => ({ ...entry, highlights: [] }));
+  assert.equal(reconcileResearchActivity(activity, nextActivity), activity);
+});
+
+test("research snapshot reconciliation retains empty collection identities", () => {
+  const summaries: ResearchTreeSummary[] = [];
+  const activity: ResearchNode[] = [];
+  assert.equal(reconcileResearchTreeSummaries(summaries, []), summaries);
+  assert.equal(reconcileResearchActivity(activity, []), activity);
+
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "tree",
+      title: "Tree",
+      rootNodeId: "root",
+      workspaceId: "workspace",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    nodes: [],
+  };
+  assert.equal(
+    reconcileResearchTreeDetail(detail, { tree: { ...detail.tree }, nodes: [] }),
+    detail,
+  );
+});
+
+test("research snapshot reconciliation replaces only changed collection records", () => {
+  const first = tree("first", "workspace");
+  const second = tree("second", "workspace");
+  const current = [first, second];
+  const reconciled = reconcileResearchTreeSummaries(current, [
+    { ...first },
+    { ...second, runningCount: 1 },
+  ]);
+
+  assert.notEqual(reconciled, current);
+  assert.equal(reconciled[0], first);
+  assert.notEqual(reconciled[1], second);
+  assert.equal(reconciled[1].runningCount, 1);
+});
+
+test("research detail reconciliation retains identical nested snapshots", () => {
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "tree",
+      title: "Tree",
+      rootNodeId: "root",
+      workspaceId: "workspace",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    nodes: [node("root", null), node("child", "root")],
+  };
+  const incoming: ResearchTreeDetail = {
+    tree: { ...detail.tree, archivedAt: undefined },
+    nodes: detail.nodes.map((entry) => ({ ...entry, highlights: [...entry.highlights] })),
+  };
+
+  assert.equal(reconcileResearchTreeDetail(detail, incoming), detail);
+});
+
+test("research detail reconciliation preserves unchanged node identities", () => {
+  const root = node("root", null);
+  const child = node("child", "root");
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "tree",
+      title: "Tree",
+      rootNodeId: "root",
+      workspaceId: "workspace",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    nodes: [root, child],
+  };
+  const reconciled = reconcileResearchTreeDetail(detail, {
+    tree: { ...detail.tree },
+    nodes: [{ ...root }, { ...child, responsePreview: "New preview" }],
+  });
+
+  assert.notEqual(reconciled, detail);
+  assert.equal(reconciled.tree, detail.tree);
+  assert.equal(reconciled.nodes[0], root);
+  assert.notEqual(reconciled.nodes[1], child);
+});
+
+test("clearing research attention is an identity-preserving no-op when already viewed", () => {
+  const viewed = [tree("viewed", "workspace")];
+  assert.equal(clearResearchTreeAttention(viewed, "viewed"), viewed);
+
+  const unseen = [{ ...viewed[0], hasUnseenUpdate: true, hasUnseenFailure: true }];
+  const cleared = clearResearchTreeAttention(unseen, "viewed");
+  assert.notEqual(cleared, unseen);
+  assert.deepEqual(cleared[0], {
+    ...unseen[0],
+    hasUnseenUpdate: false,
+    hasUnseenFailure: false,
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -123,7 +123,7 @@ function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
   );
 }
 
-export default function ResearchSidebarSection({
+function ResearchSidebarSection({
   trees,
   archivedTrees,
   visibilityFilter,
@@ -1752,3 +1752,5 @@ export default function ResearchSidebarSection({
     </>
   );
 }
+
+export default memo(ResearchSidebarSection);

@@ -107,6 +107,12 @@ import {
   replaceResearchTreeScopeOrder,
 } from "./lib/researchOrder";
 import {
+  clearResearchTreeAttention,
+  reconcileResearchActivity,
+  reconcileResearchTreeDetail,
+  reconcileResearchTreeSummaries,
+} from "./lib/researchSnapshots";
+import {
   addTreesToResearchFolder,
   createResearchFolder,
   dissolveResearchFolder,
@@ -421,6 +427,16 @@ const LEFT_SIDEBAR_MAX_WIDTH = 420;
 const LEFT_SIDEBAR_COMPACT_WIDTH = 270;
 const PANE_TAB_DRAG_START_THRESHOLD = 4;
 const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
+type ResearchViewedAckOptions = {
+  /** A real exposure edge (selection, focus, composer close) should check the
+   * backend even when the current sidebar snapshot carries no attention bit. */
+  force?: boolean;
+  /** The accepted navigation snapshot already proved this tree has attention. */
+  knownUnseen?: boolean;
+  /** Native terminal activation is authoritative even when DOM focus belongs
+   * to the sibling native view rather than the webview document. */
+  exposureConfirmed?: boolean;
+};
 const GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS: ReadonlyArray<{
   value: GlobalTaskLauncherHotkey;
   label: string;
@@ -1466,6 +1482,11 @@ function MainApp() {
   const researchDetailRequestSeqRef = useRef(0);
   const researchNavRefreshSeqRef = useRef(0);
   const researchNavRefreshInFlightRef = useRef(0);
+  const researchViewAckInFlightRef = useRef(new Set<string>());
+  const researchViewAckPendingRef = useRef(new Set<string>());
+  const markVisibleResearchTreeViewedRef = useRef<
+    (treeId: string, options?: ResearchViewedAckOptions) => Promise<void>
+  >(async () => undefined);
   activeResearchTreeIdRef.current = activeResearchTreeId;
   const [activeResearchPaneId, setActiveResearchPaneId] = useState<string | null>(() =>
     localStorage.getItem(ACTIVE_RESEARCH_PANE_KEY),
@@ -1715,6 +1736,12 @@ function MainApp() {
   );
   const [publicationTarget, setPublicationTarget] = useState<PublishDialogTarget | null>(null);
   const [publicationBindings, setPublicationBindings] = useState<PublicationBinding[]>([]);
+  const handlePublicationBindingChange = useCallback((binding: PublicationBinding) => {
+    setPublicationBindings((current) => [
+      binding,
+      ...current.filter((candidate) => candidate.publicationId !== binding.publicationId),
+    ]);
+  }, []);
   const [markdownDropTargetActive, setMarkdownDropTargetActive] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const markdownImportRequestSeqRef = useRef(0);
@@ -5237,7 +5264,9 @@ function MainApp() {
             if (!cancelled) {
               setActiveResearchTreeId(researchTreeToRestore.id);
               localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, researchTreeToRestore.id);
-              setActiveResearchDetail(detail);
+              setActiveResearchDetail((current) =>
+                reconcileResearchTreeDetail(current, detail),
+              );
               const restoredResearchPaneId = localStorage.getItem(ACTIVE_RESEARCH_PANE_KEY);
               const restoredResearchPane = existingPanes.find(
                 (pane) =>
@@ -5587,6 +5616,13 @@ function MainApp() {
   const activateTerminalPane = useCallback((paneId: string) => {
     setActivePaneId(paneId);
     acknowledgePaneIfDone(paneId, true);
+    const treeId = researchNodeByPaneIdRef.current.get(paneId)?.treeId;
+    if (treeId) {
+      void markVisibleResearchTreeViewedRef.current(treeId, {
+        force: true,
+        exposureConfirmed: true,
+      }).catch(() => undefined);
+    }
   }, []);
   const clearResearchUnseen = useCallback((treeId: string) => {
     // Both attention flags: viewing acknowledges failures exactly like
@@ -5594,16 +5630,12 @@ function MainApp() {
     // last_viewed_at). Clearing only the update dot left the sidebar and
     // mode-toggle "!" lit forever — mark_research_tree_viewed emits no
     // event, so no refetch ever corrected the local copy.
-    const clear = (trees: ResearchTreeSummary[]) =>
-      trees.map((tree) =>
-        tree.id === treeId && (tree.hasUnseenUpdate || tree.hasUnseenFailure)
-          ? { ...tree, hasUnseenUpdate: false, hasUnseenFailure: false }
-          : tree,
-      );
-    setResearchTrees(clear);
-    setArchivedResearchTrees(clear);
+    setResearchTrees((current) => clearResearchTreeAttention(current, treeId));
+    setArchivedResearchTrees((current) => clearResearchTreeAttention(current, treeId));
   }, []);
-  const refreshResearchNavigation = useCallback(async () => {
+  const refreshResearchNavigation = useCallback(async (): Promise<
+    ResearchTreeSummary[] | null
+  > => {
     // Bump-and-check like every other refetch here (agents, panes, groups,
     // the research detail): refreshes overlap — the debounced event refresh
     // races the direct calls from archive/remove/submit — and the two list
@@ -5620,12 +5652,16 @@ function MainApp() {
         listResearchActivity(),
       ]);
       if (researchNavRefreshSeqRef.current !== requestSeq) {
-        return;
+        return null;
       }
       const partitioned = partitionResearchTrees(trees);
-      setResearchTrees(partitioned.active);
-      setArchivedResearchTrees(partitioned.archived);
-      setResearchActivity(activity);
+      setResearchTrees((current) =>
+        reconcileResearchTreeSummaries(current, partitioned.active),
+      );
+      setArchivedResearchTrees((current) =>
+        reconcileResearchTreeSummaries(current, partitioned.archived),
+      );
+      setResearchActivity((current) => reconcileResearchActivity(current, activity));
       // The backend can remove the selected tree out from under the UI (a root
       // launch that failed removes its never-launched tree). Left selected, the
       // document would spin on a tree that no longer exists with nothing able to
@@ -5650,6 +5686,7 @@ function MainApp() {
           trees.map((tree) => tree.id),
         ),
       );
+      return trees;
     } finally {
       researchNavRefreshInFlightRef.current -= 1;
     }
@@ -5728,7 +5765,7 @@ function MainApp() {
     [applyResearchTreeOrder],
   );
   const markVisibleResearchTreeViewed = useCallback(
-    async (treeId: string) => {
+    async (treeId: string, options: ResearchViewedAckOptions = {}) => {
       // An open composer page covers the document view, so an unread tree
       // selected behind a draft-holding composer is not actually seen. The
       // composer's close path re-marks the active tree.
@@ -5752,41 +5789,64 @@ function MainApp() {
         document.hasFocus() &&
         activePaneId !== null &&
         researchNodeByPaneIdRef.current.get(activePaneId)?.treeId === treeId;
-      if (!documentVisible && !paneVisible) {
+      if (!options.exposureConfirmed && !documentVisible && !paneVisible) {
         return;
       }
-      const hadUnseen = [
-        ...researchTreesRef.current,
-        ...archivedResearchTreesRef.current,
-      ].some(
-        (tree) => tree.id === treeId && (tree.hasUnseenUpdate || tree.hasUnseenFailure),
-      );
-      await markResearchTreeViewed(treeId);
-      // A refresh can already hold a pre-view snapshot even when its unseen
-      // flag has not reached React state yet. Capture that after the mark
-      // completes: if the request finishes before this continuation, the
-      // local clear below corrects its result; if it is still running, the
-      // replacement refresh supersedes it by sequence number.
-      const staleNavigationMayStillLand = researchNavRefreshInFlightRef.current > 0;
-      clearResearchUnseen(treeId);
-      // A navigation refresh started before the view was recorded holds a
-      // snapshot with the badges still lit; applied after the local clear it
-      // would resurrect them — and with the run settled, no later event would
-      // ever correct it. Refetch when a badge was already lit or a navigation
-      // request can still land: the fresh request supersedes any pre-view
-      // snapshot (bump-and-check above) and carries the acknowledged flags.
-      // With neither condition, streaming traffic avoids a duplicate fetch.
-      if (hadUnseen || staleNavigationMayStillLand) {
-        void refreshResearchNavigation().catch(() => undefined);
+      const hadUnseen =
+        options.knownUnseen === true ||
+        [...researchTreesRef.current, ...archivedResearchTreesRef.current].some(
+          (tree) => tree.id === treeId && (tree.hasUnseenUpdate || tree.hasUnseenFailure),
+        );
+      if (!options.force && !hadUnseen) {
+        return;
+      }
+      if (researchViewAckInFlightRef.current.has(treeId)) {
+        // A navigation result that discovered a newer settlement while an
+        // exposure-edge acknowledgment was in flight needs one trailing scan.
+        // Plain focus/visibility duplicates can share the current request.
+        if (options.knownUnseen) {
+          researchViewAckPendingRef.current.add(treeId);
+        }
+        return;
+      }
+      researchViewAckInFlightRef.current.add(treeId);
+      try {
+        await markResearchTreeViewed(treeId);
+        // A refresh can already hold a pre-view snapshot even when its unseen
+        // flag has not reached React state yet. Capture that after the mark
+        // completes: if the request finishes before this continuation, the
+        // local clear below corrects its result; if it is still running, the
+        // replacement refresh supersedes it by sequence number.
+        const staleNavigationMayStillLand = researchNavRefreshInFlightRef.current > 0;
+        clearResearchUnseen(treeId);
+        // A navigation refresh started before the view was recorded holds a
+        // snapshot with the badges still lit; applied after the local clear it
+        // would resurrect them — and with the run settled, no later event would
+        // ever correct it. Refetch when a badge was already lit or a navigation
+        // request can still land: the fresh request supersedes any pre-view
+        // snapshot (bump-and-check above) and carries the acknowledged flags.
+        if (hadUnseen || staleNavigationMayStillLand) {
+          void refreshResearchNavigation().catch(() => undefined);
+        }
+      } finally {
+        researchViewAckInFlightRef.current.delete(treeId);
+        if (researchViewAckPendingRef.current.delete(treeId)) {
+          queueMicrotask(() => {
+            void markVisibleResearchTreeViewedRef.current(treeId, {
+              knownUnseen: true,
+            }).catch(() => undefined);
+          });
+        }
       }
     },
     [clearResearchUnseen, refreshResearchNavigation],
   );
+  markVisibleResearchTreeViewedRef.current = markVisibleResearchTreeViewed;
   useEffect(() => {
     const markCurrent = () => {
       const treeId = activeResearchTreeIdRef.current;
       if (treeId) {
-        void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
+        void markVisibleResearchTreeViewed(treeId, { force: true }).catch(() => undefined);
       }
     };
     window.addEventListener("focus", markCurrent);
@@ -5804,7 +5864,7 @@ function MainApp() {
     }
     const treeId = activeResearchTreeIdRef.current;
     if (treeId) {
-      void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
+      void markVisibleResearchTreeViewed(treeId, { force: true }).catch(() => undefined);
     }
   }, [markVisibleResearchTreeViewed, newDocumentOpen]);
   const selectResearchTree = useCallback(async (treeId: string) => {
@@ -5830,7 +5890,9 @@ function MainApp() {
         researchDetailRequestSeqRef.current === requestSeq &&
         activeResearchTreeIdRef.current === treeId
       ) {
-        setActiveResearchDetail(detail);
+        setActiveResearchDetail((current) =>
+          reconcileResearchTreeDetail(current, detail),
+        );
         // Selection can arrive from outside the scoped sidebar (archive
         // restore, a remembered tree on mode switch). Follow it with the
         // folder scope, or the document would show a tree the sidebar
@@ -5838,7 +5900,7 @@ function MainApp() {
         if (researchScopeRef.current !== detail.tree.workspaceId) {
           changeResearchFolderScope(detail.tree.workspaceId);
         }
-        void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
+        void markVisibleResearchTreeViewed(treeId, { force: true }).catch(() => undefined);
       }
     } catch (err) {
       // Surfaced inside the document (with a working Retry) rather than as a
@@ -6202,7 +6264,17 @@ function MainApp() {
     }
     researchRefreshTimerRef.current = window.setTimeout(() => {
       researchRefreshTimerRef.current = null;
-      void refreshResearchNavigation().catch(() => undefined);
+      void refreshResearchNavigation()
+        .then((trees) => {
+          const treeId = activeResearchTreeIdRef.current;
+          const tree = treeId ? trees?.find((candidate) => candidate.id === treeId) : null;
+          if (treeId && tree && (tree.hasUnseenUpdate || tree.hasUnseenFailure)) {
+            void markVisibleResearchTreeViewed(treeId, { knownUnseen: true }).catch(
+              () => undefined,
+            );
+          }
+        })
+        .catch(() => undefined);
       const treeId = activeResearchTreeIdRef.current;
       if (treeId) {
         const requestSeq = researchDetailRequestSeqRef.current + 1;
@@ -6213,9 +6285,10 @@ function MainApp() {
               researchDetailRequestSeqRef.current === requestSeq &&
               activeResearchTreeIdRef.current === treeId
             ) {
-              setActiveResearchDetail(detail);
+              setActiveResearchDetail((current) =>
+                reconcileResearchTreeDetail(current, detail),
+              );
               setActiveResearchDetailError(null);
-              void markVisibleResearchTreeViewed(treeId).catch(() => undefined);
             }
           })
           .catch(() => undefined);
@@ -6317,7 +6390,9 @@ function MainApp() {
       activeResearchTreeIdRef.current = detail.tree.id;
       setActiveResearchTreeId(detail.tree.id);
       localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, detail.tree.id);
-      setActiveResearchDetail(detail);
+      setActiveResearchDetail((current) =>
+        reconcileResearchTreeDetail(current, detail),
+      );
       setActiveResearchDetailError(null);
       if (researchScopeRef.current !== detail.tree.workspaceId) {
         changeResearchFolderScope(detail.tree.workspaceId);
@@ -6726,7 +6801,9 @@ function MainApp() {
               researchDetailRequestSeqRef.current === requestSeq &&
               activeResearchTreeIdRef.current === treeId
             ) {
-              setActiveResearchDetail(detail);
+              setActiveResearchDetail((current) =>
+                reconcileResearchTreeDetail(current, detail),
+              );
             }
           })
           .catch(() => undefined);
@@ -6761,7 +6838,9 @@ function MainApp() {
             researchDetailRequestSeqRef.current === requestSeq &&
             activeResearchTreeIdRef.current === treeId
           ) {
-            setActiveResearchDetail(detail);
+            setActiveResearchDetail((current) =>
+              reconcileResearchTreeDetail(current, detail),
+            );
             setActiveResearchDetailError(null);
           }
         } catch (err) {
@@ -6928,6 +7007,22 @@ function MainApp() {
     }
     focusPaneTab(paneId);
   }
+  // ResearchDocument is memoized at its outer boundary. Route the two legacy
+  // function declarations through stable callbacks so unrelated App renders
+  // do not defeat that boundary; refs keep their behavior current.
+  const researchDocumentOpenPaneRef = useRef(openResearchPaneTab);
+  researchDocumentOpenPaneRef.current = openResearchPaneTab;
+  const handleResearchDocumentOpenPane = useCallback(
+    (paneId: string) => researchDocumentOpenPaneRef.current(paneId),
+    [],
+  );
+  const researchDocumentToastRef = useRef(showAppToast);
+  researchDocumentToastRef.current = showAppToast;
+  const handleResearchDocumentToast = useCallback(
+    (message: string, tone?: "normal" | "warning") =>
+      researchDocumentToastRef.current(message, tone),
+    [],
+  );
 
   // The prompt library's project scope follows the pane's group directory; a
   // worktree group resolves to its base repo so prompts don't fork with the
@@ -10819,6 +10914,32 @@ function MainApp() {
     );
   }
 
+  const selectResearchTreeFromSidebar = useCallback(
+    (treeId: string) => {
+      if (
+        isResearchTreeSelectionChange(
+          activeResearchTreeId,
+          // An open composer page covers the document, so re-clicking the
+          // active tree is a real navigation rather than a redundant select.
+          researchSurfaceActive && !newDocumentOpen,
+          treeId,
+        )
+      ) {
+        void selectResearchTree(treeId);
+      }
+    },
+    [activeResearchTreeId, newDocumentOpen, researchSurfaceActive, selectResearchTree],
+  );
+  const reorderResearchTreesFromSidebar = useCallback(
+    (archived: boolean, orderedTreeIds: string[]) => {
+      const scope = researchScopeRef.current;
+      if (scope) {
+        applyResearchTreeOrder(archived, scope, orderedTreeIds);
+      }
+    },
+    [applyResearchTreeOrder],
+  );
+
   const renamingGroup = renameGroupId ? groupById.get(renameGroupId) : undefined;
   const renamingResearchFolder =
     renamingGroup?.scope === "research" ? renamingGroup : undefined;
@@ -11000,31 +11121,13 @@ function MainApp() {
               onDeleteFolder={deleteResearchFolderFromSidebar}
               onToggleStar={toggleResearchStarFromSidebar}
               onReorderStars={reorderResearchStarsFromSidebar}
-              onSelect={(treeId) => {
-                if (
-                  isResearchTreeSelectionChange(
-                    activeResearchTreeId,
-                    // An open composer page covers the document, so re-clicking
-                    // the active tree is a real navigation: it must run the
-                    // selection (dismissing a pristine composer) rather than
-                    // being skipped as a redundant re-select.
-                    researchSurfaceActive && !newDocumentOpen,
-                    treeId,
-                  )
-                ) {
-                  void selectResearchTree(treeId);
-                }
-              }}
+              onSelect={selectResearchTreeFromSidebar}
               onRename={renameResearchTreeTitle}
               onArchive={archiveResearchTreeFromSidebar}
               onRegenerateTitle={regenerateResearchTreeTitle}
               onRestore={restoreResearchTreeFromSidebar}
               onRemove={removeResearchTreeFromSidebar}
-              onReorder={(archived, orderedTreeIds) => {
-                if (researchScope) {
-                  applyResearchTreeOrder(archived, researchScope, orderedTreeIds);
-                }
-              }}
+              onReorder={reorderResearchTreesFromSidebar}
             />
           ) : null}
           {sidebarMode === "terminal" ? terminalGroups.map((group, groupIndex) => {
@@ -12845,10 +12948,10 @@ function MainApp() {
               onRemoveTree={removeResearchTreeAndSelectFallback}
               onUpdateDocument={editResearchDocument}
               onCancel={cancelResearchRun}
-              onOpenPane={openResearchPaneTab}
+              onOpenPane={handleResearchDocumentOpenPane}
               linkActions={linkActionsForPane(researchBrowserOwnerId(activeResearchTreeId))}
               onError={setError}
-              onToast={showAppToast}
+              onToast={handleResearchDocumentToast}
               onPublish={setPublicationTarget}
               publicationBinding={
                 publicationBindings.find(
@@ -12857,15 +12960,7 @@ function MainApp() {
                     binding.source.treeId === activeResearchTreeId,
                 ) ?? null
               }
-              onPublicationBindingChange={(binding) => {
-                setPublicationBindings((current) => [
-                  binding,
-                  ...current.filter(
-                    (candidate) =>
-                      candidate.publicationId !== binding.publicationId,
-                  ),
-                ]);
-              }}
+              onPublicationBindingChange={handlePublicationBindingChange}
             />
           ) : null}
           {researchStageView === "home" ? (
