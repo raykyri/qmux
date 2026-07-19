@@ -86,8 +86,20 @@ public func qmuxNativeTerminalIsReadyForReplay(
 @_cdecl("qmux_native_terminal_remove")
 public func qmuxNativeTerminalRemove(_ paneID: UnsafePointer<CChar>?) {
     guard let paneID = terminalString(paneID) else { return }
-    onTerminalMain {
-        NativeTerminalHost.shared.removePane(id: paneID)
+    // Cut the receive path first, on the caller's thread: once the session is
+    // unregistered, PTY reader threads can no longer resolve it, so no output
+    // lands on a surface that is queued for teardown. The view teardown itself
+    // (removeFromSuperview + Ghostty surface deinit) is main-actor AppKit work,
+    // but the caller is typically a backend kill path (research-pane retirement,
+    // kill_all_panes) that must not park on DispatchQueue.main.sync behind a
+    // busy runloop — the research auto-end stall. Queue it instead, matching
+    // the already-async surfaceDidClose removal path. removePane's missing-key
+    // guard keeps a duplicate delivery (kill racing EOF) a no-op.
+    TerminalSessionRegistry.shared.unregister(paneID)
+    DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+            NativeTerminalHost.shared.removePane(id: paneID)
+        }
     }
 }
 

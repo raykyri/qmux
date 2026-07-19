@@ -8,6 +8,80 @@ use crate::state::AppState;
 static APP_STATE: OnceLock<Mutex<Option<AppState>>> = OnceLock::new();
 static REPLAYING_PANES: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Main-thread delegate reports that need the model lock or the filesystem
+/// (OSC title, cwd). They arrive on the AppKit main thread, and applying them
+/// there parks the UI behind whatever backend thread currently holds the
+/// model lock (persist snapshot, research launch/retire churn) — the same
+/// stall `qmux_native_terminal_did_close`'s worker handoff already avoids. A
+/// single draining worker preserves per-pane ordering and collapses bursts.
+enum DeferredPaneReport {
+    Title { pane_id: String, title: String },
+    Cwd { pane_id: String, cwd: String },
+}
+
+impl DeferredPaneReport {
+    fn pane_id(&self) -> &str {
+        match self {
+            DeferredPaneReport::Title { pane_id, .. } | DeferredPaneReport::Cwd { pane_id, .. } => {
+                pane_id
+            }
+        }
+    }
+}
+
+static DEFERRED_REPORT_TX: std::sync::LazyLock<std::sync::mpsc::Sender<DeferredPaneReport>> =
+    std::sync::LazyLock::new(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<DeferredPaneReport>();
+        std::thread::spawn(move || {
+            while let Ok(first) = rx.recv() {
+                // Drain the burst before applying: a later report for the same
+                // pane supersedes an earlier one (last title/cwd wins), so a
+                // title-spamming program can't build an unbounded backlog.
+                let mut batch = vec![first];
+                while let Ok(report) = rx.try_recv() {
+                    batch.push(report);
+                }
+                for (index, report) in batch.iter().enumerate() {
+                    let superseded = batch[index + 1..]
+                        .iter()
+                        .any(|later| later.pane_id() == report.pane_id());
+                    if !superseded {
+                        apply_deferred_pane_report(report);
+                    }
+                }
+            }
+        });
+        tx
+    });
+
+fn apply_deferred_pane_report(report: &DeferredPaneReport) {
+    with_app_state(|state| match report {
+        DeferredPaneReport::Title { pane_id, title } => {
+            let event_title = match state.update_last_osc_title(pane_id, title) {
+                Ok(title) => title.unwrap_or_default(),
+                Err(err) => {
+                    eprintln!("qmux: failed to record native title for pane {pane_id}: {err}");
+                    // Persistence is best-effort. Preserve the pre-existing live
+                    // behavior even if the model is temporarily unavailable; the
+                    // frontend still applies its own sanitization.
+                    title.clone()
+                }
+            };
+            state.emit(QmuxEvent::new(
+                "terminal.title_changed",
+                Some(pane_id.clone()),
+                None,
+                serde_json::json!({ "title": event_title }),
+            ));
+        }
+        DeferredPaneReport::Cwd { pane_id, cwd } => {
+            if let Err(err) = state.update_pane_cwd(pane_id, cwd.clone()) {
+                eprintln!("qmux: rejected native cwd update for pane {pane_id}: {err}");
+            }
+        }
+    });
+}
 /// Whether the webview's qmux-event listener is live. The native shortcut
 /// classifiers report a chord as "handled" — which makes Swift consume its
 /// keyDown and keyUp — purely by emitting an event; while no listener exists
@@ -949,24 +1023,9 @@ pub extern "C" fn qmux_native_terminal_did_change_title(
     let (Some(pane_id), Some(title)) = (callback_string(pane_id), callback_string(title)) else {
         return;
     };
-    with_app_state(|state| {
-        let event_title = match state.update_last_osc_title(&pane_id, &title) {
-            Ok(title) => title.unwrap_or_default(),
-            Err(err) => {
-                eprintln!("qmux: failed to record native title for pane {pane_id}: {err}");
-                // Persistence is best-effort. Preserve the pre-existing live
-                // behavior even if the model is temporarily unavailable; the
-                // frontend still applies its own sanitization.
-                title
-            }
-        };
-        state.emit(QmuxEvent::new(
-            "terminal.title_changed",
-            Some(pane_id),
-            None,
-            serde_json::json!({ "title": event_title }),
-        ));
-    });
+    // Fires on the AppKit main thread (agents stream OSC titles at startup and
+    // while working); the model lock + persist mark happen on the worker.
+    let _ = DEFERRED_REPORT_TX.send(DeferredPaneReport::Title { pane_id, title });
 }
 
 #[unsafe(no_mangle)]
@@ -977,11 +1036,9 @@ pub extern "C" fn qmux_native_terminal_did_change_cwd(
     let (Some(pane_id), Some(cwd)) = (callback_string(pane_id), callback_string(cwd)) else {
         return;
     };
-    with_app_state(|state| {
-        if let Err(err) = state.update_pane_cwd(&pane_id, cwd) {
-            eprintln!("qmux: rejected native cwd update for pane {pane_id}: {err}");
-        }
-    });
+    // Fires on the AppKit main thread; the directory stat, model lock, and
+    // persist mark happen on the worker.
+    let _ = DEFERRED_REPORT_TX.send(DeferredPaneReport::Cwd { pane_id, cwd });
 }
 
 #[unsafe(no_mangle)]
