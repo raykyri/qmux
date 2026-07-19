@@ -32,7 +32,12 @@ import {
   conversationActivityToolCalls,
   conversationToolCallLabel,
 } from "../../lib/researchConversations";
-import { canContinueThread, inlineChainFor } from "../../lib/researchThreads";
+import {
+  canContinueThread,
+  canFollowUpFrom,
+  inlineChainFor,
+  isActiveResearchStatus,
+} from "../../lib/researchThreads";
 import { countResearchDocumentWords } from "../../lib/researchDocuments";
 import {
   expandedResearchHighlightOffsets,
@@ -529,10 +534,18 @@ function sameCardTops(a: Record<string, number>, b: Record<string, number>) {
   );
 }
 
-const ACTIVE_RESEARCH_STATUSES = ["queued", "starting", "running"] as const;
-
-function isActiveResearchStatus(status: ResearchNode["status"]) {
-  return (ACTIVE_RESEARCH_STATUSES as readonly string[]).includes(status);
+/** Removes the given keys from a record, keeping the identity when none are
+ * present — the shape every per-node cache invalidation here needs. */
+function withoutKeys<T>(record: Record<string, T>, keys: Iterable<string>): Record<string, T> {
+  const stale = [...keys].filter((key) => key in record);
+  if (stale.length === 0) {
+    return record;
+  }
+  const next = { ...record };
+  for (const key of stale) {
+    delete next[key];
+  }
+  return next;
 }
 
 /** Dotted elbow connectors, grouped by the thread segment whose grid hosts
@@ -874,15 +887,19 @@ export default function ResearchDocument({
   const detailRef = useRef(detail);
   const previousDetailNodesRef = useRef<ResearchNode[]>([]);
   const contentByNodeRef = useRef(contentByNode);
+  const contentErrorByNodeRef = useRef(contentErrorByNode);
   const askRef = useRef(ask);
   // The (status, snapshot) stamp each cached content was fetched under, so
   // the loader can tell a cache hit from a stale entry without refetching
   // unchanged segments every time the chain recomputes.
   const fetchStampByNodeRef = useRef(new Map<string, string>());
-  // Guards scroll recording, as the old contentNodeIdRef did for the
-  // single-node view: offsets are only meaningful while the selected node's
-  // content is on screen, not while a loading placeholder clamps scrollTop.
-  const selectedContentLoadedRef = useRef(false);
+  // Guards scroll recording and restoration, as the old contentNodeIdRef did
+  // for the single-node view: offsets are only meaningful once the WHOLE
+  // chain has settled (content or a terminal error per segment). While any
+  // segment is still a short loading placeholder the page is not at its real
+  // height, and the browser's clamp scroll event would otherwise record —
+  // and permanently overwrite — the saved offset with the clamped value.
+  const chainContentSettledRef = useRef(false);
   // Set once the chain page's scroll offset has been restored; cleared on
   // tree switches and cross-chain navigation. In-chain selection changes
   // scroll to segments instead of re-restoring, and a chain growing a new
@@ -895,8 +912,8 @@ export default function ResearchDocument({
   treeIdRef.current = treeId;
   detailRef.current = detail;
   contentByNodeRef.current = contentByNode;
+  contentErrorByNodeRef.current = contentErrorByNode;
   askRef.current = ask;
-  selectedContentLoadedRef.current = Boolean(selectedNodeId && contentByNode[selectedNodeId]);
 
   // The inline chain this document renders, stabilized by id-list equality:
   // `detail` is replaced by every research event (4×/s while any run in the
@@ -926,6 +943,9 @@ export default function ResearchDocument({
     [detail, chainNodeIds],
   );
   const tailNode = chainNodes.length > 0 ? chainNodes[chainNodes.length - 1] : null;
+  chainContentSettledRef.current =
+    chainNodeIds.length > 0 &&
+    chainNodeIds.every((id) => contentByNode[id] || contentErrorByNode[id]);
   // A per-segment (status, snapshot) key: the loader and pollers restart on
   // lifecycle transitions rather than on every detail replacement.
   const chainStatusKey = chainNodes
@@ -982,6 +1002,11 @@ export default function ResearchDocument({
   const revisionsKey = chainNodeIds
     .map((id) => contentByNode[id]?.responseRevision ?? "")
     .join("\n");
+  const highlightsKey = chainNodeIds
+    .map((id) =>
+      (contentByNode[id]?.node.highlights ?? []).map((highlight) => highlight.id).join(","),
+    )
+    .join("\n");
   const expandedKey = chainNodeIds.map((id) => (expandedNodes[id] ? "1" : "0")).join("");
   const fullTraceKey = chainNodeIds.map((id) => (fullTraceNodes[id] ? "1" : "0")).join("");
 
@@ -1006,26 +1031,38 @@ export default function ResearchDocument({
     setLinkedAnchorNodeId(null);
   }, [treeId, chainKey, revisionsKey]);
 
-  // Restore a persisted in-progress ask once the selected node's content is
-  // on screen. Declared after the reset above so that when both fire in the
-  // same pass (the revision landing after a remount), the restore wins.
+  // Restore a persisted in-progress ask once its segment's content is on
+  // screen. An ask can be composed on ANY chain segment and persists under
+  // that segment's id, so the whole chain is searched (selected segment
+  // first). Never replaces a live ask — an in-chain selection change or an
+  // unrelated segment's revision landing must not retarget what the user is
+  // typing. Declared after the reset above so that when both fire in the
+  // same pass (a revision landing), the restore wins and the ask survives.
   useEffect(() => {
-    if (!treeId || !selectedNodeId) {
+    if (!treeId || chainNodeIds.length === 0 || ask) {
       return;
     }
-    if (!contentByNodeRef.current[selectedNodeId]?.responseRevision) {
+    const askByNode = navigationRef.current[treeId]?.askByNode;
+    if (!askByNode) {
       return;
     }
-    const saved = navigationRef.current[treeId]?.askByNode?.[selectedNodeId];
-    if (!saved) {
+    const candidates = selectedNodeId
+      ? [selectedNodeId, ...chainNodeIds.filter((id) => id !== selectedNodeId)]
+      : chainNodeIds;
+    for (const nodeId of candidates) {
+      const saved = askByNode[nodeId];
+      if (!saved || !contentByNodeRef.current[nodeId]?.responseRevision) {
+        continue;
+      }
+      setAsk({ nodeId, anchor: saved.anchor });
+      // Never clobber text the user managed to type before the content
+      // loaded.
+      if (saved.text) {
+        setFollowup((current) => current || saved.text);
+      }
       return;
     }
-    setAsk({ nodeId: selectedNodeId, anchor: saved.anchor });
-    // Never clobber text the user managed to type before the content loaded.
-    if (saved.text) {
-      setFollowup((current) => current || saved.text);
-    }
-  }, [treeId, chainKey, selectedNodeId, revisionsKey]);
+  }, [ask, treeId, chainKey, chainNodeIds, selectedNodeId, revisionsKey]);
 
   // Match the right-pane composer: fit the textarea to its contents up to the
   // shared cap, then let it scroll. The chain dependency also sizes a newly
@@ -1137,6 +1174,19 @@ export default function ResearchDocument({
     }
     return anchoredEntriesRef.current;
   }, [chainNodeIds, childrenBySegment]);
+  // Height-relevant card content, for the collision measurer: preview and
+  // prompt growth changes a card's rendered height; other detail churn does
+  // not.
+  const cardsMeasureKey = chainNodeIds
+    .map((id) =>
+      (childrenBySegment.get(id) ?? [])
+        .map(
+          (child) =>
+            `${child.id}:${child.prompt.length}:${child.responsePreview?.length ?? 0}:${child.status}`,
+        )
+        .join("|"),
+    )
+    .join("\n");
   const deletingBranch = useMemo(
     () =>
       deletingBranchId && detail
@@ -1172,6 +1222,13 @@ export default function ResearchDocument({
         const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
         navigation.selectedNodeId = fallbackNodeId;
         saveResearchNavigation();
+        // The fallback is a page swap that bypasses applySelection: reset the
+        // same per-page state, or the new page never restores its saved
+        // scroll offset (restoredChainRef would still hold the deleted
+        // page's latch).
+        restoredChainRef.current = null;
+        setFullTraceNodes({});
+        setFollowupMode("thread");
         setSelectedNodeId(fallbackNodeId);
       }
       previousDetailNodesRef.current = detail.nodes;
@@ -1391,8 +1448,10 @@ export default function ResearchDocument({
     });
     // Full-trace is a per-visit reading choice, not a sticky session mode:
     // each page opens on its answers so revealing one node's transcript
-    // never flips the default view for the next.
+    // never flips the default view for the next. The composer mode is
+    // likewise a per-answer choice.
     setFullTraceNodes({});
+    setFollowupMode("thread");
   }, [treeId, detail?.tree.rootNodeId]);
 
   // Switches the displayed node without touching visit history: records the
@@ -1409,7 +1468,7 @@ export default function ResearchDocument({
       if (
         selectedNodeId &&
         documentScrollRef.current &&
-        selectedContentLoadedRef.current
+        chainContentSettledRef.current
       ) {
         recordResearchScrollPosition(
           navigation,
@@ -1421,10 +1480,13 @@ export default function ResearchDocument({
       saveResearchNavigation();
       const sameChain = chainNodeIdsRef.current.includes(nodeId);
       if (!sameChain) {
-        // A page swap: reset the per-visit trace choice and let the chain
-        // effects prune and reload content. Expanded windows are tree-wide
-        // persisted state, so they carry over.
+        // A page swap: reset the per-visit trace choice and the composer
+        // mode (a "New branch" choice belongs to the answer it was made for,
+        // not to whatever tail comes next), and let the chain effects prune
+        // and reload content. Expanded windows are tree-wide persisted
+        // state, so they carry over.
         setFullTraceNodes({});
+        setFollowupMode("thread");
         restoredChainRef.current = null;
       }
       setSelectedNodeId(nodeId);
@@ -1644,17 +1706,8 @@ export default function ResearchDocument({
   // the old page's contents, matching the single-node view's memory profile.
   useEffect(() => {
     const keep = new Set(chainNodeIds);
-    const prune = <T,>(current: Record<string, T>) => {
-      const stale = Object.keys(current).filter((key) => !keep.has(key));
-      if (stale.length === 0) {
-        return current;
-      }
-      const next = { ...current };
-      for (const key of stale) {
-        delete next[key];
-      }
-      return next;
-    };
+    const prune = <T,>(current: Record<string, T>) =>
+      withoutKeys(current, Object.keys(current).filter((key) => !keep.has(key)));
     setContentByNode(prune);
     setContentErrorByNode(prune);
     for (const key of [...fetchStampByNodeRef.current.keys()]) {
@@ -1676,14 +1729,7 @@ export default function ResearchDocument({
       return node ? `${node.status}:${node.responseSnapshotAt ?? 0}` : "";
     };
     const clearError = (nodeId: string) =>
-      setContentErrorByNode((current) => {
-        if (!(nodeId in current)) {
-          return current;
-        }
-        const next = { ...current };
-        delete next[nodeId];
-        return next;
-      });
+      setContentErrorByNode((current) => withoutKeys(current, [nodeId]));
     const load = async (nodeId: string) => {
       // Stamped before the fetch: a transition that lands mid-flight
       // restarts this effect and refetches under the new stamp.
@@ -1723,12 +1769,26 @@ export default function ResearchDocument({
       }
     };
     for (const nodeId of chainNodeIds) {
+      const node = detailRef.current?.nodes.find((candidate) => candidate.id === nodeId);
       const hasContent = Boolean(contentByNodeRef.current[nodeId]);
-      if (!hasContent || fetchStampByNodeRef.current.get(nodeId) !== stampFor(nodeId)) {
+      const hasError = Boolean(contentErrorByNodeRef.current[nodeId]);
+      if (
+        !hasContent ||
+        hasError ||
+        fetchStampByNodeRef.current.get(nodeId) !== stampFor(nodeId)
+      ) {
         // A restart is a fresh load for this segment (status transition,
         // snapshot landing, retry): a failure reported by the previous run
-        // must not sit on screen while this one is in flight.
+        // must not sit on screen while this one is in flight. An error with
+        // a matching stamp still reloads — that is what the Retry button's
+        // nonce bump asks for.
         clearError(nodeId);
+        void load(nodeId);
+      } else if (node && isActiveResearchStatus(node.status)) {
+        // The cleanup above cancelled this still-streaming segment's pending
+        // poll timer (a sibling's transition, a retry, or a document edit
+        // restarted the effect). Re-arm it, or its live transcript freezes
+        // until its own status finally changes.
         void load(nodeId);
       }
     }
@@ -1747,26 +1807,39 @@ export default function ResearchDocument({
     // transcript flush.
   }, [chainKey, chainStatusKey, contentLoadNonce]);
 
-  // Restore the chain page's scroll offset once the selected segment's
-  // content is on screen — once per page visit, so a growing chain (a new
-  // inline follow-up landing) or in-chain selection cannot yank the viewport
-  // back to a stale offset.
+  // Restore the chain page's scroll offset once the WHOLE chain has settled
+  // (see chainContentSettledRef — restoring against a partially loaded page
+  // clamps, and the clamp destroys the saved offset). Once per page visit,
+  // so a growing chain (a new inline follow-up landing) or in-chain
+  // selection cannot yank the viewport back to a stale offset. When the
+  // selected segment sits mid-chain and no offset was saved, land on the
+  // segment itself rather than the top of the thread.
   useLayoutEffect(() => {
     if (
       !treeId ||
       !selectedNodeId ||
-      !contentByNode[selectedNodeId] ||
+      !chainContentSettledRef.current ||
       !documentScrollRef.current ||
       restoredChainRef.current !== null
     ) {
       return;
     }
     restoredChainRef.current = `${treeId}:${chainKey}`;
-    documentScrollRef.current.scrollTop = restoreResearchScrollPosition(
+    const saved = restoreResearchScrollPosition(
       navigationRef.current[treeId],
       selectedNodeId,
     );
-  }, [contentByNode, treeId, chainKey, selectedNodeId]);
+    if (saved === 0 && chainNodeIds[0] !== selectedNodeId) {
+      // Arriving at a mid-chain segment with nothing to restore (e.g. Back
+      // from a branch page to the answer it was asked about): show that
+      // answer, not the root five screens above it.
+      documentScrollRef.current
+        .querySelector(`[data-segment-anchor="${CSS.escape(selectedNodeId)}"]`)
+        ?.scrollIntoView({ block: "start" });
+      return;
+    }
+    documentScrollRef.current.scrollTop = saved;
+  }, [contentByNode, contentErrorByNode, treeId, chainKey, chainNodeIds, selectedNodeId]);
 
   useEffect(() => {
     if (treeId && selectedNodeId && detail?.nodes.some((node) => node.id === selectedNodeId)) {
@@ -1791,7 +1864,7 @@ export default function ResearchDocument({
         currentTreeId &&
         currentNodeId &&
         documentScrollRef.current &&
-        selectedContentLoadedRef.current
+        chainContentSettledRef.current
       ) {
         const navigation = (navigationRef.current[currentTreeId] ??= { scrollByNode: {} });
         recordResearchScrollPosition(
@@ -1810,8 +1883,9 @@ export default function ResearchDocument({
       return;
     }
     // Loading windows are not this page's scroll state (see the ref's
-    // comment) — without this, navigating to a node wipes its saved offset.
-    if (!selectedContentLoadedRef.current) {
+    // comment) — without this, navigating to a node wipes its saved offset,
+    // and a partially loaded chain's clamp event overwrites it.
+    if (!chainContentSettledRef.current) {
       return;
     }
     const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
@@ -1913,7 +1987,9 @@ export default function ResearchDocument({
           cached.view.node === node && cached.view.contentError === contentError
             ? cached.view
             : { ...cached.view, node, contentError };
-        cache.set(node.id, { ...cached, view });
+        if (view !== cached.view) {
+          cache.set(node.id, { ...cached, view });
+        }
         return view;
       }
       // A conversation node's whole timeline is the document: there is no
@@ -1999,20 +2075,37 @@ export default function ResearchDocument({
   // nodes without changing the transcript items. Observe those commits so saved
   // ranges are rebuilt against the current rendered projection. Query-anchor
   // passages (and an in-progress ask) resolve against the same projections, so
-  // they need the observer even when no segment has saved highlights —
+  // they need the observer even when a segment has no saved highlights —
   // without it their paints and card offsets go stale after a diagram lands.
-  const hasAnyAnnotations =
-    anchoredEntries.length > 0 ||
-    Boolean(ask) ||
-    chainNodes.some((node) => (node.highlights?.length ?? 0) > 0);
+  // Only annotated segments' response roots are observed — never the rails,
+  // whose streaming card previews mutate 4×/s and would otherwise churn the
+  // nonce (and every DOM-walking paint effect keyed on it) for content no
+  // annotation can resolve against.
+  const annotatedSegmentsKey = chainNodeIds
+    .filter((id) => {
+      if (!contentByNode[id]?.responseRevision) {
+        return false;
+      }
+      return (
+        Boolean(contentByNode[id]?.node.highlights?.length) ||
+        ask?.nodeId === id ||
+        anchoredEntries.some((entry) => entry.segmentId === id)
+      );
+    })
+    .join("\n");
   useEffect(() => {
-    const root = contentContainerRef.current;
     if (
-      !root ||
-      !hasAnyAnnotations ||
+      !annotatedSegmentsKey ||
       !researchHighlightApi() ||
       typeof MutationObserver === "undefined"
     ) {
+      return;
+    }
+    const roots = annotatedSegmentsKey
+      .split("\n")
+      .map((id) => segmentRoot(id))
+      .filter((root): root is HTMLDivElement => Boolean(root));
+    if (roots.length === 0) {
       return;
     }
     let frame: number | null = null;
@@ -2025,14 +2118,19 @@ export default function ResearchDocument({
         setHighlightDomNonce((value) => value + 1);
       });
     });
-    observer.observe(root, { childList: true, characterData: true, subtree: true });
+    for (const root of roots) {
+      observer.observe(root, { childList: true, characterData: true, subtree: true });
+    }
     return () => {
       observer.disconnect();
       if (frame !== null) {
         window.cancelAnimationFrame(frame);
       }
     };
-  }, [chainKey, hasAnyAnnotations]);
+    // Re-observed on view toggles as well: the roots' inner DOM is rebuilt
+    // wholesale then, and an observer bound before a rebuild keeps working,
+    // but a root remount (content refetch after an edit) needs the rebind.
+  }, [annotatedSegmentsKey, revisionsKey, expandedKey, fullTraceKey, segmentRoot]);
 
   // Paint saved ranges without rewriting the markdown DOM, across every
   // rendered segment. The CSS Custom Highlight registry is name-global, so
@@ -2089,10 +2187,17 @@ export default function ResearchDocument({
     return () => {
       api?.registry.delete(RESEARCH_HIGHLIGHT_NAME);
     };
+    // Keyed on the revisions and highlight-id lists rather than contentByNode
+    // identity: a streaming segment's 1s poll replaces the map every second,
+    // and repainting would re-walk every settled segment's text nodes each
+    // time for content that cannot have moved. Anchors only resolve against
+    // revision-bearing (snapshot) content, and DOM swaps inside observed
+    // roots arrive via highlightDomNonce.
   }, [
     chainKey,
     chainNodeIds,
-    contentByNode,
+    highlightsKey,
+    revisionsKey,
     expandedKey,
     fullTraceKey,
     highlightDomNonce,
@@ -2141,20 +2246,15 @@ export default function ResearchDocument({
           }
           painted.add(range);
           paintedAny = true;
+          const top = aside
+            ? Math.max(0, Math.round(range.getBoundingClientRect().top - asideTop))
+            : null;
           if (id === "__ask__") {
-            if (aside) {
-              askTop = Math.max(
-                0,
-                Math.round(range.getBoundingClientRect().top - asideTop),
-              );
-            }
+            askTop = top;
           } else {
             anchoredRangeOffsetsRef.current.push({ segmentId: nodeId, id, ...offsets! });
-            if (aside) {
-              tops[id] = Math.max(
-                0,
-                Math.round(range.getBoundingClientRect().top - asideTop),
-              );
+            if (top !== null) {
+              tops[id] = top;
             }
           }
         }
@@ -2168,12 +2268,16 @@ export default function ResearchDocument({
     return () => {
       api?.registry.delete(RESEARCH_QUERY_ANCHOR_NAME);
     };
+    // revisionsKey instead of contentByNode identity for the same reason as
+    // the saved-highlight paint above: anchors are immutable and resolve
+    // only against revision-bearing content, so a streaming sibling's polls
+    // must not force whole-thread re-resolution every second.
   }, [
     anchoredEntries,
     ask,
     chainKey,
     chainNodeIds,
-    contentByNode,
+    revisionsKey,
     expandedKey,
     fullTraceKey,
     highlightDomNonce,
@@ -2365,8 +2469,10 @@ export default function ResearchDocument({
       }
     }
     setResolvedCardTops((current) => (sameCardTops(current, next) ? current : next));
-    // `detail` remeasures when streaming previews change card heights.
-  }, [anchoredCardTops, anchoredEntries, detail, segmentAside]);
+    // cardsMeasureKey remeasures when streaming previews change card
+    // heights, without re-running (and force-laying-out every rail) on the
+    // 4×/s detail replacements that change nothing height-relevant.
+  }, [anchoredCardTops, anchoredEntries, cardsMeasureKey, segmentAside]);
 
   // Ask mode: push any cards the docked composer would cover out of the way.
   // The composer itself sits absolutely at askComposerTop inside the ask
@@ -2613,6 +2719,33 @@ export default function ResearchDocument({
     setLinkedAnchorNodeId(null);
   }, []);
 
+  // One updater for every optimistic highlight mutation: replaces a cached
+  // segment's highlight list, leaving unrelated segments' identities alone.
+  const patchNodeHighlights = useCallback(
+    (
+      nodeId: string,
+      transform: (highlights: ResearchHighlight[]) => ResearchHighlight[],
+    ) => {
+      setContentByNode((current) => {
+        const entry = current[nodeId];
+        if (!entry) {
+          return current;
+        }
+        return {
+          ...current,
+          [nodeId]: {
+            ...entry,
+            node: {
+              ...entry.node,
+              highlights: transform(entry.node.highlights ?? []),
+            },
+          },
+        };
+      });
+    },
+    [],
+  );
+
   const applyHighlightAction = useCallback(async () => {
     if (!highlightAction || savingHighlight) {
       return;
@@ -2629,42 +2762,12 @@ export default function ResearchDocument({
           highlightAction.highlightIds,
         );
         const removedIds = new Set(removed.map(({ id }) => id));
-        setContentByNode((current) => {
-          const entry = current[targetNodeId];
-          if (!entry) {
-            return current;
-          }
-          return {
-            ...current,
-            [targetNodeId]: {
-              ...entry,
-              node: {
-                ...entry.node,
-                highlights: (entry.node.highlights ?? []).filter(
-                  ({ id }) => !removedIds.has(id),
-                ),
-              },
-            },
-          };
-        });
+        patchNodeHighlights(targetNodeId, (highlights) =>
+          highlights.filter(({ id }) => !removedIds.has(id)),
+        );
       } else {
         const created = await createResearchHighlight(targetNodeId, highlightAction.anchor);
-        setContentByNode((current) => {
-          const entry = current[targetNodeId];
-          if (!entry) {
-            return current;
-          }
-          return {
-            ...current,
-            [targetNodeId]: {
-              ...entry,
-              node: {
-                ...entry.node,
-                highlights: [...(entry.node.highlights ?? []), created],
-              },
-            },
-          };
-        });
+        patchNodeHighlights(targetNodeId, (highlights) => [...highlights, created]);
       }
       window.getSelection()?.removeAllRanges();
       setHighlightAction(null);
@@ -2673,7 +2776,7 @@ export default function ResearchDocument({
     } finally {
       setSavingHighlight(false);
     }
-  }, [highlightAction, onError, savingHighlight]);
+  }, [highlightAction, onError, patchNodeHighlights, savingHighlight]);
 
   // Expand: save the merged annotation, then retire the highlights it
   // absorbed. Creation goes first — if removal then fails, the leftover is
@@ -2697,25 +2800,10 @@ export default function ResearchDocument({
           ? await removeResearchHighlights(targetNodeId, highlightAction.highlightIds)
           : [];
       const removedIds = new Set(removed.map(({ id }) => id));
-      setContentByNode((current) => {
-        const entry = current[targetNodeId];
-        if (!entry) {
-          return current;
-        }
-        return {
-          ...current,
-          [targetNodeId]: {
-            ...entry,
-            node: {
-              ...entry.node,
-              highlights: [
-                ...(entry.node.highlights ?? []).filter(({ id }) => !removedIds.has(id)),
-                created,
-              ],
-            },
-          },
-        };
-      });
+      patchNodeHighlights(targetNodeId, (highlights) => [
+        ...highlights.filter(({ id }) => !removedIds.has(id)),
+        created,
+      ]);
       window.getSelection()?.removeAllRanges();
       setHighlightAction(null);
     } catch (err) {
@@ -2723,7 +2811,7 @@ export default function ResearchDocument({
     } finally {
       setSavingHighlight(false);
     }
-  }, [highlightAction, onError, savingHighlight]);
+  }, [highlightAction, onError, patchNodeHighlights, savingHighlight]);
 
   // The selection can back a targeted follow-up only while its segment can
   // actually take one: that node finished, and the tree accepts branches. A
@@ -2952,20 +3040,20 @@ export default function ResearchDocument({
       return;
     }
     // Ask mode targets the segment the passage was selected in and is always
-    // a branch; otherwise the composer acts on the thread's tail, continuing
-    // the thread or branching from it per the mode toggle.
+    // a branch; thread mode continues from the tail; branch mode branches
+    // from the last completed answer — the same targeting the composer's
+    // enabled state was derived from.
     const askState = ask;
     const target = askState
       ? detail.nodes.find((node) => node.id === askState.nodeId) ?? null
-      : tailNode;
-    // Mirrors the submit button's disabled conditions: Cmd+Enter must not
-    // reach the backend (and bounce with an error) from a state the button
-    // presents as unavailable.
-    if (!target || target.status !== "complete") {
-      return;
-    }
-    const launchesFresh = target.kind === "document" || target.kind === "conversation";
-    if (!launchesFresh && !target.nativeSessionId) {
+      : followupMode === "branch"
+        ? ([...chainNodes].reverse().find((node) => node.status === "complete") ?? null)
+        : tailNode;
+    // Mirrors the submit button's disabled conditions (same canFollowUpFrom
+    // / canContinueThread predicates): Cmd+Enter must not reach the backend
+    // (and bounce with an error) from a state the button presents as
+    // unavailable.
+    if (!target || !canFollowUpFrom(target)) {
       return;
     }
     const inline = !askState && followupMode === "thread";
@@ -3131,14 +3219,7 @@ export default function ResearchDocument({
       // Do not leave the old revision visible after the modal closes. The
       // existing loader refetches the atomically replaced snapshot.
       const editedNodeId = documentEditSession.nodeId;
-      setContentByNode((current) => {
-        if (!(editedNodeId in current)) {
-          return current;
-        }
-        const next = { ...current };
-        delete next[editedNodeId];
-        return next;
-      });
+      setContentByNode((current) => withoutKeys(current, [editedNodeId]));
       fetchStampByNodeRef.current.delete(editedNodeId);
       setContentLoadNonce((value) => value + 1);
     }
@@ -3188,22 +3269,34 @@ export default function ResearchDocument({
   const activeRun = isActiveResearchStatus(displayNode.status);
   const cancellationNeedsRetry = displayNode.status === "cancelled" && Boolean(displayNode.paneId);
   const threadLength = chainNodes.length;
-  const branchCount = Math.max(0, detail.nodes.length - threadLength);
+  // The chip counts what this page shows: the thread's turns and the branch
+  // cards hanging off them — not every descendant in the whole tree. The
+  // single-node label keeps the legacy whole-tree follow-up total.
+  const branchCount = chainNodeIds.reduce(
+    (total, id) => total + (childrenBySegment.get(id)?.length ?? 0),
+    0,
+  );
+  const legacyFollowupCount = Math.max(0, detail.nodes.length - 1);
 
-  // The thread composer acts on the ask segment (always branching) or the
-  // thread's tail. A tail that already has an inline child cannot exist by
-  // definition — the chain would extend through it — so "slot taken" never
-  // disables the tail composer; only an unfinished or unusable tail does.
+  // The thread composer acts on the ask segment (always branching), the
+  // thread's tail (Continue thread), or — in branch mode — the last
+  // completed answer in the thread, so branching stays available while the
+  // tail streams or after it failed, as every complete node's own composer
+  // allowed before threads. A tail that already has an inline child cannot
+  // exist by definition — the chain would extend through it — so "slot
+  // taken" never disables the tail composer; only an unfinished or unusable
+  // tail does.
+  const lastCompleteChainNode =
+    [...chainNodes].reverse().find((node) => node.status === "complete") ?? null;
   const composerTarget = ask
     ? detail.nodes.find((node) => node.id === ask.nodeId) ?? null
-    : tailNode;
-  const composerTargetLaunchesFresh =
-    composerTarget?.kind === "document" || composerTarget?.kind === "conversation";
+    : followupMode === "branch"
+      ? lastCompleteChainNode
+      : tailNode;
   const composerAwaitingCheckpoint = Boolean(
     composerTarget &&
-      !composerTargetLaunchesFresh &&
       composerTarget.status === "complete" &&
-      !composerTarget.nativeSessionId,
+      !canFollowUpFrom(composerTarget),
   );
   const composerDisabled =
     archived || !composerTarget || composerTarget.status !== "complete";
@@ -3212,8 +3305,10 @@ export default function ResearchDocument({
       !archived &&
       followup.trim() &&
       !submitting &&
-      composerTarget.status === "complete" &&
-      !composerAwaitingCheckpoint,
+      canFollowUpFrom(composerTarget) &&
+      (ask ||
+        followupMode === "branch" ||
+        canContinueThread(detail.nodes, composerTarget)),
   );
   const tailActive = Boolean(tailNode && isActiveResearchStatus(tailNode.status));
   const tailUnusable = Boolean(
@@ -3223,11 +3318,16 @@ export default function ResearchDocument({
     ? null
     : composerAwaitingCheckpoint
       ? "Waiting for the native session checkpoint before continuing."
-      : !ask && tailActive
+      : !ask && followupMode === "thread" && tailActive
         ? "Waiting for the answer above to finish."
-        : !ask && tailUnusable
-          ? `The last follow-up ${tailNode?.status === "failed" ? "failed" : "was cancelled"} — delete it to continue the thread.`
-          : null;
+        : !ask && followupMode === "thread" && tailUnusable
+          ? `The last follow-up ${tailNode?.status === "failed" ? "failed" : "was cancelled"} — delete it to continue the thread, or branch instead.`
+          : !ask &&
+              followupMode === "branch" &&
+              composerTarget &&
+              composerTarget.id !== tailNode?.id
+            ? "Branches from the last completed answer in this thread."
+            : null;
   const composerPlaceholder = ask
     ? "Ask about the highlighted text…"
     : followupMode === "branch"
@@ -3240,13 +3340,18 @@ export default function ResearchDocument({
             ? "Continue this thread…"
             : "Type your query…";
 
+  // An anchored composer whose passage currently resolves docks absolutely
+  // beside it; while the anchor cannot be located in the rendered projection
+  // (a transcript-view toggle hid the passage, an edit moved it) the
+  // composer stays in the rail's flow instead of pinning to top 0 over the
+  // card stack.
   const renderComposer = (anchored: boolean) => (
     <div
       ref={followupComposerRef}
       className={`research-followup-composer${composerDisabled ? " is-disabled" : ""}${
         anchored ? " is-anchored" : " is-thread"
-      }`}
-      style={anchored ? { top: askComposerTop ?? 0 } : undefined}
+      }${anchored && askComposerTop !== null ? " is-docked" : ""}`}
+      style={anchored && askComposerTop !== null ? { top: askComposerTop } : undefined}
     >
       {ask && anchored ? (
         <div className="research-followup-quote-row">
@@ -3580,9 +3685,12 @@ export default function ResearchDocument({
                   ) : segmentActive ? (
                     <span>Waiting to start</span>
                   ) : null}
-                  {segmentActive && node.id !== displayNode.id ? (
+                  {(segmentActive ||
+                    (node.status === "cancelled" && Boolean(node.paneId))) &&
+                  node.id !== displayNode.id ? (
                     // The header's terminal/cancel controls follow the
-                    // selected node; a run streaming elsewhere in the thread
+                    // selected node; a run streaming — or a cancellation
+                    // stuck with a lingering pane — elsewhere in the thread
                     // carries its own.
                     <>
                       {node.paneId ? (
@@ -3607,7 +3715,11 @@ export default function ResearchDocument({
                             .finally(() => setCancelling(false));
                         }}
                       >
-                        {cancelling ? "Cancelling…" : "Cancel"}
+                        {cancelling
+                          ? "Cancelling…"
+                          : node.status === "cancelled"
+                            ? "Retry cancel"
+                            : "Cancel"}
                       </button>
                     </>
                   ) : null}
@@ -3851,7 +3963,7 @@ export default function ResearchDocument({
                 Exported from terminal
               </span>
             ) : null}
-            {threadLength > 1 || branchCount > 0 ? (
+            {threadLength > 1 || legacyFollowupCount > 0 ? (
               <span className="research-document-followup-count">
                 {threadLength > 1
                   ? `${threadLength} in thread${
@@ -3859,7 +3971,7 @@ export default function ResearchDocument({
                         ? ` · ${branchCount} ${branchCount === 1 ? "branch" : "branches"}`
                         : ""
                     }`
-                  : `${branchCount} ${branchCount === 1 ? "follow-up" : "follow-ups"}`}
+                  : `${legacyFollowupCount} ${legacyFollowupCount === 1 ? "follow-up" : "follow-ups"}`}
               </span>
             ) : null}
             {selectedView?.hasTranscriptActivity && selectedNodeId ? (

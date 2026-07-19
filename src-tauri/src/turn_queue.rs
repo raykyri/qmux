@@ -1496,7 +1496,9 @@ mod tests {
         state
             .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
             .unwrap();
-        assert!(resolve_agent_submit_watch(&state, "agent-1", "pane-1", baseline));
+        assert!(resolve_agent_submit_watch(
+            &state, "agent-1", "pane-1", baseline
+        ));
     }
 
     #[test]
@@ -1521,7 +1523,9 @@ mod tests {
         state
             .set_agent_status("agent-1", AgentStatus::Running)
             .unwrap();
-        assert!(!resolve_agent_submit_watch(&state, "agent-1", "pane-1", baseline));
+        assert!(!resolve_agent_submit_watch(
+            &state, "agent-1", "pane-1", baseline
+        ));
     }
 
     #[test]
@@ -1541,7 +1545,9 @@ mod tests {
         // No outstanding send (the UserPromptSubmit echo already popped it): nothing to
         // nudge even though the agent is otherwise quiet.
         let baseline = state.agent_activity_seq("agent-1").unwrap();
-        assert!(!resolve_agent_submit_watch(&state, "agent-1", "pane-1", baseline));
+        assert!(!resolve_agent_submit_watch(
+            &state, "agent-1", "pane-1", baseline
+        ));
     }
 
     #[test]

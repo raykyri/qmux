@@ -4673,6 +4673,10 @@ impl AppState {
         mut nodes: Vec<ResearchNode>,
         responses: HashMap<String, Vec<Turn>>,
     ) -> Result<GroupInfo, String> {
+        // Imported nodes bypass create_research_child's one-inline-child
+        // check; repair the slot invariant here so a tampered archive cannot
+        // admit a permanently occupied slot the viewer cannot free.
+        research::normalize_inline_slots(&mut nodes);
         // Import rewrites response JSON with this build's serializer. Retarget
         // anchors to those exact bytes so a schema-preserving app upgrade does
         // not make otherwise valid portable highlights disappear.

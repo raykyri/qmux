@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   canContinueThread,
+  canFollowUpFrom,
   inlineChainFor,
   inlineChildOf,
+  isActiveResearchStatus,
 } from "../src/lib/researchThreads";
 import type { ResearchNode, ResearchNodeStatus } from "../src/types";
 
@@ -75,8 +77,9 @@ test("duplicate inline children resolve to the oldest, stably", () => {
   ];
   assert.equal(inlineChildOf(nodes, "root")?.id, "early");
   assert.deepEqual(inlineChainFor(nodes, "root"), ["root", "early"]);
-  // The orphaned duplicate still resolves its own chain through the head.
-  assert.deepEqual(inlineChainFor(nodes, "late"), ["root", "early"]);
+  // The losing duplicate stays viewable: it heads its own chain (rendered
+  // like a branch child) instead of resolving to a page that never shows it.
+  assert.deepEqual(inlineChainFor(nodes, "late"), ["late"]);
 });
 
 test("a parent-link cycle cannot hang the walk", () => {
@@ -113,6 +116,29 @@ test("canContinueThread requires a free inline slot, any child status", () => {
   const tail = node("tail");
   const branch = node("branch", { parentNodeId: "tail" });
   assert.equal(canContinueThread([tail, branch], tail), true);
+});
+
+test("isActiveResearchStatus matches only unsettled statuses", () => {
+  assert.equal(isActiveResearchStatus("queued"), true);
+  assert.equal(isActiveResearchStatus("starting"), true);
+  assert.equal(isActiveResearchStatus("running"), true);
+  assert.equal(isActiveResearchStatus("complete"), false);
+  assert.equal(isActiveResearchStatus("failed"), false);
+  assert.equal(isActiveResearchStatus("cancelled"), false);
+});
+
+test("canFollowUpFrom gates on completion and the run checkpoint", () => {
+  assert.equal(canFollowUpFrom(node("done")), true);
+  assert.equal(canFollowUpFrom(node("running", { status: "running" })), false);
+  assert.equal(canFollowUpFrom(node("unforked", { nativeSessionId: null })), false);
+  assert.equal(
+    canFollowUpFrom(node("doc", { kind: "document", nativeSessionId: null })),
+    true,
+  );
+  assert.equal(
+    canFollowUpFrom(node("conv", { kind: "conversation", nativeSessionId: null })),
+    true,
+  );
 });
 
 test("run tails need the session checkpoint; documents and conversations do not", () => {

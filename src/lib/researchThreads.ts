@@ -5,7 +5,33 @@
 // whatever node list they are given, so a malformed graph degrades to
 // shorter chains rather than throwing.
 
-import type { ResearchNode } from "../types";
+import type { ResearchNode, ResearchNodeStatus } from "../types";
+
+/** The statuses of a run that has been admitted but not settled. One list,
+ * shared by the branch/thread math and the document view, so a future status
+ * cannot fall out of sync between them. Mirrors the backend's
+ * ResearchNodeStatus::is_active (src-tauri/src/research.rs). */
+export const ACTIVE_RESEARCH_STATUSES: readonly ResearchNodeStatus[] = [
+  "queued",
+  "starting",
+  "running",
+];
+
+export function isActiveResearchStatus(status: ResearchNodeStatus): boolean {
+  return ACTIVE_RESEARCH_STATUSES.includes(status);
+}
+
+/** Whether a settled node can take any follow-up at all: it finished, and —
+ * for run nodes, whose follow-ups fork the native session — its checkpoint
+ * was recorded. Documents and conversations launch fresh runs that carry
+ * their content as context, so they need no checkpoint. */
+export function canFollowUpFrom(node: ResearchNode): boolean {
+  if (node.status !== "complete") {
+    return false;
+  }
+  const launchesFresh = node.kind === "document" || node.kind === "conversation";
+  return launchesFresh || Boolean(node.nativeSessionId);
+}
 
 /** The unique inline child of a node, or null. Duplicate inline children
  * cannot be created, but a corrupted store could hold them; the oldest wins
@@ -53,6 +79,25 @@ export function inlineChainFor(nodes: ResearchNode[], nodeId: string): string[] 
     chain.push(next.id);
     current = next;
   }
+  if (!chain.includes(nodeId)) {
+    // A stray inline node the spine does not reach — the losing duplicate of
+    // an occupied slot on a corrupted store. It must still be viewable, so it
+    // heads its own chain (like a branch child) instead of resolving to a
+    // page that never renders it.
+    const strayChain = [nodeId];
+    const straySeen = new Set<string>([nodeId]);
+    let strayCurrent = byId.get(nodeId);
+    while (strayCurrent) {
+      const next = inlineChildOf(nodes, strayCurrent.id);
+      if (!next || straySeen.has(next.id)) {
+        break;
+      }
+      straySeen.add(next.id);
+      strayChain.push(next.id);
+      strayCurrent = next;
+    }
+    return strayChain;
+  }
   return chain;
 }
 
@@ -63,9 +108,5 @@ export function inlineChainFor(nodes: ResearchNode[], nodeId: string): string[] 
  * checkpoint. Archived-tree gating stays the caller's job, matching how
  * branch follow-ups are gated today. */
 export function canContinueThread(nodes: ResearchNode[], tail: ResearchNode): boolean {
-  if (tail.status !== "complete" || inlineChildOf(nodes, tail.id)) {
-    return false;
-  }
-  const launchesFresh = tail.kind === "document" || tail.kind === "conversation";
-  return launchesFresh || Boolean(tail.nativeSessionId);
+  return canFollowUpFrom(tail) && !inlineChildOf(nodes, tail.id);
 }

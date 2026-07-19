@@ -227,6 +227,7 @@ import {
   isResearchTreeSelectionChange,
   pruneResearchNavigation,
 } from "./lib/researchNavigation";
+import { isActiveResearchStatus } from "./lib/researchThreads";
 import {
   groupsForScope,
   paneScope,
@@ -8497,7 +8498,7 @@ function MainApp() {
     flushPendingDrafts();
     try {
       const activeResearchNodeIds = researchActivity
-        .filter((node) => ["queued", "starting", "running"].includes(node.status))
+        .filter((node) => isActiveResearchStatus(node.status))
         .map((node) => node.id);
       // Settled, not fail-fast: the activity snapshot can be moments stale, so
       // a run that finished (and lost its pane) in the meantime rejects with

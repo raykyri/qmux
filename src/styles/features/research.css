@@ -1313,17 +1313,22 @@
 
 /* Ask mode: the composer docks beside the quoted passage inside that
    segment's rail, above whatever cards it displaces, on an opaque surface so
-   overlap stays readable. */
+   overlap stays readable. Absolute positioning applies only while the
+   passage resolves (is-docked); an unresolvable anchor keeps the composer in
+   the rail's flow above the cards instead of pinning it over them. */
 .research-followup-composer.is-anchored {
-  position: absolute;
   z-index: 5;
-  right: 2px;
-  left: 0;
   padding: 9px 10px;
   border: 1px solid var(--surface-border-default);
   border-radius: 10px;
   background: var(--research-followup-composer-bg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.research-followup-composer.is-anchored.is-docked {
+  position: absolute;
+  right: 2px;
+  left: 0;
 }
 
 /* The thread composer: the conversation's next turn, so it sits at the end

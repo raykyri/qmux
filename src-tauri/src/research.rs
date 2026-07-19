@@ -18,7 +18,14 @@ pub const MAX_RESEARCH_DOCUMENT_WORDS: usize = 10_000;
 /// Backstop for word-sparse documents (one giant token counts as one word).
 /// Imports and the composer both advertise this exact limit.
 pub const MAX_RESEARCH_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
-pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 5;
+pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 6;
+/// Written for archives whose newest feature is conversation nodes (no
+/// inline follow-ups), so they stay readable by pre-inline builds (which
+/// accept versions 1–5). Builds that predate the `inline` field would
+/// otherwise deserialize an inline thread without error and silently flatten
+/// it into sibling branches — the exact loss this version gate exists to
+/// turn into an "upgrade this installation" refusal.
+const DETACHED_RESEARCH_ARCHIVE_VERSION_CONVERSATIONS: u32 = 5;
 /// Written for archives whose newest content kind is document nodes, so they
 /// stay readable by pre-conversations builds (which accept versions 1–4).
 const DETACHED_RESEARCH_ARCHIVE_VERSION_DOCUMENTS: u32 = 4;
@@ -581,16 +588,20 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
 }
 
 /// The version to stamp on a new archive: the lowest version whose readers
-/// understand every node kind present, so archives keep the widest
-/// compatibility their content allows. Pre-conversations builds refuse
-/// anything above 4 (and pre-documents builds anything above 3) with an
-/// "upgrade this installation" error.
+/// understand every feature present, so archives keep the widest
+/// compatibility their content allows. Inline follow-ups need the newest
+/// readers regardless of node kinds — older builds would drop the flag
+/// silently, not fail — while pre-conversations builds refuse anything above
+/// 4 (and pre-documents builds anything above 3) with an "upgrade this
+/// installation" error.
 pub fn detached_archive_version(nodes: &[ResearchNode]) -> u32 {
-    if nodes
+    if nodes.iter().any(|node| node.inline) {
+        DETACHED_RESEARCH_ARCHIVE_VERSION
+    } else if nodes
         .iter()
         .any(|node| node.kind == ResearchNodeKind::Conversation)
     {
-        DETACHED_RESEARCH_ARCHIVE_VERSION
+        DETACHED_RESEARCH_ARCHIVE_VERSION_CONVERSATIONS
     } else if nodes
         .iter()
         .any(|node| node.kind == ResearchNodeKind::Document)
@@ -598,6 +609,40 @@ pub fn detached_archive_version(nodes: &[ResearchNode]) -> u32 {
         DETACHED_RESEARCH_ARCHIVE_VERSION_DOCUMENTS
     } else {
         DETACHED_RESEARCH_ARCHIVE_VERSION_RUNS_ONLY
+    }
+}
+
+/// Repairs the inline-slot invariant on nodes entering the store from
+/// outside `create_research_child` — at most one inline child per parent
+/// (the oldest wins, matching the viewer's fallback) and no inline roots.
+/// Archives written by this build already satisfy this; a hand-edited or
+/// corrupted archive is normalized instead of admitting a permanently
+/// occupied slot whose holder the interface cannot display or free.
+pub fn normalize_inline_slots(nodes: &mut [ResearchNode]) {
+    let mut winner_by_parent: HashMap<&str, (u128, &str)> = HashMap::new();
+    for node in nodes.iter() {
+        if !node.inline {
+            continue;
+        }
+        let Some(parent_id) = node.parent_node_id.as_deref() else {
+            continue;
+        };
+        let candidate = (node.created_at, node.id.as_str());
+        match winner_by_parent.get(parent_id) {
+            Some(current) if *current <= candidate => {}
+            _ => {
+                winner_by_parent.insert(parent_id, candidate);
+            }
+        }
+    }
+    let winners = winner_by_parent
+        .into_values()
+        .map(|(_, id)| id.to_string())
+        .collect::<HashSet<_>>();
+    for node in nodes.iter_mut() {
+        if node.inline && !winners.contains(&node.id) {
+            node.inline = false;
+        }
     }
 }
 
@@ -2456,7 +2501,7 @@ mod tests {
         archive.nodes.push(conversation);
         assert_eq!(
             detached_archive_version(&archive.nodes),
-            DETACHED_RESEARCH_ARCHIVE_VERSION
+            DETACHED_RESEARCH_ARCHIVE_VERSION_CONVERSATIONS
         );
         validate_detached_archive(&archive).unwrap();
 
@@ -2468,6 +2513,40 @@ mod tests {
         archive.tree_order.pop();
         let error = validate_detached_archive(&archive).unwrap_err();
         assert!(error.contains("not a root node"), "{error}");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn inline_follow_ups_bump_the_archive_version_and_normalize_on_repair() {
+        let folder = temp_workspace();
+        let mut archive = sample_detached_archive(&folder);
+        assert_eq!(detached_archive_version(&archive.nodes), 3);
+        let mut inline_child = archive.nodes[0].clone();
+        inline_child.id = "research-node-2".to_string();
+        inline_child.parent_node_id = Some(archive.nodes[0].id.clone());
+        inline_child.inline = true;
+        inline_child.created_at = 5;
+        archive.nodes.push(inline_child);
+        // An inline thread needs the newest readers even in a runs-only tree:
+        // older builds would silently drop the flag, not fail.
+        assert_eq!(
+            detached_archive_version(&archive.nodes),
+            DETACHED_RESEARCH_ARCHIVE_VERSION
+        );
+        validate_detached_archive(&archive).unwrap();
+
+        // Slot repair: an older duplicate wins the slot, the newer duplicate
+        // and an inline root both lose the flag.
+        let mut duplicate = archive.nodes[1].clone();
+        duplicate.id = "research-node-3".to_string();
+        duplicate.created_at = 2;
+        archive.nodes.push(duplicate);
+        archive.nodes[0].inline = true; // corrupted root
+        let mut nodes = archive.nodes.clone();
+        normalize_inline_slots(&mut nodes);
+        assert!(!nodes[0].inline, "roots never hold an inline flag");
+        assert!(!nodes[1].inline, "the newer duplicate loses the slot");
+        assert!(nodes[2].inline, "the oldest inline child keeps the slot");
         std::fs::remove_dir_all(folder).unwrap();
     }
 
