@@ -1113,6 +1113,24 @@
   color: var(--text-subtle);
 }
 
+.export-research-field .export-research-input,
+.export-research-field select {
+  width: 100%;
+  min-height: var(--control-h-lg);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-strong);
+  font-size: var(--fs-input);
+}
+
+.export-research-field .export-research-input:focus,
+.export-research-field select:focus {
+  outline: none;
+  border-color: var(--focus-ring);
+}
+
 .export-research-error {
   margin: 4px 0 8px;
   color: var(--status-failed-fg);

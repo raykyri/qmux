@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GroupInfo } from "../../types";
 
 // Confirmation for "Export to Research": pick the destination Research
@@ -35,6 +35,7 @@ export default function ExportToResearchDialog({
   // Shown inside the dialog: a global banner renders behind the modal
   // backdrop. Fields are kept for the retry.
   const [error, setError] = useState<string | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setWorkspaceId((current) =>
@@ -44,6 +45,31 @@ export default function ExportToResearchDialog({
     );
   }, [folders]);
 
+  // Pull DOM focus onto the title field on open. The native terminal only
+  // yields keyboard ownership once this dialog is mounted and registered as a
+  // blocking overlay, which can land after the input's initial autofocus — so
+  // re-assert focus across the next frame and a short settle, the same retry
+  // cadence the quit dialog uses for its confirm button.
+  useEffect(() => {
+    const focusTitle = (force: boolean) => {
+      const input = titleInputRef.current;
+      if (!input) {
+        return;
+      }
+      const dialog = input.closest(".confirm-dialog");
+      if (force || !dialog?.contains(document.activeElement)) {
+        input.focus();
+      }
+    };
+    focusTitle(true);
+    const frame = requestAnimationFrame(() => focusTitle(false));
+    const settle = window.setTimeout(() => focusTitle(false), 100);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, []);
+
   async function submit() {
     if (submitting) {
       return;
@@ -51,7 +77,10 @@ export default function ExportToResearchDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await onExport({ workspaceId, title: title.trim() || null });
+      // Default to the pane title shown in this dialog's header rather than the
+      // conversation's first prompt, so the exported tree is named after the
+      // terminal it came from.
+      await onExport({ workspaceId, title: title.trim() || paneTitle.trim() || null });
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -114,10 +143,12 @@ export default function ExportToResearchDialog({
         <label className="export-research-field">
           <span>Title</span>
           <input
+            ref={titleInputRef}
+            className="export-research-input"
             type="text"
             value={title}
             autoFocus
-            placeholder="Optional — defaults to the first prompt"
+            placeholder="Optional — defaults to the terminal title"
             aria-label="Research title"
             onChange={(event) => setTitle(event.currentTarget.value)}
           />

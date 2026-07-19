@@ -3679,6 +3679,10 @@ function MainApp() {
       activeBrowserOverlay?.open ||
       closeDialog ||
       exitDialog ||
+      // The export-to-Research dialog floats over the terminal stage like the
+      // quit/close dialogs; without this the terminal keeps pointer/keyboard
+      // ownership under the modal and its buttons and title field go dead.
+      exportResearchPane ||
       exitPreflightRequest ||
       renamePaneId ||
       renameGroupId ||
@@ -5958,6 +5962,7 @@ function MainApp() {
     Boolean(
       closeDialog ||
         exitDialog ||
+        exportResearchPane ||
         exitPreflightRequest ||
         renamePaneId ||
         renameGroupId ||
@@ -12979,11 +12984,16 @@ function MainApp() {
           onClose={() => setExportResearchPane(null)}
           onExport={async ({ workspaceId, title }) => {
             const workspace = await resolveResearchComposerWorkspace(workspaceId);
-            await exportPaneToResearch({
+            const detail = await exportPaneToResearch({
               paneId: exportResearchPane.id,
               workspaceId: workspace.id,
               title,
             });
+            // Bring the freshly exported tree forward: switch to the research
+            // surface, scope the sidebar to its folder, and select it with its
+            // detail already in hand — the same adoption a new-research submit
+            // uses, so an export is never left invisible behind the terminal.
+            adoptCreatedResearchTree(detail);
             // Name the folder: the research sidebar shows one folder at a
             // time, so an export into another scope is otherwise invisible.
             showAppToast(`Exported to Research · ${workspace.name}`);
