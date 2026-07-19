@@ -212,6 +212,13 @@ const ASK_COMPOSER_CLEARANCE = 20;
 // Tighter than the stacked rail's 20px so a cascaded cluster stays visually
 // attached to the passage that produced it.
 const ANCHORED_CARD_GAP = 12;
+// When connector vertical runs would sit on top of one another, they fan out
+// into the gutter by one lane's worth per collision. A run may be displaced up
+// to this fraction of its own horizontal span from the centered midline.
+const CONNECTOR_STAGGER_FRACTION = 0.25;
+// Pixel separation between adjacent lanes of overlapping vertical runs. Capped
+// per-connector by CONNECTOR_STAGGER_FRACTION.
+const CONNECTOR_STAGGER_STEP = 14;
 
 function researchHighlightApi(): ResearchHighlightApi | null {
   const css = (globalThis as unknown as { CSS?: { highlights?: ResearchHighlightRegistry } }).CSS;
@@ -443,16 +450,21 @@ function highlightActionPlacement(rect: DOMRect, reservedWidth = 260) {
 }
 
 // Rounded-elbow connector path: out from the passage's line into the gutter,
-// a vertical run at the gutter's midline, then into the card at the card's
-// own height. Degenerates to a straight segment when the pair is level or the
-// gutter is too tight for the turns.
-function connectorElbowPath(sx: number, sy: number, ex: number, ey: number): string {
+// a vertical run at `midX` (defaults to the gutter's midline), then into the
+// card at the card's own height. Degenerates to a straight segment when the
+// pair is level or the gutter is too tight for the turns.
+function connectorElbowPath(
+  sx: number,
+  sy: number,
+  ex: number,
+  ey: number,
+  midX = Math.round((sx + ex) / 2),
+): string {
   const dy = ey - sy;
   if (Math.abs(dy) < 2 || ex - sx < 8) {
     return `M ${sx} ${sy} L ${ex} ${ey}`;
   }
-  const midX = Math.round((sx + ex) / 2);
-  const r = Math.min(10, Math.abs(dy) / 2, midX - sx);
+  const r = Math.min(10, Math.abs(dy) / 2, midX - sx, ex - midX);
   const dir = dy > 0 ? 1 : -1;
   return (
     `M ${sx} ${sy} L ${midX - r} ${sy}` +
@@ -1826,7 +1838,8 @@ export default function ResearchDocument({
     }
     const gridRect = grid.getBoundingClientRect();
     const sx = Math.round(root.getBoundingClientRect().right - gridRect.left) + 8;
-    const next = anchoredRangeOffsetsRef.current.flatMap((entry) => {
+    // First pass: resolve each connector's raw endpoints.
+    const geometry = anchoredRangeOffsetsRef.current.flatMap((entry) => {
       const range = rangeForTextOffsets(root, entry.start, entry.end);
       const card = aside.querySelector<HTMLElement>(
         `.research-followup-card.is-anchored[data-node-id="${CSS.escape(entry.id)}"]`,
@@ -1841,7 +1854,37 @@ export default function ResearchDocument({
       const sy = Math.round(firstLine.top + firstLine.height / 2 - gridRect.top);
       const ex = Math.round(cardRect.left - gridRect.left) - 6;
       const ey = Math.round(cardRect.top - gridRect.top) + 17;
-      return [{ id: entry.id, d: connectorElbowPath(sx, sy, ex, ey), x: sx, y: sy }];
+      return [{ id: entry.id, sx, sy, ex, ey }];
+    });
+    // Second pass: connectors share the same gutter, so their vertical runs
+    // would stack on one x line. Assign each run the lowest lane not taken by
+    // an overlapping neighbour (greedy interval colouring, top-to-bottom), then
+    // fan lanes leftward into the gutter — capped per-run at a fraction of its
+    // span so a run never crowds the passage edge.
+    const lanes: number[] = [];
+    const laneByIndex = new Map<number, number>();
+    geometry
+      .map((g, index) => ({ index, top: Math.min(g.sy, g.ey), bottom: Math.max(g.sy, g.ey) }))
+      .sort((a, b) => a.top - b.top || a.index - b.index)
+      .forEach(({ index, top, bottom }) => {
+        let lane = lanes.findIndex((occupiedUntil) => occupiedUntil <= top);
+        if (lane === -1) {
+          lane = lanes.length;
+        }
+        lanes[lane] = bottom;
+        laneByIndex.set(index, lane);
+      });
+    const next = geometry.map((g, index) => {
+      const lane = laneByIndex.get(index) ?? 0;
+      const maxOffset = CONNECTOR_STAGGER_FRACTION * (g.ex - g.sx);
+      const offset = Math.min(lane * CONNECTOR_STAGGER_STEP, maxOffset);
+      const midX = Math.round((g.sx + g.ex) / 2 - offset);
+      return {
+        id: g.id,
+        d: connectorElbowPath(g.sx, g.sy, g.ex, g.ey, midX),
+        x: g.sx,
+        y: g.sy,
+      };
     });
     setAnchorConnectors(next);
   }, [anchoredCardTops, highlightDomNonce, resolvedCardTops]);
