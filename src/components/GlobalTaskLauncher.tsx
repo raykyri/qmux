@@ -579,6 +579,12 @@ export default function GlobalTaskLauncher() {
       );
       return;
     }
+    if (plan.kind === "loop") {
+      // Looping is driven by the session composer's controller, which the launcher
+      // doesn't host, so /loop here just strips the command and sends the message once.
+      void finishSubmission(() => submitAgentTurn(selected.agent.id, plan.prompt, mode));
+      return;
+    }
     void finishSubmission(() => submitAgentTurn(selected.agent.id, value.trim(), mode));
   }
 
@@ -829,14 +835,26 @@ export default function GlobalTaskLauncher() {
             <button
               type="button"
               className="control-button"
-              disabled={submitting || parsedSlashCommand.kind !== "ready" || !canFork}
-              title={!canFork ? FORK_REQUIREMENT_TITLE : undefined}
+              disabled={
+                submitting ||
+                parsedSlashCommand.kind !== "ready" ||
+                (parsedSlashCommand.command.kind === "fork" && !canFork)
+              }
+              title={
+                parsedSlashCommand.command.kind === "fork" && !canFork
+                  ? FORK_REQUIREMENT_TITLE
+                  : parsedSlashCommand.command.kind === "loop"
+                    ? "Sent once — looping runs from the session composer"
+                    : undefined
+              }
               onClick={() => submit("send")}
             >
               <span>
-                {parsedSlashCommand.command.useWorktree
-                  ? "Fork in worktree & send"
-                  : "Fork & send"}
+                {parsedSlashCommand.command.kind === "loop"
+                  ? "Send"
+                  : parsedSlashCommand.command.useWorktree
+                    ? "Fork in worktree & send"
+                    : "Fork & send"}
               </span>
               <ComposerSubmitShortcutGlyph
                 requireCmdEnter={requireCmdEnterToSend}

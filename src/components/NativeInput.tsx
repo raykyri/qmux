@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, EllipsisVertical, FolderGit2, GitFork, X } from "lucide-react";
+import { ChevronDown, EllipsisVertical, FolderGit2, GitFork, Repeat, X } from "lucide-react";
 import {
   listAgentTurnQueue,
   queueDeliveryAgentTurn,
@@ -28,6 +28,8 @@ import { writeClipboardText } from "../lib/clipboard";
 import { growComposerTextarea } from "../lib/composerTextarea";
 import {
   completeComposerSlashCommand,
+  isTuiCommandMessage,
+  LOOP_MAX_ITERATIONS,
   matchingComposerSlashCommands,
   parseComposerSlashCommand,
   type ComposerSlashCommand,
@@ -83,6 +85,7 @@ const SLASH_COMMAND_PRESENTATION: Record<
 > = {
   fork: { Icon: GitFork, summary: "Fork this session" },
   worktree: { Icon: FolderGit2, summary: "Fork into a new worktree" },
+  loop: { Icon: Repeat, summary: `Loop until no changes (max ${LOOP_MAX_ITERATIONS})` },
 };
 
 type QueuePointerDrag = {
@@ -134,6 +137,15 @@ interface NativeInputProps {
     useWorktree: boolean;
     prompt: string;
   }) => Promise<boolean>;
+  // Starts a /loop for this agent: re-sends `prompt` after each completed turn
+  // until the agent makes no changes (or the iteration cap is hit). Resolves true
+  // when the loop started (first turn sent), false when it couldn't (e.g. no git
+  // worktree). The loop itself is driven by the App; the composer only kicks it off.
+  onLoopWithPrompt: (options: { prompt: string }) => Promise<boolean>;
+  // The agent's active /loop, if any, so the composer can show progress and a Stop
+  // control. Null when no loop is running for this agent.
+  activeLoop: { iterations: number } | null;
+  onStopLoop: () => void;
   onTurnSubmitted: (agentId: string, text: string, mode: SubmitAgentTurnMode) => void;
   onUserInput: (agentId: string) => void;
   // Read/write a tab's last queue scroll position (kept in App so it survives the
@@ -166,6 +178,9 @@ export default function NativeInput({
   registerDraftFlusher,
   onWaitTargetHover,
   onForkWithPrompt,
+  onLoopWithPrompt,
+  activeLoop,
+  onStopLoop,
   onTurnSubmitted,
   onUserInput,
   getQueueScroll,
@@ -376,6 +391,42 @@ export default function NativeInput({
   const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
+
+  // Why a slash command can't run right now, or null when it can. Fork commands
+  // need a forkable session; /loop only needs a live (non-failed) agent — the git
+  // requirement is enforced at runtime by the loop controller, which aborts
+  // cleanly if the worktree has no readable git state.
+  function slashCommandBlockedReason(command: ComposerSlashCommand): string | null {
+    if (command.kind === "loop") {
+      return agent.status === "failed" ? "Can't loop a failed session" : null;
+    }
+    return canQueueFork ? null : FORK_REQUIREMENT_TITLE;
+  }
+
+  // Derived presentation for the inline slash-command submit button (shown when the
+  // composer holds a recognized command). A /loop whose message the agent TUI would
+  // intercept can't loop, so the button says so and sends it a single time.
+  const slashCommand = parsedSlashCommand.kind !== "none" ? parsedSlashCommand.command : null;
+  const slashCommandBlocked = slashCommand ? slashCommandBlockedReason(slashCommand) : null;
+  const slashLoopRunsOnce =
+    parsedSlashCommand.kind === "ready" &&
+    parsedSlashCommand.command.kind === "loop" &&
+    isTuiCommandMessage(parsedSlashCommand.prompt);
+  const slashSubmitLabel =
+    slashCommand?.kind === "loop"
+      ? slashLoopRunsOnce
+        ? "Send once"
+        : "Loop & send"
+      : slashCommand?.useWorktree
+        ? "Fork in worktree & send"
+        : "Fork & send";
+  const slashSubmitTitle =
+    slashCommandBlocked ??
+    (slashCommand?.kind === "loop"
+      ? slashLoopRunsOnce
+        ? "Message starts with / or ! — sent once, not looped"
+        : `Re-sends your message until the agent makes no changes (max ${LOOP_MAX_ITERATIONS} runs)`
+      : undefined);
 
   useEffect(() => {
     setSlashSelectedIndex(0);
@@ -624,9 +675,51 @@ export default function NativeInput({
       return;
     }
 
+    // A manual submit takes over from any loop this composer is running: the user's
+    // action wins, so stop the loop before dispatching (a fresh /loop just restarts).
+    if (activeLoop) {
+      onStopLoop();
+    }
+
     const plan = planComposerSubmission(parseComposerSlashCommand(text), canQueueFork);
     if (plan.kind === "reject") {
       onError(plan.message);
+      return;
+    }
+    if (plan.kind === "loop") {
+      if (plan.runOnce) {
+        // A "/"- or "!"-prefixed message is a TUI command the agent reports no
+        // completion for, so it can't drive a loop: strip /loop and send it once.
+        setSubmitting(true);
+        try {
+          const result = await submitAgentTurn(agent.id, plan.prompt, mode);
+          onQueueChange(agent.id, result.queuedTurns);
+          onTurnSubmitted(agent.id, plan.prompt, mode);
+          recordRecentMessage(plan.prompt);
+          setValue("");
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        } catch (err) {
+          onError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setSubmitting(false);
+        }
+        return;
+      }
+      setMenuOpen(false);
+      setWaitOpen(false);
+      setSubmitting(true);
+      try {
+        const started = await onLoopWithPrompt({ prompt: plan.prompt });
+        if (started) {
+          recordRecentMessage(plan.prompt);
+          setValue("");
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
+      } catch (err) {
+        onError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
     if (plan.kind === "fork") {
@@ -1274,10 +1367,11 @@ export default function NativeInput({
                 const command = slashMatches[activeSlashIndex];
                 if (command) {
                   event.preventDefault();
-                  if (canQueueFork) {
-                    completeSlashCommand(command);
+                  const blocked = slashCommandBlockedReason(command);
+                  if (blocked) {
+                    onError(blocked);
                   } else {
-                    onError(FORK_REQUIREMENT_TITLE);
+                    completeSlashCommand(command);
                   }
                   return;
                 }
@@ -1296,10 +1390,11 @@ export default function NativeInput({
                 if (!command) {
                   return;
                 }
-                if (canQueueFork) {
-                  completeSlashCommand(command);
+                const blocked = slashCommandBlockedReason(command);
+                if (blocked) {
+                  onError(blocked);
                 } else {
-                  onError(FORK_REQUIREMENT_TITLE);
+                  completeSlashCommand(command);
                 }
               } else if (parsedSlashCommand.kind !== "none") {
                 void submitTurn(value, "send");
@@ -1356,6 +1451,7 @@ export default function NativeInput({
                 >
                   {slashMatches.map((command, index) => {
                     const { Icon, summary } = SLASH_COMMAND_PRESENTATION[command.name];
+                    const blocked = slashCommandBlockedReason(command);
                     return (
                       <button
                         key={command.name}
@@ -1366,8 +1462,8 @@ export default function NativeInput({
                         className={`composer-slash-option${
                           index === activeSlashIndex ? " is-selected" : ""
                         }`}
-                        disabled={!canQueueFork}
-                        title={!canQueueFork ? FORK_REQUIREMENT_TITLE : command.description}
+                        disabled={Boolean(blocked)}
+                        title={blocked ?? command.description}
                         onMouseDown={(event) => event.preventDefault()}
                         onMouseMove={() => setSlashSelectedIndex(index)}
                         onClick={() => completeSlashCommand(command)}
@@ -1381,16 +1477,25 @@ export default function NativeInput({
                     );
                   })}
                 </div>
-                <p className="composer-slash-hint">
-                  {canQueueFork
-                    ? "Type a message after the command"
-                    : FORK_REQUIREMENT_TITLE}
-                </p>
+                <p className="composer-slash-hint">Type a message after the command</p>
               </div>,
               document.body,
             )
           : null}
         <div className="native-input-submit-actions">
+          {activeLoop ? (
+            <span className="composer-loop-label">
+              Looping {activeLoop.iterations}/{LOOP_MAX_ITERATIONS}
+              <button
+                type="button"
+                className="composer-loop-stop"
+                onClick={() => onStopLoop()}
+                title="Stop the loop"
+              >
+                Stop
+              </button>
+            </span>
+          ) : null}
           {paused ? <span className="composer-paused-label">Queue Paused</span> : null}
           <div className="composer-menu" ref={menuRef}>
             <button
@@ -1558,16 +1663,12 @@ export default function NativeInput({
               className="control-button"
               type="button"
               disabled={
-                submitting || parsedSlashCommand.kind !== "ready" || !canQueueFork
+                submitting || parsedSlashCommand.kind !== "ready" || Boolean(slashCommandBlocked)
               }
-              title={!canQueueFork ? FORK_REQUIREMENT_TITLE : undefined}
+              title={slashSubmitTitle}
               onClick={() => void submitTurn(value, "send")}
             >
-              <span>
-                {parsedSlashCommand.command.useWorktree
-                  ? "Fork in worktree & send"
-                  : "Fork & send"}
-              </span>
+              <span>{slashSubmitLabel}</span>
               <ComposerSubmitShortcutGlyph
                 requireCmdEnter={requireCmdEnterToSend}
                 className="shortcut-hint"

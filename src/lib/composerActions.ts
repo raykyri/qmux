@@ -1,7 +1,7 @@
 import type { AgentStatus, ComposerPolicy } from "../adapters";
 import type { QueuedTurn, QueuedTurnDelivery, WaitTarget } from "../types";
 import { agentStatusLabel, agentStatusTone } from "./appHelpers";
-import type { ParsedComposerSlashCommand } from "./composerSlashCommands";
+import { isTuiCommandMessage, type ParsedComposerSlashCommand } from "./composerSlashCommands";
 
 export const FORK_REQUIREMENT_TITLE =
   "Forking requires a supported agent session that has run a turn";
@@ -43,10 +43,13 @@ export function deriveComposerGating(
 }
 
 /** How a composer submission dispatches given its parsed slash command, shared
- * so /fork and /worktree behave identically in the composer and the launcher. */
+ * so the slash commands behave identically in the composer and the launcher.
+ * A loop with `runOnce` is a message the agent TUI would intercept (`/` or `!`):
+ * it can't be looped (no completion to wait on), so it is sent a single time. */
 export type ComposerSubmissionPlan =
   | { kind: "reject"; message: string }
   | { kind: "fork"; useWorktree: boolean; prompt: string }
+  | { kind: "loop"; prompt: string; runOnce: boolean }
   | { kind: "turn" };
 
 export function planComposerSubmission(
@@ -57,6 +60,13 @@ export function planComposerSubmission(
     return { kind: "reject", message: `Add a message after ${parsed.command.token}` };
   }
   if (parsed.kind === "ready") {
+    if (parsed.command.kind === "loop") {
+      return {
+        kind: "loop",
+        prompt: parsed.prompt,
+        runOnce: isTuiCommandMessage(parsed.prompt),
+      };
+    }
     if (!canFork) {
       return { kind: "reject", message: FORK_REQUIREMENT_TITLE };
     }

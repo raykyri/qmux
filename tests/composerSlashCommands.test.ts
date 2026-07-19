@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   completeComposerSlashCommand,
+  isTuiCommandMessage,
   matchingComposerSlashCommands,
   parseComposerSlashCommand,
 } from "../src/lib/composerSlashCommands";
@@ -9,7 +10,7 @@ import {
 test("matches command prefixes only in the first unfinished token", () => {
   assert.deepEqual(
     matchingComposerSlashCommands("/").map((command) => command.name),
-    ["fork", "worktree"],
+    ["fork", "worktree", "loop"],
   );
   assert.deepEqual(
     matchingComposerSlashCommands("/f").map((command) => command.name),
@@ -18,6 +19,10 @@ test("matches command prefixes only in the first unfinished token", () => {
   assert.deepEqual(
     matchingComposerSlashCommands("/w").map((command) => command.name),
     ["worktree"],
+  );
+  assert.deepEqual(
+    matchingComposerSlashCommands("/l").map((command) => command.name),
+    ["loop"],
   );
   assert.deepEqual(matchingComposerSlashCommands("/fork "), []);
   assert.deepEqual(matchingComposerSlashCommands("prefix /fork"), []);
@@ -36,6 +41,7 @@ test("parses fork commands and strips only the qmux command prefix", () => {
       name: "fork",
       token: "/fork",
       description: "Fork this session and send the following message",
+      kind: "fork",
       useWorktree: false,
     },
     prompt: "investigate this",
@@ -46,6 +52,27 @@ test("parses fork commands and strips only the qmux command prefix", () => {
     assert.equal(parsed.command.useWorktree, true);
     assert.equal(parsed.prompt, "first line\nsecond line");
   }
+});
+
+test("parses the loop command and marks it as a loop kind", () => {
+  const parsed = parseComposerSlashCommand("/loop keep fixing the tests");
+  assert.equal(parsed.kind, "ready");
+  if (parsed.kind === "ready") {
+    assert.equal(parsed.command.name, "loop");
+    assert.equal(parsed.command.kind, "loop");
+    assert.equal(parsed.prompt, "keep fixing the tests");
+  }
+  assert.equal(parseComposerSlashCommand("/loop").kind, "incomplete");
+  assert.equal(parseComposerSlashCommand("/loop   ").kind, "incomplete");
+});
+
+test("flags messages the agent TUI intercepts as commands", () => {
+  assert.equal(isTuiCommandMessage("/compact"), true);
+  assert.equal(isTuiCommandMessage("  /model opus"), true);
+  assert.equal(isTuiCommandMessage("!git status"), true);
+  assert.equal(isTuiCommandMessage("\t!ls"), true);
+  assert.equal(isTuiCommandMessage("keep going"), false);
+  assert.equal(isTuiCommandMessage("fix the / in the path"), false);
 });
 
 test("recognizes known commands without a message as incomplete", () => {
