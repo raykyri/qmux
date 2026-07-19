@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter};
 
 const TRAY_ID: &str = "qmux-menu-bar";
 const SHOW_WINDOW_ID: &str = "qmux-menu-bar-show-window";
@@ -7,13 +7,13 @@ const HIDE_WINDOW_ID: &str = "qmux-menu-bar-hide-window";
 const SELECT_PANE_PREFIX: &str = "qmux-menu-bar-select-pane:";
 const SELECT_PANE_EVENT: &str = "menu-bar-select-pane";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuBarSnapshot {
     pub groups: Vec<MenuBarGroup>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuBarGroup {
     pub id: String,
@@ -21,7 +21,7 @@ pub struct MenuBarGroup {
     pub tabs: Vec<MenuBarTab>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuBarTab {
     pub pane_id: String,
@@ -48,12 +48,28 @@ fn default_status_tone() -> String {
     "idle".to_string()
 }
 
-pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+/// The last applied tray menu: the snapshot it renders plus one item handle
+/// per tab, flattened in render order. Content-only changes (a status dot, a
+/// retitled tab) mutate those items in place; a full AppKit menu rebuild —
+/// which reconstructs every NSMenuItem on the main thread and swaps the tray
+/// menu — is reserved for structural changes (groups or tabs added, removed,
+/// or reordered). Agent status flips are by far the most frequent update, and
+/// each one previously paid the full rebuild.
+#[cfg(target_os = "macos")]
+struct AppliedMenuBar {
+    snapshot: MenuBarSnapshot,
+    tab_items: Vec<tauri::menu::IconMenuItem<tauri::Wry>>,
+}
+
+#[cfg(target_os = "macos")]
+static APPLIED_MENU_BAR: std::sync::Mutex<Option<AppliedMenuBar>> = std::sync::Mutex::new(None);
+
+pub fn init(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use tauri::tray::TrayIconBuilder;
 
-        let menu = build_menu(app, None)?;
+        let (menu, _) = build_menu(app, None)?;
         TrayIconBuilder::with_id(TRAY_ID)
             .icon(bento_icon())
             .icon_as_template(true)
@@ -73,13 +89,10 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-pub fn menu_bar_update<R: Runtime>(
-    app: AppHandle<R>,
-    snapshot: MenuBarSnapshot,
-) -> Result<(), String> {
+pub fn menu_bar_update(app: AppHandle, snapshot: MenuBarSnapshot) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        update_menu(&app, &snapshot).map_err(|err| err.to_string())
+        update_menu(&app, snapshot).map_err(|err| err.to_string())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -90,20 +103,92 @@ pub fn menu_bar_update<R: Runtime>(
     }
 }
 
+/// Whether `next` can be applied to the already-built menu by mutating items:
+/// same groups (id and label) holding the same tabs in the same order. Group
+/// labels are structural on purpose — submenu text has no retained handle here,
+/// and label changes (a rename, a moved folder) are rare enough that a rebuild
+/// is the simpler correct path.
 #[cfg(target_os = "macos")]
-fn update_menu<R: Runtime>(app: &AppHandle<R>, snapshot: &MenuBarSnapshot) -> tauri::Result<()> {
-    let menu = build_menu(app, Some(snapshot))?;
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        tray.set_menu(Some(menu))?;
+fn same_menu_structure(current: &MenuBarSnapshot, next: &MenuBarSnapshot) -> bool {
+    current.groups.len() == next.groups.len()
+        && current.groups.iter().zip(&next.groups).all(|(a, b)| {
+            a.id == b.id
+                && a.label == b.label
+                && a.tabs.len() == b.tabs.len()
+                && a.tabs
+                    .iter()
+                    .zip(&b.tabs)
+                    .all(|(tab_a, tab_b)| tab_a.pane_id == tab_b.pane_id)
+        })
+}
+
+/// Applies a structure-preserving snapshot by mutating only the tabs whose
+/// rendered label or status dot actually changed. Tauri marshals each item
+/// mutation to the main thread, so the cost is a couple of NSMenuItem edits
+/// instead of rebuilding the whole menu.
+#[cfg(target_os = "macos")]
+fn apply_tab_updates(applied: &AppliedMenuBar, next: &MenuBarSnapshot) -> tauri::Result<()> {
+    let current_tabs = applied.snapshot.groups.iter().flat_map(|group| &group.tabs);
+    let next_tabs = next.groups.iter().flat_map(|group| &group.tabs);
+    for ((current, next), item) in current_tabs.zip(next_tabs).zip(&applied.tab_items) {
+        if current == next {
+            continue;
+        }
+        let label = tab_menu_label(next);
+        if tab_menu_label(current) != label {
+            item.set_text(label)?;
+        }
+        if (current.status_tone.as_str(), current.waiting_on_pane)
+            != (next.status_tone.as_str(), next.waiting_on_pane)
+        {
+            item.set_icon(Some(status_icon(&next.status_tone, next.waiting_on_pane)))?;
+        }
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn build_menu<R: Runtime>(
-    app: &AppHandle<R>,
+fn update_menu(app: &AppHandle, snapshot: MenuBarSnapshot) -> tauri::Result<()> {
+    let mut applied = APPLIED_MENU_BAR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(current) = applied.as_mut()
+        && same_menu_structure(&current.snapshot, &snapshot)
+        && current.tab_items.len()
+            == snapshot
+                .groups
+                .iter()
+                .map(|group| group.tabs.len())
+                .sum::<usize>()
+    {
+        apply_tab_updates(current, &snapshot)?;
+        current.snapshot = snapshot;
+        return Ok(());
+    }
+    let (menu, tab_items) = build_menu(app, Some(&snapshot))?;
+    // Without a tray there is nothing on screen to update; drop the applied
+    // record so a later update (with the tray present) rebuilds from scratch
+    // rather than mutating items no tray owns.
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        *applied = None;
+        return Ok(());
+    };
+    tray.set_menu(Some(menu))?;
+    *applied = Some(AppliedMenuBar {
+        snapshot,
+        tab_items,
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn build_menu(
+    app: &AppHandle,
     snapshot: Option<&MenuBarSnapshot>,
-) -> tauri::Result<tauri::menu::Menu<R>> {
+) -> tauri::Result<(
+    tauri::menu::Menu<tauri::Wry>,
+    Vec<tauri::menu::IconMenuItem<tauri::Wry>>,
+)> {
     use tauri::menu::{IconMenuItemBuilder, Menu, MenuItemBuilder, PredefinedMenuItem, Submenu};
 
     let menu = Menu::new(app)?;
@@ -117,10 +202,10 @@ fn build_menu<R: Runtime>(
     let Some(snapshot) = snapshot else {
         let empty = MenuItemBuilder::new("No tabs").enabled(false).build(app)?;
         menu.append(&empty)?;
-        return Ok(menu);
+        return Ok((menu, Vec::new()));
     };
 
-    let mut tab_count = 0usize;
+    let mut tab_items = Vec::new();
     for group in &snapshot.groups {
         let group_label = sanitize_menu_text(&group.label, 88)
             .filter(|label| !label.is_empty())
@@ -137,7 +222,6 @@ fn build_menu<R: Runtime>(
             group_menu.append(&empty)?;
         } else {
             for tab in &group.tabs {
-                tab_count += 1;
                 let item = IconMenuItemBuilder::with_id(
                     format!("{SELECT_PANE_PREFIX}{}", tab.pane_id),
                     tab_menu_label(tab),
@@ -145,24 +229,25 @@ fn build_menu<R: Runtime>(
                 .icon(status_icon(&tab.status_tone, tab.waiting_on_pane))
                 .build(app)?;
                 group_menu.append(&item)?;
+                tab_items.push(item);
             }
         }
 
         menu.append(&group_menu)?;
     }
 
-    if tab_count == 0 {
+    if tab_items.is_empty() {
         let empty = MenuItemBuilder::new("No active tabs")
             .enabled(false)
             .build(app)?;
         menu.append(&empty)?;
     }
 
-    Ok(menu)
+    Ok((menu, tab_items))
 }
 
 #[cfg(target_os = "macos")]
-fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
+fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     match event.id().as_ref() {
         SHOW_WINDOW_ID => {
             if let Err(err) = crate::show_hide_shortcut::show_qmux_window(app) {
