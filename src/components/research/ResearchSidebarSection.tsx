@@ -14,6 +14,7 @@ import {
   FolderInput,
   FolderMinus,
   FolderPlus,
+  LoaderCircle,
   MoreHorizontal,
   Pencil,
   RefreshCw,
@@ -1025,8 +1026,11 @@ export default function ResearchSidebarSection({
             <ResearchSidebarTitle tree={tree} />
           </span>
           {!archived && tree.runningCount > 0 ? (
-            <span className="research-sidebar-count" title={`${tree.runningCount} running`}>
-              {tree.runningCount}
+            <span
+              className="research-sidebar-spinner"
+              title={`${tree.runningCount} running`}
+            >
+              <LoaderCircle className="research-spinner" size={13} aria-hidden="true" />
             </span>
           ) : !archived && tree.hasUnseenFailure ? (
             <span

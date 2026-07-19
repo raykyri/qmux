@@ -215,41 +215,44 @@
   gap: 3px;
 }
 
-.research-sidebar-count,
-.research-sidebar-failed,
-.research-sidebar-unseen {
+.research-sidebar-failed {
   align-self: start;
   min-width: 18px;
   padding: 1px 5px;
   border-radius: 999px;
-  color: var(--text-subtle);
+  color: var(--status-failed-fg);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  text-align: center;
-  background: var(--surface-fill-hover);
-}
-
-/* Running count reads as live activity — tint it toward the accent instead of
-   the neutral pill shared with plain counters. */
-.research-sidebar-count {
-  color: var(--accent-color);
-  font-weight: 600;
-  background: var(--accent-soft);
-}
-
-.research-sidebar-failed {
-  color: var(--status-failed-fg);
   font-weight: 700;
+  text-align: center;
   background: rgba(217, 135, 135, 0.13);
 }
 
+/* Live runs read as activity, not a count — the spinner takes the pill's grid
+   slot (aligned to the row top) and spins in the accent tone. */
+.research-sidebar-spinner {
+  display: inline-flex;
+  align-self: start;
+  flex: none;
+  padding-top: 3px;
+  color: var(--accent-color);
+}
+
+/* Overlaid on the row's top-right corner rather than held in the grid, so the
+   "New" tag never steals width from the research title. On hover it sits under
+   the menu trigger, which shares this corner. */
 .research-sidebar-unseen {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 1px 5px;
+  border-radius: 999px;
   color: #b8cfea;
   font-size: 9px;
   font-weight: 700;
+  text-align: center;
   text-transform: uppercase;
   background: rgba(90, 130, 178, 0.16);
-  transform: translateY(2px);
 }
 
 .research-sidebar-row.is-archived {
