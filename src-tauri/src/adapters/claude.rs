@@ -3201,7 +3201,7 @@ mod tests {
             .unwrap();
         // Pause after the first queued turn.
         state
-            .set_queued_turn_pause("agent-1", 0, true, Some("first"))
+            .set_queued_turn_pause("agent-1", 0, true, Some("first"), None)
             .unwrap();
 
         // First idle drains the pause-after turn and the agent runs it.

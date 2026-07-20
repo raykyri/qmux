@@ -91,8 +91,10 @@ const SLASH_COMMAND_PRESENTATION: Record<
 type QueuePointerDrag = {
   pointerId: number;
   from: number;
-  // The grabbed card's text, so the drop can re-derive its index if the queue
-  // shifts mid-drag (e.g. the agent drains its top turn while the pointer is down).
+  // The grabbed card's stable id (and text, for the move payload), so the drop
+  // re-derives its index by identity if the queue shifts mid-drag — and never
+  // mistakes a duplicate-text turn that slid into its slot for the grabbed one.
+  id: string;
   text: string;
   startY: number;
   active: boolean;
@@ -126,7 +128,12 @@ interface NativeInputProps {
   // Cross-split queue-card drag: reports which other agent's split cell the drag
   // currently hovers (null when none), and moves the card there on drop.
   onQueueDropTargetChange: (agentId: string | null) => void;
-  onMoveQueuedTurn: (targetAgentId: string, index: number, turn: string) => void;
+  onMoveQueuedTurn: (
+    targetAgentId: string,
+    index: number,
+    turn: string,
+    expectedId?: string,
+  ) => void;
   onDraftChange: (agentId: string, draft: string) => void;
   // Registers a callback the app invokes on quit/close flushes so the composer's
   // debounced local edits reach the draft store before it writes to disk.
@@ -815,14 +822,14 @@ export default function NativeInput({
     }
   }
 
-  async function removeQueuedTurn(index: number, turn: string) {
+  async function removeQueuedTurn(index: number, turn: string, expectedId?: string) {
     if (submitting) {
       return;
     }
 
     setSubmitting(true);
     try {
-      const result = await removeQueuedAgentTurn(agent.id, index, turn);
+      const result = await removeQueuedAgentTurn(agent.id, index, turn, expectedId);
       onQueueChange(agent.id, result.queuedTurns);
       recordRecentMessage(turn);
     } catch (err) {
@@ -832,7 +839,7 @@ export default function NativeInput({
     }
   }
 
-  async function editQueuedTurn(index: number, turn: string) {
+  async function editQueuedTurn(index: number, turn: string, expectedId?: string) {
     if (submitting) {
       return;
     }
@@ -849,7 +856,7 @@ export default function NativeInput({
 
     setSubmitting(true);
     try {
-      const result = await removeQueuedAgentTurn(agent.id, index, turn);
+      const result = await removeQueuedAgentTurn(agent.id, index, turn, expectedId);
       onQueueChange(agent.id, result.queuedTurns);
       setValue(result.removedTurn);
       requestAnimationFrame(() => {
@@ -974,6 +981,7 @@ export default function NativeInput({
     queuePointerDragRef.current = {
       pointerId: event.pointerId,
       from: index,
+      id: queuedTurns[index]?.id ?? "",
       text: queuedTurns[index]?.text ?? "",
       startY: event.clientY,
       active: false,
@@ -1051,7 +1059,7 @@ export default function NativeInput({
       clearQueueDrag();
       const from = currentDragIndex(drag);
       if (from !== null) {
-        onMoveQueuedTurn(crossTargetAgentId, from, drag.text);
+        onMoveQueuedTurn(crossTargetAgentId, from, drag.text, drag.id);
       }
       return;
     }
@@ -1064,18 +1072,19 @@ export default function NativeInput({
     }
     const from = currentDragIndex(drag);
     if (from !== null) {
-      reorderQueuedTurn(from, gap);
+      reorderQueuedTurn(from, gap, drag.id);
     }
   }
 
   // The queue can shift under a drag (the agent draining its top turn, another
   // window removing an item), so resolve the grabbed card's index at drop time by
-  // its text instead of trusting the position captured at pointerdown.
+  // its stable id instead of trusting the captured position — and never by text,
+  // which a duplicate turn shares. Null means the grabbed turn is gone: abort.
   function currentDragIndex(drag: QueuePointerDrag): number | null {
-    if (queuedTurns[drag.from]?.text === drag.text) {
+    if (queuedTurns[drag.from]?.id === drag.id) {
       return drag.from;
     }
-    const index = queuedTurns.findIndex((turn) => turn.text === drag.text);
+    const index = queuedTurns.findIndex((turn) => turn.id === drag.id);
     return index === -1 ? null : index;
   }
 
@@ -1098,7 +1107,7 @@ export default function NativeInput({
     selection?.addRange(range);
   }
 
-  function reorderQueuedTurn(from: number, gap: number) {
+  function reorderQueuedTurn(from: number, gap: number, expectedId: string) {
     if (from < 0 || from >= queuedTurns.length) {
       return;
     }
@@ -1111,7 +1120,7 @@ export default function NativeInput({
     next.splice(to, 0, moved);
     // Reorder the displayed queue immediately, then persist so a reload keeps it.
     onQueueChange(agent.id, next);
-    void persistQueueReorder(from, to, moved.text);
+    void persistQueueReorder(from, to, moved.text, expectedId);
   }
 
   function setQueueDropIndex(index: number | null) {
@@ -1149,9 +1158,9 @@ export default function NativeInput({
     return rows.length;
   }
 
-  async function persistQueueReorder(from: number, to: number, turn: string) {
+  async function persistQueueReorder(from: number, to: number, turn: string, expectedId?: string) {
     try {
-      const result = await reorderQueuedAgentTurn(agent.id, from, to, turn);
+      const result = await reorderQueuedAgentTurn(agent.id, from, to, turn, expectedId);
       onQueueChange(agent.id, result.queuedTurns);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1170,7 +1179,7 @@ export default function NativeInput({
     }
     setSubmitting(true);
     try {
-      const queued = await setQueuedTurnPause(agent.id, index, pauseAfter, turn.text);
+      const queued = await setQueuedTurnPause(agent.id, index, pauseAfter, turn.text, turn.id);
       onQueueChange(agent.id, queued);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -1232,7 +1241,7 @@ export default function NativeInput({
               .join(" ");
             return (
               <QueuedTurnCard
-                key={`${index}-${turn.text}`}
+                key={turn.id}
                 text={renderQueuedTurnText(turn.text)}
                 className={stateClassName}
                 pauseAfter={turn.pauseAfter}
@@ -1264,14 +1273,14 @@ export default function NativeInput({
                       disabled={submitting}
                       aria-label="Remove queued turn"
                       title="Remove"
-                      onClick={() => void removeQueuedTurn(index, turn.text)}
+                      onClick={() => void removeQueuedTurn(index, turn.text, turn.id)}
                     >
                       <X size={13} aria-hidden="true" />
                     </button>
                     <button className="control-button"
                       type="button"
                       disabled={submitting}
-                      onClick={() => void editQueuedTurn(index, turn.text)}
+                      onClick={() => void editQueuedTurn(index, turn.text, turn.id)}
                     >
                       Edit
                     </button>
@@ -1415,7 +1424,11 @@ export default function NativeInput({
             ) {
               event.preventDefault();
               const lastIndex = queuedTurns.length - 1;
-              void editQueuedTurn(lastIndex, queuedTurns[lastIndex].text);
+              void editQueuedTurn(
+                lastIndex,
+                queuedTurns[lastIndex].text,
+                queuedTurns[lastIndex].id,
+              );
             }
           }}
           placeholder={

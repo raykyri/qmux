@@ -84,6 +84,8 @@ pub struct RemoveQueuedAgentTurnRequest {
     pub agent_id: String,
     pub index: usize,
     pub expected_data: Option<String>,
+    #[serde(default)]
+    pub expected_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,6 +103,8 @@ pub struct ReorderQueuedAgentTurnRequest {
     pub from_index: usize,
     pub to_index: usize,
     pub expected_data: Option<String>,
+    #[serde(default)]
+    pub expected_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +129,8 @@ pub struct MoveQueuedAgentTurnRequest {
     pub to_agent_id: String,
     pub index: usize,
     pub expected_data: Option<String>,
+    #[serde(default)]
+    pub expected_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -160,6 +166,7 @@ pub fn move_queued_agent_turn(
         &request.from_agent_id,
         request.index,
         request.expected_data.as_deref(),
+        request.expected_id.as_deref(),
     )?;
     state.emit(QmuxEvent::new(
         "agent.queued_turn_removed",
@@ -460,6 +467,7 @@ pub fn remove_queued_agent_turn(
         &agent_id,
         request.index,
         request.expected_data.as_deref(),
+        request.expected_id.as_deref(),
     )?;
     let pending_turns = queued_turns.len();
     state.emit(QmuxEvent::new(
@@ -490,6 +498,7 @@ pub fn reorder_queued_agent_turn(
         request.from_index,
         request.to_index,
         request.expected_data.as_deref(),
+        request.expected_id.as_deref(),
     )?;
     state.emit(QmuxEvent::new(
         "agent.queued_turn_reordered",
@@ -1610,7 +1619,7 @@ mod tests {
             .enqueue_agent_turn("agent-1", "queued".to_string())
             .unwrap();
         state
-            .set_queued_turn_pause("agent-1", 0, true, Some("queued"))
+            .set_queued_turn_pause("agent-1", 0, true, Some("queued"), None)
             .unwrap();
 
         // The pane is missing, so the send fails and the turn is requeued.
@@ -1651,6 +1660,7 @@ mod tests {
                 to_agent_id: "target".to_string(),
                 index: 0,
                 expected_data: Some("move me".to_string()),
+                expected_id: None,
             },
         )
         .unwrap();
@@ -1684,6 +1694,7 @@ mod tests {
                 to_agent_id: "target".to_string(),
                 index: 0,
                 expected_data: Some("keep me".to_string()),
+                expected_id: None,
             },
         )
         .unwrap_err();
@@ -1944,6 +1955,7 @@ mod tests {
                 from_index: 1,
                 to_index: 0,
                 expected_data: Some("send now".to_string()),
+                expected_id: None,
             },
         )
         .unwrap();

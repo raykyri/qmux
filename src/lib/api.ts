@@ -546,18 +546,22 @@ export function assignGlobalDraft(draftId: string, agentId: string) {
   });
 }
 
-/** Toggles the pause-after-send flag on one queued turn. */
+/** Toggles the pause-after-send flag on one queued turn. `expectedId` is the
+ * turn's stable id; the backend rejects the change if the turn at `index` is no
+ * longer that turn (a duplicate-text turn shifted into place). */
 export function setQueuedTurnPause(
   agentId: string,
   index: number,
   pauseAfter: boolean,
   expectedData: string,
+  expectedId?: string | null,
 ) {
   return invoke<QueuedTurn[]>("agent_set_queued_turn_pause", {
     agentId,
     index,
     pauseAfter,
     expectedData,
+    expectedId: expectedId ?? null,
   });
 }
 
@@ -662,9 +666,14 @@ export function queueDeliveryAgentTurn(
   });
 }
 
-export function removeQueuedAgentTurn(agentId: string, index: number, expectedData: string) {
+export function removeQueuedAgentTurn(
+  agentId: string,
+  index: number,
+  expectedData: string,
+  expectedId?: string | null,
+) {
   return invoke<RemoveQueuedAgentTurnResult>("agent_remove_queued_turn", {
-    request: { agentId, index, expectedData },
+    request: { agentId, index, expectedData, expectedId: expectedId ?? null },
   });
 }
 
@@ -673,9 +682,10 @@ export function reorderQueuedAgentTurn(
   fromIndex: number,
   toIndex: number,
   expectedData: string,
+  expectedId?: string | null,
 ) {
   return invoke<ReorderQueuedAgentTurnResult>("agent_reorder_queued_turn", {
-    request: { agentId, fromIndex, toIndex, expectedData },
+    request: { agentId, fromIndex, toIndex, expectedData, expectedId: expectedId ?? null },
   });
 }
 
@@ -702,9 +712,10 @@ export function moveQueuedAgentTurn(
   toAgentId: string,
   index: number,
   expectedData: string,
+  expectedId?: string | null,
 ) {
   return invoke<MoveQueuedAgentTurnResult>("agent_move_queued_turn", {
-    request: { fromAgentId, toAgentId, index, expectedData },
+    request: { fromAgentId, toAgentId, index, expectedData, expectedId: expectedId ?? null },
   });
 }
 
