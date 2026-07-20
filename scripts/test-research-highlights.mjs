@@ -29,10 +29,17 @@ execFileSync(
     "--noEmit",
     "false",
     "tests/researchHighlights.test.ts",
+    "tests/researchSelection.test.ts",
   ],
   { stdio: "inherit" },
 );
 
-execFileSync("node", ["--test", join(outDir, "tests/researchHighlights.test.js")], {
-  stdio: "inherit",
-});
+execFileSync(
+  "node",
+  [
+    "--test",
+    join(outDir, "tests/researchHighlights.test.js"),
+    join(outDir, "tests/researchSelection.test.js"),
+  ],
+  { stdio: "inherit" },
+);

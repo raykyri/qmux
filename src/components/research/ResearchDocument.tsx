@@ -57,6 +57,10 @@ import {
   saveResearchNavigation,
 } from "../../lib/researchNavigation";
 import {
+  createResearchSelectionSnapper,
+  type ResearchSelectionSnapper,
+} from "../../lib/researchSelection";
+import {
   assistantTextFromTimelineItems,
   buildTimelineItems,
   formatPlainTextTranscript,
@@ -236,6 +240,25 @@ const CONNECTOR_STAGGER_STEP = 14;
 // card, and connector geometry. A trailing debounce avoids forced layout on
 // every drag frame while still repairing the final arrangement promptly.
 const ANCHOR_LAYOUT_DEBOUNCE_MS = 140;
+// Match the platform's small click-versus-drag tolerance: a click should keep
+// link, annotation, and native double-click behavior, while a deliberate drag
+// switches to live whole-word selection quickly.
+const RESEARCH_SELECTION_DRAG_THRESHOLD = 3;
+
+interface ResearchSelectionDrag {
+  root: HTMLDivElement;
+  anchorOffset: number | null;
+  originX: number;
+  originY: number;
+  lastX: number;
+  lastY: number;
+  active: boolean;
+  snapEligible: boolean;
+  /** Undefined until the drag crosses the click threshold, null when word
+   * segmentation is unavailable, otherwise cached for every live frame. */
+  snapper: ResearchSelectionSnapper | null | undefined;
+  frame: number | null;
+}
 
 function researchHighlightApi(): ResearchHighlightApi | null {
   const css = (globalThis as unknown as { CSS?: { highlights?: ResearchHighlightRegistry } }).CSS;
@@ -286,6 +309,36 @@ function rangeForTextOffsets(root: HTMLElement, start: number, end: number) {
   range.setStart(startPoint.node, startPoint.offset);
   range.setEnd(endPoint.node, endPoint.offset);
   return range;
+}
+
+function applyDirectionalSelectionRange(
+  range: Range,
+  direction: "forward" | "backward",
+) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+  if (typeof selection.setBaseAndExtent === "function") {
+    if (direction === "forward") {
+      selection.setBaseAndExtent(
+        range.startContainer,
+        range.startOffset,
+        range.endContainer,
+        range.endOffset,
+      );
+    } else {
+      selection.setBaseAndExtent(
+        range.endContainer,
+        range.endOffset,
+        range.startContainer,
+        range.startOffset,
+      );
+    }
+    return;
+  }
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 // Rows whose text is transcript machinery rather than the assistant's prose:
@@ -781,7 +834,7 @@ interface ThreadSegmentProps {
   onCancelNode: (nodeId: string) => void;
   onCardHover: (childId: string, entering: boolean) => void;
   onRootMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
-  onRootMouseUp: () => void;
+  onRootMouseUp: (event: React.MouseEvent<HTMLDivElement>) => void;
   onRootKeyUp: () => void;
   onRootClick: (event: React.MouseEvent<HTMLDivElement>) => void;
   onRootMouseMove: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -1548,7 +1601,7 @@ function ResearchDocument({
   } | null>(null);
   const savedHighlightPaintRef = useRef<ResearchNativeHighlight | null>(null);
   const selectedHighlightPaintRef = useRef<ResearchNativeHighlight | null>(null);
-  const selectionDragNodeIdRef = useRef<string | null>(null);
+  const selectionDragRef = useRef<ResearchSelectionDrag | null>(null);
   const anchorHoverFrameRef = useRef<number | null>(null);
   const anchorHoverPointerRef = useRef<{
     root: HTMLDivElement;
@@ -3415,6 +3468,59 @@ function ResearchDocument({
     });
   }, []);
 
+  /** Replaces the native character-precise drag range with whole-word
+   * endpoints. The raw range is checked first so snapping never makes an
+   * otherwise ineligible selection (one crossing tool/thinking machinery)
+   * eligible for Highlight/Ask. */
+  const applySnappedResearchSelection = useCallback(
+    (drag: ResearchSelectionDrag, clientX: number, clientY: number) => {
+      if (!drag.snapEligible || drag.anchorOffset === null) {
+        return;
+      }
+      const focusOffset = flatOffsetAtPoint(drag.root, clientX, clientY);
+      if (focusOffset === null) {
+        return;
+      }
+      if (focusOffset !== drag.anchorOffset) {
+        const rawRange = rangeForTextOffsets(
+          drag.root,
+          Math.min(drag.anchorOffset, focusOffset),
+          Math.max(drag.anchorOffset, focusOffset),
+        );
+        if (!rawRange || selectionTouchesNonTextRow(drag.root, rawRange)) {
+          if (rawRange) {
+            applyDirectionalSelectionRange(
+              rawRange,
+              focusOffset < drag.anchorOffset ? "backward" : "forward",
+            );
+          }
+          return;
+        }
+      }
+
+      if (drag.snapper === undefined) {
+        drag.snapper = createResearchSelectionSnapper(
+          drag.root.textContent ?? "",
+          document.documentElement.lang || navigator.language,
+        );
+      }
+      const snapped = drag.snapper?.(drag.anchorOffset, focusOffset) ?? null;
+      if (!snapped) {
+        return;
+      }
+      const range = rangeForTextOffsets(drag.root, snapped.start, snapped.end);
+      if (!range) {
+        return;
+      }
+
+      // Keep the live focus on the pointer side. Besides making reversals feel
+      // native, this means a subsequent keyboard extension continues from the
+      // end the reader last moved.
+      applyDirectionalSelectionRange(range, snapped.direction);
+    },
+    [],
+  );
+
   // A mouse selection can begin in the answer and end over the rail or other
   // document chrome, where the response root's mouseup never fires. Remember
   // answer-originated drags and finish them from a document-level fallback;
@@ -3425,28 +3531,96 @@ function ResearchDocument({
       if (event.button !== 0) {
         return;
       }
-      selectionDragNodeIdRef.current = event.currentTarget.dataset.nodeId ?? null;
+      const root = event.currentTarget;
+      const nodeId = root.dataset.nodeId ?? null;
+      const content = nodeId ? contentByNodeRef.current[nodeId] : null;
+      const target = event.target instanceof Element ? event.target : null;
+      const anchorOffset = flatOffsetAtPoint(root, event.clientX, event.clientY);
+      selectionDragRef.current = {
+        root,
+        anchorOffset,
+        originX: event.clientX,
+        originY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        active: false,
+        snapEligible: Boolean(
+          researchHighlightApi() &&
+            nodeId &&
+            content?.responseRevision &&
+            content.node.kind !== "conversation" &&
+            anchorOffset !== null &&
+            !target?.closest(NON_TEXT_ROW_SELECTOR)
+        ),
+        snapper: undefined,
+        frame: null,
+      };
     },
     [],
   );
-  const finishHighlightSelectionDrag = useCallback(() => {
-    if (!selectionDragNodeIdRef.current) {
-      return;
-    }
-    selectionDragNodeIdRef.current = null;
-    captureHighlightSelection();
-  }, [captureHighlightSelection]);
+  const finishHighlightSelectionDrag = useCallback(
+    (event: { clientX: number; clientY: number }) => {
+      const drag = selectionDragRef.current;
+      if (!drag) {
+        return;
+      }
+      selectionDragRef.current = null;
+      if (drag.frame !== null) {
+        window.cancelAnimationFrame(drag.frame);
+        drag.frame = null;
+      }
+      if (drag.active) {
+        applySnappedResearchSelection(drag, event.clientX, event.clientY);
+      }
+      captureHighlightSelection();
+    },
+    [applySnappedResearchSelection, captureHighlightSelection],
+  );
   useEffect(() => {
     const cancelDrag = () => {
-      selectionDragNodeIdRef.current = null;
+      const drag = selectionDragRef.current;
+      selectionDragRef.current = null;
+      if (drag?.frame !== null && drag?.frame !== undefined) {
+        window.cancelAnimationFrame(drag.frame);
+      }
     };
+    const updateDrag = (event: MouseEvent) => {
+      const drag = selectionDragRef.current;
+      if (!drag) {
+        return;
+      }
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      if (
+        !drag.active &&
+        Math.hypot(event.clientX - drag.originX, event.clientY - drag.originY) >=
+          RESEARCH_SELECTION_DRAG_THRESHOLD
+      ) {
+        drag.active = true;
+      }
+      if (!drag.active || !drag.snapEligible || drag.frame !== null) {
+        return;
+      }
+      // Run after WebKit's native selection update for this mousemove. We do
+      // not prevent the default, so dragging beyond the viewport keeps native
+      // selection autoscroll.
+      drag.frame = window.requestAnimationFrame(() => {
+        drag.frame = null;
+        if (selectionDragRef.current === drag) {
+          applySnappedResearchSelection(drag, drag.lastX, drag.lastY);
+        }
+      });
+    };
+    document.addEventListener("mousemove", updateDrag);
     document.addEventListener("mouseup", finishHighlightSelectionDrag);
     window.addEventListener("blur", cancelDrag);
     return () => {
+      document.removeEventListener("mousemove", updateDrag);
       document.removeEventListener("mouseup", finishHighlightSelectionDrag);
       window.removeEventListener("blur", cancelDrag);
+      cancelDrag();
     };
-  }, [finishHighlightSelectionDrag]);
+  }, [applySnappedResearchSelection, finishHighlightSelectionDrag]);
 
   // A plain click on a painted highlight or ask passage selects the whole
   // annotation, which opens the action bar through the ordinary selection flow.
