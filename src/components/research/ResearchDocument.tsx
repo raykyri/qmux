@@ -58,6 +58,7 @@ import {
 } from "../../lib/researchNavigation";
 import {
   createResearchSelectionSnapper,
+  shouldDismissEmptyResearchAskOnClick,
   type ResearchSelectionSnapper,
 } from "../../lib/researchSelection";
 import {
@@ -3880,6 +3881,36 @@ function ResearchDocument({
     clearSavedAsk(askRef.current?.nodeId ?? null);
     setAsk(null);
   }, [clearSavedAsk]);
+
+  // Ask mode paints its quoted passage with the CSS Highlight API rather than
+  // retaining the browser selection. Once an empty composer is open, a click
+  // that leaves no live passage selection means the reader clicked away from
+  // that transient ask and closes it. Run on `click` (after response-root
+  // handlers) so clicking the painted passage can first select it and keep the
+  // composer. Composer controls and the floating selection actions are exempt:
+  // in particular, clicking Ask there may be retargeting this composer.
+  const emptyAskOpen = Boolean(ask && !followup.trim());
+  useEffect(() => {
+    if (!emptyAskOpen) {
+      return;
+    }
+    const closeEmptyAskOnClickAway = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const selection = window.getSelection();
+      if (
+        shouldDismissEmptyResearchAskOnClick({
+          followup,
+          selectionCollapsed: !selection || selection.isCollapsed,
+          insideComposer: Boolean(target?.closest(".research-followup-composer")),
+          insideSelectionActions: Boolean(target?.closest(".research-highlight-actions")),
+        })
+      ) {
+        dismissAsk();
+      }
+    };
+    document.addEventListener("click", closeEmptyAskOnClickAway);
+    return () => document.removeEventListener("click", closeEmptyAskOnClickAway);
+  }, [dismissAsk, emptyAskOpen, followup]);
 
   // Mirror the in-progress ask into the navigation store so tabbing away from
   // the research surface (which unmounts this document) keeps it. The store

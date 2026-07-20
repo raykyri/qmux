@@ -1,6 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { snapResearchDragSelection } from "../src/lib/researchSelection";
+import {
+  shouldDismissEmptyResearchAskOnClick,
+  snapResearchDragSelection,
+} from "../src/lib/researchSelection";
+
+test("dismisses an empty targeted ask only when a click clears the selection", () => {
+  const base = {
+    followup: "",
+    selectionCollapsed: true,
+    insideComposer: false,
+    insideSelectionActions: false,
+  };
+  assert.equal(shouldDismissEmptyResearchAskOnClick(base), true);
+  assert.equal(
+    shouldDismissEmptyResearchAskOnClick({ ...base, selectionCollapsed: false }),
+    false,
+  );
+  assert.equal(
+    shouldDismissEmptyResearchAskOnClick({ ...base, insideComposer: true }),
+    false,
+  );
+  assert.equal(
+    shouldDismissEmptyResearchAskOnClick({ ...base, insideSelectionActions: true }),
+    false,
+  );
+});
+
+test("preserves targeted asks containing text", () => {
+  const base = {
+    selectionCollapsed: true,
+    insideComposer: false,
+    insideSelectionActions: false,
+  };
+  assert.equal(shouldDismissEmptyResearchAskOnClick({ ...base, followup: "question" }), false);
+  assert.equal(shouldDismissEmptyResearchAskOnClick({ ...base, followup: "  \n" }), true);
+});
 
 test("snaps forward and backward drags to whole words", () => {
   const text = "The quick, brown fox.";

@@ -9,6 +9,23 @@ export type ResearchSelectionSnapper = (
   focusOffset: number,
 ) => SnappedResearchSelection | null;
 
+/** An empty targeted-ask composer follows its passage selection: clicking
+ * away closes it, while composer controls, selection actions, and clicks that
+ * leave a live passage selection alone do not. */
+export function shouldDismissEmptyResearchAskOnClick(input: {
+  followup: string;
+  selectionCollapsed: boolean;
+  insideComposer: boolean;
+  insideSelectionActions: boolean;
+}) {
+  return (
+    !input.followup.trim() &&
+    input.selectionCollapsed &&
+    !input.insideComposer &&
+    !input.insideSelectionActions
+  );
+}
+
 interface SelectionUnit {
   start: number;
   end: number;
