@@ -139,9 +139,9 @@ function HomeGroupChip({
       >
         <span className="home-group-checkbox" aria-hidden="true">
           {checkState === true ? (
-            <Check size={12} strokeWidth={3} />
+            <Check size={10} strokeWidth={3} />
           ) : checkState === "mixed" ? (
-            <Minus size={12} strokeWidth={3} />
+            <Minus size={10} strokeWidth={3} />
           ) : null}
         </span>
         <span className="home-group-name">{group.name}</span>
@@ -198,7 +198,7 @@ function HomeGroupChip({
                     }}
                   >
                     <span className="home-group-checkbox" aria-hidden="true">
-                      {shown ? <Check size={12} strokeWidth={3} /> : null}
+                      {shown ? <Check size={10} strokeWidth={3} /> : null}
                     </span>
                     <span className="home-group-menu-item-name">{terminal.title}</span>
                   </button>

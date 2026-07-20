@@ -2567,8 +2567,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 15px;
-  height: 15px;
+  width: 13px;
+  height: 13px;
   flex: 0 0 auto;
   border: 1px solid var(--accent-strong);
   border-radius: 4px;
