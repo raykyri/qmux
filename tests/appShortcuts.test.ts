@@ -260,6 +260,11 @@ test("only pane-targeted commands are withheld from an unknown origin pane", () 
     appShortcutTargetsActivePane({ type: "toggleTranscriptOrBrowser" }),
     true,
   );
+  // Reorders the active sidebar item, so a stale native chord must be dropped.
+  assert.equal(
+    appShortcutTargetsActivePane({ type: "moveSidebarItem", direction: 1 }),
+    true,
+  );
   // Everything else is pane-independent and must survive: the native monitor
   // already consumed the keystroke, so withholding these would lose it.
   assert.equal(appShortcutTargetsActivePane({ type: "toggleSidebarMode" }), false);
