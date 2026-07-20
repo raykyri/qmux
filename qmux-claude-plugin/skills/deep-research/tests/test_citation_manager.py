@@ -190,6 +190,24 @@ class TestCanonicalization(unittest.TestCase):
         result = canonicalize_locator('https://example.com/page/')
         self.assertFalse(result.endswith('/'))
 
+    def test_url_preserves_non_default_port(self):
+        canonicalize_locator = self.canonicalize
+        compute_source_id = self.compute_id
+        plain = canonicalize_locator('https://example.com/report')
+        ported = canonicalize_locator('https://example.com:8443/report')
+        # Distinct services must keep distinct locators and ids.
+        self.assertNotEqual(plain, ported)
+        self.assertIn(':8443', ported)
+        self.assertNotEqual(compute_source_id(plain), compute_source_id(ported))
+
+    def test_url_drops_default_port(self):
+        canonicalize_locator = self.canonicalize
+        # A default port is redundant, so it normalizes away.
+        self.assertEqual(
+            canonicalize_locator('https://example.com:443/report'),
+            canonicalize_locator('https://example.com/report'),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
