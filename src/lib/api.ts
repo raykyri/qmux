@@ -151,12 +151,17 @@ export function listSavedPrompts(projectDir?: string | null) {
 // Creates or overwrites a saved prompt in `scope`. Passing a different
 // previousScope/previousName renames or moves that prompt instead of leaving
 // both files behind.
+// `expectedModifiedMs` is the modifiedMs the caller last loaded for the prompt
+// being updated/moved/deleted; the backend refuses the write if the file changed
+// since (optimistic concurrency). Omit it for a brand-new prompt, whose write is
+// create-only and has nothing to compare against.
 export function saveSavedPrompt(
   scope: PromptScope,
   name: string,
   content: string,
   projectDir?: string | null,
   previous?: { scope: PromptScope; name: string } | null,
+  expectedModifiedMs?: number | null,
 ) {
   return invoke<SavedPrompt>("prompt_library_save", {
     scope,
@@ -165,6 +170,7 @@ export function saveSavedPrompt(
     projectDir: projectDir ?? null,
     previousScope: previous?.scope ?? null,
     previousName: previous?.name ?? null,
+    expectedModifiedMs: expectedModifiedMs ?? null,
   });
 }
 
@@ -172,8 +178,14 @@ export function deleteSavedPrompt(
   scope: PromptScope,
   name: string,
   projectDir?: string | null,
+  expectedModifiedMs?: number | null,
 ) {
-  return invoke<void>("prompt_library_delete", { scope, name, projectDir: projectDir ?? null });
+  return invoke<void>("prompt_library_delete", {
+    scope,
+    name,
+    projectDir: projectDir ?? null,
+    expectedModifiedMs: expectedModifiedMs ?? null,
+  });
 }
 
 export function getActiveTab() {
