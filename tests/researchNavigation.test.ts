@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ensureResearchAskByNode,
+  ensureResearchExpandedByNode,
+  ensureResearchNavigation,
   isResearchNodeSelectionChange,
   isResearchTreeSelectionChange,
+  pruneResearchNavigationNodes,
   recordResearchScrollPosition,
   RESEARCH_SCROLL_POSITION_TTL_MS,
+  researchNavigationStore,
   restoreResearchScrollPosition,
   type SavedResearchNavigation,
 } from "../src/lib/researchNavigation";
@@ -385,4 +390,27 @@ test("clearing research attention is an identity-preserving no-op when already v
     hasUnseenUpdate: false,
     hasUnseenFailure: false,
   });
+});
+
+test("magic navigation ids create own state without prototype pollution", () => {
+  // A tree/node id like "__proto__" must resolve to a real own entry, never to
+  // Object.prototype, and must never mutate any prototype.
+  const nav = ensureResearchNavigation("__proto__");
+  assert.equal(Object.getPrototypeOf(nav.scrollByNode), null);
+  assert.ok(Object.prototype.hasOwnProperty.call(researchNavigationStore(), "__proto__"));
+  // No inherited value leaks for an id that was never stored.
+  assert.equal(researchNavigationStore()["constructor"], undefined);
+  assert.equal(({} as Record<string, unknown>).scrollByNode, undefined);
+
+  // Magic node ids write own data properties on the null-prototype nested maps.
+  ensureResearchExpandedByNode(nav)["__proto__"] = true;
+  ensureResearchAskByNode(nav);
+  recordResearchScrollPosition(nav, "__proto__", 12, 1000);
+  assert.equal(Object.getPrototypeOf(nav.expandedByNode ?? {}), null);
+  assert.equal(nav.scrollByNode["__proto__"].top, 12);
+  assert.equal(({} as Record<string, unknown>).top, undefined);
+
+  // Pruning a tree whose id is "__proto__" reads its own scroll map (rather
+  // than throwing on an inherited Object.prototype), so it doesn't crash.
+  assert.doesNotThrow(() => pruneResearchNavigationNodes("__proto__", []));
 });

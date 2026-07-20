@@ -35,6 +35,27 @@ export interface SavedResearchNavigation {
 const RESEARCH_NAVIGATION_KEY = "qmux.research-navigation.v1";
 export const RESEARCH_SCROLL_POSITION_TTL_MS = 15 * 60 * 1000;
 
+// Tree and node ids come from research archives, whose ids can be arbitrary
+// ASCII — including "__proto__", "constructor", and other names that resolve to
+// Object.prototype on an ordinary object. Every id-keyed collection here is a
+// null-prototype object so a lookup for an absent id yields undefined (not an
+// inherited value) and assigning a magic id creates an own data property rather
+// than mutating a prototype.
+function nullMap<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+// Building the map by direct assignment (never the `__proto__` literal setter)
+// is safe on a null-prototype target: `map["__proto__"] = value` defines an own
+// data property because there is no inherited setter.
+function nullMapFromEntries<T>(entries: Iterable<readonly [string, T]>): Record<string, T> {
+  const map = nullMap<T>();
+  for (const [key, value] of entries) {
+    map[key] = value;
+  }
+  return map;
+}
+
 let store: Record<string, SavedResearchNavigation> | null = null;
 
 export function isResearchNodeSelectionChange(
@@ -77,15 +98,15 @@ function load(): Record<string, SavedResearchNavigation> {
     const now = Date.now();
     const parsed = JSON.parse(localStorage.getItem(RESEARCH_NAVIGATION_KEY) ?? "{}") as unknown;
     if (!parsed || typeof parsed !== "object") {
-      return {};
+      return nullMap();
     }
-    return Object.fromEntries(
+    return nullMapFromEntries(
       Object.entries(parsed).flatMap(([treeId, value]) => {
         if (!value || typeof value !== "object") {
           return [];
         }
         const candidate = value as Partial<SavedResearchNavigation>;
-        const scrollByNode = Object.fromEntries(
+        const scrollByNode = nullMapFromEntries(
           Object.entries(candidate.scrollByNode ?? {}).flatMap(([nodeId, value]) => {
             if (!value || typeof value !== "object") {
               // The previous schema stored a bare number, which has no age and
@@ -103,12 +124,12 @@ function load(): Record<string, SavedResearchNavigation> {
               : [];
           }),
         );
-        const expandedByNode = Object.fromEntries(
+        const expandedByNode = nullMapFromEntries(
           Object.entries(candidate.expandedByNode ?? {}).filter(
             (entry): entry is [string, boolean] => entry[1] === true,
           ),
         );
-        const askByNode = Object.fromEntries(
+        const askByNode = nullMapFromEntries(
           Object.entries(candidate.askByNode ?? {}).flatMap(([nodeId, value]) => {
             if (!value || typeof value !== "object") {
               return [];
@@ -132,12 +153,42 @@ function load(): Record<string, SavedResearchNavigation> {
       }),
     );
   } catch {
-    return {};
+    return nullMap();
   }
 }
 
 export function researchNavigationStore(): Record<string, SavedResearchNavigation> {
   return (store ??= load());
+}
+
+/** The navigation entry for `treeId`, creating a fresh one (with a
+ * null-prototype scroll map) if absent. Callers must go through this rather
+ * than `store[treeId] ??= { scrollByNode: {} }`: an ordinary object would let a
+ * tree named "__proto__" resolve to Object.prototype (so `??=` never assigns
+ * and later writes land on the prototype) and would give the nested maps an
+ * ordinary prototype a magic node id could pollute. */
+export function ensureResearchNavigation(treeId: string): SavedResearchNavigation {
+  const current = researchNavigationStore();
+  let navigation = current[treeId];
+  if (!navigation) {
+    navigation = { scrollByNode: nullMap() };
+    current[treeId] = navigation;
+  }
+  return navigation;
+}
+
+/** The tree's expanded-node map, created as a null-prototype object if absent. */
+export function ensureResearchExpandedByNode(
+  navigation: SavedResearchNavigation,
+): Record<string, boolean> {
+  return (navigation.expandedByNode ??= nullMap());
+}
+
+/** The tree's in-progress-ask map, created as a null-prototype object if absent. */
+export function ensureResearchAskByNode(
+  navigation: SavedResearchNavigation,
+): Record<string, SavedResearchAsk> {
+  return (navigation.askByNode ??= nullMap());
 }
 
 export function saveResearchNavigation(): void {

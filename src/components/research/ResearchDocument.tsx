@@ -49,6 +49,9 @@ import {
   resolveResearchHighlightOffset,
 } from "../../lib/researchHighlights";
 import {
+  ensureResearchAskByNode,
+  ensureResearchExpandedByNode,
+  ensureResearchNavigation,
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
   recordResearchScrollPosition,
@@ -2025,7 +2028,7 @@ function ResearchDocument({
         pruneResearchHistory(current, validNodeIds, fallbackNodeId),
       );
       if (selectedNodeId && !validNodeIds.has(selectedNodeId)) {
-        const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+        const navigation = ensureResearchNavigation(treeId);
         navigation.selectedNodeId = fallbackNodeId;
         saveResearchNavigation();
         // The fallback is a page swap that bypasses applySelection: reset the
@@ -2277,7 +2280,7 @@ function ResearchDocument({
       if (!treeId) {
         return;
       }
-      const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+      const navigation = ensureResearchNavigation(treeId);
       if (
         selectedNodeId &&
         documentScrollRef.current &&
@@ -2507,8 +2510,8 @@ function ResearchDocument({
         current[nodeId] ? current : { ...current, [nodeId]: true },
       );
       if (treeId) {
-        const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
-        (navigation.expandedByNode ??= {})[nodeId] = true;
+        const navigation = ensureResearchNavigation(treeId);
+        ensureResearchExpandedByNode(navigation)[nodeId] = true;
         saveResearchNavigation();
       }
     },
@@ -2654,7 +2657,7 @@ function ResearchDocument({
 
   useEffect(() => {
     if (treeId && selectedNodeId && detail?.nodes.some((node) => node.id === selectedNodeId)) {
-      const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+      const navigation = ensureResearchNavigation(treeId);
       // `detail.nodes` is a fresh array on every research event; without the
       // guard a streaming run rewrote localStorage several times a second.
       if (navigation.selectedNodeId !== selectedNodeId) {
@@ -2677,7 +2680,7 @@ function ResearchDocument({
         documentScrollRef.current &&
         chainContentSettledRef.current
       ) {
-        const navigation = (navigationRef.current[currentTreeId] ??= { scrollByNode: {} });
+        const navigation = ensureResearchNavigation(currentTreeId);
         recordResearchScrollPosition(
           navigation,
           currentNodeId,
@@ -2699,7 +2702,7 @@ function ResearchDocument({
     if (!chainContentSettledRef.current) {
       return;
     }
-    const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+    const navigation = ensureResearchNavigation(treeId);
     recordResearchScrollPosition(
       navigation,
       selectedNodeId,
@@ -3923,8 +3926,8 @@ function ResearchDocument({
     if (!ask || !treeId || !askContentLoaded) {
       return;
     }
-    const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
-    (navigation.askByNode ??= {})[ask.nodeId] = {
+    const navigation = ensureResearchNavigation(treeId);
+    ensureResearchAskByNode(navigation)[ask.nodeId] = {
       anchor: ask.anchor,
       text: followup,
       updatedAt: Date.now(),
