@@ -113,18 +113,40 @@ interface AgentExchange {
  * image markers removed, whitespace collapsed to a single line. The You row
  * keeps the tail rather than the head — the end of the last message is what
  * says where the conversation left off. */
+// The visible preview and the DOM tooltip title are both bounded before they
+// are stored. A target's last reply is agent-authored and can be many
+// megabytes; without a bound the always-on-top launcher runs several
+// full-string transformations and inserts the whole thing twice (span + title)
+// on every summon. Slicing the raw source to a small working window first keeps
+// even the clean/normalize passes cheap.
+const EXCHANGE_RAW_WINDOW_CHARS = 4_000;
+const EXCHANGE_PREVIEW_CHARS = 110;
+const EXCHANGE_TITLE_CHARS = 500;
+
 function exchangeLine(
   raw: string | null,
   clean: (text: string) => string,
   tailBiased: boolean,
 ): { text: string; title: string } | null {
   if (!raw) return null;
-  const cleaned = collapseImageMarkers(clean(raw)).trim();
+  const windowed =
+    raw.length > EXCHANGE_RAW_WINDOW_CHARS
+      ? tailBiased
+        ? raw.slice(-EXCHANGE_RAW_WINDOW_CHARS)
+        : raw.slice(0, EXCHANGE_RAW_WINDOW_CHARS)
+      : raw;
+  const cleaned = collapseImageMarkers(clean(windowed)).trim();
   if (!cleaned) return null;
   const collapsed = cleaned.replace(/\s+/g, " ");
   const text =
-    tailBiased && collapsed.length > 110 ? `…${collapsed.slice(-110)}` : collapsed;
-  return { text, title: cleaned };
+    collapsed.length > EXCHANGE_PREVIEW_CHARS
+      ? tailBiased
+        ? `…${collapsed.slice(-EXCHANGE_PREVIEW_CHARS)}`
+        : `${collapsed.slice(0, EXCHANGE_PREVIEW_CHARS)}…`
+      : collapsed;
+  const title =
+    cleaned.length > EXCHANGE_TITLE_CHARS ? `${cleaned.slice(0, EXCHANGE_TITLE_CHARS)}…` : cleaned;
+  return { text, title };
 }
 
 /** Matches the main window's tab-cycling chords (⌃Tab / ⌃⇧Tab and ⌘⇧[ / ⌘⇧])
