@@ -464,7 +464,10 @@ export default function PromptLibraryMenu({
       insert(prompt.content);
       return;
     }
-    setFillValues({});
+    // Seed every discovered name as an OWN empty string (Object.fromEntries
+    // defines `__proto__`/`constructor` as data properties rather than tripping
+    // the prototype setter), so reads never resolve an inherited member.
+    setFillValues(Object.fromEntries(placeholders.map((name) => [name, ""])));
     setView({ kind: "fill", prompt, placeholders });
   };
 
@@ -713,7 +716,11 @@ export default function PromptLibraryMenu({
             <input
               type="text"
               className="form-field prompt-library-search"
-              value={fillValues[name] ?? ""}
+              value={
+                Object.prototype.hasOwnProperty.call(fillValues, name)
+                  ? fillValues[name]
+                  : ""
+              }
               autoFocus={index === 0}
               onChange={(event) =>
                 setFillValues((current) => ({ ...current, [name]: event.target.value }))
