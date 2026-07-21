@@ -2072,15 +2072,6 @@ pub fn completed_exchange_boundary(turns: &[crate::transcript::Turn]) -> Option<
     turns.iter().rposition(turn_has_exportable_prompt)
 }
 
-/// The turns before the in-flight exchange; see
-/// [`completed_exchange_boundary`].
-pub fn completed_exchange_turns(turns: &[crate::transcript::Turn]) -> &[crate::transcript::Turn] {
-    match completed_exchange_boundary(turns) {
-        Some(index) => &turns[..index],
-        None => turns,
-    }
-}
-
 /// The marker text standing in for a user image attachment. The payload never
 /// leaves the terminal, but the turn must keep its place or the following
 /// answer reads as a reply to the wrong prompt.
@@ -3164,16 +3155,14 @@ mod tests {
     }
 
     #[test]
-    fn completed_exchange_turns_drop_the_in_flight_exchange() {
+    fn completed_exchange_boundary_finds_the_in_flight_exchange() {
         let turns = vec![
             export_turn("u1", "user", vec![text_block("First question")]),
             export_turn("a1", "assistant", vec![text_block("First answer")]),
             export_turn("u2", "user", vec![text_block("Second question")]),
             export_turn("a2", "assistant", vec![text_block("Half-streamed")]),
         ];
-        let bounded = completed_exchange_turns(&turns);
-        assert_eq!(bounded.len(), 2);
-        assert_eq!(bounded[1].id, "a1");
+        assert_eq!(completed_exchange_boundary(&turns), Some(2));
 
         // A trailing injected instruction is not the user's prompt; the
         // boundary must fall on the real question before it.
@@ -3187,11 +3176,11 @@ mod tests {
                 )],
             ),
         ];
-        assert!(completed_exchange_turns(&with_instruction).is_empty());
+        assert_eq!(completed_exchange_boundary(&with_instruction), Some(0));
 
         // Nothing prompt-like at all: nothing in flight to drop.
         let assistant_only = vec![export_turn("a1", "assistant", vec![text_block("Answer")])];
-        assert_eq!(completed_exchange_turns(&assistant_only).len(), 1);
+        assert_eq!(completed_exchange_boundary(&assistant_only), None);
     }
 
     #[test]

@@ -21,6 +21,7 @@ import type {
   GlobalTaskLauncherSetting,
   GroupInfo,
   InitialPaneSize,
+  MessageAnchor,
   MoveQueuedAgentTurnResult,
   PaneActivity,
   PaneInfo,
@@ -612,15 +613,26 @@ export function resumeRecentSession(recentSessionId: string) {
 // Forks the session in `paneId` into a new tab and resumes it. With `nest`, the
 // fork lands as a child of the source pane; otherwise it lands as a sibling
 // immediately after it. `prompt` is submitted as the fork's launch message.
+//
+// `anchor` forks from a chosen message instead of the session head: the backend
+// synthesizes a transcript ending just before it and resumes that. The anchor is
+// resolved against the pane's own transcript, so it can only ever address that
+// session's messages.
 export function forkAgent(
   paneId: string,
-  options?: { useWorktree?: boolean; nest?: boolean; prompt?: string },
+  options?: {
+    useWorktree?: boolean;
+    nest?: boolean;
+    prompt?: string;
+    anchor?: MessageAnchor;
+  },
 ) {
   return invoke<PaneInfo>("agent_fork", {
     paneId,
     useWorktree: options?.useWorktree ?? false,
     nest: options?.nest ?? false,
     prompt: options?.prompt,
+    anchor: options?.anchor,
   });
 }
 

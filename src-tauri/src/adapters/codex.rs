@@ -1,10 +1,10 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy,
     FORK_AT_MESSAGE_EMPTY_ERROR, LaunchEnv, MessageAnchor, PrepareShellAgentLaunchRequest,
-    PreparedShellAgentLaunch, ShellCommandIntegration, SpawnAgentRequest, SynthesizedSession,
-    TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable, new_uuid_v4,
-    parse_transcript_records, prepared_shell_agent, record_shell_session_lineage,
-    reusable_session_agent, shell_quote_arg, shell_quote_path,
+    PreparedShellAgentLaunch, ShellCommandIntegration, SpawnAgentRequest, TranscriptLifecycleEvent,
+    ensure_on_path, hook_transcript_path_acceptable, new_uuid_v4, parse_transcript_records,
+    prepared_shell_agent, record_shell_session_lineage, reusable_session_agent, shell_quote_arg,
+    shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -170,7 +170,7 @@ impl AgentAdapter for CodexAdapter {
         &self,
         transcript_path: &Path,
         anchor: &MessageAnchor,
-    ) -> Result<SynthesizedSession, String> {
+    ) -> Result<String, String> {
         synthesize_truncated_codex_session(transcript_path, anchor)
     }
 
@@ -208,23 +208,26 @@ impl CodexAdapter {
                 "this Codex session isn't ready to fork yet (no session id); send a turn first"
                     .to_string()
             })?;
-        let mut args = Vec::new();
-        if let Some(model) = source
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        {
-            args.push("--model".to_string());
-            args.push(model.to_string());
-        }
-        args.push("fork".to_string());
-        args.push(session_id.to_string());
-        if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
-            args.push("--".to_string());
-            args.push(prompt.to_string());
-        }
-        Ok(args)
+        Ok(shell_session_args(
+            session_id,
+            source.model.as_deref(),
+            prompt,
+            true,
+        ))
+    }
+
+    /// Args for a fork anchored at a message. The session id is a rollout
+    /// synthesized by `synthesize_truncated_session`, which already ends where
+    /// the branch begins — so this resumes it directly rather than running
+    /// `codex fork`, which would copy the seed into a second session and leave
+    /// the seed behind as a duplicate in the picker.
+    pub fn shell_fork_at_message_args(
+        &self,
+        source: &AgentInfo,
+        session_id: &str,
+        prompt: Option<&str>,
+    ) -> Vec<String> {
+        shell_session_args(session_id, source.model.as_deref(), prompt, false)
     }
 
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
@@ -2078,10 +2081,34 @@ fn codex_payload_turn_id(payload: &Value) -> Option<String> {
 /// `turn_context`, the `response_item` the anchor points at, and the
 /// `event_msg` mirror of it); cutting at the anchor itself would leave the
 /// turn's opening records behind and replay a duplicate prompt.
+/// The shared shape of a session-continuing launch. `fork` picks the
+/// subcommand: `codex fork <id>` branches at the head, `codex resume <id>`
+/// continues the session as-is. `--` delimits the prompt so a leading `-` in
+/// attacker-influenced text cannot be read as a flag.
+fn shell_session_args(
+    session_id: &str,
+    model: Option<&str>,
+    prompt: Option<&str>,
+    fork: bool,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.push(if fork { "fork" } else { "resume" }.to_string());
+    args.push(session_id.to_string());
+    if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        args.push("--".to_string());
+        args.push(prompt.to_string());
+    }
+    args
+}
+
 fn synthesize_truncated_codex_session(
     transcript_path: &Path,
     anchor: &MessageAnchor,
-) -> Result<SynthesizedSession, String> {
+) -> Result<String, String> {
     let contents = fs::read_to_string(transcript_path).map_err(|err| {
         format!(
             "cannot read transcript {}: {err}",
@@ -2134,10 +2161,7 @@ fn synthesize_truncated_codex_session(
     fs::write(&out_path, body)
         .map_err(|err| format!("cannot write fork transcript {}: {err}", out_path.display()))?;
 
-    Ok(SynthesizedSession {
-        session_id,
-        transcript_path: out_path,
-    })
+    Ok(session_id)
 }
 
 fn is_codex_turn_start(value: &Value) -> bool {
@@ -3673,6 +3697,36 @@ trusted_hash = "sha256:trusted"
         })
     }
 
+    #[test]
+    fn anchored_fork_resumes_the_seed_instead_of_forking_again() {
+        let mut source = sample_agent();
+        source.session_id = Some("live-session".to_string());
+        source.model = Some("gpt-5".to_string());
+        let state = test_state();
+        let adapter = CodexAdapter::new(state.config());
+
+        let anchored = adapter.shell_fork_at_message_args(&source, "seed-session", Some("retry"));
+        let head = adapter
+            .shell_fork_args(&source, Path::new("/tmp"), Some("retry"))
+            .unwrap();
+
+        // The seed rollout already ends at the fork point, so continue it with
+        // `resume`; `fork` would branch it again and strand the seed.
+        assert!(anchored.contains(&"resume".to_string()));
+        assert!(!anchored.contains(&"fork".to_string()));
+        assert!(anchored.contains(&"seed-session".to_string()));
+        assert!(!anchored.contains(&"live-session".to_string()));
+
+        assert!(head.contains(&"fork".to_string()));
+        assert!(head.contains(&"live-session".to_string()));
+
+        for args in [&anchored, &head] {
+            let delimiter = args.iter().position(|arg| arg == "--").unwrap();
+            assert_eq!(args[delimiter + 1], "retry");
+        }
+        assert!(anchored.windows(2).any(|pair| pair == ["--model", "gpt-5"]));
+    }
+
     fn sample_agent() -> AgentInfo {
         AgentInfo {
             id: "agent-1".to_string(),
@@ -3902,8 +3956,9 @@ trusted_hash = "sha256:trusted"
 
         // The cut lands on the second turn's `task_started` (index 8), so none
         // of that turn's opening records survive to replay a duplicate prompt.
+        let seed = dir.join(format!("rollout-2026-06-21T20-08-03-{result}.jsonl"));
         assert_eq!(
-            rollout_record_kinds(&result.transcript_path),
+            rollout_record_kinds(&seed),
             vec![
                 "session_meta/",
                 "response_item/messagedeveloper",
@@ -3915,28 +3970,20 @@ trusted_hash = "sha256:trusted"
                 "event_msg/task_complete",
             ]
         );
-        let kept = fs::read_to_string(&result.transcript_path).unwrap();
+        let kept = fs::read_to_string(&seed).unwrap();
         assert!(kept.contains("first") && !kept.contains("second"));
 
         // Both id fields in session_meta are rewritten; Codex reads either.
         let meta: Value = serde_json::from_str(kept.lines().next().unwrap()).unwrap();
         assert_eq!(
             meta["payload"]["session_id"].as_str(),
-            Some(result.session_id.as_str())
+            Some(result.as_str())
         );
-        assert_eq!(
-            meta["payload"]["id"].as_str(),
-            Some(result.session_id.as_str())
-        );
+        assert_eq!(meta["payload"]["id"].as_str(), Some(result.as_str()));
 
-        // The fork is named for the source's timestamp so it sorts beside it.
-        assert_eq!(
-            result.transcript_path,
-            dir.join(format!(
-                "rollout-2026-06-21T20-08-03-{}.jsonl",
-                result.session_id
-            ))
-        );
+        // The fork is named for the source's timestamp so it sorts beside it,
+        // which `seed` above already assumes by locating the file at all.
+        assert!(seed.exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

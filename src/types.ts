@@ -389,6 +389,14 @@ export interface Turn {
   nativeMessageId?: string | null;
 }
 
+/** Identifies the message a fork branches from. Mirrors the adapters' anchor:
+ * Claude keys off the uuid chain, Codex off the transcript line index. */
+export interface MessageAnchor {
+  nativeId?: string | null;
+  parentNativeId?: string | null;
+  sourceIndex: number;
+}
+
 export interface ThreadGraph {
   version: 1;
   threadId: string;

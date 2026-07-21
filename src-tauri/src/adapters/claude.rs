@@ -2,7 +2,7 @@ use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy,
     FORK_AT_MESSAGE_EMPTY_ERROR, LaunchEnv, MessageAnchor, PermissionAction,
     PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, SynthesizedSession, TranscriptLifecycleEvent, ensure_on_path, new_uuid_v4,
+    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, new_uuid_v4,
     parse_transcript_records, prepared_shell_agent, record_shell_session_lineage,
     reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
@@ -184,7 +184,7 @@ impl AgentAdapter for ClaudeAdapter {
         &self,
         transcript_path: &Path,
         anchor: &MessageAnchor,
-    ) -> Result<SynthesizedSession, String> {
+    ) -> Result<String, String> {
         synthesize_truncated_claude_session(transcript_path, anchor)
     }
 
@@ -233,26 +233,26 @@ impl ClaudeAdapter {
                 "this Claude session isn't ready to fork yet (no session id); send a turn first"
                     .to_string()
             })?;
-        let mut args = Vec::new();
-        if let Some(model) = source
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        {
-            args.push("--model".to_string());
-            args.push(model.to_string());
-        }
-        args.push("--permission-mode".to_string());
-        args.push("auto".to_string());
-        args.push("--resume".to_string());
-        args.push(session_id.to_string());
-        args.push("--fork-session".to_string());
-        if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
-            args.push("--".to_string());
-            args.push(prompt.to_string());
-        }
-        Ok(args)
+        Ok(shell_session_args(
+            session_id,
+            source.model.as_deref(),
+            prompt,
+            true,
+        ))
+    }
+
+    /// Args for a fork anchored at a message. The session id is a transcript
+    /// synthesized by `synthesize_truncated_session`, which already ends where
+    /// the branch begins — so this resumes it directly rather than passing
+    /// `--fork-session`. Forking again would copy the seed into a second
+    /// session and leave the seed behind as a duplicate in the picker.
+    pub fn shell_fork_at_message_args(
+        &self,
+        source: &AgentInfo,
+        session_id: &str,
+        prompt: Option<&str>,
+    ) -> Vec<String> {
+        shell_session_args(session_id, source.model.as_deref(), prompt, false)
     }
 
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
@@ -2101,10 +2101,39 @@ fn claude_ancestor_set(
 /// to an untruncated copy looks like it should steer the resume to an earlier
 /// leaf, but Claude ignores it and replays the full history — truncation is the
 /// only mechanism that actually works.
+/// The shared shape of a resume-based launch: optional model, the permission
+/// mode forks run under, the session to resume, and the prompt. `--` delimits
+/// the prompt so a leading `-` in attacker-influenced text cannot be read as a
+/// flag (e.g. `--dangerously-skip-permissions`).
+fn shell_session_args(
+    session_id: &str,
+    model: Option<&str>,
+    prompt: Option<&str>,
+    fork_session: bool,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.push("--permission-mode".to_string());
+    args.push("auto".to_string());
+    args.push("--resume".to_string());
+    args.push(session_id.to_string());
+    if fork_session {
+        args.push("--fork-session".to_string());
+    }
+    if let Some(prompt) = prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        args.push("--".to_string());
+        args.push(prompt.to_string());
+    }
+    args
+}
+
 fn synthesize_truncated_claude_session(
     transcript_path: &Path,
     anchor: &MessageAnchor,
-) -> Result<SynthesizedSession, String> {
+) -> Result<String, String> {
     // The fork keeps everything up to and including the anchor's parent; the
     // anchored message itself is replaced by the caller's prompt.
     let keep_leaf = anchor
@@ -2202,10 +2231,7 @@ fn synthesize_truncated_claude_session(
     fs::write(&out_path, body)
         .map_err(|err| format!("cannot write fork transcript {}: {err}", out_path.display()))?;
 
-    Ok(SynthesizedSession {
-        session_id,
-        transcript_path: out_path,
-    })
+    Ok(session_id)
 }
 
 fn claude_line_can_update_turn_status(line: &str) -> bool {
@@ -2703,6 +2729,39 @@ mod tests {
             paused: false,
             created_at: 1,
         }
+    }
+
+    #[test]
+    fn anchored_fork_resumes_the_seed_instead_of_forking_again() {
+        let mut source = sample_agent();
+        source.session_id = Some("live-session".to_string());
+        source.model = Some("opus".to_string());
+        let state = test_state();
+        let adapter = ClaudeAdapter::new(state.config());
+
+        let anchored = adapter.shell_fork_at_message_args(&source, "seed-session", Some("retry"));
+        let head = adapter
+            .shell_fork_args(&source, Path::new("/tmp"), Some("retry"))
+            .unwrap();
+
+        // The seed transcript already ends at the fork point, so resume it as-is.
+        // Forking again would copy it into a second session and strand the seed.
+        assert!(anchored.contains(&"--resume".to_string()));
+        assert!(anchored.contains(&"seed-session".to_string()));
+        assert!(!anchored.contains(&"--fork-session".to_string()));
+        assert!(!anchored.contains(&"live-session".to_string()));
+
+        // The head fork keeps its existing shape.
+        assert!(head.contains(&"--fork-session".to_string()));
+        assert!(head.contains(&"live-session".to_string()));
+
+        // Both delimit the prompt so a leading `-` cannot be read as a flag.
+        for args in [&anchored, &head] {
+            let delimiter = args.iter().position(|arg| arg == "--").unwrap();
+            assert_eq!(args[delimiter + 1], "retry");
+        }
+        // Model still propagates to the branch.
+        assert!(anchored.windows(2).any(|pair| pair == ["--model", "opus"]));
     }
 
     fn install_agent_pane(state: &AppState) -> Arc<Mutex<Vec<u8>>> {
@@ -4219,19 +4278,15 @@ mod tests {
         let result =
             synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("a1"), 2)).unwrap();
 
-        assert_eq!(read_uuids(&result.transcript_path), vec!["u1", "a1"]);
-        assert_eq!(
-            result.transcript_path,
-            dir.join(format!("{}.jsonl", result.session_id))
-        );
+        // Claude derives the session id from the filename, so the seed must
+        // land at <project>/<id>.jsonl for `--resume <id>` to find it.
+        let seed = dir.join(format!("{result}.jsonl"));
+        assert_eq!(read_uuids(&seed), vec!["u1", "a1"]);
         // Every copied record is re-stamped with the new session id, or the
         // resumed session would report the one it branched from.
-        for line in fs::read_to_string(&result.transcript_path).unwrap().lines() {
+        for line in fs::read_to_string(&seed).unwrap().lines() {
             let value: Value = serde_json::from_str(line).unwrap();
-            assert_eq!(
-                value["sessionId"].as_str(),
-                Some(result.session_id.as_str())
-            );
+            assert_eq!(value["sessionId"].as_str(), Some(result.as_str()));
         }
         // The source is never modified.
         assert!(
@@ -4262,7 +4317,10 @@ mod tests {
             synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("a1"), 2)).unwrap();
 
         // Only the anchor's own ancestry survives; the sibling branch does not.
-        assert_eq!(read_uuids(&result.transcript_path), vec!["u1", "a1"]);
+        assert_eq!(
+            read_uuids(&dir.join(format!("{result}.jsonl"))),
+            vec!["u1", "a1"]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4280,7 +4338,10 @@ mod tests {
         let result =
             synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("a1"), 2)).unwrap();
 
-        assert_eq!(read_uuids(&result.transcript_path), vec!["u1", "a1"]);
+        assert_eq!(
+            read_uuids(&dir.join(format!("{result}.jsonl"))),
+            vec!["u1", "a1"]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

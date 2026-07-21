@@ -3,7 +3,7 @@
 // derivation) is testable without rendering — TurnOverlay's import chain
 // reaches ESM-only markdown packages that the node test runner can't load.
 
-import type { ThreadParticipant, Turn, TurnBlock } from "../types";
+import type { MessageAnchor, ThreadParticipant, Turn, TurnBlock } from "../types";
 import {
   stripTaggedInstructionBlocks,
   stripTaggedUserInstructionBlocks,
@@ -26,6 +26,10 @@ export interface MessageItem {
   blocks: MessageBlock[];
   activities: ActivityItem[];
   status?: TurnTimelineStatus;
+  /** Where a fork anchored at this message would branch from. Set from the
+   * first turn folded into the card, so forking from a card that merged
+   * back-to-back prompts branches before the first of them. */
+  anchor?: MessageAnchor | null;
 }
 
 export interface ToolEntry {
@@ -257,6 +261,7 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
     block?: MessageBlock,
     status?: TurnTimelineStatus,
     participant?: ThreadParticipant | null,
+    anchor?: MessageAnchor | null,
   ): MessageItem => ({
     type: "message",
     key: nextKey(`message-${role}`),
@@ -265,6 +270,7 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
     blocks: block ? [block] : [],
     activities: [],
     status,
+    anchor,
   });
 
   const pushMessageBlock = (
@@ -272,6 +278,7 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
     block: MessageBlock,
     status?: TurnTimelineStatus,
     participant?: ThreadParticipant | null,
+    anchor?: MessageAnchor | null,
   ) => {
     const previous = items[items.length - 1];
     if (
@@ -280,10 +287,12 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
       participantKey(previous.participant) === participantKey(participant) &&
       previous.activities.length === 0
     ) {
+      // Deliberately keeps the existing anchor: the card now spans several
+      // turns, and a fork from it must branch before the earliest.
       previous.blocks.push(block);
       return;
     }
-    items.push(createMessageItem(role, block, status, participant));
+    items.push(createMessageItem(role, block, status, participant, anchor));
   };
 
   const assistantActivityOwner = (
@@ -402,11 +411,16 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
   for (const turn of turns) {
     const status = timelineStatus(turn.status);
     const participant = turn.participant ?? null;
+    const anchor: MessageAnchor = {
+      nativeId: turn.nativeId ?? null,
+      parentNativeId: turn.parentNativeId ?? null,
+      sourceIndex: turn.sourceIndex,
+    };
     for (const [blockIndex, block] of turn.blocks.entries()) {
       keyBase = `${turn.id}:${blockIndex}`;
       switch (block.type) {
         case "text":
-          pushMessageBlock(turn.role, block, status, participant);
+          pushMessageBlock(turn.role, block, status, participant, anchor);
           break;
         case "toolUse":
           if (showActivityDetail) {
@@ -424,7 +438,7 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
               pushThinkingValue(block.value, status, participant);
             }
           } else {
-            pushMessageBlock(turn.role, block, status, participant);
+            pushMessageBlock(turn.role, block, status, participant, anchor);
           }
           break;
       }

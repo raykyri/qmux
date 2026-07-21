@@ -424,6 +424,27 @@
   opacity: 0.55;
 }
 
+/* The label takes the free space so the badge sits flush right; without it the
+   two spans sit next to each other mid-row. */
+.turn-message-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Marks an action still being proven out. Deliberately quiet — it should read
+   as a note on the item, not compete with the label. */
+.turn-message-menu-badge {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 999px;
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+
 .turn-card.role-system header,
 .turn-card.role-system .turn-text,
 .turn-card.role-system .turn-markdown {

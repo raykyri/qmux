@@ -154,6 +154,7 @@ import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
 import {
   agentStatusLabel,
   agentCanFork,
+  agentSupportsForkAtMessage,
   agentStatusTone,
   clamp,
   cycleTabId,
@@ -427,6 +428,7 @@ import type {
   GlobalDraft,
   GroupInfo,
   InitialPaneSize,
+  MessageAnchor,
   PaneInfo,
   PaneSplitInfo,
   QmuxEvent,
@@ -9284,7 +9286,12 @@ function MainApp() {
   // list, so the optimistic append below is just to avoid a flicker.
   async function forkPane(
     pane: PaneInfo,
-    options: { nest: boolean; useWorktree: boolean; prompt?: string },
+    options: {
+      nest: boolean;
+      useWorktree: boolean;
+      prompt?: string;
+      anchor?: MessageAnchor;
+    },
   ): Promise<boolean> {
     setError(null);
     try {
@@ -11350,6 +11357,14 @@ function MainApp() {
             : undefined
         }
         titleGenerationBusy={regeneratingTitlePaneIds.has(surface.pane.id)}
+        // Preview: forks from a chosen message by synthesizing a truncated
+        // transcript, so it is offered only for adapters that support it.
+        onForkFromMessage={
+          agent && !researchBound && agentSupportsForkAtMessage(agent)
+            ? (anchor) =>
+                void forkPane(surface.pane, { nest: true, useWorktree: false, anchor })
+            : undefined
+        }
         header={
           showHeader ? (
             <TurnPaneHeader

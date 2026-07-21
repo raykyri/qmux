@@ -15,7 +15,13 @@ import type {
 } from "react";
 import { createPortal } from "react-dom";
 import { Ellipsis } from "lucide-react";
-import type { ThreadParticipant, Turn, TurnBlock, TranscriptOption } from "../types";
+import type {
+  MessageAnchor,
+  ThreadParticipant,
+  Turn,
+  TurnBlock,
+  TranscriptOption,
+} from "../types";
 import {
   placePanePopover,
   turnPaneRectFrom,
@@ -109,6 +115,12 @@ interface TurnOverlayProps {
   // regenerate the tab title from that message.
   onRegenerateTitleFromUserMessage?: (message: string) => void;
   titleGenerationBusy?: boolean;
+  // When supplied, user messages offer "Fork from here", branching a new agent
+  // from the transcript as it stood just before that message. Absent for
+  // adapters that cannot fork at a message. The branch opens with an empty
+  // composer: its history ends just before the message, so the point is to take
+  // that turn somewhere else rather than re-run it.
+  onForkFromMessage?: (anchor: MessageAnchor) => void;
   // When true (the overlay showing the active pane), Cmd-F/Ctrl-F opens this
   // pane's find bar — unless focus is in the terminal, which owns its own find.
   searchHotkeyActive?: boolean;
@@ -176,6 +188,7 @@ export default function TurnOverlay({
   stickyUserMessages = true,
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy = false,
+  onForkFromMessage,
   searchHotkeyActive = false,
 }: TurnOverlayProps) {
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -757,6 +770,12 @@ export default function TurnOverlay({
                 titleGenerationEnabled={titleGenerationEnabled}
                 onRegenerateTitleFromUserMessage={handleRegenerateTitleFromUserMessage}
                 titleGenerationBusy={titleGenerationBusy}
+                // Hidden on the very first rendered message: a fork from there
+                // keeps nothing, which is a new agent rather than a branch.
+                // When the per-agent cap has truncated older turns this is
+                // conservative by one item, which beats offering an action the
+                // backend would refuse.
+                onForkFromMessage={index === 0 ? undefined : onForkFromMessage}
               />
             );
           })
@@ -800,6 +819,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   titleGenerationEnabled,
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy,
+  onForkFromMessage,
 }: {
   item: MessageItem;
   agentId?: string;
@@ -811,6 +831,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   titleGenerationEnabled: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
   titleGenerationBusy: boolean;
+  onForkFromMessage?: ((anchor: MessageAnchor) => void) | undefined;
 }) {
   return (
     <>
@@ -826,6 +847,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
           titleGenerationEnabled={titleGenerationEnabled}
           onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
           titleGenerationBusy={titleGenerationBusy}
+          onForkFromMessage={onForkFromMessage}
         />
       ) : null}
       {item.activities.map((activity) => (
@@ -851,6 +873,7 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
   previous.titleGenerationEnabled === next.titleGenerationEnabled &&
   previous.titleGenerationBusy === next.titleGenerationBusy &&
   previous.onRegenerateTitleFromUserMessage === next.onRegenerateTitleFromUserMessage &&
+  previous.onForkFromMessage === next.onForkFromMessage &&
   (previous.item === next.item || sameMessageItem(previous.item, next.item)));
 
 function MessageItemView({
@@ -864,6 +887,7 @@ function MessageItemView({
   titleGenerationEnabled,
   onRegenerateTitleFromUserMessage,
   titleGenerationBusy,
+  onForkFromMessage,
 }: {
   item: MessageItem;
   agentId?: string;
@@ -875,6 +899,7 @@ function MessageItemView({
   titleGenerationEnabled: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
   titleGenerationBusy: boolean;
+  onForkFromMessage?: ((anchor: MessageAnchor) => void) | undefined;
 }) {
   const taggedInstructionMessage = messageItemIsTaggedInstruction(item);
   const messageText =
@@ -883,8 +908,16 @@ function MessageItemView({
     item.role === "assistant"
       ? assistantCopyText ?? null
       : messageItemCopyText(item);
+  // A fork anchor is only meaningful on a user message, and only when the turn
+  // that produced the card carried one (a detached transcript has none).
+  const forkFromMessage =
+    item.role === "user" && onForkFromMessage && item.anchor
+      ? () => onForkFromMessage(item.anchor as MessageAnchor)
+      : null;
   const showUserMessageActions = Boolean(
-    item.role === "user" && showName && (titleGenerationEnabled || savePromptAgentId),
+    item.role === "user" &&
+      showName &&
+      (titleGenerationEnabled || savePromptAgentId || forkFromMessage),
   );
   const showMessageActions = Boolean(
     !taggedInstructionMessage &&
@@ -919,6 +952,7 @@ function MessageItemView({
               titleGenerationEnabled={item.role === "user" && titleGenerationEnabled}
               titleGenerationBusy={titleGenerationBusy}
               onRegenerateTitleFromUserMessage={onRegenerateTitleFromUserMessage}
+              onForkFromMessage={forkFromMessage}
             />
           ) : null}
         </header>
@@ -933,7 +967,7 @@ function MessageItemView({
 }
 
 // Preferred natural width for the message "..." menu; placement clamps to the pane.
-const MESSAGE_MENU_PREFERRED_WIDTH = 180;
+const MESSAGE_MENU_PREFERRED_WIDTH = 200;
 
 // The "..." menu shown at the right of a message header. Assistant messages only
 // offer Copy; user messages can also regenerate the tab title or save to the
@@ -948,6 +982,7 @@ function MessageActionsMenu({
   titleGenerationEnabled,
   titleGenerationBusy,
   onRegenerateTitleFromUserMessage,
+  onForkFromMessage,
 }: {
   savePromptAgentId?: string | null;
   messageText: string;
@@ -956,6 +991,7 @@ function MessageActionsMenu({
   titleGenerationEnabled: boolean;
   titleGenerationBusy: boolean;
   onRegenerateTitleFromUserMessage: (message: string) => void;
+  onForkFromMessage?: (() => void) | null;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -1071,6 +1107,21 @@ function MessageActionsMenu({
                   }}
                 >
                   {titleGenerationBusy ? "Regenerating title…" : "Regenerate title"}
+                </button>
+              ) : null}
+              {onForkFromMessage ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="menu-item turn-message-menu-item"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(false);
+                    onForkFromMessage();
+                  }}
+                >
+                  <span className="turn-message-menu-label">Fork from here</span>
+                  <span className="turn-message-menu-badge">Preview</span>
                 </button>
               ) : null}
               <button

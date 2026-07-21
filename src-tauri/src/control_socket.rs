@@ -346,12 +346,18 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
             // pane's own session (the source is resolved from the token, not the
             // payload), so a token can never spawn off another pane's session. This is
             // the same authority the user already has acting in their own terminal.
+            // Always forks at the session head: anchoring at a message is a UI
+            // action, and the payload carries no anchor to honour. Keeping it
+            // that way means the control plane cannot ask for a synthesized
+            // transcript, so this path never writes into an agent's own state
+            // directory.
             let pane = agent_fork(
                 state,
                 &authed_pane,
                 payload.use_worktree,
                 true,
                 payload.prompt,
+                None,
             )?;
             serde_json::to_value(pane).map_err(|err| format!("failed to encode forked pane: {err}"))
         }

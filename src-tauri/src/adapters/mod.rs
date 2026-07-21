@@ -615,15 +615,16 @@ pub trait AgentAdapter: Send + Sync {
     }
 
     /// Writes a copy of `transcript_path` truncated to exclude `anchor` and
-    /// everything after it, returning the new session's id and path. The copy
-    /// lands beside the source so the CLI discovers it the same way it finds its
-    /// own sessions. Adapters that cannot be truncated safely keep this default
-    /// and are reported as such by `adapter_supports_fork_at_message`.
+    /// everything after it, returning the new session's id. The copy lands
+    /// beside the source so the CLI discovers it the same way it finds its own
+    /// sessions — the id is the only handle a resume needs. Adapters that
+    /// cannot be truncated safely keep this default and are reported as such by
+    /// `adapter_supports_fork_at_message`.
     fn synthesize_truncated_session(
         &self,
         _transcript_path: &Path,
         _anchor: &MessageAnchor,
-    ) -> Result<SynthesizedSession, String> {
+    ) -> Result<String, String> {
         Err(FORK_UNSUPPORTED_ERROR.to_string())
     }
 
@@ -720,11 +721,19 @@ pub fn agent_fork(
     use_worktree: bool,
     nest: bool,
     prompt: Option<String>,
+    anchor: Option<MessageAnchor>,
 ) -> Result<PaneInfo, String> {
     let source = state
         .agent_by_pane(authed_pane)?
         .ok_or_else(|| "no agent is running in this pane to fork".to_string())?;
-    fork_agent_in_shell(state, &source, use_worktree, nest, prompt.as_deref())
+    fork_agent_in_shell(
+        state,
+        &source,
+        use_worktree,
+        nest,
+        prompt.as_deref(),
+        anchor.as_ref(),
+    )
 }
 
 /// Forks an ordinary terminal agent into a new persistent shell pane. The child
@@ -737,9 +746,13 @@ fn fork_agent_in_shell(
     use_worktree: bool,
     nest: bool,
     prompt: Option<&str>,
+    anchor: Option<&MessageAnchor>,
 ) -> Result<PaneInfo, String> {
     if !adapter_supports_fork(&source.adapter) {
         return Err(FORK_UNSUPPORTED_ERROR.to_string());
+    }
+    if anchor.is_some() && !adapter_supports_fork_at_message(&source.adapter) {
+        return Err(FORK_AT_MESSAGE_UNSUPPORTED_ERROR.to_string());
     }
     ensure_shell_agent_startup_supported()?;
     let session_id = source
@@ -785,11 +798,50 @@ fn fork_agent_in_shell(
             cwd.display()
         ));
     }
-    let args = match source.adapter.as_str() {
-        "claude" => ClaudeAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
-        "codex" => CodexAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
-        "opencode" => OpencodeAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
-        "grok" => GrokAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
+    let args = match (source.adapter.as_str(), anchor) {
+        // An anchored fork resumes a transcript synthesized from the source's
+        // own file. Resolving the path from `source` — never from the caller —
+        // keeps a forged anchor confined to the transcript of the pane that
+        // sent it.
+        (adapter_id, Some(anchor)) => {
+            let transcript_path = source
+                .transcript_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "this {} session has no transcript yet; send a turn first",
+                        source.adapter
+                    )
+                })?;
+            let seed_session_id = adapter_registry(state.config())
+                .get(adapter_id)?
+                .synthesize_truncated_session(Path::new(transcript_path), anchor)?;
+            match adapter_id {
+                "claude" => ClaudeAdapter::new(state.config()).shell_fork_at_message_args(
+                    source,
+                    &seed_session_id,
+                    prompt,
+                ),
+                "codex" => CodexAdapter::new(state.config()).shell_fork_at_message_args(
+                    source,
+                    &seed_session_id,
+                    prompt,
+                ),
+                _ => return Err(FORK_AT_MESSAGE_UNSUPPORTED_ERROR.to_string()),
+            }
+        }
+        ("claude", None) => {
+            ClaudeAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?
+        }
+        ("codex", None) => {
+            CodexAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?
+        }
+        ("opencode", None) => {
+            OpencodeAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?
+        }
+        ("grok", None) => GrokAdapter::new(state.config()).shell_fork_args(source, &cwd, prompt)?,
         _ => return Err(FORK_UNSUPPORTED_ERROR.to_string()),
     };
     let pane_id = state.next_id("pane");
@@ -850,19 +902,14 @@ pub struct MessageAnchor {
     pub source_index: usize,
 }
 
-/// A truncated transcript written alongside the source session, ready to be
-/// resumed as if the agent had produced it.
-#[derive(Clone, Debug)]
-pub struct SynthesizedSession {
-    pub session_id: String,
-    pub transcript_path: PathBuf,
-}
-
 /// Refused when the chosen message has no history before it. Truncating there
 /// would leave a transcript with no turns, which is a new session rather than a
 /// fork — the caller should start a fresh agent instead.
 pub const FORK_AT_MESSAGE_EMPTY_ERROR: &str =
     "Cannot fork from the first message; start a new agent instead";
+
+pub const FORK_AT_MESSAGE_UNSUPPORTED_ERROR: &str =
+    "Forking from a message is not supported for this agent adapter";
 
 /// Parses a native transcript into `(line, value)` pairs, skipping records that
 /// do not parse. Tolerating bad lines is deliberate: forking from a live session
@@ -1219,7 +1266,7 @@ mod tests {
         let state = AppState::new(test_config());
 
         // No agent bound to the pane: nothing to fork.
-        let err = agent_fork(&state, "pane-1", false, true, None).unwrap_err();
+        let err = agent_fork(&state, "pane-1", false, true, None, None).unwrap_err();
         assert!(err.contains("no agent"), "unexpected error: {err}");
 
         // An adapter without a native fork command is rejected before any spawn is attempted.
@@ -1245,7 +1292,7 @@ mod tests {
                 created_at: 1,
             })
             .unwrap();
-        let err = agent_fork(&state, "pane-1", false, true, None).unwrap_err();
+        let err = agent_fork(&state, "pane-1", false, true, None, None).unwrap_err();
         assert_eq!(err, FORK_UNSUPPORTED_ERROR);
     }
 

@@ -384,6 +384,18 @@ export function agentCanFork(agent: AgentInfo | null | undefined): boolean {
   );
 }
 
+// Forking from a chosen message additionally needs an adapter whose transcript
+// can be truncated safely, and a transcript on disk to truncate. Mirrors the
+// backend's `adapter_supports_fork_at_message`; the action is hidden rather
+// than disabled where it does not apply.
+export function agentSupportsForkAtMessage(agent: AgentInfo | null | undefined): boolean {
+  return Boolean(
+    agentCanFork(agent) &&
+      agent?.transcriptPath &&
+      (agent.adapter === CLAUDE_ADAPTER_ID || agent.adapter === CODEX_ADAPTER_ID),
+  );
+}
+
 // Applies a single updated agent to the list: replaces it in place when present,
 // otherwise appends it (e.g. a freshly spawned agent), preserving order.
 //
