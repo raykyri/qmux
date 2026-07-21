@@ -29,6 +29,7 @@
     "test:research-conversations": "node scripts/test-research-conversations.mjs",
     "test:research-threads": "node scripts/test-research-threads.mjs",
     "test:image-markers": "node scripts/test-image-markers.mjs",
+    "test:markdown-math": "node --import tsx --test tests/markdownMath.test.ts",
     "test:tagged-instructions": "node scripts/test-tagged-instructions.mjs",
     "test:thread-graph-overlay": "node scripts/test-thread-graph-overlay.mjs",
     "test:workspace-scope": "node scripts/test-workspace-scope.mjs",
@@ -47,8 +48,10 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
+    "rehype-mathjax": "^7.1.0",
     "remark-breaks": "^4.0.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

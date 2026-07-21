@@ -8,6 +8,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type {
   ComponentPropsWithoutRef,
@@ -17,13 +18,58 @@ import type {
 import { createPortal } from "react-dom";
 import { Ellipsis } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import type { Components } from "react-markdown";
+import type { Components, Options } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
 import { safeHref } from "../lib/links";
 import DiagramBlock, { diagramLangFromClassName, nodeText } from "./DiagramBlock";
+
+// The TeX pipeline (remark-math + rehype-mathjax) weighs a couple of
+// megabytes of SVG glyph tables, so like mermaid/viz it lives in its own
+// chunk instead of the startup bundle. Unlike diagrams it cannot load on
+// demand — rehype plugins run synchronously inside ReactMarkdown — so the
+// chunk starts fetching as soon as this module loads and mounted transcripts
+// swap the plugins in via useSyncExternalStore once it lands. Until then
+// (and if the chunk fails to load) text renders with the base plugins and
+// TeX stays visible as its literal source.
+type MarkdownPluginList = NonNullable<Options["remarkPlugins"]>;
+
+interface MathPlugins {
+  remark: MarkdownPluginList;
+  rehype: MarkdownPluginList;
+}
+
+const baseRemarkPlugins: MarkdownPluginList = [remarkGfm, remarkBreaks];
+
+let mathPlugins: MathPlugins | null = null;
+const mathPluginListeners = new Set<() => void>();
+
+/** Resolves once the math chunk is in (or failed); tests and SSR callers
+ * await it so the first render already includes MathJax output. */
+export const transcriptMathPluginsReady: Promise<void> = import("../lib/markdownPlugins")
+  .then((module) => {
+    mathPlugins = {
+      remark: module.transcriptRemarkPlugins,
+      rehype: module.transcriptRehypePlugins,
+    };
+    for (const listener of mathPluginListeners) {
+      listener();
+    }
+  })
+  .catch(() => undefined);
+
+function subscribeToMathPlugins(listener: () => void) {
+  mathPluginListeners.add(listener);
+  return () => {
+    mathPluginListeners.delete(listener);
+  };
+}
+
+function readMathPlugins() {
+  return mathPlugins;
+}
 
 // Shared by ordinary transcript Markdown and research documents. The provider
 // keeps link closures stable above memoized message items while giving ordinary
@@ -336,6 +382,7 @@ export default memo(function TranscriptMarkdown({
   oversizedContent,
   inline = false,
 }: TranscriptMarkdownProps) {
+  const math = useSyncExternalStore(subscribeToMathPlugins, readMathPlugins, readMathPlugins);
   if (oversizedContent && text.length > oversizedContent.maxCharacters) {
     const displayLimit = oversizedContent.maxDisplayCharacters;
     const shown =
@@ -358,7 +405,8 @@ export default memo(function TranscriptMarkdown({
               ? researchMarkdownComponents
               : markdownComponents
         }
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={math ? math.remark : baseRemarkPlugins}
+        rehypePlugins={math ? math.rehype : undefined}
         disallowedElements={inline ? INLINE_DISALLOWED_ELEMENTS : undefined}
         unwrapDisallowed={inline}
       >
