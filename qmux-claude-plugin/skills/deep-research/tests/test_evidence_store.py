@@ -161,6 +161,13 @@ class TestEvidenceID(unittest.TestCase):
             'hello world',
         )
 
+    def test_field_boundaries_unambiguous(self):
+        # Ambiguous concatenation would give 'src' + 'alpha' + 'beta' ==
+        # 'src' + 'alphab' + 'eta'; a structured encoding must keep them apart.
+        id1 = self.compute_id('src', 'alpha', 'beta')
+        id2 = self.compute_id('src', 'alphab', 'eta')
+        self.assertNotEqual(id1, id2)
+
 
 if __name__ == '__main__':
     unittest.main()

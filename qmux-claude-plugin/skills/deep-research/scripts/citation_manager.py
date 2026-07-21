@@ -38,6 +38,29 @@ TRACKING_PARAMS = frozenset([
     'ref', 'source', 'fbclid', 'gclid', 'mc_cid', 'mc_eid',
 ])
 
+# Default ports per scheme; an explicit non-default port distinguishes services
+# and must survive canonicalization, while a default port is redundant noise.
+DEFAULT_PORTS = {'http': 80, 'https': 443, 'ftp': 21}
+
+
+def _canonical_authority(parsed, scheme: str) -> str:
+    """Host plus any distinguishing (non-default) port, userinfo stripped.
+
+    ``parsed.hostname`` deliberately drops the port, so reconstructing the
+    locator from it alone collapses https://example.com and
+    https://example.com:8443 onto the same id. Preserve an explicit non-default
+    port, and re-bracket IPv6 literals (hostname strips the brackets)."""
+    host = (parsed.hostname or '').lower()
+    if ':' in host:
+        host = f'[{host}]'
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None and port != DEFAULT_PORTS.get(scheme):
+        return f'{host}:{port}'
+    return host
+
 
 def canonicalize_locator(raw_url: str) -> str:
     """Derive a canonical locator from a raw URL or identifier string.
@@ -57,7 +80,7 @@ def canonicalize_locator(raw_url: str) -> str:
     # Normalized URL: lowercase scheme+host, strip fragment and tracking params
     parsed = urlparse(raw_url)
     scheme = (parsed.scheme or 'https').lower()
-    host = (parsed.hostname or '').lower()
+    authority = _canonical_authority(parsed, scheme)
     path = parsed.path.rstrip('/')
     # Filter query params
     if parsed.query:
@@ -69,7 +92,7 @@ def canonicalize_locator(raw_url: str) -> str:
         query = '&'.join(sorted(pairs))
     else:
         query = ''
-    return urlunparse((scheme, host, path, '', query, ''))
+    return urlunparse((scheme, authority, path, '', query, ''))
 
 
 def compute_source_id(canonical_locator: str) -> str:

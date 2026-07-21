@@ -36,8 +36,16 @@ def normalize_quote(quote: str) -> str:
 
 
 def compute_evidence_id(source_id: str, quote: str, locator: str | None) -> str:
-    """sha256(source_id + normalized_quote + locator)[:16] hex."""
-    payload = source_id + normalize_quote(quote) + (locator or '')
+    """sha256 of an unambiguous encoding of (source_id, quote, locator)[:16].
+
+    Concatenating the fields directly makes their boundaries ambiguous:
+    (quote='alpha', locator='beta') and (quote='alphab', locator='eta') would
+    hash the same preimage and collide with no SHA-256 weakness involved. Hash a
+    JSON array instead, whose quoting/commas fence the fields unambiguously."""
+    payload = json.dumps(
+        [source_id, normalize_quote(quote), locator or ''],
+        ensure_ascii=False,
+    )
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
 
 

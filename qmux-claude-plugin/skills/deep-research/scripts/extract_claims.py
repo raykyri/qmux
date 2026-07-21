@@ -40,8 +40,13 @@ def normalize_text(text: str) -> str:
 
 
 def compute_claim_id(section_id: str, text: str) -> str:
-    """sha256(section_id + normalized_text)[:16] hex."""
-    payload = section_id + normalize_text(text)
+    """sha256 of an unambiguous encoding of (section_id, normalized_text)[:16].
+
+    Concatenating the fields directly makes their boundary ambiguous:
+    (section_id='fact', text='s ...') and (section_id='facts', text=' ...')
+    can share a preimage and collide. Hash a JSON array instead, whose quoting
+    and comma fence the two fields unambiguously."""
+    payload = json.dumps([section_id, normalize_text(text)], ensure_ascii=False)
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
 
 
@@ -89,25 +94,45 @@ CITATION_RE = re.compile(r'\[(\d+(?:,\s*\d+)*)\]')
 SENTENCE_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z])')
 
 
+def _indicator_regex(phrases: list[str]) -> re.Pattern:
+    """Match any phrase only at whole-word boundaries.
+
+    Substring matching mislabels factual sentences: 'considerable' contains
+    'consider' and 'suggests' contains 'suggest', so a factual assertion could
+    be tagged 'recommendation' and slip past the strict factual support gate.
+    Word boundaries keep each indicator to its own word."""
+    return re.compile(r'\b(?:' + '|'.join(re.escape(p) for p in phrases) + r')\b')
+
+
+_RECOMMENDATION_RE = _indicator_regex(['should', 'recommend', 'suggest', 'advise', 'consider'])
+_SPECULATION_RE = _indicator_regex(
+    ['might', 'could potentially', 'it is possible', 'may eventually',
+     'hypothetically', 'speculatively']
+)
+_SYNTHESIS_RE = _indicator_regex(
+    ['overall', 'taken together', 'collectively', 'the evidence suggests', 'this implies']
+)
+
+
 def classify_claim(text: str, section_id: str) -> str:
-    """Heuristic claim type classification."""
+    """Heuristic claim type classification.
+
+    Indicators are matched on word boundaries, and anything ambiguous falls
+    through to 'factual' — the type the support gate actually enforces — so a
+    misread cannot waive verification of an unsupported factual assertion."""
     lower = text.lower()
 
     # Recommendation indicators
-    if any(w in lower for w in ['should', 'recommend', 'suggest', 'advise', 'consider']):
-        if section_id == 'recommendations':
-            return 'recommendation'
+    if _RECOMMENDATION_RE.search(lower):
         return 'recommendation'
 
     # Speculation indicators
-    if any(w in lower for w in ['might', 'could potentially', 'it is possible', 'may eventually',
-                                 'hypothetically', 'speculatively']):
+    if _SPECULATION_RE.search(lower):
         return 'speculation'
 
     # Synthesis indicators (often in synthesis/conclusion sections)
     if section_id in ('synthesis', 'conclusion', 'limitations'):
-        if any(w in lower for w in ['overall', 'taken together', 'collectively',
-                                     'the evidence suggests', 'this implies']):
+        if _SYNTHESIS_RE.search(lower):
             return 'synthesis'
 
     # Default: factual

@@ -208,6 +208,26 @@ class TestClaimID(unittest.TestCase):
             'synthesis',
         )
 
+    def test_classify_substring_does_not_misfire(self):
+        # 'considerable' contains 'consider' and 'suggests' contains 'suggest',
+        # but neither is a recommendation — word boundaries keep them factual so
+        # they still face the strict support gate.
+        self.assertEqual(
+            self.classify('The trial reported a considerable reduction in mortality.', 'finding_1'),
+            'factual',
+        )
+        self.assertEqual(
+            self.classify('The data suggests a downward trend in latency.', 'finding_1'),
+            'factual',
+        )
+
+    def test_claim_id_field_boundaries_unambiguous(self):
+        # Ambiguous concatenation would collide 'fact' + 'show ...' with
+        # 'facts' + 'how ...'; the structured encoding must keep them distinct.
+        id1 = self.compute_id('fact', 'show how migration lowers risk.')
+        id2 = self.compute_id('facts', 'how migration lowers risk.')
+        self.assertNotEqual(id1, id2)
+
 
 if __name__ == '__main__':
     unittest.main()
