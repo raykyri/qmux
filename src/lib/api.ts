@@ -412,6 +412,14 @@ export function readMarkdownDocumentFile(path: string) {
   return invoke<string>("read_markdown_document_file", { path });
 }
 
+/** Reads a pasted image referenced by a transcript "[Image: source: <path>]"
+ * marker and returns it as a data: URL for direct use in an <img> tag. The
+ * backend enforces the home-directory confinement, raster extension
+ * allowlist, regular-file requirement, and byte cap. */
+export function readTranscriptImage(path: string) {
+  return invoke<string>("read_transcript_image", { path });
+}
+
 /** Copies a terminal agent pane's conversation into a Research workspace as
  * a read-only conversation tree. The terminal is untouched — repeating the
  * export creates another independent tree. */

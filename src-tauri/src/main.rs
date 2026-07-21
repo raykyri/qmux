@@ -6,6 +6,7 @@ mod control_socket;
 mod events;
 mod file_server;
 mod global_task_launcher;
+mod image_files;
 mod launch_path;
 mod menu_bar;
 mod native_terminal;
@@ -1004,6 +1005,20 @@ async fn read_markdown_document_file(path: String) -> Result<String, String> {
     })
     .await
     .map_err(|err| format!("read_markdown_document_file task failed: {err}"))?
+}
+
+/// Reads a pasted image referenced by a transcript "[Image: source: <path>]"
+/// marker and returns it as a data: URL (the webview CSP blocks file paths in
+/// <img> tags). The backend enforces the home-directory confinement, raster
+/// extension allowlist, regular-file requirement, and byte cap before any
+/// content reaches the webview.
+#[tauri::command]
+async fn read_transcript_image(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        image_files::read_transcript_image(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|err| format!("read_transcript_image task failed: {err}"))?
 }
 
 /// The tree is committed before its root run launches so a crash mid-launch is
@@ -2283,6 +2298,7 @@ fn main() {
             export_pane_to_research,
             update_research_document,
             read_markdown_document_file,
+            read_transcript_image,
             get_research_node_content,
             fork_research_node,
             cancel_research_node,
