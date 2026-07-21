@@ -12,14 +12,16 @@ import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
 import PromptLibraryMenu from "./PromptLibraryMenu";
 import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions";
-import type { TranscriptOption } from "../types";
+import type { BranchInfo, TranscriptOption } from "../types";
 
 // How long the "copied" toast stays up after copying the session id.
 const COPIED_TOAST_MS = 1600;
 
 // Preferred natural widths for the header menus; placement clamps them to the pane.
 const SESSION_MENU_PREFERRED_WIDTH = 320;
-const FORK_MENU_PREFERRED_WIDTH = 220;
+// Wider than the fork actions alone need: the menu also lists sibling branches,
+// whose rows carry a prompt preview.
+const FORK_MENU_PREFERRED_WIDTH = 300;
 
 // The top bar across the right pane: the active session's id on the left, and
 // session/browser/transcript controls on the right. Forking is only enabled for
@@ -39,6 +41,11 @@ interface TurnPaneHeaderProps {
   // Fork the session into a child tab of the current one, optionally in a fresh
   // git worktree.
   onFork: (options: { nest: boolean; useWorktree: boolean }) => void;
+  // Sibling sessions in this agent's fork lineage, root first. Empty until the
+  // agent has a session id, or when it has never been forked.
+  branches: BranchInfo[];
+  // Focuses another branch, reopening its pane if it was closed.
+  onSelectBranch: (branch: BranchInfo) => void;
   showQueueSplit: boolean;
   queueSplit: boolean;
   onToggleQueueSplit: () => void;
@@ -57,6 +64,30 @@ interface TurnPaneHeaderProps {
   promptProjectPath?: string | null;
 }
 
+// A branch is named by its first prompt when one has been recorded. Before that
+// (a fork spawned but not yet talked to) fall back to a short session id, then to
+// a placeholder for a fork whose SessionStart hook hasn't landed.
+function branchTitle(branch: BranchInfo): string {
+  const preview = branch.preview?.trim();
+  if (preview) {
+    return preview;
+  }
+  const sessionId = branch.sessionId?.trim();
+  return sessionId ? `Session ${sessionId.slice(0, 8)}` : "Starting…";
+}
+
+function branchMeta(branch: BranchInfo): string {
+  const parts = [branch.isRoot ? "Root" : "Fork"];
+  if (branch.missing) {
+    // Explains why the row is disabled.
+    parts.push("Unavailable");
+  } else if (!branch.live) {
+    parts.push("Closed");
+  }
+  parts.push(formatRelativeTime(branch.lastActiveAt));
+  return parts.join(" · ");
+}
+
 type MenuPos = {
   left: number;
   top: number;
@@ -72,6 +103,8 @@ export default function TurnPaneHeader({
   onSelectTranscript,
   canFork,
   onFork,
+  branches,
+  onSelectBranch,
   showQueueSplit,
   queueSplit,
   onToggleQueueSplit,
@@ -103,6 +136,11 @@ export default function TurnPaneHeader({
     [transcriptOptions],
   );
   const canOpenSessionMenu = Boolean(sessionId || sessionOptions.length > 0);
+  // The branch menu carries both the lineage list and the fork actions, so it
+  // opens when either has something to offer. A lineage of one is just this
+  // session, which the header already names — not worth a list.
+  const siblingBranches = branches.length > 1 ? branches : [];
+  const canOpenBranchMenu = canFork || siblingBranches.length > 0;
 
   // Clear any pending toast timer on unmount so it can't fire into a gone component.
   useEffect(() => {
@@ -141,10 +179,10 @@ export default function TurnPaneHeader({
   }, [menuOpen]);
 
   useEffect(() => {
-    if (!canFork) {
+    if (!canOpenBranchMenu) {
       setMenuOpen(false);
     }
-  }, [canFork]);
+  }, [canOpenBranchMenu]);
 
   // Close the session menu on an outside click or Escape while it is open.
   useEffect(() => {
@@ -250,6 +288,11 @@ export default function TurnPaneHeader({
   const fork = (options: { nest: boolean; useWorktree: boolean }) => {
     setMenuOpen(false);
     onFork(options);
+  };
+
+  const selectBranch = (branch: BranchInfo) => {
+    setMenuOpen(false);
+    onSelectBranch(branch);
   };
 
   const selectTranscript = (path: string | null) => {
@@ -377,17 +420,17 @@ export default function TurnPaneHeader({
             ref={menuTriggerRef}
             type="button"
             className="icon-button turn-pane-header-button"
-            disabled={!canFork}
+            disabled={!canOpenBranchMenu}
             title={
-              canFork
-                ? "Fork session"
+              canOpenBranchMenu
+                ? "Branches"
                 : "Forking is available after a supported session id is recorded"
             }
-            aria-label="Fork session"
+            aria-label="Branches"
             aria-haspopup="menu"
-            aria-expanded={canFork ? menuOpen : false}
+            aria-expanded={canOpenBranchMenu ? menuOpen : false}
             onClick={() => {
-              if (canFork) {
+              if (canOpenBranchMenu) {
                 setSessionMenuOpen(false);
                 setMenuOpen((open) => !open);
               }
@@ -395,7 +438,7 @@ export default function TurnPaneHeader({
           >
             <GitBranch size={14} aria-hidden="true" />
           </button>
-          {canFork && menuOpen
+          {canOpenBranchMenu && menuOpen
             ? createPortal(
                 <div
                   ref={menuPopoverRef}
@@ -413,10 +456,49 @@ export default function TurnPaneHeader({
                       : { left: -9999, top: -9999 }
                   }
                 >
+                  {siblingBranches.length > 0 ? (
+                    <>
+                      <div className="turn-pane-branch-label">Branches</div>
+                      <div
+                        className="turn-pane-branch-list"
+                        role="group"
+                        aria-label="Switch branch"
+                      >
+                        {siblingBranches.map((branch) => {
+                          const current = Boolean(agentId) && branch.agentId === agentId;
+                          return (
+                            <button
+                              key={branch.recentSessionId ?? branch.agentId ?? branch.sessionId}
+                              type="button"
+                              role="menuitemcheckbox"
+                              aria-checked={current}
+                              // A missing branch has no transcript left to reopen;
+                              // the current one is already on screen.
+                              disabled={current || branch.missing}
+                              className={`menu-item menu-item--compact turn-pane-branch-item${
+                                current ? " is-active" : ""
+                              }`}
+                              title={branch.sessionId ?? undefined}
+                              onClick={() => selectBranch(branch)}
+                            >
+                              <span className="turn-pane-branch-title">
+                                {branchTitle(branch)}
+                              </span>
+                              <span className="turn-pane-branch-meta">
+                                {branchMeta(branch)}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="menu-divider" role="separator" />
+                    </>
+                  ) : null}
                   <button
                     type="button"
                     role="menuitem"
                     className="menu-item menu-item--compact turn-pane-fork-item"
+                    disabled={!canFork}
                     onClick={() => fork({ nest: true, useWorktree: false })}
                   >
                     Fork session
@@ -425,6 +507,7 @@ export default function TurnPaneHeader({
                     type="button"
                     role="menuitem"
                     className="menu-item menu-item--compact turn-pane-fork-item"
+                    disabled={!canFork}
                     onClick={() => fork({ nest: true, useWorktree: true })}
                   >
                     Fork session in worktree

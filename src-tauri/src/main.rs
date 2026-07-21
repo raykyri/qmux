@@ -57,7 +57,7 @@ use show_hide_shortcut::{
 };
 use sleep::SleepGuard;
 use state::{
-    AppState, PaneInfo, PaneLayoutEntry, PaneSplitInfo, QueuedTurn, RecentSessionInfo,
+    AppState, BranchInfo, PaneInfo, PaneLayoutEntry, PaneSplitInfo, QueuedTurn, RecentSessionInfo,
     ShellAgentJobInfo,
 };
 use tauri::Manager;
@@ -77,10 +77,10 @@ use turn_queue::{
 use workspace::{
     AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, ResearchWorkspaceInfo,
     WorktreeStatus, acknowledge_agent, agent_worktree_signature, agent_worktree_status,
-    clear_agent_working_status,
-    create_group, create_research_workspace, ensure_default_research_workspace,
-    move_research_workspace, remove_agent_worktree, remove_research_workspace, rename_group,
-    rename_research_workspace, set_group_collapsed, set_group_dir, validate_launch_workspace,
+    clear_agent_working_status, create_group, create_research_workspace,
+    ensure_default_research_workspace, move_research_workspace, remove_agent_worktree,
+    remove_research_workspace, rename_group, rename_research_workspace, set_group_collapsed,
+    set_group_dir, validate_launch_workspace,
 };
 
 fn handle_global_shortcut(
@@ -668,6 +668,14 @@ fn list_recent_sessions(
     limit: Option<usize>,
 ) -> Result<Vec<RecentSessionInfo>, String> {
     state.list_recent_sessions(limit.unwrap_or(12))
+}
+
+#[tauri::command(async)]
+fn agent_branches(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<BranchInfo>, String> {
+    state.list_agent_branches(&agent_id)
 }
 
 #[tauri::command]
@@ -2258,6 +2266,7 @@ fn main() {
             list_agents,
             list_shell_agent_jobs,
             list_recent_sessions,
+            agent_branches,
             recent_session_resume,
             list_turns,
             list_thread_graphs,
