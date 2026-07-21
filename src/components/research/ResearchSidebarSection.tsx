@@ -34,7 +34,6 @@ import {
   moveResearchUnitToGap,
   removeTreesFromResearchFolderMembership,
   researchSidebarUnitId,
-  toggleResearchStar,
   translateResearchGapAfterInsertion,
   type ResearchFolder,
   type ResearchFolderState,
@@ -215,14 +214,26 @@ function ResearchSidebarSection({
     [archivedTrees, folderState.membership, menuFolder, trees],
   );
   const menuFolderHasRunning = menuFolderTrees.some((tree) => tree.runningCount > 0);
-  // Folders offered as "Add to" targets for a multi-selection — the ones with
-  // members visible in this scope, starred or not.
+  // Every organizational folder in this workspace is a valid move target,
+  // including an empty folder or one whose current members are all archived.
   const folderChoices = useMemo(
     () =>
-      [...starredUnits, ...mainUnits].flatMap((unit) =>
-        unit.kind === "folder" ? [unit.folder] : [],
+      workspaceId
+        ? folderState.folders.filter((folder) => folder.workspaceId === workspaceId)
+        : [],
+    [folderState.folders, workspaceId],
+  );
+  const multiFolderChoices = useMemo(
+    () =>
+      folderChoices.filter((folder) =>
+        multiSelectedIds.some(
+          (treeId) => folderState.membership[treeId] !== folder.id,
+        ),
       ),
-    [mainUnits, starredUnits],
+    [folderChoices, folderState.membership, multiSelectedIds],
+  );
+  const multiSelectionHasFolderMembers = multiSelectedIds.some(
+    (treeId) => Boolean(folderState.membership[treeId]),
   );
 
   useEffect(() => {
@@ -768,15 +779,12 @@ function ResearchSidebarSection({
     }
     const draggedTree = trees.find((tree) => tree.id === drag.id) ?? null;
     if (target.kind === "folder" && draggedTree) {
-      let proposedState = addTreesToResearchFolder(
+      const proposedState = addTreesToResearchFolder(
         folderState,
         target.folderId,
         [drag.id],
       );
-      const wasStarred = isResearchStarred(proposedState, drag.id);
-      if (wasStarred) {
-        proposedState = toggleResearchStar(proposedState, drag.id);
-      }
+      const wasStarred = isResearchStarred(folderState, drag.id);
       const proposedLists = buildResearchSidebarLists(trees, proposedState, workspaceId);
       const targetIsStarred = proposedLists.starred.some(
         (unit) => unit.kind === "folder" && unit.folder.id === target.folderId,
@@ -1262,10 +1270,10 @@ function ResearchSidebarSection({
                   <FolderPlus size={13} aria-hidden="true" />
                   <span>New folder with {multiSelectedIds.length} items</span>
                 </button>
-                {folderChoices.length > 0 ? (
+                {multiFolderChoices.length > 0 || multiSelectionHasFolderMembers ? (
                   <div className="context-menu-divider" role="separator" />
                 ) : null}
-                {folderChoices.map((folder) => (
+                {multiFolderChoices.map((folder) => (
                   <button
                     key={folder.id}
                     className="control-button"
@@ -1277,9 +1285,23 @@ function ResearchSidebarSection({
                     }}
                   >
                     <FolderInput size={13} aria-hidden="true" />
-                    <span>Add to “{folder.name}”</span>
+                    <span>Move to “{folder.name}”</span>
                   </button>
                 ))}
+                {multiSelectionHasFolderMembers ? (
+                  <button
+                    className="control-button"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(null);
+                      onRemoveFromFolder(multiSelectedIds);
+                    }}
+                  >
+                    <FolderMinus size={13} aria-hidden="true" />
+                    <span>Remove from folders</span>
+                  </button>
+                ) : null}
               </div>
             </div>,
             document.body,
@@ -1476,6 +1498,26 @@ function ResearchSidebarSection({
                       <FolderPlus size={13} aria-hidden="true" />
                       <span>New folder with item</span>
                     </button>
+                    {folderChoices
+                      .filter(
+                        (folder) =>
+                          folder.id !== folderState.membership[menuTree.id],
+                      )
+                      .map((folder) => (
+                        <button
+                          key={folder.id}
+                          className="control-button"
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setMenu(null);
+                            onAddToFolder(folder.id, [menuTree.id]);
+                          }}
+                        >
+                          <FolderInput size={13} aria-hidden="true" />
+                          <span>Move to “{folder.name}”</span>
+                        </button>
+                      ))}
                   </>
                 )}
                 {!menu.archived ? (

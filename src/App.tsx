@@ -7286,6 +7286,7 @@ function MainApp() {
           treeIds,
         ),
       );
+      setResearchMultiSelectIds([]);
     },
     [commitResearchFolderState],
   );

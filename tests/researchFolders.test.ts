@@ -96,6 +96,19 @@ test("moving the last member to another folder preserves the empty source folder
   assert.deepEqual(next.folders.map((folder) => folder.id), ["folder-a", "folder-b"]);
 });
 
+test("moving trees into a folder clears their individual stars", () => {
+  const initial = state();
+  const next = addTreesToResearchFolder(initial, "folder-b", ["one"]);
+  assert.equal(next.membership.one, "folder-b");
+  assert.deepEqual(next.starred, ["folder-a"]);
+});
+
+test("creating a folder moves its trees out of the individual starred list", () => {
+  const created = createResearchFolder(state(), "workspace-1", ["one"], "Created");
+  assert.equal(created.state.membership.one, created.folder.id);
+  assert.deepEqual(created.state.starred, ["folder-a"]);
+});
+
 test("empty folders are created and displayed in their workspace", () => {
   const created = createResearchFolder(
     { folders: [], membership: {}, starred: [], collapsed: [] },

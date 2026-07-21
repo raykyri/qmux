@@ -138,11 +138,19 @@ export function createResearchFolder(
     membership[treeId] = folder.id;
   }
   return {
-    state: { ...state, folders: [...state.folders, folder], membership },
+    state: {
+      ...state,
+      folders: [...state.folders, folder],
+      membership,
+      starred: state.starred.filter((id) => !treeIds.includes(id)),
+    },
     folder,
   };
 }
 
+/** Moves trees into one folder. A tree-level star is cleared so the moved row
+ * appears inside its destination; the destination folder's own star is
+ * independent and remains intact. */
 export function addTreesToResearchFolder(
   state: ResearchFolderState,
   folderId: string,
@@ -158,6 +166,7 @@ export function addTreesToResearchFolder(
   return {
     ...state,
     membership,
+    starred: state.starred.filter((id) => !treeIds.includes(id)),
   };
 }
 
