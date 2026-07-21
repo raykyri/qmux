@@ -2690,7 +2690,19 @@ function ResearchDocument({
   );
 
   const recordScroll = useCallback(() => {
-    if (!treeId || !selectedNodeId || !documentScrollRef.current) {
+    const scroller = documentScrollRef.current;
+    if (!scroller) {
+      return;
+    }
+    // The document never scrolls sideways legitimately (wide tables and code
+    // blocks scroll inside their own containers), and overflow-x is hidden —
+    // but programmatic scrolls (scrollIntoView, find-in-page) can still shift
+    // a hidden axis, and a stray scrollLeft reads as collapsed left padding
+    // on every page sharing this scroller. Pin it back to the left edge.
+    if (scroller.scrollLeft !== 0) {
+      scroller.scrollLeft = 0;
+    }
+    if (!treeId || !selectedNodeId) {
       return;
     }
     // Loading windows are not this page's scroll state (see the ref's
@@ -2700,11 +2712,7 @@ function ResearchDocument({
       return;
     }
     const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
-    recordResearchScrollPosition(
-      navigation,
-      selectedNodeId,
-      documentScrollRef.current.scrollTop,
-    );
+    recordResearchScrollPosition(navigation, selectedNodeId, scroller.scrollTop);
     if (navigationPersistTimerRef.current !== null) {
       window.clearTimeout(navigationPersistTimerRef.current);
     }
