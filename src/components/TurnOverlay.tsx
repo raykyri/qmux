@@ -150,8 +150,14 @@ const LONG_USER_MESSAGE_PREVIEW_CHARS = 1_200;
 // whole message on every streamed append, so a pathological multi-hundred-KB
 // message would otherwise stall the stream per event batch. Hoisted so the
 // memoized renderer sees a stable prop identity.
+// Past maxCharacters the message renders as plain preformatted text instead of
+// markdown; maxDisplayCharacters then bounds what actually lands in the DOM, so
+// a single multi-megabyte assistant message can't force the privileged webview
+// to allocate and lay out the whole node (the research document view uses the
+// same 1M display cap). Content beyond the cap is elided with a notice.
 const OVERSIZED_ASSISTANT_MARKDOWN: OversizedMarkdownPolicy = {
   maxCharacters: 100_000,
+  maxDisplayCharacters: 1_000_000,
   fallbackClassName: "turn-text",
 };
 // A pinned last-user-message taller than this share of the pane would blanket
