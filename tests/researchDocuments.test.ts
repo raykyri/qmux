@@ -58,6 +58,16 @@ test("derived titles prefer the first content line and strip heading markers", (
   assert.equal(deriveResearchDocumentTitle("  \n\t"), "Untitled document");
 });
 
+test("derived titles use backend White_Space rules for U+FEFF and U+0085", () => {
+  // U+FEFF is JS whitespace but NOT Unicode White_Space: like the backend, the
+  // BOM must stay before the heading marker, so the marker is not stripped and
+  // the preview matches the persisted "# Title"-equivalent title.
+  assert.equal(deriveResearchDocumentTitle("\uFEFF# Title"), "\uFEFF# Title");
+  // U+0085 (NEL) is Unicode White_Space but NOT JS \s: it must trim away so the
+  // heading marker is recognized, matching the backend.
+  assert.equal(deriveResearchDocumentTitle("\u0085Real title"), "Real title");
+});
+
 test("derived titles normalize whitespace and truncate like backend titles", () => {
   assert.equal(deriveResearchDocumentTitle("a   spaced  title"), "a spaced title");
   const long = deriveResearchDocumentTitle(`# ${"x".repeat(80)}`);

@@ -34,6 +34,19 @@ function isDocumentWhitespace(codeUnit: number): boolean {
   );
 }
 
+/** Trims leading whitespace using the same Unicode White_Space set as the
+ * backend, rather than JavaScript's `\s`/`trimStart` — the two disagree on
+ * U+FEFF (JS whitespace, White_Space is not) and U+0085 (the reverse), which
+ * is exactly what makes the title preview drift from the persisted title on a
+ * BOM-prefixed import. */
+function trimDocumentWhitespaceStart(value: string): string {
+  let index = 0;
+  while (index < value.length && isDocumentWhitespace(value.charCodeAt(index))) {
+    index += 1;
+  }
+  return value.slice(index);
+}
+
 export class ResearchDocumentWordLimitExceeded extends Error {
   readonly limit: number;
   readonly count: number;
@@ -80,12 +93,12 @@ export function deriveResearchDocumentTitle(markdown: string): string {
   while (start <= markdown.length) {
     const newline = markdown.indexOf("\n", start);
     const rawLine = newline === -1 ? markdown.slice(start) : markdown.slice(start, newline);
-    let line = rawLine.trimStart();
+    let line = trimDocumentWhitespaceStart(rawLine);
     let markerEnd = 0;
     while (line.charCodeAt(markerEnd) === 35) {
       markerEnd += 1;
     }
-    line = line.slice(markerEnd).trimStart();
+    line = trimDocumentWhitespaceStart(line.slice(markerEnd));
     if (line) {
       // Normalize only as far as the title can display. The old split/spread
       // path materialized a full-line token array and then a full code-point
@@ -93,7 +106,7 @@ export function deriveResearchDocumentTitle(markdown: string): string {
       const characters: string[] = [];
       let pendingSpace = false;
       for (const character of line) {
-        if (/\s/u.test(character)) {
+        if (isDocumentWhitespace(character.charCodeAt(0))) {
           pendingSpace = characters.length > 0;
           continue;
         }
