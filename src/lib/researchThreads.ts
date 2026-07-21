@@ -33,19 +33,45 @@ export function canFollowUpFrom(node: ResearchNode): boolean {
   return launchesFresh || Boolean(node.nativeSessionId);
 }
 
+/** Whether `candidate` should win the inline slot over the current best: the
+ * oldest child wins, ties broken by id, so the spine is stable across renders. */
+function inlineChildWins(candidate: ResearchNode, current: ResearchNode | null): boolean {
+  return (
+    !current ||
+    candidate.createdAt < current.createdAt ||
+    (candidate.createdAt === current.createdAt && candidate.id < current.id)
+  );
+}
+
 /** The unique inline child of a node, or null. Duplicate inline children
  * cannot be created, but a corrupted store could hold them; the oldest wins
  * (stable across renders) so the thread never flickers between spines. */
 export function inlineChildOf(nodes: ResearchNode[], nodeId: string): ResearchNode | null {
   let child: ResearchNode | null = null;
   for (const node of nodes) {
-    if (node.parentNodeId === nodeId && node.inline) {
-      if (!child || node.createdAt < child.createdAt || (node.createdAt === child.createdAt && node.id < child.id)) {
-        child = node;
-      }
+    if (node.parentNodeId === nodeId && node.inline && inlineChildWins(node, child)) {
+      child = node;
     }
   }
   return child;
+}
+
+/** Index of every node's oldest inline child, built in one pass so walking a
+ * chain is O(N) rather than O(N²): the previous code rescanned the whole node
+ * array at every downward step, so an N-node inline chain — attacker-controlled
+ * data from an imported archive, bounded by bytes but not by node count — did
+ * ~N full scans and could freeze the renderer. */
+function inlineChildByParent(nodes: ResearchNode[]): Map<string, ResearchNode> {
+  const byParent = new Map<string, ResearchNode>();
+  for (const node of nodes) {
+    if (!node.inline || !node.parentNodeId) {
+      continue;
+    }
+    if (inlineChildWins(node, byParent.get(node.parentNodeId) ?? null)) {
+      byParent.set(node.parentNodeId, node);
+    }
+  }
+  return byParent;
 }
 
 /** Ordered node ids of the inline chain containing nodeId: walk up parent
@@ -54,6 +80,9 @@ export function inlineChildOf(nodes: ResearchNode[], nodeId: string): ResearchNo
  * so a malformed graph cannot hang the renderer. */
 export function inlineChainFor(nodes: ResearchNode[], nodeId: string): string[] {
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  // Both maps are built in a single linear pass, so the walks below are O(1)
+  // per step and the whole traversal is O(N).
+  const childByParent = inlineChildByParent(nodes);
   let head = byId.get(nodeId);
   if (!head) {
     return [nodeId];
@@ -71,7 +100,7 @@ export function inlineChainFor(nodes: ResearchNode[], nodeId: string): string[] 
   const seen = new Set<string>([head.id]);
   let current = head;
   for (;;) {
-    const next = inlineChildOf(nodes, current.id);
+    const next = childByParent.get(current.id);
     if (!next || seen.has(next.id)) {
       break;
     }
@@ -88,7 +117,7 @@ export function inlineChainFor(nodes: ResearchNode[], nodeId: string): string[] 
     const straySeen = new Set<string>([nodeId]);
     let strayCurrent = byId.get(nodeId);
     while (strayCurrent) {
-      const next = inlineChildOf(nodes, strayCurrent.id);
+      const next = childByParent.get(strayCurrent.id);
       if (!next || straySeen.has(next.id)) {
         break;
       }
