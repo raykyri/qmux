@@ -23,6 +23,9 @@ import {
 } from "./QueuedTurnCard";
 
 export interface HomeRailQueuedTurn {
+  /** The turn's stable id — the authoritative identity for drags and every
+   * mutation, since duplicate-text turns are otherwise indistinguishable. */
+  id: string;
   /** Display text (instruction blocks stripped). */
   text: string;
   /** The turn's stored text, verbatim — what the queue commands' expectedData
@@ -79,13 +82,30 @@ interface HomeRailsProps {
   /** Reveal the Drafts rail when its app shortcut is used while hidden. */
   onShowDrafts: () => void;
   onActivatePane: (paneId: string) => void;
-  onReorderQueuedTurn: (agentId: string, fromIndex: number, toIndex: number, text: string) => void;
+  onReorderQueuedTurn: (
+    agentId: string,
+    fromIndex: number,
+    toIndex: number,
+    text: string,
+    expectedId?: string,
+  ) => void;
   /** Cross-rail drop; the backend appends to the target agent's queue. */
-  onMoveQueuedTurn: (fromAgentId: string, toAgentId: string, index: number, text: string) => void;
+  onMoveQueuedTurn: (
+    fromAgentId: string,
+    toAgentId: string,
+    index: number,
+    text: string,
+    expectedId?: string,
+  ) => void;
   onQueueTurn: (agentId: string, text: string) => Promise<boolean>;
   /** Remove a queued turn (the … menu's Remove and edit-recall). Resolves true
    * when the backend dropped it, so an edit only pulls text in on success. */
-  onRemoveQueuedTurn: (agentId: string, index: number, rawText: string) => Promise<boolean>;
+  onRemoveQueuedTurn: (
+    agentId: string,
+    index: number,
+    rawText: string,
+    expectedId?: string,
+  ) => Promise<boolean>;
   /** Clear a paused queue (the right pane's Unpause button, as a card menu item). */
   onUnpauseAgent: (agentId: string) => Promise<void>;
   /** Toggle a queued turn's pause-after-send flag (the composer menu's
@@ -95,6 +115,7 @@ interface HomeRailsProps {
     index: number,
     pauseAfter: boolean,
     rawText: string,
+    expectedId?: string,
   ) => Promise<void>;
   /** Push the agent's top queued turn immediately (the composer menu's
    * "Send top queued item now!"); shown on the first queued card only. */
@@ -124,10 +145,12 @@ type RailPointerDrag = {
   // Queued: the owning agent. Draft: the DRAFTS_RAIL_ID sentinel.
   agentId: string;
   from: number;
-  // Queued: the turn's stored (raw) text — re-derives the index if the queue
-  // shifts mid-drag and feeds the backend's expectedData check. Draft: the
-  // draft id.
+  // Queued: the turn's stored (raw) text, sent as the backend's expectedData.
+  // Draft: the draft id.
   text: string;
+  // Queued only: the grabbed turn's stable id, so the drop re-derives its index
+  // by identity and never mistakes a duplicate-text turn for the grabbed one.
+  id?: string;
   startX: number;
   startY: number;
   active: boolean;
@@ -728,6 +751,7 @@ export default function HomeRails({
     agentId: string,
     index: number,
     text: string,
+    id?: string,
   ) {
     if (event.button !== 0) {
       return;
@@ -741,6 +765,7 @@ export default function HomeRails({
       agentId,
       from: index,
       text,
+      id,
       startX: event.clientX,
       startY: event.clientY,
       active: false,
@@ -822,7 +847,7 @@ export default function HomeRails({
       return;
     }
     if (crossRailAgentId && crossRailAgentId !== drag.agentId) {
-      onMoveQueuedTurn(drag.agentId, crossRailAgentId, from, drag.text);
+      onMoveQueuedTurn(drag.agentId, crossRailAgentId, from, drag.text, drag.id);
       return;
     }
     if (!gap || gap.agentId !== drag.agentId) {
@@ -830,7 +855,7 @@ export default function HomeRails({
     }
     const to = from < gap.index ? gap.index - 1 : gap.index;
     if (to !== from) {
-      onReorderQueuedTurn(drag.agentId, from, to, drag.text);
+      onReorderQueuedTurn(drag.agentId, from, to, drag.text, drag.id);
     }
   }
 
@@ -839,10 +864,13 @@ export default function HomeRails({
     if (!workstream) {
       return null;
     }
-    if (workstream.queuedTurns[drag.from]?.rawText === drag.text) {
+    // Resolve by the grabbed turn's stable id — the queue can shift mid-drag and
+    // a duplicate-text turn must not be mistaken for the one that was grabbed.
+    // Null means the grabbed turn is gone, so the drop is dropped.
+    if (workstream.queuedTurns[drag.from]?.id === drag.id) {
       return drag.from;
     }
-    const index = workstream.queuedTurns.findIndex((turn) => turn.rawText === drag.text);
+    const index = workstream.queuedTurns.findIndex((turn) => turn.id === drag.id);
     return index === -1 ? null : index;
   }
 
@@ -933,11 +961,16 @@ export default function HomeRails({
 
   // Pull a queued turn into its agent's composer to edit; only drop it once the
   // backend confirms the removal, so a failed call can't lose the text.
-  async function editQueuedTurn(agentId: string, index: number, rawText: string) {
+  async function editQueuedTurn(
+    agentId: string,
+    index: number,
+    rawText: string,
+    expectedId: string,
+  ) {
     if (!(await confirmComposerReplace(agentId))) {
       return;
     }
-    if ((await runMutation(() => onRemoveQueuedTurn(agentId, index, rawText))) !== true) {
+    if ((await runMutation(() => onRemoveQueuedTurn(agentId, index, rawText, expectedId))) !== true) {
       return;
     }
     setComposerDraft(agentId, rawText);
@@ -956,7 +989,8 @@ export default function HomeRails({
   function editLastQueuedTurn(workstream: HomeRailWorkstream) {
     const index = workstream.queuedTurns.length - 1;
     if (index >= 0) {
-      void editQueuedTurn(workstream.agentId, index, workstream.queuedTurns[index].rawText);
+      const turn = workstream.queuedTurns[index];
+      void editQueuedTurn(workstream.agentId, index, turn.rawText, turn.id);
     }
   }
 
@@ -1114,10 +1148,10 @@ export default function HomeRails({
     // it (duplicated text disambiguates by occurrence — visually identical
     // cards, so an occurrence shift is harmless).
     const refKey = queuedCardKey(workstream.agentId, index);
-    const occurrence = workstream.queuedTurns
-      .slice(0, index)
-      .filter((candidate) => candidate.rawText === turn.rawText).length;
-    const cardKey = `${workstream.agentId}:${occurrence}:${turn.rawText}`;
+    // Key by the turn's stable id: an occurrence+text key let a duplicate reuse
+    // a drained card's DOM node, which could carry a captured drag onto the
+    // wrong turn.
+    const cardKey = `${workstream.agentId}:${turn.id}`;
     const isDraggingCard =
       dragging?.agentId === workstream.agentId && dragging.index === index;
     // Suppress the drop rule at the dragged card's own position.
@@ -1152,7 +1186,7 @@ export default function HomeRails({
           .filter(Boolean)
           .join(" ")}
         onPointerDown={(event) =>
-          handleCardPointerDown(event, "queued", workstream.agentId, index, turn.rawText)
+          handleCardPointerDown(event, "queued", workstream.agentId, index, turn.rawText, turn.id)
         }
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
@@ -1183,7 +1217,8 @@ export default function HomeRails({
                 : []),
               {
                 label: "Edit",
-                action: () => void editQueuedTurn(workstream.agentId, index, turn.rawText),
+                action: () =>
+                  void editQueuedTurn(workstream.agentId, index, turn.rawText, turn.id),
                 disabled: mutating,
               },
               {
@@ -1195,6 +1230,7 @@ export default function HomeRails({
                       index,
                       !turn.pauseAfter,
                       turn.rawText,
+                      turn.id,
                     ),
                   ),
                 disabled: mutating,
@@ -1203,7 +1239,7 @@ export default function HomeRails({
                 label: "Remove",
                 action: () =>
                   void runMutation(() =>
-                    onRemoveQueuedTurn(workstream.agentId, index, turn.rawText),
+                    onRemoveQueuedTurn(workstream.agentId, index, turn.rawText, turn.id),
                   ),
                 danger: true,
                 disabled: mutating,

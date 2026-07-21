@@ -3975,6 +3975,7 @@ function MainApp() {
           currentSettledAt: latestTurnTimestamp(turnInfo.turns),
           pastTurns: railPastTurns(turnInfo.turns),
           queuedTurns: (queuedTurnsByAgent[agent.id] ?? []).map((turn) => ({
+            id: turn.id,
             text: railQueuedTurnText(turn.text),
             rawText: turn.text,
             pauseAfter: turn.pauseAfter,
@@ -4661,10 +4662,15 @@ function MainApp() {
     }
   }
 
-  async function discardRecoveredQueuedTurn(agentId: string, index: number, turn: string) {
+  async function discardRecoveredQueuedTurn(
+    agentId: string,
+    index: number,
+    turn: string,
+    expectedId?: string,
+  ) {
     setError(null);
     try {
-      const result = await removeQueuedAgentTurn(agentId, index, turn);
+      const result = await removeQueuedAgentTurn(agentId, index, turn, expectedId);
       setAgentQueuedTurns(agentId, result.queuedTurns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -4678,6 +4684,7 @@ function MainApp() {
     targetAgentId: string | null | undefined,
     index: number,
     turn: string,
+    expectedId?: string,
   ) {
     if (!targetAgentId || targetAgentId === agentId) {
       return;
@@ -4687,7 +4694,7 @@ function MainApp() {
     try {
       // One atomic backend call removes from the source and hands the turn to the
       // target (rolling back on failure), so the turn can't end up in both queues.
-      const result = await moveQueuedAgentTurn(agentId, targetAgentId, index, turn);
+      const result = await moveQueuedAgentTurn(agentId, targetAgentId, index, turn, expectedId);
       setAgentQueuedTurns(agentId, result.sourceQueuedTurns);
       setAgentQueuedTurns(targetAgentId, result.targetQueuedTurns);
     } catch (err) {
@@ -4702,10 +4709,11 @@ function MainApp() {
     fromIndex: number,
     toIndex: number,
     turn: string,
+    expectedId?: string,
   ) {
     setError(null);
     try {
-      const result = await reorderQueuedAgentTurn(agentId, fromIndex, toIndex, turn);
+      const result = await reorderQueuedAgentTurn(agentId, fromIndex, toIndex, turn, expectedId);
       setAgentQueuedTurns(agentId, result.queuedTurns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -4740,10 +4748,11 @@ function MainApp() {
     agentId: string,
     index: number,
     rawText: string,
+    expectedId?: string,
   ): Promise<boolean> {
     setError(null);
     try {
-      const result = await removeQueuedAgentTurn(agentId, index, rawText);
+      const result = await removeQueuedAgentTurn(agentId, index, rawText, expectedId);
       setAgentQueuedTurns(agentId, result.queuedTurns);
       return true;
     } catch (err) {
@@ -4771,10 +4780,14 @@ function MainApp() {
     index: number,
     pauseAfter: boolean,
     rawText: string,
+    expectedId?: string,
   ) {
     setError(null);
     try {
-      setAgentQueuedTurns(agentId, await setQueuedTurnPause(agentId, index, pauseAfter, rawText));
+      setAgentQueuedTurns(
+        agentId,
+        await setQueuedTurnPause(agentId, index, pauseAfter, rawText, expectedId),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -11461,11 +11474,11 @@ function MainApp() {
                 queues={surface.orphanedQueues}
                 hasTargetAgent={Boolean(agent)}
                 agentLabel={launchAdapter.label}
-                onMoveTurn={(agentId, index, turn) =>
-                  void moveQueuedTurnToAgent(agentId, agent?.id, index, turn)
+                onMoveTurn={(agentId, index, turn, expectedId) =>
+                  void moveQueuedTurnToAgent(agentId, agent?.id, index, turn, expectedId)
                 }
-                onDiscardTurn={(agentId, index, turn) =>
-                  void discardRecoveredQueuedTurn(agentId, index, turn)
+                onDiscardTurn={(agentId, index, turn, expectedId) =>
+                  void discardRecoveredQueuedTurn(agentId, index, turn, expectedId)
                 }
               />
             ) : null}
@@ -11523,8 +11536,8 @@ function MainApp() {
                 shortcutLabelForPane={shortcutLabelForPaneId}
                 onQueueChange={setAgentQueuedTurns}
                 onQueueDropTargetChange={setQueueDropTargetAgentId}
-                onMoveQueuedTurn={(targetAgentId, index, turn) =>
-                  void moveQueuedTurnToAgent(agent.id, targetAgentId, index, turn)
+                onMoveQueuedTurn={(targetAgentId, index, turn, expectedId) =>
+                  void moveQueuedTurnToAgent(agent.id, targetAgentId, index, turn, expectedId)
                 }
                 onDraftChange={setAgentDraft}
                 registerDraftFlusher={registerComposerDraftFlusher}
@@ -13682,11 +13695,11 @@ function MainApp() {
                   draftsVisible={homeDraftsVisible}
                   onShowDrafts={showHomeDrafts}
                   onActivatePane={focusPaneTab}
-                  onReorderQueuedTurn={(agentId, fromIndex, toIndex, text) =>
-                    void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text)
+                  onReorderQueuedTurn={(agentId, fromIndex, toIndex, text, expectedId) =>
+                    void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text, expectedId)
                   }
-                  onMoveQueuedTurn={(fromAgentId, toAgentId, index, text) =>
-                    void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text)
+                  onMoveQueuedTurn={(fromAgentId, toAgentId, index, text, expectedId) =>
+                    void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text, expectedId)
                   }
                   onQueueTurn={queueHomeTurn}
                   onRemoveQueuedTurn={removeHomeQueuedTurn}

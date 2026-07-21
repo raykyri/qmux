@@ -333,6 +333,10 @@ export type QueuedTurnDelivery =
   | { kind: "newSession" };
 
 export interface QueuedTurn {
+  // Stable, unique identity assigned by the backend. Duplicate-text turns are
+  // otherwise indistinguishable, so drag/mutation code keys and targets turns by
+  // this id (and passes it as expectedId) rather than by index+text.
+  id: string;
   text: string;
   pauseAfter: boolean;
   waitFor?: QueuedTurnWait | null;

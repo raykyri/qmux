@@ -542,13 +542,34 @@ pub enum QueuedTurnDelivery {
     NewSession,
 }
 
-/// A queued turn: the text to send plus optional directives controlling when and
-/// where it should send. Deserializes from either a bare string (the legacy
-/// persisted format) or a `{ text, pauseAfter, waitFor, delivery }` object, so old
-/// state still loads.
+static QUEUED_TURN_ID_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A stable, unique identity for a queued turn. Two queued turns can share the
+/// same text and differ only in pause/wait/delivery metadata; without an id,
+/// mutations that identify a turn by index+text can act on the wrong one when
+/// duplicates shift position, so every turn carries an opaque id used for the
+/// optimistic-concurrency guards. Random by default; the counter fallback keeps
+/// ids unique if the CSPRNG is momentarily unavailable (this runs inside
+/// infallible constructors, so it must never fail).
+fn new_queued_turn_id() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::getrandom(&mut bytes).is_ok() {
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        return format!("qturn-{hex}");
+    }
+    let seq = QUEUED_TURN_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("qturn-seq-{seq}")
+}
+
+/// A queued turn: an id, the text to send, plus optional directives controlling
+/// when and where it should send. Deserializes from either a bare string (the
+/// legacy persisted format) or a `{ text, pauseAfter, waitFor, delivery }`
+/// object, so old state still loads; a turn persisted without an id is assigned
+/// a fresh one on load.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
+    pub id: String,
     pub text: String,
     pub pause_after: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -560,6 +581,7 @@ pub struct QueuedTurn {
 impl QueuedTurn {
     pub fn new(text: String) -> Self {
         Self {
+            id: new_queued_turn_id(),
             text,
             pause_after: false,
             wait_for: None,
@@ -569,6 +591,7 @@ impl QueuedTurn {
 
     pub fn waiting(text: String, wait_for: QueuedTurnWait) -> Self {
         Self {
+            id: new_queued_turn_id(),
             text,
             pause_after: false,
             wait_for: Some(wait_for),
@@ -578,6 +601,7 @@ impl QueuedTurn {
 
     pub fn delivering(text: String, delivery: QueuedTurnDelivery) -> Self {
         Self {
+            id: new_queued_turn_id(),
             text,
             pause_after: false,
             wait_for: None,
@@ -596,6 +620,8 @@ impl<'de> Deserialize<'de> for QueuedTurn {
         enum Repr {
             Text(String),
             Full {
+                #[serde(default)]
+                id: Option<String>,
                 text: String,
                 #[serde(default, rename = "pauseAfter")]
                 pause_after: bool,
@@ -607,17 +633,22 @@ impl<'de> Deserialize<'de> for QueuedTurn {
         }
         Ok(match Repr::deserialize(deserializer)? {
             Repr::Text(text) => QueuedTurn {
+                id: new_queued_turn_id(),
                 text,
                 pause_after: false,
                 wait_for: None,
                 delivery: None,
             },
             Repr::Full {
+                id,
                 text,
                 pause_after,
                 wait_for,
                 delivery,
             } => QueuedTurn {
+                // A turn persisted before turns had ids is migrated to a fresh
+                // one; a stored id is preserved so it stays stable across loads.
+                id: id.unwrap_or_else(new_queued_turn_id),
                 text,
                 pause_after,
                 wait_for,
@@ -7038,6 +7069,7 @@ impl AppState {
         index: usize,
         pause_after: bool,
         expected_text: Option<&str>,
+        expected_id: Option<&str>,
     ) -> Result<Vec<QueuedTurn>, String> {
         let queued_turns = {
             let mut model = self
@@ -7052,6 +7084,14 @@ impl AppState {
             let turn = queue
                 .get_mut(index)
                 .ok_or_else(|| format!("queued turn {index} was not found"))?;
+            // The id is the authoritative identity: duplicate-text turns are
+            // indistinguishable by text alone, so a shifted duplicate would pass
+            // the text guard. Both are checked when supplied.
+            if let Some(expected_id) = expected_id
+                && turn.id != expected_id
+            {
+                return Err("queued turn changed; refresh before updating".to_string());
+            }
             if let Some(expected_text) = expected_text
                 && turn.text != expected_text
             {
@@ -7069,6 +7109,7 @@ impl AppState {
         agent_id: &str,
         index: usize,
         expected_data: Option<&str>,
+        expected_id: Option<&str>,
     ) -> Result<(QueuedTurn, Vec<QueuedTurn>), String> {
         let mut model = self
             .inner
@@ -7084,6 +7125,11 @@ impl AppState {
             let current = queue
                 .get(index)
                 .ok_or_else(|| format!("queued turn {index} was not found"))?;
+            if let Some(expected_id) = expected_id
+                && current.id != expected_id
+            {
+                return Err("queued turn changed; refresh before editing".to_string());
+            }
             if let Some(expected_data) = expected_data
                 && current.text != expected_data
             {
@@ -7124,6 +7170,7 @@ impl AppState {
         from: usize,
         to: usize,
         expected_data: Option<&str>,
+        expected_id: Option<&str>,
     ) -> Result<Vec<QueuedTurn>, String> {
         let queued_turns = {
             let mut model = self
@@ -7139,11 +7186,18 @@ impl AppState {
             if from >= len || to >= len {
                 return Err(format!("queued turn index out of range (len {len})"));
             }
-            if let Some(expected_data) = expected_data {
+            if expected_id.is_some() || expected_data.is_some() {
                 let current = queue
                     .get(from)
                     .ok_or_else(|| format!("queued turn {from} was not found"))?;
-                if current.text != expected_data {
+                if let Some(expected_id) = expected_id
+                    && current.id != expected_id
+                {
+                    return Err("queued turn changed; refresh before reordering".to_string());
+                }
+                if let Some(expected_data) = expected_data
+                    && current.text != expected_data
+                {
                     return Err("queued turn changed; refresh before reordering".to_string());
                 }
             }
@@ -13225,7 +13279,7 @@ mod tests {
             .unwrap();
 
         let items = state
-            .set_queued_turn_pause("agent-1", 1, true, Some("b"))
+            .set_queued_turn_pause("agent-1", 1, true, Some("b"), None)
             .unwrap();
         assert!(!items[0].pause_after);
         assert!(items[1].pause_after);
@@ -13238,7 +13292,7 @@ mod tests {
         // A stale expected-text guards against editing the wrong item.
         assert!(
             state
-                .set_queued_turn_pause("agent-1", 1, false, Some("wrong"))
+                .set_queued_turn_pause("agent-1", 1, false, Some("wrong"), None)
                 .is_err()
         );
 
@@ -13269,7 +13323,7 @@ mod tests {
                 .unwrap();
             // Drop "second" from the middle.
             state
-                .remove_agent_turn_queue_item("agent-1", 1, Some("second"))
+                .remove_agent_turn_queue_item("agent-1", 1, Some("second"), None)
                 .unwrap();
         }
 
@@ -13295,6 +13349,53 @@ mod tests {
             state.list_agent_turn_queue("agent-1").unwrap(),
             vec!["third".to_string()]
         );
+    }
+
+    #[test]
+    fn queued_turn_id_guards_the_right_duplicate() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        assert!(state.restore_session().is_empty());
+        // Two queued turns with identical text but distinct identities.
+        state
+            .enqueue_agent_turn("agent-1", "same".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "same".to_string())
+            .unwrap();
+        let queue = state.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_ne!(queue[0].id, queue[1].id);
+
+        // Text matches at index 0, but a wrong id is still rejected.
+        assert!(
+            state
+                .remove_agent_turn_queue_item("agent-1", 0, Some("same"), Some("does-not-exist"))
+                .is_err()
+        );
+        // The correct id removes exactly that turn, leaving the other duplicate.
+        let second_id = queue[1].id.clone();
+        let (removed, remaining) = state
+            .remove_agent_turn_queue_item("agent-1", 1, Some("same"), Some(&second_id))
+            .unwrap();
+        assert_eq!(removed.id, second_id);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, queue[0].id);
+    }
+
+    #[test]
+    fn queued_turns_persisted_without_ids_are_migrated_on_load() {
+        // A turn stored by an older build (no `id` field) still loads, gaining a
+        // fresh id, so mutations can identify it afterward.
+        let turn: QueuedTurn =
+            serde_json::from_str(r#"{"text":"legacy","pauseAfter":true}"#).unwrap();
+        assert_eq!(turn.text, "legacy");
+        assert!(turn.pause_after);
+        assert!(turn.id.starts_with("qturn-"));
+        // The legacy bare-string form is migrated too.
+        let bare: QueuedTurn = serde_json::from_str(r#""just text""#).unwrap();
+        assert_eq!(bare.text, "just text");
+        assert!(bare.id.starts_with("qturn-"));
     }
 
     #[test]
@@ -13390,7 +13491,7 @@ mod tests {
             .unwrap();
 
         let (removed, queued) = state
-            .remove_agent_turn_queue_item("source", 0, Some("remove me"))
+            .remove_agent_turn_queue_item("source", 0, Some("remove me"), None)
             .unwrap();
         assert_eq!(removed.text, "remove me");
         assert_eq!(queued.len(), 1);
@@ -15368,7 +15469,7 @@ mod tests {
             vec!["queued turn".to_string()]
         );
         state
-            .remove_agent_turn_queue_item("agent-1", 0, Some("queued turn"))
+            .remove_agent_turn_queue_item("agent-1", 0, Some("queued turn"), None)
             .unwrap();
         let agent = state.agent("agent-1").unwrap().expect("agent restored");
         assert_eq!(agent.orphaned_queue_pane_id, None);
