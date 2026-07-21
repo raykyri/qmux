@@ -485,6 +485,24 @@ header + .turn-blocks {
   color: var(--text-activity);
 }
 
+/* Pasted images referenced by "[Image: source: <path>]" transcript markers
+   render inline in the user bubble; pathless "[Image #N]" references, loads
+   still in flight, and failed reads fall back to the muted chip. */
+.turn-image {
+  display: block;
+  max-width: min(480px, 100%);
+  max-height: 360px;
+  width: auto;
+  height: auto;
+  margin: 4px 0;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 6px;
+}
+
+.turn-image-chip {
+  color: var(--text-activity);
+}
+
 .tagged-user-instruction {
   display: grid;
   gap: 7px;

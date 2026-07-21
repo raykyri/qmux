@@ -39,3 +39,13 @@ export function splitImageMarkers(text: string): ImageMarkerSegment[] {
 export function collapseImageMarkers(text: string): string {
   return text.replace(imageMarkerPattern(), COLLAPSED_IMAGE_LABEL);
 }
+
+const IMAGE_MARKER_PATH = /^\[Image: source: ([^\]\n]*)\]$/;
+
+/** Extracts the on-disk path from a "[Image: source: <path>]" marker segment.
+ *  Numbered "[Image #N]" references carry no path and return null — they can
+ *  only render as the collapsed chip. */
+export function imageMarkerSourcePath(marker: string): string | null {
+  const path = IMAGE_MARKER_PATH.exec(marker)?.[1].trim();
+  return path ? path : null;
+}

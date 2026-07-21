@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collapseImageMarkers, splitImageMarkers } from "../src/lib/imageMarkers";
+import {
+  collapseImageMarkers,
+  imageMarkerSourcePath,
+  splitImageMarkers,
+} from "../src/lib/imageMarkers";
 
 const CACHE_MARKER =
   "[Image: source: /Users/raymond/.claude/image-cache/0da57d2c-6591-467c-8abf-6961554736e0/2.png]";
@@ -57,4 +61,25 @@ test("collapseImageMarkers replaces every marker shape with [Image]", () => {
 
 test("collapseImageMarkers leaves marker-free text unchanged", () => {
   assert.equal(collapseImageMarkers("nothing to see"), "nothing to see");
+});
+
+test("imageMarkerSourcePath extracts the cache path from a source marker", () => {
+  assert.equal(
+    imageMarkerSourcePath(CACHE_MARKER),
+    "/Users/raymond/.claude/image-cache/0da57d2c-6591-467c-8abf-6961554736e0/2.png",
+  );
+});
+
+test("imageMarkerSourcePath keeps interior spaces but trims edge whitespace", () => {
+  assert.equal(
+    imageMarkerSourcePath("[Image: source: /Users/raymond/My Files/image cache/1.png ]"),
+    "/Users/raymond/My Files/image cache/1.png",
+  );
+});
+
+test("imageMarkerSourcePath returns null for numbered references and non-markers", () => {
+  assert.equal(imageMarkerSourcePath("[Image #1]"), null);
+  assert.equal(imageMarkerSourcePath("[Image: source: ]"), null);
+  assert.equal(imageMarkerSourcePath("plain text"), null);
+  assert.equal(imageMarkerSourcePath(`prefixed ${CACHE_MARKER}`), null);
 });

@@ -28,6 +28,7 @@ import {
 } from "../lib/appHelpers";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
+import { splitImageMarkers, type ImageMarkerSegment } from "../lib/imageMarkers";
 import { requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
 import { listenToScrollToMessage } from "../lib/transcriptNavigation";
@@ -42,6 +43,7 @@ import {
 } from "../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../lib/turnTimeline";
 import DomSearchBar from "./DomSearchBar";
+import TranscriptImage from "./TranscriptImage";
 import TranscriptPickerLink from "./TranscriptPickerLink";
 import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
@@ -1189,6 +1191,15 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
           <CollapsedTaggedUserInstruction label={taggedInstruction.label} text={block.text} />
         );
       }
+      // Pasted-image markers take precedence over the long-message collapse:
+      // the whole point of a pasted screenshot is to be seen, and marker-bearing
+      // messages are overwhelmingly short prompts around the paste.
+      if (role === "user") {
+        const segments = splitImageMarkers(block.text);
+        if (segments.some((segment) => segment.kind === "image")) {
+          return <UserTextWithImages segments={segments} />;
+        }
+      }
       if (role === "user" && block.text.length > LONG_USER_MESSAGE_COLLAPSE_THRESHOLD) {
         return <CollapsedUserText text={block.text} />;
       }
@@ -1197,6 +1208,24 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
     return <TranscriptMarkdown text={block.text} oversizedContent={OVERSIZED_ASSISTANT_MARKDOWN} />;
   }
   return <RawTranscriptDisclosure value={block.value} deferPayload />;
+}
+
+/** A user message containing pasted-image markers keeps its text flowing
+ *  exactly as typed (the paragraph stays pre-wrap) while each
+ *  "[Image: source: <path>]" marker renders as the actual image at its marker
+ *  position. Pathless "[Image #N]" references stay collapsed chips. */
+function UserTextWithImages({ segments }: { segments: ImageMarkerSegment[] }) {
+  return (
+    <p className="turn-text">
+      {segments.map((segment, index) =>
+        segment.kind === "image" ? (
+          <TranscriptImage key={index} marker={segment.text} />
+        ) : (
+          <span key={index}>{segment.text}</span>
+        ),
+      )}
+    </p>
+  );
 }
 
 function CollapsedTaggedUserInstruction({ label, text }: { label: string; text: string }) {
