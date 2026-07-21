@@ -1303,9 +1303,19 @@ fn write_native_data_and_submit(
         }
 
         if attempt == submit_attempts {
-            return Err(format!(
-                "native terminal accepted submit key but emitted no PTY input after {submit_attempts} attempts"
-            ));
+            // The paste is already durable in the composer and the Return has been
+            // issued; we simply could not observe its bytes reach the PTY within the
+            // local window. Do NOT fail here: an error would make the turn queue treat
+            // the whole turn as undelivered and requeue it (see send_claimed_turn),
+            // re-pasting duplicate text even though the Return usually lands moments
+            // later. Report best-effort delivery and let the outstanding-send watchdog
+            // (watch_agent_after_queued_send) confirm the submit — and re-send a bare
+            // Return, never a re-paste — if it was genuinely dropped.
+            eprintln!(
+                "qmux: native submit not acknowledged after {submit_attempts} attempts; \
+                 treating as delivered and deferring to the submit watchdog"
+            );
+            return Ok(());
         }
     }
     unreachable!("submit attempt loop always returns")
@@ -2902,11 +2912,15 @@ mod tests {
     }
 
     #[test]
-    fn native_submission_rejects_a_submit_after_bounded_attempts() {
+    fn native_submission_defers_unacknowledged_submit_to_the_watchdog() {
         let submit_calls = Cell::new(0);
         let positions = RefCell::new(vec![0_u64, 12, 12, 12, 12, 12].into_iter());
 
-        let err = write_native_data_and_submit(
+        // The paste landed (12 > 0) but the Return's bytes never showed up at the PTY
+        // within the local window. This must NOT error: an error requeues the turn and
+        // re-pastes duplicate text. Instead we exhaust the bounded Return retries and
+        // report best-effort delivery, leaving final confirmation to the submit watchdog.
+        write_native_data_and_submit(
             "test",
             || Ok(()),
             || {
@@ -2923,10 +2937,8 @@ mod tests {
             Duration::ZERO,
             NATIVE_SUBMIT_ACK_ATTEMPTS,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err.contains("submit key"));
-        assert!(err.contains("2 attempts"));
         assert_eq!(submit_calls.get(), NATIVE_SUBMIT_ACK_ATTEMPTS);
     }
 
