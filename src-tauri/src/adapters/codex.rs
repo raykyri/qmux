@@ -1,9 +1,10 @@
 use super::{
-    AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
-    PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable,
-    prepared_shell_agent, record_shell_session_lineage, reusable_session_agent, shell_quote_arg,
-    shell_quote_path,
+    AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy,
+    FORK_AT_MESSAGE_EMPTY_ERROR, LaunchEnv, MessageAnchor, PrepareShellAgentLaunchRequest,
+    PreparedShellAgentLaunch, ShellCommandIntegration, SpawnAgentRequest, SynthesizedSession,
+    TranscriptLifecycleEvent, ensure_on_path, hook_transcript_path_acceptable, new_uuid_v4,
+    parse_transcript_records, prepared_shell_agent, record_shell_session_lineage,
+    reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -163,6 +164,14 @@ impl AgentAdapter for CodexAdapter {
 
     fn transcript_line_can_update_turn_status(&self, line: &str) -> bool {
         is_codex_status_event(line)
+    }
+
+    fn synthesize_truncated_session(
+        &self,
+        transcript_path: &Path,
+        anchor: &MessageAnchor,
+    ) -> Result<SynthesizedSession, String> {
+        synthesize_truncated_codex_session(transcript_path, anchor)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -2059,6 +2068,136 @@ fn codex_payload_turn_id(payload: &Value) -> Option<String> {
         .or_else(|| string_field(payload, "turn_id"))
 }
 
+/// Writes a rollout truncated to exclude the anchored turn, returning the new
+/// session's id and path. Codex rollouts are linear — no uuid graph, and
+/// `codex resume` appends in place rather than branching a file — so the cut is
+/// positional.
+///
+/// The cut lands on the `task_started` event that opens the anchored turn, not
+/// on the anchor's own line. A Codex turn spans several records (`task_started`,
+/// `turn_context`, the `response_item` the anchor points at, and the
+/// `event_msg` mirror of it); cutting at the anchor itself would leave the
+/// turn's opening records behind and replay a duplicate prompt.
+fn synthesize_truncated_codex_session(
+    transcript_path: &Path,
+    anchor: &MessageAnchor,
+) -> Result<SynthesizedSession, String> {
+    let contents = fs::read_to_string(transcript_path).map_err(|err| {
+        format!(
+            "cannot read transcript {}: {err}",
+            transcript_path.display()
+        )
+    })?;
+    let records = parse_transcript_records(&contents);
+    if anchor.source_index >= records.len() {
+        return Err(format!(
+            "fork anchor {} is past the end of {}",
+            anchor.source_index,
+            transcript_path.display()
+        ));
+    }
+
+    let cut = records[..anchor.source_index]
+        .iter()
+        .rposition(|(_, value)| is_codex_turn_start(value))
+        .ok_or_else(|| FORK_AT_MESSAGE_EMPTY_ERROR.to_string())?;
+
+    // A prefix with no conversational message is preamble only (session meta,
+    // sandbox policy, AGENTS.md) — a new session rather than a fork.
+    let keeps_history = records[..cut]
+        .iter()
+        .any(|(_, value)| is_codex_conversational_message(value));
+    if !keeps_history {
+        return Err(FORK_AT_MESSAGE_EMPTY_ERROR.to_string());
+    }
+
+    let session_id = new_uuid_v4()?;
+    let out_path = codex_fork_rollout_path(transcript_path, &session_id)?;
+
+    let mut body = String::new();
+    for (line, value) in &records[..cut] {
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            let mut rewritten = value.clone();
+            if let Some(payload) = rewritten.get_mut("payload") {
+                payload["session_id"] = json!(session_id);
+                if payload.get("id").is_some() {
+                    payload["id"] = json!(session_id);
+                }
+            }
+            body.push_str(&serde_json::to_string(&rewritten).map_err(|err| err.to_string())?);
+        } else {
+            body.push_str(line);
+        }
+        body.push('\n');
+    }
+
+    fs::write(&out_path, body)
+        .map_err(|err| format!("cannot write fork transcript {}: {err}", out_path.display()))?;
+
+    Ok(SynthesizedSession {
+        session_id,
+        transcript_path: out_path,
+    })
+}
+
+fn is_codex_turn_start(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("event_msg")
+        && value
+            .get("payload")
+            .and_then(|payload| payload.get("type"))
+            .and_then(Value::as_str)
+            == Some("task_started")
+}
+
+fn is_codex_conversational_message(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("response_item") {
+        return false;
+    }
+    let Some(payload) = value.get("payload") else {
+        return false;
+    };
+    if payload.get("type").and_then(Value::as_str) != Some("message") {
+        return false;
+    }
+    matches!(
+        payload.get("role").and_then(Value::as_str),
+        Some("user") | Some("assistant")
+    )
+}
+
+/// Names the fork after the source rollout's timestamp rather than the current
+/// time: Codex resolves sessions by the id in the filename (and in
+/// `session_meta`), so the timestamp only affects directory ordering, where
+/// sorting beside the session it branched from is the more useful result.
+fn codex_fork_rollout_path(transcript_path: &Path, session_id: &str) -> Result<PathBuf, String> {
+    let parent = transcript_path
+        .parent()
+        .ok_or_else(|| format!("transcript {} has no parent", transcript_path.display()))?;
+    let stem = transcript_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("transcript {} has no file name", transcript_path.display()))?;
+    let timestamp = stem
+        .strip_prefix("rollout-")
+        .and_then(|rest| {
+            // `rollout-<YYYY-MM-DDTHH-MM-SS>-<id>`: the timestamp is a fixed
+            // five hyphen-separated groups. Splitting from the left bounds it
+            // without assuming anything about the id, whose own hyphen count
+            // varies (a bare id, or a uuid's five groups).
+            let mut parts = rest.splitn(6, '-');
+            let stamp: Vec<&str> = parts.by_ref().take(5).collect();
+            let id = parts.next();
+            (stamp.len() == 5 && id.is_some_and(|id| !id.is_empty())).then(|| stamp.join("-"))
+        })
+        .ok_or_else(|| {
+            format!(
+                "transcript {} is not a rollout-<timestamp>-<id>.jsonl file",
+                transcript_path.display()
+            )
+        })?;
+    Ok(parent.join(format!("rollout-{timestamp}-{session_id}.jsonl")))
+}
+
 fn is_codex_status_event(line: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return false;
@@ -3691,6 +3830,161 @@ trusted_hash = "sha256:trusted"
         let dir = env::temp_dir().join(format!("qmux-codex-{nanos}-{seq}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Preamble plus two turns, in the record order Codex writes: each turn
+    /// opens with `task_started`/`turn_context`, then the user `response_item`,
+    /// then its `event_msg` mirror, then the reply.
+    fn codex_fork_rollout(session: &str) -> String {
+        let mut records = vec![
+            json!({"type": "session_meta", "payload": {"session_id": session, "id": session,
+                   "cwd": "/repo"}}),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "developer",
+                   "content": [{"type": "input_text", "text": "<permissions>"}]}}),
+        ];
+        for (index, (prompt, reply)) in [("first", "ok one"), ("second", "ok two")]
+            .into_iter()
+            .enumerate()
+        {
+            records.extend([
+                json!({"type": "event_msg", "payload": {"type": "task_started",
+                       "turn_id": format!("turn-{index}")}}),
+                json!({"type": "turn_context", "payload": {"cwd": "/repo"}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+                       "content": [{"type": "input_text", "text": prompt}]}}),
+                json!({"type": "event_msg", "payload": {"type": "user_message",
+                       "message": prompt}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                       "content": [{"type": "output_text", "text": reply}]}}),
+                json!({"type": "event_msg", "payload": {"type": "task_complete"}}),
+            ]);
+        }
+        records
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn codex_anchor(source_index: usize) -> MessageAnchor {
+        MessageAnchor {
+            native_id: None,
+            parent_native_id: None,
+            source_index,
+        }
+    }
+
+    fn rollout_record_kinds(path: &Path) -> Vec<String> {
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let value: Value = serde_json::from_str(line).unwrap();
+                let outer = value["type"].as_str().unwrap_or_default();
+                let inner = value["payload"]["type"].as_str().unwrap_or_default();
+                let role = value["payload"]["role"].as_str().unwrap_or_default();
+                format!("{outer}/{inner}{}", if role.is_empty() { "" } else { role })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn synthesize_codex_cuts_at_the_turn_boundary_not_the_anchor() {
+        let dir = temp_dir();
+        let source = dir.join("rollout-2026-06-21T20-08-03-abc.jsonl");
+        fs::write(&source, codex_fork_rollout("original-session")).unwrap();
+
+        // Index 10 is the second turn's user `response_item` — the line a qmux
+        // Turn anchors to, since only `response_item` records become Turns.
+        let result = synthesize_truncated_codex_session(&source, &codex_anchor(10)).unwrap();
+
+        // The cut lands on the second turn's `task_started` (index 8), so none
+        // of that turn's opening records survive to replay a duplicate prompt.
+        assert_eq!(
+            rollout_record_kinds(&result.transcript_path),
+            vec![
+                "session_meta/",
+                "response_item/messagedeveloper",
+                "event_msg/task_started",
+                "turn_context/",
+                "response_item/messageuser",
+                "event_msg/user_message",
+                "response_item/messageassistant",
+                "event_msg/task_complete",
+            ]
+        );
+        let kept = fs::read_to_string(&result.transcript_path).unwrap();
+        assert!(kept.contains("first") && !kept.contains("second"));
+
+        // Both id fields in session_meta are rewritten; Codex reads either.
+        let meta: Value = serde_json::from_str(kept.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            meta["payload"]["session_id"].as_str(),
+            Some(result.session_id.as_str())
+        );
+        assert_eq!(
+            meta["payload"]["id"].as_str(),
+            Some(result.session_id.as_str())
+        );
+
+        // The fork is named for the source's timestamp so it sorts beside it.
+        assert_eq!(
+            result.transcript_path,
+            dir.join(format!(
+                "rollout-2026-06-21T20-08-03-{}.jsonl",
+                result.session_id
+            ))
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn synthesize_codex_refuses_a_preamble_only_prefix() {
+        let dir = temp_dir();
+        let source = dir.join("rollout-2026-06-21T20-08-03-abc.jsonl");
+        fs::write(&source, codex_fork_rollout("original-session")).unwrap();
+
+        // Index 4 is the *first* turn's user message: cutting there leaves only
+        // session meta and the developer preamble, which is a new session.
+        let err = synthesize_truncated_codex_session(&source, &codex_anchor(4)).unwrap_err();
+        assert_eq!(err, FORK_AT_MESSAGE_EMPTY_ERROR);
+
+        let err = synthesize_truncated_codex_session(&source, &codex_anchor(999)).unwrap_err();
+        assert!(err.contains("past the end"));
+
+        let strays = fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path() != source)
+            .count();
+        assert_eq!(strays, 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codex_fork_path_requires_the_rollout_naming_convention() {
+        let dir = temp_dir();
+        let session = "99999999-9999-4999-8999-999999999999";
+        assert_eq!(
+            codex_fork_rollout_path(&dir.join("rollout-2026-06-21T20-08-03-abc.jsonl"), session)
+                .unwrap(),
+            dir.join(format!("rollout-2026-06-21T20-08-03-{session}.jsonl"))
+        );
+        // A uuid source id keeps only the timestamp, not the id's own hyphens.
+        assert_eq!(
+            codex_fork_rollout_path(
+                &dir.join("rollout-2026-06-21T20-08-03-019f8225-c9af-7072-af98-68445de31730.jsonl"),
+                session,
+            )
+            .unwrap(),
+            dir.join(format!("rollout-2026-06-21T20-08-03-{session}.jsonl"))
+        );
+        assert!(codex_fork_rollout_path(&dir.join("not-a-rollout.jsonl"), session).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[derive(Debug)]

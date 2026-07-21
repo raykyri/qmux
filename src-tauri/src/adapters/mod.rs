@@ -614,6 +614,19 @@ pub trait AgentAdapter: Send + Sync {
         None
     }
 
+    /// Writes a copy of `transcript_path` truncated to exclude `anchor` and
+    /// everything after it, returning the new session's id and path. The copy
+    /// lands beside the source so the CLI discovers it the same way it finds its
+    /// own sessions. Adapters that cannot be truncated safely keep this default
+    /// and are reported as such by `adapter_supports_fork_at_message`.
+    fn synthesize_truncated_session(
+        &self,
+        _transcript_path: &Path,
+        _anchor: &MessageAnchor,
+    ) -> Result<SynthesizedSession, String> {
+        Err(FORK_UNSUPPORTED_ERROR.to_string())
+    }
+
     fn composer_policy(&self) -> ComposerPolicy;
 }
 
@@ -649,6 +662,7 @@ impl AdapterRegistry {
                 label: adapter.display_name().to_string(),
                 default: adapter.id() == "claude",
                 supports_fork: adapter_supports_fork(adapter.id()),
+                supports_fork_at_message: adapter_supports_fork_at_message(adapter.id()),
             })
             .collect()
     }
@@ -665,6 +679,10 @@ pub struct AdapterMetadata {
     /// can filter their adapter choices instead of discovering the gap after
     /// a long root run.
     pub supports_fork: bool,
+    /// Whether the adapter can fork from a chosen message rather than the
+    /// session head. Gates the transcript's per-message fork action, which is
+    /// hidden rather than disabled for adapters without it.
+    pub supports_fork_at_message: bool,
 }
 
 pub fn adapter_registry(config: &QmuxConfig) -> AdapterRegistry {
@@ -805,6 +823,77 @@ fn fork_agent_in_shell(
 /// validation, so a new forkable adapter is added in one place.
 pub fn adapter_supports_fork(adapter_id: &str) -> bool {
     matches!(adapter_id, "claude" | "codex" | "opencode" | "grok")
+}
+
+/// Adapters that can fork from a chosen message rather than the session head.
+/// Neither CLI has a flag for this — `claude --fork-session` and `codex fork`
+/// both branch at the head — so the adapter synthesizes a truncated copy of the
+/// native transcript and resumes that instead. Only adapters whose transcript
+/// format we can safely truncate qualify; the rest inherit the trait's default
+/// `Err` and are filtered out of the UI by `supports_fork_at_message`.
+pub fn adapter_supports_fork_at_message(adapter_id: &str) -> bool {
+    matches!(adapter_id, "claude" | "codex")
+}
+
+/// Identifies the message a fork branches from. Carries every anchor the
+/// frontend already has on `Turn` because the adapters key off different ones:
+/// Claude walks the `parentUuid` chain, Codex cuts positionally on the line
+/// index. Each adapter validates the field it needs and ignores the rest.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageAnchor {
+    /// Native record uuid of the message being forked from.
+    pub native_id: Option<String>,
+    /// The message's parent uuid — the last record the fork keeps.
+    pub parent_native_id: Option<String>,
+    /// Transcript line index of the message being forked from.
+    pub source_index: usize,
+}
+
+/// A truncated transcript written alongside the source session, ready to be
+/// resumed as if the agent had produced it.
+#[derive(Clone, Debug)]
+pub struct SynthesizedSession {
+    pub session_id: String,
+    pub transcript_path: PathBuf,
+}
+
+/// Refused when the chosen message has no history before it. Truncating there
+/// would leave a transcript with no turns, which is a new session rather than a
+/// fork — the caller should start a fresh agent instead.
+pub const FORK_AT_MESSAGE_EMPTY_ERROR: &str =
+    "Cannot fork from the first message; start a new agent instead";
+
+/// Parses a native transcript into `(line, value)` pairs, skipping records that
+/// do not parse. Tolerating bad lines is deliberate: forking from a live session
+/// races the CLI's own writes, so the final line can be torn mid-write. Dropping
+/// it loses at most the in-flight record, which is after the fork point anyway.
+pub(crate) fn parse_transcript_records(contents: &str) -> Vec<(&str, Value)> {
+    contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok().map(|v| (line, v)))
+        .collect()
+}
+
+/// Mints a random v4 UUID. Both adapters name synthesized sessions this way:
+/// Claude derives the session id from the transcript filename, and Codex parses
+/// it out of the `rollout-<timestamp>-<id>.jsonl` convention.
+pub(crate) fn new_uuid_v4() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|err| format!("OS CSPRNG unavailable; cannot mint a session id: {err}"))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
 }
 
 /// The adapter used when research must launch a run without an explicit

@@ -23,6 +23,10 @@ export interface AgentAdapterMetadata {
   default: boolean;
   /** Whether the adapter can fork a session — required for research follow-ups. */
   supportsFork: boolean;
+  /** Whether the adapter can fork from a chosen message rather than the session
+   * head. Gates the transcript's per-message fork action, which is hidden
+   * rather than disabled for adapters without it. */
+  supportsForkAtMessage: boolean;
 }
 
 export interface ClaudeSkill {

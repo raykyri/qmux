@@ -1,9 +1,10 @@
 use super::{
-    AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy, LaunchEnv,
-    PermissionAction, PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch,
-    ShellCommandIntegration, SpawnAgentRequest, TranscriptLifecycleEvent, ensure_on_path,
-    prepared_shell_agent, record_shell_session_lineage, reusable_session_agent, shell_quote_arg,
-    shell_quote_path,
+    AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy,
+    FORK_AT_MESSAGE_EMPTY_ERROR, LaunchEnv, MessageAnchor, PermissionAction,
+    PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
+    SpawnAgentRequest, SynthesizedSession, TranscriptLifecycleEvent, ensure_on_path, new_uuid_v4,
+    parse_transcript_records, prepared_shell_agent, record_shell_session_lineage,
+    reusable_session_agent, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -177,6 +178,14 @@ impl AgentAdapter for ClaudeAdapter {
 
     fn transcript_line_can_update_turn_status(&self, line: &str) -> bool {
         claude_line_can_update_turn_status(line)
+    }
+
+    fn synthesize_truncated_session(
+        &self,
+        transcript_path: &Path,
+        anchor: &MessageAnchor,
+    ) -> Result<SynthesizedSession, String> {
+        synthesize_truncated_claude_session(transcript_path, anchor)
     }
 
     fn composer_policy(&self) -> ComposerPolicy {
@@ -2076,6 +2085,127 @@ fn claude_ancestor_set(
             .and_then(|node| node.parent_uuid.as_deref());
     }
     ancestors
+}
+
+/// Writes the ancestor chain of the message *before* `anchor` to a new session
+/// file beside the source, producing a transcript that ends where the fork
+/// begins. Claude discovers it by scanning the project directory, and derives
+/// the session id from the filename, so the copy needs no registration beyond
+/// existing at `<project>/<uuid>.jsonl`.
+///
+/// Records are copied opaquely apart from `sessionId`: the format carries
+/// fields we neither model nor need to understand, and rewriting only the one
+/// field that must change keeps this tolerant of upstream additions.
+///
+/// Note there is no `last-prompt`/`leafUuid` marker written here. Appending one
+/// to an untruncated copy looks like it should steer the resume to an earlier
+/// leaf, but Claude ignores it and replays the full history — truncation is the
+/// only mechanism that actually works.
+fn synthesize_truncated_claude_session(
+    transcript_path: &Path,
+    anchor: &MessageAnchor,
+) -> Result<SynthesizedSession, String> {
+    // The fork keeps everything up to and including the anchor's parent; the
+    // anchored message itself is replaced by the caller's prompt.
+    let keep_leaf = anchor
+        .parent_native_id
+        .as_deref()
+        .filter(|uuid| !uuid.is_empty())
+        .ok_or_else(|| FORK_AT_MESSAGE_EMPTY_ERROR.to_string())?;
+
+    let contents = fs::read_to_string(transcript_path).map_err(|err| {
+        format!(
+            "cannot read transcript {}: {err}",
+            transcript_path.display()
+        )
+    })?;
+    let records = parse_transcript_records(&contents);
+
+    let mut nodes_by_uuid: HashMap<String, ClaudeGraphNode> = HashMap::new();
+    for (index, (_, value)) in records.iter().enumerate() {
+        if let Some(uuid) = super::string_field(value, "uuid") {
+            nodes_by_uuid.insert(
+                uuid.clone(),
+                ClaudeGraphNode {
+                    uuid,
+                    parent_uuid: super::string_field(value, "parentUuid")
+                        .or_else(|| super::string_field(value, "parent_uuid")),
+                    source_index: index,
+                    is_typed_user_prompt: false,
+                },
+            );
+        }
+    }
+
+    if !nodes_by_uuid.contains_key(keep_leaf) {
+        return Err(format!(
+            "fork anchor {keep_leaf} is not present in {}",
+            transcript_path.display()
+        ));
+    }
+
+    // The anchor is built from a rendered turn, which can lag the file — a
+    // compaction or a rewind may have relinked the record since. Re-deriving the
+    // parent from the transcript and requiring it to match means a stale anchor
+    // fails loudly instead of silently forking from the wrong point.
+    if let Some(native_id) = anchor.native_id.as_deref().filter(|id| !id.is_empty()) {
+        let actual_parent = nodes_by_uuid
+            .get(native_id)
+            .ok_or_else(|| {
+                format!(
+                    "fork anchor {native_id} is not present in {}",
+                    transcript_path.display()
+                )
+            })?
+            .parent_uuid
+            .as_deref();
+        if actual_parent != Some(keep_leaf) {
+            return Err(format!(
+                "fork anchor {native_id} no longer follows {keep_leaf} in {}",
+                transcript_path.display()
+            ));
+        }
+    }
+
+    let keep = claude_ancestor_set(keep_leaf, &nodes_by_uuid);
+    let session_id = new_uuid_v4()?;
+    let parent_dir = transcript_path
+        .parent()
+        .ok_or_else(|| format!("transcript {} has no parent", transcript_path.display()))?;
+    let out_path = parent_dir.join(format!("{session_id}.jsonl"));
+
+    let mut body = String::new();
+    let mut kept = 0usize;
+    for (line, value) in &records {
+        let Some(uuid) = super::string_field(value, "uuid") else {
+            continue;
+        };
+        if !keep.contains(&uuid) {
+            continue;
+        }
+        match value.get("sessionId") {
+            Some(_) => {
+                let mut rewritten = value.clone();
+                rewritten["sessionId"] = json!(session_id);
+                body.push_str(&serde_json::to_string(&rewritten).map_err(|err| err.to_string())?);
+            }
+            None => body.push_str(line),
+        }
+        body.push('\n');
+        kept += 1;
+    }
+
+    if kept == 0 {
+        return Err(FORK_AT_MESSAGE_EMPTY_ERROR.to_string());
+    }
+
+    fs::write(&out_path, body)
+        .map_err(|err| format!("cannot write fork transcript {}: {err}", out_path.display()))?;
+
+    Ok(SynthesizedSession {
+        session_id,
+        transcript_path: out_path,
+    })
 }
 
 fn claude_line_can_update_turn_status(line: &str) -> bool {
@@ -4034,5 +4164,156 @@ mod tests {
         assert!(skills.iter().all(|skill| skill.command == "/qmux:shared"));
 
         let _ = fs::remove_dir_all(&plugin_dir);
+    }
+
+    /// A linear two-exchange transcript: user A -> assistant A -> user B ->
+    /// assistant B, matching the record shape Claude writes.
+    fn linear_fork_transcript(session: &str) -> String {
+        [
+            json!({"type": "user", "uuid": "u1", "parentUuid": null, "sessionId": session,
+                   "message": {"role": "user", "content": "first"}}),
+            json!({"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": session,
+                   "message": {"role": "assistant", "content": "ok one"}}),
+            json!({"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": session,
+                   "message": {"role": "user", "content": "second"}}),
+            json!({"type": "assistant", "uuid": "a2", "parentUuid": "u2", "sessionId": session,
+                   "message": {"role": "assistant", "content": "ok two"}}),
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n"
+    }
+
+    fn anchor_at(native_id: &str, parent: Option<&str>, source_index: usize) -> MessageAnchor {
+        MessageAnchor {
+            native_id: Some(native_id.to_string()),
+            parent_native_id: parent.map(str::to_string),
+            source_index,
+        }
+    }
+
+    fn read_uuids(path: &Path) -> Vec<String> {
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["uuid"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn synthesize_claude_keeps_ancestors_and_rewrites_session_id() {
+        let dir = unique_test_dir("qmux-claude-fork");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("11111111-1111-4111-8111-111111111111.jsonl");
+        fs::write(&source, linear_fork_transcript("original-session")).unwrap();
+
+        // Fork from user message B: keep everything through its parent (a1).
+        let result =
+            synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("a1"), 2)).unwrap();
+
+        assert_eq!(read_uuids(&result.transcript_path), vec!["u1", "a1"]);
+        assert_eq!(
+            result.transcript_path,
+            dir.join(format!("{}.jsonl", result.session_id))
+        );
+        // Every copied record is re-stamped with the new session id, or the
+        // resumed session would report the one it branched from.
+        for line in fs::read_to_string(&result.transcript_path).unwrap().lines() {
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                value["sessionId"].as_str(),
+                Some(result.session_id.as_str())
+            );
+        }
+        // The source is never modified.
+        assert!(
+            fs::read_to_string(&source)
+                .unwrap()
+                .contains("original-session")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn synthesize_claude_drops_sibling_branches() {
+        let dir = unique_test_dir("qmux-claude-fork-branch");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("22222222-2222-4222-8222-222222222222.jsonl");
+        // a1 has two children: the abandoned rewind branch `x1` and `u2`.
+        let mut body = linear_fork_transcript("original-session");
+        body.push_str(
+            &json!({"type": "user", "uuid": "x1", "parentUuid": "a1", "sessionId": "original-session",
+                    "message": {"role": "user", "content": "abandoned"}})
+            .to_string(),
+        );
+        body.push('\n');
+        fs::write(&source, body).unwrap();
+
+        let result =
+            synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("a1"), 2)).unwrap();
+
+        // Only the anchor's own ancestry survives; the sibling branch does not.
+        assert_eq!(read_uuids(&result.transcript_path), vec!["u1", "a1"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn synthesize_claude_tolerates_a_torn_trailing_record() {
+        let dir = unique_test_dir("qmux-claude-fork-torn");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("33333333-3333-4333-8333-333333333333.jsonl");
+        // Forking from a live session races the CLI's own append.
+        let mut body = linear_fork_transcript("original-session");
+        body.push_str("{\"type\":\"assistant\",\"uuid\":\"a3\",\"parentUu");
+        fs::write(&source, body).unwrap();
+
+        let result =
+            synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("a1"), 2)).unwrap();
+
+        assert_eq!(read_uuids(&result.transcript_path), vec!["u1", "a1"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn synthesize_claude_refuses_the_first_message_and_unknown_anchors() {
+        let dir = unique_test_dir("qmux-claude-fork-reject");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("44444444-4444-4444-8444-444444444444.jsonl");
+        fs::write(&source, linear_fork_transcript("original-session")).unwrap();
+
+        // The first user message has no parent: truncating leaves nothing.
+        let empty = synthesize_truncated_claude_session(&source, &anchor_at("u1", None, 0));
+        assert_eq!(empty.unwrap_err(), FORK_AT_MESSAGE_EMPTY_ERROR);
+
+        // An anchor from some other transcript must not silently produce an
+        // empty fork — it means the caller and the file disagree.
+        let unknown =
+            synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("nope"), 2));
+        assert!(unknown.unwrap_err().contains("not present in"));
+
+        // A stale anchor — the message still exists but has been relinked to a
+        // different parent — must fail rather than fork from the wrong point.
+        let stale = synthesize_truncated_claude_session(&source, &anchor_at("u2", Some("u1"), 2));
+        assert!(stale.unwrap_err().contains("no longer follows"));
+
+        // Nothing was written for either rejection.
+        let strays = fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path() != source)
+            .count();
+        assert_eq!(strays, 0);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
