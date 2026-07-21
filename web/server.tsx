@@ -7,8 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
-import remarkBreaks from "remark-breaks";
-import remarkGfm from "remark-gfm";
+import {
+  transcriptRehypePlugins,
+  transcriptRemarkPlugins,
+} from "../src/lib/markdownPlugins";
 import {
   MAX_RESEARCH_PROPOSAL_ANSWER_CHARACTERS,
   MAX_RESEARCH_PROPOSAL_PROMPT_CHARACTERS,
@@ -2347,7 +2349,8 @@ function publicationNodePath(gistId: string, nodeId: string) {
 function SafeMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
+      remarkPlugins={transcriptRemarkPlugins}
+      rehypePlugins={transcriptRehypePlugins}
       skipHtml
       components={{
         a: ({ href, children: label }) => (
@@ -2615,6 +2618,7 @@ a { color:inherit; text-decoration:none; }
 .turn-markdown hr { margin:24px 0; border:0; border-top:1px solid var(--surface-border-subtle); }
 .turn-markdown-table-wrap { max-width:100%; margin:0 0 12px; border:1px solid var(--markdown-table-frame-border); border-radius:6px; overflow-x:auto; }
 .turn-markdown-table-wrap table { width:100%; margin:0; border-collapse:collapse; font-size:14px; }
+.turn-markdown mjx-container[jax="SVG"][display="true"] { margin:0 0 12px; overflow-x:auto; overflow-y:hidden; padding:2px 0; }
 .turn-markdown th, .turn-markdown td { padding:8px 12px; border-right:1px solid var(--markdown-table-border); border-bottom:1px solid var(--markdown-table-border); text-align:left; vertical-align:top; overflow-wrap:break-word; }
 .turn-markdown th { background:#1a1f21; border-bottom-color:#38403f; color:var(--text-body-soft); font-weight:600; }
 .turn-markdown th:last-child, .turn-markdown td:last-child { border-right:0; }

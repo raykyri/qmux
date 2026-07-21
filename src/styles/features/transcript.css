@@ -803,6 +803,17 @@ header + .turn-blocks {
   font-size: calc(13.5px + var(--transcript-font-delta, 0px));
 }
 
+/* TeX math (remark-math + rehype-mathjax SVG). MathJax injects its own
+   container styles; these only keep wide display equations scrolling inside
+   the column instead of widening it, and align block spacing with the rest
+   of the transcript ramp. */
+.turn-markdown mjx-container[jax="SVG"][display="true"] {
+  margin: 0 0 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
 .turn-markdown th,
 .turn-markdown td {
   padding: 8px 12px;

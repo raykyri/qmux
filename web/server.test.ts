@@ -101,6 +101,63 @@ test("the public server renders a valid transcript without executing raw HTML", 
   assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
 });
 
+test("the public server renders transcript TeX math as MathJax SVG", async (t) => {
+  const draft = await createTranscriptPublicationDraft({
+    title: "Math render",
+    pane,
+    agent,
+    assistantLabel: "Codex",
+    publicationId: "pub_mathmath",
+    createdAt: "2026-07-16T12:00:00.000Z",
+    turns: [
+      turn("turn-1", "user", "What is Euler's identity?"),
+      turn("turn-2", "assistant", "It is $e^{i\\pi}+1=0$, and it costs $5 and $10 more."),
+    ],
+  });
+  const index = draft.files["publication.json"];
+  const fetchImpl: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        id: "fghij67890",
+        html_url: "https://gist.github.com/octocat/fghij67890",
+        public: false,
+        created_at: "2026-07-16T12:00:00Z",
+        updated_at: "2026-07-16T12:00:00Z",
+        files: {
+          "publication.json": {
+            filename: "publication.json",
+            size: Buffer.byteLength(index),
+            content: index,
+            truncated: false,
+          },
+        },
+        owner: {
+          login: "octocat",
+          html_url: "https://github.com/octocat",
+        },
+      }),
+      { status: 200, headers: { ETag: '"v1"' } },
+    );
+  const server = createQmuxWebServer({ fetchImpl });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/p/fghij67890`);
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  // The TeX renders to a self-contained MathJax SVG (CSP allows no external
+  // fetches). The plain-text meta description keeps the raw source, so the
+  // leak check scopes to the rendered document body.
+  const rendered = body.slice(body.indexOf("<body"));
+  assert.match(rendered, /<mjx-container class="MathJax" jax="SVG">/);
+  assert.equal(rendered.includes("e^{i\\pi}"), false);
+  // Dollar amounts survive as prose instead of being mathified.
+  assert.equal(rendered.includes("costs $5 and $10 more."), true);
+});
+
 test("the public server renders deep-linked research nodes and verifies their files", async (t) => {
   const root: ResearchNode = {
     id: "private-root",
