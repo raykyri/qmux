@@ -437,6 +437,7 @@ function RailComposer({
         onKeyDown={(event) => {
           if (
             event.key === "Enter" &&
+            !event.repeat &&
             !event.shiftKey &&
             !event.metaKey &&
             !event.ctrlKey &&
@@ -541,6 +542,10 @@ export default function HomeRails({
   }, [composerDrafts, saveComposerDrafts]);
   // Composer textareas by rail id — used to focus the field (⌘D, edit recall).
   const composerRefs = useRef(new Map<string, HTMLTextAreaElement>());
+  // Rails with an in-flight submission. onSubmit fires per Enter keydown, and
+  // submitRailComposer awaits the backend, so without a synchronous guard rapid
+  // Enters (or key-repeat) dispatch the same task more than once.
+  const submittingRailsRef = useRef(new Set<string>());
   const registerComposerRef = useCallback(
     (railId: string, element: HTMLTextAreaElement | null) => {
       if (element) {
@@ -862,14 +867,27 @@ export default function HomeRails({
   }
 
   async function submitRailComposer(railId: string) {
-    const text = (composerDrafts[railId] ?? "").trim();
+    if (submittingRailsRef.current.has(railId)) {
+      return;
+    }
+    const snapshot = composerDrafts[railId] ?? "";
+    const text = snapshot.trim();
     if (!text) {
       return;
     }
-    const accepted =
-      railId === DRAFTS_RAIL_ID ? await onCreateDraft(text) : await onQueueTurn(railId, text);
-    if (accepted) {
-      setComposerDraft(railId, "");
+    submittingRailsRef.current.add(railId);
+    try {
+      const accepted =
+        railId === DRAFTS_RAIL_ID ? await onCreateDraft(text) : await onQueueTurn(railId, text);
+      if (accepted) {
+        // Clear only if the field still holds exactly what was submitted; if the
+        // user has started typing the next follow-up, keep their newer text.
+        setComposerDrafts((current) =>
+          current[railId] === snapshot ? { ...current, [railId]: "" } : current,
+        );
+      }
+    } finally {
+      submittingRailsRef.current.delete(railId);
     }
   }
 
