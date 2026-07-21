@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import HomeGroupSelector from "../src/components/HomeGroupSelector";
 import { railLinkPath } from "../src/components/HomeRails";
 import {
   latestUserTurnTimestamp,
@@ -42,6 +45,30 @@ function rect(left: number, top: number, width = 100, height = 40): DOMRect {
     toJSON: () => ({}),
   } as DOMRect;
 }
+
+function renderHomeSelector(draftsVisible: boolean) {
+  return renderToStaticMarkup(
+    createElement(HomeGroupSelector, {
+      groups: [],
+      draftsVisible,
+      onDraftsVisibleChange: () => undefined,
+      hiddenTerminalIds: new Set<string>(),
+      onSetTerminalsHidden: () => undefined,
+      onToggleTerminal: () => undefined,
+    }),
+  );
+}
+
+test("Home stream selector exposes the Drafts visibility checkbox without agent groups", () => {
+  const shown = renderHomeSelector(true);
+  assert.match(shown, /aria-label="Home streams"/);
+  assert.match(shown, /role="checkbox" aria-checked="true"/);
+  assert.match(shown, />Drafts<\/span>/);
+
+  const hidden = renderHomeSelector(false);
+  assert.match(hidden, /class="home-group-chip is-off"/);
+  assert.match(hidden, /role="checkbox" aria-checked="false"/);
+});
 
 test("railPastTurns drops the dangling latest prompt (the current card)", () => {
   const turns = [

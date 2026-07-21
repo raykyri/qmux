@@ -515,6 +515,7 @@ const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
 // as a JSON array; a terminal's absence means it's shown (new terminals default
 // visible).
 const HOME_HIDDEN_TERMINALS_KEY = "qmux.home-hidden-terminals.v1";
+const HOME_DRAFTS_VISIBLE_KEY = "qmux.home-drafts-visible.v1";
 const WARM_QMUX_TERMINAL_THEME_ID = "qmux-warm";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
@@ -1696,6 +1697,20 @@ function MainApp() {
   const persistHiddenHomeTerminalIds = useCallback((next: Set<string>) => {
     localStorage.setItem(HOME_HIDDEN_TERMINALS_KEY, JSON.stringify(Array.from(next)));
   }, []);
+  const [homeDraftsVisible, setHomeDraftsVisible] = useState(() => {
+    try {
+      return localStorage.getItem(HOME_DRAFTS_VISIBLE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const setHomeDraftsVisibility = useCallback((visible: boolean) => {
+    setHomeDraftsVisible(visible);
+    localStorage.setItem(HOME_DRAFTS_VISIBLE_KEY, String(visible));
+  }, []);
+  const showHomeDrafts = useCallback(() => setHomeDraftsVisibility(true), [
+    setHomeDraftsVisibility,
+  ]);
   // Show/hide a batch of terminals in one write (a group checkbox toggling all
   // its terminals at once).
   const setHomeTerminalsHidden = useCallback(
@@ -13562,6 +13577,8 @@ function MainApp() {
               <div className="home-board">
                 <HomeGroupSelector
                   groups={homeGroups}
+                  draftsVisible={homeDraftsVisible}
+                  onDraftsVisibleChange={setHomeDraftsVisibility}
                   hiddenTerminalIds={hiddenHomeTerminalIds}
                   onSetTerminalsHidden={setHomeTerminalsHidden}
                   onToggleTerminal={toggleHomeTerminal}
@@ -13569,6 +13586,8 @@ function MainApp() {
                 <HomeRails
                   workstreams={homeVisibleWorkstreams}
                   drafts={globalDrafts}
+                  draftsVisible={homeDraftsVisible}
+                  onShowDrafts={showHomeDrafts}
                   onActivatePane={focusPaneTab}
                   onReorderQueuedTurn={(agentId, fromIndex, toIndex, text) =>
                     void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text)

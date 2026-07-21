@@ -73,8 +73,11 @@ export interface HomeRailScrollPosition {
 
 interface HomeRailsProps {
   workstreams: HomeRailWorkstream[];
-  /** Application-global drafts; the rail shows on every workspace tab. */
+  /** Application-global drafts; when enabled, the rail shows on every workspace tab. */
   drafts: GlobalDraft[];
+  draftsVisible: boolean;
+  /** Reveal the Drafts rail when its app shortcut is used while hidden. */
+  onShowDrafts: () => void;
   onActivatePane: (paneId: string) => void;
   onReorderQueuedTurn: (agentId: string, fromIndex: number, toIndex: number, text: string) => void;
   /** Cross-rail drop; the backend appends to the target agent's queue. */
@@ -466,6 +469,8 @@ function RailComposer({
 export default function HomeRails({
   workstreams,
   drafts,
+  draftsVisible,
+  onShowDrafts,
   onActivatePane,
   onReorderQueuedTurn,
   onMoveQueuedTurn,
@@ -938,17 +943,21 @@ export default function HomeRails({
   }
 
   // ⌘D jumps to the drafts composer while Home is on screen (the component
-  // only mounts there); terminal panes keep their own key handling.
+  // only mounts there). Reveal a hidden Drafts rail first so the shortcut
+  // remains useful after adding the visibility filter.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === "d" && event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
-        composerRefs.current.get(DRAFTS_RAIL_ID)?.focus();
+        if (!draftsVisible) {
+          onShowDrafts();
+        }
+        focusComposerAtEnd(DRAFTS_RAIL_ID);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [draftsVisible, onShowDrafts]);
 
   // Consumed drafts linger briefly as history, then fall out of the rail.
   const visibleDrafts = drafts.filter(
@@ -1254,31 +1263,33 @@ export default function HomeRails({
         <div className="home-rails-inner" ref={innerRef}>
           {renderLinkSvg()}
           <div className={`home-rails-columns${dragging ? " is-dragging" : ""}`}>
-            <div className="home-rail" data-rail-agent-id={DRAFTS_RAIL_ID}>
-              <div className="home-rail-head is-static">
-                <span className="home-rail-title">Drafts</span>
-                {openDraftCount > 0 ? (
-                  <span className="home-rail-count">{openDraftCount}</span>
-                ) : null}
+            {draftsVisible ? (
+              <div className="home-rail" data-rail-agent-id={DRAFTS_RAIL_ID}>
+                <div className="home-rail-head is-static">
+                  <span className="home-rail-title">Drafts</span>
+                  {openDraftCount > 0 ? (
+                    <span className="home-rail-count">{openDraftCount}</span>
+                  ) : null}
+                </div>
+                <div
+                  className="home-rail-scroll"
+                  ref={(element) => setScrollerRef(DRAFTS_RAIL_ID, element)}
+                  onScroll={(event) => handleRailScroll(DRAFTS_RAIL_ID, event.currentTarget)}
+                >
+                  {visibleDrafts.map(renderDraftCard)}
+                </div>
+                <RailComposer
+                  railId={DRAFTS_RAIL_ID}
+                  value={composerDrafts[DRAFTS_RAIL_ID] ?? ""}
+                  placeholder="New draft…"
+                  ariaLabel="New draft"
+                  onChange={(text) => setComposerDraft(DRAFTS_RAIL_ID, text)}
+                  onSubmit={() => void submitRailComposer(DRAFTS_RAIL_ID)}
+                  onEditLast={editLastDraft}
+                  registerRef={registerComposerRef}
+                />
               </div>
-              <div
-                className="home-rail-scroll"
-                ref={(element) => setScrollerRef(DRAFTS_RAIL_ID, element)}
-                onScroll={(event) => handleRailScroll(DRAFTS_RAIL_ID, event.currentTarget)}
-              >
-                {visibleDrafts.map(renderDraftCard)}
-              </div>
-              <RailComposer
-                railId={DRAFTS_RAIL_ID}
-                value={composerDrafts[DRAFTS_RAIL_ID] ?? ""}
-                placeholder="New draft…"
-                ariaLabel="New draft"
-                onChange={(text) => setComposerDraft(DRAFTS_RAIL_ID, text)}
-                onSubmit={() => void submitRailComposer(DRAFTS_RAIL_ID)}
-                onEditLast={editLastDraft}
-                registerRef={registerComposerRef}
-              />
-            </div>
+            ) : null}
             {workstreams.map((workstream) => (
               <div
                 key={workstream.agentId}

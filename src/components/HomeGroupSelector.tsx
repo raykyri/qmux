@@ -22,6 +22,9 @@ export interface HomeGroup {
 
 interface HomeGroupSelectorProps {
   groups: HomeGroup[];
+  /** Whether the application-global Drafts rail is shown on Home. */
+  draftsVisible: boolean;
+  onDraftsVisibleChange: (visible: boolean) => void;
   /** Agent ids whose rail is currently hidden from Home. Absence = shown. */
   hiddenTerminalIds: Set<string>;
   /** Show/hide every terminal in the passed list in one write (group checkbox). */
@@ -212,19 +215,32 @@ function HomeGroupChip({
   );
 }
 
-/** The Home group selector: a chip per root sidebar group that owns agents,
+/** Home stream visibility: a Drafts chip plus one chip per root sidebar group,
  *  with a whole-group checkbox and a caret for picking individual terminals. */
 export default function HomeGroupSelector({
   groups,
+  draftsVisible,
+  onDraftsVisibleChange,
   hiddenTerminalIds,
   onSetTerminalsHidden,
   onToggleTerminal,
 }: HomeGroupSelectorProps) {
-  if (groups.length === 0) {
-    return null;
-  }
   return (
-    <div className="home-group-selector" role="group" aria-label="Workspaces">
+    <div className="home-group-selector" role="group" aria-label="Home streams">
+      <div className={`home-group-chip${draftsVisible ? "" : " is-off"}`}>
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={draftsVisible}
+          className="control-button home-group-toggle"
+          onClick={() => onDraftsVisibleChange(!draftsVisible)}
+        >
+          <span className="home-group-checkbox" aria-hidden="true">
+            {draftsVisible ? <Check size={10} strokeWidth={3} /> : null}
+          </span>
+          <span className="home-group-name">Drafts</span>
+        </button>
+      </div>
       {groups.map((group) => (
         <HomeGroupChip
           key={group.id}
