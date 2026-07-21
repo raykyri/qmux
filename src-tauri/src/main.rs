@@ -336,6 +336,7 @@ fn prompt_library_save(
     project_dir: Option<String>,
     previous_scope: Option<prompt_library::PromptScope>,
     previous_name: Option<String>,
+    expected_modified_ms: Option<u64>,
 ) -> Result<prompt_library::SavedPrompt, String> {
     let previous = match (&previous_scope, &previous_name) {
         (Some(previous_scope), Some(previous_name)) => {
@@ -350,6 +351,7 @@ fn prompt_library_save(
         &name,
         &content,
         previous,
+        expected_modified_ms,
     )
 }
 
@@ -358,8 +360,14 @@ fn prompt_library_delete(
     scope: prompt_library::PromptScope,
     name: String,
     project_dir: Option<String>,
+    expected_modified_ms: Option<u64>,
 ) -> Result<(), String> {
-    prompt_library::delete(prompt_project_path(&project_dir), scope, &name)
+    prompt_library::delete(
+        prompt_project_path(&project_dir),
+        scope,
+        &name,
+        expected_modified_ms,
+    )
 }
 
 /// Reveals a scope's prompts folder in the OS file manager, creating it (and the

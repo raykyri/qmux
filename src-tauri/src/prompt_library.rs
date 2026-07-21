@@ -304,9 +304,35 @@ pub fn list(project: Option<&Path>) -> Result<PromptLibrary, String> {
     })
 }
 
+/// The conflict a stale dialog hits: the prompt it was editing/moving/deleting
+/// changed on disk since it was loaded, or a create would clobber a name another
+/// surface just claimed. Callers refresh and retry.
+const PROMPT_CONFLICT_MESSAGE: &str =
+    "this prompt changed since it was loaded; refresh the library and try again";
+
+/// Fails when `path`'s current mtime differs from what the caller last saw, so a
+/// stale save/move/delete cannot silently overwrite or remove a prompt another
+/// surface updated. `None` opts out (callers with no snapshot to compare). Runs
+/// under LIBRARY_LOCK, so the check and the subsequent write don't interleave.
+fn ensure_prompt_unchanged(path: &Path, expected_modified_ms: Option<u64>) -> Result<(), String> {
+    let Some(expected) = expected_modified_ms else {
+        return Ok(());
+    };
+    if !path.exists() || modified_ms(path) != expected {
+        return Err(PROMPT_CONFLICT_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
 /// Writes `content` under `name` in `dir`, atomically (temp + fsync + rename).
-fn write_prompt(dir: &Path, name: &str, content: &str) -> Result<PathBuf, String> {
+/// With `create_only`, refuses to overwrite an existing prompt of that name so
+/// two surfaces deriving the same filename can't clobber each other (serialized
+/// by LIBRARY_LOCK, so the existence check and the rename don't race in-process).
+fn write_prompt(dir: &Path, name: &str, content: &str, create_only: bool) -> Result<PathBuf, String> {
     let path = prompt_path(dir, name)?;
+    if create_only && path.exists() {
+        return Err(PROMPT_CONFLICT_MESSAGE.to_string());
+    }
     fs::create_dir_all(dir)
         .map_err(|err| format!("failed to create prompts dir {}: {err}", dir.display()))?;
 
@@ -336,12 +362,20 @@ fn remove_prompt_file(path: &Path) -> Result<(), String> {
 /// different (scope, name) location this is a rename and/or a move between scopes:
 /// the new file is committed first, then the old one removed, so an interruption
 /// can duplicate a prompt but never lose one.
+///
+/// Optimistic concurrency: a create (no `previous`) or a move (a `previous` that
+/// differs from the target) refuses to clobber an existing prompt at the target;
+/// an in-place update, and the removal of a move's source, require the file's
+/// mtime to still equal `expected_modified_ms` (the value the caller loaded).
+/// `expected_modified_ms` is `None` for a fresh create, which has nothing to
+/// compare against.
 pub fn save(
     project: Option<&Path>,
     scope: PromptScope,
     name: &str,
     content: &str,
     previous: Option<(PromptScope, &str)>,
+    expected_modified_ms: Option<u64>,
 ) -> Result<SavedPrompt, String> {
     let _guard = LIBRARY_LOCK
         .lock()
@@ -367,15 +401,32 @@ pub fn save(
     };
 
     let dir = dir_for(scope)?;
-    let path = write_prompt(&dir, name, content)?;
+    let target_path = prompt_path(&dir, name)?;
+    let previous_path = match previous {
+        Some((previous_scope, previous_name)) => {
+            Some(prompt_path(&dir_for(previous_scope)?, previous_name)?)
+        }
+        None => None,
+    };
+
+    // An in-place update overwrites the same file (so require it unchanged); a
+    // create or a move must not clobber the target (so write create-only), and a
+    // move must also find its source unchanged before removing it.
+    let is_in_place_update = previous_path.as_ref() == Some(&target_path);
+    if is_in_place_update {
+        ensure_prompt_unchanged(&target_path, expected_modified_ms)?;
+    } else if let Some(previous_path) = &previous_path {
+        ensure_prompt_unchanged(previous_path, expected_modified_ms)?;
+    }
+
+    let path = write_prompt(&dir, name, content, !is_in_place_update)?;
     if scope == PromptScope::Project
         && let Some(store) = &store
     {
         store.ensure_meta();
     }
 
-    if let Some((previous_scope, previous_name)) = previous {
-        let previous_path = prompt_path(&dir_for(previous_scope)?, previous_name)?;
+    if let Some(previous_path) = previous_path {
         if previous_path != path {
             remove_prompt_file(&previous_path)
                 .map_err(|err| format!("saved, but couldn't remove the old prompt: {err}"))?;
@@ -391,13 +442,30 @@ pub fn save(
 }
 
 /// Removes the prompt `name` from `scope`. Deleting a prompt that is already gone
-/// succeeds: the caller's goal (the file no longer exists) is met either way.
-pub fn delete(project: Option<&Path>, scope: PromptScope, name: &str) -> Result<(), String> {
+/// succeeds: the caller's goal (the file no longer exists) is met either way. But
+/// when the file still exists and `expected_modified_ms` no longer matches, the
+/// prompt was updated by another surface since this dialog loaded it, so the
+/// delete is refused rather than discarding that newer content.
+pub fn delete(
+    project: Option<&Path>,
+    scope: PromptScope,
+    name: &str,
+    expected_modified_ms: Option<u64>,
+) -> Result<(), String> {
     let _guard = LIBRARY_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = scope_dir(project, scope)?;
-    remove_prompt_file(&prompt_path(&dir, name)?)
+    let path = prompt_path(&dir, name)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    if let Some(expected) = expected_modified_ms
+        && modified_ms(&path) != expected
+    {
+        return Err(PROMPT_CONFLICT_MESSAGE.to_string());
+    }
+    remove_prompt_file(&path)
 }
 
 #[cfg(test)]
@@ -479,6 +547,7 @@ mod tests {
             "Review checklist",
             "Review {target} for bugs.",
             None,
+            None,
         )
         .unwrap();
 
@@ -493,10 +562,10 @@ mod tests {
         assert_eq!(prompts[0].name, "Review checklist");
         assert_eq!(prompts[0].content, "Review {target} for bugs.");
 
-        delete(Some(&project), PromptScope::Project, "Review checklist").unwrap();
+        delete(Some(&project), PromptScope::Project, "Review checklist", None).unwrap();
         assert!(list_dir(&dir, PromptScope::Project).unwrap().is_empty());
         // Deleting an already-missing prompt is a no-op, not an error.
-        delete(Some(&project), PromptScope::Project, "Review checklist").unwrap();
+        delete(Some(&project), PromptScope::Project, "Review checklist", None).unwrap();
 
         // Clean up the real ~/.qmux/projects entry this test created.
         let _ = fs::remove_dir_all(store.dir);
@@ -523,6 +592,7 @@ mod tests {
             "old name",
             "body",
             None,
+            None,
         )
         .unwrap();
         save(
@@ -531,6 +601,7 @@ mod tests {
             "new name",
             "body v2",
             Some((PromptScope::Project, "old name")),
+            None,
         )
         .unwrap();
 
@@ -545,8 +616,8 @@ mod tests {
 
     #[test]
     fn project_scope_without_project_dir_errors() {
-        assert!(save(None, PromptScope::Project, "note", "body", None).is_err());
-        assert!(delete(None, PromptScope::Project, "note").is_err());
+        assert!(save(None, PromptScope::Project, "note", "body", None, None).is_err());
+        assert!(delete(None, PromptScope::Project, "note", None).is_err());
         assert!(scope_dir(None, PromptScope::Project).is_err());
         assert!(materialize_scope_dir(None, PromptScope::Project).is_err());
         // A global save whose `previous` names the project scope needs one too.
@@ -557,6 +628,7 @@ mod tests {
                 "note",
                 "body",
                 Some((PromptScope::Project, "note")),
+                None,
             )
             .is_err()
         );
@@ -588,7 +660,7 @@ mod tests {
             "a\nb",
         ] {
             assert!(
-                save(Some(&project), PromptScope::Project, bad, "body", None).is_err(),
+                save(Some(&project), PromptScope::Project, bad, "body", None, None).is_err(),
                 "accepted {bad:?}"
             );
         }
@@ -599,7 +671,7 @@ mod tests {
     #[test]
     fn skips_non_markdown_files() {
         let project = temp_dir("filter");
-        save(Some(&project), PromptScope::Project, "keep", "body", None).unwrap();
+        save(Some(&project), PromptScope::Project, "keep", "body", None, None).unwrap();
         let store = ProjectStore::resolve(&project).unwrap();
         fs::write(store.prompts_dir().join("notes.txt"), "ignored").unwrap();
         let prompts = list_dir(&store.prompts_dir(), PromptScope::Project).unwrap();
@@ -619,5 +691,76 @@ mod tests {
             serde_json::from_str::<PromptScope>("\"project\"").unwrap(),
             PromptScope::Project
         );
+    }
+
+    #[test]
+    fn create_only_save_refuses_to_clobber() {
+        let project = temp_dir("create-only");
+        save(Some(&project), PromptScope::Project, "dup", "first", None, None).unwrap();
+        // A second create (no `previous`) at the same name must not overwrite —
+        // this is how two panes deriving the same filename are resolved.
+        assert!(save(Some(&project), PromptScope::Project, "dup", "second", None, None).is_err());
+        let store = ProjectStore::resolve(&project).unwrap();
+        let prompts = list_dir(&store.prompts_dir(), PromptScope::Project).unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].content, "first");
+        let _ = fs::remove_dir_all(store.dir);
+    }
+
+    #[test]
+    fn stale_update_is_rejected_and_current_survives() {
+        let project = temp_dir("stale-update");
+        let saved = save(Some(&project), PromptScope::Project, "note", "v1", None, None).unwrap();
+        let previous = Some((PromptScope::Project, "note"));
+        // A stale in-place update (mismatched expected mtime) is refused.
+        assert!(
+            save(
+                Some(&project),
+                PromptScope::Project,
+                "note",
+                "v2",
+                previous,
+                Some(saved.modified_ms.wrapping_add(1)),
+            )
+            .is_err()
+        );
+        // The matching expected mtime still succeeds.
+        save(
+            Some(&project),
+            PromptScope::Project,
+            "note",
+            "v2",
+            previous,
+            Some(saved.modified_ms),
+        )
+        .unwrap();
+        let store = ProjectStore::resolve(&project).unwrap();
+        let prompts = list_dir(&store.prompts_dir(), PromptScope::Project).unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].content, "v2");
+        let _ = fs::remove_dir_all(store.dir);
+    }
+
+    #[test]
+    fn stale_delete_is_rejected_and_matching_delete_succeeds() {
+        let project = temp_dir("stale-delete");
+        let saved = save(Some(&project), PromptScope::Project, "keep", "body", None, None).unwrap();
+        let store = ProjectStore::resolve(&project).unwrap();
+        // A stale delete (mismatched expected mtime) leaves the prompt in place.
+        assert!(
+            delete(
+                Some(&project),
+                PromptScope::Project,
+                "keep",
+                Some(saved.modified_ms.wrapping_add(1)),
+            )
+            .is_err()
+        );
+        assert_eq!(list_dir(&store.prompts_dir(), PromptScope::Project).unwrap().len(), 1);
+        // The matching mtime deletes; a repeat on the now-missing file is a no-op.
+        delete(Some(&project), PromptScope::Project, "keep", Some(saved.modified_ms)).unwrap();
+        assert!(list_dir(&store.prompts_dir(), PromptScope::Project).unwrap().is_empty());
+        delete(Some(&project), PromptScope::Project, "keep", Some(saved.modified_ms)).unwrap();
+        let _ = fs::remove_dir_all(store.dir);
     }
 }

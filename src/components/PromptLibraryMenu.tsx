@@ -505,6 +505,9 @@ export default function PromptLibraryMenu({
         content,
         projectDir,
         original ? { scope: original.scope, name: original.name } : null,
+        // A new prompt is create-only; an edit/move must match the mtime this
+        // dialog loaded, so a stale save can't clobber a newer version.
+        original ? original.modifiedMs : null,
       );
       await refresh();
       setDialog(null);
@@ -521,7 +524,13 @@ export default function PromptLibraryMenu({
     }
     setBusy(true);
     try {
-      await deleteSavedPrompt(dialog.prompt.scope, dialog.prompt.name, projectDir);
+      await deleteSavedPrompt(
+        dialog.prompt.scope,
+        dialog.prompt.name,
+        projectDir,
+        // Refuse the delete if another surface updated this prompt since load.
+        dialog.prompt.modifiedMs,
+      );
       await refresh();
       setDialog(null);
     } catch (err) {
@@ -548,10 +557,15 @@ export default function PromptLibraryMenu({
       const taken = namesInScope(target);
       const collides = taken.some((name) => name.toLowerCase() === prompt.name.toLowerCase());
       const name = collides ? derivePromptName(prompt.content, taken) : prompt.name;
-      await saveSavedPrompt(target, name, prompt.content, projectDir, {
-        scope: prompt.scope,
-        name: prompt.name,
-      });
+      await saveSavedPrompt(
+        target,
+        name,
+        prompt.content,
+        projectDir,
+        { scope: prompt.scope, name: prompt.name },
+        // The move must find its source unchanged since this menu loaded it.
+        prompt.modifiedMs,
+      );
       setError(null);
       await refresh();
     } catch (err) {
