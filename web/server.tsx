@@ -207,6 +207,7 @@ export function createQmuxRequestHandler(options: ServerOptions = {}) {
     upstreamCooldownUntil: 0,
     webAuth,
     activePublicationLoads: 0,
+    inFlightLoads: new Map(),
   };
 
   return async (request: IncomingMessage, response: ServerResponse) => {
@@ -260,6 +261,9 @@ interface RouteContext {
   trustFlyClientIp: boolean;
   upstreamCooldownUntil: number;
   activePublicationLoads: number;
+  // In-flight publication loads keyed by cache key, so a cold-cache burst for
+  // the same Gist shares one upstream fetch instead of one per request.
+  inFlightLoads: Map<string, Promise<CachedPublication>>;
 }
 
 async function routeRequest(
@@ -481,11 +485,15 @@ async function handleCreateProposal(
   if (!session) {
     throw new PublicationHttpError(401, "Sign in with GitHub before proposing a follow-up.");
   }
+  // Authentication and CSRF stop cross-site forgery but not deliberate abuse by
+  // an authenticated user, so proposal mutations get the same per-client rate
+  // limit as the page views — enforced before any upstream work.
+  enforcePublicationRateLimit(request, context);
   const form = await readUrlEncodedForm(request);
   if (form.get("csrfToken") !== session.csrfToken) {
     throw new PublicationHttpError(403, "The proposal request could not be verified.");
   }
-  const loaded = await loadPublication(route.gistId, context);
+  const loaded = await loadPublicationGuarded(route.gistId, context);
   if (
     loaded.publication.kind !== "research-tree" ||
     !loaded.publication.research.nodes.some((node) => node.id === route.nodeId)
@@ -832,6 +840,27 @@ function githubApiErrorMessage(raw: string, fallback: string) {
   }
 }
 
+// Loads a publication under the same global concurrency budget the page views
+// use, so mutation paths (proposals) can't open unbounded parallel upstream
+// reads that the page's guard would have refused.
+async function loadPublicationGuarded(
+  gistId: string,
+  context: RouteContext,
+): Promise<CachedPublication> {
+  if (context.activePublicationLoads >= MAX_CONCURRENT_PUBLICATION_LOADS) {
+    throw new PublicationHttpError(
+      503,
+      "The publication server is busy. Try again shortly.",
+    );
+  }
+  context.activePublicationLoads += 1;
+  try {
+    return await loadPublication(gistId, context);
+  } finally {
+    context.activePublicationLoads -= 1;
+  }
+}
+
 async function loadPublication(
   gistId: string,
   context: RouteContext,
@@ -853,6 +882,27 @@ async function loadPublication(
       "The publication server is briefly rate-limited. Try again shortly.",
     );
   }
+  // Coalesce concurrent cold-cache loads for the same Gist so a parallel burst
+  // (e.g. many proposal requests) issues one upstream fetch, not one each.
+  const inFlight = context.inFlightLoads.get(key);
+  if (inFlight) {
+    return inFlight;
+  }
+  const load = fetchPublication(gistId, context, key, cached);
+  context.inFlightLoads.set(key, load);
+  try {
+    return await load;
+  } finally {
+    context.inFlightLoads.delete(key);
+  }
+}
+
+async function fetchPublication(
+  gistId: string,
+  context: RouteContext,
+  key: string,
+  cached: CachedPublication | undefined,
+): Promise<CachedPublication> {
   const endpoint = `https://api.github.com/gists/${encodeURIComponent(gistId)}`;
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
