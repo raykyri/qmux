@@ -794,7 +794,15 @@
   width: 100%;
   min-height: 0;
   padding: 44px clamp(24px, 5vw, 72px) 40px;
-  overflow: auto;
+  /* Vertical only. Wide content (tables, code blocks) scrolls inside its own
+     inner scrollers, so this container never scrolls sideways legitimately.
+     With plain `auto`, transient horizontal overflow — the WebKit var()-drop
+     layouts documented on .research-document-content could momentarily let a
+     streaming answer overrun the right edge — made it horizontally
+     scrollable, and a trackpad deltaX then shifted scrollLeft. Nothing reset
+     it on navigation, so the left padding looked collapsed or erratic
+     between questions, follow-ups, and freshly posted replies. */
+  overflow: hidden auto;
   overscroll-behavior: contain;
 }
 
