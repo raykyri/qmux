@@ -23,7 +23,13 @@ export function discoverPlaceholders(content: string): string[] {
  *  user can still fill it in the composer. */
 export function fillPlaceholders(content: string, values: Record<string, string>): string {
   return content.replace(PLACEHOLDER_PATTERN, (token, name: string) => {
-    const value = values[name]?.trim();
+    // A placeholder name like `constructor`, `toString`, or `__proto__` would
+    // otherwise read an inherited Object.prototype member; `.trim()` on that
+    // non-string throws and blocks insertion. Only own string values count.
+    const value =
+      Object.prototype.hasOwnProperty.call(values, name) && typeof values[name] === "string"
+        ? values[name].trim()
+        : "";
     return value ? value : token;
   });
 }
