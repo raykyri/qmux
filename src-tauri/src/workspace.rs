@@ -1473,7 +1473,9 @@ pub fn agent_worktree_signature(state: &AppState, agent_id: &str) -> Result<Stri
         ));
     }
 
-    let signature = String::from_utf8_lossy(&write_tree.stdout).trim().to_string();
+    let signature = String::from_utf8_lossy(&write_tree.stdout)
+        .trim()
+        .to_string();
     if signature.is_empty() {
         return Err(format!("git write-tree produced no output in {dir}"));
     }
