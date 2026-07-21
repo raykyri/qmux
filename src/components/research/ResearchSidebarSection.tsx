@@ -68,7 +68,7 @@ interface ResearchSidebarSectionProps {
   onRestore: (treeId: string) => Promise<void>;
   onRemove: (treeId: string) => Promise<void>;
   onReorder: (archived: boolean, orderedTreeIds: string[]) => void;
-  onCreateFolder: (treeIds: string[]) => ResearchFolder | null;
+  onRequestCreateFolder: (treeIds: string[]) => void;
   onAddToFolder: (folderId: string, treeIds: string[]) => void;
   onRemoveFromFolder: (treeIds: string[]) => void;
   onFolderCollapsedChange: (folderId: string, collapsed: boolean) => void;
@@ -142,7 +142,7 @@ function ResearchSidebarSection({
   onRestore,
   onRemove,
   onReorder,
-  onCreateFolder,
+  onRequestCreateFolder,
   onAddToFolder,
   onRemoveFromFolder,
   onFolderCollapsedChange,
@@ -1206,6 +1206,19 @@ function ResearchSidebarSection({
         className={`research-sidebar-section${draggingId ? " is-dragging" : ""}`}
         aria-label="Research"
       >
+        <div className="research-sidebar-heading">
+          <span>Research</span>
+          <button
+            className="control-button"
+            type="button"
+            title="New folder"
+            aria-label="New research folder"
+            disabled={!workspaceId}
+            onClick={() => onRequestCreateFolder([])}
+          >
+            <FolderPlus size={13} aria-hidden="true" />
+          </button>
+        </div>
         {activeListVisible && starredUnits.length > 0 ? (
           <div className="research-sidebar-starred" role="group" aria-label="Starred research">
             {starredUnits.map((unit, index) => renderUnit(unit, index, "starred"))}
@@ -1243,10 +1256,7 @@ function ResearchSidebarSection({
                   role="menuitem"
                   onClick={() => {
                     setMenu(null);
-                    const folder = onCreateFolder(multiSelectedIds);
-                    if (folder) {
-                      openFolderRenameDialog(folder);
-                    }
+                    onRequestCreateFolder(multiSelectedIds);
                   }}
                 >
                   <FolderPlus size={13} aria-hidden="true" />
@@ -1453,23 +1463,19 @@ function ResearchSidebarSection({
                         <FolderMinus size={13} aria-hidden="true" />
                         <span>Remove from folder</span>
                       </button>
-                    ) : (
-                      <button
-                        className="control-button"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenu(null);
-                          const folder = onCreateFolder([menuTree.id]);
-                          if (folder) {
-                            openFolderRenameDialog(folder);
-                          }
-                        }}
-                      >
-                        <FolderPlus size={13} aria-hidden="true" />
-                        <span>New folder with item</span>
-                      </button>
-                    )}
+                    ) : null}
+                    <button
+                      className="control-button"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenu(null);
+                        onRequestCreateFolder([menuTree.id]);
+                      }}
+                    >
+                      <FolderPlus size={13} aria-hidden="true" />
+                      <span>New folder with item</span>
+                    </button>
                   </>
                 )}
                 {!menu.archived ? (

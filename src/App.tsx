@@ -89,6 +89,7 @@ import ResearchSidebarSection, {
   type ResearchVisibilityFilter,
 } from "./components/research/ResearchSidebarSection";
 import ResearchFolderSwitcher from "./components/research/ResearchFolderSwitcher";
+import ResearchFolderDialog from "./components/research/ResearchFolderDialog";
 import {
   nextTreeInResearchScope,
   resolveResearchScope,
@@ -147,7 +148,6 @@ import {
   setResearchFolderCollapsed,
   toggleResearchStar,
   visibleResearchTreeIds,
-  type ResearchFolder,
   type ResearchFolderState,
 } from "./lib/researchFolders";
 import type { OrphanedQueueGroup } from "./components/RecoveredQueuePanel";
@@ -1593,6 +1593,10 @@ function MainApp() {
   // safely lag behind deletions performed elsewhere.
   const [researchFolderState, setResearchFolderState] =
     useState<ResearchFolderState>(emptyResearchFolderState);
+  const [newResearchFolderRequest, setNewResearchFolderRequest] = useState<{
+    workspaceId: string;
+    treeIds: string[];
+  } | null>(null);
   const researchFolderStateRef = useRef(researchFolderState);
   researchFolderStateRef.current = researchFolderState;
   // Serializes backend persists so a burst of edits lands in order and the last
@@ -7229,22 +7233,41 @@ function MainApp() {
     },
     [removeResearchTreeAndSelectFallback],
   );
-  const createResearchFolderFromSelection = useCallback(
-    (treeIds: string[]): ResearchFolder | null => {
-      const first = researchTreesRef.current.find((tree) => tree.id === treeIds[0]);
-      if (!first) {
-        return null;
+  const requestResearchFolderCreation = useCallback((treeIds: string[]) => {
+    const first = researchTreesRef.current.find((tree) => tree.id === treeIds[0]);
+    if (treeIds.length > 0 && !first) {
+      return;
+    }
+    const workspaceId = first?.workspaceId ?? researchScopeRef.current;
+    if (!workspaceId) {
+      return;
+    }
+    setNewResearchFolderRequest({
+      workspaceId,
+      treeIds: treeIds.filter((treeId) =>
+        researchTreesRef.current.some(
+          (tree) => tree.id === treeId && tree.workspaceId === workspaceId,
+        ),
+      ),
+    });
+  }, []);
+  const confirmResearchFolderCreation = useCallback(
+    (name: string) => {
+      const request = newResearchFolderRequest;
+      if (!request) {
+        return;
       }
-      const { state, folder } = createResearchFolder(
+      const { state } = createResearchFolder(
         researchFolderStateRef.current,
-        first.workspaceId,
-        treeIds,
+        request.workspaceId,
+        request.treeIds,
+        name,
       );
       commitResearchFolderState(state);
       setResearchMultiSelectIds([]);
-      return folder;
+      setNewResearchFolderRequest(null);
     },
-    [commitResearchFolderState],
+    [commitResearchFolderState, newResearchFolderRequest],
   );
   const addResearchTreesToFolder = useCallback(
     (folderId: string, treeIds: string[]) => {
@@ -11733,7 +11756,7 @@ function MainApp() {
               shortcutHintsShown={shortcutHintsShown}
               shortcutIndexByTreeId={researchShortcutIndexByTreeId}
               onMultiSelectChange={changeResearchMultiSelection}
-              onCreateFolder={createResearchFolderFromSelection}
+              onRequestCreateFolder={requestResearchFolderCreation}
               onAddToFolder={addResearchTreesToFolder}
               onRemoveFromFolder={removeResearchTreesFromFolder}
               onFolderCollapsedChange={setResearchFolderCollapsedFromSidebar}
@@ -13859,6 +13882,13 @@ function MainApp() {
         workspaceId={researchScope}
         onClose={() => setNewResearchOpen(false)}
         onCreate={submitNewResearch}
+      />
+
+      <ResearchFolderDialog
+        open={newResearchFolderRequest !== null}
+        itemCount={newResearchFolderRequest?.treeIds.length ?? 0}
+        onClose={() => setNewResearchFolderRequest(null)}
+        onCreate={confirmResearchFolderCreation}
       />
 
       {exportResearchPane ? (
