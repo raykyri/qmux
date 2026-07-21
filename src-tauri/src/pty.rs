@@ -51,6 +51,12 @@ const RESTORED_SCROLLBACK_TERMINAL_RESET: &[u8] = b"\x18\x1b>\x1b[0m\x1b(B\x1b[4
 // restore and any trim still close a mid-alternate-screen entry.
 const LIVE_PANE_TERMINAL_MODE_RESET: &[u8] = b"\x1b>\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?2026l\x1b[>4;0m\x1b[=0u";
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
+/// Ghostty can accept a synthesized Return before its PTY write callback runs.
+/// Retry only that Return a small, bounded number of times; the pasted payload
+/// is deliberately outside this retry loop so a missing acknowledgement cannot
+/// duplicate a queued turn.
+const NATIVE_SUBMIT_ACK_ATTEMPTS: usize = 2;
+const NATIVE_SUBMIT_ACK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const NATIVE_INPUT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_PTY_COLS: u16 = 100;
 const DEFAULT_PTY_ROWS: u16 = 24;
@@ -1246,6 +1252,8 @@ fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> R
             || crate::native_terminal::submit(&options.pane_id),
             || flush_native_host_input(&options.pane_id),
             SUBMIT_KEY_DELAY,
+            NATIVE_SUBMIT_ACK_RETRY_DELAY,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
         );
     }
     write_native_pane_input(
@@ -1260,9 +1268,11 @@ fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> R
 fn write_native_data_and_submit(
     data: &str,
     emit_data: impl FnOnce() -> Result<(), String>,
-    submit: impl FnOnce() -> Result<(), String>,
+    mut submit: impl FnMut() -> Result<(), String>,
     mut flush_input: impl FnMut() -> Result<u64, String>,
     submit_key_delay: Duration,
+    submit_retry_delay: Duration,
+    submit_attempts: usize,
 ) -> Result<(), String> {
     let before_data = flush_input()?;
     emit_data()?;
@@ -1274,12 +1284,31 @@ fn write_native_data_and_submit(
     if !submit_key_delay.is_zero() {
         thread::sleep(submit_key_delay);
     }
-    submit()?;
-    let after_submit = flush_input()?;
-    if after_submit <= after_data {
-        return Err("native terminal accepted submit key but emitted no PTY input".to_string());
+    let submit_attempts = submit_attempts.max(1);
+    for attempt in 1..=submit_attempts {
+        submit()?;
+        if flush_input()? > after_data {
+            return Ok(());
+        }
+
+        // Give a deferred Ghostty input callback a chance to reach the PTY before
+        // sending another Return. A second barrier after the pause distinguishes a
+        // late acknowledgement from a genuinely missing write and avoids an
+        // unnecessary duplicate keypress in the common race.
+        if !submit_retry_delay.is_zero() {
+            thread::sleep(submit_retry_delay);
+        }
+        if flush_input()? > after_data {
+            return Ok(());
+        }
+
+        if attempt == submit_attempts {
+            return Err(format!(
+                "native terminal accepted submit key but emitted no PTY input after {submit_attempts} attempts"
+            ));
+        }
     }
-    Ok(())
+    unreachable!("submit attempt loop always returns")
 }
 
 fn write_native_pane_input(
@@ -2234,7 +2263,7 @@ mod tests {
     };
     use crate::scrollback::read_pane_scrollback;
     use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::io;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2802,6 +2831,8 @@ mod tests {
                     .ok_or_else(|| "unexpected flush".to_string())
             },
             Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
         )
         .unwrap();
 
@@ -2812,13 +2843,17 @@ mod tests {
     }
 
     #[test]
-    fn native_submission_rejects_a_submit_that_emits_no_bytes() {
-        let positions = RefCell::new(vec![0_u64, 12, 12].into_iter());
+    fn native_submission_accepts_a_late_submit_ack_without_retrying_return() {
+        let submit_calls = Cell::new(0);
+        let positions = RefCell::new(vec![0_u64, 12, 12, 13].into_iter());
 
-        let err = write_native_data_and_submit(
+        write_native_data_and_submit(
             "test",
             || Ok(()),
-            || Ok(()),
+            || {
+                submit_calls.set(submit_calls.get() + 1);
+                Ok(())
+            },
             || {
                 positions
                     .borrow_mut()
@@ -2826,10 +2861,73 @@ mod tests {
                     .ok_or_else(|| "unexpected flush".to_string())
             },
             Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
+        )
+        .unwrap();
+
+        assert_eq!(submit_calls.get(), 1);
+    }
+
+    #[test]
+    fn native_submission_retries_only_return_after_missing_ack() {
+        let data_calls = Cell::new(0);
+        let submit_calls = Cell::new(0);
+        let positions = RefCell::new(vec![0_u64, 12, 12, 12, 13].into_iter());
+
+        write_native_data_and_submit(
+            "test",
+            || {
+                data_calls.set(data_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                submit_calls.set(submit_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                positions
+                    .borrow_mut()
+                    .next()
+                    .ok_or_else(|| "unexpected flush".to_string())
+            },
+            Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
+        )
+        .unwrap();
+
+        assert_eq!(data_calls.get(), 1);
+        assert_eq!(submit_calls.get(), 2);
+    }
+
+    #[test]
+    fn native_submission_rejects_a_submit_after_bounded_attempts() {
+        let submit_calls = Cell::new(0);
+        let positions = RefCell::new(vec![0_u64, 12, 12, 12, 12, 12].into_iter());
+
+        let err = write_native_data_and_submit(
+            "test",
+            || Ok(()),
+            || {
+                submit_calls.set(submit_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                positions
+                    .borrow_mut()
+                    .next()
+                    .ok_or_else(|| "unexpected flush".to_string())
+            },
+            Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
         )
         .unwrap_err();
 
         assert!(err.contains("submit key"));
+        assert!(err.contains("2 attempts"));
+        assert_eq!(submit_calls.get(), NATIVE_SUBMIT_ACK_ATTEMPTS);
     }
 
     fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
