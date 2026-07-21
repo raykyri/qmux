@@ -51,6 +51,7 @@ export type ResearchVisibilityFilter = "active" | "archived" | "all";
 interface ResearchSidebarSectionProps {
   trees: ResearchTreeSummary[];
   archivedTrees: ResearchTreeSummary[];
+  workspaceId: string | null;
   visibilityFilter: ResearchVisibilityFilter;
   activeTreeId: string | null;
   multiSelectedIds: string[];
@@ -126,6 +127,7 @@ function ResearchSidebarTitle({ tree }: { tree: ResearchTreeSummary }) {
 function ResearchSidebarSection({
   trees,
   archivedTrees,
+  workspaceId,
   visibilityFilter,
   activeTreeId,
   multiSelectedIds,
@@ -176,8 +178,8 @@ function ResearchSidebarSection({
   const activeListVisible = visibilityFilter !== "archived";
   const visibleArchivedTrees = visibilityFilter === "active" ? [] : archivedTrees;
   const lists = useMemo(
-    () => buildResearchSidebarLists(trees, folderState),
-    [folderState, trees],
+    () => buildResearchSidebarLists(trees, folderState, workspaceId),
+    [folderState, trees, workspaceId],
   );
   const starredUnits = lists.starred;
   const mainUnits = lists.main;
@@ -775,7 +777,7 @@ function ResearchSidebarSection({
       if (wasStarred) {
         proposedState = toggleResearchStar(proposedState, drag.id);
       }
-      const proposedLists = buildResearchSidebarLists(trees, proposedState);
+      const proposedLists = buildResearchSidebarLists(trees, proposedState, workspaceId);
       const targetIsStarred = proposedLists.starred.some(
         (unit) => unit.kind === "folder" && unit.folder.id === target.folderId,
       );
@@ -841,7 +843,7 @@ function ResearchSidebarSection({
     const proposedState = draggedTree
       ? removeTreesFromResearchFolderMembership(folderState, [drag.id])
       : folderState;
-    const proposedLists = buildResearchSidebarLists(trees, proposedState);
+    const proposedLists = buildResearchSidebarLists(trees, proposedState, workspaceId);
     const sourceFolderId =
       drag.scope.kind === "folder" ? drag.scope.folderId : null;
     const sourceFolder =
@@ -1108,7 +1110,7 @@ function ResearchSidebarSection({
             list,
             unitIndex,
             listUnits.length,
-            collapsed ? "only" : "first",
+            collapsed || unit.trees.length === 0 ? "only" : "first",
           )}`}
           data-research-unit-index={list === "units" ? unitIndex : undefined}
           data-research-star-index={list === "starred" ? unitIndex : undefined}

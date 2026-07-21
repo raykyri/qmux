@@ -4596,10 +4596,6 @@ impl AppState {
             })
             .map(|(tree_id, folder_id)| (tree_id.clone(), folder_id.clone()))
             .collect::<HashMap<_, _>>();
-        // A folder with no member travelling in this archive would import as an
-        // empty ghost the display never shows; drop it and its dangling members.
-        let kept_folder_ids = membership.values().cloned().collect::<HashSet<_>>();
-        folders.retain(|folder| kept_folder_ids.contains(&folder.id));
         Ok(research::DetachedResearchArchive {
             version: research::detached_archive_version(&nodes),
             archive_id: research::new_detached_research_archive_id()?,

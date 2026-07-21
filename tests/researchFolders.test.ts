@@ -4,6 +4,8 @@ import type { ResearchTreeSummary } from "../src/types";
 import {
   RESEARCH_FOLDERS_STORAGE_KEY,
   addTreesToResearchFolder,
+  buildResearchSidebarLists,
+  createResearchFolder,
   loadResearchFolderState,
   removeTreesFromResearchFolderMembership,
   setResearchFolderCollapsed,
@@ -74,16 +76,16 @@ test("collapsed folders hide members from the visible research order", () => {
   );
 });
 
-test("unfoldering preserves item stars and prunes an empty folder", () => {
+test("unfoldering preserves item stars and the emptied folder", () => {
   const initial = state();
   const next = removeTreesFromResearchFolderMembership(initial, ["one", "two"]);
   assert.deepEqual(next.membership, { three: "folder-b" });
-  assert.deepEqual(next.folders.map((folder) => folder.id), ["folder-b"]);
-  assert.deepEqual(next.starred, ["one"]);
-  assert.deepEqual(next.collapsed, []);
+  assert.deepEqual(next.folders.map((folder) => folder.id), ["folder-a", "folder-b"]);
+  assert.deepEqual(next.starred, ["one", "folder-a"]);
+  assert.deepEqual(next.collapsed, ["folder-a"]);
 });
 
-test("moving the last member to another folder removes the empty source folder", () => {
+test("moving the last member to another folder preserves the empty source folder", () => {
   const initial = state();
   const next = addTreesToResearchFolder(initial, "folder-a", ["three"]);
   assert.deepEqual(next.membership, {
@@ -91,7 +93,25 @@ test("moving the last member to another folder removes the empty source folder",
     two: "folder-a",
     three: "folder-a",
   });
-  assert.deepEqual(next.folders.map((folder) => folder.id), ["folder-a"]);
+  assert.deepEqual(next.folders.map((folder) => folder.id), ["folder-a", "folder-b"]);
+});
+
+test("empty folders are created and displayed in their workspace", () => {
+  const created = createResearchFolder(
+    { folders: [], membership: {}, starred: [], collapsed: [] },
+    "workspace-1",
+    [],
+    "Empty",
+  );
+  const lists = buildResearchSidebarLists([], created.state, "workspace-1");
+  assert.equal(created.folder.name, "Empty");
+  assert.deepEqual(lists.main, [
+    { kind: "folder", folder: created.folder, trees: [] },
+  ]);
+  assert.deepEqual(buildResearchSidebarLists([], created.state, "workspace-2"), {
+    starred: [],
+    main: [],
+  });
 });
 
 test("pre-insertion drop gaps account for the inserted item's temporary slot", () => {

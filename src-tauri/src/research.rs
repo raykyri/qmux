@@ -109,9 +109,9 @@ pub fn normalize_research_folder_state(state: &mut ResearchFolderState) {
         .retain(|id| folder_ids.contains(id) && seen_collapsed.insert(id.clone()));
 }
 
-/// Drops every part of the grouping that references a tree or folder that no
-/// longer exists: memberships for absent trees, folders left with no members,
-/// stars for absent trees and pruned folders, collapsed for pruned folders.
+/// Drops every part of the grouping that references a tree that no longer
+/// exists. Folder records survive independently of membership so an empty
+/// organizational folder remains durable.
 /// Runs only where the tree set is authoritative (load, under the model lock),
 /// never against the per-refresh navigation snapshot that could be transiently
 /// empty — that unconditional prune is the data-loss bug this replaces.
@@ -122,10 +122,6 @@ pub fn reconcile_research_folder_state(
     state
         .membership
         .retain(|tree_id, _| known_tree_ids.contains(tree_id));
-    let live_folder_ids = state.membership.values().cloned().collect::<HashSet<_>>();
-    state
-        .folders
-        .retain(|folder| live_folder_ids.contains(&folder.id));
     let folder_ids = state
         .folders
         .iter()
@@ -138,31 +134,17 @@ pub fn reconcile_research_folder_state(
 }
 
 /// Drops the supplied trees out of whatever folder holds them and out of the
-/// starred list, then prunes folders left empty (and their stars/collapsed).
+/// starred list. Folder records and their view state survive when left empty.
 /// Mirrors the frontend `removeTreesFromResearchFolders`; used when a tree is
 /// actually removed so the persisted grouping stays clean between loads.
 pub fn remove_trees_from_research_folders(
     state: &mut ResearchFolderState,
     tree_ids: &HashSet<String>,
 ) {
-    // Every id that names a folder before pruning, so the star filter can tell a
-    // just-emptied folder's star (drop it) from a plain tree star (keep it).
-    let all_folder_ids = state
-        .folders
-        .iter()
-        .map(|folder| folder.id.clone())
-        .collect::<HashSet<_>>();
     state
         .membership
         .retain(|tree_id, _| !tree_ids.contains(tree_id));
-    let live_folder_ids = state.membership.values().cloned().collect::<HashSet<_>>();
-    state
-        .folders
-        .retain(|folder| live_folder_ids.contains(&folder.id));
-    state.starred.retain(|id| {
-        !tree_ids.contains(id) && (live_folder_ids.contains(id) || !all_folder_ids.contains(id))
-    });
-    state.collapsed.retain(|id| live_folder_ids.contains(id));
+    state.starred.retain(|id| !tree_ids.contains(id));
 }
 
 /// Removes every folder belonging to a workspace along with the memberships,
@@ -2281,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_drops_absent_trees_and_empties_but_keeps_live_grouping() {
+    fn reconcile_drops_absent_trees_but_preserves_empty_folders() {
         let mut state = folder_state(
             &[("f1", "ws"), ("f2", "ws")],
             &[("t1", "f1"), ("gone", "f2")],
@@ -2290,30 +2272,32 @@ mod tests {
         );
         let known = HashSet::from(["t1".to_string()]);
         reconcile_research_folder_state(&mut state, &known);
-        // f1 keeps its live member; f2 loses its only (absent) member and is pruned.
-        assert_eq!(state.folders.len(), 1);
+        // f1 keeps its live member; f2 loses its absent member but remains reusable.
+        assert_eq!(state.folders.len(), 2);
         assert_eq!(state.folders[0].id, "f1");
         assert_eq!(
             state.membership,
             HashMap::from([("t1".to_string(), "f1".to_string())])
         );
-        // A star survives only for a live tree or a surviving folder.
-        assert_eq!(state.starred, vec!["t1".to_string()]);
+        // Stars survive for live trees and durable folders.
+        assert_eq!(state.starred, vec!["t1".to_string(), "f2".to_string()]);
+        assert_eq!(state.collapsed, vec!["f1".to_string(), "f2".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_against_empty_tree_set_preserves_folders() {
+        // Reconciliation may clear stale memberships and tree stars, but never
+        // uses an empty tree snapshot as a reason to delete folders.
+        let mut state = folder_state(&[("f1", "ws")], &[("t1", "f1")], &["t1"], &["f1"]);
+        reconcile_research_folder_state(&mut state, &HashSet::new());
+        assert_eq!(state.folders.len(), 1);
+        assert!(state.membership.is_empty());
+        assert!(state.starred.is_empty());
         assert_eq!(state.collapsed, vec!["f1".to_string()]);
     }
 
     #[test]
-    fn reconcile_against_empty_tree_set_is_total_but_that_path_is_never_hit_on_refresh() {
-        // Documents the behavior the refresh path must avoid: reconciling the
-        // grouping against an empty known-tree set erases everything. The fix is
-        // that this only runs at load, under the authoritative tree set.
-        let mut state = folder_state(&[("f1", "ws")], &[("t1", "f1")], &["t1"], &["f1"]);
-        reconcile_research_folder_state(&mut state, &HashSet::new());
-        assert!(state.is_empty());
-    }
-
-    #[test]
-    fn removing_a_tree_drops_its_star_and_prunes_the_emptied_folder() {
+    fn removing_a_tree_drops_its_star_and_preserves_the_emptied_folder() {
         let mut state = folder_state(
             &[("f1", "ws")],
             &[("t1", "f1"), ("t2", "f1")],
@@ -2325,12 +2309,12 @@ mod tests {
         assert_eq!(state.folders.len(), 1);
         assert_eq!(state.starred, vec!["f1".to_string(), "t2".to_string()]);
         assert_eq!(state.collapsed, vec!["f1".to_string()]);
-        // Removing the last member prunes the folder and its folder-star.
+        // Removing the last member leaves the folder and its view state intact.
         remove_trees_from_research_folders(&mut state, &HashSet::from(["t2".to_string()]));
-        assert!(state.folders.is_empty());
+        assert_eq!(state.folders.len(), 1);
         assert!(state.membership.is_empty());
-        assert!(state.starred.is_empty());
-        assert!(state.collapsed.is_empty());
+        assert_eq!(state.starred, vec!["f1".to_string()]);
+        assert_eq!(state.collapsed, vec!["f1".to_string()]);
     }
 
     #[test]

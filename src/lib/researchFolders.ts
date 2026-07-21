@@ -155,16 +155,9 @@ export function addTreesToResearchFolder(
   for (const treeId of treeIds) {
     membership[treeId] = folderId;
   }
-  const liveFolderIds = new Set(Object.values(membership));
   return {
     ...state,
-    folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
     membership,
-    starred: state.starred.filter(
-      (id) =>
-        liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id),
-    ),
-    collapsed: state.collapsed.filter((id) => liveFolderIds.has(id)),
   };
 }
 
@@ -202,8 +195,9 @@ export function renameResearchFolder(
 }
 
 /** Drops individual trees out of whatever folder holds them, and out of the
- * starred list — a tree passed here is gone, foldered or not. A folder left
- * with no members disappears along with its own star. */
+ * starred list — a tree passed here is gone, foldered or not. Folder records
+ * survive independently so deleting their last member leaves a reusable empty
+ * folder. */
 export function removeTreesFromResearchFolders(
   state: ResearchFolderState,
   treeIds: string[],
@@ -217,25 +211,19 @@ export function removeTreesFromResearchFolders(
       membershipChanged = true;
     }
   }
-  const liveFolderIds = new Set(Object.values(membership));
-  const starred = state.starred.filter(
-    (id) =>
-      !removed.has(id) &&
-      (liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id)),
-  );
+  const starred = state.starred.filter((id) => !removed.has(id));
   if (!membershipChanged && starred.length === state.starred.length) {
     return state;
   }
   return {
-    folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
+    ...state,
     membership,
     starred,
-    collapsed: state.collapsed.filter((id) => liveFolderIds.has(id)),
   };
 }
 
 /** Removes only the organizational membership for the supplied trees. Stars
- * on the trees are preserved; empty folders and their own UI state are pruned. */
+ * on the trees and empty folders are preserved. */
 export function removeTreesFromResearchFolderMembership(
   state: ResearchFolderState,
   treeIds: string[],
@@ -251,15 +239,9 @@ export function removeTreesFromResearchFolderMembership(
   if (!changed) {
     return state;
   }
-  const liveFolderIds = new Set(Object.values(membership));
   return {
-    folders: state.folders.filter((folder) => liveFolderIds.has(folder.id)),
+    ...state,
     membership,
-    starred: state.starred.filter(
-      (id) =>
-        liveFolderIds.has(id) || !state.folders.some((folder) => folder.id === id),
-    ),
-    collapsed: state.collapsed.filter((id) => liveFolderIds.has(id)),
   };
 }
 
@@ -308,6 +290,7 @@ export function researchSidebarUnitId(unit: ResearchSidebarUnit): string {
 export function buildResearchSidebarUnits(
   trees: ResearchTreeSummary[],
   state: ResearchFolderState,
+  workspaceId?: string | null,
 ): ResearchSidebarUnit[] {
   const units: ResearchSidebarUnit[] = [];
   const folderUnits = new Map<
@@ -330,6 +313,23 @@ export function buildResearchSidebarUnits(
       units.push(unit);
     }
     unit.trees.push(tree);
+  }
+  const inferredWorkspaceId =
+    trees.length > 0 && trees.every((tree) => tree.workspaceId === trees[0].workspaceId)
+      ? trees[0].workspaceId
+      : null;
+  const displayedWorkspaceId = workspaceId ?? inferredWorkspaceId;
+  if (displayedWorkspaceId) {
+    const foldersWithStoredMembers = new Set(Object.values(state.membership));
+    for (const folder of state.folders) {
+      if (
+        folder.workspaceId === displayedWorkspaceId &&
+        !folderUnits.has(folder.id) &&
+        !foldersWithStoredMembers.has(folder.id)
+      ) {
+        units.push({ kind: "folder", folder, trees: [] });
+      }
+    }
   }
   return units;
 }
@@ -380,6 +380,7 @@ export interface ResearchSidebarLists {
 export function buildResearchSidebarLists(
   trees: ResearchTreeSummary[],
   state: ResearchFolderState,
+  workspaceId?: string | null,
 ): ResearchSidebarLists {
   const starredSet = new Set(state.starred);
   const starredFolderIds = new Set(
@@ -393,13 +394,23 @@ export function buildResearchSidebarLists(
     return !folderId || !starredFolderIds.has(folderId);
   });
   const starred: ResearchSidebarUnit[] = [];
+  const inferredWorkspaceId =
+    trees.length > 0 && trees.every((tree) => tree.workspaceId === trees[0].workspaceId)
+      ? trees[0].workspaceId
+      : null;
+  const displayedWorkspaceId = workspaceId ?? inferredWorkspaceId;
+  const foldersWithStoredMembers = new Set(Object.values(state.membership));
   for (const id of state.starred) {
     const folder = state.folders.find((candidate) => candidate.id === id);
     if (folder) {
       const members = trees.filter(
         (tree) => state.membership[tree.id] === id && !starredSet.has(tree.id),
       );
-      if (members.length > 0) {
+      if (
+        members.length > 0 ||
+        (folder.workspaceId === displayedWorkspaceId &&
+          !foldersWithStoredMembers.has(folder.id))
+      ) {
         starred.push({ kind: "folder", folder, trees: members });
       }
       continue;
@@ -409,7 +420,12 @@ export function buildResearchSidebarLists(
       starred.push({ kind: "tree", tree });
     }
   }
-  return { starred, main: buildResearchSidebarUnits(mainTrees, state) };
+  return {
+    starred,
+    main: buildResearchSidebarUnits(mainTrees, state, displayedWorkspaceId).filter(
+      (unit) => unit.kind === "tree" || !starredFolderIds.has(unit.folder.id),
+    ),
+  };
 }
 
 /** Moves one unit (tree or whole folder) to a gap in the unit list. Returns

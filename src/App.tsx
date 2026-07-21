@@ -7197,8 +7197,8 @@ function MainApp() {
     async (treeId: string) => {
       setError(null);
       await removeResearchTree(treeId);
-      // Folder membership must not outlive the tree; dropping the last member
-      // also dissolves its now-empty folder.
+      // Folder membership must not outlive the tree. The folder itself remains
+      // available when its last member is deleted.
       commitResearchFolderState(
         removeTreesFromResearchFolders(researchFolderStateRef.current, [treeId]),
       );
@@ -11725,6 +11725,7 @@ function MainApp() {
             <ResearchSidebarSection
               trees={scopedResearchTrees}
               archivedTrees={scopedArchivedResearchTrees}
+              workspaceId={researchScope}
               visibilityFilter={researchVisibilityFilter}
               activeTreeId={activeResearchTreeId}
               multiSelectedIds={researchMultiSelection}
